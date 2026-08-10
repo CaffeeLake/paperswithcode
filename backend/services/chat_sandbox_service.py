@@ -16,10 +16,9 @@ from typing import cast
 import httpx
 import modal
 from modal.client import _Client
-from modal.exception import Error as ModalError
 from modal.exception import NotFoundError
 from modal_proto import api_pb2
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
 
@@ -48,13 +47,13 @@ from backend.services.chat_sandbox_capacity_repository import (
 )
 from backend.services.chat_sandbox_pool_coordinator import (
     ChatSandboxPoolCoordinator,
+    PoolMaintenanceResult,
     lock_pool_maintenance,
 )
 from backend.services.chat_sandbox_pool_repository import (
     MODAL_CPU_USD_PER_CORE_SECOND,
     MODAL_MEMORY_USD_PER_GIB_SECOND,
     ChatSandboxPoolRepository,
-    PoolTerminationClaim,
 )
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
@@ -94,10 +93,6 @@ from backend.services.chat_sandbox_worker_transport import (
 )
 
 logger = logging.getLogger(__name__)
-
-POOL_TERMINAL_RETENTION_DAYS = 35
-POOL_CLEANUP_BATCH_SIZE = 100
-POOL_ACCOUNTING_SAFETY_SECONDS = 120
 
 
 async def resolve_modal_image(image_reference: str):
@@ -350,10 +345,6 @@ class SandboxSessionManager:
     def _lock_capacity(db: Session, *, wait: bool = True) -> bool:
         return lock_capacity(db, wait=wait)
 
-    @staticmethod
-    def _lock_pool_maintenance(db: Session) -> bool:
-        return lock_pool_maintenance(db)
-
     def _pool_cost_per_second(self) -> float:
         return float(self.settings.chat_sandbox_cpu) * MODAL_CPU_USD_PER_CORE_SECOND + (
             float(self.settings.chat_sandbox_memory_mib)
@@ -418,15 +409,6 @@ class SandboxSessionManager:
             "within_budget": status["circuit_state"] != "tripped",
         }
 
-    def _spawn_pool_replenishment(self) -> None:
-        self._pool_coordinator().spawn_replenishment()
-
-    async def _pool_sandbox_health(self, sandbox_id: str, worker_generation: str):
-        return await self._pool_coordinator().pool_sandbox_health(
-            sandbox_id,
-            worker_generation,
-        )
-
     async def _start_persistent_control(
         self, sandbox, worker_generation: str
     ) -> SessionControl:
@@ -452,18 +434,6 @@ class SandboxSessionManager:
             failure_code=failure_code,
         )
 
-    async def _terminate_claimed_pool_row(
-        self,
-        claim: PoolTerminationClaim,
-    ) -> bool:
-        return await self._pool_coordinator().terminate_claimed_pool_row(claim)
-
-    async def _terminate_claimed_pool_rows(
-        self,
-        claims: list[PoolTerminationClaim],
-    ) -> int:
-        return await self._pool_coordinator().terminate_claimed_pool_rows(claims)
-
     async def claim_blank(
         self, chat_session_id: uuid.UUID
     ) -> tuple[object, int] | None:
@@ -473,291 +443,17 @@ class SandboxSessionManager:
         return await self._pool_coordinator().replenish_pool()
 
     async def reconcile_pool_orphans(self) -> int:
-        """Terminate provider pool sandboxes not represented by durable state."""
-
-        now = datetime.now(UTC)
-        with self.session_factory() as db:
-            known_ids = set(
-                db.execute(
-                    select(ChatSandboxPool.modal_sandbox_id).where(
-                        ChatSandboxPool.modal_sandbox_id.is_not(None),
-                        ChatSandboxPool.state.in_(
-                            ["starting", "blank_ready", "draining"]
-                        ),
-                    )
-                ).scalars()
-            )
-            known_ids.update(
-                db.execute(
-                    select(ChatSandboxLease.modal_sandbox_id).where(
-                        ChatSandboxLease.modal_sandbox_id.is_not(None),
-                        ChatSandboxLease.state.in_(
-                            ["starting", "ready", "busy", "idle", "terminating"]
-                        ),
-                    )
-                ).scalars()
-            )
-            creation_in_flight = bool(
-                db.execute(
-                    select(ChatSandboxPool.id)
-                    .where(
-                        ChatSandboxPool.state == "starting",
-                        ChatSandboxPool.updated_at
-                        > now - timedelta(seconds=self.ready_timeout_seconds + 15),
-                    )
-                    .limit(1)
-                ).first()
-            )
-        if creation_in_flight:
-            # create_isolated_sandbox waits for worker readiness before it can
-            # persist the provider ID. Concurrency one means an unknown tagged
-            # sandbox during this bounded window may be that legitimate start.
-            return 0
-        terminated = 0
-        async for sandbox in self._listed_pool_sandboxes():
-            if sandbox.object_id in known_ids:
-                continue
-            try:
-                await self._link_provider_pool_interval(sandbox)
-                confirmed = await self._terminate_provider_sandbox(
-                    sandbox.object_id, sandbox
-                )
-                if not confirmed:
-                    raise RuntimeError("provider termination was not confirmed")
-                if self.settings.chat_sandbox_spend_enforcement_enabled:
-                    with self.session_factory() as db, db.begin():
-                        ChatSandboxSpendService(db, self.settings).terminate(
-                            sandbox.object_id,
-                            "pool_orphan_reconciled",
-                            confirmed=True,
-                        )
-                terminated += 1
-            except Exception:
-                if self.settings.chat_sandbox_spend_enforcement_enabled:
-                    with self.session_factory() as db, db.begin():
-                        ChatSandboxSpendService(db, self.settings).terminate(
-                            sandbox.object_id,
-                            "termination_uncertain",
-                            confirmed=False,
-                        )
-        return terminated
-
-    async def _link_provider_pool_interval(self, sandbox: object) -> bool:
-        """Recover a pool creation race from immutable provider tags."""
-
-        try:
-            tags = await self._provider_adapter().get_tags(sandbox)
-            pool_id = uuid.UUID(str(tags["pool_id"]))
-        except (AttributeError, KeyError, ModalError, TypeError, ValueError):
-            return False
-        with self.session_factory() as db, db.begin():
-            pool = db.get(ChatSandboxPool, pool_id)
-            if (
-                pool is None
-                or tags.get("pool") != "blank"
-                or tags.get("release") != pool.app_release_id
-                or tags.get("image") != pool.image_version
-                or tags.get("contract") != pool.worker_contract_version
-            ):
-                return False
-            interval = db.execute(
-                select(ChatSandboxComputeInterval)
-                .where(
-                    ChatSandboxComputeInterval.environment == self.settings.environment,
-                    ChatSandboxComputeInterval.worker_generation
-                    == pool.worker_generation,
-                )
-                .with_for_update()
-            ).scalar_one_or_none()
-            if interval is None or interval.modal_sandbox_id not in {
-                None,
-                sandbox.object_id,
-            }:
-                return False
-            ChatSandboxSpendService(db, self.settings).provider_created(
-                interval.id,
-                sandbox.object_id,
-            )
-            return True
-
-    async def _listed_pool_sandboxes(self):
-        async for sandbox in self._provider_adapter().iter_sandboxes(
-            tags={"service": "pwc-chat", "pool": "blank"},
-        ):
-            yield sandbox
+        return await self._pool_coordinator().reconcile_pool_orphans()
 
     async def maintain_pool(self) -> dict[str, int]:
-        """Drain stale blanks, reconcile provider loss, and replenish safely."""
-
-        if not self.pool_maintenance_owner():
-            return {
-                "drained": 0,
-                "lost": 0,
-                "orphaned": 0,
-                "abandoned": 0,
-                "cleaned": 0,
-                "replenished": 0,
-            }
-        enabled = self.blank_pool_enabled
-        now = datetime.now(UTC)
-        drain: list[PoolTerminationClaim] = []
-        health_candidates: list[tuple[uuid.UUID, str, str]] = []
-        budget_blocked = not enabled
-        termination_concurrency = self.pool_termination_concurrency
-        with self.session_factory() as db, db.begin():
-            if not self._lock_pool_maintenance(db):
-                return {
-                    "drained": 0,
-                    "lost": 0,
-                    "orphaned": 0,
-                    "abandoned": 0,
-                    "cleaned": 0,
-                    "replenished": 0,
-                }
-            self._lock_capacity(db)
-            if enabled:
-                try:
-                    ChatSandboxSpendService(db, self.settings).assert_available(now)
-                except ChatComputeDisabled:
-                    budget_blocked = True
-            rows = list(
-                db.execute(
-                    select(ChatSandboxPool)
-                    .where(
-                        ChatSandboxPool.state.in_(
-                            ["starting", "blank_ready", "draining"]
-                        )
-                    )
-                    .with_for_update()
-                ).scalars()
-            )
-            for row in rows:
-                failure_code: str | None = None
-                # Preserve a compatible unassigned worker across app-only releases.
-                # Its creator release remains recorded on the pool row for audit.
-                incompatible = (
-                    row.image_version != self.settings.chat_modal_image_version
-                    or row.worker_contract_version
-                    != self.settings.chat_worker_contract_version
-                    or row.cpu_request != self.settings.chat_sandbox_cpu
-                    or row.cpu_limit
-                    != (
-                        self.settings.chat_sandbox_cpu_limit
-                        or self.settings.chat_sandbox_cpu
-                    )
-                    or row.memory_request_mib != self.settings.chat_sandbox_memory_mib
-                    or row.memory_limit_mib
-                    != (
-                        self.settings.chat_sandbox_memory_limit_mib
-                        or self.settings.chat_sandbox_memory_mib
-                    )
-                )
-                rotation_due = self._as_utc(row.expires_at) <= now + timedelta(
-                    seconds=self.settings.chat_blank_pool_rotate_before_seconds
-                )
-                creation_expired = row.state == "starting" and self._as_utc(
-                    row.updated_at
-                ) <= now - timedelta(seconds=self.ready_timeout_seconds + 15)
-                if creation_expired:
-                    failure_code = "sandbox_start_failed"
-                if (
-                    row.state == "draining"
-                    or not enabled
-                    or incompatible
-                    or rotation_due
-                    or row.billing_month != self._billing_month(now)
-                    or budget_blocked
-                    or creation_expired
-                ):
-                    if len(drain) >= termination_concurrency:
-                        continue
-                    claim = self._pool_repository().claim_termination(
-                        db,
-                        row.id,
-                        row.modal_sandbox_id,
-                        failure_code=failure_code,
-                        now=now,
-                        stale_draining_before=now
-                        - timedelta(
-                            seconds=self.pool_termination_claim_timeout_seconds
-                        ),
-                        capacity_locked=True,
-                    )
-                    if claim is not None:
-                        drain.append(claim)
-                elif row.state == "blank_ready" and row.modal_sandbox_id:
-                    health_candidates.append(
-                        (row.id, row.modal_sandbox_id, row.worker_generation)
-                    )
-        drained = await self._terminate_claimed_pool_rows(drain)
-        lost = 0
-        for pool_id, sandbox_id, worker_generation in health_candidates:
-            sandbox = await self._pool_sandbox_health(sandbox_id, worker_generation)
-            if sandbox is None:
-                lost += bool(
-                    await self._terminate_pool_row(
-                        pool_id, sandbox_id, failure_code="sandbox_lost"
-                    )
-                )
-                continue
-            with self.session_factory() as db, db.begin():
-                row = db.execute(
-                    select(ChatSandboxPool)
-                    .where(
-                        ChatSandboxPool.id == pool_id,
-                        ChatSandboxPool.state == "blank_ready",
-                        ChatSandboxPool.modal_sandbox_id == sandbox_id,
-                        ChatSandboxPool.worker_generation == worker_generation,
-                    )
-                    .with_for_update()
-                ).scalar_one_or_none()
-                if row is not None:
-                    row.last_health_checked_at = datetime.now(UTC)
-                    row.updated_at = datetime.now(UTC)
-                    self._finalize_pool_cost(row, datetime.now(UTC))
-        cutoff = now - timedelta(days=POOL_TERMINAL_RETENTION_DAYS)
-        cleaned = 0
-        with self.session_factory() as db, db.begin():
-            terminal_ids = list(
-                db.execute(
-                    select(ChatSandboxPool.id)
-                    .where(
-                        ChatSandboxPool.state.in_(["claimed", "terminated", "failed"]),
-                        ChatSandboxPool.updated_at < cutoff,
-                    )
-                    .order_by(ChatSandboxPool.updated_at)
-                    .limit(POOL_CLEANUP_BATCH_SIZE)
-                ).scalars()
-            )
-            if terminal_ids:
-                cleaned = (
-                    db.execute(
-                        delete(ChatSandboxPool).where(
-                            ChatSandboxPool.id.in_(terminal_ids)
-                        )
-                    ).rowcount
-                    or 0
-                )
-        orphaned = await self.reconcile_pool_orphans()
-        abandoned = 0
-        if self.settings.chat_sandbox_spend_enforcement_enabled:
-            with self.session_factory() as db, db.begin():
-                abandoned = ChatSandboxSpendService(
-                    db, self.settings
-                ).abort_abandoned_pool_reservations()
-            if abandoned:
-                logger.info(
-                    "chat blank pool abandoned reservations released count=%d",
-                    abandoned,
-                )
-        replenished = 0 if budget_blocked else await self.replenish_pool()
+        result: PoolMaintenanceResult = await self._pool_coordinator().maintain_pool()
         return {
-            "drained": drained,
-            "lost": lost,
-            "orphaned": orphaned,
-            "abandoned": abandoned,
-            "cleaned": cleaned,
-            "replenished": replenished,
+            "drained": result.drained,
+            "lost": result.lost,
+            "orphaned": result.orphaned,
+            "abandoned": result.abandoned,
+            "cleaned": result.cleaned,
+            "replenished": result.replenished,
         }
 
     @property
@@ -769,14 +465,6 @@ class SandboxSessionManager:
                 self.settings.chat_sandbox_ready_timeout_seconds,
             )
         return self.settings.chat_sandbox_ready_timeout_seconds
-
-    @property
-    def pool_termination_claim_timeout_seconds(self) -> float:
-        return self._pool_coordinator().termination_claim_timeout_seconds
-
-    @property
-    def pool_termination_concurrency(self) -> int:
-        return self._pool_coordinator().termination_concurrency
 
     @property
     def blank_pool_enabled(self) -> bool:

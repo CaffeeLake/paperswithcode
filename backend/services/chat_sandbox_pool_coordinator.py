@@ -6,7 +6,8 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
@@ -17,12 +18,16 @@ from backend.services.chat_sandbox_pool_repository import (
     BlankPoolClaim,
     ChatSandboxPoolRepository,
     PoolEvictionRequired,
+    PoolHealthCandidate,
     PoolLandingDurability,
     PoolLandingOutcome,
+    PoolMaintenancePlan,
     PoolReservationUnavailable,
     PoolStartReservation,
     PoolTerminationClaim,
     PoolTerminationFinishOutcome,
+    ProviderPoolDisposition,
+    ProviderPoolInspection,
 )
 from backend.services.chat_sandbox_provider import (
     SandboxError,
@@ -42,6 +47,8 @@ logger = logging.getLogger(__name__)
 POOL_MAINTENANCE_LOCK_NAME = "chat-sandbox-pool-maintenance-v1"
 POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 POOL_TERMINATION_MAX_CONCURRENCY = 8
+POOL_MAINTENANCE_BATCH_SIZE = 100
+POOL_TERMINAL_RETENTION_DAYS = 35
 
 SessionFactory = Callable[[], Session]
 SpendFactory = Callable[[Session], ChatSandboxSpendService]
@@ -50,6 +57,16 @@ MonotonicClock = Callable[[], float]
 MaintenanceOwner = Callable[[], bool]
 MaintenanceLocker = Callable[[Session], bool]
 AssignedLeaseEvictor = Callable[[uuid.UUID], Awaitable[bool]]
+
+
+@dataclass(frozen=True)
+class PoolMaintenanceResult:
+    drained: int = 0
+    lost: int = 0
+    orphaned: int = 0
+    abandoned: int = 0
+    cleaned: int = 0
+    replenished: int = 0
 
 
 def lock_pool_maintenance(db: Session) -> bool:
@@ -105,6 +122,7 @@ class ChatSandboxPoolCoordinator:
             settings.chat_blank_pool_refill_concurrency
         )
         self._refill_tasks: set[asyncio.Task[int]] = set()
+        self._maintenance_lock = asyncio.Lock()
 
     @property
     def termination_claim_timeout_seconds(self) -> float:
@@ -127,6 +145,16 @@ class ChatSandboxPoolCoordinator:
             self.settings.chat_blank_pool_refill_concurrency,
             configured_max,
         )
+
+    @property
+    def ready_timeout_seconds(self) -> float:
+        if getattr(self.settings, "chat_persistent_worker_enabled", False):
+            return getattr(
+                self.settings,
+                "chat_worker_ready_timeout_seconds",
+                self.settings.chat_sandbox_ready_timeout_seconds,
+            )
+        return self.settings.chat_sandbox_ready_timeout_seconds
 
     def spawn_replenishment(self) -> None:
         if (
@@ -698,7 +726,10 @@ class ChatSandboxPoolCoordinator:
         confirmed = True
         if claim.sandbox_id:
             self.transport.drop_blank_control(claim.sandbox_id)
-            confirmed = await self.provider.terminate(claim.sandbox_id)
+            try:
+                confirmed = await self.provider.terminate(claim.sandbox_id)
+            except Exception:
+                confirmed = False
         now = self.utcnow()
         with self.session_factory() as db, db.begin():
             outcome = self.repository.finish_termination(
@@ -731,10 +762,331 @@ class ChatSandboxPoolCoordinator:
 
         async def terminate_one(claim: PoolTerminationClaim) -> bool:
             async with semaphore:
-                return await self.terminate_claimed_pool_row(claim)
+                try:
+                    return await self.terminate_claimed_pool_row(claim)
+                except Exception as error:
+                    logger.warning(
+                        "chat blank pool termination failed pool_id=%s error=%s",
+                        claim.pool_id,
+                        type(error).__name__,
+                    )
+                    return False
 
         results = await asyncio.gather(*(terminate_one(claim) for claim in claims))
         return sum(results)
+
+    async def reconcile_pool_orphans(self) -> int:
+        """Reconcile bounded provider-only blanks while this slot owns maintenance."""
+
+        if not self.maintenance_owner():
+            return 0
+        async with self._maintenance_lock:
+            if not self.maintenance_owner():
+                return 0
+            return await self._reconcile_pool_orphans()
+
+    async def _reconcile_pool_orphans(self) -> int:
+        if not self.maintenance_owner():
+            return 0
+        sandboxes: list[object] = []
+        try:
+            async for sandbox in self.provider.iter_sandboxes(
+                tags={
+                    "service": "pwc-chat",
+                    "environment": self.settings.environment,
+                    "pool": "blank",
+                }
+            ):
+                sandboxes.append(sandbox)
+                if len(sandboxes) >= POOL_MAINTENANCE_BATCH_SIZE:
+                    break
+        except Exception as error:
+            logger.warning(
+                "chat blank pool provider listing failed error=%s",
+                type(error).__name__,
+            )
+        semaphore = asyncio.Semaphore(self.termination_concurrency)
+
+        async def reconcile_one(sandbox: object) -> bool:
+            async with semaphore:
+                return await self._reconcile_provider_sandbox(sandbox)
+
+        results = await asyncio.gather(*(reconcile_one(item) for item in sandboxes))
+        return sum(results)
+
+    async def _reconcile_provider_sandbox(self, sandbox: object) -> bool:
+        if not self.maintenance_owner():
+            return False
+        sandbox_id = getattr(sandbox, "object_id", None)
+        if not isinstance(sandbox_id, str) or not sandbox_id:
+            return False
+        try:
+            tags = await self.provider.get_tags(sandbox)
+        except Exception as error:
+            logger.warning(
+                "chat blank pool tag lookup failed sandbox_id=%s error=%s",
+                sandbox_id,
+                type(error).__name__,
+            )
+            return False
+        if not self.maintenance_owner():
+            return False
+        if not isinstance(tags, Mapping):
+            return False
+        if tags.get("environment") != self.settings.environment:
+            return False
+        inspection: ProviderPoolInspection
+        now = self.utcnow()
+        try:
+            with self.session_factory() as db, db.begin():
+                if not self.maintenance_locker(db):
+                    return False
+                if not self.repository.acquire_capacity_lock(db):
+                    return False
+                inspection = self.repository.classify_and_claim_provider_sandbox(
+                    db,
+                    sandbox_id,
+                    tags,
+                    environment=self.settings.environment,
+                    fresh_start_after=now
+                    - timedelta(seconds=self.ready_timeout_seconds + 15),
+                    stale_draining_before=now
+                    - timedelta(seconds=self.termination_claim_timeout_seconds),
+                    now=now,
+                    capacity_locked=True,
+                )
+                if (
+                    inspection.disposition is ProviderPoolDisposition.ORPHAN
+                    and inspection.interval_id is not None
+                    and getattr(
+                        self.settings,
+                        "chat_sandbox_spend_enforcement_enabled",
+                        False,
+                    )
+                ):
+                    self.spend_factory(db).provider_created(
+                        inspection.interval_id,
+                        sandbox_id,
+                        now,
+                    )
+        except Exception as error:
+            logger.warning(
+                "chat blank pool orphan inspection failed sandbox_id=%s error=%s",
+                sandbox_id,
+                type(error).__name__,
+            )
+            return False
+        if inspection.disposition is not ProviderPoolDisposition.ORPHAN:
+            return False
+        if inspection.termination_claim is None and not self.maintenance_owner():
+            return False
+        self.transport.drop_blank_control(sandbox_id)
+        try:
+            confirmed = await self.provider.terminate(sandbox_id, sandbox)
+        except Exception:
+            confirmed = False
+        spend_enabled = getattr(
+            self.settings,
+            "chat_sandbox_spend_enforcement_enabled",
+            False,
+        )
+        try:
+            with self.session_factory() as db, db.begin():
+                if inspection.termination_claim is not None:
+                    finish = self.repository.finish_termination(
+                        db,
+                        inspection.termination_claim,
+                        confirmed=confirmed,
+                        now=self.utcnow(),
+                    )
+                    if finish is not PoolTerminationFinishOutcome.FINISHED:
+                        return False
+                elif spend_enabled and not self.repository.acquire_capacity_lock(db):
+                    return False
+                if spend_enabled:
+                    terminal_reason = (
+                        inspection.termination_claim.failure_code
+                        if inspection.termination_claim is not None
+                        else (
+                            "pool_orphan_reconciled"
+                            if confirmed
+                            else "termination_uncertain"
+                        )
+                    )
+                    self.spend_factory(db).terminate(
+                        sandbox_id,
+                        terminal_reason,
+                        confirmed=confirmed,
+                        now=self.utcnow(),
+                    )
+        except Exception as error:
+            logger.warning(
+                "chat blank pool orphan settlement failed sandbox_id=%s error=%s",
+                sandbox_id,
+                type(error).__name__,
+            )
+            return False
+        return confirmed
+
+    async def maintain_pool(self) -> PoolMaintenanceResult:
+        """Drain, health-check, reconcile, clean, and refill the blank pool."""
+
+        if not self.maintenance_owner():
+            return self._empty_maintenance_result()
+        async with self._maintenance_lock:
+            if not self.maintenance_owner():
+                return self._empty_maintenance_result()
+            return await self._maintain_pool()
+
+    async def _maintain_pool(self) -> PoolMaintenanceResult:
+        now = self.utcnow()
+        budget_blocked = not self._enabled
+        plan = PoolMaintenancePlan((), ())
+        with self.session_factory() as db, db.begin():
+            if not self.maintenance_locker(db):
+                return self._empty_maintenance_result()
+            if not self.repository.acquire_capacity_lock(db):
+                return self._empty_maintenance_result()
+            if self._enabled and getattr(
+                self.settings,
+                "chat_sandbox_spend_enforcement_enabled",
+                False,
+            ):
+                try:
+                    self.spend_factory(db).assert_available(
+                        now,
+                        capacity_locked=True,
+                    )
+                except ChatComputeDisabled:
+                    budget_blocked = True
+            plan = self.repository.plan_maintenance(
+                db,
+                now=now,
+                enabled=self._enabled,
+                budget_blocked=budget_blocked,
+                starting_expired_before=now
+                - timedelta(seconds=self.ready_timeout_seconds + 15),
+                rotation_before=now
+                + timedelta(
+                    seconds=self.settings.chat_blank_pool_rotate_before_seconds
+                ),
+                stale_draining_before=now
+                - timedelta(seconds=self.termination_claim_timeout_seconds),
+                termination_limit=self.termination_concurrency,
+                scan_limit=POOL_MAINTENANCE_BATCH_SIZE,
+                capacity_locked=True,
+            )
+
+        drained = await self.terminate_claimed_pool_rows(list(plan.termination_claims))
+        lost = await self._refresh_pool_health(plan.health_candidates)
+        cleaned = 0
+        if self.maintenance_owner():
+            try:
+                with self.session_factory() as db, db.begin():
+                    if self.maintenance_locker(
+                        db
+                    ) and self.repository.acquire_capacity_lock(db):
+                        cleaned = self.repository.cleanup_terminal(
+                            db,
+                            updated_before=now
+                            - timedelta(days=POOL_TERMINAL_RETENTION_DAYS),
+                            limit=POOL_MAINTENANCE_BATCH_SIZE,
+                        )
+            except Exception as error:
+                logger.warning(
+                    "chat blank pool terminal cleanup failed error=%s",
+                    type(error).__name__,
+                )
+        orphaned = (
+            await self._reconcile_pool_orphans() if self.maintenance_owner() else 0
+        )
+        abandoned = 0
+        if self.maintenance_owner() and getattr(
+            self.settings,
+            "chat_sandbox_spend_enforcement_enabled",
+            False,
+        ):
+            try:
+                with self.session_factory() as db, db.begin():
+                    if self.maintenance_locker(
+                        db
+                    ) and self.repository.acquire_capacity_lock(db):
+                        abandoned = self.spend_factory(
+                            db
+                        ).abort_abandoned_pool_reservations(
+                            self.utcnow(),
+                            limit=POOL_MAINTENANCE_BATCH_SIZE,
+                        )
+            except Exception as error:
+                logger.warning(
+                    "chat blank pool reservation cleanup failed error=%s",
+                    type(error).__name__,
+                )
+            if abandoned:
+                logger.info(
+                    "chat blank pool abandoned reservations released count=%d",
+                    abandoned,
+                )
+        replenished = 0 if budget_blocked else await self.replenish_pool()
+        return PoolMaintenanceResult(
+            drained=drained,
+            lost=lost,
+            orphaned=orphaned,
+            abandoned=abandoned,
+            cleaned=cleaned,
+            replenished=replenished,
+        )
+
+    async def _refresh_pool_health(
+        self,
+        candidates: tuple[PoolHealthCandidate, ...],
+    ) -> int:
+        lost = 0
+        for candidate in candidates:
+            if not self.maintenance_owner():
+                break
+            sandbox = await self.pool_sandbox_health(
+                candidate.sandbox_id,
+                candidate.worker_generation,
+            )
+            if not self.maintenance_owner():
+                break
+            if sandbox is None:
+                try:
+                    with self.session_factory() as db, db.begin():
+                        claim = self.repository.claim_health_failure(
+                            db,
+                            candidate,
+                            failure_code="sandbox_lost",
+                            now=self.utcnow(),
+                        )
+                    if claim is not None:
+                        lost += bool(await self.terminate_claimed_pool_row(claim))
+                except Exception as error:
+                    logger.warning(
+                        "chat blank pool lost-worker cleanup failed pool_id=%s error=%s",
+                        candidate.pool_id,
+                        type(error).__name__,
+                    )
+                continue
+            try:
+                with self.session_factory() as db, db.begin():
+                    self.repository.refresh_health(
+                        db,
+                        candidate,
+                        now=self.utcnow(),
+                    )
+            except Exception as error:
+                logger.warning(
+                    "chat blank pool health refresh failed pool_id=%s error=%s",
+                    candidate.pool_id,
+                    type(error).__name__,
+                )
+        return lost
+
+    @staticmethod
+    def _empty_maintenance_result() -> PoolMaintenanceResult:
+        return PoolMaintenanceResult()
 
     @property
     def _enabled(self) -> bool:

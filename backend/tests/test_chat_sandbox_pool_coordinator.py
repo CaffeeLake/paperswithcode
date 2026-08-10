@@ -21,10 +21,13 @@ from backend.models.database import (
     ChatSession,
 )
 from backend.services.chat_sandbox_pool_coordinator import (
+    POOL_MAINTENANCE_BATCH_SIZE,
     ChatSandboxPoolCoordinator,
+    PoolMaintenanceResult,
 )
 from backend.services.chat_sandbox_pool_repository import (
     ChatSandboxPoolRepository,
+    PoolHealthCandidate,
     PoolLandingDurability,
     PoolLandingOutcome,
     PoolStartReservation,
@@ -142,6 +145,11 @@ class _Provider:
         self.create_calls: list[dict] = []
         self.create_error: BaseException | None = None
         self.create_hook = None
+        self.listed_sandboxes: list[object] = []
+        self.list_tags_calls: list[dict[str, str]] = []
+        self.sandbox_tags: dict[str, object] = {}
+        self.tag_errors: dict[str, BaseException] = {}
+        self.iter_hook = None
         self._sandbox_ids = count(1)
 
     async def create(self, **kwargs):
@@ -189,12 +197,20 @@ class _Provider:
     async def open_turn_process(self, *_args, **_kwargs):
         raise AssertionError("not used by increment-A coordinator tests")
 
-    async def get_tags(self, _sandbox):
-        raise AssertionError("not used by increment-A coordinator tests")
+    async def get_tags(self, sandbox):
+        self.probe.outside_transaction("provider.tags")
+        sandbox_id = sandbox.object_id
+        if sandbox_id in self.tag_errors:
+            raise self.tag_errors[sandbox_id]
+        return self.sandbox_tags.get(sandbox_id, {})
 
-    async def iter_sandboxes(self, **_kwargs):
-        if False:
-            yield None
+    async def iter_sandboxes(self, *, tags):
+        self.probe.outside_transaction("provider.list")
+        self.list_tags_calls.append(tags)
+        for index, sandbox in enumerate(self.listed_sandboxes):
+            if self.iter_hook is not None:
+                await self.iter_hook(index, sandbox)
+            yield sandbox
 
 
 class _Transport(ChatSandboxWorkerTransport):
@@ -373,6 +389,30 @@ def _control(sandbox: object) -> SessionControl:
         queues={},
         resume_id=None,
     )
+
+
+def _pool_tags(harness: _Harness, row: ChatSandboxPool) -> dict[str, str]:
+    return {
+        "service": "pwc-chat",
+        "environment": harness.settings.environment,
+        "pool": "blank",
+        "pool_id": str(row.id),
+        "release": row.app_release_id,
+        "image": row.image_version,
+        "contract": row.worker_contract_version,
+    }
+
+
+def _orphan_tags(harness: _Harness) -> dict[str, str]:
+    return {
+        "service": "pwc-chat",
+        "environment": harness.settings.environment,
+        "pool": "blank",
+        "pool_id": str(uuid.uuid4()),
+        "release": harness.settings.release_id,
+        "image": harness.settings.chat_modal_image_version,
+        "contract": harness.settings.chat_worker_contract_version,
+    }
 
 
 def test_coordinator_requires_provider_and_transport_identity():
@@ -1586,3 +1626,743 @@ def test_spawn_replenishment_discards_cancelled_tasks_without_warning(caplog):
 
     assert harness.coordinator._refill_tasks == set()
     assert "chat blank pool replenishment failed" not in caplog.text
+
+
+def test_maintenance_preserves_compatible_blank_from_previous_release():
+    harness = _Harness(
+        settings=_settings(chat_blank_pool_rotate_before_seconds=60),
+        owner=True,
+    )
+    row = _pool(harness, release_id="release-previous")
+    row.expires_at = harness.clock.utcnow() + timedelta(hours=2)
+    with harness.sessions() as db, db.begin():
+        db.add(row)
+
+    result = asyncio.run(harness.coordinator.maintain_pool())
+
+    assert result == PoolMaintenanceResult()
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxPool, row.id)
+    assert persisted.state == "blank_ready"
+    assert persisted.app_release_id == "release-previous"
+    assert persisted.last_health_checked_at == harness.clock.utcnow().replace(
+        tzinfo=None
+    )
+
+
+def test_disabled_maintenance_drains_pool_without_touching_assigned_lease():
+    harness = _Harness(settings=_settings(chat_blank_pool_enabled=False), owner=True)
+    row = _pool(harness)
+    session_id = uuid.uuid4()
+    with harness.sessions() as db, db.begin():
+        db.add_all(
+            [
+                row,
+                _session(session_id),
+                ChatSandboxLease(
+                    chat_session_id=session_id,
+                    modal_sandbox_id="sb-assigned",
+                    app_release_id=harness.settings.release_id,
+                    image_version=harness.settings.chat_modal_image_version,
+                    worker_contract_version=(
+                        harness.settings.chat_worker_contract_version
+                    ),
+                    worker_generation="generation-assigned",
+                    state="idle",
+                ),
+            ]
+        )
+
+    result = asyncio.run(harness.coordinator.maintain_pool())
+
+    assert result.drained == 1
+    assert harness.provider.termination_calls == [row.modal_sandbox_id]
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxPool, row.id)
+        assigned = db.get(ChatSandboxLease, session_id)
+    assert persisted.state == "terminated"
+    assert assigned.state == "idle"
+    assert assigned.modal_sandbox_id == "sb-assigned"
+
+
+def test_maintenance_commits_claim_before_provider_io():
+    events: list[str] = []
+
+    def capacity_locker(_db, *, wait=True):
+        assert wait is True
+        events.append("capacity")
+        return True
+
+    def maintenance_locker(_db):
+        events.append("maintenance")
+        return True
+
+    harness = _Harness(
+        settings=_settings(chat_blank_pool_enabled=False),
+        capacity_locker=capacity_locker,
+        maintenance_locker=maintenance_locker,
+        owner=True,
+    )
+    row = _pool(harness)
+    with harness.sessions() as db, db.begin():
+        db.add(row)
+    original_claim = harness.repository.claim_termination
+
+    def record_claim(*args, **kwargs):
+        events.append("claim")
+        return original_claim(*args, **kwargs)
+
+    harness.repository.claim_termination = record_claim
+
+    async def terminate(sandbox_id, sandbox=None):
+        harness.probe.outside_transaction("provider.terminate")
+        events.append("provider")
+        with harness.sessions() as db:
+            persisted = db.get(ChatSandboxPool, row.id)
+        assert persisted.state == "draining"
+        assert persisted.modal_sandbox_id == sandbox_id
+        assert persisted.claim_token_hash is not None
+        return True
+
+    harness.provider.terminate = terminate
+
+    result = asyncio.run(harness.coordinator.maintain_pool())
+
+    assert result.drained == 1
+    assert events[:4] == ["maintenance", "capacity", "claim", "provider"]
+
+
+def test_termination_claim_horizon_covers_provider_completion_window():
+    harness = _Harness(
+        settings=_settings(
+            chat_worker_ready_timeout_seconds=5,
+            chat_sandbox_termination_grace_seconds=120,
+        )
+    )
+
+    assert harness.coordinator.termination_claim_timeout_seconds == 140
+    assert harness.coordinator.termination_claim_timeout_seconds > (
+        harness.coordinator.ready_timeout_seconds
+        + harness.settings.chat_sandbox_termination_grace_seconds
+    )
+
+
+@pytest.mark.parametrize("successor_state", ["draining", "claimed"])
+def test_health_result_cannot_mutate_a_successor(successor_state):
+    harness = _Harness(owner=True)
+    row = _pool(harness)
+    checked_at = harness.clock.utcnow() - timedelta(minutes=1)
+    row.last_health_checked_at = checked_at
+    row.blank_billable_seconds = 123
+    row.estimated_blank_cost_usd = 1.25
+    candidate = PoolHealthCandidate(
+        pool_id=row.id,
+        sandbox_id=row.modal_sandbox_id,
+        worker_generation=row.worker_generation,
+        claim_generation=row.claim_generation,
+        token_hash=row.claim_token_hash,
+    )
+    with harness.sessions() as db, db.begin():
+        db.add(row)
+    successor_at = harness.clock.utcnow() + timedelta(seconds=10)
+
+    async def race_health(sandbox_id, worker_generation):
+        assert (sandbox_id, worker_generation) == (
+            row.modal_sandbox_id,
+            row.worker_generation,
+        )
+        with harness.sessions() as db, db.begin():
+            successor = db.get(ChatSandboxPool, row.id)
+            successor.state = successor_state
+            successor.claim_token_hash = "successor-token"
+            successor.updated_at = successor_at
+        return SimpleNamespace(object_id=sandbox_id)
+
+    harness.coordinator.pool_sandbox_health = race_health
+
+    assert asyncio.run(harness.coordinator._refresh_pool_health((candidate,))) == 0
+    with harness.sessions() as db:
+        successor = db.get(ChatSandboxPool, row.id)
+    assert successor.state == successor_state
+    assert successor.claim_token_hash == "successor-token"
+    assert successor.last_health_checked_at == checked_at.replace(tzinfo=None)
+    assert successor.updated_at == successor_at.replace(tzinfo=None)
+    assert successor.blank_billable_seconds == 123
+    assert float(successor.estimated_blank_cost_usd) == 1.25
+
+
+def test_concurrent_maintenance_serializes_and_rechecks_owner():
+    harness = _Harness(owner=True)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def controlled_maintenance():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return PoolMaintenanceResult(drained=1)
+
+    harness.coordinator._maintain_pool = controlled_maintenance
+
+    async def run():
+        first = asyncio.create_task(harness.coordinator.maintain_pool())
+        await started.wait()
+        second = asyncio.create_task(harness.coordinator.maintain_pool())
+        await asyncio.sleep(0)
+        harness.owner = False
+        release.set()
+        return await asyncio.gather(first, second)
+
+    first, second = asyncio.run(run())
+
+    assert first == PoolMaintenanceResult(drained=1)
+    assert second == PoolMaintenanceResult()
+    assert calls == 1
+
+
+def test_orphan_scan_is_environment_filtered_outside_transactions_and_capped():
+    harness = _Harness(owner=True)
+    harness.provider.listed_sandboxes = [
+        SimpleNamespace(object_id=f"sb-listed-{index}")
+        for index in range(POOL_MAINTENANCE_BATCH_SIZE + 5)
+    ]
+    for sandbox in harness.provider.listed_sandboxes:
+        harness.provider.sandbox_tags[sandbox.object_id] = {
+            "environment": "another-environment"
+        }
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    assert harness.provider.list_tags_calls == [
+        {
+            "service": "pwc-chat",
+            "environment": harness.settings.environment,
+            "pool": "blank",
+        }
+    ]
+    tag_calls = [
+        call for call in harness.probe.provider_calls if call == "provider.tags"
+    ]
+    assert len(tag_calls) == POOL_MAINTENANCE_BATCH_SIZE
+
+
+def test_unrelated_fresh_start_does_not_globally_shield_an_orphan():
+    harness = _Harness(owner=True)
+    fresh = _pool(harness, state="starting", sandbox_id=None)
+    fresh.updated_at = harness.clock.utcnow()
+    with harness.sessions() as db, db.begin():
+        db.add(fresh)
+    orphan = SimpleNamespace(object_id="sb-unrelated-orphan")
+    harness.provider.listed_sandboxes = [orphan]
+    harness.provider.sandbox_tags[orphan.object_id] = _orphan_tags(harness)
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    assert harness.provider.termination_calls == [orphan.object_id]
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxPool, fresh.id)
+    assert persisted.state == "starting"
+    assert persisted.modal_sandbox_id is None
+
+
+def test_exact_fresh_start_is_protected_but_stale_start_is_reconciled():
+    harness = _Harness(owner=True)
+    fresh = _pool(harness, state="starting", sandbox_id=None)
+    stale = _pool(harness, state="starting", sandbox_id=None)
+    fresh.updated_at = harness.clock.utcnow()
+    stale.updated_at = harness.clock.utcnow() - timedelta(minutes=2)
+    fresh_provider = SimpleNamespace(object_id="sb-fresh-start")
+    stale_provider = SimpleNamespace(object_id="sb-stale-start")
+    with harness.sessions() as db, db.begin():
+        db.add_all([fresh, stale])
+    harness.provider.listed_sandboxes = [fresh_provider, stale_provider]
+    harness.provider.sandbox_tags[fresh_provider.object_id] = _pool_tags(harness, fresh)
+    harness.provider.sandbox_tags[stale_provider.object_id] = _pool_tags(harness, stale)
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    assert harness.provider.termination_calls == [stale_provider.object_id]
+    with harness.sessions() as db:
+        fresh_row = db.get(ChatSandboxPool, fresh.id)
+        stale_row = db.get(ChatSandboxPool, stale.id)
+    assert fresh_row.state == "starting"
+    assert fresh_row.modal_sandbox_id is None
+    assert stale_row.state == "failed"
+    assert stale_row.failure_code == "sandbox_start_failed"
+    assert stale_row.modal_sandbox_id == stale_provider.object_id
+
+
+def test_mismatched_fresh_start_tags_do_not_protect_provider():
+    harness = _Harness(owner=True)
+    fresh = _pool(harness, state="starting", sandbox_id=None)
+    fresh.updated_at = harness.clock.utcnow()
+    sandbox = SimpleNamespace(object_id="sb-mismatched-start")
+    with harness.sessions() as db, db.begin():
+        db.add(fresh)
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = {
+        **_pool_tags(harness, fresh),
+        "release": "wrong-release",
+    }
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    assert harness.provider.termination_calls == [sandbox.object_id]
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxPool, fresh.id)
+    assert persisted.state == "starting"
+    assert persisted.modal_sandbox_id is None
+
+
+def test_provider_landing_during_scan_is_seen_by_fresh_item_inspection():
+    harness = _Harness(owner=True)
+    sandbox = SimpleNamespace(object_id="sb-landed-during-scan")
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _orphan_tags(harness)
+
+    async def land_during_scan(index, listed):
+        assert index == 0
+        row = _pool(harness, sandbox_id=listed.object_id)
+        with harness.sessions() as db, db.begin():
+            db.add(row)
+
+    harness.provider.iter_hook = land_during_scan
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    assert harness.provider.termination_calls == []
+
+
+def test_tag_and_database_inspection_failures_are_isolated(monkeypatch):
+    harness = _Harness(owner=True)
+    tag_failure = SimpleNamespace(object_id="sb-tag-failure")
+    db_failure = SimpleNamespace(object_id="sb-db-failure")
+    healthy_orphan = SimpleNamespace(object_id="sb-next-orphan")
+    harness.provider.listed_sandboxes = [tag_failure, db_failure, healthy_orphan]
+    harness.provider.tag_errors[tag_failure.object_id] = RuntimeError("tags")
+    harness.provider.sandbox_tags[db_failure.object_id] = _orphan_tags(harness)
+    harness.provider.sandbox_tags[healthy_orphan.object_id] = _orphan_tags(harness)
+    original_inspect = harness.repository.classify_and_claim_provider_sandbox
+
+    def inspect(db, sandbox_id, *args, **kwargs):
+        if sandbox_id == db_failure.object_id:
+            raise RuntimeError("database inspection")
+        return original_inspect(db, sandbox_id, *args, **kwargs)
+
+    monkeypatch.setattr(
+        harness.repository,
+        "classify_and_claim_provider_sandbox",
+        inspect,
+    )
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    assert harness.provider.termination_calls == [healthy_orphan.object_id]
+
+
+def test_orphan_termination_failures_record_uncertainty_and_continue():
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    false_result = SimpleNamespace(object_id="sb-false")
+    raised = SimpleNamespace(object_id="sb-raised")
+    confirmed = SimpleNamespace(object_id="sb-confirmed")
+    harness.provider.listed_sandboxes = [false_result, raised, confirmed]
+    for sandbox in harness.provider.listed_sandboxes:
+        harness.provider.sandbox_tags[sandbox.object_id] = _orphan_tags(harness)
+
+    async def terminate(sandbox_id, _sandbox=None):
+        harness.probe.outside_transaction("provider.terminate")
+        if sandbox_id == raised.object_id:
+            raise RuntimeError("provider unavailable")
+        return sandbox_id == confirmed.object_id
+
+    harness.provider.terminate = terminate
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    with harness.sessions() as db:
+        intervals = {
+            row.modal_sandbox_id: row
+            for row in db.scalars(select(ChatSandboxComputeInterval))
+        }
+    assert intervals[false_result.object_id].reconciliation_state == (
+        "termination_uncertain"
+    )
+    assert intervals[false_result.object_id].terminal_at is None
+    assert intervals[raised.object_id].reconciliation_state == "termination_uncertain"
+    assert intervals[raised.object_id].terminal_at is None
+    assert intervals[confirmed.object_id].reconciliation_state == "confirmed"
+    assert intervals[confirmed.object_id].terminal_at is not None
+
+
+def test_aborted_interval_is_reactivated_when_provider_is_discovered_unconfirmed():
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state="terminated", sandbox_id=None)
+    interval = _interval(harness, row, reserved_microusd=0)
+    interval.provider_created_at = None
+    interval.terminal_at = harness.clock.utcnow() - timedelta(minutes=1)
+    interval.terminal_reason = "pool_owner_terminated"
+    interval.reconciliation_state = "creation_failed"
+    sandbox = SimpleNamespace(object_id="sb-recovered-after-abort")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+    harness.provider.termination_confirmed = False
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    with harness.sessions() as db:
+        recovered = db.get(ChatSandboxComputeInterval, interval.id)
+    assert recovered.modal_sandbox_id == sandbox.object_id
+    assert recovered.provider_created_at is not None
+    assert recovered.terminal_at is None
+    assert recovered.reserved_microusd > 0
+    assert recovered.reconciliation_state == "termination_uncertain"
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_stale_start_spend_preserves_claim_failure_reason(confirmed):
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state="starting", sandbox_id=None)
+    row.updated_at = harness.clock.utcnow() - timedelta(minutes=2)
+    interval = _interval(harness, row)
+    interval.provider_created_at = None
+    sandbox = SimpleNamespace(object_id=f"sb-stale-confirmed-{confirmed}")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+    harness.provider.termination_confirmed = confirmed
+
+    result = asyncio.run(harness.coordinator.reconcile_pool_orphans())
+
+    assert result == int(confirmed)
+    with harness.sessions() as db:
+        failed = db.get(ChatSandboxPool, row.id)
+        settled = db.get(ChatSandboxComputeInterval, interval.id)
+    assert failed.state == "failed"
+    assert failed.failure_code == (
+        "sandbox_start_failed" if confirmed else "termination_uncertain"
+    )
+    assert settled.terminal_reason == "sandbox_start_failed"
+    if confirmed:
+        assert settled.terminal_at is not None
+        assert settled.reserved_microusd == 0
+        assert settled.reconciliation_state == "confirmed"
+    else:
+        assert settled.terminal_at is None
+        assert settled.reserved_microusd > 0
+        assert settled.reconciliation_state == "termination_uncertain"
+
+
+def test_orphan_cancellation_propagates_after_interval_is_linked():
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state="terminated", sandbox_id=None)
+    interval = _interval(harness, row)
+    sandbox = SimpleNamespace(object_id="sb-cancelled-orphan")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+    termination_started = asyncio.Event()
+
+    async def terminate(sandbox_id, _sandbox=None):
+        harness.probe.outside_transaction("provider.terminate")
+        assert sandbox_id == sandbox.object_id
+        termination_started.set()
+        await asyncio.Event().wait()
+
+    harness.provider.terminate = terminate
+
+    async def run():
+        task = asyncio.create_task(harness.coordinator.reconcile_pool_orphans())
+        await termination_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxComputeInterval, interval.id)
+    assert persisted.modal_sandbox_id == sandbox.object_id
+    assert persisted.provider_created_at is not None
+    assert persisted.terminal_at is None
+
+
+def test_orphan_provider_work_is_bounded_by_termination_concurrency():
+    harness = _Harness(
+        settings=_settings(
+            chat_blank_pool_max=3,
+            chat_blank_pool_refill_concurrency=2,
+        ),
+        owner=True,
+    )
+    harness.provider.listed_sandboxes = [
+        SimpleNamespace(object_id=f"sb-orphan-{index}") for index in range(5)
+    ]
+    for sandbox in harness.provider.listed_sandboxes:
+        harness.provider.sandbox_tags[sandbox.object_id] = _orphan_tags(harness)
+    active = 0
+    maximum_active = 0
+
+    async def termination_hook(_call_number, _sandbox_id):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    harness.provider.termination_hook = termination_hook
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 5
+    assert maximum_active == harness.coordinator.termination_concurrency == 2
+
+
+def test_owner_loss_after_tag_fetch_skips_inspection_and_termination(monkeypatch):
+    harness = _Harness(owner=True)
+    sandbox = SimpleNamespace(object_id="sb-owner-lost-tags")
+    harness.provider.listed_sandboxes = [sandbox]
+    tags_started = asyncio.Event()
+    release_tags = asyncio.Event()
+
+    async def delayed_tags(candidate):
+        harness.probe.outside_transaction("provider.tags")
+        assert candidate is sandbox
+        tags_started.set()
+        await release_tags.wait()
+        return _orphan_tags(harness)
+
+    async def run():
+        monkeypatch.setattr(harness.provider, "get_tags", delayed_tags)
+        monkeypatch.setattr(
+            harness.repository,
+            "classify_and_claim_provider_sandbox",
+            lambda *_args, **_kwargs: pytest.fail(
+                "owner loss must skip database inspection"
+            ),
+        )
+        task = asyncio.create_task(harness.coordinator.reconcile_pool_orphans())
+        await tags_started.wait()
+        harness.owner = False
+        release_tags.set()
+        return await task
+
+    assert asyncio.run(run()) == 0
+    assert harness.provider.termination_calls == []
+
+
+def test_owner_loss_after_health_probe_skips_database_mutation():
+    harness = _Harness(owner=True)
+    row = _pool(harness)
+    candidate = PoolHealthCandidate(
+        pool_id=row.id,
+        sandbox_id=row.modal_sandbox_id,
+        worker_generation=row.worker_generation,
+        claim_generation=row.claim_generation,
+        token_hash=row.claim_token_hash,
+    )
+    with harness.sessions() as db, db.begin():
+        db.add(row)
+    health_started = asyncio.Event()
+    release_health = asyncio.Event()
+
+    async def delayed_health(_sandbox_id, _worker_generation):
+        health_started.set()
+        await release_health.wait()
+        return None
+
+    async def run():
+        harness.coordinator.pool_sandbox_health = delayed_health
+        task = asyncio.create_task(
+            harness.coordinator._refresh_pool_health((candidate,))
+        )
+        await health_started.wait()
+        harness.owner = False
+        release_health.set()
+        return await task
+
+    assert asyncio.run(run()) == 0
+    assert harness.provider.termination_calls == []
+    with harness.sessions() as db:
+        persisted = db.get(ChatSandboxPool, row.id)
+    assert persisted.state == "blank_ready"
+    assert persisted.claim_token_hash is None
+
+
+def test_claimless_orphan_spend_settlement_reacquires_capacity_lock():
+    capacity_calls: list[bool] = []
+
+    def capacity_locker(_db, *, wait=True):
+        capacity_calls.append(wait)
+        return True
+
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        capacity_locker=capacity_locker,
+        owner=True,
+    )
+    sandbox = SimpleNamespace(object_id="sb-claimless-orphan")
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _orphan_tags(harness)
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 1
+    assert capacity_calls == [True, True]
+    with harness.sessions() as db:
+        interval = db.execute(
+            select(ChatSandboxComputeInterval).where(
+                ChatSandboxComputeInterval.modal_sandbox_id == sandbox.object_id
+            )
+        ).scalar_one()
+    assert interval.reconciliation_state == "confirmed"
+
+
+@pytest.mark.parametrize("pool_state", ["starting", "draining"])
+def test_stale_provider_claim_finish_is_fenced_from_successor(pool_state):
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state=pool_state, sandbox_id=None)
+    row.updated_at = harness.clock.utcnow() - timedelta(minutes=2)
+    interval = _interval(harness, row)
+    sandbox = SimpleNamespace(object_id=f"sb-stale-{pool_state}")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+    successor_at = harness.clock.utcnow() + timedelta(seconds=1)
+
+    async def replace_owner(_call_number, sandbox_id):
+        with harness.sessions() as db, db.begin():
+            successor = db.get(ChatSandboxPool, row.id)
+            assert successor.state == "draining"
+            assert successor.modal_sandbox_id == sandbox_id
+            successor.state = "blank_ready"
+            successor.claim_token_hash = "successor-token"
+            successor.updated_at = successor_at
+
+    harness.provider.termination_hook = replace_owner
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    with harness.sessions() as db:
+        successor = db.get(ChatSandboxPool, row.id)
+        linked = db.get(ChatSandboxComputeInterval, interval.id)
+    assert successor.state == "blank_ready"
+    assert successor.claim_token_hash == "successor-token"
+    assert successor.updated_at == successor_at.replace(tzinfo=None)
+    assert linked.modal_sandbox_id == sandbox.object_id
+    assert linked.terminal_at is None
+
+
+def test_claimed_orphan_finish_failure_leaves_durable_reconciliation(monkeypatch):
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state="starting", sandbox_id=None)
+    row.updated_at = harness.clock.utcnow() - timedelta(minutes=2)
+    interval = _interval(harness, row)
+    sandbox = SimpleNamespace(object_id="sb-finish-failure")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+
+    def fail_finish(*_args, **_kwargs):
+        raise RuntimeError("finish unavailable")
+
+    monkeypatch.setattr(harness.repository, "finish_termination", fail_finish)
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    assert harness.provider.termination_calls == [sandbox.object_id]
+    with harness.sessions() as db:
+        claimed = db.get(ChatSandboxPool, row.id)
+        linked = db.get(ChatSandboxComputeInterval, interval.id)
+    assert claimed.state == "draining"
+    assert claimed.claim_token_hash is not None
+    assert linked.modal_sandbox_id == sandbox.object_id
+    assert linked.terminal_at is None
+
+
+def test_active_pool_and_assigned_lease_protect_provider_sandboxes():
+    harness = _Harness(owner=True)
+    pool = _pool(harness, sandbox_id="sb-active-pool")
+    session_id = uuid.uuid4()
+    with harness.sessions() as db, db.begin():
+        db.add_all(
+            [
+                pool,
+                _session(session_id),
+                ChatSandboxLease(
+                    chat_session_id=session_id,
+                    modal_sandbox_id="sb-active-lease",
+                    app_release_id=harness.settings.release_id,
+                    image_version=harness.settings.chat_modal_image_version,
+                    worker_contract_version=(
+                        harness.settings.chat_worker_contract_version
+                    ),
+                    worker_generation="generation-assigned",
+                    state="busy",
+                ),
+            ]
+        )
+    pool_provider = SimpleNamespace(object_id="sb-active-pool")
+    lease_provider = SimpleNamespace(object_id="sb-active-lease")
+    harness.provider.listed_sandboxes = [pool_provider, lease_provider]
+    for sandbox in harness.provider.listed_sandboxes:
+        harness.provider.sandbox_tags[sandbox.object_id] = {
+            "environment": harness.settings.environment,
+        }
+
+    assert asyncio.run(harness.coordinator.reconcile_pool_orphans()) == 0
+    assert harness.provider.termination_calls == []
+
+
+def test_claimed_orphan_cancellation_keeps_exact_claim_reconcilable():
+    harness = _Harness(
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        owner=True,
+    )
+    row = _pool(harness, state="starting", sandbox_id=None)
+    row.updated_at = harness.clock.utcnow() - timedelta(minutes=2)
+    interval = _interval(harness, row)
+    sandbox = SimpleNamespace(object_id="sb-cancelled-claimed-orphan")
+    with harness.sessions() as db, db.begin():
+        db.add_all([row, interval])
+    harness.provider.listed_sandboxes = [sandbox]
+    harness.provider.sandbox_tags[sandbox.object_id] = _pool_tags(harness, row)
+    termination_started = asyncio.Event()
+
+    async def terminate(sandbox_id, _sandbox=None):
+        harness.probe.outside_transaction("provider.terminate")
+        assert sandbox_id == sandbox.object_id
+        termination_started.set()
+        await asyncio.Event().wait()
+
+    harness.provider.terminate = terminate
+
+    async def run():
+        task = asyncio.create_task(harness.coordinator.reconcile_pool_orphans())
+        await termination_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    with harness.sessions() as db:
+        claimed = db.get(ChatSandboxPool, row.id)
+        linked = db.get(ChatSandboxComputeInterval, interval.id)
+    assert claimed.state == "draining"
+    assert claimed.modal_sandbox_id == sandbox.object_id
+    assert claimed.claim_token_hash is not None
+    assert claimed.failure_code == "sandbox_start_failed"
+    assert linked.modal_sandbox_id == sandbox.object_id
+    assert linked.terminal_at is None
