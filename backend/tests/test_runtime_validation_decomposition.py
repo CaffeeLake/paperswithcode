@@ -255,6 +255,33 @@ def test_chat_capacity_policy_owns_title_resources_and_pool(
     assert str(exc_info.value) == message
 
 
+def test_runtime_finishes_local_chat_policy_before_openrouter_guardrail(
+    settings_factory, monkeypatch
+):
+    settings, _release = settings_factory("staging")
+    calls = []
+
+    def provider(_settings, *, include_openrouter):
+        assert include_openrouter is False
+        calls.append("provider")
+
+    monkeypatch.setattr(runtime_validation, "validate_chat_provider_policy", provider)
+    monkeypatch.setattr(
+        runtime_validation,
+        "validate_chat_capacity_and_spend_policy",
+        lambda _settings: calls.append("capacity"),
+    )
+    monkeypatch.setattr(
+        runtime_validation,
+        "_validate_chat_openrouter_policy",
+        lambda _settings: calls.append("openrouter"),
+    )
+
+    runtime_validation.validate_runtime(settings)
+
+    assert calls == ["provider", "capacity", "openrouter"]
+
+
 def test_release_manifest_isolated_from_storage_and_tolerates_extra_keys(
     settings_factory,
 ):

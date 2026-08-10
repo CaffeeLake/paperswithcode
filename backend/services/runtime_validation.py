@@ -361,7 +361,11 @@ def validate_chat_runtime_descriptor(settings: Settings) -> bool:
     return validate_chat_configuration
 
 
-def validate_chat_provider_policy(settings: Settings) -> None:
+def validate_chat_provider_policy(
+    settings: Settings,
+    *,
+    include_openrouter: bool = True,
+) -> None:
     """Validate inference credentials, discovery, gateway, search, and OpenRouter."""
 
     _validate_production_openrouter_prohibition(settings)
@@ -418,7 +422,8 @@ def validate_chat_provider_policy(settings: Settings) -> None:
         ):
             raise RuntimeError("web-search runtime descriptor is invalid")
     _validate_chat_gateway_policy(settings)
-    _validate_chat_openrouter_policy(settings)
+    if include_openrouter:
+        _validate_chat_openrouter_policy(settings)
 
 
 def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
@@ -745,8 +750,9 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     validate_environment_policy(settings)
     validate_chat_configuration = validate_chat_runtime_descriptor(settings)
     if validate_chat_configuration:
-        validate_chat_provider_policy(settings)
+        validate_chat_provider_policy(settings, include_openrouter=False)
         validate_chat_capacity_and_spend_policy(settings)
+        _validate_chat_openrouter_policy(settings)
     validate_release_manifest(settings)
     validate_deployed_mutation_policy(settings)
     return validate_frontend_dist(settings)
