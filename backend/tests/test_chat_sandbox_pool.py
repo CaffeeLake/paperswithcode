@@ -116,80 +116,57 @@ def _manager(factory, settings: Settings) -> SandboxSessionManager:
     return manager
 
 
-def test_concurrent_claims_bind_one_blank_to_exactly_one_session():
+def test_claim_blank_facade_delegates_and_spawns_refill_on_success():
     factory = _database()
     settings = _settings()
-    first_id, second_id = uuid.uuid4(), uuid.uuid4()
-    with factory() as db, db.begin():
-        db.add_all([_session(first_id), _session(second_id), _blank(settings)])
-    manager = _manager(factory, settings)
+    manager = SandboxSessionManager(settings, session_factory=factory)
+    session_id = uuid.uuid4()
+    sandbox = SimpleNamespace(object_id="sb-claimed")
+    delegated: list[uuid.UUID] = []
+    refill_started = asyncio.Event()
+    release_refill = asyncio.Event()
+
+    class Coordinator:
+        async def claim_blank(self, candidate_session_id):
+            delegated.append(candidate_session_id)
+            return sandbox, 7
+
+    manager._sandbox_pool_coordinator = Coordinator()
+
+    async def refill():
+        refill_started.set()
+        await release_refill.wait()
+        return 1
+
+    manager.replenish_pool = refill
 
     async def run():
-        return await asyncio.gather(
-            manager.claim_blank(first_id),
-            manager.claim_blank(second_id),
-        )
+        result = await manager.claim_blank(session_id)
+        await refill_started.wait()
+        assert len(manager._background_tasks) == 1
+        release_refill.set()
+        await asyncio.gather(*manager._background_tasks)
+        return result
 
-    claims = asyncio.run(run())
-    assert sum(claim is not None for claim in claims) == 1
-    with factory() as db:
-        row = db.execute(select(ChatSandboxPool)).scalar_one()
-        leases = list(db.execute(select(ChatSandboxLease)).scalars())
-    assert row.state == "claimed"
-    assert row.claim_generation == 1
-    assert row.claim_token_hash
-    assert len(leases) == 1
-    assert leases[0].modal_sandbox_id == "sb-blank"
+    assert asyncio.run(run()) == (sandbox, 7)
+    assert delegated == [session_id]
 
 
-def test_failed_precommit_claim_leaves_worker_blank():
-    factory = _database()
-    settings = _settings()
+def test_claim_blank_facade_does_not_spawn_refill_on_miss():
+    manager = SandboxSessionManager(_settings(), session_factory=_database())
     session_id = uuid.uuid4()
-    blank = _blank(settings)
-    with factory() as db, db.begin():
-        db.add_all([_session(session_id), blank])
-    manager = _manager(factory, settings)
-    original_lease = manager._lease
 
-    def fail_during_claim(db, candidate_session_id, *, lock):
-        if lock:
-            raise RuntimeError("simulated transaction failure")
-        return original_lease(db, candidate_session_id, lock=lock)
+    class Coordinator:
+        async def claim_blank(self, candidate_session_id):
+            assert candidate_session_id == session_id
+            return None
 
-    manager._lease = fail_during_claim
-    with pytest.raises(RuntimeError, match="simulated transaction failure"):
-        asyncio.run(manager.claim_blank(session_id))
+    manager._sandbox_pool_coordinator = Coordinator()
+    manager._spawn_pool_replenishment = lambda: pytest.fail(
+        "pool miss must not spawn replenishment"
+    )
 
-    with factory() as db:
-        row = db.get(ChatSandboxPool, blank.id)
-        lease_count = db.scalar(select(func.count()).select_from(ChatSandboxLease))
-    assert row.state == "blank_ready"
-    assert row.claimed_at is None
-    assert lease_count == 0
-
-
-def test_compatible_blank_survives_release_cutover():
-    factory = _database()
-    settings = _settings()
-    session_id = uuid.uuid4()
-    with factory() as db, db.begin():
-        db.add_all(
-            [
-                _session(session_id),
-                _blank(settings, release_id="previous-release"),
-            ]
-        )
-    manager = _manager(factory, settings)
-
-    assert asyncio.run(manager.claim_blank(session_id)) is not None
-    with factory() as db:
-        row = db.execute(select(ChatSandboxPool)).scalar_one()
-        lease = db.get(ChatSandboxLease, session_id)
-    assert lease is not None
-    assert row.state == "claimed"
-    assert row.app_release_id == "previous-release"
-    assert lease.app_release_id == settings.release_id
+    assert asyncio.run(manager.claim_blank(session_id)) is None
 
 
 def test_pool_maintenance_preserves_compatible_blank_from_previous_release(
@@ -260,21 +237,6 @@ def test_incompatible_resource_envelope_cannot_be_claimed():
     with factory() as db:
         row = db.execute(select(ChatSandboxPool)).scalar_one()
     assert row.state == "blank_ready"
-
-
-def test_claim_transfers_preopened_blank_control():
-    factory = _database()
-    settings = _settings()
-    session_id = uuid.uuid4()
-    with factory() as db, db.begin():
-        db.add_all([_session(session_id), _blank(settings)])
-    manager = _manager(factory, settings)
-    control = SimpleNamespace(sandbox_id="sb-blank")
-    manager._blank_controls["sb-blank"] = control
-
-    assert asyncio.run(manager.claim_blank(session_id)) is not None
-    assert "sb-blank" not in manager._blank_controls
-    assert manager._controls[session_id] is control
 
 
 def test_preopened_control_health_does_not_repeat_provider_poll():
@@ -500,7 +462,8 @@ def test_maintenance_commits_preclaim_before_provider_termination():
         return claim
 
     repository.claim_termination = record_claim
-    original_terminate_claim = manager._terminate_claimed_pool_row
+    coordinator = manager._pool_coordinator()
+    original_terminate_claim = coordinator.terminate_claimed_pool_row
     received = []
 
     async def terminate_claim(claim):
@@ -508,7 +471,7 @@ def test_maintenance_commits_preclaim_before_provider_termination():
         received.append(claim)
         return await original_terminate_claim(claim)
 
-    manager._terminate_claimed_pool_row = terminate_claim
+    coordinator.terminate_claimed_pool_row = terminate_claim
 
     async def terminate_provider(sandbox_id, sandbox=None):
         events.append("provider")
@@ -519,20 +482,19 @@ def test_maintenance_commits_preclaim_before_provider_termination():
         assert persisted.claim_token_hash == received[0].token_hash
         return True
 
-    manager._terminate_provider_sandbox = terminate_provider
+    coordinator.provider.terminate = terminate_provider
 
     result = asyncio.run(manager.maintain_pool())
 
     assert result["drained"] == 1
     assert len(claims) == 1
     assert received == [claims[0]]
-    assert events[:6] == [
+    assert events[:5] == [
         "advisory",
         "capacity",
         "preclaim",
         "helper",
         "provider",
-        "capacity",
     ]
 
 
