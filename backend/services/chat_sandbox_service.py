@@ -44,6 +44,17 @@ from backend.models.database import (
     ChatTurnCapability,
 )
 from backend.services.chat_capability_service import IssuedCapability
+from backend.services.chat_sandbox_capacity_repository import (
+    CapacityUnavailable,
+    ChatSandboxCapacityRepository,
+    EvictionRequired,
+    LeaseDecisionChanged,
+    RecoveryRequired,
+    ReuseLease,
+    StartAcquired,
+    WaitForLease,
+    lock_capacity,
+)
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
     SandboxError,
@@ -68,7 +79,6 @@ from backend.services.chat_sandbox_state_repository import (
 
 logger = logging.getLogger(__name__)
 
-CAPACITY_LOCK_NAME = "chat-sandbox-capacity-v1"
 POOL_MAINTENANCE_LOCK_NAME = "chat-sandbox-pool-maintenance-v1"
 POOL_TERMINAL_RETENTION_DAYS = 35
 POOL_CLEANUP_BATCH_SIZE = 100
@@ -223,12 +233,14 @@ class SandboxSessionManager:
         snapshot_provider: WorkspaceSnapshotProvider | None = None,
         sandbox_provider: SandboxProvider | None = None,
         state_repository: ChatSandboxStateRepository | None = None,
+        capacity_repository: ChatSandboxCapacityRepository | None = None,
         pool_maintenance_owner: Callable[[], bool] | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
         self._sandbox_provider = sandbox_provider
         self._sandbox_state = state_repository
+        self._sandbox_capacity = capacity_repository
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -259,6 +271,19 @@ class SandboxSessionManager:
         if repository is None:
             repository = ChatSandboxStateRepository(self.settings)
             self._sandbox_state = repository
+        return repository
+
+    def _capacity_repository(self) -> ChatSandboxCapacityRepository:
+        repository = getattr(self, "_sandbox_capacity", None)
+        if repository is None:
+            repository = ChatSandboxCapacityRepository(
+                self.settings,
+                self._state_repository(),
+                capacity_locker=self._lock_capacity,
+                start_locker=self._lock_start_claim,
+                lease_loader=self._lease,
+            )
+            self._sandbox_capacity = repository
         return repository
 
     async def _create_provider_sandbox(
@@ -304,13 +329,7 @@ class SandboxSessionManager:
 
     @staticmethod
     def _lock_capacity(db: Session, *, wait: bool = True) -> bool:
-        function = (
-            func.pg_advisory_xact_lock if wait else func.pg_try_advisory_xact_lock
-        )
-        result = db.scalar(
-            select(function(func.hashtextextended(CAPACITY_LOCK_NAME, 0)))
-        )
-        return True if wait else bool(result)
+        return lock_capacity(db, wait=wait)
 
     @staticmethod
     def _lock_pool_maintenance(db: Session) -> bool:
@@ -1329,9 +1348,39 @@ class SandboxSessionManager:
             worker_generation=worker_generation,
         )
 
-    @staticmethod
-    def _unexpired(lease: ChatSandboxLease, now: datetime) -> bool:
-        return ChatSandboxStateRepository.unexpired(lease, now)
+    async def _recover_acquisition(
+        self,
+        chat_session_id: uuid.UUID,
+        recovery: RecoveryRequired,
+    ) -> bool:
+        """Terminate and account for one committed recovery claim."""
+
+        claim = recovery.claim
+        if claim.sandbox_id is None:  # pragma: no cover - recovery requires an ID
+            raise LeaseDecisionChanged
+        self._drop_control(chat_session_id)
+        confirmed = await self._terminate_provider_sandbox(claim.sandbox_id)
+        if getattr(
+            self.settings,
+            "chat_sandbox_spend_enforcement_enabled",
+            False,
+        ):
+            with self.session_factory() as db, db.begin():
+                ChatSandboxSpendService(db, self.settings).terminate(
+                    claim.sandbox_id,
+                    claim.failure_code,
+                    confirmed=confirmed,
+                )
+        if not confirmed:
+            return False
+        with self.session_factory() as db, db.begin():
+            self._capacity_repository().finish_recovery(
+                db,
+                chat_session_id,
+                claim=claim,
+                now=datetime.now(UTC),
+            )
+        return True
 
     async def ensure_ready(
         self,
@@ -1370,155 +1419,68 @@ class SandboxSessionManager:
         deadline = time.monotonic() + self.ready_timeout_seconds
         claim: StartClaim | None = None
         interval_id: uuid.UUID | None = None
-        budget_rejection: ChatComputeDisabled | None = None
         sandbox_id: str | None = None
         worker_generation: str | None = None
         while claim is None and sandbox_id is None:
             creation_token = secrets.token_urlsafe(24)
+            next_generation = secrets.token_hex(16)
             now = datetime.now(UTC)
-            waiting_for_owner = False
-            evict_session_id: uuid.UUID | None = None
-            with self.session_factory() as db, db.begin():
-                if self.blank_pool_enabled:
-                    self._lock_capacity(db)
-                self._lock_start_claim(db, chat_session_id)
-                lease = self._lease(db, chat_session_id, lock=True)
-                compatible = bool(
-                    lease
-                    and lease.image_version == self.settings.chat_modal_image_version
-                    and lease.worker_contract_version
-                    == self.settings.chat_worker_contract_version
-                    and lease.worker_generation is not None
-                )
-                if (
-                    lease
-                    and compatible
-                    and lease.modal_sandbox_id
-                    and lease.state in {"ready", "idle", "busy"}
-                ):
-                    sandbox_id = lease.modal_sandbox_id
-                    worker_generation = lease.worker_generation
-                elif (
-                    lease
-                    and compatible
-                    and lease.state == "starting"
-                    and lease.lease_token_hash
-                    and self._unexpired(lease, now)
-                ):
-                    waiting_for_owner = True
-                elif (
-                    lease is None
-                    or not compatible
-                    or lease.state
-                    not in {
-                        "starting",
-                        "ready",
-                        "busy",
-                        "idle",
-                        "terminating",
-                    }
-                ):
-                    if self.blank_pool_enabled:
-                        live_assigned = (
-                            db.scalar(
-                                select(func.count())
-                                .select_from(ChatSandboxLease)
-                                .where(
-                                    ChatSandboxLease.chat_session_id != chat_session_id,
-                                    ChatSandboxLease.state.in_(
-                                        [
-                                            "starting",
-                                            "ready",
-                                            "busy",
-                                            "idle",
-                                            "terminating",
-                                        ]
-                                    ),
-                                )
-                            )
-                            or 0
-                        )
-                        live_pool = (
-                            db.scalar(
-                                select(func.count())
-                                .select_from(ChatSandboxPool)
-                                .where(
-                                    ChatSandboxPool.state.in_(
-                                        ["starting", "blank_ready", "draining"]
-                                    )
-                                )
-                            )
-                            or 0
-                        )
-                        if (
-                            live_assigned + live_pool
-                            >= self.settings.chat_sandbox_total_live_cap
-                        ):
-                            evict_session_id = db.execute(
-                                select(ChatSandboxLease.chat_session_id)
-                                .where(ChatSandboxLease.state == "idle")
-                                .order_by(ChatSandboxLease.last_activity_at)
-                                .limit(1)
-                            ).scalar_one_or_none()
-                            if evict_session_id is None:
-                                raise SandboxError(
-                                    "sandbox_capacity",
-                                    "Secure workspace capacity is temporarily full",
-                                )
-                    if evict_session_id is None:
-                        worker_generation = secrets.token_hex(16)
-                        if getattr(
-                            self.settings,
-                            "chat_sandbox_spend_enforcement_enabled",
-                            False,
-                        ):
-                            try:
-                                interval_id = ChatSandboxSpendService(
-                                    db, self.settings
-                                ).reserve_interval(
-                                    origin="direct",
-                                    worker_generation=worker_generation,
-                                    chat_session_id=chat_session_id,
-                                    now=now,
-                                )
-                            except ChatComputeDisabled as error:
-                                budget_rejection = error
-                        if budget_rejection is None and lease is None:
-                            token_hash = self._token_hash(creation_token)
-                            lease = ChatSandboxLease(
+            acquisition = None
+            budget_rejection: ChatComputeDisabled | None = None
+            try:
+                with self.session_factory() as db, db.begin():
+                    reserve_interval: Callable[[str], uuid.UUID] | None = None
+                    if getattr(
+                        self.settings,
+                        "chat_sandbox_spend_enforcement_enabled",
+                        False,
+                    ):
+                        spend = ChatSandboxSpendService(db, self.settings)
+
+                        def reserve_direct_interval(generation: str) -> uuid.UUID:
+                            return spend.reserve_interval(
+                                origin="direct",
+                                worker_generation=generation,
                                 chat_session_id=chat_session_id,
-                                app_release_id=self.settings.release_id,
-                                image_version=self.settings.chat_modal_image_version,
-                                worker_contract_version=(
-                                    self.settings.chat_worker_contract_version
-                                ),
-                                worker_generation=worker_generation,
-                                state="starting",
-                                lease_token_hash=token_hash,
-                                lease_expires_at=now
-                                + timedelta(seconds=self.ready_timeout_seconds + 15),
-                                last_activity_at=now,
-                            )
-                            db.add(lease)
-                            claim = StartClaim(
-                                token_hash,
-                                None,
-                                None,
-                                lease.worker_generation or "",
-                            )
-                        elif budget_rejection is None:
-                            claim = self._claim_start(
-                                lease,
-                                creation_token=creation_token,
                                 now=now,
-                                worker_generation=worker_generation,
+                                capacity_locked=True,
                             )
+
+                        reserve_interval = reserve_direct_interval
+
+                    try:
+                        acquisition = self._capacity_repository().acquire(
+                            db,
+                            chat_session_id,
+                            creation_token=creation_token,
+                            worker_generation=next_generation,
+                            now=now,
+                            ready_timeout_seconds=self.ready_timeout_seconds,
+                            reserve_interval=reserve_interval,
+                        )
+                    except ChatComputeDisabled as error:
+                        # Committing here preserves the durable circuit trip; the
+                        # repository has not changed the lease before reservation.
+                        budget_rejection = error
+            except LeaseDecisionChanged:
+                # Any reservation and repair from this attempt rolled back with
+                # the transaction. Reselect the now-current exact lease state.
+                continue
             if budget_rejection is not None:
                 raise SandboxError(
                     budget_rejection.code, str(budget_rejection)
                 ) from budget_rejection
-            if evict_session_id is not None:
-                if await self.snapshot_and_terminate(evict_session_id):
+            assert acquisition is not None
+            if isinstance(acquisition, ReuseLease):
+                sandbox_id = acquisition.sandbox_id
+                worker_generation = acquisition.worker_generation
+                continue
+            if isinstance(acquisition, StartAcquired):
+                claim = acquisition.claim
+                interval_id = acquisition.interval_id
+                continue
+            if isinstance(acquisition, EvictionRequired):
+                if await self.snapshot_and_terminate(acquisition.chat_session_id):
                     continue
                 if time.monotonic() >= deadline:
                     raise SandboxError(
@@ -1526,22 +1488,35 @@ class SandboxSessionManager:
                         "Secure workspace capacity is temporarily full",
                     )
                 await asyncio.sleep(0.05)
-            elif waiting_for_owner:
+                continue
+            if isinstance(acquisition, WaitForLease):
                 if time.monotonic() >= deadline:
+                    if acquisition.state == "terminating":
+                        raise SandboxError(
+                            "sandbox_capacity",
+                            "Secure workspace capacity is temporarily full",
+                        )
                     raise SandboxError(
                         "sandbox_timeout", "Secure workspace startup timed out"
                     )
                 await asyncio.sleep(0.05)
+                continue
+            if isinstance(acquisition, RecoveryRequired):
+                if await self._recover_acquisition(chat_session_id, acquisition):
+                    continue
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                raise SandboxError(
+                    "sandbox_capacity",
+                    "Secure workspace capacity is temporarily full",
+                )
+            if isinstance(acquisition, CapacityUnavailable):
+                raise SandboxError(
+                    "sandbox_capacity",
+                    "Secure workspace capacity is temporarily full",
+                )
+            raise AssertionError("Unhandled sandbox acquisition outcome")
 
-        if claim and claim.stale_sandbox_id:
-            confirmed = await self._terminate_provider_sandbox(claim.stale_sandbox_id)
-            if self.settings.chat_sandbox_spend_enforcement_enabled:
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        claim.stale_sandbox_id,
-                        "stale_replaced",
-                        confirmed=confirmed,
-                    )
         await self.enforce_warm_cap()
 
         if sandbox_id:

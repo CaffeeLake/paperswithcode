@@ -18,8 +18,11 @@ from backend.models.database import (
     ChatSandboxLease,
     ChatSandboxPool,
 )
+from backend.services.chat_sandbox_capacity_repository import (
+    CAPACITY_LOCK_NAME as CAPACITY_LOCK_NAME,
+    lock_capacity,
+)
 
-CAPACITY_LOCK_NAME = "chat-sandbox-capacity-v1"
 CPU_MICROUSD_PER_CORE_SECOND = Decimal("39.42")
 MEMORY_MICROUSD_PER_GIB_SECOND = Decimal("6.72")
 
@@ -52,13 +55,7 @@ class ChatSandboxSpendService:
         self.settings = settings
 
     def _lock(self) -> None:
-        if self.db.get_bind().dialect.name != "postgresql":
-            return
-        self.db.scalar(
-            select(
-                func.pg_advisory_xact_lock(func.hashtextextended(CAPACITY_LOCK_NAME, 0))
-            )
-        )
+        lock_capacity(self.db)
 
     def _policy(self) -> tuple[int, int, int, int]:
         return (
@@ -367,8 +364,11 @@ class ChatSandboxSpendService:
         )
         return int(summary["accrued_microusd"]), bool(summary["invalid_count"])
 
-    def refresh(self, now: datetime) -> ChatSandboxBudgetState:
-        self._lock()
+    def refresh(
+        self, now: datetime, *, capacity_locked: bool = False
+    ) -> ChatSandboxBudgetState:
+        if not capacity_locked:
+            self._lock()
         state = self._state(now)
         configured_policy = self._policy()
         stored_policy = (
@@ -595,8 +595,16 @@ class ChatSandboxSpendService:
             self._event(state, "circuit_tripped", "critical", reason, now)
         return state
 
-    def assert_available(self, now: datetime | None = None) -> ChatSandboxBudgetState:
-        state = self.refresh(now or datetime.now(UTC))
+    def assert_available(
+        self,
+        now: datetime | None = None,
+        *,
+        capacity_locked: bool = False,
+    ) -> ChatSandboxBudgetState:
+        state = self.refresh(
+            now or datetime.now(UTC),
+            capacity_locked=capacity_locked,
+        )
         if state.circuit_state == "tripped":
             raise ChatComputeDisabled(
                 "Chat is temporarily disabled",
@@ -611,9 +619,10 @@ class ChatSandboxSpendService:
         worker_generation: str,
         chat_session_id: uuid.UUID | None = None,
         now: datetime | None = None,
+        capacity_locked: bool = False,
     ) -> uuid.UUID:
         now = now or datetime.now(UTC)
-        state = self.assert_available(now)
+        state = self.assert_available(now, capacity_locked=capacity_locked)
         reservation = self.reservation_amount()
         effective = max(state.estimated_accrued_microusd, state.provider_floor_microusd)
         if (

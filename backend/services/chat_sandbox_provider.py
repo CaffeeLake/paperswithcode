@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol
 
 import modal
+from modal.exception import NotFoundError
 from modal.stream_type import StreamType
 from websockets.asyncio.client import connect as websocket_connect
 
@@ -258,6 +259,8 @@ class ModalSandboxProviderAdapter:
                     await target.terminate.aio(wait=True)
             else:
                 await target.terminate.aio(wait=False)
+            return True
+        except NotFoundError:
             return True
         except Exception:
             return False

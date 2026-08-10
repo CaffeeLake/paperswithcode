@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from modal.exception import NotFoundError
 from modal.stream_type import StreamType
 
 from backend.chat_sandbox_worker.contract import (
@@ -277,6 +278,20 @@ def test_terminate_returns_false_when_resolution_or_provider_confirmation_fails(
 
     sandbox = SimpleNamespace(terminate=_AsyncCall(fail_termination))
     assert asyncio.run(provider.terminate("sb-test", sandbox)) is False
+
+
+def test_terminate_treats_provider_not_found_as_confirmed_absence(monkeypatch):
+    async def missing(_sandbox_id):
+        raise NotFoundError("sandbox no longer exists")
+
+    monkeypatch.setattr(
+        chat_sandbox_provider.modal.Sandbox,
+        "from_id",
+        _AsyncCall(missing),
+    )
+    provider = ModalSandboxProviderAdapter(_settings())
+
+    assert asyncio.run(provider.terminate("sb-missing")) is True
 
 
 def test_resolve_and_poll_delegate_to_provider(monkeypatch):
