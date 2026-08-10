@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from backend.database.connection import db_manager
 from backend.models.database import (
+    Evaluation as DBEvaluation,
     Paper as DBPaper,
     Task as DBTask,
     Dataset as DBDataset,
@@ -189,11 +190,10 @@ class TestTripleValidation:
                 best_metric=request.best_metric,
             )
 
-    def test_evaluation_without_triple_restrictions(
+    def test_evaluation_without_triple_is_rejected(
         self, db_session, test_paper, test_task, test_dataset
     ):
-        """Test that evaluation succeeds when no triple restrictions exist (backwards compatibility)."""
-        # Don't create any triples - should allow any metric
+        """An evaluation requires a configured task-dataset metric triple."""
         service = EvaluationService(db_session)
         request = EvaluationCreateRequest(
             paper_id=test_paper.id,
@@ -204,17 +204,26 @@ class TestTripleValidation:
             best_metric="AnyMetric",
         )
 
-        evaluation = service.create_evaluation(
-            paper_id=request.paper_id,
-            task_id=request.task_id,
-            dataset_id=request.dataset_id,
-            model_name=request.model_name,
-            metrics=request.metrics,
-            best_metric=request.best_metric,
-        )
+        with pytest.raises(ValueError, match="No leaderboard defined"):
+            service.create_evaluation(
+                paper_id=request.paper_id,
+                task_id=request.task_id,
+                dataset_id=request.dataset_id,
+                model_name=request.model_name,
+                metrics=request.metrics,
+                best_metric=request.best_metric,
+            )
 
-        assert evaluation is not None
-        assert evaluation.best_metric == "AnyMetric"
+        assert (
+            db_session.query(DBEvaluation)
+            .filter(
+                DBEvaluation.paper_id == request.paper_id,
+                DBEvaluation.task_id == request.task_id,
+                DBEvaluation.dataset_id == request.dataset_id,
+            )
+            .count()
+            == 0
+        )
 
 
 class TestProjectPageCRUD:

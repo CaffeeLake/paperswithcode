@@ -27,27 +27,18 @@ def _database_unavailable() -> OperationalError:
     )
 
 
-def test_dataset_task_validation_currently_fails_open_on_operational_error():
+def test_dataset_task_validation_propagates_operational_error():
     db = Mock()
     db.query.side_effect = _database_unavailable()
 
-    result = EvaluationService(db)._validate_dataset_task_consistency(1, 2)
-
-    # Phase 0 records this known-undesirable behavior. Phase 1 intentionally
-    # changes the expectation to propagation so writes fail closed.
-    assert result == (True, None)
+    with pytest.raises(OperationalError, match="database unavailable"):
+        EvaluationService(db)._validate_dataset_task_consistency(1, 2)
 
 
-def test_create_evaluation_rolls_back_when_validation_operational_error_propagates(
-    monkeypatch,
-):
+def test_create_evaluation_rolls_back_when_validation_operational_error_propagates():
     db = Mock()
+    db.query.side_effect = _database_unavailable()
     service = EvaluationService(db)
-    monkeypatch.setattr(
-        service,
-        "_validate_dataset_task_consistency",
-        Mock(side_effect=_database_unavailable()),
-    )
 
     with pytest.raises(DatabaseError, match="Failed to create evaluation"):
         service.create_evaluation(
@@ -64,9 +55,7 @@ def test_create_evaluation_rolls_back_when_validation_operational_error_propagat
     db.commit.assert_not_called()
 
 
-def test_update_evaluation_rolls_back_without_mutation_when_validation_error_propagates(
-    monkeypatch,
-):
+def test_update_evaluation_rolls_back_without_mutation_when_validation_error_propagates():
     evaluation = SimpleNamespace(
         task_id=2,
         dataset_id=3,
@@ -76,13 +65,10 @@ def test_update_evaluation_rolls_back_without_mutation_when_validation_error_pro
         harness=None,
     )
     db = Mock()
-    db.query.return_value.filter.return_value.first.return_value = evaluation
+    evaluation_query = Mock()
+    evaluation_query.filter.return_value.first.return_value = evaluation
+    db.query.side_effect = [evaluation_query, _database_unavailable()]
     service = EvaluationService(db)
-    monkeypatch.setattr(
-        service,
-        "_validate_dataset_task_consistency",
-        Mock(side_effect=_database_unavailable()),
-    )
 
     with pytest.raises(DatabaseError, match="Failed to update evaluation"):
         service.update_evaluation(

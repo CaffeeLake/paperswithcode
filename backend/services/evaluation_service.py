@@ -500,42 +500,30 @@ class EvaluationService:
         Returns:
             Tuple of (is_valid, error_message)
         """
-        try:
-            # Check if this task-dataset pair has any metrics defined
-            has_metrics = (
-                self.db.query(TaskDatasetMetric)
-                .filter(
-                    TaskDatasetMetric.task_id == task_id,
-                    TaskDatasetMetric.dataset_id == dataset_id,
-                )
-                .first()
+        # Check if this task-dataset pair has any metrics defined
+        has_metrics = (
+            self.db.query(TaskDatasetMetric)
+            .filter(
+                TaskDatasetMetric.task_id == task_id,
+                TaskDatasetMetric.dataset_id == dataset_id,
+            )
+            .first()
+        )
+
+        if not has_metrics:
+            # Get task and dataset names for error message
+            task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+            dataset = (
+                self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
             )
 
-            if not has_metrics:
-                # Get task and dataset names for error message
-                task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
-                dataset = (
-                    self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
-                )
-
-                return False, (
-                    f"No leaderboard defined for task '{task.name if task else task_id}' "
-                    f"and dataset '{dataset.name if dataset else dataset_id}'. "
-                    f"Please define metrics for this task-dataset pair before adding evaluations."
-                )
-
-            return True, None
-
-        except Exception as e:
-            # If validation fails due to an error, log it but don't block the operation
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.error(
-                f"Error validating dataset-task consistency for dataset {dataset_id}, task {task_id}: {str(e)}"
+            return False, (
+                f"No leaderboard defined for task '{task.name if task else task_id}' "
+                f"and dataset '{dataset.name if dataset else dataset_id}'. "
+                f"Please define metrics for this task-dataset pair before adding evaluations."
             )
-            # In case of error, allow the operation to proceed
-            return True, None
+
+        return True, None
 
     def _validate_harness_support(
         self, task_id: int, dataset_id: int, harness: Optional[str]
