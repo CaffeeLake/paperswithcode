@@ -2136,7 +2136,9 @@ class SandboxSessionManager:
             and existing_control.resume_id is not None
             and existing_control.resume_id != resume
         ):
-            await self.snapshot_and_terminate(chat_session_id)
+            # The persistent agent reconnects its SDK client to the durable
+            # resume boundary while retaining the already-running sandbox.
+            existing_control.resume_id = None
         persistent = bool(
             getattr(self.settings, "chat_persistent_worker_enabled", False)
         )

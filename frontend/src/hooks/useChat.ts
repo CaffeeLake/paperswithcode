@@ -184,6 +184,34 @@ export function useChat(options: UseChatOptions) {
     patchLast(withoutWorkspaceStatus, projectsActiveStream());
   };
 
+  const armWorkspaceStatus = (
+    controller: AbortController,
+    messagesGeneration: number,
+  ) => {
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+    }
+    workspaceStatusStateRef.current = "armed";
+    preparingTimerRef.current = window.setTimeout(() => {
+      preparingTimerRef.current = null;
+      if (
+        workspaceStatusStateRef.current !== "armed"
+        || abortRef.current !== controller
+        || controller.signal.aborted
+        || messagesGenerationRef.current !== messagesGeneration
+      ) return;
+      workspaceStatusStateRef.current = "shown";
+      patchLast((message) => (
+        message.role === "assistant"
+        && message.streaming
+        && (message.blocks?.length ?? 0) === 0
+        && !message.error
+          ? { ...message, status: WORKSPACE_STATUS }
+          : message
+      ), projectsActiveStream());
+    }, WORKSPACE_STATUS_DELAY_MS);
+  };
+
   const reportTiming = (
     timing: BrowserTiming,
     update: ChatBrowserLatencyUpdate,
@@ -390,28 +418,7 @@ export function useChat(options: UseChatOptions) {
       firstVisibleReported: false,
       terminalReported: false,
     };
-    if (preparingTimerRef.current !== null) {
-      window.clearTimeout(preparingTimerRef.current);
-    }
-    workspaceStatusStateRef.current = "armed";
-    preparingTimerRef.current = window.setTimeout(() => {
-      preparingTimerRef.current = null;
-      if (
-        workspaceStatusStateRef.current !== "armed"
-        || abortRef.current !== controller
-        || controller.signal.aborted
-        || messagesGenerationRef.current !== messagesGeneration
-      ) return;
-      workspaceStatusStateRef.current = "shown";
-      patchLast((message) => (
-        message.role === "assistant"
-        && message.streaming
-        && (message.blocks?.length ?? 0) === 0
-        && !message.error
-          ? { ...message, status: WORKSPACE_STATUS }
-          : message
-      ), projectsActiveStream());
-    }, WORKSPACE_STATUS_DELAY_MS);
+    workspaceStatusStateRef.current = "cleared";
     void (async () => {
       let sawStreamStart = false;
       let providerExecuted = false;
@@ -426,8 +433,12 @@ export function useChat(options: UseChatOptions) {
             providerExecuted = event.provider_execution !== false;
             recordStreamStart(controller, event.request_id);
           }
+          if (event.type === "sandbox_start") {
+            armWorkspaceStatus(controller, messagesGeneration);
+          }
           if (
-            event.type === "workspace_ready"
+            event.type === "sandbox_ready"
+            || event.type === "workspace_ready"
             || event.type === "reasoning_start"
             || event.type === "reasoning_delta"
             || event.type === "tool_call"
@@ -449,6 +460,7 @@ export function useChat(options: UseChatOptions) {
                 "openrouter_byok_credential_invalid",
                 "openrouter_byok_billing_error",
                 "openrouter_byok_rate_limit",
+                "hf_inference_billing_exhausted",
               ].includes(event.code ?? "")
             ) {
               providerStatusChanged = true;
@@ -533,6 +545,7 @@ export function useChat(options: UseChatOptions) {
                 "openrouter_byok_credential_invalid",
                 "openrouter_byok_billing_error",
                 "openrouter_byok_rate_limit",
+                "hf_inference_billing_exhausted",
               ].includes(error.code ?? "")
             ) {
               providerStatusChanged = true;

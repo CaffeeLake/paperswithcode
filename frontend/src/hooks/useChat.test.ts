@@ -696,14 +696,15 @@ describe("useChat canonical reloads", () => {
 });
 
 describe("useChat workspace status and browser timing", () => {
-  it("shows workspace preparation at exactly 750 ms and clears it on workspace_ready", async () => {
+  it("shows workspace preparation only during slow sandbox acquisition", async () => {
     vi.useFakeTimers();
     const workspaceReady = deferred<void>();
     const finish = deferred<void>();
     streamChatMock.mockImplementation(async function* () {
       yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      yield { type: "sandbox_start", session_id: "session-1" };
       await workspaceReady.promise;
-      yield { type: "workspace_ready" };
+      yield { type: "sandbox_ready", session_id: "session-1", cold_start_ms: 750 };
       await finish.promise;
       yield { type: "done", finish_reason: "success" };
     });
@@ -726,6 +727,31 @@ describe("useChat workspace status and browser timing", () => {
       await workspaceReady.promise;
       await Promise.resolve();
     });
+    expect(result.current.messages.at(-1)?.status).toBeUndefined();
+
+    await act(async () => {
+      finish.resolve();
+      await finish.promise;
+      await Promise.resolve();
+    });
+    unmount();
+  });
+
+  it("does not show workspace preparation while waiting on a warm model call", async () => {
+    vi.useFakeTimers();
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      await finish.promise;
+      yield { type: "done", finish_reason: "success" };
+    });
+    const { result, unmount } = renderChat();
+
+    act(() => {
+      expect(result.current.send("Warm turn")).toBe(true);
+    });
+    await act(async () => { await Promise.resolve(); });
+    act(() => vi.advanceTimersByTime(1_000));
     expect(result.current.messages.at(-1)?.status).toBeUndefined();
 
     await act(async () => {

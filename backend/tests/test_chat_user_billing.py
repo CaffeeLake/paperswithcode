@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from backend.chat_gateway_app import (
     _byok_provider_error_code,
+    _huggingface_provider_error_code,
     _pin_openrouter_reasoning_effort,
     _provider_headers,
     _provider_target,
@@ -177,6 +178,14 @@ def test_gateway_keeps_byok_billing_and_rate_limit_errors_distinct(
     status_code, error_code
 ):
     assert _byok_provider_error_code(status_code) == error_code
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code"),
+    [(402, "hf_inference_billing_exhausted"), (401, None), (429, None)],
+)
+def test_gateway_classifies_hugging_face_billing_errors(status_code, error_code):
+    assert _huggingface_provider_error_code(status_code) == error_code
 
 
 def test_chat_search_never_calls_shared_query_embedding_endpoint(monkeypatch):

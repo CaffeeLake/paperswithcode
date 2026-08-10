@@ -254,6 +254,12 @@ def _byok_provider_error_code(status_code: int) -> str | None:
     }.get(status_code)
 
 
+def _huggingface_provider_error_code(status_code: int) -> str | None:
+    if status_code == 402:
+        return "hf_inference_billing_exhausted"
+    return None
+
+
 def _settle_openrouter_call(
     settings: Settings,
     call_id: uuid.UUID,
@@ -600,6 +606,10 @@ async def messages(
             _record_provider_error(capability_id, provider_error)
     elif provider_mode == "openrouter_funded" and upstream.status_code in {402, 403}:
         _record_provider_error(capability_id, "openrouter_unavailable")
+    elif provider_mode == "huggingface":
+        provider_error = _huggingface_provider_error_code(upstream.status_code)
+        if provider_error is not None:
+            _record_provider_error(capability_id, provider_error)
 
     async def chunks():
         first_byte = True

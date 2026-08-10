@@ -1024,16 +1024,38 @@ def test_persistent_agent_accepts_resume_hint_before_sdk_session(monkeypatch):
     asyncio.run(run())
 
 
-def test_persistent_agent_keeps_sdk_session_authoritative():
+def test_persistent_agent_reconnects_when_durable_resume_moves_back(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, options):
+            calls.append(("init", options.resume))
+
+        async def connect(self, prompt):
+            calls.append(("connect", prompt))
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
     worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
-    worker.client = SimpleNamespace()
+    worker.client = Client(SimpleNamespace(resume="session-a"))
     worker.model = "model-a"
     worker._record_session_id("session-a")
 
-    asyncio.run(worker.connect(model="model-a", resume="session-a"))
-    with pytest.raises(RuntimeError, match="Resume changed"):
-        asyncio.run(worker.connect(model="model-a", resume="session-b"))
-    assert worker.sdk_session_id == "session-a"
+    asyncio.run(worker.connect(model="model-a", resume="session-b"))
+
+    assert worker.sdk_session_id is None
+    assert calls[-3:] == [
+        ("disconnect",),
+        ("init", "session-b"),
+        ("connect", None),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2239,9 +2261,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-4TRubJGxjB9jhiHk9zfStc"
+    assert MODAL_IMAGE_ID == "im-vimdZOKqbY0v9u9XGR3LT4"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "51"
+    assert WORKER_CONTRACT_VERSION == "52"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

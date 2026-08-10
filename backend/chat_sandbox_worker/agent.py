@@ -816,11 +816,14 @@ class PersistentAgent:
                     and self.sdk_session_id is not None
                     and resume != self.sdk_session_id
                 ):
-                    raise RuntimeError("Resume changed after worker connection")
-                if model != self.model:
-                    await self.client.set_model(model)
-                    self.model = model
-                return
+                    await self.client.disconnect()
+                    self.client = None
+                    self.sdk_session_id = None
+                else:
+                    if model != self.model:
+                        await self.client.set_model(model)
+                        self.model = model
+                    return
         self.model = model
         self.resume = resume
         self.web_search_enabled = web_search_enabled

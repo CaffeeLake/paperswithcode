@@ -416,6 +416,8 @@ def test_persistent_turns_reuse_one_control_attachment():
 
         session_id = uuid.uuid4()
         for index in (1, 2):
+            if index == 2:
+                manager._controls[session_id].resume_id = "failed-branch"
             events = []
             turn_id = uuid.uuid4()
             stream = manager.run_turn(
@@ -424,7 +426,7 @@ def test_persistent_turns_reuse_one_control_attachment():
                 request_id=f"request-{index}",
                 prompt="prompt",
                 model="model",
-                resume="resume",
+                resume="durable-branch",
                 capability=SimpleNamespace(token="capability"),
             )
             async for event in stream:

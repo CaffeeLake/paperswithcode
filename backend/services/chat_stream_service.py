@@ -930,53 +930,53 @@ class ChatStreamOrchestrator:
                         "Chat was disabled while this response was running. "
                         "The partial response is saved. Please try again later."
                     )
-                provider = self.settings.chat_route_providers.get(
-                    self.admission.model_route
-                )
-                if provider == "openrouter":
-                    with db_manager.session_local() as error_db:
-                        funded_code = ChatCapabilityService(
-                            error_db
-                        ).provider_error_for_turn(
-                            self.admission.session_id, self.admission.turn_id
-                        )
-                        if funded_code:
-                            event["code"] = funded_code
-                            if funded_code == "openrouter_monthly_budget_exhausted":
-                                usage = OpenRouterUserBudgetService(
-                                    error_db, self.settings
-                                ).status_percentage(self.owner.hf_user_id)
-                                reset = usage.resets_at.isoformat().replace(
-                                    "+00:00", "Z"
-                                )
-                                event["message"] = (
-                                    f"{usage.remaining_percent}% of your monthly shared "
-                                    "OpenRouter allowance remains, but that is not enough "
-                                    "to reserve another model call for this response. "
-                                    f"It resets at {reset}."
-                                )
-                            elif funded_code == "openrouter_unavailable":
-                                event["message"] = (
-                                    "OpenRouter is currently unavailable. However, "
-                                    "you can still bring your own key in Settings."
-                                )
-                            elif funded_code == "openrouter_byok_credential_invalid":
-                                event["message"] = (
-                                    "Your OpenRouter API key is no longer valid. "
-                                    "Reconnect it in Settings, then try again."
-                                )
-                            elif funded_code == "openrouter_byok_billing_error":
-                                event["message"] = (
-                                    "Your OpenRouter key is connected, but OpenRouter "
-                                    "rejected billing for the account behind it. A key "
-                                    "spending limit is not an account credit balance. "
-                                    "Add credits or enable pay-as-you-go in OpenRouter, "
-                                    "then try again."
-                                )
-                            elif funded_code == "openrouter_byok_rate_limit":
-                                event["message"] = (
-                                    "Your OpenRouter API key is temporarily rate-limited."
-                                )
+                with db_manager.session_local() as error_db:
+                    provider_code = ChatCapabilityService(
+                        error_db
+                    ).provider_error_for_turn(
+                        self.admission.session_id, self.admission.turn_id
+                    )
+                    if provider_code:
+                        event["code"] = provider_code
+                        if provider_code == "hf_inference_billing_exhausted":
+                            event["message"] = (
+                                "Hugging Face could not bill this request. Your included "
+                                "credits may be exhausted; enable or review pay-as-you-go "
+                                "billing in Settings."
+                            )
+                        elif provider_code == "openrouter_monthly_budget_exhausted":
+                            usage = OpenRouterUserBudgetService(
+                                error_db, self.settings
+                            ).status_percentage(self.owner.hf_user_id)
+                            reset = usage.resets_at.isoformat().replace("+00:00", "Z")
+                            event["message"] = (
+                                f"{usage.remaining_percent}% of your monthly shared "
+                                "OpenRouter allowance remains, but that is not enough "
+                                "to reserve another model call for this response. "
+                                f"It resets at {reset}."
+                            )
+                        elif provider_code == "openrouter_unavailable":
+                            event["message"] = (
+                                "OpenRouter is currently unavailable. However, "
+                                "you can still bring your own key in Settings."
+                            )
+                        elif provider_code == "openrouter_byok_credential_invalid":
+                            event["message"] = (
+                                "Your OpenRouter API key is no longer valid. "
+                                "Reconnect it in Settings, then try again."
+                            )
+                        elif provider_code == "openrouter_byok_billing_error":
+                            event["message"] = (
+                                "Your OpenRouter key is connected, but OpenRouter "
+                                "rejected billing for the account behind it. A key "
+                                "spending limit is not an account credit balance. "
+                                "Add credits or enable pay-as-you-go in OpenRouter, "
+                                "then try again."
+                            )
+                        elif provider_code == "openrouter_byok_rate_limit":
+                            event["message"] = (
+                                "Your OpenRouter API key is temporarily rate-limited."
+                            )
                 _persist_failure(
                     self.owner,
                     self.settings,
