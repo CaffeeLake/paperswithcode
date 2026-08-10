@@ -20,18 +20,12 @@ import modal
 from modal.client import _Client
 from modal.exception import Error as ModalError
 from modal.exception import NotFoundError
-from modal.stream_type import StreamType
 from modal_proto import api_pb2
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
 
-from backend.chat_sandbox_worker.contract import (
-    CHAT_SANDBOX_REGION,
-    CONTROL_PORT,
-    MODAL_APP_NAME,
-    PROVIDER_OUTPUT_TOKEN_LIMIT,
-)
+from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
     ProtocolError,
@@ -50,7 +44,13 @@ from backend.models.database import (
     ChatTurnCapability,
 )
 from backend.services.chat_capability_service import IssuedCapability
-from backend.services.chat_runtime_contract import dedicated_gateway_hostname
+from backend.services.chat_sandbox_provider import (
+    ModalSandboxProviderAdapter,
+    SandboxError,
+    SandboxProvider,
+    resolve_modal_image as _resolve_modal_image,
+    sandbox_environment as _sandbox_environment,
+)
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
@@ -66,13 +66,6 @@ POOL_ACCOUNTING_SAFETY_SECONDS = 120
 POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
-
-
-class SandboxError(RuntimeError):
-    def __init__(self, code: str, message: str, *, uncertain: bool = False):
-        super().__init__(message)
-        self.code = code
-        self.uncertain = uncertain
 
 
 @dataclass(frozen=True)
@@ -156,28 +149,21 @@ class StartClaim:
 
 
 async def resolve_modal_image(image_reference: str):
-    if image_reference.startswith("im-"):
-        return modal.Image.from_id(image_reference)
-    return modal.Image.from_name(image_reference)
+    """Compatibility export for qualification scripts and existing tests."""
+
+    return await _resolve_modal_image(image_reference)
 
 
 def sandbox_environment(settings: Settings) -> dict[str, str]:
-    return {
-        "PWC_CHAT_GATEWAY_URL": settings.chat_gateway_url,
-        "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_deepseek_v4_flash_route,
-        "PWC_CHAT_MAX_TURNS": str(settings.chat_max_turns),
-        "PWC_CHAT_MAX_TOOL_CALLS": str(settings.chat_max_tool_calls),
-        "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": str(settings.chat_max_direct_search_calls),
-        "PWC_CHAT_MAX_WEB_SEARCH_CALLS": str(settings.chat_web_search_max_calls),
-        "PWC_CHAT_TOOL_RESULT_MAX_BYTES": str(settings.chat_tool_result_max_bytes),
-        "PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES": str(
-            settings.chat_turn_tool_output_max_bytes
-        ),
-        "PWC_CHAT_BASH_TIMEOUT_SECONDS": str(settings.chat_bash_timeout_seconds),
-        "PWC_CHAT_AGENT_TIMEOUT_SECONDS": str(settings.chat_agent_timeout_seconds),
-        "PWC_CHAT_SANDBOX_PIDS_MAX": str(settings.chat_sandbox_pids_max),
-        "PWC_CHAT_MAX_OUTPUT_TOKENS": str(PROVIDER_OUTPUT_TOKEN_LIMIT),
-    }
+    """Compatibility export for the provider worker environment."""
+
+    return _sandbox_environment(settings)
+
+
+async def _connect_provider_websocket(*args, **kwargs):
+    """Resolve the legacy monkeypatch seam when the connection is opened."""
+
+    return await websocket_connect(*args, **kwargs)
 
 
 async def create_isolated_sandbox(
@@ -187,106 +173,17 @@ async def create_isolated_sandbox(
     tags: dict[str, str],
     worker_generation: str | None = None,
 ):
-    try:
-        gateway_host = dedicated_gateway_hostname(settings.chat_gateway_url)
-    except ValueError as error:
-        raise SandboxError(
-            "gateway_unavailable", "The research gateway is not configured"
-        ) from error
-    app, image = await asyncio.gather(
-        modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=False),
-        resolve_modal_image(settings.chat_modal_image_version),
+    """Compatibility export backed by the provider adapter."""
+
+    provider = ModalSandboxProviderAdapter(
+        settings,
+        image_resolver=resolve_modal_image,
+        websocket_connector=_connect_provider_websocket,
     )
-    persistent_enabled = bool(
-        getattr(settings, "chat_persistent_worker_enabled", False)
-    )
-    worker_generation = worker_generation or secrets.token_hex(16)
-    command = (
-        ("python", "-m", "backend.chat_sandbox_worker.control_daemon")
-        if persistent_enabled
-        else ("sleep", "infinity")
-    )
-    cpu_limit = (
-        getattr(settings, "chat_sandbox_cpu_limit", None) or settings.chat_sandbox_cpu
-    )
-    memory_limit = (
-        getattr(settings, "chat_sandbox_memory_limit_mib", None)
-        or settings.chat_sandbox_memory_mib
-    )
-    if cpu_limit < settings.chat_sandbox_cpu:
-        raise SandboxError("sandbox_resource_invalid", "CPU limit is below request")
-    if memory_limit < settings.chat_sandbox_memory_mib:
-        raise SandboxError("sandbox_resource_invalid", "Memory limit is below request")
-    sandbox = await modal.Sandbox.create.aio(
-        *command,
-        app=app,
-        image=image,
-        env={
-            **sandbox_environment(settings),
-            "PWC_CHAT_WORKER_GENERATION": worker_generation,
-        },
+    return await provider.create(
         name=name,
         tags=tags,
-        region=CHAT_SANDBOX_REGION,
-        timeout=(
-            settings.chat_persistent_sandbox_lifetime_seconds
-            if persistent_enabled
-            else 3600
-        ),
-        idle_timeout=(
-            settings.chat_persistent_sandbox_lifetime_seconds
-            if persistent_enabled
-            else max(60, settings.chat_sandbox_warm_seconds)
-        ),
-        workdir="/workspace",
-        cpu=(settings.chat_sandbox_cpu, cpu_limit),
-        memory=(
-            settings.chat_sandbox_memory_mib,
-            memory_limit,
-        ),
-        outbound_domain_allowlist=[gateway_host],
-        inbound_cidr_allowlist=None if persistent_enabled else [],
-        encrypted_ports=[],
-        unencrypted_ports=[],
-        include_oidc_identity_token=False,
-        readiness_probe=modal.sandbox.Probe.with_exec(
-            *(
-                (
-                    "python",
-                    "-m",
-                    "backend.chat_sandbox_worker.relay",
-                    "--ping",
-                    worker_generation,
-                )
-                if persistent_enabled
-                else ("test", "-x", "/usr/local/bin/pwc")
-            )
-        ),
-    )
-    if not persistent_enabled:
-        return sandbox
-    deadline = time.monotonic() + settings.chat_worker_ready_timeout_seconds
-    while time.monotonic() < deadline:
-        try:
-            probe = await sandbox.exec.aio(
-                "python",
-                "-m",
-                "backend.chat_sandbox_worker.relay",
-                "--ping",
-                worker_generation,
-                timeout=5,
-            )
-            await probe.wait.aio()
-            if probe.returncode == 0:
-                return sandbox
-        except Exception:
-            pass
-        if await sandbox.poll.aio() is not None:
-            break
-        await asyncio.sleep(0.05)
-    await sandbox.terminate.aio(wait=settings.chat_sandbox_spend_enforcement_enabled)
-    raise SandboxError(
-        "sandbox_worker_not_ready", "Persistent worker readiness timed out"
+        worker_generation=worker_generation,
     )
 
 
@@ -330,10 +227,12 @@ class SandboxSessionManager:
         *,
         session_factory: Callable[[], Session] | None = None,
         snapshot_provider: WorkspaceSnapshotProvider | None = None,
+        sandbox_provider: SandboxProvider | None = None,
         pool_maintenance_owner: Callable[[], bool] | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
+        self._sandbox_provider = sandbox_provider
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -349,26 +248,42 @@ class SandboxSessionManager:
                 "Configured workspace snapshots require a Directory Snapshot provider",
             )
 
+    def _provider_adapter(self) -> SandboxProvider:
+        provider = getattr(self, "_sandbox_provider", None)
+        if provider is not None:
+            return provider
+        return ModalSandboxProviderAdapter(
+            self.settings,
+            image_resolver=resolve_modal_image,
+            websocket_connector=_connect_provider_websocket,
+        )
+
+    async def _create_provider_sandbox(
+        self,
+        *,
+        name: str,
+        tags: dict[str, str],
+        worker_generation: str | None = None,
+    ) -> object:
+        provider = getattr(self, "_sandbox_provider", None)
+        if provider is not None:
+            return await provider.create(
+                name=name,
+                tags=tags,
+                worker_generation=worker_generation,
+            )
+        return await create_isolated_sandbox(
+            self.settings,
+            name=name,
+            tags=tags,
+            worker_generation=worker_generation,
+        )
+
     async def _terminate_provider_sandbox(
         self, sandbox_id: str, sandbox: object | None = None
     ) -> bool:
         """Wait for provider confirmation whenever spend enforcement is active."""
-        try:
-            target = sandbox or await modal.Sandbox.from_id.aio(sandbox_id)
-            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
-                async with asyncio.timeout(
-                    getattr(
-                        self.settings,
-                        "chat_sandbox_termination_grace_seconds",
-                        30,
-                    )
-                ):
-                    await target.terminate.aio(wait=True)
-            else:
-                await target.terminate.aio(wait=False)
-            return True
-        except Exception:
-            return False
+        return await self._provider_adapter().terminate(sandbox_id, sandbox)
 
     @staticmethod
     def _billing_month(now: datetime) -> date:
@@ -520,39 +435,25 @@ class SandboxSessionManager:
                     self._blank_health_at[sandbox_id] = time.monotonic()
                     return control.sandbox
                 return None
-            sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-            if await sandbox.poll.aio() is not None:
+            provider = self._provider_adapter()
+            sandbox = await provider.resolve(sandbox_id)
+            if await provider.poll(sandbox) is not None:
                 return None
-            probe = await sandbox.exec.aio(
-                "python",
-                "-m",
-                "backend.chat_sandbox_worker.relay",
-                "--ping",
-                worker_generation,
-                timeout=5,
+            healthy = await provider.health(
+                sandbox,
+                persistent=True,
+                worker_generation=worker_generation,
             )
-            await probe.wait.aio()
-            return sandbox if probe.returncode == 0 else None
+            return sandbox if healthy else None
         except Exception:
             return None
 
     async def _start_persistent_control(
         self, sandbox, worker_generation: str
     ) -> SessionControl:
-        credentials = await sandbox.create_connect_token.aio(
-            user_metadata={"worker_generation": worker_generation},
-            port=CONTROL_PORT,
-        )
-        websocket_url = credentials.url.replace("https://", "wss://", 1)
-        connection = await websocket_connect(
-            websocket_url,
-            additional_headers={"Authorization": f"Bearer {credentials.token}"},
-            compression=None,
-            proxy=None,
-            open_timeout=5,
-            ping_interval=20,
-            ping_timeout=20,
-            max_size=1024 * 1024,
+        connection = await self._provider_adapter().open_persistent_connection(
+            sandbox,
+            worker_generation,
         )
         process = _WebSocketProcess(connection)
         control = SessionControl(
@@ -921,8 +822,7 @@ class SandboxSessionManager:
         if pool_id is None:
             return 0
         try:
-            sandbox = await create_isolated_sandbox(
-                self.settings,
+            sandbox = await self._create_provider_sandbox(
                 name=f"chat-blank-{pool_id}",
                 tags={
                     "service": "pwc-chat",
@@ -1092,7 +992,7 @@ class SandboxSessionManager:
         """Recover a pool creation race from immutable provider tags."""
 
         try:
-            tags = await sandbox.get_tags.aio()
+            tags = await self._provider_adapter().get_tags(sandbox)
             pool_id = uuid.UUID(str(tags["pool_id"]))
         except (AttributeError, KeyError, ModalError, TypeError, ValueError):
             return False
@@ -1127,8 +1027,8 @@ class SandboxSessionManager:
             return True
 
     async def _listed_pool_sandboxes(self):
-        async for sandbox in modal.Sandbox.list.aio(
-            tags={"service": "pwc-chat", "pool": "blank"}
+        async for sandbox in self._provider_adapter().iter_sandboxes(
+            tags={"service": "pwc-chat", "pool": "blank"},
         ):
             yield sandbox
 
@@ -1732,26 +1632,20 @@ class SandboxSessionManager:
                     pool_lookup_ms,
                 )
             try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-                if await sandbox.poll.aio() is None:
-                    probe = await sandbox.exec.aio(
-                        *(
-                            (
-                                "python",
-                                "-m",
-                                "backend.chat_sandbox_worker.relay",
-                                "--ping",
-                                worker_generation,
+                provider = self._provider_adapter()
+                sandbox = await provider.resolve(sandbox_id)
+                if await provider.poll(sandbox) is None:
+                    if await provider.health(
+                        sandbox,
+                        persistent=bool(
+                            getattr(
+                                self.settings,
+                                "chat_persistent_worker_enabled",
+                                False,
                             )
-                            if getattr(
-                                self.settings, "chat_persistent_worker_enabled", False
-                            )
-                            else ("test", "-x", "/usr/local/bin/pwc")
                         ),
-                        timeout=5,
-                    )
-                    await probe.wait.aio()
-                    if probe.returncode == 0:
+                        worker_generation=worker_generation,
+                    ):
                         return (
                             sandbox,
                             round((time.perf_counter() - started) * 1000),
@@ -1785,8 +1679,7 @@ class SandboxSessionManager:
         sandbox = None
         try:
             async with asyncio.timeout(self.ready_timeout_seconds):
-                sandbox = await create_isolated_sandbox(
-                    self.settings,
+                sandbox = await self._create_provider_sandbox(
                     name=f"chat-{chat_session_id}",
                     tags={
                         "service": "pwc-chat",
@@ -2225,15 +2118,11 @@ class SandboxSessionManager:
                     process = control.process
                     self._controls[chat_session_id] = control
                 else:
-                    process = await sandbox.exec.aio(
-                        "python",
-                        "-m",
-                        "backend.chat_sandbox_worker.supervisor",
-                        stdout=StreamType.PIPE,
-                        stderr=StreamType.PIPE,
-                        timeout=round(self.settings.chat_agent_timeout_seconds + 15),
-                        workdir="/workspace",
-                        text=False,
+                    process = await self._provider_adapter().open_turn_process(
+                        sandbox,
+                        timeout_seconds=round(
+                            self.settings.chat_agent_timeout_seconds + 15
+                        ),
                     )
 
                     async def drain_stderr(stream) -> None:
@@ -2641,7 +2530,7 @@ class SandboxSessionManager:
             )
         if should_snapshot and sandbox_id:
             try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
+                sandbox = await self._provider_adapter().resolve(sandbox_id)
                 snapshot_id = await self.snapshots.save(sandbox, chat_session_id)
                 with self.session_factory() as db, db.begin():
                     lease = self._lease(db, chat_session_id, lock=True)
@@ -2808,8 +2697,8 @@ class SandboxSessionManager:
                     ).scalars()
                 )
         uncertain = 0
-        async for sandbox in modal.Sandbox.list.aio(
-            tags={"service": "pwc-chat", "environment": self.settings.environment}
+        async for sandbox in self._provider_adapter().iter_sandboxes(
+            tags={"service": "pwc-chat", "environment": self.settings.environment},
         ):
             if sandbox.object_id in protected_busy_ids:
                 continue
@@ -3224,8 +3113,9 @@ class SandboxSessionManager:
                         repaired += 1
                 continue
             try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-                alive = await sandbox.poll.aio() is None
+                provider = self._provider_adapter()
+                sandbox = await provider.resolve(sandbox_id)
+                alive = await provider.poll(sandbox) is None
             except Exception:
                 alive = False
             if not alive:
