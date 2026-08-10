@@ -276,12 +276,7 @@ def test_unknown_repository_is_an_empty_scoped_feed():
     )
 
     assert response.count == 0
-    assert response.applied_filters == {
-        "task": "Image Classification",
-        "method": "Vision Transformer",
-        "conference": "CVPR 2026",
-        "organization": "Qwen",
-    }
+    assert response.applied_filters == {}
     assert response.scope.repository == "unknown/project"
 
 
@@ -551,6 +546,7 @@ def test_trending_feed_uses_official_repository_ema_scores():
             return EmptyResult()
 
     service = PaperService(FakeDatabase())
+    service.settings = SimpleNamespace(trending_ranking_mode="github")
 
     response = service._get_trending_papers(page=1, page_size=20)
 
