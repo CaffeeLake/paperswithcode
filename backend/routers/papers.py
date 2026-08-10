@@ -1029,7 +1029,7 @@ class PaperSubmitResponse(BaseModel):
 
     paper: Optional[Paper] = None
     route_identifier: Optional[str] = Field(
-        ...,
+        default=None,
         description=(
             "Identifier the frontend should use to navigate to the new paper "
             "page: ArXiv ID for ArXiv rows, internal numeric ID otherwise."

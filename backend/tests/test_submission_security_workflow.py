@@ -1,11 +1,17 @@
 import argparse
+import asyncio
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
+from fastapi import Response
+from starlette.requests import Request
 
+import backend.routers.papers as papers_router
 from backend.cli import build_parser
 from backend.cli_submissions import decide_submission
+from backend.routers.papers import PaperSubmitRequest, submit_paper
 from backend.services.pending_edit_errors import PendingEditError
 from backend.services.pending_edit_payloads import validate_payload
 from backend.services.thumbnail_service import ThumbnailService
@@ -68,6 +74,39 @@ def test_external_paper_date_is_normalized_as_a_date():
                 "date_published": "2026-08-04T12:30:00",
             },
         )
+
+
+def test_external_paper_submission_returns_pending_review_response(monkeypatch):
+    submitted = SimpleNamespace(id=42)
+    service = SimpleNamespace(submit=lambda **_kwargs: submitted)
+    monkeypatch.setattr(papers_router, "PendingEditService", lambda _db: service)
+
+    result = asyncio.run(
+        submit_paper(
+            http_request=Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/v1/papers/submit",
+                    "headers": [],
+                    "client": ("127.0.0.1", 12345),
+                }
+            ),
+            response=Response(),
+            request=PaperSubmitRequest(source_url="https://example.com/paper"),
+            idempotency_key=None,
+            user={
+                "username": "submitter",
+                "hf_subject": "hf-subject",
+                "role": "user",
+            },
+            db=object(),
+        )
+    )
+
+    assert result.route_identifier is None
+    assert result.submission_id == 42
+    assert result.pending_review is True
 
 
 def test_submission_cli_requires_explicit_environment():
