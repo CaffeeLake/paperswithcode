@@ -45,6 +45,9 @@ from backend.services.chat_sandbox_capacity_repository import (
     WaitForLease,
     lock_capacity,
 )
+from backend.services.chat_sandbox_lease_eviction_coordinator import (
+    ChatSandboxLeaseEvictionCoordinator,
+)
 from backend.services.chat_sandbox_pool_coordinator import (
     ChatSandboxPoolCoordinator,
     PoolMaintenanceResult,
@@ -179,6 +182,7 @@ class SandboxSessionManager:
         capacity_repository: ChatSandboxCapacityRepository | None = None,
         pool_repository: ChatSandboxPoolRepository | None = None,
         pool_maintenance_owner: Callable[[], bool] | None = None,
+        lease_eviction_coordinator: ChatSandboxLeaseEvictionCoordinator | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
@@ -187,6 +191,7 @@ class SandboxSessionManager:
         self._sandbox_capacity = capacity_repository
         self._sandbox_pool = pool_repository
         self._sandbox_pool_coordinator = None
+        self._sandbox_lease_eviction = lease_eviction_coordinator
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -283,6 +288,21 @@ class SandboxSessionManager:
             self._sandbox_pool = repository
         return repository
 
+    def _lease_eviction_coordinator(self) -> ChatSandboxLeaseEvictionCoordinator:
+        coordinator = getattr(self, "_sandbox_lease_eviction", None)
+        if coordinator is None:
+            transport = self._worker_transport()
+            coordinator = ChatSandboxLeaseEvictionCoordinator(
+                self.settings,
+                session_factory=self.session_factory,
+                repository=self._state_repository(),
+                provider=cast(SandboxProvider, transport.provider),
+                transport=transport,
+                snapshots=self.snapshots,
+            )
+            self._sandbox_lease_eviction = coordinator
+        return coordinator
+
     def _pool_coordinator(self) -> ChatSandboxPoolCoordinator:
         coordinator = getattr(self, "_sandbox_pool_coordinator", None)
         if coordinator is None:
@@ -295,7 +315,7 @@ class SandboxSessionManager:
                 transport=transport,
                 maintenance_owner=self.pool_maintenance_owner,
                 maintenance_locker=lock_pool_maintenance,
-                evict_assigned_lease=self.snapshot_and_terminate,
+                lease_eviction=self._lease_eviction_coordinator(),
             )
             self._sandbox_pool_coordinator = coordinator
         return coordinator
@@ -1416,51 +1436,8 @@ class SandboxSessionManager:
         return sum(results)
 
     async def snapshot_and_terminate(self, chat_session_id: uuid.UUID) -> bool:
-        claim: TerminationClaim | None = None
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            claim = self._state_repository().claim_snapshot_termination(
-                lease,
-                termination_token=secrets.token_urlsafe(24),
-                expires_at=datetime.now(UTC)
-                + timedelta(seconds=self.ready_timeout_seconds + 15),
-            )
-        if claim is None:
-            return False
-        sandbox_id = claim.sandbox_id
-        assert sandbox_id is not None
-        if claim.should_snapshot:
-            try:
-                sandbox = await self._provider_adapter().resolve(sandbox_id)
-                snapshot_id = await self.snapshots.save(sandbox, chat_session_id)
-                with self.session_factory() as db, db.begin():
-                    lease = self._lease(db, chat_session_id, lock=True)
-                    self._state_repository().record_snapshot(
-                        lease,
-                        claim=claim,
-                        snapshot_id=snapshot_id,
-                        image_version=self.settings.chat_modal_image_version,
-                        now=datetime.now(UTC),
-                    )
-            except Exception:
-                # Workspace continuity is recoverable; the transcript remains
-                # authoritative and the next sandbox safely starts empty.
-                pass
-        self._drop_control(chat_session_id)
-        confirmed = await self._terminate_provider_sandbox(sandbox_id)
-        if self.settings.chat_sandbox_spend_enforcement_enabled:
-            with self.session_factory() as db, db.begin():
-                ChatSandboxSpendService(db, self.settings).terminate(
-                    sandbox_id, "snapshot_complete", confirmed=confirmed
-                )
-        self._finish_termination_claim(
-            chat_session_id,
-            claim,
-            state="terminated",
-            failure_code=None,
-            clear_sandbox=True,
-        )
-        return True
+        outcome = await self._lease_eviction_coordinator().evict_idle(chat_session_id)
+        return outcome.acquired
 
     async def enforce_warm_cap(self) -> int:
         with self.session_factory() as db:

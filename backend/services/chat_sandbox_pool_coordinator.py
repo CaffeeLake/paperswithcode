@@ -14,6 +14,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.services.chat_sandbox_lease_eviction_coordinator import (
+    ChatSandboxLeaseEvictionCoordinator,
+)
 from backend.services.chat_sandbox_pool_repository import (
     BlankPoolClaim,
     ChatSandboxPoolRepository,
@@ -56,7 +59,6 @@ UtcClock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 MaintenanceOwner = Callable[[], bool]
 MaintenanceLocker = Callable[[Session], bool]
-AssignedLeaseEvictor = Callable[[uuid.UUID], Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -97,7 +99,7 @@ class ChatSandboxPoolCoordinator:
         provider: SandboxProvider,
         transport: ChatSandboxWorkerTransport,
         maintenance_owner: MaintenanceOwner,
-        evict_assigned_lease: AssignedLeaseEvictor,
+        lease_eviction: ChatSandboxLeaseEvictionCoordinator,
         maintenance_locker: MaintenanceLocker = lock_pool_maintenance,
         spend_factory: SpendFactory | None = None,
         utcnow: UtcClock | None = None,
@@ -111,7 +113,7 @@ class ChatSandboxPoolCoordinator:
         self.provider = provider
         self.transport = transport
         self.maintenance_owner = maintenance_owner
-        self.evict_assigned_lease = evict_assigned_lease
+        self.lease_eviction = lease_eviction
         self.maintenance_locker = maintenance_locker
         self.spend_factory = spend_factory or (
             lambda db: ChatSandboxSpendService(db, settings)
@@ -397,7 +399,10 @@ class ChatSandboxPoolCoordinator:
                 break
             if reservation_attempt == 1:
                 return 0
-            if not await self.evict_assigned_lease(eviction.chat_session_id):
+            eviction_outcome = await self.lease_eviction.evict_idle(
+                eviction.chat_session_id
+            )
+            if not eviction_outcome.acquired:
                 return 0
             if not self._refill_enabled or not self.maintenance_owner():
                 return 0

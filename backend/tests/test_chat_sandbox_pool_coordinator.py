@@ -20,6 +20,9 @@ from backend.models.database import (
     ChatSandboxPool,
     ChatSession,
 )
+from backend.services.chat_sandbox_lease_eviction_coordinator import (
+    LeaseEvictionOutcome,
+)
 from backend.services.chat_sandbox_pool_coordinator import (
     POOL_MAINTENANCE_BATCH_SIZE,
     ChatSandboxPoolCoordinator,
@@ -249,13 +252,24 @@ class _Transport(ChatSandboxWorkerTransport):
         return self.ping_result
 
 
+class _LeaseEviction:
+    def __init__(self, evict_idle):
+        self._evict_idle = evict_idle
+
+    async def evict_idle(
+        self,
+        chat_session_id: uuid.UUID,
+    ) -> LeaseEvictionOutcome:
+        return await self._evict_idle(chat_session_id)
+
+
 class _Harness:
     def __init__(
         self,
         *,
         settings: Settings | None = None,
         capacity_locker=None,
-        evict_assigned_lease=None,
+        lease_eviction=None,
         lease_loader=None,
         maintenance_locker=None,
         spend_factory=None,
@@ -277,10 +291,10 @@ class _Harness:
         self.owner = owner
         self.evictions: list[uuid.UUID] = []
 
-        async def default_evict(session_id: uuid.UUID) -> bool:
+        async def default_evict(session_id: uuid.UUID) -> LeaseEvictionOutcome:
             self.probe.outside_transaction("assigned.evict")
             self.evictions.append(session_id)
-            return False
+            return LeaseEvictionOutcome.NOT_IDLE
 
         self.coordinator = ChatSandboxPoolCoordinator(
             self.settings,
@@ -289,7 +303,7 @@ class _Harness:
             provider=self.provider,
             transport=self.transport,
             maintenance_owner=lambda: self.owner,
-            evict_assigned_lease=(evict_assigned_lease or default_evict),
+            lease_eviction=(lease_eviction or _LeaseEviction(default_evict)),
             maintenance_locker=(maintenance_locker or (lambda _db: True)),
             spend_factory=(
                 spend_factory or (lambda db: ChatSandboxSpendService(db, self.settings))
@@ -427,7 +441,12 @@ def test_coordinator_requires_provider_and_transport_identity():
             provider=other_provider,
             transport=harness.transport,
             maintenance_owner=lambda: True,
-            evict_assigned_lease=lambda _session_id: asyncio.sleep(0, result=False),
+            lease_eviction=_LeaseEviction(
+                lambda _session_id: asyncio.sleep(
+                    0,
+                    result=LeaseEvictionOutcome.NOT_IDLE,
+                )
+            ),
             spend_factory=lambda db: ChatSandboxSpendService(db, harness.settings),
         )
 
@@ -1033,7 +1052,9 @@ def test_total_cap_evicts_outside_the_transaction_then_retries_once():
     holder: dict[str, _Harness] = {}
     session_id = uuid.uuid4()
 
-    async def evict_assigned_lease(candidate_session_id: uuid.UUID) -> bool:
+    async def evict_idle(
+        candidate_session_id: uuid.UUID,
+    ) -> LeaseEvictionOutcome:
         harness = holder["harness"]
         harness.probe.outside_transaction("assigned.evict")
         harness.evictions.append(candidate_session_id)
@@ -1042,7 +1063,7 @@ def test_total_cap_evicts_outside_the_transaction_then_retries_once():
             lease.state = "terminated"
             lease.modal_sandbox_id = None
             lease.updated_at = harness.clock.utcnow()
-        return True
+        return LeaseEvictionOutcome.EVICTED
 
     harness = _Harness(
         owner=True,
@@ -1051,7 +1072,7 @@ def test_total_cap_evicts_outside_the_transaction_then_retries_once():
             chat_blank_pool_max=1,
             chat_sandbox_total_live_cap=1,
         ),
-        evict_assigned_lease=evict_assigned_lease,
+        lease_eviction=_LeaseEviction(evict_idle),
     )
     holder["harness"] = harness
     with harness.sessions() as db, db.begin():
@@ -1505,20 +1526,39 @@ def test_refill_lock_order_is_maintenance_then_capacity_then_spend():
     assert order[:3] == ["maintenance", "capacity:False", "spend"]
 
 
-@pytest.mark.parametrize("eviction_succeeds", [False, True])
-def test_unsuccessful_eviction_is_attempted_once(eviction_succeeds):
+@pytest.mark.parametrize(
+    ("eviction_outcome", "expected_reservation_attempts"),
+    [
+        (LeaseEvictionOutcome.NOT_IDLE, 1),
+        (LeaseEvictionOutcome.EVICTED, 2),
+        (LeaseEvictionOutcome.OWNERSHIP_CHANGED, 2),
+    ],
+)
+def test_eviction_outcome_controls_the_single_refill_retry(
+    eviction_outcome,
+    expected_reservation_attempts,
+):
     session_id = uuid.uuid4()
     eviction_calls: list[uuid.UUID] = []
 
     async def leave_capacity_full(candidate_session_id):
         eviction_calls.append(candidate_session_id)
-        return eviction_succeeds
+        return eviction_outcome
 
     harness = _Harness(
         owner=True,
         settings=_settings(chat_sandbox_total_live_cap=1),
-        evict_assigned_lease=leave_capacity_full,
+        lease_eviction=_LeaseEviction(leave_capacity_full),
     )
+    reserve_attempts = 0
+    reserve_starting_blank = harness.repository.reserve_starting_blank
+
+    def counted_reservation(*args, **kwargs):
+        nonlocal reserve_attempts
+        reserve_attempts += 1
+        return reserve_starting_blank(*args, **kwargs)
+
+    harness.repository.reserve_starting_blank = counted_reservation
     with harness.sessions() as db, db.begin():
         db.add_all(
             [
@@ -1543,6 +1583,7 @@ def test_unsuccessful_eviction_is_attempted_once(eviction_succeeds):
 
     assert asyncio.run(harness.coordinator.replenish_pool()) == 0
     assert eviction_calls == [session_id]
+    assert reserve_attempts == expected_reservation_attempts
     assert harness.provider.create_calls == []
 
 
