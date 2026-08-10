@@ -49,8 +49,10 @@ class FakeExternalThumbnailService:
     def get_local_custom_thumbnail_path(self, _filename):
         return None
 
-    async def generate_external_thumbnail(self, paper_id, source_url, force):
-        self.calls.append((paper_id, source_url, force))
+    async def generate_external_thumbnail(
+        self, paper_id, source_url, force, title=None
+    ):
+        self.calls.append((paper_id, source_url, force, title))
         return self.generated
 
 
@@ -110,6 +112,7 @@ def test_regenerate_external_thumbnail_persists_public_url(tmp_path: Path, monke
         arxiv_id=None,
         source="external",
         source_url="https://example.com/report.pdf",
+        title="External report",
         version="v1",
         thumbnail_url=None,
     )
@@ -127,6 +130,9 @@ def test_regenerate_external_thumbnail_persists_public_url(tmp_path: Path, monke
     assert result.thumbnail_url.startswith("/api/thumbnails/custom/external_42.jpg")
     assert paper.thumbnail_url == result.thumbnail_url
     assert db.commits == 1
+    assert service.calls == [
+        (42, "https://example.com/report.pdf", True, "External report")
+    ]
 
 
 def test_pwc_thumbnail_cli_parses_simple_and_structured_forms():

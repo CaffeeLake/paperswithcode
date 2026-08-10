@@ -15,13 +15,13 @@ from sqlalchemy.orm import Session
 
 from backend.database.connection import db_manager, get_database_session
 from backend.models.database import Paper as DBPaper
+from backend.services.paper_service import PaperService
 from backend.services.thumbnail_service import (
     ThumbnailService,
     build_custom_thumbnail_url,
 )
-from backend.services.paper_service import PaperService
-from backend.utils.exceptions import PaperNotFoundError
 from backend.utils.auth import require_admin
+from backend.utils.exceptions import PaperNotFoundError
 
 router = APIRouter(prefix="/thumbnails", tags=["thumbnails"])
 
@@ -149,7 +149,7 @@ async def generate_thumbnail(
             async def generate_external_in_background():
                 try:
                     await thumbnail_service.generate_external_thumbnail(
-                        paper.id, paper.source_url
+                        paper.id, paper.source_url, title=paper.title
                     )
                     filename = thumbnail_service.get_external_filename(paper.id)
                     thumbnail_url = build_custom_thumbnail_url(filename)

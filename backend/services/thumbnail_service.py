@@ -543,6 +543,44 @@ class ThumbnailService:
 
         return image
 
+    def _render_external_metadata_thumbnail(
+        self, title: str | None, source_url: str
+    ) -> Image.Image:
+        """Render a card for an external resource that has no direct PDF."""
+        width = self.thumbnail_width
+        height = EXPECTED_THUMBNAIL_HEIGHT
+        image = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(image)
+        font_title = ImageFont.load_default(size=22)
+        font_body = ImageFont.load_default(size=14)
+        font_label = ImageFont.load_default(size=12)
+
+        margin = 24
+        y = margin
+        draw.text((margin, y), "External resource", fill="#2563eb", font=font_label)
+        y += 34
+
+        display_title = (title or "Untitled resource").strip()
+        for line in self._wrap_text(display_title, font_title, width - 2 * margin):
+            draw.text((margin, y), line, fill="#111827", font=font_title)
+            y += 28
+            if y > height - 120:
+                break
+
+        hostname = (urlparse(source_url).hostname or source_url).removeprefix("www.")
+        draw.line(
+            (margin, height - 68, width - margin, height - 68),
+            fill="#d1d5db",
+            width=1,
+        )
+        draw.text(
+            (margin, height - 48),
+            hostname,
+            fill="#4b5563",
+            font=font_body,
+        )
+        return image
+
     def _wrap_text(
         self, text: str, font: ImageFont.ImageFont, max_width: int
     ) -> list[str]:
@@ -587,6 +625,8 @@ class ThumbnailService:
         Download an external PDF when the source URL is directly PDF-like.
         """
         pdf_url = self._normalize_external_pdf_url(source_url)
+        if not self._looks_like_pdf_url(pdf_url):
+            return None
         try:
             result = await fetch_public_resource(
                 pdf_url,
@@ -765,7 +805,11 @@ class ThumbnailService:
             )
 
     async def generate_external_thumbnail(
-        self, paper_id: int | str, source_url: str, force: bool = False
+        self,
+        paper_id: int | str,
+        source_url: str,
+        force: bool = False,
+        title: str | None = None,
     ) -> Path:
         """
         Generate a thumbnail for a non-ArXiv external paper.
@@ -805,9 +849,7 @@ class ThumbnailService:
                 )
             thumbnail = self._render_biorxiv_metadata_thumbnail(metadata, server)
         else:
-            raise ThumbnailGenerationError(
-                "External thumbnail source did not provide a supported PDF"
-            )
+            thumbnail = self._render_external_metadata_thumbnail(title, source_url)
 
         self._save_thumbnail(thumbnail, cache_path)
         self._upload_to_bucket(cache_path, filename)

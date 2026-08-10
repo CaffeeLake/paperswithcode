@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -230,4 +231,34 @@ def test_normalize_external_pdf_url_converts_github_blob_to_raw():
             "https://github.com/huggingface/carbon/blob/main/tech-report.pdf"
         )
         == "https://github.com/huggingface/carbon/raw/main/tech-report.pdf"
+    )
+
+
+def test_external_html_source_skips_pdf_download():
+    service = ThumbnailService.__new__(ThumbnailService)
+
+    result = asyncio.run(
+        service._download_external_pdf(
+            "https://docs.lightly.ai/train/stable/object_detection.html"
+        )
+    )
+
+    assert result is None
+
+
+def test_external_metadata_thumbnail_matches_card_dimensions():
+    service = ThumbnailService.__new__(ThumbnailService)
+    service.thumbnail_width = EXPECTED_THUMBNAIL_WIDTH
+
+    image = service._render_external_metadata_thumbnail(
+        "Object Detection with LightlyTrain",
+        "https://docs.lightly.ai/train/stable/object_detection.html",
+    )
+
+    assert image.size == (EXPECTED_THUMBNAIL_WIDTH, EXPECTED_THUMBNAIL_HEIGHT)
+    assert image.getbbox() == (
+        0,
+        0,
+        EXPECTED_THUMBNAIL_WIDTH,
+        EXPECTED_THUMBNAIL_HEIGHT,
     )
