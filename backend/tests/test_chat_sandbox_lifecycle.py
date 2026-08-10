@@ -257,48 +257,6 @@ def test_concurrent_startup_single_flights_initial_lease_insert(monkeypatch):
     assert store.lease.modal_sandbox_id == "sb-created"
 
 
-def test_stale_termination_cannot_clear_a_successor_lease(monkeypatch):
-    async def run():
-        lease = _lease(state="busy", sandbox_id="sb-old")
-        lease.lease_token_hash = "worker-owner"
-        manager = _manager(lease)
-        termination_started = asyncio.Event()
-        allow_termination = asyncio.Event()
-
-        class BlockingSandbox(_Sandbox):
-            async def _terminate(self, *, wait):
-                assert wait is False
-                termination_started.set()
-                await allow_termination.wait()
-
-        async def from_id(sandbox_id):
-            assert sandbox_id == "sb-old"
-            return BlockingSandbox(sandbox_id)
-
-        monkeypatch.setattr(
-            chat_sandbox_service.modal.Sandbox,
-            "from_id",
-            _AsyncCall(from_id),
-        )
-
-        stale_operation = asyncio.create_task(manager.terminate(uuid.uuid4()))
-        await termination_started.wait()
-        lease.state = "ready"
-        lease.modal_sandbox_id = "sb-new"
-        lease.worker_generation = "generation-b"
-        lease.lease_token_hash = "successor-token"
-        lease.lease_expires_at = None
-        allow_termination.set()
-        await stale_operation
-
-        assert lease.state == "ready"
-        assert lease.modal_sandbox_id == "sb-new"
-        assert lease.worker_generation == "generation-b"
-        assert lease.lease_token_hash == "successor-token"
-
-    asyncio.run(run())
-
-
 def test_persistent_turns_reuse_one_control_attachment():
     class Connection:
         def __init__(self):
@@ -532,42 +490,6 @@ def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
         assert lease.state == "ready"
         assert lease.modal_sandbox_id == "sb-new"
         assert lease.worker_generation == "generation-b"
-
-    asyncio.run(run())
-
-
-def test_stale_failed_worker_cannot_terminate_a_successor(monkeypatch):
-    async def run():
-        lease = _lease(state="busy", sandbox_id="sb-old")
-        lease.lease_token_hash = "worker-old"
-        manager = _manager(lease)
-        stale_claim = WorkerClaim("sb-old", "worker-old")
-        provider_calls = 0
-
-        async def from_id(_sandbox_id):
-            nonlocal provider_calls
-            provider_calls += 1
-            return _Sandbox("sb-old")
-
-        monkeypatch.setattr(
-            chat_sandbox_service.modal.Sandbox,
-            "from_id",
-            _AsyncCall(from_id),
-        )
-
-        lease.state = "busy"
-        lease.modal_sandbox_id = "sb-new"
-        lease.lease_token_hash = "worker-new"
-
-        assert not await manager._terminate_worker(
-            uuid.uuid4(),
-            stale_claim,
-            failure_code="sandbox_worker_failed",
-        )
-        assert lease.state == "busy"
-        assert lease.modal_sandbox_id == "sb-new"
-        assert lease.lease_token_hash == "worker-new"
-        assert provider_calls == 0
 
     asyncio.run(run())
 

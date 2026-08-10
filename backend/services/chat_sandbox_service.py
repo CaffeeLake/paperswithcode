@@ -48,6 +48,10 @@ from backend.services.chat_sandbox_capacity_repository import (
 from backend.services.chat_sandbox_lease_eviction_coordinator import (
     ChatSandboxLeaseEvictionCoordinator,
 )
+from backend.services.chat_sandbox_lease_lifecycle_coordinator import (
+    ChatSandboxLeaseLifecycleCoordinator,
+    SandboxCleanupUnverified as SandboxCleanupUnverified,
+)
 from backend.services.chat_sandbox_pool_coordinator import (
     ChatSandboxPoolCoordinator,
     PoolMaintenanceResult,
@@ -164,10 +168,6 @@ class WorkspaceSnapshotProvider:
         return
 
 
-class SandboxCleanupUnverified(RuntimeError):
-    """The application could not confirm deletion of all provider state."""
-
-
 class SandboxSessionManager:
     MAINTENANCE_CONCURRENCY = 8
 
@@ -183,6 +183,7 @@ class SandboxSessionManager:
         pool_repository: ChatSandboxPoolRepository | None = None,
         pool_maintenance_owner: Callable[[], bool] | None = None,
         lease_eviction_coordinator: ChatSandboxLeaseEvictionCoordinator | None = None,
+        lease_lifecycle_coordinator: ChatSandboxLeaseLifecycleCoordinator | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
@@ -192,6 +193,7 @@ class SandboxSessionManager:
         self._sandbox_pool = pool_repository
         self._sandbox_pool_coordinator = None
         self._sandbox_lease_eviction = lease_eviction_coordinator
+        self._sandbox_lease_lifecycle = lease_lifecycle_coordinator
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -318,6 +320,23 @@ class SandboxSessionManager:
                 lease_eviction=self._lease_eviction_coordinator(),
             )
             self._sandbox_pool_coordinator = coordinator
+        return coordinator
+
+    def _lease_lifecycle_coordinator(self) -> ChatSandboxLeaseLifecycleCoordinator:
+        coordinator = getattr(self, "_sandbox_lease_lifecycle", None)
+        if coordinator is None:
+            transport = self._worker_transport()
+            coordinator = ChatSandboxLeaseLifecycleCoordinator(
+                self.settings,
+                session_factory=self.session_factory,
+                repository=self._state_repository(),
+                provider=cast(SandboxProvider, transport.provider),
+                transport=transport,
+                snapshots=self.snapshots,
+                idle_eviction=self._lease_eviction_coordinator(),
+                termination_concurrency=self.MAINTENANCE_CONCURRENCY,
+            )
+            self._sandbox_lease_lifecycle = coordinator
         return coordinator
 
     async def _create_provider_sandbox(
@@ -1022,32 +1041,15 @@ class SandboxSessionManager:
         *,
         failure_code: str,
     ) -> bool:
-        termination: TerminationClaim | None = None
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            now = datetime.now(UTC)
-            termination = self._state_repository().claim_worker_termination(
-                lease,
-                claim=claim,
-                termination_token=secrets.token_urlsafe(24),
-                failure_code=failure_code,
-                expires_at=now + timedelta(seconds=self.ready_timeout_seconds + 15),
-                now=now,
-            )
-        if termination is None:
-            return False
-        self._drop_control(chat_session_id)
-        await self._terminate_claimed_sandbox(
+        outcome = await self._lease_lifecycle_coordinator().terminate_worker(
             chat_session_id,
-            termination,
+            claim,
+            failure_code=failure_code,
         )
-        return True
+        return outcome.acquired
 
     def _drop_control(self, chat_session_id: uuid.UUID) -> None:
         self._worker_transport().drop_session_control(chat_session_id)
-
-    def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
-        self._worker_transport().drop_session_controls_by_sandbox(sandbox_id)
 
     def _drop_blank_control(self, sandbox_id: str) -> None:
         self._worker_transport().drop_blank_control(sandbox_id)
@@ -1317,94 +1319,28 @@ class SandboxSessionManager:
     async def terminate(
         self, chat_session_id: uuid.UUID, *, failure_code: str | None = None
     ) -> None:
-        claim: TerminationClaim | None = None
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            claim = self._state_repository().claim_termination(
-                lease,
-                termination_token=secrets.token_urlsafe(24),
-                failure_code=failure_code,
-                expires_at=datetime.now(UTC)
-                + timedelta(seconds=self.ready_timeout_seconds + 15),
-            )
-        if claim is not None:
-            self._drop_control(chat_session_id)
-            await self._terminate_claimed_sandbox(chat_session_id, claim)
+        await self._lease_lifecycle_coordinator().terminate(
+            chat_session_id,
+            failure_code=failure_code,
+        )
 
     async def _terminate_claimed_sandbox(
         self,
         chat_session_id: uuid.UUID,
         claim: TerminationClaim,
     ) -> None:
-        failure_code = claim.failure_code
-        termination_confirmed: bool | None = None
-        if claim.sandbox_id:
-            termination_confirmed = await self._terminate_provider_sandbox(
-                claim.sandbox_id
-            )
-            if getattr(
-                self.settings,
-                "chat_sandbox_spend_enforcement_enabled",
-                False,
-            ):
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        claim.sandbox_id,
-                        claim.failure_code,
-                        confirmed=termination_confirmed,
-                    )
-            if not termination_confirmed:
-                failure_code = "termination_uncertain"
-        self._finish_termination_claim(
+        await self._lease_lifecycle_coordinator().terminate_claimed(
             chat_session_id,
             claim,
-            state="failed" if failure_code else "terminated",
-            failure_code=failure_code,
-            clear_sandbox=True,
         )
-
-    def _finish_termination_claim(
-        self,
-        chat_session_id: uuid.UUID,
-        claim: TerminationClaim,
-        *,
-        state: str,
-        failure_code: str | None,
-        clear_sandbox: bool,
-    ) -> bool:
-        with self.session_factory() as db, db.begin():
-            if self.blank_pool_enabled:
-                self._lock_capacity(db)
-            lease = self._lease(db, chat_session_id, lock=True)
-            return self._state_repository().finish_termination(
-                lease,
-                claim=claim,
-                state=state,
-                failure_code=failure_code,
-                clear_sandbox=clear_sandbox,
-                now=datetime.now(UTC),
-            )
 
     async def cleanup_deleted(
         self, sandbox_id: str | None, snapshot_id: str | None
     ) -> None:
-        termination_confirmed = True
-        if sandbox_id:
-            self._drop_control_by_sandbox(sandbox_id)
-            termination_confirmed = await self._terminate_provider_sandbox(sandbox_id)
-            if self.settings.chat_sandbox_spend_enforcement_enabled:
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        sandbox_id,
-                        "session_deleted",
-                        confirmed=termination_confirmed,
-                    )
-        if snapshot_id:
-            await self.snapshots.delete(snapshot_id)
-        if not termination_confirmed:
-            raise SandboxCleanupUnverified(
-                "Sandbox termination could not be confirmed after chat deletion"
-            )
+        await self._lease_lifecycle_coordinator().cleanup_deleted(
+            sandbox_id,
+            snapshot_id,
+        )
 
     async def reap_idle(self) -> int:
         cutoff = datetime.now(UTC) - timedelta(
@@ -1424,16 +1360,9 @@ class SandboxSessionManager:
         return await self._terminate_many(ids)
 
     async def _terminate_many(self, chat_session_ids: list[uuid.UUID]) -> int:
-        semaphore = asyncio.Semaphore(self.MAINTENANCE_CONCURRENCY)
-
-        async def terminate_one(chat_session_id: uuid.UUID) -> bool:
-            async with semaphore:
-                return await self.snapshot_and_terminate(chat_session_id)
-
-        results = await asyncio.gather(
-            *(terminate_one(session_id) for session_id in chat_session_ids)
+        return await self._lease_lifecycle_coordinator().terminate_idle_many(
+            chat_session_ids
         )
-        return sum(results)
 
     async def snapshot_and_terminate(self, chat_session_id: uuid.UUID) -> bool:
         outcome = await self._lease_eviction_coordinator().evict_idle(chat_session_id)
@@ -1923,7 +1852,6 @@ class SandboxSessionManager:
                 )
             if claim is None:
                 continue
-            self._drop_control(session_id)
             await self._terminate_claimed_sandbox(session_id, claim)
             repaired += 1
 
