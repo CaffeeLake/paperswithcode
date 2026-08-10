@@ -30,11 +30,14 @@ from backend.services.chat_sandbox_pool_repository import (
     ChatSandboxPoolRepository,
     PoolCompatibility,
     PoolEvictionRequired,
+    PoolHealthCandidate,
+    PoolHealthRefreshOutcome,
     PoolLandingOutcome,
     PoolReservationUnavailable,
     PoolStartReservation,
     PoolTerminationClaim,
     PoolTerminationFinishOutcome,
+    ProviderPoolDisposition,
 )
 
 
@@ -214,6 +217,18 @@ def _repository(
         ),
         pool_id_factory=lambda: next(id_values, uuid.uuid4()),
     )
+
+
+def _provider_tags(settings: Settings, row: ChatSandboxPool) -> dict[str, str]:
+    return {
+        "service": "pwc-chat",
+        "environment": settings.environment,
+        "pool": "blank",
+        "pool_id": str(row.id),
+        "release": row.app_release_id,
+        "image": row.image_version,
+        "contract": row.worker_contract_version,
+    }
 
 
 def test_compatible_candidates_are_oldest_ready_first_and_release_agnostic():
@@ -1023,3 +1038,307 @@ def test_repository_never_commits_or_touches_a_provider():
 
     with sessions() as db:
         assert db.get(ChatSandboxPool, reservation.pool_id) is None
+
+
+def test_maintenance_plan_preserves_previous_release_and_bounds_drains():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    previous_release = _pool(settings, sandbox_id="sb-previous")
+    previous_release.app_release_id = "release-previous"
+    previous_release.expires_at = now + timedelta(hours=2)
+    draining = [
+        _pool(settings, sandbox_id=f"sb-draining-{index}", state="draining")
+        for index in range(3)
+    ]
+    for index, row in enumerate(draining):
+        row.updated_at = now - timedelta(minutes=10 - index)
+    with sessions() as db, db.begin():
+        db.add_all([previous_release, *draining])
+
+    repository = _repository(settings)
+    with sessions() as db, db.begin():
+        plan = repository.plan_maintenance(
+            db,
+            now=now,
+            enabled=True,
+            budget_blocked=False,
+            starting_expired_before=now - timedelta(minutes=1),
+            rotation_before=now + timedelta(minutes=1),
+            stale_draining_before=now - timedelta(minutes=5),
+            termination_limit=2,
+            scan_limit=10,
+        )
+
+    assert [claim.sandbox_id for claim in plan.termination_claims] == [
+        "sb-draining-0",
+        "sb-draining-1",
+    ]
+    assert plan.health_candidates == (
+        PoolHealthCandidate(
+            pool_id=previous_release.id,
+            sandbox_id="sb-previous",
+            worker_generation=previous_release.worker_generation,
+            claim_generation=0,
+            token_hash=None,
+        ),
+    )
+    with sessions() as db:
+        states = {
+            row.modal_sandbox_id: row.state
+            for row in db.scalars(select(ChatSandboxPool))
+        }
+    assert states["sb-previous"] == "blank_ready"
+    assert states["sb-draining-2"] == "draining"
+
+
+def test_maintenance_plan_claims_blank_without_provider_as_lost():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    row = _pool(settings, sandbox_id=None)
+    row.expires_at = now + timedelta(hours=2)
+    with sessions() as db, db.begin():
+        db.add(row)
+
+    repository = _repository(settings, tokens=("missing-provider",))
+    with sessions() as db, db.begin():
+        plan = repository.plan_maintenance(
+            db,
+            now=now,
+            enabled=True,
+            budget_blocked=False,
+            starting_expired_before=now - timedelta(minutes=1),
+            rotation_before=now + timedelta(minutes=1),
+            stale_draining_before=now - timedelta(minutes=5),
+            termination_limit=1,
+            scan_limit=1,
+        )
+
+    assert len(plan.termination_claims) == 1
+    assert plan.termination_claims[0].pool_id == row.id
+    assert plan.termination_claims[0].sandbox_id is None
+    assert plan.termination_claims[0].failure_code == "sandbox_lost"
+    assert plan.health_candidates == ()
+    with sessions() as db:
+        persisted = db.get(ChatSandboxPool, row.id)
+    assert persisted.state == "draining"
+    assert persisted.failure_code == "sandbox_lost"
+
+
+@pytest.mark.parametrize("successor_state", ["draining", "claimed"])
+def test_health_refresh_and_failure_claim_are_fenced_from_successor(
+    successor_state,
+):
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    row = _pool(settings)
+    checked_at = now - timedelta(minutes=1)
+    row.last_health_checked_at = checked_at
+    row.blank_billable_seconds = 123
+    row.estimated_blank_cost_usd = 1.25
+    candidate = PoolHealthCandidate(
+        pool_id=row.id,
+        sandbox_id=row.modal_sandbox_id,
+        worker_generation=row.worker_generation,
+        claim_generation=row.claim_generation,
+        token_hash=row.claim_token_hash,
+    )
+    with sessions() as db, db.begin():
+        db.add(row)
+    successor_at = now + timedelta(seconds=10)
+    with sessions() as db, db.begin():
+        successor = db.get(ChatSandboxPool, row.id)
+        successor.state = successor_state
+        successor.claim_token_hash = "successor-token"
+        successor.updated_at = successor_at
+
+    repository = _repository(settings)
+    with sessions() as db, db.begin():
+        refresh = repository.refresh_health(db, candidate, now=now)
+        failure_claim = repository.claim_health_failure(
+            db,
+            candidate,
+            failure_code="sandbox_lost",
+            now=now,
+        )
+
+    assert refresh is PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
+    assert failure_claim is None
+    with sessions() as db:
+        successor = db.get(ChatSandboxPool, row.id)
+    assert successor.state == successor_state
+    assert successor.claim_token_hash == "successor-token"
+    assert successor.last_health_checked_at == checked_at.replace(tzinfo=None)
+    assert successor.updated_at == successor_at.replace(tzinfo=None)
+    assert successor.blank_billable_seconds == 123
+    assert float(successor.estimated_blank_cost_usd) == 1.25
+
+
+def test_terminal_cleanup_is_state_safe_and_bounded():
+    settings = _settings()
+    sessions = _database()
+    cutoff = datetime.now(UTC) - timedelta(days=35)
+    old_terminal = [
+        _pool(settings, sandbox_id=f"sb-old-{index}", state="failed")
+        for index in range(3)
+    ]
+    for index, row in enumerate(old_terminal):
+        row.updated_at = cutoff - timedelta(minutes=3 - index)
+    recent = _pool(settings, sandbox_id="sb-recent", state="terminated")
+    recent.updated_at = cutoff + timedelta(seconds=1)
+    active = _pool(settings, sandbox_id="sb-active")
+    active.updated_at = cutoff - timedelta(days=1)
+    with sessions() as db, db.begin():
+        db.add_all([*old_terminal, recent, active])
+
+    repository = _repository(settings)
+    with sessions() as db, db.begin():
+        cleaned = repository.cleanup_terminal(
+            db,
+            updated_before=cutoff,
+            limit=2,
+        )
+
+    assert cleaned == 2
+    with sessions() as db:
+        remaining = {
+            row.modal_sandbox_id for row in db.scalars(select(ChatSandboxPool))
+        }
+    assert remaining == {"sb-old-2", "sb-recent", "sb-active"}
+
+
+def test_provider_inspection_protects_only_exact_fresh_start():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    fresh = _pool(settings, state="starting", sandbox_id=None)
+    fresh.updated_at = now
+    unrelated = _pool(settings, state="starting", sandbox_id=None)
+    unrelated.updated_at = now
+    with sessions() as db, db.begin():
+        db.add_all([fresh, unrelated])
+    repository = _repository(settings)
+
+    with sessions() as db, db.begin():
+        protected = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-fresh",
+            _provider_tags(settings, fresh),
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(seconds=30),
+            stale_draining_before=now - timedelta(minutes=5),
+            now=now,
+        )
+        unrelated_orphan = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-unrelated",
+            {
+                "service": "pwc-chat",
+                "environment": settings.environment,
+                "pool": "blank",
+                "pool_id": str(uuid.uuid4()),
+            },
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(seconds=30),
+            stale_draining_before=now - timedelta(minutes=5),
+            now=now,
+        )
+        mismatched = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-mismatch",
+            {**_provider_tags(settings, fresh), "release": "wrong-release"},
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(seconds=30),
+            stale_draining_before=now - timedelta(minutes=5),
+            now=now,
+        )
+
+    assert protected.disposition is ProviderPoolDisposition.PROTECTED_FRESH_START
+    assert unrelated_orphan.disposition is ProviderPoolDisposition.ORPHAN
+    assert mismatched.disposition is ProviderPoolDisposition.ORPHAN
+
+
+def test_stale_start_inspection_claims_exact_row_and_recovers_interval():
+    settings = _settings(chat_sandbox_spend_enforcement_enabled=True)
+    sessions = _database()
+    now = datetime.now(UTC)
+    row = _pool(settings, state="starting", sandbox_id=None)
+    row.updated_at = now - timedelta(minutes=2)
+    interval = _interval(settings, row.worker_generation, now)
+    with sessions() as db, db.begin():
+        db.add_all([row, interval])
+
+    repository = _repository(settings, tokens=("orphan-claim",))
+    with sessions() as db, db.begin():
+        inspection = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-stale-start",
+            _provider_tags(settings, row),
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(minutes=1),
+            stale_draining_before=now - timedelta(minutes=1),
+            now=now,
+        )
+
+    assert inspection.disposition is ProviderPoolDisposition.ORPHAN
+    assert inspection.interval_id == interval.id
+    assert inspection.termination_claim is not None
+    assert inspection.termination_claim.pool_id == row.id
+    assert inspection.termination_claim.sandbox_id == "sb-stale-start"
+    assert inspection.termination_claim.failure_code == "sandbox_start_failed"
+    with sessions() as db:
+        persisted = db.get(ChatSandboxPool, row.id)
+    assert persisted.state == "draining"
+    assert persisted.modal_sandbox_id == "sb-stale-start"
+
+
+def test_fresh_idless_drain_is_protected_and_stale_drain_rotates_claim():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    fresh = _pool(settings, state="draining", sandbox_id=None)
+    stale = _pool(settings, state="draining", sandbox_id=None)
+    fresh.updated_at = now
+    stale.updated_at = now - timedelta(minutes=10)
+    fresh.claim_token_hash = "fresh-owner"
+    stale.claim_token_hash = "stale-owner"
+    with sessions() as db, db.begin():
+        db.add_all([fresh, stale])
+    repository = _repository(settings, tokens=("stale-takeover",))
+
+    with sessions() as db, db.begin():
+        protected = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-fresh-drain",
+            _provider_tags(settings, fresh),
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(minutes=1),
+            stale_draining_before=now - timedelta(minutes=5),
+            now=now,
+        )
+        takeover = repository.classify_and_claim_provider_sandbox(
+            db,
+            "sb-stale-drain",
+            _provider_tags(settings, stale),
+            environment=settings.environment,
+            fresh_start_after=now - timedelta(minutes=1),
+            stale_draining_before=now - timedelta(minutes=5),
+            now=now,
+        )
+
+    assert protected.disposition is ProviderPoolDisposition.PROTECTED_ACTIVE
+    assert protected.termination_claim is None
+    assert takeover.disposition is ProviderPoolDisposition.ORPHAN
+    assert takeover.termination_claim is not None
+    assert takeover.termination_claim.pool_id == stale.id
+    assert takeover.termination_claim.sandbox_id == "sb-stale-drain"
+    assert takeover.termination_claim.token_hash != "stale-owner"
+    with sessions() as db:
+        fresh_row = db.get(ChatSandboxPool, fresh.id)
+        stale_row = db.get(ChatSandboxPool, stale.id)
+    assert fresh_row.claim_token_hash == "fresh-owner"
+    assert fresh_row.modal_sandbox_id is None
+    assert stale_row.claim_token_hash == takeover.termination_claim.token_hash
+    assert stale_row.modal_sandbox_id == "sb-stale-drain"

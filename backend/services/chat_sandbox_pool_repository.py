@@ -9,13 +9,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Mapping, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
-from backend.models.database import ChatSandboxLease, ChatSandboxPool
+from backend.models.database import (
+    ChatSandboxComputeInterval,
+    ChatSandboxLease,
+    ChatSandboxPool,
+)
 
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
@@ -112,6 +116,41 @@ class PoolTerminationFinishOutcome(StrEnum):
     OWNERSHIP_CHANGED = "ownership_changed"
 
 
+@dataclass(frozen=True)
+class PoolHealthCandidate:
+    pool_id: uuid.UUID
+    sandbox_id: str
+    worker_generation: str
+    claim_generation: int
+    token_hash: str | None
+
+
+@dataclass(frozen=True)
+class PoolMaintenancePlan:
+    termination_claims: tuple[PoolTerminationClaim, ...]
+    health_candidates: tuple[PoolHealthCandidate, ...]
+
+
+class PoolHealthRefreshOutcome(StrEnum):
+    REFRESHED = "refreshed"
+    OWNERSHIP_CHANGED = "ownership_changed"
+
+
+class ProviderPoolDisposition(StrEnum):
+    PROTECTED_ACTIVE = "protected_active"
+    PROTECTED_FRESH_START = "protected_fresh_start"
+    ORPHAN = "orphan"
+    OUT_OF_SCOPE = "out_of_scope"
+    INSPECTION_UNAVAILABLE = "inspection_unavailable"
+
+
+@dataclass(frozen=True)
+class ProviderPoolInspection:
+    disposition: ProviderPoolDisposition
+    interval_id: uuid.UUID | None = None
+    termination_claim: PoolTerminationClaim | None = None
+
+
 PoolReservationOutcome = (
     PoolStartReservation | PoolEvictionRequired | PoolReservationUnavailable
 )
@@ -153,6 +192,11 @@ class ChatSandboxPoolRepository:
                 or self.settings.chat_sandbox_memory_mib
             ),
         )
+
+    def acquire_capacity_lock(self, db: Session, *, wait: bool = True) -> bool:
+        """Acquire the shared pool/lease/spend lock in the caller transaction."""
+
+        return self.capacity_locker(db, wait=wait)
 
     def list_claim_candidates(
         self,
@@ -545,6 +589,342 @@ class ChatSandboxPoolRepository:
         row.terminated_at = now
         row.updated_at = now
         return PoolTerminationFinishOutcome.FINISHED
+
+    def plan_maintenance(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        enabled: bool,
+        budget_blocked: bool,
+        starting_expired_before: datetime,
+        rotation_before: datetime,
+        stale_draining_before: datetime,
+        termination_limit: int,
+        scan_limit: int,
+        capacity_locked: bool = False,
+    ) -> PoolMaintenancePlan:
+        """Claim bounded pool drains and return exact rows needing health I/O."""
+
+        if not capacity_locked and not self.capacity_locker(db):
+            return PoolMaintenancePlan((), ())
+        compatibility = self.compatibility()
+        rows = tuple(
+            db.execute(
+                select(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.state.in_(["starting", "blank_ready", "draining"])
+                )
+                .order_by(ChatSandboxPool.updated_at, ChatSandboxPool.id)
+                .limit(scan_limit)
+                .with_for_update()
+            ).scalars()
+        )
+        claims: list[PoolTerminationClaim] = []
+        health_candidates: list[PoolHealthCandidate] = []
+        for row in rows:
+            incompatible = (
+                row.image_version != compatibility.image_version
+                or row.worker_contract_version != compatibility.worker_contract_version
+                or row.cpu_request != compatibility.cpu_request
+                or row.cpu_limit != compatibility.cpu_limit
+                or row.memory_request_mib != compatibility.memory_request_mib
+                or row.memory_limit_mib != compatibility.memory_limit_mib
+            )
+            creation_expired = row.state == "starting" and self._as_utc(
+                row.updated_at
+            ) <= self._as_utc(starting_expired_before)
+            failure_code = (
+                "sandbox_start_failed"
+                if creation_expired
+                else (
+                    "sandbox_lost"
+                    if row.state == "blank_ready" and row.modal_sandbox_id is None
+                    else None
+                )
+            )
+            should_drain = (
+                row.state == "draining"
+                or not enabled
+                or incompatible
+                or self._as_utc(row.expires_at) <= self._as_utc(rotation_before)
+                or row.billing_month != self.billing_month(now)
+                or budget_blocked
+                or creation_expired
+                or (row.state == "blank_ready" and row.modal_sandbox_id is None)
+            )
+            if should_drain:
+                if len(claims) >= termination_limit:
+                    continue
+                claim = self.claim_termination(
+                    db,
+                    row.id,
+                    row.modal_sandbox_id,
+                    failure_code=failure_code,
+                    now=now,
+                    stale_draining_before=stale_draining_before,
+                    capacity_locked=True,
+                )
+                if claim is not None:
+                    claims.append(claim)
+            elif row.state == "blank_ready" and row.modal_sandbox_id:
+                health_candidates.append(
+                    PoolHealthCandidate(
+                        pool_id=row.id,
+                        sandbox_id=row.modal_sandbox_id,
+                        worker_generation=row.worker_generation,
+                        claim_generation=row.claim_generation,
+                        token_hash=row.claim_token_hash,
+                    )
+                )
+        return PoolMaintenancePlan(tuple(claims), tuple(health_candidates))
+
+    def refresh_health(
+        self,
+        db: Session,
+        candidate: PoolHealthCandidate,
+        *,
+        now: datetime,
+    ) -> PoolHealthRefreshOutcome:
+        """Refresh cost and health only while the exact blank still owns the row."""
+
+        if not self.capacity_locker(db):
+            return PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
+        token_condition = (
+            ChatSandboxPool.claim_token_hash.is_(None)
+            if candidate.token_hash is None
+            else ChatSandboxPool.claim_token_hash == candidate.token_hash
+        )
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(
+                ChatSandboxPool.id == candidate.pool_id,
+                ChatSandboxPool.state == "blank_ready",
+                ChatSandboxPool.modal_sandbox_id == candidate.sandbox_id,
+                ChatSandboxPool.worker_generation == candidate.worker_generation,
+                ChatSandboxPool.claim_generation == candidate.claim_generation,
+                token_condition,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            return PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
+        row.last_health_checked_at = now
+        row.updated_at = now
+        self.finalize_cost(row, now)
+        return PoolHealthRefreshOutcome.REFRESHED
+
+    def claim_health_failure(
+        self,
+        db: Session,
+        candidate: PoolHealthCandidate,
+        *,
+        failure_code: str,
+        now: datetime,
+    ) -> PoolTerminationClaim | None:
+        """Claim termination only for the exact blank that failed its probe."""
+
+        if not self.capacity_locker(db):
+            return None
+        token_condition = (
+            ChatSandboxPool.claim_token_hash.is_(None)
+            if candidate.token_hash is None
+            else ChatSandboxPool.claim_token_hash == candidate.token_hash
+        )
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(
+                ChatSandboxPool.id == candidate.pool_id,
+                ChatSandboxPool.state == "blank_ready",
+                ChatSandboxPool.modal_sandbox_id == candidate.sandbox_id,
+                ChatSandboxPool.worker_generation == candidate.worker_generation,
+                ChatSandboxPool.claim_generation == candidate.claim_generation,
+                token_condition,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        next_token_hash = self._token_hash(self.token_factory())
+        row.state = "draining"
+        row.claim_token_hash = next_token_hash
+        row.failure_code = self._termination_failure(row.failure_code, failure_code)
+        row.updated_at = now
+        return PoolTerminationClaim(
+            pool_id=row.id,
+            sandbox_id=row.modal_sandbox_id,
+            token_hash=next_token_hash,
+            failure_code=row.failure_code,
+        )
+
+    def cleanup_terminal(
+        self,
+        db: Session,
+        *,
+        updated_before: datetime,
+        limit: int,
+    ) -> int:
+        terminal_ids = tuple(
+            db.execute(
+                select(ChatSandboxPool.id)
+                .where(
+                    ChatSandboxPool.state.in_(["claimed", "terminated", "failed"]),
+                    ChatSandboxPool.updated_at < updated_before,
+                )
+                .order_by(ChatSandboxPool.updated_at, ChatSandboxPool.id)
+                .limit(limit)
+            ).scalars()
+        )
+        if not terminal_ids:
+            return 0
+        return (
+            db.execute(
+                delete(ChatSandboxPool).where(
+                    ChatSandboxPool.id.in_(terminal_ids),
+                    ChatSandboxPool.state.in_(["claimed", "terminated", "failed"]),
+                    ChatSandboxPool.updated_at < updated_before,
+                )
+            ).rowcount
+            or 0
+        )
+
+    def classify_and_claim_provider_sandbox(
+        self,
+        db: Session,
+        sandbox_id: str,
+        tags: Mapping[str, str],
+        *,
+        environment: str,
+        fresh_start_after: datetime,
+        stale_draining_before: datetime,
+        now: datetime,
+        capacity_locked: bool = False,
+    ) -> ProviderPoolInspection:
+        """Classify one provider and claim an exact stale start or drain."""
+
+        if tags.get("environment") != environment:
+            return ProviderPoolInspection(ProviderPoolDisposition.OUT_OF_SCOPE)
+        if not capacity_locked and not self.capacity_locker(db):
+            return ProviderPoolInspection(
+                ProviderPoolDisposition.INSPECTION_UNAVAILABLE
+            )
+        active_pool = db.execute(
+            select(ChatSandboxPool.id)
+            .where(
+                ChatSandboxPool.modal_sandbox_id == sandbox_id,
+                ChatSandboxPool.state.in_(["blank_ready", "draining"]),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_pool is not None:
+            return ProviderPoolInspection(ProviderPoolDisposition.PROTECTED_ACTIVE)
+        active_lease = db.execute(
+            select(ChatSandboxLease.chat_session_id)
+            .where(
+                ChatSandboxLease.modal_sandbox_id == sandbox_id,
+                ChatSandboxLease.state.in_(
+                    ["starting", "ready", "busy", "idle", "terminating"]
+                ),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_lease is not None:
+            return ProviderPoolInspection(ProviderPoolDisposition.PROTECTED_ACTIVE)
+
+        try:
+            pool_id = uuid.UUID(str(tags["pool_id"]))
+        except (KeyError, TypeError, ValueError):
+            return ProviderPoolInspection(ProviderPoolDisposition.ORPHAN)
+        pool = db.execute(
+            select(ChatSandboxPool)
+            .where(ChatSandboxPool.id == pool_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        exact_identity = bool(
+            pool is not None
+            and tags.get("service") == "pwc-chat"
+            and tags.get("pool") == "blank"
+            and tags.get("release") == pool.app_release_id
+            and tags.get("image") == pool.image_version
+            and tags.get("contract") == pool.worker_contract_version
+        )
+        if (
+            exact_identity
+            and pool is not None
+            and pool.state == "starting"
+            and pool.modal_sandbox_id in {None, sandbox_id}
+            and self._as_utc(pool.updated_at) > self._as_utc(fresh_start_after)
+        ):
+            return ProviderPoolInspection(ProviderPoolDisposition.PROTECTED_FRESH_START)
+        if (
+            exact_identity
+            and pool is not None
+            and pool.state == "draining"
+            and pool.modal_sandbox_id is None
+            and self._as_utc(pool.updated_at) > self._as_utc(stale_draining_before)
+        ):
+            return ProviderPoolInspection(ProviderPoolDisposition.PROTECTED_ACTIVE)
+        if not exact_identity or pool is None:
+            return ProviderPoolInspection(ProviderPoolDisposition.ORPHAN)
+        termination_claim = None
+        if pool.state in {"starting", "draining"} and pool.modal_sandbox_id in {
+            None,
+            sandbox_id,
+        }:
+            requested_failure = (
+                "sandbox_start_failed" if pool.state == "starting" else None
+            )
+            token_hash = self._token_hash(self.token_factory())
+            pool.modal_sandbox_id = sandbox_id
+            pool.state = "draining"
+            pool.claim_token_hash = token_hash
+            pool.failure_code = self._termination_failure(
+                pool.failure_code,
+                requested_failure,
+            )
+            pool.updated_at = now
+            termination_claim = PoolTerminationClaim(
+                pool_id=pool.id,
+                sandbox_id=sandbox_id,
+                token_hash=token_hash,
+                failure_code=pool.failure_code,
+            )
+        if not getattr(
+            self.settings,
+            "chat_sandbox_spend_enforcement_enabled",
+            False,
+        ):
+            return ProviderPoolInspection(
+                ProviderPoolDisposition.ORPHAN,
+                termination_claim=termination_claim,
+            )
+        interval = db.execute(
+            select(
+                ChatSandboxComputeInterval.id,
+                ChatSandboxComputeInterval.modal_sandbox_id,
+            )
+            .where(
+                ChatSandboxComputeInterval.environment == environment,
+                ChatSandboxComputeInterval.origin == "blank_pool",
+                ChatSandboxComputeInterval.worker_generation == pool.worker_generation,
+                or_(
+                    ChatSandboxComputeInterval.modal_sandbox_id.is_(None),
+                    ChatSandboxComputeInterval.modal_sandbox_id == sandbox_id,
+                ),
+            )
+            .order_by(ChatSandboxComputeInterval.reserved_at.desc())
+            .limit(1)
+            .with_for_update()
+        ).one_or_none()
+        return ProviderPoolInspection(
+            ProviderPoolDisposition.ORPHAN,
+            interval_id=(
+                interval.id
+                if interval is not None and interval.modal_sandbox_id is None
+                else None
+            ),
+            termination_claim=termination_claim,
+        )
 
     @staticmethod
     def billing_month(now: datetime) -> date:
