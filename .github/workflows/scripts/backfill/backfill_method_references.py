@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from datetime import date
 from typing import Callable
@@ -106,6 +107,13 @@ def main() -> int:
     finally:
         client.close()
     print(stats)
+    if stats.papers_failed:
+        print(
+            f"reference backfill stopped after {stats.papers_failed} "
+            "provider lookup failure(s)",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

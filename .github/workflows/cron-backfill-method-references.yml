@@ -2,9 +2,8 @@ name: Cron - Backfill Method References
 
 on:
   schedule:
-    # The production host uses OpenAlex's keyless daily allowance. Run once after
-    # its midnight UTC reset; additional sweeps only receive HTTP 429 responses.
-    - cron: "15 0 * * *"
+    # The secondary Semantic Scholar key is reserved for bounded historical scans.
+    - cron: "15 */6 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -48,4 +47,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              'sudo /usr/local/sbin/pwc-cron backfill_method_references --provider openalex --resume --retry-failures --limit 10000 --max-runtime-seconds 19800'
+              'sudo /usr/local/sbin/pwc-cron backfill_method_references --provider semantic-scholar --resume --retry-failures --limit 10000 --max-runtime-seconds 19800'
