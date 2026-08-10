@@ -62,7 +62,12 @@ def test_sandbox_provider_startup_timeout_marks_claim_and_uses_stable_error_code
 
         manager.enforce_warm_cap = enforce_warm_cap
         failures = []
-        manager._mark_start_failed = lambda *args: failures.append(args) or True
+
+        def fail_start(session_id, claim, code):
+            failures.append((session_id, claim.token_hash, code))
+            return True
+
+        manager._fail_start_claim = fail_start
         provider_calls = []
 
         async def never_finishes(*_args, **kwargs):

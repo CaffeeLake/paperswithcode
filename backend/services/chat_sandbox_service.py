@@ -55,6 +55,14 @@ from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
 )
+from backend.services.chat_sandbox_state_repository import (
+    ChatSandboxStateRepository,
+    LeaseUnavailable,
+    StartClaim,
+    TerminationClaim,
+    WorkerClaim,
+    WorkerGenerationUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +74,6 @@ POOL_ACCOUNTING_SAFETY_SECONDS = 120
 POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
-
-
-@dataclass(frozen=True)
-class WorkerClaim:
-    sandbox_id: str
-    token_hash: str
-    assignment_token: str = ""
-    worker_generation: str = ""
 
 
 @dataclass
@@ -138,14 +138,6 @@ class SessionControl:
     reader_task: asyncio.Task | None
     queues: dict[str, asyncio.Queue]
     resume_id: str | None
-
-
-@dataclass(frozen=True)
-class StartClaim:
-    token_hash: str
-    stale_sandbox_id: str | None
-    snapshot_id: str | None
-    worker_generation: str = ""
 
 
 async def resolve_modal_image(image_reference: str):
@@ -228,11 +220,13 @@ class SandboxSessionManager:
         session_factory: Callable[[], Session] | None = None,
         snapshot_provider: WorkspaceSnapshotProvider | None = None,
         sandbox_provider: SandboxProvider | None = None,
+        state_repository: ChatSandboxStateRepository | None = None,
         pool_maintenance_owner: Callable[[], bool] | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
         self._sandbox_provider = sandbox_provider
+        self._sandbox_state = state_repository
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -257,6 +251,13 @@ class SandboxSessionManager:
             image_resolver=resolve_modal_image,
             websocket_connector=_connect_provider_websocket,
         )
+
+    def _state_repository(self) -> ChatSandboxStateRepository:
+        repository = getattr(self, "_sandbox_state", None)
+        if repository is None:
+            repository = ChatSandboxStateRepository(self.settings)
+            self._sandbox_state = repository
+        return repository
 
     async def _create_provider_sandbox(
         self,
@@ -1300,28 +1301,15 @@ class SandboxSessionManager:
             ) from error
 
     def _lease(self, db: Session, chat_session_id: uuid.UUID, *, lock: bool):
-        query = select(ChatSandboxLease).where(
-            ChatSandboxLease.chat_session_id == chat_session_id
-        )
-        if lock:
-            query = query.with_for_update()
-        return db.execute(query).scalar_one_or_none()
+        return self._state_repository().load_lease(db, chat_session_id, lock=lock)
 
     @staticmethod
     def _lock_start_claim(db: Session, chat_session_id: uuid.UUID) -> None:
-        """Serialize start claims even before the lease row exists."""
-
-        db.execute(
-            select(
-                func.pg_advisory_xact_lock(
-                    func.hashtextextended(f"chat-sandbox:{chat_session_id}", 0)
-                )
-            )
-        )
+        ChatSandboxStateRepository.lock_start_claim(db, chat_session_id)
 
     @staticmethod
     def _token_hash(token: str) -> str:
-        return hashlib.sha256(token.encode()).hexdigest()
+        return ChatSandboxStateRepository.token_hash(token)
 
     def _claim_start(
         self,
@@ -1331,48 +1319,17 @@ class SandboxSessionManager:
         now: datetime,
         worker_generation: str | None = None,
     ) -> StartClaim:
-        snapshot_id = None
-        if (
-            self.settings.chat_workspace_snapshots_enabled
-            and lease.workspace_snapshot_id
-            and lease.snapshot_image_version == self.settings.chat_modal_image_version
-        ):
-            snapshot_id = lease.workspace_snapshot_id
-        elif lease.workspace_snapshot_id:
-            lease.workspace_snapshot_id = None
-            lease.snapshot_image_version = None
-            lease.snapshot_updated_at = None
-
-        token_hash = self._token_hash(creation_token)
-        worker_generation = worker_generation or secrets.token_hex(16)
-        claim = StartClaim(
-            token_hash,
-            lease.modal_sandbox_id,
-            snapshot_id,
-            worker_generation,
+        return self._state_repository().claim_start(
+            lease,
+            creation_token=creation_token,
+            now=now,
+            ready_timeout_seconds=self.ready_timeout_seconds,
+            worker_generation=worker_generation,
         )
-        lease.state = "starting"
-        lease.modal_sandbox_id = None
-        lease.app_release_id = self.settings.release_id
-        lease.image_version = self.settings.chat_modal_image_version
-        lease.worker_contract_version = self.settings.chat_worker_contract_version
-        lease.worker_generation = worker_generation
-        lease.lease_token_hash = token_hash
-        lease.lease_expires_at = now + timedelta(
-            seconds=self.ready_timeout_seconds + 15
-        )
-        lease.failure_code = None
-        lease.updated_at = now
-        return claim
 
     @staticmethod
     def _unexpired(lease: ChatSandboxLease, now: datetime) -> bool:
-        expires_at = lease.lease_expires_at
-        if expires_at is None:
-            return False
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        return expires_at > now
+        return ChatSandboxStateRepository.unexpired(lease, now)
 
     def _finish_owned_operation(
         self,
@@ -1389,21 +1346,16 @@ class SandboxSessionManager:
             if self.blank_pool_enabled:
                 self._lock_capacity(db)
             lease = self._lease(db, chat_session_id, lock=True)
-            if not (
-                lease
-                and lease.state == expected_state
-                and lease.lease_token_hash == token_hash
-                and lease.modal_sandbox_id == expected_sandbox_id
-            ):
-                return False
-            if clear_sandbox:
-                lease.modal_sandbox_id = None
-            lease.state = state
-            lease.failure_code = failure_code
-            lease.lease_token_hash = None
-            lease.lease_expires_at = None
-            lease.updated_at = datetime.now(UTC)
-            return True
+            return self._state_repository().finish_owned_operation(
+                lease,
+                token_hash=token_hash,
+                expected_state=expected_state,
+                expected_sandbox_id=expected_sandbox_id,
+                state=state,
+                failure_code=failure_code,
+                clear_sandbox=clear_sandbox,
+                now=datetime.now(UTC),
+            )
 
     async def ensure_ready(
         self,
@@ -1698,18 +1650,11 @@ class SandboxSessionManager:
                     except Exception:
                         with self.session_factory() as db, db.begin():
                             lease = self._lease(db, chat_session_id, lock=True)
-                            if (
-                                lease
-                                and lease.state == "starting"
-                                and lease.lease_token_hash == claim.token_hash
-                            ):
-                                lease.workspace_snapshot_id = None
-                                lease.snapshot_image_version = None
-                                lease.snapshot_updated_at = None
+                            self._state_repository().clear_start_snapshot(
+                                lease, claim=claim
+                            )
         except asyncio.CancelledError:
-            self._mark_start_failed(
-                chat_session_id, claim.token_hash, "sandbox_start_failed"
-            )
+            self._fail_start_claim(chat_session_id, claim, "sandbox_start_failed")
             if interval_id is not None:
                 if sandbox is None:
                     with self.session_factory() as db, db.begin():
@@ -1730,9 +1675,7 @@ class SandboxSessionManager:
                         )
             raise
         except TimeoutError as error:
-            self._mark_start_failed(
-                chat_session_id, claim.token_hash, "sandbox_timeout"
-            )
+            self._fail_start_claim(chat_session_id, claim, "sandbox_timeout")
             if interval_id is not None:
                 with self.session_factory() as db, db.begin():
                     ChatSandboxSpendService(db, self.settings).abort_reservation(
@@ -1742,9 +1685,7 @@ class SandboxSessionManager:
                 "sandbox_timeout", "Secure workspace startup timed out"
             ) from error
         except Exception as error:
-            self._mark_start_failed(
-                chat_session_id, claim.token_hash, "sandbox_start_failed"
-            )
+            self._fail_start_claim(chat_session_id, claim, "sandbox_start_failed")
             if interval_id is not None:
                 with self.session_factory() as db, db.begin():
                     ChatSandboxSpendService(db, self.settings).abort_reservation(
@@ -1758,24 +1699,17 @@ class SandboxSessionManager:
         landed = False
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if (
-                lease
-                and lease.state == "starting"
-                and lease.lease_token_hash == claim.token_hash
-                and lease.modal_sandbox_id is None
-            ):
-                lease.modal_sandbox_id = sandbox_id
-                lease.state = "ready"
-                lease.lease_token_hash = None
-                lease.lease_expires_at = None
-                lease.last_activity_at = datetime.now(UTC)
-                lease.workspace_dirty = False
-                lease.updated_at = datetime.now(UTC)
+            landed = self._state_repository().land_start(
+                lease,
+                claim=claim,
+                sandbox_id=sandbox_id,
+                now=datetime.now(UTC),
+            )
+            if landed:
                 if interval_id is not None:
                     ChatSandboxSpendService(db, self.settings).provider_created(
                         interval_id, sandbox_id
                     )
-                landed = True
         if not landed:
             confirmed = await self._terminate_provider_sandbox(sandbox_id, sandbox)
             if interval_id is not None:
@@ -1809,55 +1743,48 @@ class SandboxSessionManager:
             clear_sandbox=False,
         )
 
+    def _fail_start_claim(
+        self, chat_session_id: uuid.UUID, claim: StartClaim, code: str
+    ) -> bool:
+        with self.session_factory() as db, db.begin():
+            if self.blank_pool_enabled:
+                self._lock_capacity(db)
+            lease = self._lease(db, chat_session_id, lock=True)
+            return self._state_repository().fail_start(
+                lease,
+                claim=claim,
+                code=code,
+                now=datetime.now(UTC),
+            )
+
     def _claim_worker(self, chat_session_id: uuid.UUID, sandbox_id: str) -> WorkerClaim:
         assignment_token = secrets.token_urlsafe(24)
-        claim: WorkerClaim | None = None
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if not (
-                lease
-                and lease.state in {"ready", "idle"}
-                and lease.modal_sandbox_id == sandbox_id
-                and lease.lease_token_hash is None
-            ):
-                raise SandboxError("sandbox_lost", "Secure workspace is unavailable")
-            if not lease.worker_generation:
+            try:
+                return self._state_repository().claim_worker(
+                    lease,
+                    sandbox_id=sandbox_id,
+                    assignment_token=assignment_token,
+                    now=datetime.now(UTC),
+                )
+            except LeaseUnavailable as error:
+                raise SandboxError(
+                    "sandbox_lost", "Secure workspace is unavailable"
+                ) from error
+            except WorkerGenerationUnavailable as error:
                 raise SandboxError(
                     "sandbox_lost", "Secure workspace generation is unavailable"
-                )
-            claim = WorkerClaim(
-                sandbox_id=sandbox_id,
-                token_hash=self._token_hash(assignment_token),
-                assignment_token=assignment_token,
-                worker_generation=lease.worker_generation,
-            )
-            lease.state = "busy"
-            lease.lease_token_hash = claim.token_hash
-            lease.lease_expires_at = None
-            lease.last_activity_at = datetime.now(UTC)
-            lease.updated_at = datetime.now(UTC)
-        assert claim is not None
-        return claim
+                ) from error
 
     def _release_worker(self, chat_session_id: uuid.UUID, claim: WorkerClaim) -> bool:
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if not (
-                lease
-                and lease.state == "busy"
-                and lease.modal_sandbox_id == claim.sandbox_id
-                and lease.lease_token_hash == claim.token_hash
-            ):
-                return False
-            lease.state = "idle"
-            lease.lease_token_hash = None
-            lease.lease_expires_at = None
-            lease.last_activity_at = datetime.now(UTC)
-            # A completed turn may have changed /workspace through arbitrary
-            # Bash, so conservatively mark it dirty.
-            lease.workspace_dirty = True
-            lease.updated_at = datetime.now(UTC)
-            return True
+            return self._state_repository().release_worker(
+                lease,
+                claim=claim,
+                now=datetime.now(UTC),
+            )
 
     async def _terminate_worker(
         self,
@@ -1866,28 +1793,24 @@ class SandboxSessionManager:
         *,
         failure_code: str,
     ) -> bool:
-        termination_token_hash = self._token_hash(secrets.token_urlsafe(24))
+        termination: TerminationClaim | None = None
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if not (
-                lease
-                and lease.state == "busy"
-                and lease.modal_sandbox_id == claim.sandbox_id
-                and lease.lease_token_hash == claim.token_hash
-            ):
-                return False
-            lease.state = "terminating"
-            lease.failure_code = failure_code
-            lease.lease_token_hash = termination_token_hash
-            lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self.ready_timeout_seconds + 15
+            now = datetime.now(UTC)
+            termination = self._state_repository().claim_worker_termination(
+                lease,
+                claim=claim,
+                termination_token=secrets.token_urlsafe(24),
+                failure_code=failure_code,
+                expires_at=now + timedelta(seconds=self.ready_timeout_seconds + 15),
+                now=now,
             )
-            lease.updated_at = datetime.now(UTC)
+        if termination is None:
+            return False
         self._drop_control(chat_session_id)
-        await self._terminate_owned_sandbox(
+        await self._terminate_claimed_sandbox(
             chat_session_id,
-            sandbox_id=claim.sandbox_id,
-            token_hash=termination_token_hash,
+            termination,
             failure_code=failure_code,
         )
         return True
@@ -2462,6 +2385,52 @@ class SandboxSessionManager:
             failure_code=failure_code,
             clear_sandbox=True,
         )
+
+    async def _terminate_claimed_sandbox(
+        self,
+        chat_session_id: uuid.UUID,
+        claim: TerminationClaim,
+        *,
+        failure_code: str | None,
+    ) -> None:
+        if claim.sandbox_id:
+            confirmed = await self._terminate_provider_sandbox(claim.sandbox_id)
+            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        claim.sandbox_id, failure_code, confirmed=confirmed
+                    )
+            if not confirmed:
+                failure_code = "termination_uncertain"
+        self._finish_termination_claim(
+            chat_session_id,
+            claim,
+            state="failed" if failure_code else "terminated",
+            failure_code=failure_code,
+            clear_sandbox=True,
+        )
+
+    def _finish_termination_claim(
+        self,
+        chat_session_id: uuid.UUID,
+        claim: TerminationClaim,
+        *,
+        state: str,
+        failure_code: str | None,
+        clear_sandbox: bool,
+    ) -> bool:
+        with self.session_factory() as db, db.begin():
+            if self.blank_pool_enabled:
+                self._lock_capacity(db)
+            lease = self._lease(db, chat_session_id, lock=True)
+            return self._state_repository().finish_termination(
+                lease,
+                claim=claim,
+                state=state,
+                failure_code=failure_code,
+                clear_sandbox=clear_sandbox,
+                now=datetime.now(UTC),
+            )
 
     async def cleanup_deleted(
         self, sandbox_id: str | None, snapshot_id: str | None
