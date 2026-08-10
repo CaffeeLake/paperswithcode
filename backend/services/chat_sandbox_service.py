@@ -1332,26 +1332,11 @@ class SandboxSessionManager:
     def _token_hash(token: str) -> str:
         return ChatSandboxStateRepository.token_hash(token)
 
-    def _claim_start(
-        self,
-        lease: ChatSandboxLease,
-        *,
-        creation_token: str,
-        now: datetime,
-        worker_generation: str | None = None,
-    ) -> StartClaim:
-        return self._state_repository().claim_start(
-            lease,
-            creation_token=creation_token,
-            now=now,
-            ready_timeout_seconds=self.ready_timeout_seconds,
-            worker_generation=worker_generation,
-        )
-
     async def _recover_acquisition(
         self,
         chat_session_id: uuid.UUID,
         recovery: RecoveryRequired,
+        sandbox: object | None = None,
     ) -> bool:
         """Terminate and account for one committed recovery claim."""
 
@@ -1359,7 +1344,11 @@ class SandboxSessionManager:
         if claim.sandbox_id is None:  # pragma: no cover - recovery requires an ID
             raise LeaseDecisionChanged
         self._drop_control(chat_session_id)
-        confirmed = await self._terminate_provider_sandbox(claim.sandbox_id)
+        confirmed = (
+            await self._terminate_provider_sandbox(claim.sandbox_id)
+            if sandbox is None
+            else await self._terminate_provider_sandbox(claim.sandbox_id, sandbox)
+        )
         if getattr(
             self.settings,
             "chat_sandbox_spend_enforcement_enabled",
@@ -1381,6 +1370,39 @@ class SandboxSessionManager:
                 now=datetime.now(UTC),
             )
         return True
+
+    async def _cleanup_failed_start(
+        self,
+        chat_session_id: uuid.UUID,
+        claim: StartClaim,
+        *,
+        interval_id: uuid.UUID | None,
+        sandbox: object | None,
+        failure_code: str,
+    ) -> None:
+        """Release exactly the claimed lease, reservation, and created provider."""
+
+        self._fail_start_claim(chat_session_id, claim, failure_code)
+        if sandbox is None:
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).abort_reservation(
+                        interval_id,
+                        failure_code,
+                    )
+            return
+
+        sandbox_id = sandbox.object_id
+        confirmed = await self._terminate_provider_sandbox(sandbox_id, sandbox)
+        if interval_id is not None:
+            with self.session_factory() as db, db.begin():
+                spend = ChatSandboxSpendService(db, self.settings)
+                spend.provider_created(interval_id, sandbox_id)
+                spend.terminate(
+                    sandbox_id,
+                    failure_code,
+                    confirmed=confirmed,
+                )
 
     async def ensure_ready(
         self,
@@ -1419,9 +1441,7 @@ class SandboxSessionManager:
         deadline = time.monotonic() + self.ready_timeout_seconds
         claim: StartClaim | None = None
         interval_id: uuid.UUID | None = None
-        sandbox_id: str | None = None
-        worker_generation: str | None = None
-        while claim is None and sandbox_id is None:
+        while claim is None:
             creation_token = secrets.token_urlsafe(24)
             next_generation = secrets.token_hex(16)
             now = datetime.now(UTC)
@@ -1472,13 +1492,77 @@ class SandboxSessionManager:
                 ) from budget_rejection
             assert acquisition is not None
             if isinstance(acquisition, ReuseLease):
-                sandbox_id = acquisition.sandbox_id
-                worker_generation = acquisition.worker_generation
-                continue
+                await self.enforce_warm_cap()
+                control = getattr(self, "_controls", {}).get(chat_session_id)
+                if (
+                    getattr(
+                        self.settings,
+                        "chat_persistent_worker_enabled",
+                        False,
+                    )
+                    and control is not None
+                    and control.sandbox_id == acquisition.sandbox_id
+                ):
+                    return (
+                        control.sandbox,
+                        round((time.perf_counter() - started) * 1000),
+                        False,
+                        "reused_session",
+                        pool_lookup_ms,
+                    )
+
+                sandbox = None
+                try:
+                    provider = self._provider_adapter()
+                    sandbox = await provider.resolve(acquisition.sandbox_id)
+                    if await provider.poll(sandbox) is None and await provider.health(
+                        sandbox,
+                        persistent=bool(
+                            getattr(
+                                self.settings,
+                                "chat_persistent_worker_enabled",
+                                False,
+                            )
+                        ),
+                        worker_generation=acquisition.worker_generation,
+                    ):
+                        return (
+                            sandbox,
+                            round((time.perf_counter() - started) * 1000),
+                            False,
+                            "reused_session",
+                            pool_lookup_ms,
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    with self.session_factory() as db, db.begin():
+                        recovery = self._capacity_repository().claim_reuse_recovery(
+                            db,
+                            chat_session_id,
+                            acquisition,
+                            now=datetime.now(UTC),
+                            ready_timeout_seconds=self.ready_timeout_seconds,
+                        )
+                except LeaseDecisionChanged:
+                    continue
+                if await self._recover_acquisition(
+                    chat_session_id,
+                    recovery,
+                    sandbox,
+                ):
+                    continue
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                raise SandboxError(
+                    "sandbox_capacity",
+                    "Secure workspace capacity is temporarily full",
+                )
             if isinstance(acquisition, StartAcquired):
                 claim = acquisition.claim
                 interval_id = acquisition.interval_id
-                continue
+                break
             if isinstance(acquisition, EvictionRequired):
                 if await self.snapshot_and_terminate(acquisition.chat_session_id):
                     continue
@@ -1517,68 +1601,19 @@ class SandboxSessionManager:
                 )
             raise AssertionError("Unhandled sandbox acquisition outcome")
 
-        await self.enforce_warm_cap()
-
-        if sandbox_id:
-            assert worker_generation is not None
-            control = getattr(self, "_controls", {}).get(chat_session_id)
-            if (
-                getattr(self.settings, "chat_persistent_worker_enabled", False)
-                and control is not None
-                and control.sandbox_id == sandbox_id
-            ):
-                return (
-                    control.sandbox,
-                    round((time.perf_counter() - started) * 1000),
-                    False,
-                    "reused_session",
-                    pool_lookup_ms,
-                )
-            try:
-                provider = self._provider_adapter()
-                sandbox = await provider.resolve(sandbox_id)
-                if await provider.poll(sandbox) is None:
-                    if await provider.health(
-                        sandbox,
-                        persistent=bool(
-                            getattr(
-                                self.settings,
-                                "chat_persistent_worker_enabled",
-                                False,
-                            )
-                        ),
-                        worker_generation=worker_generation,
-                    ):
-                        return (
-                            sandbox,
-                            round((time.perf_counter() - started) * 1000),
-                            False,
-                            "reused_session",
-                            pool_lookup_ms,
-                        )
-            except Exception:
-                pass
-            with self.session_factory() as db, db.begin():
-                lease = self._lease(db, chat_session_id, lock=True)
-                if (
-                    lease
-                    and lease.modal_sandbox_id == sandbox_id
-                    and lease.state in {"ready", "idle", "busy"}
-                ):
-                    claim = self._claim_start(
-                        lease,
-                        creation_token=secrets.token_urlsafe(24),
-                        now=datetime.now(UTC),
-                    )
-            if claim is None:
-                return await self.ensure_ready(
-                    chat_session_id,
-                    pool_miss=pool_miss,
-                    pool_lookup_ms=pool_lookup_ms,
-                    budget_prechecked=budget_prechecked,
-                )
-
         assert claim is not None
+        try:
+            await self.enforce_warm_cap()
+        except (asyncio.CancelledError, Exception):
+            await self._cleanup_failed_start(
+                chat_session_id,
+                claim,
+                interval_id=interval_id,
+                sandbox=None,
+                failure_code="sandbox_start_failed",
+            )
+            raise
+
         sandbox = None
         try:
             async with asyncio.timeout(self.ready_timeout_seconds):
@@ -1605,62 +1640,62 @@ class SandboxSessionManager:
                                 lease, claim=claim
                             )
         except asyncio.CancelledError:
-            self._fail_start_claim(chat_session_id, claim, "sandbox_start_failed")
-            if interval_id is not None:
-                if sandbox is None:
-                    with self.session_factory() as db, db.begin():
-                        ChatSandboxSpendService(db, self.settings).abort_reservation(
-                            interval_id, "sandbox_start_failed"
-                        )
-                else:
-                    confirmed = await self._terminate_provider_sandbox(
-                        sandbox.object_id, sandbox
-                    )
-                    with self.session_factory() as db, db.begin():
-                        spend = ChatSandboxSpendService(db, self.settings)
-                        spend.provider_created(interval_id, sandbox.object_id)
-                        spend.terminate(
-                            sandbox.object_id,
-                            "sandbox_start_failed",
-                            confirmed=confirmed,
-                        )
+            await self._cleanup_failed_start(
+                chat_session_id,
+                claim,
+                interval_id=interval_id,
+                sandbox=sandbox,
+                failure_code="sandbox_start_failed",
+            )
             raise
         except TimeoutError as error:
-            self._fail_start_claim(chat_session_id, claim, "sandbox_timeout")
-            if interval_id is not None:
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).abort_reservation(
-                        interval_id, "sandbox_timeout"
-                    )
+            await self._cleanup_failed_start(
+                chat_session_id,
+                claim,
+                interval_id=interval_id,
+                sandbox=sandbox,
+                failure_code="sandbox_timeout",
+            )
             raise SandboxError(
                 "sandbox_timeout", "Secure workspace startup timed out"
             ) from error
         except Exception as error:
-            self._fail_start_claim(chat_session_id, claim, "sandbox_start_failed")
-            if interval_id is not None:
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).abort_reservation(
-                        interval_id, "sandbox_start_failed"
-                    )
+            await self._cleanup_failed_start(
+                chat_session_id,
+                claim,
+                interval_id=interval_id,
+                sandbox=sandbox,
+                failure_code="sandbox_start_failed",
+            )
             raise SandboxError(
                 "sandbox_start_failed", "Secure workspace startup failed"
             ) from error
 
         sandbox_id = sandbox.object_id
         landed = False
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            landed = self._state_repository().land_start(
-                lease,
-                claim=claim,
-                sandbox_id=sandbox_id,
-                now=datetime.now(UTC),
-            )
-            if landed:
-                if interval_id is not None:
+        try:
+            with self.session_factory() as db, db.begin():
+                lease = self._lease(db, chat_session_id, lock=True)
+                landed = self._state_repository().land_start(
+                    lease,
+                    claim=claim,
+                    sandbox_id=sandbox_id,
+                    now=datetime.now(UTC),
+                )
+                if landed and interval_id is not None:
                     ChatSandboxSpendService(db, self.settings).provider_created(
-                        interval_id, sandbox_id
+                        interval_id,
+                        sandbox_id,
                     )
+        except Exception:
+            await self._cleanup_failed_start(
+                chat_session_id,
+                claim,
+                interval_id=interval_id,
+                sandbox=sandbox,
+                failure_code="sandbox_start_failed",
+            )
+            raise
         if not landed:
             confirmed = await self._terminate_provider_sandbox(sandbox_id, sandbox)
             if interval_id is not None:

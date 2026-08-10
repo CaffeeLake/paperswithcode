@@ -520,42 +520,18 @@ def test_start_lock_precedes_row_lock_and_repository_never_commits():
 
 
 def test_manager_constructor_uses_injected_state_repository():
-    calls: list[tuple[object, ...]] = []
-    expected_claim = object()
-
-    class Repository:
-        def claim_start(self, lease, **options):
-            calls.append((lease, options))
-            return expected_claim
-
-    repository = Repository()
+    settings = _settings()
+    repository = ChatSandboxStateRepository(settings)
     manager = SandboxSessionManager(
-        _settings(),
+        settings,
         state_repository=repository,
     )
-    lease = _lease(state="terminated")
-    now = datetime(2026, 8, 10, 13, tzinfo=UTC)
 
-    assert (
-        manager._claim_start(
-            lease,
-            creation_token="creation-token",
-            now=now,
-            worker_generation="generation-new",
-        )
-        is expected_claim
-    )
-    assert calls == [
-        (
-            lease,
-            {
-                "creation_token": "creation-token",
-                "now": now,
-                "ready_timeout_seconds": manager.ready_timeout_seconds,
-                "worker_generation": "generation-new",
-            },
-        )
-    ]
+    capacity = manager._capacity_repository()
+
+    assert manager._state_repository() is repository
+    assert capacity.state_repository is repository
+    assert manager._capacity_repository() is capacity
 
 
 class _TransactionContext:

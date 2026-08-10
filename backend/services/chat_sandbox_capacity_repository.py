@@ -323,6 +323,35 @@ class ChatSandboxCapacityRepository:
             now=now,
         )
 
+    def claim_reuse_recovery(
+        self,
+        db: Session,
+        chat_session_id: uuid.UUID,
+        candidate: ReuseLease,
+        *,
+        now: datetime,
+        ready_timeout_seconds: float,
+    ) -> RecoveryRequired:
+        """Claim cleanup only while the exact reused lease is still current."""
+
+        lease = self._lock_lease(db, chat_session_id)
+        if (
+            lease is None
+            or candidate.expected.sandbox_id != candidate.sandbox_id
+            or candidate.expected.worker_generation != candidate.worker_generation
+            or self._state_claim(lease) != candidate.expected
+        ):
+            raise LeaseDecisionChanged
+        claim = self.state_repository.claim_termination(
+            lease,
+            termination_token=secrets.token_urlsafe(24),
+            failure_code="stale_replaced",
+            expires_at=now + timedelta(seconds=ready_timeout_seconds + 15),
+        )
+        if claim is None:  # pragma: no cover - the exact locked lease exists
+            raise LeaseDecisionChanged
+        return RecoveryRequired(claim=claim)
+
     def _claim_loaded_start(
         self,
         db: Session,
