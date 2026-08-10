@@ -193,6 +193,49 @@ def test_terminal_pool_owner_releases_abandoned_pre_provider_reservation():
     assert active.reserved_microusd > 0
 
 
+def test_late_provider_reopens_creation_failed_reservation_until_confirmed():
+    sessions = factory()
+    configured = settings()
+    started_at = datetime(2026, 8, 4, 8, 0, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        interval_id = service.reserve_interval(
+            origin="blank_pool",
+            worker_generation="late-provider",
+            now=started_at,
+        )
+        service.abort_reservation(
+            interval_id,
+            "pool_owner_terminated",
+            started_at + timedelta(seconds=1),
+        )
+
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        service.provider_created(
+            interval_id,
+            "sb-late-provider",
+            started_at + timedelta(seconds=2),
+        )
+        service.terminate(
+            "sb-late-provider",
+            "termination_uncertain",
+            confirmed=False,
+            now=started_at + timedelta(seconds=3),
+        )
+
+    with sessions() as db:
+        interval = db.get(ChatSandboxComputeInterval, interval_id)
+    assert interval.modal_sandbox_id == "sb-late-provider"
+    assert interval.provider_created_at == (started_at + timedelta(seconds=2)).replace(
+        tzinfo=None
+    )
+    assert interval.terminal_at is None
+    assert interval.terminal_reason == "termination_uncertain"
+    assert interval.reconciliation_state == "termination_uncertain"
+    assert interval.reserved_microusd > 0
+
+
 def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
     sessions = factory()
     configured = settings()

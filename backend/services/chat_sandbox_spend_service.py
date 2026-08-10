@@ -670,11 +670,23 @@ class ChatSandboxSpendService:
     def provider_created(
         self, interval_id: uuid.UUID, sandbox_id: str, now: datetime | None = None
     ) -> None:
+        """Attach a provider and revive an exact creation-failed reservation."""
+
+        now = now or datetime.now(UTC)
         row = self.db.get(ChatSandboxComputeInterval, interval_id)
         if row:
+            if row.reconciliation_state == "creation_failed":
+                row.terminal_at = None
+                row.terminal_reason = None
+                row.termination_requested_at = None
+                row.reserved_microusd = max(
+                    row.reserved_microusd,
+                    self.reservation_amount(),
+                )
+                row.reconciliation_state = "local"
             row.modal_sandbox_id = sandbox_id
-            row.provider_created_at = now or datetime.now(UTC)
-            row.updated_at = now or datetime.now(UTC)
+            row.provider_created_at = now
+            row.updated_at = now
 
     def abort_reservation(
         self, interval_id: uuid.UUID, reason: str, now: datetime | None = None
