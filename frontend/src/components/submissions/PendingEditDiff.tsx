@@ -488,6 +488,65 @@ function SourceUrlDiff({ currentPayload, proposedPayload }: {
   );
 }
 
+function ExternalPaperSuggestionDiff({ proposedPayload }: { proposedPayload: JsonRecord }) {
+  const title = typeof proposedPayload.title === "string" ? proposedPayload.title : "";
+  const sourceUrl =
+    typeof proposedPayload.source_url === "string" ? proposedPayload.source_url : "";
+  const abstract = typeof proposedPayload.abstract === "string" ? proposedPayload.abstract : "";
+  const published =
+    typeof proposedPayload.date_published === "string" ? proposedPayload.date_published : "";
+  const authors = Array.isArray(proposedPayload.authors)
+    ? proposedPayload.authors.filter((author): author is string => typeof author === "string")
+    : [];
+
+  return (
+    <div className="submission-diff-columns">
+      <DiffColumn title="Title">
+        {title ? (
+          <span className="submission-field-value">{title}</span>
+        ) : (
+          <EmptyInline>No title provided</EmptyInline>
+        )}
+      </DiffColumn>
+      <DiffColumn title="Publication date">
+        {published || <EmptyInline>No publication date provided</EmptyInline>}
+      </DiffColumn>
+      <DiffColumn title="Authors">
+        {authors.length > 0 ? (
+          authors.map((author, index) => (
+            <span key={`${author}-${index}`} className="submission-diff-pill added">
+              {author}
+            </span>
+          ))
+        ) : (
+          <EmptyInline>No authors provided</EmptyInline>
+        )}
+      </DiffColumn>
+      <DiffColumn title="Source URL">
+        {sourceUrl ? (
+          <a
+            className="submission-url-link"
+            href={safeExternalHref(sourceUrl) ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {sourceUrl}
+          </a>
+        ) : (
+          <EmptyInline>No source URL provided</EmptyInline>
+        )}
+      </DiffColumn>
+      <DiffColumn title="Abstract">
+        {abstract ? (
+          <span className="submission-field-value">{abstract}</span>
+        ) : (
+          <EmptyInline>No abstract provided</EmptyInline>
+        )}
+      </DiffColumn>
+    </div>
+  );
+}
+
 function TaxonomySuggestionDiff({
   kind,
   proposedPayload,
@@ -732,6 +791,8 @@ export function PendingEditDiff({ editType, currentPayload, proposedPayload }: P
     content = <TaxonomySuggestionDiff kind="metric" proposedPayload={proposedPayload} />;
   } else if (editType === "new_conference") {
     content = <TaxonomySuggestionDiff kind="conference" proposedPayload={proposedPayload} />;
+  } else if (editType === "new_external_paper") {
+    content = <ExternalPaperSuggestionDiff proposedPayload={proposedPayload} />;
   } else {
     content = (
       <div className="submission-empty submission-empty-warn">
