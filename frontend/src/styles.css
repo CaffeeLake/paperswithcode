@@ -5341,6 +5341,11 @@ html { scroll-behavior: smooth; }
   user-select: text;
   cursor: text;
 }
+.chat-bubble::selection,
+.chat-bubble *::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
 .chat-user-actions {
   display: flex;
   justify-content: flex-end;
