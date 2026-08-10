@@ -5896,7 +5896,6 @@ html { scroll-behavior: smooth; }
 }
 .chat-paper-inline-highlight {
   color: var(--accent-text);
-  font-weight: 600;
   text-decoration-line: underline;
   text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent);
   text-decoration-thickness: 1px;
