@@ -44,6 +44,8 @@ class _DB(_Context):
         return None
 
     def execute(self, _query):
+        if "JOIN chat_sessions" in str(_query):
+            return _Result([])
         return _Result(list(self.rows))
 
 
@@ -257,7 +259,8 @@ def test_concurrent_startup_single_flights_initial_lease_insert(monkeypatch):
 
 def test_stale_termination_cannot_clear_a_successor_lease(monkeypatch):
     async def run():
-        lease = _lease(state="ready", sandbox_id="sb-old")
+        lease = _lease(state="busy", sandbox_id="sb-old")
+        lease.lease_token_hash = "worker-owner"
         manager = _manager(lease)
         termination_started = asyncio.Event()
         allow_termination = asyncio.Event()
@@ -282,13 +285,16 @@ def test_stale_termination_cannot_clear_a_successor_lease(monkeypatch):
         await termination_started.wait()
         lease.state = "ready"
         lease.modal_sandbox_id = "sb-new"
-        lease.lease_token_hash = None
+        lease.worker_generation = "generation-b"
+        lease.lease_token_hash = "successor-token"
         lease.lease_expires_at = None
         allow_termination.set()
         await stale_operation
 
         assert lease.state == "ready"
         assert lease.modal_sandbox_id == "sb-new"
+        assert lease.worker_generation == "generation-b"
+        assert lease.lease_token_hash == "successor-token"
 
     asyncio.run(run())
 
@@ -504,7 +510,7 @@ def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
     async def run():
         session_id = uuid.uuid4()
         lease = _lease(state="ready", sandbox_id="sb-old")
-        rows = [(session_id, "sb-old", "ready", None)]
+        rows = [(session_id, "sb-old", "ready", None, "generation-a")]
         manager = _manager(lease, rows=rows)
         poll_started = asyncio.Event()
         allow_poll = asyncio.Event()
@@ -529,11 +535,13 @@ def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
         await poll_started.wait()
         lease.state = "ready"
         lease.modal_sandbox_id = "sb-new"
+        lease.worker_generation = "generation-b"
         allow_poll.set()
 
         assert await stale_reconcile == 0
         assert lease.state == "ready"
         assert lease.modal_sandbox_id == "sb-new"
+        assert lease.worker_generation == "generation-b"
 
     asyncio.run(run())
 

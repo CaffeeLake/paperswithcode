@@ -57,7 +57,9 @@ from backend.services.chat_sandbox_spend_service import (
 )
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
+    LeaseStateClaim,
     LeaseUnavailable,
+    SnapshotClaim,
     StartClaim,
     TerminationClaim,
     WorkerClaim,
@@ -1331,32 +1333,6 @@ class SandboxSessionManager:
     def _unexpired(lease: ChatSandboxLease, now: datetime) -> bool:
         return ChatSandboxStateRepository.unexpired(lease, now)
 
-    def _finish_owned_operation(
-        self,
-        chat_session_id: uuid.UUID,
-        *,
-        token_hash: str,
-        expected_state: str,
-        expected_sandbox_id: str | None,
-        state: str,
-        failure_code: str | None,
-        clear_sandbox: bool,
-    ) -> bool:
-        with self.session_factory() as db, db.begin():
-            if self.blank_pool_enabled:
-                self._lock_capacity(db)
-            lease = self._lease(db, chat_session_id, lock=True)
-            return self._state_repository().finish_owned_operation(
-                lease,
-                token_hash=token_hash,
-                expected_state=expected_state,
-                expected_sandbox_id=expected_sandbox_id,
-                state=state,
-                failure_code=failure_code,
-                clear_sandbox=clear_sandbox,
-                now=datetime.now(UTC),
-            )
-
     async def ensure_ready(
         self,
         chat_session_id: uuid.UUID,
@@ -1730,19 +1706,6 @@ class SandboxSessionManager:
             pool_lookup_ms,
         )
 
-    def _mark_start_failed(
-        self, chat_session_id: uuid.UUID, token_hash: str, code: str
-    ) -> bool:
-        return self._finish_owned_operation(
-            chat_session_id,
-            token_hash=token_hash,
-            expected_state="starting",
-            expected_sandbox_id=None,
-            state="failed",
-            failure_code=code,
-            clear_sandbox=False,
-        )
-
     def _fail_start_claim(
         self, chat_session_id: uuid.UUID, claim: StartClaim, code: str
     ) -> bool:
@@ -1811,7 +1774,6 @@ class SandboxSessionManager:
         await self._terminate_claimed_sandbox(
             chat_session_id,
             termination,
-            failure_code=failure_code,
         )
         return True
 
@@ -2337,70 +2299,43 @@ class SandboxSessionManager:
     async def terminate(
         self, chat_session_id: uuid.UUID, *, failure_code: str | None = None
     ) -> None:
-        sandbox_id: str | None = None
-        token_hash: str | None = None
+        claim: TerminationClaim | None = None
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if lease:
-                sandbox_id = lease.modal_sandbox_id
-                token_hash = self._token_hash(secrets.token_urlsafe(24))
-                lease.state = "terminating"
-                lease.failure_code = failure_code
-                lease.lease_token_hash = token_hash
-                lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                    seconds=self.ready_timeout_seconds + 15
-                )
-        if token_hash:
-            self._drop_control(chat_session_id)
-            await self._terminate_owned_sandbox(
-                chat_session_id,
-                sandbox_id=sandbox_id,
-                token_hash=token_hash,
+            claim = self._state_repository().claim_termination(
+                lease,
+                termination_token=secrets.token_urlsafe(24),
                 failure_code=failure_code,
+                expires_at=datetime.now(UTC)
+                + timedelta(seconds=self.ready_timeout_seconds + 15),
             )
-
-    async def _terminate_owned_sandbox(
-        self,
-        chat_session_id: uuid.UUID,
-        *,
-        sandbox_id: str | None,
-        token_hash: str,
-        failure_code: str | None,
-    ) -> None:
-        if sandbox_id:
-            confirmed = await self._terminate_provider_sandbox(sandbox_id)
-            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        sandbox_id, failure_code, confirmed=confirmed
-                    )
-            if not confirmed:
-                failure_code = "termination_uncertain"
-        self._finish_owned_operation(
-            chat_session_id,
-            token_hash=token_hash,
-            expected_state="terminating",
-            expected_sandbox_id=sandbox_id,
-            state="failed" if failure_code else "terminated",
-            failure_code=failure_code,
-            clear_sandbox=True,
-        )
+        if claim is not None:
+            self._drop_control(chat_session_id)
+            await self._terminate_claimed_sandbox(chat_session_id, claim)
 
     async def _terminate_claimed_sandbox(
         self,
         chat_session_id: uuid.UUID,
         claim: TerminationClaim,
-        *,
-        failure_code: str | None,
     ) -> None:
+        failure_code = claim.failure_code
+        termination_confirmed: bool | None = None
         if claim.sandbox_id:
-            confirmed = await self._terminate_provider_sandbox(claim.sandbox_id)
-            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+            termination_confirmed = await self._terminate_provider_sandbox(
+                claim.sandbox_id
+            )
+            if getattr(
+                self.settings,
+                "chat_sandbox_spend_enforcement_enabled",
+                False,
+            ):
                 with self.session_factory() as db, db.begin():
                     ChatSandboxSpendService(db, self.settings).terminate(
-                        claim.sandbox_id, failure_code, confirmed=confirmed
+                        claim.sandbox_id,
+                        claim.failure_code,
+                        confirmed=termination_confirmed,
                     )
-            if not confirmed:
+            if not termination_confirmed:
                 failure_code = "termination_uncertain"
         self._finish_termination_claim(
             chat_session_id,
@@ -2483,38 +2418,32 @@ class SandboxSessionManager:
         return sum(results)
 
     async def snapshot_and_terminate(self, chat_session_id: uuid.UUID) -> bool:
-        token_hash = self._token_hash(secrets.token_urlsafe(24))
+        claim: TerminationClaim | None = None
         with self.session_factory() as db, db.begin():
             lease = self._lease(db, chat_session_id, lock=True)
-            if lease is None or lease.state != "idle" or not lease.modal_sandbox_id:
-                return False
-            sandbox_id = lease.modal_sandbox_id
-            should_snapshot = bool(
-                self.settings.chat_workspace_snapshots_enabled and lease.workspace_dirty
+            claim = self._state_repository().claim_snapshot_termination(
+                lease,
+                termination_token=secrets.token_urlsafe(24),
+                expires_at=datetime.now(UTC)
+                + timedelta(seconds=self.ready_timeout_seconds + 15),
             )
-            lease.state = "terminating"
-            lease.lease_token_hash = token_hash
-            lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self.ready_timeout_seconds + 15
-            )
-        if should_snapshot and sandbox_id:
+        if claim is None:
+            return False
+        sandbox_id = claim.sandbox_id
+        assert sandbox_id is not None
+        if claim.should_snapshot:
             try:
                 sandbox = await self._provider_adapter().resolve(sandbox_id)
                 snapshot_id = await self.snapshots.save(sandbox, chat_session_id)
                 with self.session_factory() as db, db.begin():
                     lease = self._lease(db, chat_session_id, lock=True)
-                    if (
-                        lease
-                        and lease.state == "terminating"
-                        and lease.modal_sandbox_id == sandbox_id
-                        and lease.lease_token_hash == token_hash
-                    ):
-                        lease.workspace_snapshot_id = snapshot_id
-                        lease.snapshot_image_version = (
-                            self.settings.chat_modal_image_version
-                        )
-                        lease.snapshot_updated_at = datetime.now(UTC)
-                        lease.workspace_dirty = False
+                    self._state_repository().record_snapshot(
+                        lease,
+                        claim=claim,
+                        snapshot_id=snapshot_id,
+                        image_version=self.settings.chat_modal_image_version,
+                        now=datetime.now(UTC),
+                    )
             except Exception:
                 # Workspace continuity is recoverable; the transcript remains
                 # authoritative and the next sandbox safely starts empty.
@@ -2526,11 +2455,9 @@ class SandboxSessionManager:
                 ChatSandboxSpendService(db, self.settings).terminate(
                     sandbox_id, "snapshot_complete", confirmed=confirmed
                 )
-        self._finish_owned_operation(
+        self._finish_termination_claim(
             chat_session_id,
-            token_hash=token_hash,
-            expected_state="terminating",
-            expected_sandbox_id=sandbox_id,
+            claim,
             state="terminated",
             failure_code=None,
             clear_sandbox=True,
@@ -2963,6 +2890,8 @@ class SandboxSessionManager:
                         ChatSandboxLease.chat_session_id,
                         ChatSandboxLease.modal_sandbox_id,
                         ChatSandboxLease.state,
+                        ChatSandboxLease.lease_token_hash,
+                        ChatSandboxLease.worker_generation,
                     )
                     .join(
                         ChatSession,
@@ -2987,15 +2916,20 @@ class SandboxSessionManager:
                 ).all()
             )
         repaired = 0
-        for operation in stale_operations:
-            # Lightweight lifecycle test doubles return the later reconcile
-            # projection for every SELECT; only this query's three-column
-            # projection represents a stale operation.
-            if len(operation) != 3:
-                continue
-            session_id, sandbox_id, state = operation
-            token_hash = self._token_hash(secrets.token_urlsafe(24))
-            failure_code: str | None = None
+        for (
+            session_id,
+            sandbox_id,
+            state,
+            token_hash,
+            worker_generation,
+        ) in stale_operations:
+            expected = LeaseStateClaim(
+                state=state,
+                sandbox_id=sandbox_id,
+                token_hash=token_hash,
+                worker_generation=worker_generation,
+            )
+            claim: TerminationClaim | None = None
             with self.session_factory() as db, db.begin():
                 lease = self._lease(db, session_id, lock=True)
                 session = db.execute(
@@ -3003,44 +2937,22 @@ class SandboxSessionManager:
                     .where(ChatSession.id == session_id)
                     .with_for_update()
                 ).scalar_one_or_none()
-                if (
-                    lease is None
-                    or session is None
-                    or lease.state != state
-                    or lease.modal_sandbox_id != sandbox_id
-                ):
+                if session is None:
                     continue
                 current = datetime.now(UTC)
-                if state == "busy":
-                    active_expiry = session.active_turn_expires_at
-                    if (
-                        active_expiry is not None
-                        and self._as_utc(active_expiry) > current
-                    ):
-                        continue
-                    failure_code = "sandbox_worker_failed"
-                else:
-                    lease_expiry = lease.lease_expires_at
-                    if (
-                        lease_expiry is not None
-                        and self._as_utc(lease_expiry) > current
-                    ):
-                        continue
-                    failure_code = lease.failure_code
-                lease.state = "terminating"
-                lease.failure_code = failure_code
-                lease.lease_token_hash = token_hash
-                lease.lease_expires_at = current + timedelta(
-                    seconds=self.ready_timeout_seconds + 15
+                claim = self._state_repository().claim_stale_termination(
+                    lease,
+                    expected=expected,
+                    active_turn_expires_at=session.active_turn_expires_at,
+                    termination_token=secrets.token_urlsafe(24),
+                    expires_at=current
+                    + timedelta(seconds=self.ready_timeout_seconds + 15),
+                    now=current,
                 )
-                lease.updated_at = current
+            if claim is None:
+                continue
             self._drop_control(session_id)
-            await self._terminate_owned_sandbox(
-                session_id,
-                sandbox_id=sandbox_id,
-                token_hash=token_hash,
-                failure_code=failure_code,
-            )
+            await self._terminate_claimed_sandbox(session_id, claim)
             repaired += 1
 
         with self.session_factory() as db:
@@ -3051,6 +2963,7 @@ class SandboxSessionManager:
                         ChatSandboxLease.modal_sandbox_id,
                         ChatSandboxLease.state,
                         ChatSandboxLease.lease_token_hash,
+                        ChatSandboxLease.worker_generation,
                     ).where(
                         (ChatSandboxLease.state == "starting")
                         & (
@@ -3061,24 +2974,41 @@ class SandboxSessionManager:
                     )
                 ).all()
             )
-        for session_id, sandbox_id, state, token_hash in candidates:
+        for session_id, sandbox_id, state, token_hash, worker_generation in candidates:
             if state == "starting":
-                if token_hash and self._mark_start_failed(
-                    session_id, token_hash, "sandbox_start_failed"
-                ):
-                    repaired += 1
+                if token_hash:
+                    claim = StartClaim(
+                        token_hash=token_hash,
+                        stale_sandbox_id=None,
+                        snapshot_id=None,
+                        worker_generation=worker_generation,
+                    )
+                    with self.session_factory() as db, db.begin():
+                        if self.blank_pool_enabled:
+                            self._lock_capacity(db)
+                        lease = self._lease(db, session_id, lock=True)
+                        if self._state_repository().fail_expired_start(
+                            lease,
+                            claim=claim,
+                            code="sandbox_start_failed",
+                            now=datetime.now(UTC),
+                        ):
+                            repaired += 1
                 continue
+            claim = LeaseStateClaim(
+                state=state,
+                sandbox_id=sandbox_id,
+                token_hash=token_hash,
+                worker_generation=worker_generation,
+            )
             if not sandbox_id:
                 with self.session_factory() as db, db.begin():
                     lease = self._lease(db, session_id, lock=True)
-                    if (
-                        lease
-                        and lease.state == state
-                        and lease.modal_sandbox_id is None
+                    if self._state_repository().mark_lost(
+                        lease,
+                        claim=claim,
+                        now=datetime.now(UTC),
                     ):
-                        lease.state = "failed"
-                        lease.failure_code = "sandbox_lost"
-                        lease.updated_at = datetime.now(UTC)
                         repaired += 1
                 continue
             try:
@@ -3090,15 +3020,11 @@ class SandboxSessionManager:
             if not alive:
                 with self.session_factory() as db, db.begin():
                     lease = self._lease(db, session_id, lock=True)
-                    if (
-                        lease
-                        and lease.state == state
-                        and lease.modal_sandbox_id == sandbox_id
+                    if self._state_repository().mark_lost(
+                        lease,
+                        claim=claim,
+                        now=datetime.now(UTC),
                     ):
-                        lease.modal_sandbox_id = None
-                        lease.state = "failed"
-                        lease.failure_code = "sandbox_lost"
-                        lease.updated_at = datetime.now(UTC)
                         repaired += 1
         return repaired
 
@@ -3125,13 +3051,12 @@ class SandboxSessionManager:
             )
         expired = 0
         for session_id, snapshot_id in rows:
-            if snapshot_id:
-                await self.snapshots.delete(snapshot_id)
+            if not snapshot_id:
+                continue
+            claim = SnapshotClaim(snapshot_id=snapshot_id)
+            await self.snapshots.delete(snapshot_id)
             with self.session_factory() as db, db.begin():
                 lease = self._lease(db, session_id, lock=True)
-                if lease and lease.workspace_snapshot_id == snapshot_id:
-                    lease.workspace_snapshot_id = None
-                    lease.snapshot_image_version = None
-                    lease.snapshot_updated_at = None
+                if self._state_repository().clear_inactive_snapshot(lease, claim=claim):
                     expired += 1
         return expired

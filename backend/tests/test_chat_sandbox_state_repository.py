@@ -13,7 +13,10 @@ from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
+    LeaseStateClaim,
     LeaseUnavailable,
+    SnapshotClaim,
+    StartClaim,
     WorkerGenerationUnavailable,
 )
 
@@ -665,3 +668,520 @@ def test_manager_landing_rejects_new_generation_and_cleans_old_provider():
     assert lease.modal_sandbox_id is None
     assert lease.worker_generation == "generation-successor"
     assert lease.lease_token_hash == repository.token_hash("successor-token")
+
+
+@pytest.mark.parametrize("prior_state", ["starting", "busy", "terminating"])
+def test_unconditional_termination_replaces_any_in_flight_owner(prior_state):
+    repository = ChatSandboxStateRepository(_settings())
+    expires_at = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(
+        state=prior_state,
+        sandbox_id="sb-current",
+        token_hash="prior-owner-token",
+        worker_generation="generation-a",
+    )
+
+    claim = repository.claim_termination(
+        lease,
+        termination_token="termination-token",
+        failure_code="forced_cleanup",
+        expires_at=expires_at,
+    )
+
+    assert claim is not None
+    assert claim.sandbox_id == "sb-current"
+    assert claim.token_hash == repository.token_hash("termination-token")
+    assert claim.worker_generation == "generation-a"
+    assert claim.failure_code == "forced_cleanup"
+    assert claim.should_snapshot is False
+    assert lease.state == "terminating"
+    assert lease.failure_code == "forced_cleanup"
+    assert lease.lease_token_hash == claim.token_hash
+    assert lease.lease_expires_at == expires_at
+
+
+def test_historical_null_generation_can_complete_owned_termination():
+    repository = ChatSandboxStateRepository(_settings())
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(
+        state="busy",
+        sandbox_id="sb-historical",
+        token_hash="historical-owner",
+        worker_generation=None,
+    )
+    claim = repository.claim_termination(
+        lease,
+        termination_token="termination-token",
+        failure_code=None,
+        expires_at=now + timedelta(seconds=30),
+    )
+
+    assert claim is not None
+    assert claim.worker_generation is None
+    assert repository.finish_termination(
+        lease,
+        claim=claim,
+        state="terminated",
+        failure_code=None,
+        clear_sandbox=True,
+        now=now,
+    )
+    assert lease.state == "terminated"
+    assert lease.modal_sandbox_id is None
+    assert lease.worker_generation is None
+
+
+def test_idle_snapshot_claim_record_and_finish_share_one_generation_bound_owner():
+    repository = ChatSandboxStateRepository(
+        _settings(chat_workspace_snapshots_enabled=True)
+    )
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(state="idle", sandbox_id="sb-current")
+    lease.workspace_dirty = True
+
+    claim = repository.claim_snapshot_termination(
+        lease,
+        termination_token="termination-token",
+        expires_at=now + timedelta(seconds=30),
+    )
+
+    assert claim is not None
+    assert claim.sandbox_id == "sb-current"
+    assert claim.worker_generation == "generation-a"
+    assert claim.should_snapshot is True
+    assert lease.state == "terminating"
+    assert repository.record_snapshot(
+        lease,
+        claim=claim,
+        snapshot_id="snapshot-new",
+        image_version="im-current",
+        now=now + timedelta(seconds=1),
+    )
+    assert lease.workspace_snapshot_id == "snapshot-new"
+    assert lease.snapshot_image_version == "im-current"
+    assert lease.workspace_dirty is False
+    assert repository.finish_termination(
+        lease,
+        claim=claim,
+        state="terminated",
+        failure_code=None,
+        clear_sandbox=True,
+        now=now + timedelta(seconds=2),
+    )
+    assert lease.state == "terminated"
+    assert lease.modal_sandbox_id is None
+
+
+def test_snapshot_record_and_finish_refuse_a_successor_generation():
+    repository = ChatSandboxStateRepository(
+        _settings(chat_workspace_snapshots_enabled=True)
+    )
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(state="idle", sandbox_id="sb-current")
+    lease.workspace_dirty = True
+    claim = repository.claim_snapshot_termination(
+        lease,
+        termination_token="termination-token",
+        expires_at=now + timedelta(seconds=30),
+    )
+    assert claim is not None
+    lease.state = "idle"
+    lease.modal_sandbox_id = "sb-successor"
+    lease.worker_generation = "generation-successor"
+    lease.lease_token_hash = None
+    before = _state(lease)
+
+    assert not repository.record_snapshot(
+        lease,
+        claim=claim,
+        snapshot_id="snapshot-old-owner",
+        image_version="im-current",
+        now=now + timedelta(seconds=1),
+    )
+    assert not repository.finish_termination(
+        lease,
+        claim=claim,
+        state="terminated",
+        failure_code=None,
+        clear_sandbox=True,
+        now=now + timedelta(seconds=2),
+    )
+    assert _state(lease) == before
+
+
+@pytest.mark.parametrize(
+    ("state", "active_expiry", "failure_code"),
+    [
+        ("busy", None, "sandbox_worker_failed"),
+        ("terminating", None, "prior_failure"),
+    ],
+)
+def test_stale_busy_and_terminating_claims_are_generation_bound(
+    state, active_expiry, failure_code
+):
+    repository = ChatSandboxStateRepository(_settings())
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(
+        state=state,
+        sandbox_id="sb-current",
+        token_hash="prior-token",
+        worker_generation="generation-a",
+    )
+    lease.failure_code = failure_code if state == "terminating" else None
+    lease.lease_expires_at = now - timedelta(seconds=1)
+    expected = LeaseStateClaim(
+        state=state,
+        sandbox_id="sb-current",
+        token_hash="prior-token",
+        worker_generation="generation-a",
+    )
+
+    claim = repository.claim_stale_termination(
+        lease,
+        expected=expected,
+        active_turn_expires_at=active_expiry,
+        termination_token="termination-token",
+        expires_at=now + timedelta(seconds=30),
+        now=now,
+    )
+
+    assert claim is not None
+    assert claim.failure_code == failure_code
+    assert claim.worker_generation == "generation-a"
+    assert lease.state == "terminating"
+    assert lease.lease_token_hash == claim.token_hash
+
+    successor = _lease(
+        state=state,
+        sandbox_id="sb-current",
+        token_hash="prior-token",
+        worker_generation="generation-successor",
+    )
+    successor.failure_code = lease.failure_code
+    successor.lease_expires_at = now - timedelta(seconds=1)
+    before = _state(successor)
+    assert (
+        repository.claim_stale_termination(
+            successor,
+            expected=expected,
+            active_turn_expires_at=active_expiry,
+            termination_token="termination-token",
+            expires_at=now + timedelta(seconds=30),
+            now=now,
+        )
+        is None
+    )
+    assert _state(successor) == before
+
+
+def test_stale_claim_refuses_renewed_busy_turn_or_termination_lease():
+    repository = ChatSandboxStateRepository(_settings())
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    for state, active_expiry in (
+        ("busy", now + timedelta(seconds=1)),
+        ("terminating", None),
+    ):
+        lease = _lease(
+            state=state,
+            sandbox_id="sb-current",
+            token_hash="owner-token",
+        )
+        lease.lease_expires_at = now + timedelta(seconds=1)
+        expected = LeaseStateClaim(
+            state=state,
+            sandbox_id="sb-current",
+            token_hash="owner-token",
+            worker_generation="generation-a",
+        )
+        before = _state(lease)
+        assert (
+            repository.claim_stale_termination(
+                lease,
+                expected=expected,
+                active_turn_expires_at=active_expiry,
+                termination_token="termination-token",
+                expires_at=now + timedelta(seconds=30),
+                now=now,
+            )
+            is None
+        )
+        assert _state(lease) == before
+
+
+@pytest.mark.parametrize("renewed", [False, True])
+def test_expired_start_failure_checks_expiry_and_generation(renewed):
+    repository = ChatSandboxStateRepository(_settings())
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(
+        state="starting",
+        sandbox_id=None,
+        token_hash="start-token",
+        worker_generation="generation-a",
+    )
+    lease.lease_expires_at = now + timedelta(seconds=1 if renewed else -1)
+    claim = StartClaim(
+        token_hash="start-token",
+        stale_sandbox_id=None,
+        snapshot_id=None,
+        worker_generation="generation-a",
+    )
+    before = _state(lease)
+
+    result = repository.fail_expired_start(
+        lease,
+        claim=claim,
+        code="sandbox_start_failed",
+        now=now,
+    )
+
+    assert result is not renewed
+    if renewed:
+        assert _state(lease) == before
+    else:
+        assert lease.state == "failed"
+        assert lease.failure_code == "sandbox_start_failed"
+
+    replaced = _lease(
+        state="starting",
+        sandbox_id=None,
+        token_hash="start-token",
+        worker_generation="generation-successor",
+    )
+    replaced.lease_expires_at = now - timedelta(seconds=1)
+    replaced_before = _state(replaced)
+    assert not repository.fail_expired_start(
+        replaced,
+        claim=claim,
+        code="sandbox_start_failed",
+        now=now,
+    )
+    assert _state(replaced) == replaced_before
+
+
+@pytest.mark.parametrize(
+    ("state", "sandbox_id"),
+    [("ready", None), ("idle", "sb-lost")],
+)
+def test_mark_lost_handles_ready_and_idle_claims(state, sandbox_id):
+    repository = ChatSandboxStateRepository(_settings())
+    now = datetime(2026, 8, 10, 14, tzinfo=UTC)
+    lease = _lease(state=state, sandbox_id=sandbox_id)
+    claim = LeaseStateClaim(
+        state=state,
+        sandbox_id=sandbox_id,
+        token_hash=None,
+        worker_generation="generation-a",
+    )
+
+    assert repository.mark_lost(lease, claim=claim, now=now)
+    assert lease.state == "failed"
+    assert lease.modal_sandbox_id is None
+    assert lease.failure_code == "sandbox_lost"
+    assert lease.updated_at == now
+
+    successor = _lease(
+        state=state,
+        sandbox_id=sandbox_id,
+        worker_generation="generation-successor",
+    )
+    before = _state(successor)
+    assert not repository.mark_lost(successor, claim=claim, now=now)
+    assert _state(successor) == before
+
+
+def test_inactive_snapshot_clear_uses_deleted_snapshot_id_not_generation():
+    repository = ChatSandboxStateRepository(_settings())
+    lease = _lease(
+        snapshot_id="snapshot-deleted",
+        snapshot_image_version="im-old",
+        worker_generation="generation-successor",
+    )
+
+    assert repository.clear_inactive_snapshot(
+        lease,
+        claim=SnapshotClaim(snapshot_id="snapshot-deleted"),
+    )
+    assert lease.workspace_snapshot_id is None
+    assert lease.snapshot_image_version is None
+    assert lease.snapshot_updated_at is None
+    assert lease.worker_generation == "generation-successor"
+
+    lease.workspace_snapshot_id = "snapshot-current"
+    lease.snapshot_image_version = "im-current"
+    before = _state(lease)
+    assert not repository.clear_inactive_snapshot(
+        lease,
+        claim=SnapshotClaim(snapshot_id="snapshot-deleted"),
+    )
+    assert _state(lease) == before
+
+
+def test_manager_snapshot_provider_io_cannot_overwrite_successor_lease():
+    async def scenario():
+        lease = _lease(state="idle", sandbox_id="sb-old")
+        lease.workspace_dirty = True
+        snapshot_started = asyncio.Event()
+        allow_snapshot = asyncio.Event()
+        terminated: list[str] = []
+
+        class SnapshotProvider:
+            supported = True
+
+            async def save(self, sandbox, chat_session_id):
+                assert sandbox.object_id == "sb-old"
+                assert chat_session_id == lease.chat_session_id
+                snapshot_started.set()
+                await allow_snapshot.wait()
+                return "snapshot-old-owner"
+
+        class Provider:
+            async def resolve(self, sandbox_id):
+                assert sandbox_id == "sb-old"
+                return SimpleNamespace(object_id=sandbox_id)
+
+            async def terminate(self, sandbox_id, sandbox=None):
+                assert sandbox is None
+                terminated.append(sandbox_id)
+                return True
+
+        settings = _settings(
+            chat_workspace_snapshots_enabled=True,
+            chat_sandbox_ready_timeout_seconds=2,
+            chat_blank_pool_enabled=False,
+            chat_sandbox_spend_enforcement_enabled=False,
+        )
+        manager = SandboxSessionManager(
+            settings,
+            session_factory=_TransactionDB,
+            snapshot_provider=SnapshotProvider(),
+            sandbox_provider=Provider(),
+            state_repository=ChatSandboxStateRepository(settings),
+        )
+        manager._lease = lambda *_args, **_options: lease
+
+        stale_snapshot = asyncio.create_task(
+            manager.snapshot_and_terminate(lease.chat_session_id)
+        )
+        await snapshot_started.wait()
+        lease.state = "idle"
+        lease.modal_sandbox_id = "sb-successor"
+        lease.worker_generation = "generation-successor"
+        lease.lease_token_hash = None
+        lease.lease_expires_at = None
+        lease.workspace_snapshot_id = "snapshot-successor"
+        lease.snapshot_image_version = "im-current"
+        lease.workspace_dirty = False
+        successor_state = _state(lease)
+        allow_snapshot.set()
+
+        assert await stale_snapshot is True
+        assert terminated == ["sb-old"]
+        assert _state(lease) == successor_state
+
+    asyncio.run(scenario())
+
+
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _CandidateDB(_TransactionDB):
+    def __init__(self, candidates):
+        self.candidates = candidates
+
+    def execute(self, query):
+        rows = [] if "JOIN chat_sessions" in str(query) else self.candidates
+        return _RowsResult(rows)
+
+
+class _RowsDB(_TransactionDB):
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, _query):
+        return _RowsResult(self.rows)
+
+
+def test_manager_reconcile_uses_typed_expired_start_and_lost_claims():
+    now = datetime.now(UTC)
+    expired_start = _lease(
+        state="starting",
+        sandbox_id=None,
+        token_hash="start-token",
+        worker_generation="generation-start",
+    )
+    expired_start.lease_expires_at = now - timedelta(seconds=1)
+    lost_ready = _lease(state="ready", sandbox_id=None)
+    lost_idle = _lease(state="idle", sandbox_id=None)
+    leases = {
+        lease.chat_session_id: lease for lease in (expired_start, lost_ready, lost_idle)
+    }
+    candidates = [
+        (
+            expired_start.chat_session_id,
+            None,
+            "starting",
+            "start-token",
+            "generation-start",
+        ),
+        (lost_ready.chat_session_id, None, "ready", None, "generation-a"),
+        (lost_idle.chat_session_id, None, "idle", None, "generation-a"),
+    ]
+    settings = _settings(chat_blank_pool_enabled=False)
+    manager = SandboxSessionManager(
+        settings,
+        session_factory=lambda: _CandidateDB(candidates),
+        state_repository=ChatSandboxStateRepository(settings),
+    )
+    manager._lease = lambda _db, session_id, **_options: leases[session_id]
+
+    assert asyncio.run(manager.reconcile()) == 3
+    assert expired_start.state == "failed"
+    assert expired_start.failure_code == "sandbox_start_failed"
+    for lease in (lost_ready, lost_idle):
+        assert lease.state == "failed"
+        assert lease.failure_code == "sandbox_lost"
+
+
+def test_manager_inactive_snapshot_clear_uses_typed_snapshot_id_claim():
+    lease = _lease(
+        snapshot_id="snapshot-deleted",
+        snapshot_image_version="im-old",
+        worker_generation="generation-successor",
+    )
+    deleted: list[str] = []
+    claims: list[SnapshotClaim] = []
+
+    class SnapshotProvider:
+        supported = True
+
+        async def delete(self, snapshot_id):
+            deleted.append(snapshot_id)
+
+    class Repository(ChatSandboxStateRepository):
+        def clear_inactive_snapshot(self, candidate, *, claim):
+            claims.append(claim)
+            return super().clear_inactive_snapshot(candidate, claim=claim)
+
+    settings = _settings(chat_workspace_snapshots_enabled=True)
+    repository = Repository(settings)
+    rows = [(lease.chat_session_id, "snapshot-deleted")]
+    manager = SandboxSessionManager(
+        settings,
+        session_factory=lambda: _RowsDB(rows),
+        snapshot_provider=SnapshotProvider(),
+        state_repository=repository,
+    )
+    manager._lease = lambda *_args, **_options: lease
+
+    assert asyncio.run(manager.expire_inactive_snapshots()) == 1
+    assert deleted == ["snapshot-deleted"]
+    assert claims == [SnapshotClaim(snapshot_id="snapshot-deleted")]
+    assert lease.workspace_snapshot_id is None
+    assert lease.snapshot_image_version is None
+    assert lease.snapshot_updated_at is None
+    assert lease.worker_generation == "generation-successor"

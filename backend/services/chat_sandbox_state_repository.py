@@ -20,7 +20,7 @@ class StartClaim:
     token_hash: str
     stale_sandbox_id: str | None
     snapshot_id: str | None
-    worker_generation: str = ""
+    worker_generation: str | None = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,21 @@ class TerminationClaim:
     sandbox_id: str | None
     token_hash: str
     worker_generation: str | None = None
+    failure_code: str | None = None
+    should_snapshot: bool = False
+
+
+@dataclass(frozen=True)
+class LeaseStateClaim:
+    state: str
+    sandbox_id: str | None
+    token_hash: str | None
+    worker_generation: str | None
+
+
+@dataclass(frozen=True)
+class SnapshotClaim:
+    snapshot_id: str
 
 
 class LeaseUnavailable(RuntimeError):
@@ -176,6 +191,154 @@ class ChatSandboxStateRepository:
         lease.updated_at = now
         return True
 
+    def claim_termination(
+        self,
+        lease: ChatSandboxLease | None,
+        *,
+        termination_token: str,
+        failure_code: str | None,
+        expires_at: datetime,
+    ) -> TerminationClaim | None:
+        """Claim any existing lease, intentionally replacing prior ownership."""
+
+        if lease is None:
+            return None
+        claim = TerminationClaim(
+            sandbox_id=lease.modal_sandbox_id,
+            token_hash=self.token_hash(termination_token),
+            worker_generation=lease.worker_generation,
+            failure_code=failure_code,
+        )
+        lease.state = "terminating"
+        lease.failure_code = failure_code
+        lease.lease_token_hash = claim.token_hash
+        lease.lease_expires_at = expires_at
+        return claim
+
+    def claim_snapshot_termination(
+        self,
+        lease: ChatSandboxLease | None,
+        *,
+        termination_token: str,
+        expires_at: datetime,
+    ) -> TerminationClaim | None:
+        if lease is None or lease.state != "idle" or not lease.modal_sandbox_id:
+            return None
+        claim = TerminationClaim(
+            sandbox_id=lease.modal_sandbox_id,
+            token_hash=self.token_hash(termination_token),
+            worker_generation=lease.worker_generation,
+            should_snapshot=bool(
+                self.settings.chat_workspace_snapshots_enabled and lease.workspace_dirty
+            ),
+        )
+        lease.state = "terminating"
+        lease.lease_token_hash = claim.token_hash
+        lease.lease_expires_at = expires_at
+        return claim
+
+    @staticmethod
+    def record_snapshot(
+        lease: ChatSandboxLease | None,
+        *,
+        claim: TerminationClaim,
+        snapshot_id: str,
+        image_version: str,
+        now: datetime,
+    ) -> bool:
+        if not ChatSandboxStateRepository._owns_termination(lease, claim):
+            return False
+        lease.workspace_snapshot_id = snapshot_id
+        lease.snapshot_image_version = image_version
+        lease.snapshot_updated_at = now
+        lease.workspace_dirty = False
+        return True
+
+    def claim_stale_termination(
+        self,
+        lease: ChatSandboxLease | None,
+        *,
+        expected: LeaseStateClaim,
+        active_turn_expires_at: datetime | None,
+        termination_token: str,
+        expires_at: datetime,
+        now: datetime,
+    ) -> TerminationClaim | None:
+        if not self._matches_state_claim(lease, expected):
+            return None
+        if expected.state == "busy":
+            if self._after(active_turn_expires_at, now):
+                return None
+            failure_code = "sandbox_worker_failed"
+        elif expected.state == "terminating":
+            if self._after(lease.lease_expires_at, now):
+                return None
+            failure_code = lease.failure_code
+        else:
+            return None
+        claim = TerminationClaim(
+            sandbox_id=expected.sandbox_id,
+            token_hash=self.token_hash(termination_token),
+            worker_generation=expected.worker_generation,
+            failure_code=failure_code,
+        )
+        lease.state = "terminating"
+        lease.failure_code = failure_code
+        lease.lease_token_hash = claim.token_hash
+        lease.lease_expires_at = expires_at
+        lease.updated_at = now
+        return claim
+
+    @staticmethod
+    def fail_expired_start(
+        lease: ChatSandboxLease | None,
+        *,
+        claim: StartClaim,
+        code: str,
+        now: datetime,
+    ) -> bool:
+        if not ChatSandboxStateRepository._owns_start(lease, claim):
+            return False
+        if ChatSandboxStateRepository._after(lease.lease_expires_at, now):
+            return False
+        return ChatSandboxStateRepository.fail_start(
+            lease,
+            claim=claim,
+            code=code,
+            now=now,
+        )
+
+    @staticmethod
+    def mark_lost(
+        lease: ChatSandboxLease | None,
+        *,
+        claim: LeaseStateClaim,
+        now: datetime,
+    ) -> bool:
+        if claim.state not in {"ready", "idle"} or not (
+            ChatSandboxStateRepository._matches_state_claim(lease, claim)
+        ):
+            return False
+        if claim.sandbox_id is not None:
+            lease.modal_sandbox_id = None
+        lease.state = "failed"
+        lease.failure_code = "sandbox_lost"
+        lease.updated_at = now
+        return True
+
+    @staticmethod
+    def clear_inactive_snapshot(
+        lease: ChatSandboxLease | None, *, claim: SnapshotClaim
+    ) -> bool:
+        """Clear only the provider-deleted ID; lease generation may have advanced."""
+
+        if not (lease and lease.workspace_snapshot_id == claim.snapshot_id):
+            return False
+        lease.workspace_snapshot_id = None
+        lease.snapshot_image_version = None
+        lease.snapshot_updated_at = None
+        return True
+
     @staticmethod
     def finish_termination(
         lease: ChatSandboxLease | None,
@@ -187,36 +350,6 @@ class ChatSandboxStateRepository:
         now: datetime,
     ) -> bool:
         if not ChatSandboxStateRepository._owns_termination(lease, claim):
-            return False
-        if clear_sandbox:
-            lease.modal_sandbox_id = None
-        lease.state = state
-        lease.failure_code = failure_code
-        lease.lease_token_hash = None
-        lease.lease_expires_at = None
-        lease.updated_at = now
-        return True
-
-    @staticmethod
-    def finish_owned_operation(
-        lease: ChatSandboxLease | None,
-        *,
-        token_hash: str,
-        expected_state: str,
-        expected_sandbox_id: str | None,
-        state: str,
-        failure_code: str | None,
-        clear_sandbox: bool,
-        now: datetime,
-    ) -> bool:
-        """Compatibility transition for legacy, pre-typed manager callers."""
-
-        if not (
-            lease
-            and lease.state == expected_state
-            and lease.lease_token_hash == token_hash
-            and lease.modal_sandbox_id == expected_sandbox_id
-        ):
             return False
         if clear_sandbox:
             lease.modal_sandbox_id = None
@@ -290,6 +423,7 @@ class ChatSandboxStateRepository:
             sandbox_id=claim.sandbox_id,
             token_hash=self.token_hash(termination_token),
             worker_generation=claim.worker_generation,
+            failure_code=failure_code,
         )
         lease.state = "terminating"
         lease.failure_code = failure_code
@@ -329,3 +463,23 @@ class ChatSandboxStateRepository:
             and lease.lease_token_hash == claim.token_hash
             and lease.worker_generation == claim.worker_generation
         )
+
+    @staticmethod
+    def _matches_state_claim(
+        lease: ChatSandboxLease | None, claim: LeaseStateClaim
+    ) -> bool:
+        return bool(
+            lease
+            and lease.state == claim.state
+            and lease.modal_sandbox_id == claim.sandbox_id
+            and lease.lease_token_hash == claim.token_hash
+            and lease.worker_generation == claim.worker_generation
+        )
+
+    @staticmethod
+    def _after(value: datetime | None, now: datetime) -> bool:
+        if value is None:
+            return False
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value > now
