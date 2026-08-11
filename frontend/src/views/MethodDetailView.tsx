@@ -13,6 +13,7 @@ import { transformPaperForCard } from "@/lib/transform";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { resolveInternalPath } from "@/lib/internalLinks";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 
 type SortKey = "trending" | "new" | "cited";
@@ -150,6 +151,8 @@ const MethodDetailView: React.FC = () => {
 
   const m = methodQ.data;
   const area = areasQ.data?.results.find((candidate) => candidate.id === m.area_id);
+  const internalSourcePath = resolveInternalPath(m.source_url);
+  const externalSourceHref = internalSourcePath ? null : safeExternalHref(m.source_url);
 
   return (
     <div className="page">
@@ -186,10 +189,32 @@ const MethodDetailView: React.FC = () => {
           {m.source_url && m.source_title && (
             <div className="method-source">
               <span className="method-source-label">Source</span>
-              <a className="method-source-link" href={safeExternalHref(m.source_url) ?? undefined} target="_blank" rel="noopener noreferrer">
-                <span className="method-source-title">{m.source_title}</span>
-                {m.introduced_year && <span className="method-source-meta">{m.introduced_year}</span>}
-              </a>
+              {internalSourcePath ? (
+                <Link
+                  className="method-source-link"
+                  to={internalSourcePath}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <span className="method-source-title">{m.source_title}</span>
+                  {m.introduced_year && <span className="method-source-meta">{m.introduced_year}</span>}
+                </Link>
+              ) : externalSourceHref ? (
+                <a
+                  className="method-source-link"
+                  href={externalSourceHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <span className="method-source-title">{m.source_title}</span>
+                  {m.introduced_year && <span className="method-source-meta">{m.introduced_year}</span>}
+                </a>
+              ) : (
+                <div className="method-source-link is-static">
+                  <span className="method-source-title">{m.source_title}</span>
+                  {m.introduced_year && <span className="method-source-meta">{m.introduced_year}</span>}
+                </div>
+              )}
             </div>
           )}
           <div className="tag-hero-meta">
