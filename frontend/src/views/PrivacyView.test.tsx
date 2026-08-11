@@ -4,6 +4,14 @@ import { describe, expect, it } from "vitest";
 import PrivacyView from "@/views/PrivacyView";
 
 describe("PrivacyView chat retention", () => {
+  it("discloses verified contributor email collection", () => {
+    render(<PrivacyView />);
+
+    expect(screen.getByText(/If you request contributor access/i)).toHaveTextContent(
+      /verified email address.*review and communicate/i,
+    );
+  });
+
   it("states retention, archive, deletion, sharing, and export behavior", () => {
     render(<PrivacyView />);
 

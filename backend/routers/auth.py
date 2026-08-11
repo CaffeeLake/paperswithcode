@@ -146,6 +146,7 @@ def _encode_state(
     authorize_inference: bool = False,
     authorize_bucket: bool = False,
     bucket_create: bool = False,
+    collect_email: bool = False,
 ) -> str:
     settings = get_settings()
     payload = {
@@ -155,6 +156,7 @@ def _encode_state(
         "authorize_inference": authorize_inference,
         "authorize_bucket": authorize_bucket,
         "bucket_create": bucket_create,
+        "collect_email": collect_email,
         "exp": int(time.time()) + STATE_TTL_SECONDS,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -173,6 +175,8 @@ def _encode_session(user: dict) -> str:
         "username": user["username"],
         "name": user.get("name"),
         "avatar_url": user.get("avatar_url"),
+        "email": user.get("email"),
+        "email_verified": user.get("email_verified") is True,
         "is_admin": _is_admin(user),
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
@@ -352,6 +356,7 @@ def hf_login(
     authorize_inference: bool = False,
     authorize_bucket: bool = False,
     bucket_create: bool = False,
+    collect_email: bool = False,
 ):
     """Kick off the HF OAuth authorization-code flow."""
 
@@ -372,6 +377,7 @@ def hf_login(
                 "authorize_inference": authorize_inference,
                 "authorize_bucket": authorize_bucket,
                 "bucket_create": bucket_create,
+                "collect_email": collect_email,
             }
         )
         return RedirectResponse(
@@ -390,19 +396,23 @@ def hf_login(
         authorize_inference=authorize_inference,
         authorize_bucket=authorize_bucket,
         bucket_create=bucket_create,
+        collect_email=collect_email,
     )
+    scope = (
+        HF_INFERENCE_SCOPES
+        if authorize_inference
+        else HF_BUCKET_MANAGE_SCOPES
+        if authorize_bucket and bucket_create
+        else HF_BUCKET_WRITE_SCOPES
+        if authorize_bucket
+        else HF_LOGIN_SCOPES
+    )
+    if collect_email:
+        scope = f"{scope} email"
     params = {
         "client_id": settings.hf_oauth_client_id,
         "redirect_uri": _redirect_uri(request),
-        "scope": (
-            HF_INFERENCE_SCOPES
-            if authorize_inference
-            else HF_BUCKET_MANAGE_SCOPES
-            if authorize_bucket and bucket_create
-            else HF_BUCKET_WRITE_SCOPES
-            if authorize_bucket
-            else HF_LOGIN_SCOPES
-        ),
+        "scope": scope,
         "response_type": "code",
         "state": state,
     }
@@ -504,11 +514,26 @@ async def hf_callback(
             detail="HF userinfo did not include an immutable account subject",
         )
 
+    email = userinfo.get("email")
+    email_verified = userinfo.get("email_verified") is True
+    if state_payload.get("collect_email") and (
+        not isinstance(email, str)
+        or not email.strip()
+        or len(email.strip()) > 320
+        or not email_verified
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Hugging Face did not provide a verified email address",
+        )
+
     user = {
         "sub": hf_user_id,
         "username": username,
         "name": userinfo.get("name"),
         "avatar_url": userinfo.get("picture"),
+        "email": email.strip() if state_payload.get("collect_email") else None,
+        "email_verified": email_verified and state_payload.get("collect_email") is True,
     }
     from backend.database.connection import db_manager
     from backend.services.user_profile_service import UserProfileService

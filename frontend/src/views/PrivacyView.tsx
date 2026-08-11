@@ -15,7 +15,7 @@ const PrivacyView: React.FC = () => {
       <header className="legal-header">
         <p className="legal-kicker">Legal</p>
         <h1>Privacy Policy</h1>
-        <p className="legal-effective-date">Effective August 4, 2026</p>
+        <p className="legal-effective-date">Effective August 11, 2026</p>
       </header>
 
       <p>
@@ -32,7 +32,9 @@ const PrivacyView: React.FC = () => {
           <li>
             <strong>Account information.</strong> If you sign in with Hugging Face, we
             receive account identifiers and profile details needed to authenticate you,
-            such as your user ID, username, and avatar.
+            such as your user ID, username, and avatar. If you request contributor
+            access, we also receive and retain the verified email address associated with
+            your Hugging Face account so we can review and communicate about your request.
           </li>
           <li>
             <strong>Contributions and preferences.</strong> We collect information you

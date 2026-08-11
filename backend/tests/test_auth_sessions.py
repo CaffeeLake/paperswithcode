@@ -90,6 +90,28 @@ def test_production_session_is_verified_on_staging(monkeypatch):
     assert payload["username"] == "Alice"
 
 
+def test_verified_email_survives_shared_session_round_trip(monkeypatch):
+    current = _settings(production=True)
+    monkeypatch.setattr(auth, "get_settings", lambda: current)
+    token = auth._encode_session(
+        {
+            "sub": "hf-123",
+            "username": "Alice",
+            "email": "alice@example.com",
+            "email_verified": True,
+        }
+    )
+
+    current = _settings(production=False)
+    payload = auth.decode_request_session(
+        _request("staging.paperswithcode.co", f"pwc_shared_session={token}")
+    )
+
+    assert payload is not None
+    assert payload["email"] == "alice@example.com"
+    assert payload["email_verified"] is True
+
+
 def test_staging_legacy_token_cannot_impersonate_shared_session(monkeypatch):
     settings = _settings(production=False)
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
@@ -133,6 +155,34 @@ def test_production_login_requests_only_profile_scope_by_default(monkeypatch):
 
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["scope"] == ["openid profile"]
+
+
+def test_access_request_login_explicitly_requests_email_scope(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
+
+    response = auth.hf_login(
+        _request("paperswithcode.co"),
+        return_to="https://staging.paperswithcode.co/request-access",
+        collect_email=True,
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["openid profile email"]
+    state = auth._decode_state(query["state"][0])
+    assert state["collect_email"] is True
+
+
+def test_staging_email_request_is_forwarded_to_auth_authority(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=False))
+
+    response = auth.hf_login(
+        _request("staging.paperswithcode.co"),
+        return_to="/request-access",
+        collect_email=True,
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["collect_email"] == ["True"]
 
 
 def test_production_inference_authorization_requests_inference_scope(monkeypatch):

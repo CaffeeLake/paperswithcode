@@ -7,7 +7,7 @@ import StagingAccessRequestView from "./StagingAccessRequestView";
 describe("StagingAccessRequestView", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("submits the verified Hugging Face username", async () => {
+  it("submits the verified Hugging Face identity and discloses email collection", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce({
         ok: true,
@@ -37,6 +37,11 @@ describe("StagingAccessRequestView", () => {
     );
 
     expect(await screen.findByDisplayValue("verified-user")).toHaveAttribute("readonly");
+    expect(screen.getByText(/Username and email verified through Hugging Face/i)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
+      "href",
+      "https://paperswithcode.co/privacy",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Request access" }));
 
     await screen.findByRole("heading", { name: "Request received" });

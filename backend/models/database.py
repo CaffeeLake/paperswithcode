@@ -3094,6 +3094,10 @@ class StagingAccessRequest(Base):
 
     hf_subject: Mapped[str] = mapped_column(String(255), primary_key=True)
     hf_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=text("'pending'")
     )
@@ -3111,6 +3115,10 @@ class StagingAccessRequest(Base):
         CheckConstraint(
             "status IN ('pending', 'approved', 'rejected')",
             name="staging_access_requests_status_check",
+        ),
+        CheckConstraint(
+            "email IS NULL OR email_verified",
+            name="staging_access_requests_verified_email_check",
         ),
         Index("idx_staging_access_requests_status_created", "status", "created_at"),
     )

@@ -17,4 +17,11 @@ describe("hfLoginUrl", () => {
     expect(url.searchParams.get("return_to")).toBe("/chat");
     expect(url.searchParams.get("authorize_inference")).toBe("true");
   });
+
+  it("requests email only when the caller opts in", () => {
+    const url = new URL(hfLoginUrl("/request-access", false, true), window.location.origin);
+
+    expect(url.searchParams.get("return_to")).toBe("/request-access");
+    expect(url.searchParams.get("collect_email")).toBe("true");
+  });
 });

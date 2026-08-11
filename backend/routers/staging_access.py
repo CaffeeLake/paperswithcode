@@ -33,12 +33,6 @@ def request_staging_access(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sign in with Hugging Face before requesting access",
         )
-    if can_access_staging(payload.get("sub"), username=payload.get("username")):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This account already has staging access",
-        )
-
     hf_subject = payload.get("sub")
     hf_username = payload.get("username")
     if not isinstance(hf_subject, str) or not isinstance(hf_username, str):
@@ -46,10 +40,23 @@ def request_staging_access(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="The Hugging Face session is missing account identity",
         )
+    email = payload.get("email")
+    if (
+        not isinstance(email, str)
+        or not email.strip()
+        or len(email.strip()) > 320
+        or payload.get("email_verified") is not True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in again and allow Hugging Face to share your verified email",
+        )
 
     row = submit_staging_access_request(
         db,
         hf_subject=hf_subject,
         hf_username=hf_username,
+        email=email.strip(),
+        already_authorized=can_access_staging(hf_subject, username=hf_username),
     )
     return StagingAccessRequestResponse.model_validate(row)

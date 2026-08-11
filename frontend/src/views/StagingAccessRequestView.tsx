@@ -55,7 +55,7 @@ const StagingAccessRequestView: React.FC = () => {
               <h1 id="access-request-title">Request access</h1>
               <p>
                 This preview is limited to project contributors. Send us your verified
-                Hugging Face username to request access.
+                Hugging Face username and email address to request access.
               </p>
             </div>
 
@@ -74,7 +74,10 @@ const StagingAccessRequestView: React.FC = () => {
                     autoComplete="username"
                   />
                 </div>
-                <p className="access-request-verified">Verified through Hugging Face sign-in</p>
+                <p className="access-request-verified">
+                  Username and email verified through Hugging Face sign-in. See our{" "}
+                  <a href="https://paperswithcode.co/privacy">Privacy Policy</a>.
+                </p>
                 {error && <p className="access-request-error" role="alert">{error}</p>}
                 <button className="access-request-submit" type="submit" disabled={submitting}>
                   {submitting ? "Sending…" : "Request access"}
@@ -83,7 +86,11 @@ const StagingAccessRequestView: React.FC = () => {
             ) : (
               <div className="access-request-signin">
                 <p>Sign in first so we can verify the account you’re requesting access for.</p>
-                <HfSignInButton returnTo="/request-access" label="Sign in with Hugging Face" />
+                <HfSignInButton
+                  returnTo="/request-access"
+                  label="Sign in with Hugging Face"
+                  collectEmail
+                />
               </div>
             )}
           </>
