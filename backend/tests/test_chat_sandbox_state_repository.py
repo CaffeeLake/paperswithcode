@@ -9,6 +9,9 @@ import pytest
 
 from backend.config import Settings
 from backend.models.database import ChatSandboxLease
+from backend.services.chat_sandbox_capacity_repository import (
+    ChatSandboxCapacityRepository,
+)
 from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_state_repository import (
@@ -555,19 +558,33 @@ def _manager_for_start_transition(lease, provider) -> SandboxSessionManager:
         chat_sandbox_admission_enabled=True,
         chat_sandbox_spend_enforcement_enabled=False,
     )
+
+    class StateRepository(ChatSandboxStateRepository):
+        def load_lease(self, *_args, **_options):
+            return lease
+
+    state_repository = StateRepository(settings)
+    capacity_repository = ChatSandboxCapacityRepository(
+        settings,
+        state_repository,
+        capacity_locker=lambda *_args, **_kwargs: True,
+        start_locker=lambda *_args: None,
+        lease_loader=lambda *_args, **_options: lease,
+    )
     manager = SandboxSessionManager(
         settings,
         session_factory=_TransactionDB,
         sandbox_provider=provider,
-        state_repository=ChatSandboxStateRepository(settings),
+        state_repository=state_repository,
+        capacity_repository=capacity_repository,
     )
-    manager._lock_start_claim = lambda *_args: None
-    manager._lease = lambda *_args, **_options: lease
 
     async def enforce_warm_cap():
         return 0
 
-    manager.enforce_warm_cap = enforce_warm_cap
+    manager._acquisition_coordinator().lease_maintenance.enforce_warm_cap = (
+        enforce_warm_cap
+    )
     return manager
 
 

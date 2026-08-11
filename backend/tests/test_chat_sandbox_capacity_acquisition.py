@@ -21,7 +21,12 @@ from backend.models.database import (
     ChatSandboxPool,
     ChatSession,
 )
-from backend.services.chat_sandbox_provider import SandboxError
+from backend.services.chat_sandbox_acquisition_coordinator import (
+    LeaseReused,
+    PoolAcquired,
+    SandboxCreated,
+    legacy_ensure_ready_result,
+)
 from backend.services.chat_sandbox_capacity_repository import (
     CapacityUnavailable,
     ChatSandboxCapacityRepository,
@@ -33,6 +38,7 @@ from backend.services.chat_sandbox_capacity_repository import (
     StartEligible,
     WaitForLease,
 )
+from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
@@ -203,7 +209,14 @@ class _Provider:
         return True
 
 
-def _manager(settings: Settings, sessions, provider) -> SandboxSessionManager:
+def _manager(
+    settings: Settings,
+    sessions,
+    provider,
+    *,
+    capacity_locker=None,
+    start_locker=None,
+) -> SandboxSessionManager:
     opened = provider.transactions
 
     def factory():
@@ -211,15 +224,20 @@ def _manager(settings: Settings, sessions, provider) -> SandboxSessionManager:
         opened.append(db)
         return db
 
-    manager = SandboxSessionManager(
+    state_repository = ChatSandboxStateRepository(settings)
+    capacity_repository = ChatSandboxCapacityRepository(
+        settings,
+        state_repository,
+        capacity_locker=capacity_locker or (lambda _db, *, wait=True: True),
+        start_locker=start_locker or (lambda *_args: None),
+    )
+    return SandboxSessionManager(
         settings,
         session_factory=factory,
         sandbox_provider=provider,
-        state_repository=ChatSandboxStateRepository(settings),
+        state_repository=state_repository,
+        capacity_repository=capacity_repository,
     )
-    manager._lock_start_claim = lambda *_args: None
-    manager._lock_capacity = lambda *_args, **_kwargs: True
-    return manager
 
 
 def _selection_case(
@@ -755,6 +773,49 @@ def test_created_acquisition_preserves_public_result_and_keeps_provider_io_outsi
     assert lease.lease_expires_at is None
 
 
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (
+            PoolAcquired(
+                sandbox="pool",
+                elapsed_ms=11,
+                pool_lookup_ms=3,
+            ),
+            ("pool", 11, False, "pool_hit", 3),
+        ),
+        (
+            LeaseReused(
+                sandbox="reuse",
+                elapsed_ms=12,
+                pool_lookup_ms=None,
+            ),
+            ("reuse", 12, False, "reused_session", None),
+        ),
+        (
+            SandboxCreated(
+                sandbox="created",
+                elapsed_ms=13,
+                after_pool_miss=False,
+                pool_lookup_ms=None,
+            ),
+            ("created", 13, True, "created", None),
+        ),
+        (
+            SandboxCreated(
+                sandbox="miss",
+                elapsed_ms=14,
+                after_pool_miss=True,
+                pool_lookup_ms=4,
+            ),
+            ("miss", 14, True, "pool_miss", 4),
+        ),
+    ],
+)
+def test_typed_acquisition_outcomes_preserve_exact_legacy_result(outcome, expected):
+    assert legacy_ensure_ready_result(outcome) == expected
+
+
 def test_concurrent_first_start_has_one_claim_reservation_and_provider(tmp_path):
     settings = _spend_settings(chat_sandbox_ready_timeout_seconds=2)
     sessions = _file_database(tmp_path / "capacity.db")
@@ -1139,10 +1200,14 @@ def test_spend_enforced_direct_start_locks_capacity_before_session():
     with sessions() as db, db.begin():
         db.add(_session(session_id))
     provider = _Provider(transactions=[])
-    manager = _manager(settings, sessions, provider)
     locks: list[str] = []
-    manager._lock_capacity = lambda *_args, **_kwargs: locks.append("capacity") or True
-    manager._lock_start_claim = lambda *_args: locks.append("session")
+    manager = _manager(
+        settings,
+        sessions,
+        provider,
+        capacity_locker=lambda *_args, **_kwargs: locks.append("capacity") or True,
+        start_locker=lambda *_args: locks.append("session"),
+    )
 
     asyncio.run(manager.ensure_ready(session_id))
 

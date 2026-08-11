@@ -514,7 +514,7 @@ def test_list_and_get_tags_are_provider_passthroughs(monkeypatch):
     ]
 
 
-def test_manager_injected_provider_and_legacy_create_shim_remain_late_bound(
+def test_manager_injected_provider_and_public_create_shim_remain_late_bound(
     monkeypatch,
 ):
     created = object()
@@ -529,22 +529,25 @@ def test_manager_injected_provider_and_legacy_create_shim_remain_late_bound(
         _settings(),
         sandbox_provider=Provider(),
     )
+    injected = manager._provider_adapter()
+    assert manager._worker_transport().provider is injected
     supplied_sandbox = object()
-    assert (
-        asyncio.run(manager._terminate_provider_sandbox("sb-test", supplied_sandbox))
-        is True
-    )
+    assert asyncio.run(injected.terminate("sb-test", supplied_sandbox)) is True
     assert calls == [("terminate", "sb-test", supplied_sandbox)]
 
-    legacy_manager = SandboxSessionManager(_settings())
+    class Adapter:
+        def __init__(self, settings, **_options):
+            self.settings = settings
 
-    async def legacy_create(settings, *, name, tags, worker_generation=None):
-        calls.append(("create", settings, name, tags, worker_generation))
-        return created
+        async def create(self, *, name, tags, worker_generation=None):
+            calls.append(("create", self.settings, name, tags, worker_generation))
+            return created
 
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", legacy_create)
+    monkeypatch.setattr(chat_sandbox_service, "ModalSandboxProviderAdapter", Adapter)
+    settings = _settings()
     result = asyncio.run(
-        legacy_manager._create_provider_sandbox(
+        chat_sandbox_service.create_isolated_sandbox(
+            settings,
             name="chat-test",
             tags={"service": "pwc-chat"},
             worker_generation="generation-a",
@@ -554,7 +557,7 @@ def test_manager_injected_provider_and_legacy_create_shim_remain_late_bound(
     assert result is created
     assert calls[1] == (
         "create",
-        legacy_manager.settings,
+        settings,
         "chat-test",
         {"service": "pwc-chat"},
         "generation-a",

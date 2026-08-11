@@ -17,10 +17,10 @@ from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
 from backend.tests.test_chat_sandbox_capacity_acquisition import (
-    _Provider,
     _database,
     _lease,
     _manager,
+    _Provider,
     _session,
     _settings,
     _spend_settings,
@@ -419,7 +419,9 @@ def test_cancellation_during_warm_cap_aborts_owned_pre_provider_start():
 
         provider = _Provider(transactions=[])
         manager = _manager(settings, sessions, provider)
-        manager.enforce_warm_cap = blocking_warm_cap
+        manager._acquisition_coordinator().lease_maintenance.enforce_warm_cap = (
+            blocking_warm_cap
+        )
         start = asyncio.create_task(manager.ensure_ready(session_id))
         await warm_cap_started.wait()
         start.cancel()

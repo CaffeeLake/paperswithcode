@@ -18,12 +18,16 @@ from backend.models.database import (
     ChatSession,
 )
 from backend.services import chat_sandbox_service
+from backend.services.chat_sandbox_capacity_repository import (
+    ChatSandboxCapacityRepository,
+)
 from backend.services.chat_sandbox_pool_coordinator import PoolMaintenanceResult
 from backend.services.chat_sandbox_service import (
     SandboxError,
     SandboxSessionManager,
     WorkerClaim,
 )
+from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
 
 
 def _settings(**overrides) -> Settings:
@@ -100,10 +104,43 @@ def _blank(
     )
 
 
-def _manager(factory, settings: Settings) -> SandboxSessionManager:
-    manager = SandboxSessionManager(settings, session_factory=factory)
-    manager._lock_capacity = lambda _db, wait=True: True
-    return manager
+class _AcquisitionProvider:
+    def __init__(self, sandbox_id: str):
+        self.created = SimpleNamespace(object_id=sandbox_id)
+        self.terminated: list[str] = []
+
+    async def create(self, **_options):
+        return self.created
+
+    async def resolve(self, sandbox_id: str):
+        return SimpleNamespace(object_id=sandbox_id)
+
+    async def poll(self, _sandbox):
+        return None
+
+    async def health(self, _sandbox, **_options):
+        return True
+
+    async def terminate(self, sandbox_id: str, _sandbox=None):
+        self.terminated.append(sandbox_id)
+        return True
+
+
+def _manager(factory, settings: Settings, provider=None) -> SandboxSessionManager:
+    state_repository = ChatSandboxStateRepository(settings)
+    capacity_repository = ChatSandboxCapacityRepository(
+        settings,
+        state_repository,
+        capacity_locker=lambda *_args, **_kwargs: True,
+        start_locker=lambda *_args: None,
+    )
+    return SandboxSessionManager(
+        settings,
+        session_factory=factory,
+        sandbox_provider=provider,
+        state_repository=state_repository,
+        capacity_repository=capacity_repository,
+    )
 
 
 def test_claim_blank_facade_only_delegates_to_the_pool_coordinator():
@@ -404,7 +441,7 @@ def test_reported_modal_cost_is_a_floor_for_budget_enforcement():
     assert status["within_budget"] is False
 
 
-def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
+def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity():
     factory = _database()
     settings = _settings()
     old_id, new_id = uuid.uuid4(), uuid.uuid4()
@@ -432,8 +469,8 @@ def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
                 ),
             ]
         )
-    manager = _manager(factory, settings)
-    manager._lock_start_claim = lambda *_args: None
+    provider = _AcquisitionProvider("sb-new")
+    manager = _manager(factory, settings, provider)
     evicted: list[uuid.UUID] = []
 
     async def evict(session_id: uuid.UUID):
@@ -442,19 +479,11 @@ def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
             lease = db.get(ChatSandboxLease, session_id)
             lease.modal_sandbox_id = None
             lease.state = "terminated"
-        return True
+        return SimpleNamespace(acquired=True)
 
-    manager.snapshot_and_terminate = evict
-    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
-
-    class Sandbox:
-        object_id = "sb-new"
-        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
-
-    async def create(*_args, **_kwargs):
-        return Sandbox()
-
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+    acquisition = manager._acquisition_coordinator()
+    acquisition.pool.lease_eviction.evict_idle = evict
+    acquisition.lease_maintenance.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
 
     result = asyncio.run(manager.ensure_ready(new_id, allow_pool=False, pool_miss=True))
 
@@ -469,9 +498,7 @@ def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
     assert new_lease.modal_sandbox_id == "sb-new"
 
 
-def test_incompatible_session_lease_is_replaced_without_consuming_capacity(
-    monkeypatch,
-):
+def test_incompatible_session_lease_is_replaced_without_consuming_capacity():
     factory = _database()
     settings = _settings()
     session_id = uuid.uuid4()
@@ -495,29 +522,15 @@ def test_incompatible_session_lease_is_replaced_without_consuming_capacity(
                 ),
             ]
         )
-    manager = _manager(factory, settings)
-    manager._lock_start_claim = lambda *_args: None
-    terminated: list[str] = []
-
-    async def terminate(sandbox_id: str):
-        terminated.append(sandbox_id)
-        return True
-
-    manager._terminate_provider_sandbox = terminate
-    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
-
-    class Sandbox:
-        object_id = "sb-new"
-        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
-
-    async def create(*_args, **_kwargs):
-        return Sandbox()
-
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+    provider = _AcquisitionProvider("sb-new")
+    manager = _manager(factory, settings, provider)
+    manager._acquisition_coordinator().lease_maintenance.enforce_warm_cap = (
+        lambda: asyncio.sleep(0, result=0)
+    )
 
     result = asyncio.run(manager.ensure_ready(session_id, allow_pool=False))
 
-    assert terminated == ["sb-old"]
+    assert provider.terminated == ["sb-old"]
     assert result[0].object_id == "sb-new"
     with factory() as db:
         lease = db.get(ChatSandboxLease, session_id)
@@ -527,7 +540,7 @@ def test_incompatible_session_lease_is_replaced_without_consuming_capacity(
     assert lease.modal_sandbox_id == "sb-new"
 
 
-def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity(monkeypatch):
+def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity():
     factory = _database()
     settings = _settings()
     old_id, resumed_id = uuid.uuid4(), uuid.uuid4()
@@ -564,8 +577,8 @@ def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity(monkeypa
                 ),
             ]
         )
-    manager = _manager(factory, settings)
-    manager._lock_start_claim = lambda *_args: None
+    provider = _AcquisitionProvider("sb-resumed")
+    manager = _manager(factory, settings, provider)
     evicted: list[uuid.UUID] = []
 
     async def evict(session_id: uuid.UUID):
@@ -574,19 +587,11 @@ def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity(monkeypa
             lease = db.get(ChatSandboxLease, session_id)
             lease.modal_sandbox_id = None
             lease.state = "terminated"
-        return True
+        return SimpleNamespace(acquired=True)
 
-    manager.snapshot_and_terminate = evict
-    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
-
-    class Sandbox:
-        object_id = "sb-resumed"
-        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
-
-    async def create(*_args, **_kwargs):
-        return Sandbox()
-
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+    acquisition = manager._acquisition_coordinator()
+    acquisition.pool.lease_eviction.evict_idle = evict
+    acquisition.lease_maintenance.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
 
     result = asyncio.run(manager.ensure_ready(resumed_id, allow_pool=False))
 
@@ -662,7 +667,6 @@ def test_terminated_session_resume_rejects_capacity_without_idle_worker():
             ]
         )
     manager = _manager(factory, settings)
-    manager._lock_start_claim = lambda *_args: None
 
     with pytest.raises(SandboxError, match="capacity"):
         asyncio.run(manager.ensure_ready(resumed_id, allow_pool=False))

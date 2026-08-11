@@ -123,6 +123,17 @@ class ChatSandboxCapacityRepository:
         self._start_locker = start_locker or state_repository.lock_start_claim
         self._lease_loader = lease_loader or state_repository.load_lease
 
+    @property
+    def capacity_locker(self) -> CapacityLocker:
+        """Expose the exact shared capacity lock dependency to coordinators."""
+
+        return self._capacity_locker
+
+    def acquire_capacity_lock(self, db: Session, *, wait: bool = True) -> bool:
+        """Acquire the configured capacity lock without exposing private state."""
+
+        return self._capacity_locker(db, wait=wait)
+
     def select(
         self,
         db: Session,

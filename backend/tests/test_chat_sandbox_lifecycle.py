@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -15,77 +12,7 @@ from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
     WorkerClaim,
 )
-
-
-class _Context:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-
-class _Result:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
-
-
-class _DB(_Context):
-    def __init__(self, rows=None):
-        self.rows = rows or []
-
-    def begin(self):
-        return _Context()
-
-    def add(self, _value):
-        return None
-
-    def execute(self, _query):
-        if "JOIN chat_sessions" in str(_query):
-            return _Result([])
-        return _Result(list(self.rows))
-
-
-class _LeaseStore:
-    def __init__(self):
-        self.lease = None
-        self.add_calls = 0
-        self.advisory_lock = threading.Lock()
-        self.first_missing_read = threading.Event()
-
-
-class _Transaction(_Context):
-    def __init__(self, db):
-        self.db = db
-
-    def __exit__(self, error_type, *_args):
-        if error_type is None and self.db.pending is not None:
-            self.db.store.lease = self.db.pending
-        if self.db.holds_advisory_lock:
-            self.db.store.advisory_lock.release()
-        return False
-
-
-class _TransactionalDB(_Context):
-    def __init__(self, store):
-        self.store = store
-        self.pending = None
-        self.holds_advisory_lock = False
-
-    def begin(self):
-        return _Transaction(self)
-
-    def add(self, value):
-        self.store.add_calls += 1
-        self.pending = value
-
-    def execute(self, _query):
-        self.store.advisory_lock.acquire()
-        self.holds_advisory_lock = True
-        return _Result([])
+from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
 
 
 class _AsyncCall:
@@ -138,123 +65,6 @@ def _lease(*, state: str, sandbox_id: str | None):
         failure_code=None,
         updated_at=datetime.now(UTC),
     )
-
-
-def _manager(lease, *, rows=None):
-    manager = SandboxSessionManager.__new__(SandboxSessionManager)
-    manager.settings = SimpleNamespace(
-        release_id="current-release",
-        chat_modal_image_version="im-current",
-        chat_worker_contract_version="worker-v1",
-        chat_workspace_snapshots_enabled=False,
-        chat_sandbox_ready_timeout_seconds=2,
-    )
-    manager.session_factory = lambda: _DB(rows)
-    manager.snapshots = SimpleNamespace()
-    manager._lease = lambda _db, _session_id, *, lock: lease
-
-    async def enforce_warm_cap():
-        return 0
-
-    manager.enforce_warm_cap = enforce_warm_cap
-    return manager
-
-
-def test_concurrent_startup_waits_for_the_existing_owner(monkeypatch):
-    async def run():
-        lease = _lease(state="terminated", sandbox_id=None)
-        manager = _manager(lease)
-        created = _Sandbox("sb-created")
-        creation_started = asyncio.Event()
-        allow_creation = asyncio.Event()
-        create_calls = 0
-
-        async def create(*_args, **_kwargs):
-            nonlocal create_calls
-            create_calls += 1
-            creation_started.set()
-            await allow_creation.wait()
-            return created
-
-        async def from_id(sandbox_id):
-            assert sandbox_id == "sb-created"
-            return created
-
-        monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
-        monkeypatch.setattr(
-            chat_sandbox_service.modal.Sandbox,
-            "from_id",
-            _AsyncCall(from_id),
-        )
-
-        session_id = uuid.uuid4()
-        owner = asyncio.create_task(manager.ensure_ready(session_id))
-        await creation_started.wait()
-        waiter = asyncio.create_task(manager.ensure_ready(session_id))
-        await asyncio.sleep(0.1)
-
-        assert create_calls == 1
-        assert lease.state == "starting"
-
-        allow_creation.set()
-        owner_result, waiter_result = await asyncio.gather(owner, waiter)
-        assert owner_result[2] is True
-        assert waiter_result[2] is False
-        assert lease.state == "ready"
-        assert lease.modal_sandbox_id == "sb-created"
-        assert create_calls == 1
-
-    asyncio.run(run())
-
-
-def test_concurrent_startup_single_flights_initial_lease_insert(monkeypatch):
-    store = _LeaseStore()
-    manager = _manager(None)
-    manager.session_factory = lambda: _TransactionalDB(store)
-
-    def read_lease(_db, _session_id, *, lock):
-        assert lock is True
-        lease = store.lease
-        if lease is None and not store.first_missing_read.is_set():
-            store.first_missing_read.set()
-            time.sleep(0.1)
-        return lease
-
-    manager._lease = read_lease
-    created = _Sandbox("sb-created")
-    create_calls = 0
-    create_lock = threading.Lock()
-
-    async def create(*_args, **_kwargs):
-        nonlocal create_calls
-        with create_lock:
-            create_calls += 1
-        return created
-
-    async def from_id(sandbox_id):
-        assert sandbox_id == "sb-created"
-        return created
-
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
-    monkeypatch.setattr(
-        chat_sandbox_service.modal.Sandbox,
-        "from_id",
-        _AsyncCall(from_id),
-    )
-
-    session_id = uuid.uuid4()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        owner = pool.submit(asyncio.run, manager.ensure_ready(session_id))
-        assert store.first_missing_read.wait(timeout=1)
-        waiter = pool.submit(asyncio.run, manager.ensure_ready(session_id))
-        owner_result = owner.result(timeout=3)
-        waiter_result = waiter.result(timeout=3)
-
-    assert store.add_calls == 1
-    assert create_calls == 1
-    assert {owner_result[2], waiter_result[2]} == {True, False}
-    assert store.lease.state == "ready"
-    assert store.lease.modal_sandbox_id == "sb-created"
 
 
 def test_persistent_turns_reuse_one_control_attachment():
@@ -457,13 +267,18 @@ def test_cancel_control_write_failure_terminates_worker():
 def test_stale_successful_worker_cannot_release_a_successor_or_termination():
     lease = _lease(state="busy", sandbox_id="sb-old")
     lease.lease_token_hash = "worker-old"
-    manager = _manager(lease)
+    repository = ChatSandboxStateRepository(
+        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+    )
     stale_claim = WorkerClaim("sb-old", "worker-old")
-    session_id = uuid.uuid4()
 
     lease.modal_sandbox_id = "sb-new"
     lease.lease_token_hash = "worker-new"
-    assert not manager._release_worker(session_id, stale_claim)
+    assert not repository.release_worker(
+        lease,
+        claim=stale_claim,
+        now=datetime.now(UTC),
+    )
     assert lease.state == "busy"
     assert lease.modal_sandbox_id == "sb-new"
     assert lease.lease_token_hash == "worker-new"
@@ -472,7 +287,11 @@ def test_stale_successful_worker_cannot_release_a_successor_or_termination():
     lease.state = "terminating"
     lease.modal_sandbox_id = "sb-old"
     lease.lease_token_hash = "termination-new"
-    assert not manager._release_worker(session_id, stale_claim)
+    assert not repository.release_worker(
+        lease,
+        claim=stale_claim,
+        now=datetime.now(UTC),
+    )
     assert lease.state == "terminating"
     assert lease.modal_sandbox_id == "sb-old"
     assert lease.lease_token_hash == "termination-new"

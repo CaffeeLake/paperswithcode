@@ -19,12 +19,16 @@ from backend.models.database import (
 )
 from backend.scripts.manage_chat_sandbox_circuit import operator_identity
 from backend.services import chat_sandbox_service
+from backend.services.chat_sandbox_capacity_repository import (
+    ChatSandboxCapacityRepository,
+)
 from backend.services.chat_sandbox_service import SandboxError, SandboxSessionManager
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
     billing_cycle,
 )
+from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
 
 
 def factory():
@@ -85,7 +89,7 @@ def test_lifecycle_meter_includes_reservation_to_confirmed_termination():
         assert state.outstanding_reservation_microusd == 0
 
 
-def test_cancelled_start_releases_pre_provider_reservation(monkeypatch):
+def test_cancelled_start_releases_pre_provider_reservation():
     sessions = factory()
     configured = settings()
     session_id = uuid.uuid4()
@@ -99,18 +103,28 @@ def test_cancelled_start_releases_pre_provider_reservation(monkeypatch):
                 execution_backend="modal_cli",
             )
         )
-    manager = SandboxSessionManager(configured, session_factory=sessions)
-    manager._lock_start_claim = lambda *_args: None
 
     async def enforce_warm_cap():
         return 0
 
-    async def cancelled_create(*_args, **_kwargs):
-        raise asyncio.CancelledError
+    class Provider:
+        async def create(self, **_options):
+            raise asyncio.CancelledError
 
-    manager.enforce_warm_cap = enforce_warm_cap
-    monkeypatch.setattr(
-        chat_sandbox_service, "create_isolated_sandbox", cancelled_create
+    state_repository = ChatSandboxStateRepository(configured)
+    manager = SandboxSessionManager(
+        configured,
+        session_factory=sessions,
+        sandbox_provider=Provider(),
+        state_repository=state_repository,
+        capacity_repository=ChatSandboxCapacityRepository(
+            configured,
+            state_repository,
+            start_locker=lambda *_args: None,
+        ),
+    )
+    manager._acquisition_coordinator().lease_maintenance.enforce_warm_cap = (
+        enforce_warm_cap
     )
 
     with pytest.raises(asyncio.CancelledError):
@@ -280,15 +294,8 @@ def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
     class ListCall:
         aio = staticmethod(listed)
 
-    terminated = []
-
-    async def terminate_provider(sandbox_id, _sandbox=None):
-        terminated.append(sandbox_id)
-        return True
-
     monkeypatch.setattr(chat_sandbox_service.modal.Sandbox, "list", ListCall())
     manager = SandboxSessionManager(configured, session_factory=sessions)
-    manager._terminate_provider_sandbox = terminate_provider
     manager._spend_cap_coordinator().sleeper = no_wait
 
     result = asyncio.run(manager.enforce_spend_cap())
@@ -296,7 +303,6 @@ def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
     with sessions() as db:
         lease = db.get(ChatSandboxLease, session_id)
     assert result == {"state": "tripped", "terminated": 0, "uncertain": 0}
-    assert terminated == []
     assert lease.state == "busy"
     assert lease.modal_sandbox_id == "sb-busy"
 
