@@ -17,7 +17,6 @@ from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 from backend.config import Settings
 from backend.services.chat_sandbox_acquisition_coordinator import SandboxCreated
 from backend.services.chat_sandbox_provider import SandboxError
-from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_state_repository import WorkerClaim
 from backend.services.chat_sandbox_turn_coordinator import ChatSandboxTurnRequest
 from backend.services.chat_sandbox_worker_transport import (
@@ -609,19 +608,17 @@ def test_uncorrelated_frame_fails_every_live_request_without_cross_routing():
     asyncio.run(exercise())
 
 
-def test_manager_control_facade_keeps_existing_lifecycle_contract():
+def test_transport_drop_control_keeps_existing_lifecycle_contract():
     async def exercise():
-        manager = SandboxSessionManager(
-            Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
-        )
+        transport = _transport()
         session_id = uuid.uuid4()
         control = _control("sb-manager")
-        manager._controls[session_id] = control
+        transport.register_session_control(session_id, control)
 
-        manager._drop_control(session_id)
+        transport.drop_session_control(session_id)
         await control.process.close_started.wait()
 
-        assert session_id not in manager._controls
+        assert session_id not in transport.session_controls
         assert control.process.close_calls == 1
 
     asyncio.run(exercise())

@@ -81,8 +81,7 @@ from backend.services.chat_sandbox_turn_coordinator import (
 )
 from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
-    RunningWorker,
-    SessionControl,
+    RunningWorker as RunningWorker,  # noqa: PLC0414
     WorkerCancelStatus,
 )
 
@@ -248,42 +247,6 @@ class SandboxSessionManager:
             transport = ChatSandboxWorkerTransport(self._provider_adapter())
             self._worker_transport_state = transport
         return transport
-
-    @property
-    def _processes(self) -> dict[uuid.UUID, RunningWorker]:
-        """Compatibility view for established manager tests and callers."""
-
-        return self._worker_transport().processes
-
-    @_processes.setter
-    def _processes(self, processes: dict[uuid.UUID, RunningWorker]) -> None:
-        self._worker_transport().processes = processes
-
-    @property
-    def _controls(self) -> dict[uuid.UUID, SessionControl]:
-        """Compatibility view; transport owns all production mutations."""
-
-        return self._worker_transport().session_controls
-
-    @_controls.setter
-    def _controls(self, controls: dict[uuid.UUID, SessionControl]) -> None:
-        self._worker_transport().session_controls = controls
-
-    @property
-    def _blank_controls(self) -> dict[str, SessionControl]:
-        return self._worker_transport().blank_controls
-
-    @_blank_controls.setter
-    def _blank_controls(self, controls: dict[str, SessionControl]) -> None:
-        self._worker_transport().blank_controls = controls
-
-    @property
-    def _blank_health_at(self) -> dict[str, float]:
-        return self._worker_transport().blank_health_at
-
-    @_blank_health_at.setter
-    def _blank_health_at(self, checked_at: dict[str, float]) -> None:
-        self._worker_transport().blank_health_at = checked_at
 
     def _state_repository(self) -> ChatSandboxStateRepository:
         repository = getattr(self, "_sandbox_state", None)
@@ -464,18 +427,6 @@ class SandboxSessionManager:
     def pool_budget_status(self) -> PoolBudgetStatus:
         return self._spend_reconciler().pool_budget_status()
 
-    async def _start_persistent_control(
-        self, sandbox, worker_generation: str
-    ) -> SessionControl:
-        return await self._worker_transport().open_persistent_control(
-            sandbox, worker_generation
-        )
-
-    async def _ping_control(
-        self, control: SessionControl, worker_generation: str
-    ) -> bool:
-        return await self._worker_transport().ping(control, worker_generation)
-
     async def claim_blank(
         self, chat_session_id: uuid.UUID
     ) -> tuple[object, int] | None:
@@ -617,12 +568,6 @@ class SandboxSessionManager:
                 budget_prechecked=budget_prechecked,
             )
         )
-
-    def _drop_control(self, chat_session_id: uuid.UUID) -> None:
-        self._worker_transport().drop_session_control(chat_session_id)
-
-    def _drop_blank_control(self, sandbox_id: str) -> None:
-        self._worker_transport().drop_blank_control(sandbox_id)
 
     async def run_turn(
         self,

@@ -350,7 +350,7 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     assert pool.modal_sandbox_id == "sb-new"
     assert pool.last_health_checked_at is not None
     assert lease_count == 0
-    assert manager._blank_controls == {"sb-new": control}
+    assert manager._worker_transport().blank_controls == {"sb-new": control}
 
 
 def test_reconcile_terminates_expired_busy_and_terminating_leases(monkeypatch):

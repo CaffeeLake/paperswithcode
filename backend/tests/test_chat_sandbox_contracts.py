@@ -2453,7 +2453,10 @@ def test_persistent_control_uses_authenticated_connect_token(monkeypatch):
     )
 
     async def exercise():
-        control = await manager._start_persistent_control(sandbox, "generation-a")
+        control = await manager._worker_transport().open_persistent_control(
+            sandbox,
+            "generation-a",
+        )
         control.process.stdin.write(b"first")
         control.process.stdin.write(b"-second")
         await control.process.stdin.drain.aio()
