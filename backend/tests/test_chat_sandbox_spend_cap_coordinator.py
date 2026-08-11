@@ -261,8 +261,12 @@ class _PoolCoordinator:
 
 
 class _CapacityLocker:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def __call__(self, db, *, wait=True):
         assert wait is True
+        self.calls += 1
         db.info["capacity_locked"] = True
         return True
 
@@ -591,7 +595,7 @@ def test_grace_sleep_protects_busy_provider_and_uses_exact_environment_tags():
     assert harness.events()[-1] == "kill_sweep_incomplete"
 
 
-def test_deadline_crossing_between_legacy_reads_skips_forcing_and_protection():
+def test_one_deadline_decision_keeps_busy_protected_when_forcing_is_skipped():
     harness = _Harness()
     harness.add_lease(state="busy", sandbox_id="sb-boundary-busy")
     harness.provider.listed = [_sandbox("sb-boundary-busy")]
@@ -625,8 +629,9 @@ def test_deadline_crossing_between_legacy_reads_skips_forcing_and_protection():
     assert slept == [0.5]
     assert harness.transport.signaled == []
     assert harness.lifecycle.calls == []
-    assert harness.provider.termination_calls == ["sb-boundary-busy"]
-    assert result == SpendCapEnforcementResult(state="tripped", terminated=1)
+    assert harness.provider.termination_calls == []
+    assert result == SpendCapEnforcementResult(state="tripped")
+    assert next(moments) == base + timedelta(seconds=30.1)
 
 
 def test_provider_success_false_and_error_have_exact_conservative_accounting():
@@ -770,6 +775,7 @@ def test_final_completeness_uses_global_owners_and_environment_intervals():
     complete = _Harness()
     complete.trip(seconds_ago=31)
     assert asyncio.run(complete.coordinator().enforce()).state == "tripped"
+    assert complete.capacity_locker.calls == 1
     assert complete.events()[-1] == "kill_sweep_complete"
 
     other_environment_interval = _Harness()

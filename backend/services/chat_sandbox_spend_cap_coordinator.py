@@ -112,6 +112,7 @@ class ChatSandboxSpendCapCoordinator:
         self.pool = pool
         self.transport = transport
         self.provider = provider
+        self.capacity_locker = lifecycle.capacity_locker
         self.spend_factory = spend_factory or (
             lambda db: ChatSandboxSpendService(db, settings)
         )
@@ -138,11 +139,10 @@ class ChatSandboxSpendCapCoordinator:
         deadline = self._deadline(status["tripped_at"])
         terminated = await self._terminate_tracked(self._tracked_shutdown_plan())
         await self._wait_for_grace(deadline)
-        if self.utcnow() >= deadline:
+        forced = self.utcnow() >= deadline
+        if forced:
             terminated += await self._force_busy_shutdown()
-        protected_busy_ids = (
-            self._busy_sandbox_ids() if self.utcnow() < deadline else set()
-        )
+        protected_busy_ids = set() if forced else self._busy_sandbox_ids()
         provider_sweep = await self._sweep_provider(protected_busy_ids)
         terminated += provider_sweep.terminated
         self._record_kill_sweep(provider_uncertain=provider_sweep.uncertain)
@@ -283,6 +283,7 @@ class ChatSandboxSpendCapCoordinator:
 
     def _record_kill_sweep(self, *, provider_uncertain: int) -> None:
         with self.session_factory() as db, db.begin():
+            self.capacity_locker(db)
             remaining_live = (
                 db.scalar(
                     select(func.count())
