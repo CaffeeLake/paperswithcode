@@ -27,6 +27,9 @@ from backend.services.chat_sandbox_lease_maintenance_coordinator import (
     ChatSandboxLeaseMaintenanceCoordinator,
 )
 from backend.services.chat_sandbox_provider import SandboxError
+from backend.services.chat_sandbox_spend_access import (
+    assert_chat_sandbox_spend_available,
+)
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
@@ -163,7 +166,14 @@ class ChatSandboxTurnCoordinator:
         """Stream one turn, retrying one failed reusable assignment at most once."""
 
         if self.spend_enforced:
-            self._assert_budget_available()
+            try:
+                assert_chat_sandbox_spend_available(
+                    self.settings,
+                    session_factory=self.session_factory,
+                    spend_factory=self.spend_factory,
+                )
+            except ChatComputeDisabled as error:
+                raise SandboxError(error.code, str(error)) from error
         retrying_assignment = False
         while True:
             try:
@@ -180,15 +190,6 @@ class ChatSandboxTurnCoordinator:
                 if error.code != "pool_assignment_failed" or retrying_assignment:
                     raise
                 retrying_assignment = True
-
-    def _assert_budget_available(self) -> None:
-        with self.session_factory() as db:
-            try:
-                self.spend_factory(db).assert_available()
-            except ChatComputeDisabled as error:
-                db.commit()
-                raise SandboxError(error.code, str(error)) from error
-            db.commit()
 
     async def _run_once(
         self,

@@ -56,9 +56,12 @@ from backend.services.chat_sandbox_service import (
     SandboxCleanupUnverified,
     SandboxSessionManager,
 )
+from backend.services.chat_sandbox_spend_access import (
+    assert_chat_sandbox_spend_available,
+    chat_sandbox_spend_status,
+)
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
-    ChatSandboxSpendService,
 )
 from backend.services.chat_session_service import (
     ChatServiceError,
@@ -413,13 +416,10 @@ def chat_availability(user: dict = Depends(require_user)):
             "web_search_available": search_available,
         }
     try:
-        with db_manager.session_local() as db:
-            try:
-                ChatSandboxSpendService(db, settings).assert_available()
-            except ChatComputeDisabled:
-                db.commit()
-                raise
-            db.commit()
+        assert_chat_sandbox_spend_available(
+            settings,
+            session_factory=db_manager.session_local,
+        )
         return {
             "status": "available",
             "reason": None,
@@ -461,8 +461,10 @@ def chat_sandbox_spend(environment: str | None = None):
         if not environment.startswith(f"{settings.environment}-q-"):
             raise HTTPException(status_code=404, detail="Unknown qualification")
         settings = settings.model_copy(update={"environment": environment})
-    with db_manager.session_local() as db, db.begin():
-        return ChatSandboxSpendService(db, settings).status()
+    return chat_sandbox_spend_status(
+        settings,
+        session_factory=db_manager.session_local,
+    )
 
 
 @router.get("/usage")
@@ -917,13 +919,10 @@ async def stream_chat(
         and settings.chat_sandbox_spend_enforcement_enabled
     ):
         try:
-            with db_manager.session_local() as budget_db:
-                try:
-                    ChatSandboxSpendService(budget_db, settings).assert_available()
-                except ChatComputeDisabled:
-                    budget_db.commit()
-                    raise
-                budget_db.commit()
+            assert_chat_sandbox_spend_available(
+                settings,
+                session_factory=db_manager.session_local,
+            )
         except ChatComputeDisabled as error:
             raise HTTPException(
                 status_code=503,

@@ -40,6 +40,7 @@ from backend.services.chat_agent_service import (
     stream_agent_events,
 )
 from backend.services.chat_sandbox_service import SandboxCleanupUnverified
+from backend.services.chat_sandbox_spend_service import ChatComputeDisabled
 from backend.services.chat_session_service import (
     ChatDeletionReceipt,
     ChatOwner,
@@ -183,6 +184,86 @@ def test_create_session_fails_closed_when_public_admission_is_disabled():
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["code"] == "chat_temporarily_disabled"
+
+
+def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
+    monkeypatch,
+):
+    settings = Settings(
+        _env_file=None,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        chat_default_backend="modal_cli",
+        chat_sandbox_spend_enforcement_enabled=True,
+        chat_paper_mentions_enabled=True,
+    )
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(chat_router, "web_search_available", lambda _settings: True)
+
+    def reject(*_args, **_kwargs):
+        raise ChatComputeDisabled("private circuit detail")
+
+    monkeypatch.setattr(chat_router, "assert_chat_sandbox_spend_available", reject)
+
+    assert chat_router.chat_availability(user={}) == {
+        "status": "paused",
+        "reason": "chat_temporarily_disabled",
+        "expected_recovery_at": None,
+        "paper_mentions_enabled": True,
+        "web_search_available": False,
+    }
+
+
+def test_stream_spend_rejection_preserves_exact_503_before_admission(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        chat_enabled=True,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        chat_default_backend="modal_cli",
+        chat_sandbox_spend_enforcement_enabled=True,
+    )
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+
+    def reject(*_args, **_kwargs):
+        raise ChatComputeDisabled("Chat is temporarily disabled")
+
+    monkeypatch.setattr(chat_router, "assert_chat_sandbox_spend_available", reject)
+    body = ChatRequest(message="hello", client_message_id="message-a")
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            chat_router.stream_chat(
+                body,
+                _cookie_request(),
+                {"hf_user_id": "owner-1", "username": "owner"},
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        "code": "chat_temporarily_disabled",
+        "message": "Chat is temporarily disabled",
+    }
+
+
+def test_sandbox_spend_admin_status_preserves_qualification_scope(monkeypatch):
+    settings = Settings(_env_file=None, environment="staging")
+    seen: list[str] = []
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        chat_router,
+        "chat_sandbox_spend_status",
+        lambda scoped, **_kwargs: seen.append(scoped.environment) or {"ok": True},
+    )
+
+    assert chat_router.chat_sandbox_spend("staging-q-pool") == {"ok": True}
+    assert seen == ["staging-q-pool"]
+
+    with pytest.raises(Exception) as exc_info:
+        chat_router.chat_sandbox_spend("production-q-pool")
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Unknown qualification"
 
 
 def test_production_openrouter_api_is_absent():
