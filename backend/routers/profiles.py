@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -8,10 +7,9 @@ from sqlalchemy.orm import Session
 
 from backend.config import get_settings
 from backend.database.connection import get_database_session
-from backend.models.database import PendingPaperEdit
 from backend.routers.auth import decode_request_session
-from backend.services.user_profile_service import UserProfileError, UserProfileService
 from backend.services.catalog_mutation_service import CatalogMutationService
+from backend.services.user_profile_service import UserProfileError, UserProfileService
 from backend.utils.auth import require_hf_admin
 
 router = APIRouter()
@@ -32,8 +30,9 @@ def get_profile(
     request: Request,
     db: Session = Depends(get_database_session),
 ):
+    service = UserProfileService(db)
     try:
-        profile, redirected = UserProfileService(db).resolve(username)
+        profile, redirected = service.resolve(username)
     except UserProfileError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     if redirected:
@@ -41,37 +40,33 @@ def get_profile(
             url=f"/api/v1/profiles/{profile.current_username}", status_code=308
         )
     session = decode_request_session(request) or {}
-    is_owner = session.get("sub") == profile.hf_subject
-    private_submissions = []
-    if is_owner:
-        rows = (
-            db.query(PendingPaperEdit)
-            .filter(PendingPaperEdit.hf_subject == profile.hf_subject)
-            .order_by(PendingPaperEdit.created_at.desc())
-            .limit(200)
-            .all()
-        )
-        private_submissions = [
-            {
-                "id": row.id,
-                "edit_type": row.edit_type,
-                "status": row.status,
-                "proposed_payload": row.proposed_payload,
-                "applied_payload": row.applied_payload,
-                "result_entity_type": row.result_entity_type,
-                "result_entity_id": row.result_entity_id,
-                "review_reason": row.user_review_reason,
-                "created_at": row.created_at,
-                "reviewed_at": row.reviewed_at,
-            }
-            for row in rows
-        ]
-    service = UserProfileService(db)
+    viewer_hf_subject = session.get("sub")
+    private_view = service.private_view(
+        profile_hf_subject=profile.hf_subject,
+        viewer_hf_subject=(
+            viewer_hf_subject if isinstance(viewer_hf_subject, str) else None
+        ),
+    )
+    private_submissions = [
+        {
+            "id": submission.id,
+            "edit_type": submission.edit_type,
+            "status": submission.status,
+            "proposed_payload": submission.proposed_payload,
+            "applied_payload": submission.applied_payload,
+            "result_entity_type": submission.result_entity_type,
+            "result_entity_id": submission.result_entity_id,
+            "review_reason": submission.review_reason,
+            "created_at": submission.created_at,
+            "reviewed_at": submission.reviewed_at,
+        }
+        for submission in private_view.submissions
+    ]
     return {
         "username": profile.current_username,
         "redirected_from_alias": redirected,
         "calendar": service.contribution_calendar(profile.hf_subject),
-        "is_owner": is_owner,
+        "is_owner": private_view.is_owner,
         "submissions": private_submissions,
     }
 

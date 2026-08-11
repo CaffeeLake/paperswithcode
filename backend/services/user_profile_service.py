@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import aliased
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from backend.models.database import (
     CatalogMutationEvent,
@@ -51,6 +51,26 @@ class UserProfileError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class PrivateSubmissionProjection:
+    id: int
+    edit_type: str
+    status: str
+    proposed_payload: dict
+    applied_payload: dict | None
+    result_entity_type: str | None
+    result_entity_id: str | None
+    review_reason: str | None
+    created_at: datetime
+    reviewed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ProfilePrivateView:
+    is_owner: bool
+    submissions: tuple[PrivateSubmissionProjection, ...]
+
+
 def normalize_profile_username(value: str) -> str:
     normalized = value.strip().lower()
     if not normalized or len(normalized) > 255 or "/" in normalized:
@@ -90,6 +110,41 @@ class UserProfileService:
         if profile is None:
             raise UserProfileError("Profile not found")
         return profile, username != profile.current_username
+
+    def private_view(
+        self,
+        *,
+        profile_hf_subject: str,
+        viewer_hf_subject: str | None,
+    ) -> ProfilePrivateView:
+        if viewer_hf_subject != profile_hf_subject:
+            return ProfilePrivateView(is_owner=False, submissions=())
+
+        rows = (
+            self.db.query(PendingPaperEdit)
+            .filter(PendingPaperEdit.hf_subject == profile_hf_subject)
+            .order_by(PendingPaperEdit.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        return ProfilePrivateView(
+            is_owner=True,
+            submissions=tuple(
+                PrivateSubmissionProjection(
+                    id=row.id,
+                    edit_type=row.edit_type,
+                    status=row.status,
+                    proposed_payload=row.proposed_payload,
+                    applied_payload=row.applied_payload,
+                    result_entity_type=row.result_entity_type,
+                    result_entity_id=row.result_entity_id,
+                    review_reason=row.user_review_reason,
+                    created_at=row.created_at,
+                    reviewed_at=row.reviewed_at,
+                )
+                for row in rows
+            ),
+        )
 
     def contribution_calendar(self, hf_subject: str) -> dict:
         end_date = date.today()
