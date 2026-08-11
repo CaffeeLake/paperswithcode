@@ -124,7 +124,7 @@ class CodexPaperJobService:
         return self._hf_api or HfApi(token=settings.codex_jobs_token)
 
     @staticmethod
-    def _serialize(row: PaperCurationJob, settings: Settings) -> CodexPaperJob:
+    def serialize(row: PaperCurationJob, settings: Settings) -> CodexPaperJob:
         return CodexPaperJob(
             id=row.id,
             paper_id=int(row.paper_id),
@@ -154,6 +154,9 @@ class CodexPaperJobService:
             ),
         )
 
+    # Compatibility name for callers and tests that predate the public serializer.
+    _serialize = serialize
+
     def enqueue(
         self,
         db: Session,
@@ -179,7 +182,7 @@ class CodexPaperJobService:
         db.refresh(row)
         self.dispatch_next(db, settings)
         db.refresh(row)
-        return self._serialize(row, settings)
+        return self.serialize(row, settings)
 
     def dispatch_next(self, db: Session, settings: Settings) -> None:
         """Launch exactly one queued Job when no remote curation Job is active."""
@@ -256,7 +259,7 @@ class CodexPaperJobService:
     ) -> CodexPaperJob | None:
         self.reconcile(db, settings)
         row = db.get(PaperCurationJob, job_id)
-        return self._serialize(row, settings) if row else None
+        return self.serialize(row, settings) if row else None
 
     def list_jobs(
         self, db: Session, settings: Settings, *, limit: int = 100
@@ -279,7 +282,7 @@ class CodexPaperJobService:
             counts.total += int(count)
         return CodexPaperJobsResponse(
             timestamp=_now(),
-            jobs=[self._serialize(row, settings) for row in rows],
+            jobs=[self.serialize(row, settings) for row in rows],
             summary=counts,
         )
 
@@ -344,7 +347,7 @@ class CodexPaperJobService:
         settings: Settings,
     ) -> CodexPaperJob:
         if row.status in TERMINAL_STATUSES:
-            return self._serialize(row, settings)
+            return self.serialize(row, settings)
         completion_error = error
         if completion_error is None and getattr(row, "submitted_at", None) is None:
             completion_error = "Remote job completed without an accepted apply."
@@ -365,13 +368,13 @@ class CodexPaperJobService:
         row.finished_at = _now()
         db.commit()
         self.dispatch_next(db, settings)
-        return self._serialize(row, settings)
+        return self.serialize(row, settings)
 
     def cancel(
         self, db: Session, row: PaperCurationJob, settings: Settings
     ) -> CodexPaperJob:
         if row.status in TERMINAL_STATUSES:
-            return self._serialize(row, settings)
+            return self.serialize(row, settings)
         if row.hf_job_id and settings.codex_jobs_token:
             self._api(settings).cancel_job(
                 job_id=row.hf_job_id, namespace=settings.codex_jobs_namespace
@@ -380,7 +383,7 @@ class CodexPaperJobService:
         row.finished_at = _now()
         db.commit()
         self.dispatch_next(db, settings)
-        return self._serialize(row, settings)
+        return self.serialize(row, settings)
 
 
 codex_paper_job_service = CodexPaperJobService()

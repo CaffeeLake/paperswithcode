@@ -63,8 +63,9 @@ def test_serializer_exposes_hf_job_url():
         attempt_count=1,
     )
     settings = get_settings().model_copy(update={"codex_jobs_namespace": "huggingface"})
-    serialized = CodexPaperJobService._serialize(row, settings)
+    serialized = CodexPaperJobService.serialize(row, settings)
     assert serialized.hf_job_url == "https://huggingface.co/jobs/huggingface/hf-job"
+    assert CodexPaperJobService._serialize(row, settings) == serialized
 
 
 def test_git_revision_can_be_pinned_for_remote_jobs(monkeypatch):
@@ -349,6 +350,7 @@ def test_scoped_worker_can_apply_discovered_evaluation(monkeypatch):
         "evaluations_updated": 0,
     }
     assert created[0]["dataset_id"] == 340
+    assert created[0]["commit"] is False
     assert row.applied_at is not None
     assert database.commits == 1
 
@@ -508,7 +510,6 @@ def test_late_invalid_enrichment_input_rolls_back_before_enqueue(monkeypatch):
 
         def update_paper_methods(self, _paper_id, _values, *, commit):
             assert commit is False
-            self.db.rollback()
             raise ValueError("Invalid method IDs: {999}")
 
     database = Database()

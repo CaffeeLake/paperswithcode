@@ -2504,6 +2504,31 @@ class EvaluationCreateRequest(BaseModel):
     )(normalize_optional_public_url)
 
 
+class CurationLink(BaseModel):
+    url: str
+    is_official: bool = True
+
+
+class EnrichPaperMutation(BaseModel):
+    task_ids: list[int] | None = None
+    method_ids: list[int] | None = None
+    repositories: list[CurationLink] | None = None
+    project_pages: list[CurationLink] | None = None
+    thumbnail_url: str | None = None
+    regenerate_thumbnail: bool = False
+    urls_extracted: bool | None = None
+
+
+class ApplyMutationRequest(BaseModel):
+    evaluations: list[EvaluationCreateRequest] = Field(default_factory=list)
+    enrich: EnrichPaperMutation | None = None
+
+
+class CompleteJobRequest(BaseModel):
+    report: str = ""
+    error: str | None = None
+
+
 class EvaluationUpdateRequest(BaseModel):
     """
     Request model for updating an existing evaluation.
