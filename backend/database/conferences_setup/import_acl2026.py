@@ -191,7 +191,9 @@ def link_tasks(db: Session, conference: Conference) -> int:
     for paper in papers:
         text = " ".join(part for part in (paper.title, paper.abstract) if part)
         task_ids = find_matching_items_simple(text, case_sensitive, case_insensitive)
-        task_ids = apply_task_supersession_rules(task_ids, slug_to_id, text)
+        task_ids = apply_task_supersession_rules(
+            task_ids, slug_to_id, text, paper.title
+        )
         links.extend(
             {"paper_id": paper.id, "task_id": task_id, "source": "auto"}
             for task_id in task_ids

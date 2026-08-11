@@ -49,15 +49,26 @@ def get_db_connection():
     )
 
 
-def load_tasks_with_keywords(conn) -> List[Dict]:
+def load_tasks_with_keywords(conn, task_slugs: list[str] | None = None) -> List[Dict]:
     """Load all tasks that have keywords defined."""
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""
-        SELECT id, slug, name, keywords
-        FROM tasks
-        WHERE keywords IS NOT NULL AND keywords != ''
-        ORDER BY id
-    """)
+    if task_slugs:
+        cur.execute(
+            """
+            SELECT id, slug, name, keywords
+            FROM tasks
+            WHERE keywords IS NOT NULL AND keywords != '' AND slug = ANY(%s)
+            ORDER BY id
+            """,
+            (task_slugs,),
+        )
+    else:
+        cur.execute("""
+            SELECT id, slug, name, keywords
+            FROM tasks
+            WHERE keywords IS NOT NULL AND keywords != ''
+            ORDER BY id
+        """)
 
     tasks = cur.fetchall()
     cur.close()
@@ -65,7 +76,9 @@ def load_tasks_with_keywords(conn) -> List[Dict]:
 
 
 def link_papers_by_task_keywords(
-    rebuild: bool = False, paper_ids: list[int] | None = None
+    rebuild: bool = False,
+    paper_ids: list[int] | None = None,
+    task_slugs: list[str] | None = None,
 ):
     """Link all papers, or a specified subset, to tasks by keyword matching."""
 
@@ -78,12 +91,21 @@ def link_papers_by_task_keywords(
             print("Mode: add-only (default)")
         if paper_ids is not None:
             print(f"Scope: {len(paper_ids):,} selected papers")
+        if task_slugs:
+            print(f"Tasks: {', '.join(task_slugs)}")
         print("=" * 80)
 
         conn = get_db_connection()
 
         print("\n1. Loading tasks with keywords...")
-        tasks = load_tasks_with_keywords(conn)
+        tasks = load_tasks_with_keywords(conn, task_slugs)
+        if task_slugs:
+            found_slugs = {task["slug"] for task in tasks}
+            missing_slugs = sorted(set(task_slugs) - found_slugs)
+            if missing_slugs:
+                raise ValueError(
+                    f"Unknown tasks or tasks without keywords: {', '.join(missing_slugs)}"
+                )
         print(f"   ✓ Loaded {len(tasks)} tasks with keywords")
         slug_to_id = {task["slug"]: task["id"] for task in tasks}
 
@@ -108,9 +130,16 @@ def link_papers_by_task_keywords(
         print(f"   - manual: {by_source_initial.get('manual', 0):>10,}")
 
         if rebuild:
-            print("\n3b. REBUILD: deleting all source='auto' rows ...")
+            scope = "selected-task" if task_slugs else "all"
+            print(f"\n3b. REBUILD: deleting {scope} source='auto' rows ...")
             cur2 = conn.cursor()
-            cur2.execute("DELETE FROM paper_tasks WHERE source = 'auto'")
+            if task_slugs:
+                cur2.execute(
+                    "DELETE FROM paper_tasks WHERE source = 'auto' AND task_id = ANY(%s)",
+                    ([task["id"] for task in tasks],),
+                )
+            else:
+                cur2.execute("DELETE FROM paper_tasks WHERE source = 'auto'")
             deleted_count = cur2.rowcount
             conn.commit()
             cur2.close()
@@ -174,7 +203,7 @@ def link_papers_by_task_keywords(
                 text, case_sensitive_patterns, case_insensitive_patterns
             )
             matching_task_ids = apply_task_supersession_rules(
-                matching_task_ids, slug_to_id, text
+                matching_task_ids, slug_to_id, text, paper["title"]
             )
 
             if matching_task_ids:
@@ -276,9 +305,23 @@ def parse_args() -> argparse.Namespace:
             "old/broader keyword sets."
         ),
     )
+    parser.add_argument(
+        "--task-slug",
+        action="append",
+        dest="task_slugs",
+        help=(
+            "Limit matching and rebuild deletion to this task slug. Repeat for "
+            "multiple tasks."
+        ),
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    exit(link_papers_by_task_keywords(rebuild=args.rebuild))
+    exit(
+        link_papers_by_task_keywords(
+            rebuild=args.rebuild,
+            task_slugs=args.task_slugs,
+        )
+    )

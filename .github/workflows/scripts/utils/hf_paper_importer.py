@@ -552,7 +552,7 @@ class HuggingFacePaperImporterMixin:
         )
         slug_to_id = getattr(self, "task_slug_to_id", {})
         matching_task_ids = apply_task_supersession_rules(
-            matching_task_ids, slug_to_id, text
+            matching_task_ids, slug_to_id, text, title
         )
         if not matching_task_ids:
             return

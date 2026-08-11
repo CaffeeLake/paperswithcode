@@ -28,6 +28,16 @@ uv run --env-file backend/keys.env backend/database/tasks_setup/link_papers_by_t
 uv run --env-file backend/keys.env backend/database/methods_setup/link_papers_by_keywords.py
 ```
 
+Task backfills can be scoped when only a small taxonomy subset changed. In
+rebuild mode this deletes and recreates only automatic links for the selected
+tasks; manual links remain untouched:
+
+```bash
+uv run --env-file backend/keys.env \
+  backend/database/tasks_setup/link_papers_by_task_keywords.py \
+  --rebuild --task-slug image-generation --task-slug video-generation
+```
+
 Expect ~0.86 task tags and ~2.4 method tags per paper after the improved strategy (statistics from October 2025).
 
 ## Keywords API

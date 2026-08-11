@@ -81,7 +81,9 @@ def cleanup_false_positive_tags() -> int:
         for row in rows:
             blob = f"{row['title'] or ''} {row['abstract'] or ''}".strip()
             matched = find_matching_items_simple(blob, case_sensitive, case_insensitive)
-            matched = apply_task_supersession_rules(matched, slug_to_id, blob)
+            matched = apply_task_supersession_rules(
+                matched, slug_to_id, blob, row["title"]
+            )
             if image_task_id in matched:
                 continue
 
