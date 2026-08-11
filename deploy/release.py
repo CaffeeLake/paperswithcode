@@ -241,20 +241,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
-        expected_production = chat_runtime("production")
-        expected_legacy = legacy_production_chat_runtime()
-        if set(runtime) == legacy_runtime_keys:
-            expected_production = {
-                key: value
-                for key, value in expected_production.items()
-                if key in legacy_runtime_keys
-            }
-            expected_legacy = {
-                key: value
-                for key, value in expected_legacy.items()
-                if key in legacy_runtime_keys
-            }
-        if runtime not in (expected_production, expected_legacy):
+        if runtime["enabled"] is not False or runtime["new_chat_modal_percentage"] != 0:
             raise ValueError("disabled release contains an active chat runtime")
     else:
         percentage = runtime["new_chat_modal_percentage"]

@@ -1104,7 +1104,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "55"
+    assert descriptor["worker_contract_version"] == "56"
     assert _chat_descriptor_from_source(source, "production") is None
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
@@ -1315,6 +1315,41 @@ def test_modal_bridge_manifest_remains_a_valid_rollback_target(tmp_path: Path):
     manifest_path.write_text(json.dumps(manifest))
 
     assert validate_manifest(release, "production")["git_sha"] == "a" * 40
+
+
+def test_disabled_production_runtime_remains_valid_after_worker_upgrade(
+    tmp_path: Path,
+):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["chat_runtime"].update(
+        {
+            "modal_image_version": "im-previous-production-image",
+            "worker_contract_version": "54",
+            "system_prompt_sha256": "0" * 64,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert validate_manifest(release, "production")["git_sha"] == "a" * 40
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("enabled", True), ("new_chat_modal_percentage", 1)],
+)
+def test_disabled_production_runtime_rejects_active_chat(
+    tmp_path: Path, field: str, value: object
+):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["chat_runtime"][field] = value
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="active chat runtime"):
+        validate_manifest(release, "production")
 
 
 def test_staging_profile_inherits_admin_catalog_actions():
