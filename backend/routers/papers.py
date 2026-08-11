@@ -41,12 +41,6 @@ from backend.models.api import (
     PaperBucketCopyResponse,
     RepositoryTrendingPaper,
 )
-from backend.models.database import (
-    Paper as DBPaper,
-    Author,
-    PaperAuthor,
-)
-from backend.services.author_service import normalize_arxiv_author_name
 from backend.services.paper_service import PaperService
 from backend.services.badge_service import (
     render_leaderboard_badge,
@@ -1040,47 +1034,6 @@ async def submit_paper(
         submission_id=row.id,
         pending_review=True,
     )
-
-
-async def add_authors_to_paper(
-    session: Session, paper: DBPaper, author_names: list[str]
-):
-    """
-    Add authors to a paper.
-
-    Args:
-        session: Database session
-        paper: Paper database object
-        author_names: List of author names from ArXiv
-    """
-    for order, full_name in enumerate(author_names, start=1):
-        # Parse author name
-        name = normalize_arxiv_author_name(full_name)
-
-        # Find or create author
-        author = session.query(Author).filter(Author.name == name).first()
-
-        if not author:
-            author = Author(name=name)
-            session.add(author)
-            session.flush()  # Get the ID
-
-        # Check if link already exists
-        existing_link = (
-            session.query(PaperAuthor)
-            .filter(
-                PaperAuthor.paper_id == paper.id, PaperAuthor.author_id == author.id
-            )
-            .first()
-        )
-
-        if not existing_link:
-            paper_author = PaperAuthor(
-                paper_id=paper.id, author_id=author.id, author_order=order
-            )
-            session.add(paper_author)
-
-    session.commit()
 
 
 @router.post(
