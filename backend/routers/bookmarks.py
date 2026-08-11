@@ -14,18 +14,14 @@ from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
 from backend.models.api import Paper as ApiPaper
-from backend.models.database import (
-    Paper as DBPaper,
+from backend.services.bookmark_service import (
+    BookmarkPaperNotFoundError,
+    BookmarkService,
 )
-from backend.models.database import (
-    UserBookmark,
-)
-from backend.services.bookmark_service import BookmarkReadService
 from backend.services.paper_bucket_service import (
     BUCKET_MANAGE_OAUTH_COOKIE_NAME,
     PaperBucketError,
 )
-from backend.services.saved_papers_bucket_service import SavedPapersBucket
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/me", tags=["bookmarks"])
@@ -88,39 +84,6 @@ def _bucket_error(error: PaperBucketError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
-def _bucket_authorization_required() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail={
-            "code": "saved_papers_bucket_authorization_required",
-            "message": "Authorize Papers With Code to manage your saved-papers Bucket.",
-        },
-    )
-
-
-def _bucket_store(
-    request: Request, user: dict, db: Session
-) -> SavedPapersBucket | None:
-    encrypted = request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME)
-    return BookmarkReadService(db).initialize_bucket(
-        encrypted_credential=encrypted,
-        hf_user_id=user["hf_user_id"],
-        username=user["username"],
-    )
-
-
-def _require_bucket_store(
-    request: Request, user: dict, db: Session
-) -> SavedPapersBucket:
-    try:
-        store = _bucket_store(request, user, db)
-    except PaperBucketError as error:
-        raise _bucket_error(error) from error
-    if store is None:
-        raise _bucket_authorization_required()
-    return store
-
-
 @router.get(
     "/bookmarks/ids",
     response_model=BookmarkIdsResponse,
@@ -133,7 +96,7 @@ def get_my_bookmark_ids(
 ) -> BookmarkIdsResponse:
     """Return just the IDs (cheap; used to hydrate the Save button state)."""
 
-    listing = BookmarkReadService(db).list_refs(
+    listing = BookmarkService(db).list_refs(
         encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
         hf_user_id=user["hf_user_id"],
         username=user["username"],
@@ -158,7 +121,7 @@ def get_my_bookmarks(
     catch-all ``Other / Untagged`` bucket.
     """
 
-    projection = BookmarkReadService(db).list_grouped(
+    projection = BookmarkService(db).list_grouped(
         encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
         hf_user_id=user["hf_user_id"],
         username=user["username"],
@@ -197,35 +160,19 @@ def add_bookmark(
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
 ) -> None:
-    paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-    if not paper:
+    try:
+        BookmarkService(db).add_bookmark(
+            paper_id=paper_id,
+            encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
+            hf_user_id=user["hf_user_id"],
+            username=user["username"],
+        )
+    except BookmarkPaperNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found"
-        )
-
-    store = _require_bucket_store(request, user, db)
-    try:
-        store.add(
-            paper_id,
-            title=paper.title,
-            arxiv_id=paper.arxiv_id,
-            source_url=paper.source_url,
-        )
+        ) from None
     except PaperBucketError as error:
         raise _bucket_error(error) from error
-
-    existing = (
-        db.query(UserBookmark)
-        .filter(
-            UserBookmark.hf_username == user["username"],
-            UserBookmark.paper_id == paper_id,
-        )
-        .first()
-    )
-    if existing is None:
-        db.add(UserBookmark(hf_username=user["username"], paper_id=paper_id))
-        db.commit()
-    return None
 
 
 @router.delete(
@@ -239,14 +186,12 @@ def remove_bookmark(
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
 ) -> None:
-    store = _require_bucket_store(request, user, db)
     try:
-        store.remove(paper_id)
+        BookmarkService(db).remove_bookmark(
+            paper_id=paper_id,
+            encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
+            hf_user_id=user["hf_user_id"],
+            username=user["username"],
+        )
     except PaperBucketError as error:
         raise _bucket_error(error) from error
-    db.query(UserBookmark).filter(
-        UserBookmark.hf_username == user["username"],
-        UserBookmark.paper_id == paper_id,
-    ).delete(synchronize_session=False)
-    db.commit()
-    return None

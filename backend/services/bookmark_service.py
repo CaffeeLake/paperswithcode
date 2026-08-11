@@ -1,4 +1,4 @@
-"""Read and project a user's saved papers."""
+"""Read, project, and mutate a user's saved papers."""
 
 from __future__ import annotations
 
@@ -75,8 +75,12 @@ class _SavedAreaBuilder:
     tasks: dict[int | None, _SavedTaskBuilder] = field(default_factory=dict)
 
 
-class BookmarkReadService:
-    """Own saved-paper source selection and grouped card projection."""
+class BookmarkPaperNotFoundError(LookupError):
+    """The requested paper does not exist."""
+
+
+class BookmarkService:
+    """Own saved-paper source selection, projection, and mutation ordering."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -275,3 +279,80 @@ class BookmarkReadService:
             ),
             bucket_connected=listing.bucket_connected,
         )
+
+    def _require_bucket(
+        self,
+        *,
+        encrypted_credential: str | None,
+        hf_user_id: str,
+        username: str,
+    ) -> SavedPapersBucket:
+        store = self.initialize_bucket(
+            encrypted_credential=encrypted_credential,
+            hf_user_id=hf_user_id,
+            username=username,
+        )
+        if store is None:
+            raise PaperBucketError(
+                "Authorize Papers With Code to manage your saved-papers Bucket.",
+                authorization_required=True,
+            )
+        return store
+
+    def add_bookmark(
+        self,
+        *,
+        paper_id: int,
+        encrypted_credential: str | None,
+        hf_user_id: str,
+        username: str,
+    ) -> None:
+        """Add a Bucket bookmark, then create its database compatibility mirror."""
+        paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+        if paper is None:
+            raise BookmarkPaperNotFoundError
+
+        store = self._require_bucket(
+            encrypted_credential=encrypted_credential,
+            hf_user_id=hf_user_id,
+            username=username,
+        )
+        store.add(
+            paper_id,
+            title=paper.title,
+            arxiv_id=paper.arxiv_id,
+            source_url=paper.source_url,
+        )
+
+        existing = (
+            self.db.query(UserBookmark)
+            .filter(
+                UserBookmark.hf_username == username,
+                UserBookmark.paper_id == paper_id,
+            )
+            .first()
+        )
+        if existing is None:
+            self.db.add(UserBookmark(hf_username=username, paper_id=paper_id))
+            self.db.commit()
+
+    def remove_bookmark(
+        self,
+        *,
+        paper_id: int,
+        encrypted_credential: str | None,
+        hf_user_id: str,
+        username: str,
+    ) -> None:
+        """Remove a Bucket bookmark, then delete its database compatibility mirror."""
+        store = self._require_bucket(
+            encrypted_credential=encrypted_credential,
+            hf_user_id=hf_user_id,
+            username=username,
+        )
+        store.remove(paper_id)
+        self.db.query(UserBookmark).filter(
+            UserBookmark.hf_username == username,
+            UserBookmark.paper_id == paper_id,
+        ).delete(synchronize_session=False)
+        self.db.commit()

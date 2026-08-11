@@ -9,7 +9,7 @@ from backend.models.database import Paper as DBPaper
 from backend.models.database import UserBookmark
 from backend.routers import bookmarks
 from backend.services import bookmark_service
-from backend.services.bookmark_service import BookmarkReadService, BookmarkRefListing
+from backend.services.bookmark_service import BookmarkRefListing, BookmarkService
 from backend.services.paper_bucket_service import PaperBucketError
 from backend.services.saved_papers_bucket_service import SavedPaperRef
 
@@ -60,7 +60,7 @@ def test_bookmark_reads_keep_legacy_data_visible_without_bucket_authorization():
     saved_at = datetime.now(UTC)
     db = LegacyBookmarkDb([(42, saved_at, "Existing saved paper", "2601.00042", None)])
 
-    listing = BookmarkReadService(db).list_refs(
+    listing = BookmarkService(db).list_refs(
         encrypted_credential=None,
         hf_user_id="hf-alice",
         username="alice",
@@ -95,7 +95,7 @@ def test_connected_bucket_read_keeps_eager_legacy_query(monkeypatch):
     )
     monkeypatch.setattr(bookmark_service, "SavedPapersBucket", ConnectedBucket)
 
-    listing = BookmarkReadService(db).list_refs(
+    listing = BookmarkService(db).list_refs(
         encrypted_credential="encrypted",
         hf_user_id="hf-alice",
         username="alice",
@@ -128,7 +128,7 @@ def test_first_bucket_migration_loads_legacy_refs_again(monkeypatch):
     )
     monkeypatch.setattr(bookmark_service, "SavedPapersBucket", MigratingBucket)
 
-    listing = BookmarkReadService(db).list_refs(
+    listing = BookmarkService(db).list_refs(
         encrypted_credential="encrypted",
         hf_user_id="hf-alice",
         username="alice",
@@ -160,7 +160,7 @@ def test_bucket_read_failure_falls_back_to_eager_legacy_refs(monkeypatch):
     )
     monkeypatch.setattr(bookmark_service, "SavedPapersBucket", FailingBucket)
 
-    listing = BookmarkReadService(db).list_refs(
+    listing = BookmarkService(db).list_refs(
         encrypted_credential="encrypted",
         hf_user_id="hf-alice",
         username="alice",
@@ -225,7 +225,7 @@ def test_bookmark_groups_preserve_first_seen_order_and_use_card_hydration(monkey
     )
     bookmark_ids = [60, 50, 40, 30, 20, 10]
     monkeypatch.setattr(
-        BookmarkReadService,
+        BookmarkService,
         "list_refs",
         lambda *_args, **_kwargs: BookmarkRefListing(
             refs=tuple(
@@ -310,12 +310,12 @@ def test_empty_bookmark_listing_skips_paper_projection(monkeypatch):
             raise AssertionError("empty bookmark reads must not query tasks")
 
     monkeypatch.setattr(
-        BookmarkReadService,
+        BookmarkService,
         "list_refs",
         lambda *_args, **_kwargs: BookmarkRefListing((), True),
     )
 
-    result = BookmarkReadService(NoProjectionDb()).list_grouped(
+    result = BookmarkService(NoProjectionDb()).list_grouped(
         encrypted_credential=None,
         hf_user_id="hf-alice",
         username="alice",
@@ -327,15 +327,18 @@ def test_empty_bookmark_listing_skips_paper_projection(monkeypatch):
 
 
 def test_bookmark_mutations_request_bucket_authorization_dynamically():
-    db = LegacyBookmarkDb([])
+    db = MutationDb()
     user = {"username": "alice", "hf_user_id": "hf-alice"}
 
     with pytest.raises(HTTPException) as exc_info:
-        bookmarks._require_bucket_store(_request(), user, db)
+        bookmarks.add_bookmark(_request(), 42, user, db)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail["code"] == (
         "saved_papers_bucket_authorization_required"
+    )
+    assert exc_info.value.detail["message"] == (
+        "Authorize Papers With Code to manage your saved-papers Bucket."
     )
 
 
@@ -365,9 +368,15 @@ class MutationDb:
         self.bookmark_query = MutationQuery()
         self.added = []
         self.commits = 0
+        self.paper_queries = 0
+        self.bookmark_queries = 0
 
     def query(self, entity):
-        return self.paper_query if entity is DBPaper else self.bookmark_query
+        if entity is DBPaper:
+            self.paper_queries += 1
+            return self.paper_query
+        self.bookmark_queries += 1
+        return self.bookmark_query
 
     def add(self, item):
         self.added.append(item)
@@ -392,7 +401,9 @@ def test_bucket_mutations_keep_database_fallback_in_sync(monkeypatch):
     db = MutationDb()
     store = FakeBucketStore()
     user = {"username": "alice", "hf_user_id": "hf-alice"}
-    monkeypatch.setattr(bookmarks, "_require_bucket_store", lambda *_args: store)
+    monkeypatch.setattr(
+        BookmarkService, "_require_bucket", lambda *_args, **_kwargs: store
+    )
 
     bookmarks.add_bookmark(_request(), 42, user, db)
 
@@ -407,3 +418,79 @@ def test_bucket_mutations_keep_database_fallback_in_sync(monkeypatch):
     assert store.removed == [42]
     assert db.bookmark_query.deleted is True
     assert db.commits == 2
+
+
+def test_missing_paper_wins_before_bucket_authorization(monkeypatch):
+    db = MutationDb()
+    db.paper_query.first_result = None
+    user = {"username": "alice", "hf_user_id": "hf-alice"}
+    monkeypatch.setattr(
+        BookmarkService,
+        "_require_bucket",
+        lambda *_args, **_kwargs: pytest.fail("Bucket authorization ran first"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        bookmarks.add_bookmark(_request(), 42, user, db)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Paper not found"
+    assert db.paper_queries == 1
+    assert db.bookmark_queries == 0
+    assert db.commits == 0
+
+
+def test_existing_mirror_still_updates_bucket_without_committing(monkeypatch):
+    db = MutationDb()
+    db.bookmark_query.first_result = object()
+    store = FakeBucketStore()
+    monkeypatch.setattr(
+        BookmarkService,
+        "_require_bucket",
+        lambda *_args, **_kwargs: store,
+    )
+
+    bookmarks.add_bookmark(
+        _request(),
+        42,
+        {"username": "alice", "hf_user_id": "hf-alice"},
+        db,
+    )
+
+    assert store.added[0][0] == 42
+    assert db.bookmark_queries == 1
+    assert db.added == []
+    assert db.commits == 0
+
+
+def test_bucket_mutation_failure_prevents_database_mirror_change(monkeypatch):
+    db = MutationDb()
+
+    class FailingStore(FakeBucketStore):
+        def add(self, paper_id, **metadata):
+            raise PaperBucketError("Bucket write failed")
+
+        def remove(self, paper_id):
+            raise PaperBucketError("Bucket delete failed")
+
+    monkeypatch.setattr(
+        BookmarkService,
+        "_require_bucket",
+        lambda *_args, **_kwargs: FailingStore(),
+    )
+    user = {"username": "alice", "hf_user_id": "hf-alice"}
+
+    with pytest.raises(HTTPException) as add_error:
+        bookmarks.add_bookmark(_request(), 42, user, db)
+    assert add_error.value.status_code == 400
+    assert add_error.value.detail == "Bucket write failed"
+    assert db.bookmark_queries == 0
+    assert db.commits == 0
+
+    with pytest.raises(HTTPException) as remove_error:
+        bookmarks.remove_bookmark(_request(), 42, user, db)
+    assert remove_error.value.status_code == 400
+    assert remove_error.value.detail == "Bucket delete failed"
+    assert db.bookmark_queries == 0
+    assert db.bookmark_query.deleted is False
+    assert db.commits == 0
