@@ -56,6 +56,12 @@ describe("AskAssistant", () => {
       label: "DeepSeek V4 Flash",
       provider: "openrouter",
     });
+    renderAskAssistant();
+
+    expect(screen.getByRole("link", { name: "OpenRouter" }))
+      .toHaveAttribute("href", "https://openrouter.ai");
+    expect(screen.queryByRole("link", { name: "Inference Providers" }))
+      .not.toBeInTheDocument();
   });
 
   it("shows only a read-only DeepSeek label in the production preview", () => {
@@ -67,6 +73,8 @@ describe("AskAssistant", () => {
     );
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByText(/Luna|Terra|OpenRouter/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inference Providers" }))
+      .toHaveAttribute("href", "https://huggingface.co/docs/inference-providers/en/index");
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {

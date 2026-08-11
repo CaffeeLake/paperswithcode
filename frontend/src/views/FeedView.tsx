@@ -133,6 +133,7 @@ export const AskAssistant: React.FC = () => {
   const question = draft.text;
   const [scrollTop, setScrollTop] = useState(0);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const selectedProvider = models.find((model) => model.id === selectedModel)?.provider;
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [launching, setLaunching] = useState(false);
   const placeholder = useRotatingChatPlaceholder(!question);
@@ -238,14 +239,21 @@ export const AskAssistant: React.FC = () => {
             />
           )}
           <span className="ask-home-hint">
-            Via 🤗{" "}
-            <a
-              href="https://huggingface.co/docs/inference-providers/en/index"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Inference Providers
-            </a>
+            {selectedProvider === "openrouter" ? <>
+              Via{" "}
+              <a href="https://openrouter.ai" target="_blank" rel="noreferrer">
+                OpenRouter
+              </a>
+            </> : <>
+              Via 🤗{" "}
+              <a
+                href="https://huggingface.co/docs/inference-providers/en/index"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Inference Providers
+              </a>
+            </>}
           </span>
         </div>
         <button
