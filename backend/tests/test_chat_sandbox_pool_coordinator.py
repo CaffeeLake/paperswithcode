@@ -28,6 +28,9 @@ from backend.services.chat_sandbox_pool_coordinator import (
     ChatSandboxPoolCoordinator,
     PoolMaintenanceResult,
 )
+from backend.services.chat_sandbox_pool_creation_coordinator import (
+    PoolReplenishmentOutcome,
+)
 from backend.services.chat_sandbox_pool_repository import (
     ChatSandboxPoolRepository,
     PoolHealthCandidate,
@@ -942,6 +945,47 @@ def test_replenish_creates_control_pings_and_lands_the_exact_spend_interval():
     ]
 
 
+def test_refill_commits_reservation_and_interval_before_provider_creation():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    observed: dict[str, object] = {}
+
+    async def inspect_committed_reservation(_sandbox, _kwargs):
+        with harness.sessions() as db:
+            pool = db.execute(select(ChatSandboxPool)).scalar_one()
+            interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+        observed.update(
+            pool_state=pool.state,
+            pool_sandbox_id=pool.modal_sandbox_id,
+            pool_token=pool.claim_token_hash,
+            interval_generation=interval.worker_generation,
+            interval_sandbox_id=interval.modal_sandbox_id,
+            pool_generation=pool.worker_generation,
+        )
+
+    harness.provider.create_hook = inspect_committed_reservation
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 1
+    assert observed["pool_state"] == "starting"
+    assert observed["pool_sandbox_id"] is None
+    assert isinstance(observed["pool_token"], str)
+    assert observed["pool_token"]
+    assert observed["interval_generation"] == observed["pool_generation"]
+    assert observed["interval_sandbox_id"] is None
+
+
+def test_creation_component_reports_typed_start_failure():
+    harness = _Harness(owner=True)
+    harness.provider.create_error = RuntimeError("provider create failed")
+
+    outcome = asyncio.run(harness.coordinator.creation.replenish())
+
+    assert outcome is PoolReplenishmentOutcome.START_FAILED
+    assert outcome.created_count == 0
+
+
 def test_concurrent_replenish_is_bounded_and_stops_at_the_database_target():
     harness = _Harness(
         owner=True,
@@ -1032,17 +1076,17 @@ def test_owner_loss_skips_a_queued_refill_but_finishes_a_committed_reservation()
         committed = asyncio.create_task(harness.coordinator.replenish_pool())
         await started.wait()
         harness.coordinator.spawn_replenishment()
-        assert len(harness.coordinator._refill_tasks) == 1
+        assert len(harness.coordinator.creation._tasks) == 1
         harness.owner = False
         release.set()
         first = await committed
-        await asyncio.gather(*tuple(harness.coordinator._refill_tasks))
+        await asyncio.gather(*tuple(harness.coordinator.creation._tasks))
         await asyncio.sleep(0)
         return first
 
     assert asyncio.run(run()) == 1
     assert len(harness.provider.create_calls) == 1
-    assert harness.coordinator._refill_tasks == set()
+    assert harness.coordinator.creation._tasks == set()
     with harness.sessions() as db:
         pool = db.execute(select(ChatSandboxPool)).scalar_one()
     assert pool.state == "blank_ready"
@@ -1148,8 +1192,10 @@ def test_control_or_ping_failure_terminates_the_created_provider(failure):
     else:
         harness.transport.ping_error = RuntimeError("ping failed")
 
-    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+    outcome = asyncio.run(harness.coordinator.creation.replenish())
 
+    assert outcome is PoolReplenishmentOutcome.START_FAILED
+    assert outcome.created_count == 0
     assert harness.provider.termination_calls == ["sb-created-1"]
     assert harness.transport.blank_control("sb-created-1") is None
     with harness.sessions() as db:
@@ -1161,6 +1207,37 @@ def test_control_or_ping_failure_terminates_the_created_provider(failure):
     assert interval.provider_created_at is not None
     assert interval.terminal_at is not None
     assert interval.terminal_reason == "sandbox_start_failed"
+
+
+@pytest.mark.parametrize("termination_failure", ["unconfirmed", "error"])
+def test_failed_start_records_uncertain_provider_cleanup(termination_failure):
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    harness.transport.ping_result = False
+    if termination_failure == "unconfirmed":
+        harness.provider.termination_confirmed = False
+    else:
+
+        async def fail_termination(_call_number, _sandbox_id):
+            raise RuntimeError("provider termination unavailable")
+
+        harness.provider.termination_hook = fail_termination
+
+    outcome = asyncio.run(harness.coordinator.creation.replenish())
+
+    assert outcome is PoolReplenishmentOutcome.START_FAILED
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.modal_sandbox_id == "sb-created-1"
+    assert interval.terminal_reason == "sandbox_start_failed"
+    assert interval.terminal_at is None
+    assert interval.reconciliation_state == "termination_uncertain"
 
 
 def test_landing_ownership_change_fences_the_successor_and_settles_the_start():
@@ -1178,8 +1255,10 @@ def test_landing_ownership_change_fences_the_successor_and_settles_the_start():
 
     harness.repository.land_provider_creation = move_ownership
 
-    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+    outcome = asyncio.run(harness.coordinator.creation.replenish())
 
+    assert outcome is PoolReplenishmentOutcome.OWNERSHIP_CHANGED
+    assert outcome.created_count == 0
     assert harness.provider.termination_calls == ["sb-created-1"]
     assert harness.transport.blank_control("sb-created-1") is None
     with harness.sessions() as db:
@@ -1219,6 +1298,40 @@ def test_landing_exception_not_durable_cleans_up_then_propagates():
     assert interval.terminal_reason == "sandbox_start_failed"
 
 
+def test_spend_landing_failure_rolls_back_then_compensates_the_exact_start():
+    settings = _settings(chat_sandbox_spend_enforcement_enabled=True)
+    provider_created_calls = 0
+
+    class FailFirstProviderLanding(ChatSandboxSpendService):
+        def provider_created(self, interval_id, sandbox_id, now=None):
+            nonlocal provider_created_calls
+            provider_created_calls += 1
+            if provider_created_calls == 1:
+                raise RuntimeError("spend landing failed")
+            return super().provider_created(interval_id, sandbox_id, now)
+
+    harness = _Harness(
+        owner=True,
+        settings=settings,
+        spend_factory=lambda db: FailFirstProviderLanding(db, settings),
+    )
+
+    with pytest.raises(RuntimeError, match="spend landing failed"):
+        asyncio.run(harness.coordinator.replenish_pool())
+
+    assert provider_created_calls == 2
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.modal_sandbox_id is None
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.modal_sandbox_id == "sb-created-1"
+    assert interval.terminal_reason == "sandbox_start_failed"
+    assert interval.terminal_at == harness.clock.utcnow().replace(tzinfo=None)
+
+
 @pytest.mark.parametrize(
     "durability,expected_result,control_retained",
     [
@@ -1237,7 +1350,7 @@ def test_ambiguous_landing_uses_durable_classification(
         raise RuntimeError("ambiguous commit result")
 
     harness.repository.land_provider_creation = ambiguous_landing
-    harness.coordinator._landing_durability = lambda *_args: durability
+    harness.coordinator.creation._landing_durability = lambda *_args: durability
 
     assert asyncio.run(harness.coordinator.replenish_pool()) == expected_result
 
@@ -1256,7 +1369,7 @@ def test_landing_durability_failure_preserves_the_original_error():
         raise LookupError("durability unavailable")
 
     harness.repository.land_provider_creation = ambiguous_landing
-    harness.coordinator._landing_durability = fail_durability
+    harness.coordinator.creation._landing_durability = fail_durability
 
     with pytest.raises(RuntimeError, match="original landing error"):
         asyncio.run(harness.coordinator.replenish_pool())
@@ -1361,6 +1474,59 @@ def test_start_cancellation_rethrows_the_exact_error_after_compensation(phase):
     )
 
 
+def test_cancelled_ambiguous_landing_fences_successor_owned_provider():
+    harness = _Harness(owner=True)
+    cancellation = asyncio.CancelledError("ambiguous successor landing")
+
+    def cancel_landing(*_args, **_kwargs):
+        raise cancellation
+
+    harness.repository.land_provider_creation = cancel_landing
+    harness.coordinator.creation._landing_durability = (
+        lambda *_args: PoolLandingDurability.OWNERSHIP_MOVED
+    )
+
+    async def run():
+        try:
+            await harness.coordinator.replenish_pool()
+        except asyncio.CancelledError as caught:
+            return caught
+        raise AssertionError("cancellation was swallowed")
+
+    assert asyncio.run(run()) is cancellation
+    assert harness.transport.blank_control("sb-created-1") is None
+    assert harness.provider.termination_calls == []
+
+
+def test_cancelled_landing_durability_failure_preserves_unknown_provider(caplog):
+    harness = _Harness(owner=True)
+    cancellation = asyncio.CancelledError("ambiguous unknown landing")
+
+    def cancel_landing(*_args, **_kwargs):
+        raise cancellation
+
+    def fail_durability(*_args):
+        raise LookupError("durability unavailable")
+
+    harness.repository.land_provider_creation = cancel_landing
+    harness.coordinator.creation._landing_durability = fail_durability
+
+    async def run():
+        try:
+            await harness.coordinator.replenish_pool()
+        except asyncio.CancelledError as caught:
+            return caught
+        raise AssertionError("cancellation was swallowed")
+
+    assert asyncio.run(run()) is cancellation
+    assert harness.transport.blank_control("sb-created-1") is None
+    assert harness.provider.termination_calls == []
+    assert (
+        "cancelled blank landing durability check failed error=LookupError"
+        in caplog.text
+    )
+
+
 def test_external_cancellation_waits_for_shielded_control_cleanup():
     harness = _Harness(
         owner=True,
@@ -1443,10 +1609,10 @@ def test_cleanup_failure_does_not_mask_the_landing_database_error(caplog):
         raise LookupError("cleanup failed")
 
     harness.repository.land_provider_creation = fail_landing
-    harness.coordinator._landing_durability = (
+    harness.coordinator.creation._landing_durability = (
         lambda *_args: PoolLandingDurability.NOT_DURABLE
     )
-    harness.coordinator._compensate_start = fail_cleanup
+    harness.coordinator.creation._compensate_start = fail_cleanup
 
     with pytest.raises(RuntimeError) as raised:
         asyncio.run(harness.coordinator.replenish_pool())
@@ -1479,7 +1645,7 @@ def test_start_compensation_claim_is_fenced_from_a_successor():
 
     sandbox = SimpleNamespace(object_id="sb-created-by-reservation")
     asyncio.run(
-        harness.coordinator._compensate_start(
+        harness.coordinator.creation._compensate_start(
             reservation,
             sandbox=sandbox,
             control=None,
@@ -1604,22 +1770,25 @@ def test_spawn_replenishment_keeps_a_bounded_strong_task_set():
             if calls == 2:
                 two_started.set()
             await release.wait()
-            return 1
+            return PoolReplenishmentOutcome.READY
 
-        harness.coordinator.replenish_pool = block_replenishment
+        harness.coordinator.creation.replenish = block_replenishment
         for _ in range(8):
             harness.coordinator.spawn_replenishment()
         await two_started.wait()
-        tasks = tuple(harness.coordinator._refill_tasks)
+        tasks = tuple(harness.coordinator.creation._tasks)
         assert len(tasks) == 2
         assert all(not task.done() for task in tasks)
         release.set()
-        assert await asyncio.gather(*tasks) == [1, 1]
+        assert await asyncio.gather(*tasks) == [
+            PoolReplenishmentOutcome.READY,
+            PoolReplenishmentOutcome.READY,
+        ]
         await asyncio.sleep(0)
         return calls
 
     assert asyncio.run(run()) == 2
-    assert harness.coordinator._refill_tasks == set()
+    assert harness.coordinator.creation._tasks == set()
 
 
 def test_spawn_replenishment_retrieves_and_logs_background_errors(caplog):
@@ -1634,14 +1803,14 @@ def test_spawn_replenishment_retrieves_and_logs_background_errors(caplog):
         async def fail_replenishment():
             raise RuntimeError("background failed")
 
-        harness.coordinator.replenish_pool = fail_replenishment
+        harness.coordinator.creation.replenish = fail_replenishment
         harness.coordinator.spawn_replenishment()
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         return loop_errors
 
     assert asyncio.run(run()) == []
-    assert harness.coordinator._refill_tasks == set()
+    assert harness.coordinator.creation._tasks == set()
     assert "chat blank pool replenishment failed error=RuntimeError" in caplog.text
 
 
@@ -1655,17 +1824,17 @@ def test_spawn_replenishment_discards_cancelled_tasks_without_warning(caplog):
             started.set()
             await asyncio.Event().wait()
 
-        harness.coordinator.replenish_pool = block_replenishment
+        harness.coordinator.creation.replenish = block_replenishment
         harness.coordinator.spawn_replenishment()
         await started.wait()
-        task = next(iter(harness.coordinator._refill_tasks))
+        task = next(iter(harness.coordinator.creation._tasks))
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await asyncio.sleep(0)
 
     asyncio.run(run())
 
-    assert harness.coordinator._refill_tasks == set()
+    assert harness.coordinator.creation._tasks == set()
     assert "chat blank pool replenishment failed" not in caplog.text
 
 
@@ -1819,9 +1988,12 @@ def test_health_result_cannot_mutate_a_successor(successor_state):
             successor.updated_at = successor_at
         return SimpleNamespace(object_id=sandbox_id)
 
-    harness.coordinator.pool_sandbox_health = race_health
+    harness.coordinator.maintenance.pool_sandbox_health = race_health
 
-    assert asyncio.run(harness.coordinator._refresh_pool_health((candidate,))) == 0
+    assert (
+        asyncio.run(harness.coordinator.maintenance._refresh_pool_health((candidate,)))
+        == 0
+    )
     with harness.sessions() as db:
         successor = db.get(ChatSandboxPool, row.id)
     assert successor.state == successor_state
@@ -1845,7 +2017,7 @@ def test_concurrent_maintenance_serializes_and_rechecks_owner():
         await release.wait()
         return PoolMaintenanceResult(drained=1)
 
-    harness.coordinator._maintain_pool = controlled_maintenance
+    harness.coordinator.maintenance._maintain_pool = controlled_maintenance
 
     async def run():
         first = asyncio.create_task(harness.coordinator.maintain_pool())
@@ -2220,9 +2392,9 @@ def test_owner_loss_after_health_probe_skips_database_mutation():
         return None
 
     async def run():
-        harness.coordinator.pool_sandbox_health = delayed_health
+        harness.coordinator.maintenance.pool_sandbox_health = delayed_health
         task = asyncio.create_task(
-            harness.coordinator._refresh_pool_health((candidate,))
+            harness.coordinator.maintenance._refresh_pool_health((candidate,))
         )
         await health_started.wait()
         harness.owner = False
