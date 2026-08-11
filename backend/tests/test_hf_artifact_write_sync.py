@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from backend.services import external_resource_service, paper_service
+from backend.services import external_resource_service, paper_association_service
 from backend.services.external_resource_service import ExternalResourceService
 from backend.services.hf_artifact_service import (
     collect_explicit_hf_artifacts,
@@ -75,7 +75,9 @@ def test_paper_service_syncs_links_and_invalidates_checkpoint(monkeypatch):
     db = Mock()
     db.query.return_value = _Query(paper)
     sync = Mock()
-    monkeypatch.setattr(paper_service, "sync_explicit_hf_artifact_links", sync)
+    monkeypatch.setattr(
+        paper_association_service, "sync_explicit_hf_artifact_links", sync
+    )
     service = PaperService(db)
     monkeypatch.setattr(service, "get_paper_by_id", Mock(return_value="paper"))
 

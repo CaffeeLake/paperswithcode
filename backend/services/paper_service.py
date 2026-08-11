@@ -24,7 +24,6 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
     Conference as DBConference,
     Organization as DBOrganization,
-    PaperOrganization as DBPaperOrganization,
     HfArtifact as DBHfArtifact,
     PaperHfArtifact as DBPaperHfArtifact,
     Framework as DBFramework,
@@ -62,7 +61,7 @@ from backend.utils.urls import (
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
-from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_citation_refresh_service import PaperCitationRefreshService
 from backend.services.paper_relation_loader import PaperRelationLoader, PaperRelations
 from backend.services.paper_retrieval_service import PaperRetrievalService
@@ -1785,59 +1784,9 @@ class PaperService:
     def update_paper_tasks(
         self, paper_id: int, task_ids: List[int], *, commit: bool = True
     ) -> Paper | DBPaper:
-        """
-        Update the tasks associated with a paper.
-
-        Args:
-            paper_id: Database paper ID
-            task_ids: List of task IDs to associate with the paper
-
-        Returns:
-            Updated Paper object
-
-        Raises:
-            PaperNotFoundError: If paper is not found
-            DatabaseError: If update fails
-        """
-        try:
-            from backend.models.database import Task as DBTask, PaperTask
-
-            # Verify paper exists
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            # Verify all task IDs exist
-            existing_tasks = self.db.query(DBTask).filter(DBTask.id.in_(task_ids)).all()
-            existing_task_ids = {task.id for task in existing_tasks}
-            invalid_task_ids = set(task_ids) - existing_task_ids
-            if invalid_task_ids:
-                raise DatabaseError(f"Invalid task IDs: {invalid_task_ids}")
-
-            # Replace all existing paper_tasks associations with the new set.
-            # An admin override always wins: every row inserted here is marked
-            # source='manual' so the keyword-matcher rebuild pass won't touch it.
-            self.db.query(PaperTask).filter(PaperTask.paper_id == paper_id).delete()
-
-            for task_id in task_ids:
-                paper_task = PaperTask(
-                    paper_id=paper_id, task_id=task_id, source="manual"
-                )
-                self.db.add(paper_task)
-
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            # Return updated paper
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper tasks: {str(e)}")
+        return PaperAssociationService(self.db, self.get_paper_by_id).update_tasks(
+            paper_id, task_ids, commit=commit
+        )
 
     def update_paper_organizations(
         self,
@@ -1848,125 +1797,22 @@ class PaperService:
         manual_added_by_hf_username: Optional[str] = None,
         commit: bool = True,
     ) -> Paper | DBPaper:
-        """
-        Update the organizations associated with a paper.
-
-        Makes the provided list the desired set of organization associations.
-        Existing rows retain their provenance; newly inserted rows are marked
-        source='manual' and attributed to the authenticated HF user when known.
-
-        Args:
-            paper_id: Database paper ID
-            organization_ids: List of organization IDs to associate
-
-        Returns:
-            Updated Paper object
-
-        Raises:
-            PaperNotFoundError: If paper is not found
-            DatabaseError: If update fails
-        """
-        try:
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            existing_orgs = (
-                self.db.query(DBOrganization)
-                .filter(DBOrganization.id.in_(organization_ids))
-                .all()
-            )
-            existing_org_ids = {org.id for org in existing_orgs}
-            invalid_org_ids = set(organization_ids) - existing_org_ids
-            if invalid_org_ids:
-                raise DatabaseError(f"Invalid organization IDs: {invalid_org_ids}")
-
-            links = (
-                self.db.query(DBPaperOrganization)
-                .filter(DBPaperOrganization.paper_id == paper_id)
-                .all()
-            )
-            links_by_organization = {link.organization_id: link for link in links}
-            requested_ids = set(organization_ids)
-
-            for organization_id, link in links_by_organization.items():
-                if organization_id not in requested_ids:
-                    self.db.delete(link)
-
-            for organization_id in requested_ids - links_by_organization.keys():
-                self.db.add(
-                    DBPaperOrganization(
-                        paper_id=paper_id,
-                        organization_id=organization_id,
-                        source="manual",
-                        added_by_hf_subject=manual_added_by_hf_subject,
-                        added_by_hf_username=manual_added_by_hf_username,
-                    )
-                )
-
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper organizations: {str(e)}")
+        return PaperAssociationService(
+            self.db, self.get_paper_by_id
+        ).update_organizations(
+            paper_id,
+            organization_ids,
+            manual_added_by_hf_subject=manual_added_by_hf_subject,
+            manual_added_by_hf_username=manual_added_by_hf_username,
+            commit=commit,
+        )
 
     def update_paper_methods(
         self, paper_id: int, method_ids: List[int], *, commit: bool = True
     ) -> Paper | DBPaper:
-        """
-        Update the methods associated with a paper.
-
-        Args:
-            paper_id: Database paper ID
-            method_ids: List of method IDs to associate with the paper
-
-        Returns:
-            Updated Paper object
-
-        Raises:
-            PaperNotFoundError: If paper is not found
-            DatabaseError: If update fails
-        """
-        try:
-            from backend.models.database import Method as DBMethod
-            from backend.services.paper_method_link_service import replace_manual_links
-
-            # Verify paper exists
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            # Verify all method IDs exist
-            existing_methods = (
-                self.db.query(DBMethod).filter(DBMethod.id.in_(method_ids)).all()
-            )
-            existing_method_ids = {method.id for method in existing_methods}
-            invalid_method_ids = set(method_ids) - existing_method_ids
-            if invalid_method_ids:
-                raise DatabaseError(f"Invalid method IDs: {invalid_method_ids}")
-
-            replace_manual_links(self.db, paper_id=paper_id, method_ids=method_ids)
-
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            # Return updated paper
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper methods: {str(e)}")
+        return PaperAssociationService(self.db, self.get_paper_by_id).update_methods(
+            paper_id, method_ids, commit=commit
+        )
 
     def update_paper_repositories(
         self,
@@ -1975,127 +1821,9 @@ class PaperService:
         *,
         commit: bool = True,
     ) -> Paper | DBPaper:
-        """
-        Update the repositories associated with a paper.
-
-        Creates repositories if they don't exist, and establishes the paper-repository
-        associations with the is_official flag.
-
-        Args:
-            paper_id: Database paper ID
-            repositories: List of dicts with 'url' and 'is_official' keys
-
-        Returns:
-            Updated Paper object
-
-        Raises:
-            PaperNotFoundError: If paper is not found
-            DatabaseError: If update fails
-        """
-        try:
-            from backend.models.database import (
-                Repository as DBRepository,
-                PaperRepository,
-            )
-            import re
-
-            # Verify paper exists
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            # Delete existing paper_repositories associations
-            self.db.query(PaperRepository).filter(
-                PaperRepository.paper_id == paper_id
-            ).delete()
-
-            from backend.services.repository_service import find_repository_by_url
-            from backend.utils.github_utils import (
-                normalize_github_url,
-                parse_github_url,
-            )
-
-            # Resolve URLs to repository rows, then dedupe by repository_id.
-            # Legacy data may list the same GitHub repo twice (e.g. base URL and
-            # a /tree/... subpath); find_repository_by_url collapses both to one
-            # row, so we must not insert duplicate paper_repositories keys.
-            associations: dict[int, bool] = {}
-            for repo_data in repositories:
-                url = repo_data.get("url", "").strip()
-                is_official = repo_data.get("is_official", False)
-
-                if not url:
-                    continue
-
-                normalized = normalize_github_url(url)
-                if normalized:
-                    url = normalized
-
-                existing_repo = find_repository_by_url(self.db, url)
-
-                if existing_repo:
-                    # find_repository_by_url matches case-insensitively; do not
-                    # rewrite url here — another row may already own the
-                    # normalized lowercase form (repositories.url is unique).
-                    repository_id = existing_repo.id
-                else:
-                    owner, name = parse_github_url(url) if normalized else (None, None)
-                    if not owner or not name:
-                        github_match = re.match(
-                            r"https?://github\.com/([^/]+)/([^/]+)(?:/.*)?", url
-                        )
-                        if github_match:
-                            owner = github_match.group(1)
-                            name = github_match.group(2)
-                            if name.endswith(".git"):
-                                name = name[:-4]
-
-                    new_repo = DBRepository(
-                        url=url,
-                        owner=owner,
-                        name=name,
-                        num_stars=0,
-                        source="manual",
-                    )
-                    self.db.add(new_repo)
-                    self.db.flush()
-                    repository_id = new_repo.id
-
-                if repository_id in associations:
-                    associations[repository_id] = (
-                        associations[repository_id] or is_official
-                    )
-                else:
-                    associations[repository_id] = is_official
-
-            # A lone repository is the paper page's canonical code link by
-            # default. This intentionally favors outreach coverage over strict
-            # provenance when no competing repository is present.
-            if len(associations) == 1:
-                only_repository_id = next(iter(associations))
-                associations[only_repository_id] = True
-
-            for repository_id, is_official in associations.items():
-                paper_repository = PaperRepository(
-                    paper_id=paper_id,
-                    repository_id=repository_id,
-                    is_official=is_official,
-                )
-                self.db.add(paper_repository)
-
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            # Return updated paper
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper repositories: {str(e)}")
+        return PaperAssociationService(
+            self.db, self.get_paper_by_id
+        ).update_repositories(paper_id, repositories, commit=commit)
 
     def update_paper_project_pages(
         self,
@@ -2104,151 +1832,16 @@ class PaperService:
         *,
         commit: bool = True,
     ) -> Paper | DBPaper:
-        """
-        Update the project pages associated with a paper.
-
-        Creates project pages if they don't exist, and establishes the paper-project page
-        associations.
-
-        Args:
-            paper_id: Database paper ID
-            project_pages: List of dicts with 'url' and 'is_official' keys
-
-        Returns:
-            Updated Paper object
-
-        Raises:
-            PaperNotFoundError: If paper is not found
-            DatabaseError: If update fails
-        """
-        try:
-            from backend.models.database import (
-                ProjectPage as DBProjectPage,
-                PaperProjectPage as DBPaperProjectPage,
-            )
-
-            # Verify paper exists
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            # Delete existing paper_project_pages associations
-            self.db.query(DBPaperProjectPage).filter(
-                DBPaperProjectPage.paper_id == paper_id
-            ).delete()
-
-            # Process each project page URL
-            for page_data in project_pages:
-                url = page_data.get("url", "").strip()
-                is_official = page_data.get("is_official", False)
-
-                if not url:
-                    continue
-
-                # Check if project page already exists
-                existing_page = (
-                    self.db.query(DBProjectPage)
-                    .filter(DBProjectPage.url == url)
-                    .first()
-                )
-
-                if existing_page:
-                    # Use existing project page, update is_official if needed
-                    if is_official and not existing_page.is_official:
-                        existing_page.is_official = True
-                    project_page_id = existing_page.id
-                else:
-                    # Create new project page
-                    new_page = DBProjectPage(
-                        url=url,
-                        is_official=is_official,
-                        source="manual",  # Marked as manually added by admin
-                    )
-                    self.db.add(new_page)
-                    self.db.flush()  # Get the ID without committing
-                    project_page_id = new_page.id
-
-                # Create paper-project page association
-                paper_project_page = DBPaperProjectPage(
-                    paper_id=paper_id,
-                    project_page_id=project_page_id,
-                )
-                self.db.add(paper_project_page)
-
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            # Return updated paper
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper project pages: {str(e)}")
+        return PaperAssociationService(
+            self.db, self.get_paper_by_id
+        ).update_project_pages(paper_id, project_pages, commit=commit)
 
     def update_paper_source_url(
         self, paper_id: int, source_url: str, *, commit: bool = True
     ) -> Paper | DBPaper:
-        """
-        Update the canonical source URL of an external paper.
-
-        Only valid for rows where ``source = 'external'``: ArXiv rows derive
-        their abstract URL from ``arxiv_id`` and must not have ``source_url``
-        rewritten. Raises :class:`DatabaseError` if another external row
-        already owns the new URL (the partial-unique constraint
-        ``uq_papers_source_url_external`` would otherwise raise a less
-        readable ``IntegrityError``).
-        """
-        try:
-            normalized = (source_url or "").strip()
-            if not normalized:
-                raise DatabaseError("source_url must be a non-empty string")
-            if len(normalized) > 2000:
-                raise DatabaseError("source_url must be at most 2000 characters")
-
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            if db_paper.source != "external":
-                raise DatabaseError(
-                    "source_url can only be edited on external papers; "
-                    "ArXiv rows derive their URL from arxiv_id"
-                )
-
-            if normalized == db_paper.source_url:
-                return self.get_paper_by_id(paper_id, include_resources=True)
-
-            collision = (
-                self.db.query(DBPaper.id)
-                .filter(
-                    DBPaper.source == "external",
-                    DBPaper.source_url == normalized,
-                    DBPaper.id != paper_id,
-                )
-                .first()
-            )
-            if collision is not None:
-                raise DatabaseError(
-                    f"Another external paper already uses source_url={normalized!r}"
-                )
-
-            db_paper.source_url = normalized
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper source URL: {str(e)}")
+        return PaperAssociationService(self.db, self.get_paper_by_id).update_source_url(
+            paper_id, source_url, commit=commit
+        )
 
     def update_paper_hf_artifacts(
         self,
@@ -2259,42 +1852,12 @@ class PaperService:
         *,
         commit: bool = True,
     ) -> Paper | DBPaper:
-        """Replace explicit Hugging Face artifact URLs linked to a paper."""
-        from backend.utils.hf_utils import normalize_hf_artifact_payload
-
-        try:
-            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-            if not db_paper:
-                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
-
-            models, datasets, spaces = normalize_hf_artifact_payload(
-                hf_models, hf_datasets, hf_spaces
-            )
-            db_paper.hf_models = models or None
-            db_paper.hf_datasets = datasets or None
-            db_paper.hf_spaces = spaces or None
-            sync_explicit_hf_artifact_links(
-                self.db,
-                db_paper.id,
-                db_paper.hf_models,
-                db_paper.hf_datasets,
-                db_paper.hf_spaces,
-            )
-            # Explicit URL edits must invalidate the discovery checkpoint so
-            # the cron can reconcile removed links and arXiv-discovered extras.
-            db_paper.hf_artifacts_scanned_at = None
-            if not commit:
-                self.db.flush()
-                return db_paper
-            self.db.commit()
-
-            return self.get_paper_by_id(paper_id, include_resources=True)
-
-        except ValueError as e:
-            self.db.rollback()
-            raise DatabaseError(str(e))
-        except Exception as e:
-            self.db.rollback()
-            if isinstance(e, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper HF artifacts: {str(e)}")
+        return PaperAssociationService(
+            self.db, self.get_paper_by_id
+        ).update_hf_artifacts(
+            paper_id,
+            hf_models,
+            hf_datasets,
+            hf_spaces,
+            commit=commit,
+        )
