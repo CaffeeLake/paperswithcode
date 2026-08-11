@@ -259,7 +259,7 @@ const SettingsView: React.FC = () => {
                 <a className="button button-primary" href={billing.usage_url} target="_blank" rel="noreferrer">
                   View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
                 </a>
-                <HfSignInButton returnTo="/settings" label="Refresh HF permissions" authorizeInference />
+                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
               </div>
             </div> : <div className="settings-billing-connect">
               <p className="settings-row-desc">
@@ -267,7 +267,7 @@ const SettingsView: React.FC = () => {
                 Face bills your personal account or the organization you select.
               </p>
               <div className="settings-billing-actions">
-                <HfSignInButton returnTo="/settings" label="Authorize with Hugging Face" authorizeInference />
+                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
               </div>
             </div>}
           </section>

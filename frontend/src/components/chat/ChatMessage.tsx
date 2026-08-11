@@ -493,11 +493,7 @@ export const AssistantMessage: React.FC<{
           : `The assistant hit an error: ${msg.error}`}</span>
         {["hf_inference_billing_required", "hf_inference_credential_expired"].includes(msg.errorCode ?? "") && (
           <a href="/settings">
-            {msg.errorCode === "hf_inference_billing_required"
-              ? "Authorize HF in Settings"
-              : msg.errorCode === "hf_inference_credential_expired"
-                ? "Reconnect Hugging Face"
-                : "Review billing settings"}
+            Re-sign in with Hugging Face
           </a>
         )}
         {msg.errorCode === "hf_inference_billing_exhausted" && <>

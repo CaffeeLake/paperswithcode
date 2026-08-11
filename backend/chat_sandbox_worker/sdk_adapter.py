@@ -183,7 +183,8 @@ class SDKEventAdapter:
                 provider_errors = {
                     "authentication_failed": (
                         "hf_inference_credential_expired",
-                        "Your Hugging Face authorization expired. Reconnect in Settings.",
+                        "Your Hugging Face Inference Providers authorization is "
+                        "missing or expired. Re-sign in with Hugging Face to continue.",
                     ),
                     "rate_limit": (
                         "provider_rate_limit",

@@ -147,7 +147,7 @@ describe("SettingsView organization billing", () => {
 
     expect(
       await screen.findByRole("button", { name: "Sign in with Hugging Face" }),
-    ).toHaveTextContent("Authorize with Hugging Face");
+    ).toHaveTextContent("Re-sign in with Hugging Face");
     expect(screen.queryByLabelText("Hugging Face token")).not.toBeInTheDocument();
     expect(screen.getByText(/Reconnect with Hugging Face/)).toBeVisible();
   });

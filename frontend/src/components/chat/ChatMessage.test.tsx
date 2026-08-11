@@ -278,11 +278,11 @@ describe("AssistantMessage", () => {
     renderAssistant({
       id: "assistant-1",
       role: "assistant",
-      error: "Authorize Hugging Face inference in Settings to use this model.",
+      error: "Your Hugging Face Inference Providers authorization is missing or expired. Re-sign in with Hugging Face to continue.",
       errorCode: "hf_inference_billing_required",
     });
 
-    expect(screen.getByRole("link", { name: "Authorize HF in Settings" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Re-sign in with Hugging Face" })).toHaveAttribute(
       "href",
       "/settings",
     );

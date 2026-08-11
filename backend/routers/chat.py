@@ -1021,7 +1021,8 @@ async def stream_chat(
                     raise ChatServiceError(
                         "hf_inference_billing_required",
                         402,
-                        "Authorize Hugging Face inference in Settings to use this model.",
+                        "Your Hugging Face Inference Providers authorization is "
+                        "missing or expired. Re-sign in with Hugging Face to continue.",
                     )
                 if provider == "openrouter" and not admission.replay_assistant:
                     try:

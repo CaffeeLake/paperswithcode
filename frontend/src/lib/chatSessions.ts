@@ -211,7 +211,9 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
     if (code === "hf_inference_billing_exhausted") {
       return "Hugging Face could not bill this request. Your included credits may be exhausted; enable or review pay-as-you-go billing in Settings.";
     }
-    if (code === "hf_inference_credential_expired") return "Your Hugging Face authorization expired. Reconnect in Settings.";
+    if (code === "hf_inference_credential_expired") {
+      return "Your Hugging Face Inference Providers authorization is missing or expired. Re-sign in with Hugging Face to continue.";
+    }
     if (code === "provider_rate_limit") return "The selected model is temporarily rate-limited. Try again shortly.";
     if (code === "provider_timeout") return "The model provider timed out. Try again shortly.";
     if (code === "openrouter_monthly_budget_exhausted") return "The remaining shared Papers With Code OpenRouter allowance was not enough to continue this response.";

@@ -5,7 +5,7 @@ import { toUiMessages, type ChatSessionDetail } from "@/lib/chatSessions";
 describe("toUiMessages", () => {
   it.each([
     ["hf_inference_billing_exhausted", /could not bill/],
-    ["hf_inference_credential_expired", /authorization expired/],
+    ["hf_inference_credential_expired", /Re-sign in with Hugging Face/],
     ["provider_rate_limit", /temporarily rate-limited/],
     ["provider_timeout", /timed out/],
     ["provider_unavailable", /provider failed/],
