@@ -66,6 +66,9 @@ from backend.chat_sandbox_worker.protocol import (
     decode_frame,
     encode_frame,
 )
+from backend.chat_sandbox_worker.render_method_catalog import (
+    render as render_method_catalog,
+)
 from backend.chat_sandbox_worker.render_task_catalog import (
     render as render_task_catalog,
 )
@@ -2378,9 +2381,16 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
     assert "Never output a bare repository slug" in prompt
     assert "## Available research areas and representative tasks" in prompt
+    assert "## Representative methods in the catalog" in prompt
+    assert "`world-action-models` — World Action Models (WAMs)" in prompt
+    assert "`on-policy-distillation` — On-Policy Distillation (OPD)" in prompt
+    assert "as an existing PwC method" in prompt
     assert "### Audio" in prompt
     assert "### Vision" in prompt
-    assert prompt.index("## Available research areas") < prompt.index("# pwc CLI skill")
+    assert prompt.index("## Available research areas") < prompt.index(
+        "## Representative methods"
+    )
+    assert prompt.index("## Representative methods") < prompt.index("# pwc CLI skill")
     assert "# pwc CLI skill" in prompt
     assert "name: pwc-cli" in prompt
     assert prompt.index("# pwc CLI skill") < prompt.index("# Turn metadata")
@@ -2404,7 +2414,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-bl5bM50QCQCJWc5VRSjdfO"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "55"
+    assert WORKER_CONTRACT_VERSION == "56"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2444,6 +2454,55 @@ def test_task_catalog_is_bounded_and_ranked():
     assert catalog.index("`popular`") < catalog.index("`classification`")
     assert "`detection`" not in catalog
     assert "`segmentation`" not in catalog
+
+
+def test_method_catalog_is_bounded_ranked_and_retains_featured_methods():
+    payload = {
+        "results": [
+            {
+                "name": "General",
+                "methods": [
+                    {
+                        "name": "Transformer",
+                        "full_name": "Transformer",
+                        "slug": "transformer",
+                        "paper_count": 100,
+                    },
+                    {
+                        "name": "Dropout",
+                        "full_name": "Dropout",
+                        "slug": "dropout",
+                        "paper_count": 90,
+                    },
+                    {
+                        "name": "World Action Models",
+                        "full_name": "World Action Models (WAMs)",
+                        "slug": "world-action-models",
+                        "paper_count": 5,
+                    },
+                ],
+            },
+            {
+                "name": "Vision",
+                "methods": [
+                    {
+                        "name": "Vision Transformer",
+                        "full_name": "Vision Transformer",
+                        "slug": "vision-transformer",
+                        "paper_count": 50,
+                    }
+                ],
+            },
+        ]
+    }
+
+    catalog = render_method_catalog(payload, maximum_methods_per_area=2)
+
+    assert catalog.index("### General") < catalog.index("### Vision")
+    assert "`transformer`" in catalog
+    assert "`world-action-models`" in catalog
+    assert "World Action Models (WAMs)" in catalog
+    assert "`dropout`" not in catalog
 
 
 def test_image_makes_copied_worker_readable_and_installs_skill():

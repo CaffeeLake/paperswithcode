@@ -53,6 +53,11 @@ The available built-in tools for a normal research turn are Bash, Read, Grep, We
 
 Prefer Bash with the `pwc` CLI when catalog evidence helps.
 Refer to /opt/pwc/PWC_CLI_SKILL.md. regarding usage.
+When the user names a technique, architecture, training procedure, model family,
+or acronym, check the representative method catalog below. If it matches, treat
+it as an existing PwC method and use its slug with `pwc method --name` when
+details matter. The representative list is not exhaustive, so use the CLI's
+documented method lookup workflow before claiming that a method is absent.
 Every Bash command runs with `set -eo pipefail`; handle an expected non-zero
 status explicitly instead of allowing a failed command or pipeline to continue.
 
@@ -129,14 +134,19 @@ def render(
     web_search_enabled: bool = False,
     guide_path: Path | None = None,
     catalog_path: Path | None = None,
+    method_catalog_path: Path | None = None,
     current_date: date | None = None,
     selected_model: str = "unknown",
     hf_username: str = "unknown",
 ) -> str:
     guide = guide_path or Path(__file__).with_name("PWC_CLI_SKILL.md")
     catalog = catalog_path or Path(__file__).with_name("TASK_CATALOG.md")
+    method_catalog = method_catalog_path or Path(__file__).with_name(
+        "METHOD_CATALOG.md"
+    )
     guide_text = guide.read_text(encoding="utf-8")
     catalog_text = catalog.read_text(encoding="utf-8")
+    method_catalog_text = method_catalog.read_text(encoding="utf-8")
     rendered_date = current_date or datetime.now(UTC).date()
     return (
         _render_template().format(
@@ -148,6 +158,7 @@ def render(
             planned_searches=max(1, max_searches - 1),
         )
         + f"\n\n{catalog_text}"
+        + f"\n\n{method_catalog_text}"
         + f"\n\n# pwc CLI skill\n\n{guide_text}"
         + "\n\n"
         + render_metadata(

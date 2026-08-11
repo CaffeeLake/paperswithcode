@@ -209,7 +209,9 @@ sudo python deploy/configure_host_env.py \
 
 The worker system prompt embeds
 `backend/chat_sandbox_worker/PWC_CLI_SKILL.md` plus the bounded area/task
-taxonomy in `backend/chat_sandbox_worker/TASK_CATALOG.md`. The hourly
+taxonomy in `backend/chat_sandbox_worker/TASK_CATALOG.md` and the bounded,
+area-grouped method snapshot in
+`backend/chat_sandbox_worker/METHOD_CATALOG.md`. The hourly
 `sync-pwc-cli-skill.yml` workflow compares the skill with
 `huggingface/pwc-cli:standalone_cli/SKILL.md` and commits validated skill changes
 directly to `main`. A concurrent update to `main` is rebased before push; a
