@@ -67,6 +67,7 @@ image = (
     .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
+        "chmod -R a+rX /opt/pwc/restricted_hf_cli",
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
         "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
         "chmod 0755 /opt/pwc/restricted-hf && ln -s /opt/pwc/restricted-hf /usr/local/bin/hf",
@@ -79,17 +80,17 @@ image = (
         "pwc paper --help >/dev/null",
         "pwc benchmark --help >/dev/null",
         "pwc benchmark list --help >/dev/null",
-        "hf --help >/dev/null",
-        "hf collections --help >/dev/null",
-        "hf datasets card --help >/dev/null",
-        "hf datasets list --help >/dev/null",
-        "hf models card --help >/dev/null",
-        "hf models list --help >/dev/null",
-        "hf spaces card --help >/dev/null",
-        "hf spaces list --help >/dev/null",
-        f"hf version | grep -F '{RESTRICTED_HF_CLI_VERSION}' >/dev/null",
-        'test "$(hf auth --help >/dev/null 2>&1; echo $?)" = 2',
-        'test "$(hf upload owner/repo file >/dev/null 2>&1; echo $?)" = 2',
+        "runuser -u pwc-chat -- hf --help >/dev/null",
+        "runuser -u pwc-chat -- hf collections --help >/dev/null",
+        "runuser -u pwc-chat -- hf datasets card --help >/dev/null",
+        "runuser -u pwc-chat -- hf datasets list --help >/dev/null",
+        "runuser -u pwc-chat -- hf models card --help >/dev/null",
+        "runuser -u pwc-chat -- hf models list --help >/dev/null",
+        "runuser -u pwc-chat -- hf spaces card --help >/dev/null",
+        "runuser -u pwc-chat -- hf spaces list --help >/dev/null",
+        f"runuser -u pwc-chat -- hf version | grep -F '{RESTRICTED_HF_CLI_VERSION}' >/dev/null",
+        'test "$(runuser -u pwc-chat -- hf auth --help >/dev/null 2>&1; echo $?)" = 2',
+        'test "$(runuser -u pwc-chat -- hf upload owner/repo file >/dev/null 2>&1; echo $?)" = 2',
     )
     .env(
         {

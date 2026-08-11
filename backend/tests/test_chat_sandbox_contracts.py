@@ -2516,7 +2516,10 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
         '        "/opt/pwc/backend/chat_execution_policy.py"'
     ) in source
     assert '"chmod -R a+rX /opt/pwc/backend"' in source
+    assert '"chmod -R a+rX /opt/pwc/restricted_hf_cli"' in source
     assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
+    assert '"runuser -u pwc-chat -- hf --help >/dev/null"' in source
+    assert "runuser -u pwc-chat -- hf version" in source
     assert (
         "\"PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'\""
     ) in source
