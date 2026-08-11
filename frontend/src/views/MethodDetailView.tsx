@@ -170,7 +170,9 @@ const MethodDetailView: React.FC = () => {
 
       <div
         className={`tag-hero method-hero-grid${
-          m.slug === "grokking" || m.slug === "latent-reasoning"
+          m.slug === "grokking" ||
+          m.slug === "latent-reasoning" ||
+          m.slug === "world-action-models"
             ? " method-hero-grid--wide-figure"
             : ""
         }`}

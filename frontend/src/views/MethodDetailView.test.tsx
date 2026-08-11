@@ -48,5 +48,8 @@ describe("MethodDetailView", () => {
         name: /World Action Models: The Next Frontier in Embodied AI/,
       }),
     ).toHaveAttribute("href", "/paper/2605.12090");
+    expect(document.querySelector(".method-hero-grid")).toHaveClass(
+      "method-hero-grid--wide-figure",
+    );
   });
 });
