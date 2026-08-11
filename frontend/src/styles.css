@@ -5472,6 +5472,7 @@ html { scroll-behavior: smooth; }
 .chat-user-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 2px;
   min-height: 30px;
   padding: 4px 2px 0;
   opacity: 0;
@@ -5480,12 +5481,12 @@ html { scroll-behavior: smooth; }
   -webkit-user-select: none;
   user-select: none;
 }
-.chat-user-message-wrap:hover .chat-user-actions,
-.chat-user-message-wrap:focus-within .chat-user-actions {
+.chat-msg-user:hover .chat-user-actions,
+.chat-msg-user:focus-within .chat-user-actions {
   opacity: 1;
   transform: translateY(0);
 }
-.chat-user-edit {
+.chat-user-action {
   width: 28px;
   height: 28px;
   display: inline-flex;
@@ -5496,17 +5497,17 @@ html { scroll-behavior: smooth; }
   color: var(--ink-soft);
   background: transparent;
 }
-.chat-user-edit:hover {
+.chat-user-action:hover {
   color: var(--ink);
   background: var(--bg-elevated);
   border-color: var(--hairline);
 }
-.chat-user-edit:focus-visible {
+.chat-user-action:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   opacity: 1;
 }
-.chat-user-edit svg { width: 14px; height: 14px; }
+.chat-user-action svg { width: 14px; height: 14px; }
 .chat-inline-editor {
   width: min(620px, 74%);
   min-width: min(360px, 100%);

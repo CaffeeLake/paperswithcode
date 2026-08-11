@@ -92,7 +92,22 @@ describe("UserMessage", () => {
     expect(document.getSelection()?.toString()).toBe("good");
   });
 
-  it("exposes a keyboard-accessible Codex-style edit action", async () => {
+  it("copies the full message and confirms success", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<UserMessage text={"Copy this prompt\nincluding its second line"} />);
+
+    await user.click(screen.getByRole("button", { name: "Copy message" }));
+
+    expect(writeText).toHaveBeenCalledWith("Copy this prompt\nincluding its second line");
+    expect(screen.getByRole("button", { name: "Message copied" })).toHaveAttribute("title", "Copied");
+  });
+
+  it("exposes keyboard-accessible copy and edit actions", async () => {
     const user = userEvent.setup();
     let edited = false;
     render(
@@ -104,8 +119,11 @@ describe("UserMessage", () => {
       />,
     );
 
+    const copy = screen.getByRole("button", { name: "Copy message" });
     const edit = screen.getByRole("button", { name: "Edit message" });
     expect(edit).toHaveAttribute("title", "Edit");
+    await user.tab();
+    expect(copy).toHaveFocus();
     await user.tab();
     expect(edit).toHaveFocus();
     await user.keyboard("{Enter}");

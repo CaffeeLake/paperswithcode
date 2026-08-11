@@ -5,7 +5,7 @@
  */
 
 import React from "react";
-import { FileText, Pencil } from "lucide-react";
+import { Check, Copy, FileText, Pencil } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
@@ -391,6 +391,25 @@ export const UserMessage: React.FC<{
   onResend,
   onResendDraft,
 }) => {
+  const [copied, setCopied] = React.useState(false);
+  const copiedTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  const copyMessage = async () => {
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard access can be denied by browser permissions; leave the action retryable.
+    }
+  };
+
   if (editing) {
     if (!paperMentionsEnabled && paperMentions.length === 0) {
       return <PlainUserEditor id={id} text={text} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
@@ -404,19 +423,28 @@ export const UserMessage: React.FC<{
         <div className="chat-bubble" onDoubleClick={selectDoubleClickedWord}>
           <InlinePaperMentions text={text} mentions={paperMentions} />
         </div>
-        {editingAllowed && (
-          <div className="chat-user-actions">
+        <div className="chat-user-actions">
+          <button
+            type="button"
+            className="chat-user-action"
+            aria-label={copied ? "Message copied" : "Copy message"}
+            title={copied ? "Copied" : "Copy"}
+            onClick={() => void copyMessage()}
+          >
+            {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+          </button>
+          {editingAllowed && (
             <button
               type="button"
-              className="chat-user-edit"
+              className="chat-user-action"
               aria-label="Edit message"
               title="Edit"
               onClick={onEdit}
             >
               <Pencil aria-hidden="true" />
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
