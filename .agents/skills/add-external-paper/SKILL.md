@@ -24,11 +24,9 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/v1/papers/rec
 grep -E '^PWC_ADMIN_API_TOKEN=' backend/keys.env | sed 's/=.*/=<redacted>/'
 ```
 
-If the backend is not running, start it without asking:
-
-```bash
-./start_services.sh
-```
+If the API is unavailable, use the direct database path where the operation
+supports it or report the blocker. Do not start or restart deployed services
+during data curation.
 
 Use `ADMIN_TOKEN=$(grep '^PWC_ADMIN_API_TOKEN=' backend/keys.env | cut -d= -f2-)` for API writes with `X-Admin-Token`.
 

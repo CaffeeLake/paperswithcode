@@ -129,7 +129,7 @@ def create_parent_dataset_via_api():
 
     except requests.exceptions.ConnectionError:
         logger.error("✗ Could not connect to API. Is the backend server running?")
-        logger.error("  Start it with: ./start_services.sh")
+        logger.error("  For local development, start the backend on a free port.")
         return None
     except Exception as e:
         logger.error(f"✗ Error creating dataset via API: {e}")

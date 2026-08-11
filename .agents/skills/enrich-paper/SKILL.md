@@ -50,7 +50,8 @@ ADMIN_TOKEN=$(grep '^PWC_ADMIN_API_TOKEN=' backend/keys.env | cut -d= -f2-)
 HF_TOKEN=$(grep '^PWC_HF_TOKEN=' backend/keys.env | cut -d= -f2-)
 ```
 
-If the backend is not running, start it without asking (`./start_services.sh`, per AGENTS.md).
+If the API is unavailable, use direct database verification where supported or
+report the blocker. Do not start or restart deployed services during curation.
 
 ## Step 0 — Resolve the paper row
 

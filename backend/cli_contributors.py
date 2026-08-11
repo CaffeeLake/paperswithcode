@@ -98,6 +98,6 @@ def add_contributor_command(args: argparse.Namespace) -> int:
     result = add_contributor(args.username)
     print(
         f"{result['status']}: @{result['username']} "
-        f"({result['hf_subject']}); service restart required"
+        f"({result['hf_subject']}); refresh environments with pwc-deploy"
     )
     return 0

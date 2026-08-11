@@ -244,7 +244,8 @@ curl -fsS "http://localhost:8000/api/v1/papers/<arxiv_id>?include_resources=true
   | uv run python3 -c "import json,sys; p=json.load(sys.stdin); print([(m['slug'], m.get('source_paper_id')) for m in p.get('methods') or [] if m['slug']=='<slug>'])"
 ```
 
-If the API is stale, run `./start_services.sh` without asking.
+If the API is stale, verify the database row directly and report the stale API
+response. Do not start or restart deployed services during data curation.
 
 ## Reporting Back
 

@@ -228,7 +228,8 @@ curl -fsS "http://localhost:8000/api/v1/conferences/<slug>" | uv run python3 -m 
 curl -fsS -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/v1/conferences/<slug>/image"
 ```
 
-If the API is stale, run `./start_services.sh` without asking.
+If the API is stale, verify the database row directly and report the stale API
+response. Do not start or restart deployed services during data curation.
 
 ## Reporting Back
 

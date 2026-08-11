@@ -76,3 +76,24 @@ def test_add_contributor_rejects_diverged_environment_allowlists(monkeypatch):
 
     with pytest.raises(ValueError, match="differs"):
         cli_contributors.add_contributor("fm1320")
+
+
+def test_add_contributor_command_requests_supported_environment_refresh(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(cli_contributors.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        cli_contributors,
+        "add_contributor",
+        lambda _: {
+            "status": "added",
+            "username": "fm1320",
+            "hf_subject": "immutable-subject",
+        },
+    )
+
+    assert (
+        cli_contributors.add_contributor_command(SimpleNamespace(username="fm1320"))
+        == 0
+    )
+    assert "refresh environments with pwc-deploy" in capsys.readouterr().out
