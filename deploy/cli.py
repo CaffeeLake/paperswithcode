@@ -183,7 +183,7 @@ def _chat_descriptor_from_source(
     source: Path, environment: str, *, chat_enabled: bool | None = None
 ) -> dict | None:
     enabled = environment == "staging" if chat_enabled is None else chat_enabled
-    if not enabled:
+    if not enabled and environment != "production":
         return None
     script = """
 import json
@@ -194,9 +194,10 @@ from backend.chat_sandbox_worker.contract import (
     PRODUCTION_MODAL_IMAGE_ID, PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
 )
 from backend.chat_sandbox_worker.prompt import sha256
+enabled = os.environ["PWC_RELEASE_CHAT_ENABLED"] == "true"
 print(json.dumps({
-    "enabled": True,
-    "new_chat_modal_percentage": NEW_CHAT_MODAL_PERCENTAGE,
+    "enabled": enabled,
+    "new_chat_modal_percentage": NEW_CHAT_MODAL_PERCENTAGE if enabled else 0,
     "default_backend": DEFAULT_BACKEND,
     "modal_image_version": (
         PRODUCTION_MODAL_IMAGE_ID
@@ -216,6 +217,7 @@ print(json.dumps({
         "PYTHONPATH": str(source),
         "PYTHONNOUSERSITE": "1",
         "PWC_RELEASE_ENVIRONMENT": environment,
+        "PWC_RELEASE_CHAT_ENABLED": "true" if enabled else "false",
     }
     output = subprocess.check_output(
         [sys.executable, "-c", script],

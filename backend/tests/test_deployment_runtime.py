@@ -1105,14 +1105,30 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
     assert descriptor["worker_contract_version"] == "56"
-    assert _chat_descriptor_from_source(source, "production") is None
+    dormant = _chat_descriptor_from_source(source, "production")
+    assert dormant is not None
+    assert dormant["enabled"] is False
+    assert dormant["new_chat_modal_percentage"] == 0
+    assert dormant["system_prompt_sha256"] == descriptor["system_prompt_sha256"]
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
-    assert {
-        key: value for key, value in production.items() if key != "modal_image_version"
-    } == {
-        key: value for key, value in descriptor.items() if key != "modal_image_version"
-    }
+    assert production["enabled"] is True
+    assert (
+        production["new_chat_modal_percentage"]
+        == descriptor["new_chat_modal_percentage"]
+    )
+    assert production["system_prompt_sha256"] == descriptor["system_prompt_sha256"]
+
+
+def test_disabled_production_manifest_uses_selected_source_descriptor():
+    source = Path(__file__).resolve().parents[2]
+    descriptor = _chat_descriptor_from_source(source, "production", chat_enabled=False)
+    assert descriptor is not None
+
+    manifest = build_manifest("a" * 40, "production", chat_descriptor=descriptor)
+
+    assert manifest["chat_runtime"] == descriptor
+    assert manifest["backend_features"]["chat"] is False
 
 
 def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Path):

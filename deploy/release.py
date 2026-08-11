@@ -163,7 +163,7 @@ def build_manifest(
         "frontend_features": features,
         "chat_runtime": chat_runtime(
             environment,
-            chat_descriptor if features["chat"] else None,
+            chat_descriptor,
         ),
         "frontend_entrypoint": "frontend-dist/index.html",
     }
