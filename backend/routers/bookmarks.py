@@ -8,16 +8,10 @@ Bucket. After migration, database rows are retained as a compatibility mirror.
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
 
-from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.models.api import Paper as ApiPaper
 from backend.models.database import (
@@ -26,20 +20,15 @@ from backend.models.database import (
 from backend.models.database import (
     UserBookmark,
 )
-from backend.services.hf_inference_billing_service import decrypt_oauth_credential
+from backend.services.bookmark_service import BookmarkReadService
 from backend.services.paper_bucket_service import (
     BUCKET_MANAGE_OAUTH_COOKIE_NAME,
     PaperBucketError,
 )
-from backend.services.paper_service import PaperService
-from backend.services.saved_papers_bucket_service import (
-    SavedPaperRef,
-    SavedPapersBucket,
-)
+from backend.services.saved_papers_bucket_service import SavedPapersBucket
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/me", tags=["bookmarks"])
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class BookmarkIdsResponse(BaseModel):
-    paper_ids: List[int] = Field(
+    paper_ids: list[int] = Field(
         default_factory=list,
         description="IDs of papers bookmarked by the current user",
     )
@@ -57,46 +46,29 @@ class BookmarkIdsResponse(BaseModel):
 class SavedTaskGroup(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: Optional[int] = Field(
-        None, description="Task ID, NULL for the 'Untagged' bucket"
-    )
-    slug: Optional[str] = Field(
+    id: int | None = Field(None, description="Task ID, NULL for the 'Untagged' bucket")
+    slug: str | None = Field(
         None, description="Task slug, NULL for the 'Untagged' bucket"
     )
     name: str = Field(..., description="Task display name")
-    papers: List[ApiPaper] = Field(default_factory=list)
+    papers: list[ApiPaper] = Field(default_factory=list)
 
 
 class SavedAreaGroup(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: Optional[int] = Field(None, description="Area ID, NULL for the 'Other' bucket")
+    id: int | None = Field(None, description="Area ID, NULL for the 'Other' bucket")
     name: str = Field(..., description="Area display name")
-    tasks: List[SavedTaskGroup] = Field(default_factory=list)
+    tasks: list[SavedTaskGroup] = Field(default_factory=list)
 
 
 class SavedPapersResponse(BaseModel):
     count: int = Field(..., description="Total number of bookmarked papers")
-    areas: List[SavedAreaGroup] = Field(default_factory=list)
+    areas: list[SavedAreaGroup] = Field(default_factory=list)
     bucket_connected: bool = Field(
         False,
         description="Whether the response was read from the user's HF Bucket",
     )
-
-
-@dataclass
-class _SavedTaskBucket:
-    id: Optional[int]
-    slug: Optional[str]
-    name: str
-    papers: List[ApiPaper] = field(default_factory=list)
-
-
-@dataclass
-class _SavedAreaBucket:
-    id: Optional[int]
-    name: str
-    tasks: Dict[Optional[int], _SavedTaskBucket] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -126,47 +98,15 @@ def _bucket_authorization_required() -> HTTPException:
     )
 
 
-def _legacy_bookmark_refs(user: dict, db: Session) -> list[SavedPaperRef]:
-    rows = (
-        db.query(
-            UserBookmark.paper_id,
-            UserBookmark.created_at,
-            DBPaper.title,
-            DBPaper.arxiv_id,
-            DBPaper.source_url,
-        )
-        .join(DBPaper, DBPaper.id == UserBookmark.paper_id)
-        .filter(UserBookmark.hf_username == user["username"])
-        .order_by(desc(UserBookmark.created_at))
-        .all()
-    )
-    return [
-        SavedPaperRef(
-            paper_id=int(row[0]),
-            saved_at=row[1],
-            title=row[2],
-            arxiv_id=row[3],
-            source_url=row[4],
-        )
-        for row in rows
-    ]
-
-
 def _bucket_store(
     request: Request, user: dict, db: Session
 ) -> SavedPapersBucket | None:
     encrypted = request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME)
-    credential = (
-        decrypt_oauth_credential(encrypted, user["hf_user_id"], get_settings())
-        if encrypted
-        else None
+    return BookmarkReadService(db).initialize_bucket(
+        encrypted_credential=encrypted,
+        hf_user_id=user["hf_user_id"],
+        username=user["username"],
     )
-    if credential is None:
-        return None
-
-    store = SavedPapersBucket(token=credential.token, username=user["username"])
-    store.initialize(lambda: _legacy_bookmark_refs(user, db))
-    return store
 
 
 def _require_bucket_store(
@@ -181,24 +121,6 @@ def _require_bucket_store(
     return store
 
 
-def _bookmark_refs(
-    request: Request, user: dict, db: Session
-) -> tuple[list[SavedPaperRef], bool]:
-    legacy = _legacy_bookmark_refs(user, db)
-    try:
-        store = _bucket_store(request, user, db)
-        if store is None:
-            return legacy, False
-        return store.list(), True
-    except PaperBucketError as error:
-        logger.warning(
-            "Falling back to database bookmarks for %s: %s",
-            user["username"],
-            error,
-        )
-        return legacy, False
-
-
 @router.get(
     "/bookmarks/ids",
     response_model=BookmarkIdsResponse,
@@ -211,8 +133,12 @@ def get_my_bookmark_ids(
 ) -> BookmarkIdsResponse:
     """Return just the IDs (cheap; used to hydrate the Save button state)."""
 
-    refs, _ = _bookmark_refs(request, user, db)
-    return BookmarkIdsResponse(paper_ids=[item.paper_id for item in refs])
+    listing = BookmarkReadService(db).list_refs(
+        encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
+        hf_user_id=user["hf_user_id"],
+        username=user["username"],
+    )
+    return BookmarkIdsResponse(paper_ids=[item.paper_id for item in listing.refs])
 
 
 @router.get(
@@ -232,125 +158,31 @@ def get_my_bookmarks(
     catch-all ``Other / Untagged`` bucket.
     """
 
-    bookmark_refs, bucket_connected = _bookmark_refs(request, user, db)
-    paper_ids: List[int] = [item.paper_id for item in bookmark_refs]
-
-    if not paper_ids:
-        return SavedPapersResponse(count=0, areas=[], bucket_connected=bucket_connected)
-
-    db_papers = db.query(DBPaper).filter(DBPaper.id.in_(paper_ids)).all()
-    paper_by_id: Dict[int, DBPaper] = {p.id: p for p in db_papers}
-    # Preserve "most recently bookmarked first" ordering from `bookmark_rows`.
-    ordered_papers: List[DBPaper] = [
-        paper_by_id[pid] for pid in paper_ids if pid in paper_by_id
-    ]
-
-    # Resolve each paper's primary task + that task's area in a single query.
-    primary_rows = db.execute(
-        text(
-            """
-            SELECT pt.paper_id,
-                   t.id   AS task_id,
-                   t.slug AS task_slug,
-                   t.name AS task_name,
-                   a.id   AS area_id,
-                   a.name AS area_name
-            FROM paper_tasks pt
-            JOIN tasks t ON t.id = pt.task_id
-            LEFT JOIN areas a ON a.id = t.area_id
-            WHERE pt.paper_id = ANY(:paper_ids)
-              AND pt.task_id = (
-                  SELECT MIN(pt2.task_id)
-                  FROM paper_tasks pt2
-                  WHERE pt2.paper_id = pt.paper_id
-              )
-            """
-        ),
-        {"paper_ids": paper_ids},
-    ).fetchall()
-
-    primary_by_paper: Dict[
-        int,
-        Tuple[
-            Optional[int], Optional[str], Optional[str], Optional[int], Optional[str]
-        ],
-    ] = {
-        int(row[0]): (
-            int(row[1]) if row[1] is not None else None,
-            row[2],
-            row[3],
-            int(row[4]) if row[4] is not None else None,
-            row[5],
-        )
-        for row in primary_rows
-    }
-
-    service = PaperService(db)
-    api_papers: Dict[int, ApiPaper] = {
-        int(paper.id): paper
-        for paper in service.hydrate_cards(
-            ordered_papers,
-            include_resources=False,
-        )
-    }
-
-    # Two-level grouping: area → task → papers. We use `None` keys for the
-    # catch-all buckets (paper has no task, or task has no area).
-    areas: Dict[Optional[int], _SavedAreaBucket] = {}
-
-    for db_paper in ordered_papers:
-        primary = primary_by_paper.get(db_paper.id)
-        if primary is None:
-            task_id, task_slug, task_name = None, None, "Untagged"
-            area_id, area_name = None, "Other"
-        else:
-            task_id, task_slug, task_name, area_id, area_name = primary
-            if area_id is None:
-                area_name = "Other"
-            if task_id is None:
-                task_name = "Untagged"
-
-        area_bucket = areas.get(area_id)
-        if area_bucket is None:
-            area_bucket = _SavedAreaBucket(
-                id=area_id,
-                name=area_name or "Other",
-            )
-            areas[area_id] = area_bucket
-
-        task_bucket = area_bucket.tasks.get(task_id)
-        if task_bucket is None:
-            task_bucket = _SavedTaskBucket(
-                id=task_id,
-                slug=task_slug,
-                name=task_name or "Untagged",
-            )
-            area_bucket.tasks[task_id] = task_bucket
-
-        task_bucket.papers.append(api_papers[db_paper.id])
-
-    # Materialise into Pydantic objects in deterministic order.
-    out_areas = [
+    projection = BookmarkReadService(db).list_grouped(
+        encrypted_credential=request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME),
+        hf_user_id=user["hf_user_id"],
+        username=user["username"],
+    )
+    areas = [
         SavedAreaGroup(
-            id=area_bucket.id,
-            name=area_bucket.name,
+            id=area.id,
+            name=area.name,
             tasks=[
                 SavedTaskGroup(
-                    id=task_bucket.id,
-                    slug=task_bucket.slug,
-                    name=task_bucket.name,
-                    papers=task_bucket.papers,
+                    id=task.id,
+                    slug=task.slug,
+                    name=task.name,
+                    papers=list(task.papers),
                 )
-                for task_bucket in area_bucket.tasks.values()
+                for task in area.tasks
             ],
         )
-        for area_bucket in areas.values()
+        for area in projection.areas
     ]
-
     return SavedPapersResponse(
-        count=len(api_papers),
-        areas=out_areas,
-        bucket_connected=bucket_connected,
+        count=projection.count,
+        areas=areas,
+        bucket_connected=projection.bucket_connected,
     )
 
 
