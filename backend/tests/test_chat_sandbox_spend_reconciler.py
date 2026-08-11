@@ -20,7 +20,13 @@ from backend.models.database import (
     ChatSandboxPool,
     ChatSession,
 )
+from backend.services import chat_sandbox_spend_reconciler as reconciler_module
 from backend.services import chat_sandbox_spend_service as spend_service_module
+from backend.services.chat_sandbox_pool_repository import (
+    MODAL_CPU_USD_PER_CORE_SECOND,
+    MODAL_MEMORY_USD_PER_GIB_SECOND,
+    ChatSandboxPoolRepository,
+)
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_spend_reconciler import (
     ChatSandboxSpendReconciler,
@@ -104,6 +110,40 @@ class FailingSessionFactory:
         return self.sessions()
 
 
+def pool_row(
+    configured: Settings,
+    now: datetime,
+    *,
+    state: str,
+    billing_month=None,
+    cpu_request: float = 1,
+    memory_request_mib: int = 1024,
+    cost: float = 0,
+) -> ChatSandboxPool:
+    return ChatSandboxPool(
+        id=uuid.uuid4(),
+        modal_sandbox_id=f"sb-{uuid.uuid4()}",
+        state=state,
+        image_version=configured.chat_modal_image_version,
+        worker_contract_version=configured.chat_worker_contract_version,
+        worker_generation=uuid.uuid4().hex,
+        app_release_id=configured.release_id,
+        created_at=now - timedelta(seconds=10),
+        ready_at=now - timedelta(seconds=5),
+        expires_at=now + timedelta(hours=1),
+        updated_at=now,
+        cpu_request=cpu_request,
+        cpu_limit=max(cpu_request, configured.chat_sandbox_cpu_limit),
+        memory_request_mib=memory_request_mib,
+        memory_limit_mib=max(
+            memory_request_mib,
+            configured.chat_sandbox_memory_limit_mib,
+        ),
+        estimated_blank_cost_usd=cost,
+        billing_month=billing_month or now.date().replace(day=1),
+    )
+
+
 def aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
@@ -117,6 +157,237 @@ def budget_states(sessions) -> list[ChatSandboxBudgetState]:
                 )
             ).scalars()
         )
+
+
+def test_disabled_pool_budget_status_preserves_legacy_projection_and_cost_updates():
+    sessions = session_factory()
+    now = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    configured = settings(
+        chat_sandbox_spend_enforcement_enabled=False,
+        chat_blank_pool_min=2,
+        chat_blank_pool_monthly_budget_usd=1_000,
+        chat_blank_pool_reported_month_to_date_usd=0,
+        chat_sandbox_cpu=4,
+        chat_sandbox_memory_mib=4096,
+    )
+    live = pool_row(
+        configured,
+        now,
+        state="starting",
+        cpu_request=2,
+        memory_request_mib=1024,
+        cost=99,
+    )
+    terminal = pool_row(configured, now, state="claimed", cost=3.25)
+    terminal.blank_billable_seconds = 77
+    prior_month = pool_row(
+        configured,
+        now,
+        state="blank_ready",
+        billing_month=datetime(2026, 7, 1, tzinfo=UTC).date(),
+        cost=8.5,
+    )
+    with sessions() as db, db.begin():
+        db.add_all([live, terminal, prior_month])
+
+    transaction_starts = []
+
+    def record_transaction(_db, transaction, _connection):
+        if transaction.parent is None:
+            transaction_starts.append(transaction)
+
+    event.listen(sessions.class_, "after_begin", record_transaction)
+    clock_calls = []
+
+    def clock():
+        clock_calls.append(now)
+        return now
+
+    capacity_calls = []
+    pool_repository = ChatSandboxPoolRepository(
+        configured,
+        capacity_locker=lambda *_args, **_kwargs: capacity_calls.append(True),
+    )
+    reporter = Reporter(configured, handler=lambda: pytest.fail("reporter called"))
+    reconciler = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=sessions,
+        reporter=reporter,
+        pool_repository=pool_repository,
+        utcnow=clock,
+    )
+
+    status = reconciler.pool_budget_status()
+
+    live_cost = 10 * (
+        2 * MODAL_CPU_USD_PER_CORE_SECOND + MODAL_MEMORY_USD_PER_GIB_SECOND
+    )
+    accrued = live_cost + 3.25
+    remaining_seconds = (datetime(2026, 9, 1, tzinfo=UTC) - now).total_seconds()
+    projected = (
+        accrued
+        + remaining_seconds
+        * (4 * MODAL_CPU_USD_PER_CORE_SECOND + 4 * MODAL_MEMORY_USD_PER_GIB_SECOND)
+        * 2
+    )
+    assert status == {
+        "billing_month": "2026-08-01",
+        "accrued_usd": pytest.approx(accrued),
+        "reported_usd": 0.0,
+        "effective_accrued_usd": pytest.approx(accrued),
+        "projected_usd": pytest.approx(projected),
+        "budget_usd": 1_000.0,
+        "within_budget": True,
+    }
+    assert list(status) == [
+        "billing_month",
+        "accrued_usd",
+        "reported_usd",
+        "effective_accrued_usd",
+        "projected_usd",
+        "budget_usd",
+        "within_budget",
+    ]
+    assert clock_calls == [now]
+    assert len(transaction_starts) == 1
+    assert capacity_calls == []
+    assert reporter.calls == []
+    with sessions() as db:
+        persisted_live = db.get(ChatSandboxPool, live.id)
+        persisted_terminal = db.get(ChatSandboxPool, terminal.id)
+        persisted_prior = db.get(ChatSandboxPool, prior_month.id)
+        assert persisted_live.blank_billable_seconds == 10
+        assert float(persisted_live.estimated_blank_cost_usd) == pytest.approx(
+            live_cost,
+            abs=1e-6,
+        )
+        assert persisted_terminal.blank_billable_seconds == 77
+        assert float(persisted_terminal.estimated_blank_cost_usd) == 3.25
+        assert float(persisted_prior.estimated_blank_cost_usd) == 8.5
+
+
+def test_disabled_pool_budget_status_preserves_empty_sum_and_inclusive_floor():
+    sessions = session_factory()
+    now = datetime(2026, 12, 31, 23, tzinfo=UTC)
+    configured = settings(
+        chat_sandbox_spend_enforcement_enabled=False,
+        chat_blank_pool_min=0,
+        chat_blank_pool_reported_month_to_date_usd=5,
+        chat_blank_pool_monthly_budget_usd=5,
+    )
+    reconciler = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=sessions,
+        reporter=Reporter(configured),
+        utcnow=lambda: now,
+    )
+
+    status = reconciler.pool_budget_status()
+
+    assert status == {
+        "billing_month": "2026-12-01",
+        "accrued_usd": 0,
+        "reported_usd": 5.0,
+        "effective_accrued_usd": 5.0,
+        "projected_usd": 5.0,
+        "budget_usd": 5.0,
+        "within_budget": True,
+    }
+    assert type(status["accrued_usd"]) is int
+
+
+def test_enforced_pool_budget_status_maps_spend_status_in_one_transaction(
+    monkeypatch,
+):
+    sessions = session_factory()
+    now = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    configured = settings()
+    reporter = Reporter(configured, handler=lambda: pytest.fail("reporter called"))
+    pool_repository = ChatSandboxPoolRepository(
+        configured,
+        capacity_locker=lambda *_args, **_kwargs: pytest.fail("pool lock called"),
+    )
+    clock_calls = []
+    factory_calls = []
+    status_calls = []
+
+    def tracked_factory():
+        factory_calls.append(True)
+        return sessions()
+
+    class StubSpendService:
+        def __init__(self, db, service_settings):
+            assert db.in_transaction()
+            assert service_settings is configured
+
+        def status(self, sampled_at):
+            status_calls.append(sampled_at)
+            return {
+                "billing_cycle": "2026-08",
+                "estimated_microusd": 1_250_000,
+                "provider_floor_microusd": 2_500_000,
+                "effective_microusd": 3_750_000,
+                "outstanding_reservation_microusd": 4_250_000,
+                "application_cap_microusd": 9_000_000,
+                "circuit_state": "tripped",
+            }
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "ChatSandboxSpendService",
+        StubSpendService,
+    )
+    reconciler = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=tracked_factory,
+        reporter=reporter,
+        pool_repository=pool_repository,
+        utcnow=lambda: clock_calls.append(now) or now,
+    )
+
+    status = reconciler.pool_budget_status()
+
+    assert status == {
+        "billing_month": "2026-08",
+        "accrued_usd": 1.25,
+        "reported_usd": 2.5,
+        "effective_accrued_usd": 3.75,
+        "projected_usd": 8.0,
+        "budget_usd": 9.0,
+        "within_budget": False,
+    }
+    assert factory_calls == [True]
+    assert status_calls == [now]
+    assert clock_calls == [now]
+    assert reporter.calls == []
+
+
+def test_enforced_pool_budget_status_commits_spend_status_and_propagates_db_errors():
+    sessions = session_factory()
+    now = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    configured = settings()
+    reporter = Reporter(configured)
+    reconciler = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=sessions,
+        reporter=reporter,
+        utcnow=lambda: now,
+    )
+
+    status = reconciler.pool_budget_status()
+
+    assert status["billing_month"] == "2026-08-01"
+    assert status["within_budget"] is True
+    assert len(budget_states(sessions)) == 1
+    failing = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=FailingSessionFactory(sessions, fail_at=1),
+        reporter=reporter,
+        utcnow=lambda: now,
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        failing.pool_budget_status()
+    assert reporter.calls == []
 
 
 def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
@@ -758,3 +1029,62 @@ def test_manager_maps_only_reconciled_to_true_and_validates_dependencies():
     assert component.settings is configured
     assert component.session_factory is sessions
     assert component.reporter is lazy._spend_reporter()
+    assert component.pool_repository is lazy._pool_repository()
+
+    shared_pool = ChatSandboxPoolRepository(
+        configured,
+        capacity_locker=lambda *_args, **_kwargs: True,
+    )
+    shared_reconciler = ChatSandboxSpendReconciler(
+        configured,
+        session_factory=sessions,
+        reporter=reporter,
+        pool_repository=shared_pool,
+    )
+    composed = SandboxSessionManager(
+        configured,
+        session_factory=sessions,
+        spend_reconciler=shared_reconciler,
+    )
+    assert composed._pool_repository() is shared_pool
+    assert composed._spend_reporter() is reporter
+    delegated_status = {
+        "billing_month": "delegated",
+        "accrued_usd": 0.0,
+        "reported_usd": 0.0,
+        "effective_accrued_usd": 0.0,
+        "projected_usd": 0.0,
+        "budget_usd": 0.0,
+        "within_budget": True,
+    }
+    shared_reconciler.pool_budget_status = lambda: delegated_status
+    assert composed.pool_budget_status() is delegated_status
+
+    different_pool = ChatSandboxPoolRepository(
+        configured,
+        capacity_locker=lambda *_args, **_kwargs: True,
+    )
+    with pytest.raises(ValueError, match="reconciler pool repository"):
+        SandboxSessionManager(
+            configured,
+            session_factory=sessions,
+            pool_repository=different_pool,
+            spend_reconciler=shared_reconciler,
+        )
+    wrong_settings_pool = ChatSandboxPoolRepository(
+        other_settings,
+        capacity_locker=lambda *_args, **_kwargs: True,
+    )
+    with pytest.raises(ValueError, match="Pool repository settings"):
+        SandboxSessionManager(
+            configured,
+            session_factory=sessions,
+            pool_repository=wrong_settings_pool,
+        )
+    with pytest.raises(ValueError, match="Spend pool repository settings"):
+        ChatSandboxSpendReconciler(
+            configured,
+            session_factory=sessions,
+            reporter=reporter,
+            pool_repository=wrong_settings_pool,
+        )

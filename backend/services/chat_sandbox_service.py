@@ -9,7 +9,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import modal
@@ -57,11 +57,7 @@ from backend.services.chat_sandbox_pool_coordinator import (
     PoolMaintenanceResult,
     lock_pool_maintenance,
 )
-from backend.services.chat_sandbox_pool_repository import (
-    MODAL_CPU_USD_PER_CORE_SECOND,
-    MODAL_MEMORY_USD_PER_GIB_SECOND,
-    ChatSandboxPoolRepository,
-)
+from backend.services.chat_sandbox_pool_repository import ChatSandboxPoolRepository
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
     SandboxError,
@@ -78,6 +74,7 @@ from backend.services.chat_sandbox_spend_alert_dispatcher import (
 )
 from backend.services.chat_sandbox_spend_reconciler import (
     ChatSandboxSpendReconciler,
+    PoolBudgetStatus,
     ProviderReconciliationOutcome,
 )
 from backend.services.chat_sandbox_spend_reporter import (
@@ -198,6 +195,8 @@ class SandboxSessionManager:
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
+        if pool_repository is not None and pool_repository.settings is not settings:
+            raise ValueError("Pool repository settings must be shared")
         if spend_alert_dispatcher is not None:
             if spend_alert_dispatcher.settings is not settings:
                 raise ValueError("Spend alert dispatcher settings must be shared")
@@ -215,7 +214,13 @@ class SandboxSessionManager:
                 and spend_reconciler.reporter is not spend_reporter
             ):
                 raise ValueError("Spend reconciler reporter must be shared")
+            if (
+                pool_repository is not None
+                and spend_reconciler.pool_repository is not pool_repository
+            ):
+                raise ValueError("Spend reconciler pool repository must be shared")
             spend_reporter = spend_reconciler.reporter
+            pool_repository = spend_reconciler.pool_repository
         self._sandbox_provider = sandbox_provider
         self._sandbox_state = state_repository
         self._sandbox_capacity = capacity_repository
@@ -415,6 +420,7 @@ class SandboxSessionManager:
                 self.settings,
                 session_factory=self.session_factory,
                 reporter=self._spend_reporter(),
+                pool_repository=self._pool_repository(),
             )
             self._sandbox_spend_reconciler = reconciler
         return reconciler
@@ -447,82 +453,11 @@ class SandboxSessionManager:
         return await self._provider_adapter().terminate(sandbox_id, sandbox)
 
     @staticmethod
-    def _billing_month(now: datetime) -> date:
-        return ChatSandboxPoolRepository.billing_month(now)
-
-    @staticmethod
-    def _next_month(now: datetime) -> datetime:
-        if now.month == 12:
-            return datetime(now.year + 1, 1, 1, tzinfo=UTC)
-        return datetime(now.year, now.month + 1, 1, tzinfo=UTC)
-
-    @staticmethod
     def _lock_capacity(db: Session, *, wait: bool = True) -> bool:
         return lock_capacity(db, wait=wait)
 
-    def _pool_cost_per_second(self) -> float:
-        return float(self.settings.chat_sandbox_cpu) * MODAL_CPU_USD_PER_CORE_SECOND + (
-            float(self.settings.chat_sandbox_memory_mib)
-            / 1024
-            * MODAL_MEMORY_USD_PER_GIB_SECOND
-        )
-
-    def _finalize_pool_cost(
-        self, row: ChatSandboxPool, now: datetime
-    ) -> tuple[int, float]:
-        return self._pool_repository().finalize_cost(row, now)
-
-    def pool_budget_status(self) -> dict[str, float | bool | str]:
-        now = datetime.now(UTC)
-        if not getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
-            with self.session_factory() as db, db.begin():
-                rows = list(
-                    db.execute(
-                        select(ChatSandboxPool).where(
-                            ChatSandboxPool.billing_month == self._billing_month(now)
-                        )
-                    ).scalars()
-                )
-                accrued = sum(
-                    (
-                        self._finalize_pool_cost(row, now)[1]
-                        if row.state in {"starting", "blank_ready", "draining"}
-                        else float(row.estimated_blank_cost_usd)
-                    )
-                    for row in rows
-                )
-            reported = float(self.settings.chat_blank_pool_reported_month_to_date_usd)
-            projected = (
-                max(accrued, reported)
-                + max(0, (self._next_month(now) - now).total_seconds())
-                * self._pool_cost_per_second()
-                * self.settings.chat_blank_pool_min
-            )
-            budget = float(self.settings.chat_blank_pool_monthly_budget_usd)
-            return {
-                "billing_month": self._billing_month(now).isoformat(),
-                "accrued_usd": accrued,
-                "reported_usd": reported,
-                "effective_accrued_usd": max(accrued, reported),
-                "projected_usd": projected,
-                "budget_usd": budget,
-                "within_budget": projected <= budget,
-            }
-        with self.session_factory() as db, db.begin():
-            status = ChatSandboxSpendService(db, self.settings).status(now)
-        return {
-            "billing_month": status["billing_cycle"],
-            "accrued_usd": status["estimated_microusd"] / 1_000_000,
-            "reported_usd": status["provider_floor_microusd"] / 1_000_000,
-            "effective_accrued_usd": status["effective_microusd"] / 1_000_000,
-            "projected_usd": (
-                status["effective_microusd"]
-                + status["outstanding_reservation_microusd"]
-            )
-            / 1_000_000,
-            "budget_usd": status["application_cap_microusd"] / 1_000_000,
-            "within_budget": status["circuit_state"] != "tripped",
-        }
+    def pool_budget_status(self) -> PoolBudgetStatus:
+        return self._spend_reconciler().pool_budget_status()
 
     async def _start_persistent_control(
         self, sandbox, worker_generation: str
