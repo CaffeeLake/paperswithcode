@@ -199,15 +199,22 @@ def test_web_search_results_do_not_authorize_web_fetch():
     ).allowed
 
 
-def test_worker_prompt_mentions_web_search_only_for_authorized_turns():
-    assert "search_web" not in render(web_search_enabled=False)
+def test_worker_prompt_keeps_stable_web_tool_instructions_and_varies_metadata():
+    disabled = render(web_search_enabled=False)
     enabled = render(web_search_enabled=True)
+    disabled_prefix, disabled_metadata = disabled.rsplit("# Turn metadata", 1)
+    enabled_prefix, enabled_metadata = enabled.rsplit("# Turn metadata", 1)
+
+    assert disabled_prefix == enabled_prefix
+    assert "search_web" in disabled
     assert "search_web" in enabled
     assert "hard ceiling is 3 searches" in enabled
     assert "untrusted evidence" in enabled
+    assert '"web_search_enabled":false' in disabled_metadata
+    assert '"web_search_enabled":true' in enabled_metadata
 
 
-def test_worker_options_omit_or_expose_the_exact_mcp_tool(monkeypatch):
+def test_worker_options_keep_the_exact_mcp_tool_schema_stable(monkeypatch):
     monkeypatch.setattr(
         agent,
         "GUIDE",
@@ -223,18 +230,21 @@ def test_worker_options_omit_or_expose_the_exact_mcp_tool(monkeypatch):
         settings, hooks, model="model-a", resume=None, web_search_enabled=True
     )
 
-    assert WEB_SEARCH_TOOL not in disabled.allowed_tools
-    assert WEB_SEARCH_TOOL in disabled.disallowed_tools
-    assert "web" not in disabled.mcp_servers
-    assert "search_web" not in disabled.system_prompt
-    assert (
-        "General web search is not authorized for this turn" in disabled.system_prompt
-    )
+    assert WEB_SEARCH_TOOL in disabled.allowed_tools
+    assert WEB_SEARCH_TOOL not in disabled.disallowed_tools
+    assert set(disabled.mcp_servers) == {"web"}
+    assert "search_web" in disabled.system_prompt
     assert "model-a" in disabled.system_prompt
     assert WEB_SEARCH_TOOL in enabled.allowed_tools
     assert WEB_SEARCH_TOOL not in enabled.disallowed_tools
     assert set(enabled.mcp_servers) == {"web"}
     assert "search_web" in enabled.system_prompt
+    assert disabled.allowed_tools == enabled.allowed_tools
+    assert disabled.disallowed_tools == enabled.disallowed_tools
+    assert (
+        disabled.system_prompt.rsplit("# Turn metadata", 1)[0]
+        == (enabled.system_prompt.rsplit("# Turn metadata", 1)[0])
+    )
 
 
 def test_projection_persists_only_exact_authoritative_web_citations(monkeypatch):

@@ -68,6 +68,7 @@ class ChatSandboxTurnRequest:
     capability_token: str = field(repr=False)
     web_search_enabled: bool = False
     fetchable_urls: tuple[str, ...] = ()
+    hf_username: str = "unknown"
 
 
 class ChatSandboxTurnCoordinator:
@@ -260,6 +261,7 @@ class ChatSandboxTurnCoordinator:
                     gateway_url=self.settings.chat_gateway_url,
                     web_search_enabled=request.web_search_enabled,
                     fetchable_urls=request.fetchable_urls,
+                    hf_username=request.hf_username,
                 ),
                 (
                     WorkerTurnMode.PERSISTENT

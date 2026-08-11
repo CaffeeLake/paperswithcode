@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import time
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -341,7 +342,7 @@ class WorkerToolHooks:
 
 def _validate_run_frame(
     frame: dict[str, Any],
-) -> tuple[str, str, str, bool, list[str]]:
+) -> tuple[str, str, str, bool, list[str], str]:
     prompt = frame.get("prompt")
     if (
         not isinstance(prompt, str)
@@ -357,7 +358,16 @@ def _validate_run_frame(
     if not isinstance(web_search_enabled, bool):
         raise ValueError("Invalid web search authorization")
     fetchable_urls = validate_url_seed(frame.get("fetchable_urls", []))
-    return prompt, request_id, model, web_search_enabled, fetchable_urls
+    hf_username = str(frame.get("hf_username") or "unknown")
+    if (
+        not hf_username
+        or len(hf_username) > 96
+        or not all(
+            character.isalnum() or character in "-_." for character in hf_username
+        )
+    ):
+        raise ValueError("Invalid Hugging Face username")
+    return prompt, request_id, model, web_search_enabled, fetchable_urls, hf_username
 
 
 def _persistent_stdin_reader() -> asyncio.StreamReader:
@@ -371,6 +381,8 @@ def _options(
     model: str,
     resume: str | None,
     web_search_enabled: bool = False,
+    hf_username: str = "unknown",
+    current_date: date | None = None,
     finalizing: bool = False,
 ) -> ClaudeAgentOptions:
     prompt_text = render_system_prompt(
@@ -381,13 +393,11 @@ def _options(
         max_web_searches=settings.chat_max_web_search_calls,
         web_search_enabled=web_search_enabled,
         selected_model=model,
+        hf_username=hf_username,
+        current_date=current_date,
     )
-    web_tools = [WEB_SEARCH_TOOL] if web_search_enabled and not finalizing else []
-    web_servers = (
-        {"web": _create_web_mcp_server(hooks)}
-        if web_search_enabled and not finalizing
-        else {}
-    )
+    web_tools = [] if finalizing else [WEB_SEARCH_TOOL]
+    web_servers = {} if finalizing else {"web": _create_web_mcp_server(hooks)}
     hook_matcher = "|".join(["Bash", "Read", "Grep", "WebFetch", *web_tools])
     research_tools = ["Bash", "Read", "Grep", "WebFetch"]
     disallowed = [
@@ -417,7 +427,6 @@ def _options(
                 "WebSearch",
                 "Task",
                 "AskUserQuestion",
-                *([] if web_search_enabled else [WEB_SEARCH_TOOL]),
             ]
         ),
         system_prompt=prompt_text,
@@ -568,9 +577,14 @@ async def _adapt_messages(
 async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     if frame.get("type") != "run_turn":
         raise ValueError("Expected run_turn")
-    prompt, request_id, model, web_search_enabled, fetchable_urls = _validate_run_frame(
-        frame
-    )
+    (
+        prompt,
+        request_id,
+        model,
+        web_search_enabled,
+        fetchable_urls,
+        hf_username,
+    ) = _validate_run_frame(frame)
     hooks = WorkerToolHooks(settings, prompt, web_search_enabled=web_search_enabled)
     hooks.budget.seed_urls(fetchable_urls)
     hooks.budget.observe_urls(prompt)
@@ -584,6 +598,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         model=model,
         resume=frame.get("resume"),
         web_search_enabled=web_search_enabled,
+        hf_username=hf_username,
     )
     yield {
         "v": 1,
@@ -646,6 +661,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                     model=model,
                     resume=session_id,
                     web_search_enabled=False,
+                    hf_username=hf_username,
                     finalizing=True,
                 ),
             )
@@ -790,6 +806,8 @@ class PersistentAgent:
         self.resume: str | None = None
         self.sdk_session_id: str | None = None
         self.web_search_enabled = False
+        self.hf_username = "unknown"
+        self.current_date: date | None = None
         self.finalizing = False
 
     async def connect(
@@ -798,10 +816,25 @@ class PersistentAgent:
         model: str,
         resume: str | None,
         web_search_enabled: bool = False,
+        hf_username: str = "unknown",
+        current_date: date | None = None,
         finalizing: bool = False,
     ) -> None:
+        rendered_date = current_date or datetime.now(UTC).date()
+        if (
+            self.client is not None
+            and resume is not None
+            and self.sdk_session_id is not None
+            and resume != self.sdk_session_id
+        ):
+            await self.client.disconnect()
+            self.client = None
+            self.sdk_session_id = None
         if self.client is not None and (
-            web_search_enabled != self.web_search_enabled
+            model != self.model
+            or web_search_enabled != self.web_search_enabled
+            or hf_username != self.hf_username
+            or rendered_date != self.current_date
             or finalizing != self.finalizing
         ):
             resume = self.sdk_session_id or resume
@@ -827,13 +860,12 @@ class PersistentAgent:
                     self.client = None
                     self.sdk_session_id = None
                 else:
-                    if model != self.model:
-                        await self.client.set_model(model)
-                        self.model = model
                     return
         self.model = model
         self.resume = resume
         self.web_search_enabled = web_search_enabled
+        self.hf_username = hf_username
+        self.current_date = rendered_date
         self.finalizing = finalizing
         self.client = ClaudeSDKClient(
             _options(
@@ -842,6 +874,8 @@ class PersistentAgent:
                 model=model,
                 resume=resume,
                 web_search_enabled=web_search_enabled,
+                hf_username=hf_username,
+                current_date=rendered_date,
                 finalizing=finalizing,
             )
         )
@@ -853,14 +887,20 @@ class PersistentAgent:
         await self.connect(model=model, resume=None, web_search_enabled=False)
 
     async def stream(self, frame: dict[str, Any]):
-        prompt, request_id, model, web_search_enabled, fetchable_urls = (
-            _validate_run_frame(frame)
-        )
+        (
+            prompt,
+            request_id,
+            model,
+            web_search_enabled,
+            fetchable_urls,
+            hf_username,
+        ) = _validate_run_frame(frame)
         deadline = time.monotonic() + self.settings.chat_agent_timeout_seconds
         await self.connect(
             model=model,
             resume=frame.get("resume"),
             web_search_enabled=web_search_enabled,
+            hf_username=hf_username,
         )
         assert self.client is not None
         self.hooks.reset(self.settings, prompt, web_search_enabled=web_search_enabled)
@@ -922,6 +962,7 @@ class PersistentAgent:
             model=model,
             resume=self.sdk_session_id,
             web_search_enabled=False,
+            hf_username=hf_username,
             finalizing=True,
         )
         assert self.client is not None

@@ -77,6 +77,7 @@ class WorkerTurnRequest:
     gateway_url: str
     web_search_enabled: bool = False
     fetchable_urls: tuple[str, ...] = ()
+    hf_username: str = "unknown"
 
 
 @dataclass
@@ -610,6 +611,7 @@ class WorkerTurnExecution:
             "resume": self.request.resume,
             "web_search_enabled": self.request.web_search_enabled,
             "fetchable_urls": list(self.request.fetchable_urls),
+            "hf_username": self.request.hf_username,
         }
         if self.mode is WorkerTurnMode.PERSISTENT:
             identity = {

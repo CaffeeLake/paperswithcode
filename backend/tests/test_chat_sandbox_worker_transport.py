@@ -197,6 +197,7 @@ def _turn_request(**overrides) -> WorkerTurnRequest:
         "gateway_url": "https://gateway.example.test",
         "web_search_enabled": True,
         "fetchable_urls": ("https://papers.example/one",),
+        "hf_username": "test-user",
     }
     values.update(overrides)
     return WorkerTurnRequest(**values)
@@ -663,6 +664,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "resume": request.resume,
             "web_search_enabled": True,
             "fetchable_urls": list(request.fetchable_urls),
+            "hf_username": "test-user",
             "turn_id": str(request.turn_id),
             "assignment_token": claim.assignment_token,
             "worker_generation": claim.worker_generation,
@@ -796,6 +798,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "resume": None,
             "web_search_enabled": False,
             "fetchable_urls": list(request.fetchable_urls),
+            "hf_username": "test-user",
         }
 
         assert [event async for event in execution.events(timeout_seconds=1)] == [

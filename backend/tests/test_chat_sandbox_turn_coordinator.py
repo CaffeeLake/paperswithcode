@@ -72,6 +72,7 @@ def test_manager_turn_facade_builds_typed_request_and_preserves_stream_contract(
                 capability=SimpleNamespace(token="private capability"),
                 web_search_enabled=True,
                 fetchable_urls=["https://example.test/paper"],
+                hf_username="test-user",
             )
         ]
 
@@ -89,6 +90,7 @@ def test_manager_turn_facade_builds_typed_request_and_preserves_stream_contract(
         capability_token="private capability",
         web_search_enabled=True,
         fetchable_urls=("https://example.test/paper",),
+        hf_username="test-user",
     )
     request_repr = repr(coordinator.request)
     assert "private prompt" not in request_repr

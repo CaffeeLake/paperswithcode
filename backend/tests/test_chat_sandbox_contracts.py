@@ -535,7 +535,7 @@ def test_worker_mirror_error_preserves_bounded_diagnostic_context():
     ]
 
 
-def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
+def test_persistent_agent_reconnects_client_to_apply_model_metadata(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(
         agent,
@@ -633,9 +633,9 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
         "_execution_telemetry",
         "done",
     ]
-    assert [call[0] for call in calls].count("init") == 1
-    assert ("model", "model-b") in calls
-    assert calls.count(("connect", None)) == 1
+    assert [call[0] for call in calls].count("init") == 2
+    assert ("model", "model-b") not in calls
+    assert calls.count(("connect", None)) == 2
     assert calls.count(("wait_for_flush",)) == 2
     assert calls.count(("flush",)) == 2
     assert calls[-1] == ("disconnect",)
@@ -806,6 +806,72 @@ def test_persistent_agent_preflight_reconnects_to_resume_session(monkeypatch):
         ("connect", None),
         ("disconnect",),
     ]
+
+
+def test_persistent_agent_reconnects_when_turn_metadata_changes(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, options):
+            self.options = options
+            created.append(self)
+
+        async def connect(self, prompt):
+            return None
+
+        async def disconnect(self):
+            return None
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+
+    async def run():
+        await worker.connect(
+            model="model-a",
+            resume=None,
+            web_search_enabled=False,
+            hf_username="user-a",
+            current_date=date(2026, 8, 10),
+        )
+        await worker.connect(
+            model="model-a",
+            resume=None,
+            web_search_enabled=True,
+            hf_username="user-a",
+            current_date=date(2026, 8, 10),
+        )
+        await worker.connect(
+            model="model-a",
+            resume=None,
+            web_search_enabled=True,
+            hf_username="user-b",
+            current_date=date(2026, 8, 10),
+        )
+        await worker.connect(
+            model="model-a",
+            resume=None,
+            web_search_enabled=True,
+            hf_username="user-b",
+            current_date=date(2026, 8, 11),
+        )
+        await worker.close()
+
+    asyncio.run(run())
+
+    assert len(created) == 4
+    metadata = [
+        client.options.system_prompt.rsplit("# Turn metadata", 1)[1]
+        for client in created
+    ]
+    assert '"web_search_enabled":false' in metadata[0]
+    assert '"web_search_enabled":true' in metadata[1]
+    assert '"hf_username":"user-b"' in metadata[2]
+    assert '"current_date_utc":"2026-08-11"' in metadata[3]
 
 
 def test_adapter_waits_for_late_mirror_before_terminal():
@@ -2211,6 +2277,7 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         "model-a",
         False,
         [],
+        "unknown",
     )
     assert decode_frame(encode_frame(frame))["prompt"] == prompt
 
@@ -2289,9 +2356,10 @@ def test_prompt_and_manifest_share_six_round_contract():
     prompt = render(
         current_date=date(2026, 7, 28),
         selected_model="deepseek-ai/DeepSeek-V4-Flash-0731:fastest",
+        web_search_enabled=True,
+        hf_username="nielsrogge",
     )
-    assert "The current UTC date is 2026-07-28." in prompt
-    assert "Judge publication recency relative to this date." in prompt
+    assert '"current_date_utc":"2026-07-28"' in prompt
     assert "at most 6 executed tool-use rounds" in prompt
     assert "hard failure ceilings, not retrieval targets" in prompt
     assert "within 5 rounds and 3 searches" in prompt
@@ -2303,7 +2371,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
     assert "deepseek-ai/DeepSeek-V4-Flash-0731:fastest" in prompt
-    assert "harness is not the model" in prompt
+    assert "harness is orchestration, not the model" in prompt
     assert "never identify yourself as Claude" in prompt
     assert "does not include `curl`" in prompt
     assert "`command -v <name>` succeeds" in prompt
@@ -2315,6 +2383,12 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert prompt.index("## Available research areas") < prompt.index("# pwc CLI skill")
     assert "# pwc CLI skill" in prompt
     assert "name: pwc-cli" in prompt
+    assert prompt.index("# pwc CLI skill") < prompt.index("# Turn metadata")
+    assert '"harness":"Claude Agent SDK-compatible"' in prompt
+    assert '"sandbox":"secure disposable sandbox with writable /workspace"' in prompt
+    assert '"web_search_enabled":true' in prompt
+    assert '"hf_username":"nielsrogge"' in prompt
+    assert prompt.rstrip().endswith("</turn_metadata>")
     manifest = build_manifest("a" * 40, "staging")
     assert manifest["chat_runtime"]["system_prompt_sha256"] == sha256()
     assert manifest["chat_runtime"]["new_chat_modal_percentage"] == 100
@@ -2328,9 +2402,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-1y8C9jNAn7rwgBBQry18sy"
+    assert MODAL_IMAGE_ID == "im-bl5bM50QCQCJWc5VRSjdfO"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "54"
+    assert WORKER_CONTRACT_VERSION == "55"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

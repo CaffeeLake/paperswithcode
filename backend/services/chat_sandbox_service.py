@@ -581,6 +581,7 @@ class SandboxSessionManager:
         capability: IssuedCapability,
         web_search_enabled: bool = False,
         fetchable_urls: list[str] | None = None,
+        hf_username: str = "unknown",
     ) -> AsyncIterator[dict]:
         request = ChatSandboxTurnRequest(
             chat_session_id=chat_session_id,
@@ -592,6 +593,7 @@ class SandboxSessionManager:
             capability_token=capability.token,
             web_search_enabled=web_search_enabled,
             fetchable_urls=tuple(fetchable_urls or ()),
+            hf_username=hf_username,
         )
         async for event in self._turn_coordinator().run(request):
             yield event

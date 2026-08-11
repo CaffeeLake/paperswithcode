@@ -95,6 +95,7 @@ class ModalChatTurnRunner:
         request_id: str,
         resume_id: uuid.UUID | None,
         capability: IssuedCapability,
+        hf_username: str,
         manager: SandboxSessionManager | None = None,
     ):
         self.manager = manager or shared_sandbox_manager(settings)
@@ -103,6 +104,7 @@ class ModalChatTurnRunner:
         self.request_id = request_id
         self.resume_id = resume_id
         self.capability = capability
+        self.hf_username = hf_username
         self.capability_id: uuid.UUID | None = capability.capability_id
 
     def events(self) -> AsyncIterator[dict]:
@@ -116,6 +118,7 @@ class ModalChatTurnRunner:
             capability=self.capability,
             web_search_enabled=self.admission.web_search_enabled,
             fetchable_urls=list(self.admission.fetchable_urls),
+            hf_username=self.hf_username,
         )
 
     def _revoke(self) -> None:
@@ -221,4 +224,5 @@ def create_chat_turn_runner(
         request_id=request_id,
         resume_id=resume_id,
         capability=capability,
+        hf_username=owner.hf_username,
     )
