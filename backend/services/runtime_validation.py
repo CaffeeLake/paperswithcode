@@ -429,6 +429,20 @@ def validate_chat_provider_policy(
             or settings.chat_web_search_monthly_hard_calls != 1_200
         ):
             raise RuntimeError("web-search runtime descriptor is invalid")
+    if settings.chat_hf_catalog_enabled:
+        if (
+            settings.environment != "staging"
+            or settings.chat_hf_catalog_timeout_seconds != 10
+            or settings.chat_hf_catalog_max_calls != 6
+            or settings.chat_hf_recursive_list_max_calls != 2
+            or settings.chat_hf_discovery_max_limit != 50
+            or settings.chat_hf_max_files != 200
+            or settings.chat_hf_max_depth != 10
+            or settings.chat_hf_card_metadata_max_bytes != 32 * 1024
+            or settings.chat_hf_card_text_max_bytes != 192 * 1024
+            or settings.chat_hf_response_max_bytes != 256 * 1024
+        ):
+            raise RuntimeError("HF catalog runtime descriptor is invalid")
     _validate_chat_gateway_policy(settings)
     if include_openrouter:
         _validate_chat_openrouter_policy(settings)
@@ -883,6 +897,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_capabilities", "web_search_calls"),
         ("chat_turn_capabilities", "web_search_failed"),
     }
+    hf_catalog_columns = {
+        ("chat_turn_capabilities", "hf_catalog_calls"),
+        ("chat_turn_capabilities", "hf_recursive_list_calls"),
+    }
     expected_columns = (
         common_columns
         | (
@@ -891,6 +909,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
             else set()
         )
         | (web_search_columns if settings.chat_web_search_enabled else set())
+        | (hf_catalog_columns if settings.chat_hf_catalog_enabled else set())
     )
     present_columns = set(
         db.execute(
@@ -939,6 +958,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_messages', 'web_search_enabled')
                 ,('chat_turn_capabilities', 'web_search_calls')
                 ,('chat_turn_capabilities', 'web_search_failed')
+                ,('chat_turn_capabilities', 'hf_catalog_calls')
+                ,('chat_turn_capabilities', 'hf_recursive_list_calls')
             )
             """)
         ).all()

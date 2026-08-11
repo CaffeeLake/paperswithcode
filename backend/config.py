@@ -378,6 +378,18 @@ class Settings(BaseSettings):
     chat_web_search_monthly_hard_calls: int = Field(default=1200, ge=1)
     chat_web_search_transient_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
     chat_web_search_domain_denylist: str = Field(default="")
+    chat_hf_catalog_enabled: bool = Field(default=False)
+    chat_hf_catalog_timeout_seconds: float = Field(default=10, gt=0, le=10)
+    chat_hf_catalog_max_calls: int = Field(default=6, ge=1, le=6)
+    chat_hf_recursive_list_max_calls: int = Field(default=2, ge=1, le=2)
+    chat_hf_discovery_max_limit: int = Field(default=50, ge=1, le=50)
+    chat_hf_max_files: int = Field(default=200, ge=1, le=200)
+    chat_hf_max_depth: int = Field(default=10, ge=1, le=10)
+    chat_hf_card_metadata_max_bytes: int = Field(
+        default=32 * 1024, ge=1024, le=32 * 1024
+    )
+    chat_hf_card_text_max_bytes: int = Field(default=192 * 1024, ge=4096, le=192 * 1024)
+    chat_hf_response_max_bytes: int = Field(default=256 * 1024, ge=4096, le=256 * 1024)
     chat_sandbox_ready_timeout_seconds: float = Field(default=30, gt=0, le=120)
     chat_agent_timeout_seconds: float = Field(default=180, gt=0, le=600)
     chat_bash_timeout_seconds: float = Field(default=30, gt=0, le=120)

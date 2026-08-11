@@ -194,6 +194,8 @@ def create_chat_turn_runner(
         scopes = {"model", "catalog", "session_store", "web_fetch"}
         if admission.web_search_enabled:
             scopes.add("web_search")
+        if settings.chat_hf_catalog_enabled:
+            scopes.add("hf_catalog")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,

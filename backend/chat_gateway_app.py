@@ -19,9 +19,9 @@ from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend.config import Settings, get_settings
 from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
+from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
 from backend.models.database import ChatSession, ChatTurnCapability
 from backend.services.chat_capability_service import (
@@ -29,6 +29,11 @@ from backend.services.chat_capability_service import (
     ChatCapabilityService,
 )
 from backend.services.chat_gateway_service import ChatGatewayService
+from backend.services.chat_hf_hub_service import (
+    ChatHfHubError,
+    ChatHfHubService,
+    validate_hf_request,
+)
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
@@ -99,6 +104,12 @@ def _record_gateway_timing(
 
 
 class CatalogRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: str = Field(max_length=64)
+    arguments: dict[str, Any]
+
+
+class HfCatalogRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation: str = Field(max_length=64)
     arguments: dict[str, Any]
@@ -348,6 +359,82 @@ def catalog(
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {"result": result}
+
+
+@app.post("/hf-catalog")
+def hf_catalog(
+    body: HfCatalogRequest,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    if not settings.chat_hf_catalog_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "hf_unavailable",
+                "message": "Hugging Face catalog is unavailable",
+            },
+        )
+    try:
+        arguments = validate_hf_request(body.operation, body.arguments)
+    except ChatHfHubError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": str(error)},
+        ) from None
+    token = _bearer(authorization)
+    capability = _scope(token, "hf_catalog", x_pwc_session, x_pwc_turn, db)
+    recursive = body.operation.endswith("_list") and bool(
+        arguments.get("repo_id") and arguments.get("recursive")
+    )
+    try:
+        ChatCapabilityService(db).meter_hf_catalog(
+            capability,
+            recursive=recursive,
+            maximum_calls=settings.chat_hf_catalog_max_calls,
+            maximum_recursive_calls=settings.chat_hf_recursive_list_max_calls,
+        )
+        db.commit()
+    except CapabilityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "hf_limit_reached",
+                "message": "HF operation limit reached",
+            },
+        ) from None
+    started = time.perf_counter()
+    try:
+        result = ChatHfHubService(settings).execute(body.operation, arguments)
+        logger.info(
+            "chat hf catalog operation=%s repo_type=%s cache=%s status=2xx "
+            "latency_ms=%d result_count=%d response_bytes=%d truncated=%s",
+            body.operation,
+            body.operation.partition("_")[0],
+            result.get("cache", "miss"),
+            round((time.perf_counter() - started) * 1000),
+            (result.get("result_set") or {}).get("returned", 1),
+            len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()),
+            bool((result.get("truncation") or {}).get("truncated")),
+        )
+        return result
+    except ChatHfHubError as error:
+        logger.info(
+            "chat hf catalog operation=%s repo_type=%s cache=miss status=%s "
+            "latency_ms=%d result_count=0 response_bytes=0 truncated=false",
+            body.operation,
+            body.operation.partition("_")[0],
+            error.status_code,
+            round((time.perf_counter() - started) * 1000),
+        )
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": str(error)},
+        ) from None
 
 
 @app.post("/session-store")

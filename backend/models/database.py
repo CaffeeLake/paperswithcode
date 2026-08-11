@@ -2765,6 +2765,12 @@ class ChatTurnCapability(Base):
     web_search_failed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    hf_catalog_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    hf_recursive_list_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -165,7 +165,13 @@ def validate(production: str, staging: str) -> list[str]:
             failures.append(f"{environment} chat gateway hostname is missing")
         if f"/etc/letsencrypt/live/{hostname}/fullchain.pem" not in config:
             failures.append(f"{environment} chat gateway TLS certificate is missing")
-        for endpoint in ("catalog", "session-store", "web-fetch", "v1/messages"):
+        for endpoint in (
+            "catalog",
+            "hf-catalog",
+            "session-store",
+            "web-fetch",
+            "v1/messages",
+        ):
             location = f"location = /api/internal/chat-gateway/{endpoint}"
             block = location_block(config, location)
             if not block:

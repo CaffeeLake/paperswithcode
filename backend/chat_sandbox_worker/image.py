@@ -14,6 +14,7 @@ from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     MODAL_APP_NAME,
     PWC_CLI_VERSION,
+    RESTRICTED_HF_CLI_VERSION,
     SDK_VERSION,
 )
 
@@ -21,6 +22,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 REPOSITORY = Path(__file__).resolve().parents[2]
 WORKER = Path(__file__).resolve().parent
 STANDALONE = REPOSITORY / "standalone_cli"
+RESTRICTED_HF = REPOSITORY / "restricted_hf_cli"
 
 app = modal.App(MODAL_APP_NAME)
 image = (
@@ -55,17 +57,39 @@ image = (
         ),
     )
     .add_local_file(WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md", copy=True)
+    .add_local_file(WORKER / "HF_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md", copy=True)
+    .add_local_dir(
+        RESTRICTED_HF / "src" / "restricted_hf_cli",
+        "/opt/pwc/restricted_hf_cli/restricted_hf_cli",
+        copy=True,
+    )
+    .add_local_file(RESTRICTED_HF / "bin" / "hf", "/opt/pwc/restricted-hf", copy=True)
     .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
+        "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
+        "chmod 0755 /opt/pwc/restricted-hf && ln -s /opt/pwc/restricted-hf /usr/local/bin/hf",
         "PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'",
+        "PYTHONPATH=/opt/pwc python -c \"from pathlib import Path; from backend.chat_sandbox_worker.contract import RESTRICTED_HF_CLI_SHA256, restricted_hf_cli_digest; assert restricted_hf_cli_digest(Path('/opt/pwc/restricted_hf_cli/restricted_hf_cli'), Path('/opt/pwc/restricted-hf')) == RESTRICTED_HF_CLI_SHA256\"",
+        "PYTHONPATH=/opt/pwc python -c \"from pathlib import Path; import hashlib; from backend.chat_sandbox_worker.contract import HF_CLI_SKILL_SHA256; assert hashlib.sha256(Path('/opt/pwc/HF_CLI_SKILL.md').read_bytes()).hexdigest() == HF_CLI_SKILL_SHA256\"",
         f"python /opt/pwc/install-pwc.py --version {PWC_CLI_VERSION} --prefix /usr/local",
         "pwc version",
         "pwc --help >/dev/null",
         "pwc paper --help >/dev/null",
         "pwc benchmark --help >/dev/null",
         "pwc benchmark list --help >/dev/null",
+        "hf --help >/dev/null",
+        "hf collections --help >/dev/null",
+        "hf datasets card --help >/dev/null",
+        "hf datasets list --help >/dev/null",
+        "hf models card --help >/dev/null",
+        "hf models list --help >/dev/null",
+        "hf spaces card --help >/dev/null",
+        "hf spaces list --help >/dev/null",
+        f"hf version | grep -F '{RESTRICTED_HF_CLI_VERSION}' >/dev/null",
+        'test "$(hf auth --help >/dev/null 2>&1; echo $?)" = 2',
+        'test "$(hf upload owner/repo file >/dev/null 2>&1; echo $?)" = 2',
     )
     .env(
         {

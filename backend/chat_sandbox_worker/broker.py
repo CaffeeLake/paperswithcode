@@ -43,6 +43,22 @@ CAPABILITY_DRAIN_QUIET_SECONDS = 0.5
 CAPABILITY_DRAIN_TIMEOUT_SECONDS = 20.0
 GATEWAY_CONNECTION_POOL_SIZE = 4
 GATEWAY_CONNECTION_MAX_IDLE_SECONDS = 30.0
+HF_OPERATIONS = frozenset(
+    {
+        "collection_info",
+        "collection_list",
+        "dataset_card",
+        "dataset_info",
+        "dataset_list",
+        "model_card",
+        "model_info",
+        "model_list",
+        "space_card",
+        "space_info",
+        "space_list",
+    }
+)
+HF_MAX_RESPONSE_BYTES = 300 * 1024
 
 
 def _load_config() -> dict:
@@ -295,10 +311,64 @@ class Handler(BaseHTTPRequestHandler):
             GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
+    def _forward_hf(self, body: bytes) -> None:
+        active = STATE.begin_request()
+        connection = self._connection()
+        reusable = False
+        try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/hf-catalog",
+                body=body,
+                headers={
+                    **_gateway_headers(active=active),
+                    "Accept": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            raw = response.read(HF_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > HF_MAX_RESPONSE_BYTES:
+                self.send_error(502)
+                return
+            content_type = (response.getheader("Content-Type") or "").partition(";")[0]
+            if content_type != "application/json":
+                self.send_error(502)
+                return
+            self.send_response(response.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+            reusable = _response_reusable(response)
+        finally:
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
+            STATE.finish_request()
+
     def do_POST(self) -> None:
         length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
         body = self.rfile.read(length)
         path = urlsplit(self.path).path
+        if path == "/hf/v1/query":
+            try:
+                payload = json.loads(body)
+                operation = payload["operation"]
+                arguments = payload["arguments"]
+                if (
+                    set(payload) != {"operation", "arguments"}
+                    or operation not in HF_OPERATIONS
+                    or not isinstance(arguments, dict)
+                ):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self.send_error(422)
+                return
+            envelope = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")
+            ).encode()
+            self._forward_hf(envelope)
+            return
         if path == "/proxy-authorize":
             if not STATE.active():
                 self.send_error(403)

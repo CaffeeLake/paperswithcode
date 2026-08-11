@@ -183,6 +183,14 @@ class QualificationRunner:
     async def _security_probes(self, sandbox) -> int:
         started = time.perf_counter()
         await _require_success(sandbox, "pwc", "version")
+        hf_version = await _require_success(sandbox, "hf", "version")
+        if "PwC read-only subset" not in hf_version:
+            raise RuntimeError("Restricted HF CLI identity is missing")
+        await _require_success(sandbox, "hf", "--help")
+        for rejected in (("auth", "--help"), ("upload", "owner/repo", "file")):
+            returncode, _stdout, _stderr = await _exec(sandbox, "hf", *rejected)
+            if returncode != 2:
+                raise RuntimeError("Restricted HF CLI exposed an unsupported command")
         environment = await _require_success(
             sandbox,
             "setpriv",

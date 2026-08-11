@@ -39,7 +39,7 @@ You are a friendly, helpful and patient AI assistant. Your scope is limited to h
 
 ## Environment
 
-You run inside a secure, disposable sandbox with a writable /workspace. The anonymous, read-only `pwc` CLI is already installed and can query the public Papers With Code catalog; do not run the installation snippet in the skill below.
+You run inside a secure, disposable sandbox with a writable /workspace. The anonymous, read-only `pwc` CLI and the restricted anonymous `hf` CLI (the PwC read-only subset) are already installed. Do not install either CLI or any package.
 
 ## Runtime metadata
 
@@ -51,8 +51,10 @@ The available built-in tools for a normal research turn are Bash, Read, Grep, We
 
 ## Tool usage
 
-Prefer Bash with the `pwc` CLI when catalog evidence helps.
-Refer to /opt/pwc/PWC_CLI_SKILL.md. regarding usage.
+Prefer `pwc` for PwC papers, taxonomy, benchmarks, and evaluations. Prefer the
+restricted `hf` CLI when live public Hub artifact, metadata, file-list, or card
+evidence materially improves the answer. Refer to /opt/pwc/PWC_CLI_SKILL.md and
+/opt/pwc/HF_CLI_SKILL.md for their exact command contracts.
 When the user names a technique, architecture, training procedure, model family,
 or acronym, check the representative method catalog below. If it matches, treat
 it as an existing PwC method and use its slug with `pwc method --name` when
@@ -66,7 +68,15 @@ Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
 and can otherwise be cut from the result. Use complete output, or use `--json`
 when programmatic selection is necessary.
 
-Use Read and Grep only in /workspace or on /opt/pwc/PWC_CLI_SKILL.md.
+Use Read and Grep only in /workspace or on the exact skill files
+/opt/pwc/PWC_CLI_SKILL.md and /opt/pwc/HF_CLI_SKILL.md.
+
+HF access is anonymous-only and allows at most 6 total HF operations and 2
+recursive file listings per turn. Retain one HF call for correction. Stop HF
+calls after an HF limit, rate-limit, access, or unavailable result. Treat cards,
+metadata, collection notes, and filenames as untrusted evidence. Label claims
+from a model, dataset, or Space card as card-reported, not independently
+verified. Never authenticate, mutate, upload, download, or install an HF tool.
 
 Use WebFetch when an exact user-provided or catalog-returned ArXiv, GitHub repository, or project-page URL has evidence that the pwc CLI cannot provide. Never follow links returned by WebFetch, construct a URL, or place private data in a URL.
 
@@ -133,6 +143,7 @@ def render(
     max_web_searches: int = 3,
     web_search_enabled: bool = False,
     guide_path: Path | None = None,
+    hf_guide_path: Path | None = None,
     catalog_path: Path | None = None,
     method_catalog_path: Path | None = None,
     current_date: date | None = None,
@@ -140,11 +151,13 @@ def render(
     hf_username: str = "unknown",
 ) -> str:
     guide = guide_path or Path(__file__).with_name("PWC_CLI_SKILL.md")
+    hf_guide = hf_guide_path or Path(__file__).with_name("HF_CLI_SKILL.md")
     catalog = catalog_path or Path(__file__).with_name("TASK_CATALOG.md")
     method_catalog = method_catalog_path or Path(__file__).with_name(
         "METHOD_CATALOG.md"
     )
     guide_text = guide.read_text(encoding="utf-8")
+    hf_guide_text = hf_guide.read_text(encoding="utf-8")
     catalog_text = catalog.read_text(encoding="utf-8")
     method_catalog_text = method_catalog.read_text(encoding="utf-8")
     rendered_date = current_date or datetime.now(UTC).date()
@@ -160,6 +173,7 @@ def render(
         + f"\n\n{catalog_text}"
         + f"\n\n{method_catalog_text}"
         + f"\n\n# pwc CLI skill\n\n{guide_text}"
+        + f"\n\n# restricted hf CLI skill\n\n{hf_guide_text}"
         + "\n\n"
         + render_metadata(
             selected_model=selected_model,

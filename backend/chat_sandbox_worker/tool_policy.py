@@ -131,6 +131,7 @@ class ToolBudget:
         args: dict[str, Any],
         workspace: Path = Path("/workspace"),
         guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
+        hf_guide: Path = Path("/opt/pwc/HF_CLI_SKILL.md"),
     ) -> Decision:
         if tool_id not in self.round_by_tool_id:
             # Compatibility fallback for callers that do not expose an SDK
@@ -188,7 +189,8 @@ class ToolBudget:
                 candidate = Path(path)
                 if not (
                     _inside(candidate, workspace)
-                    or candidate.resolve(strict=False) == guide
+                    or candidate.resolve(strict=False)
+                    in {guide.resolve(strict=False), hf_guide.resolve(strict=False)}
                 ):
                     self.close()
                     self.denied_calls += 1

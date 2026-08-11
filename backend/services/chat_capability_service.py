@@ -55,7 +55,14 @@ class ChatCapabilityService:
         sdk_session_id: uuid.UUID | None = None,
         lifetime_seconds: int = 240,
     ) -> IssuedCapability:
-        allowed = {"model", "catalog", "session_store", "web_fetch", "web_search"}
+        allowed = {
+            "model",
+            "catalog",
+            "session_store",
+            "web_fetch",
+            "web_search",
+            "hf_catalog",
+        }
         if not scopes or not scopes <= allowed:
             raise ValueError("Capability scopes are invalid")
         token = secrets.token_urlsafe(32)
@@ -175,6 +182,23 @@ class ChatCapabilityService:
 
     def fail_web_search(self, row: ChatTurnCapability) -> None:
         row.web_search_failed = True
+        self.db.flush()
+
+    def meter_hf_catalog(
+        self,
+        row: ChatTurnCapability,
+        *,
+        recursive: bool,
+        maximum_calls: int,
+        maximum_recursive_calls: int,
+    ) -> None:
+        if row.hf_catalog_calls >= maximum_calls:
+            raise CapabilityError("HF catalog limit reached")
+        if recursive and row.hf_recursive_list_calls >= maximum_recursive_calls:
+            raise CapabilityError("HF recursive list limit reached")
+        row.hf_catalog_calls += 1
+        if recursive:
+            row.hf_recursive_list_calls += 1
         self.db.flush()
 
     def revoke(self, capability_id: uuid.UUID) -> bool:
