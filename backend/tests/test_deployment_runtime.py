@@ -805,6 +805,29 @@ def test_disabled_bridge_releases_can_replace_legacy_production_safely():
     validate_rolling_compatibility(first_bridge, second_bridge)
 
 
+def test_hf_catalog_gateway_upgrade_has_one_explicit_fail_closed_rollback():
+    active = {
+        "chat_runtime": {
+            "enabled": True,
+            "gateway_contract_version": 26,
+            "gateway_compatible_from": 26,
+            "database_contract_version": 1,
+        }
+    }
+    candidate = {
+        "chat_runtime": {
+            "enabled": True,
+            "gateway_contract_version": 27,
+            "gateway_compatible_from": 26,
+            "database_contract_version": 1,
+        }
+    }
+    validate_rolling_compatibility(active, candidate)
+    candidate["chat_runtime"]["gateway_contract_version"] = 28
+    with pytest.raises(ValueError, match="rollback"):
+        validate_rolling_compatibility(active, candidate)
+
+
 class _ChatSchemaResult:
     def __init__(self, *, scalar=None, rows=None, first=None):
         self._scalar = scalar

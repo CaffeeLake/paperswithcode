@@ -7,7 +7,7 @@ WORKER_CONTRACT_VERSION = "57"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 27
-GATEWAY_COMPATIBLE_FROM = 27
+GATEWAY_COMPATIBLE_FROM = 26
 DATABASE_CONTRACT_VERSION = 1
 SDK_VERSION = "0.2.115"
 PWC_CLI_VERSION = "0.1.12"

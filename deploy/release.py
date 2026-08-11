@@ -315,7 +315,19 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
         return
     if not candidate_accepts <= active_emits <= candidate_emits:
         raise ValueError("candidate cannot accept the active worker contract")
-    if not active_accepts <= candidate_emits <= active_emits:
+    # Gateway 27 adds only /hf-catalog. Gateway 26 still serves every older
+    # route; a worker-57 HF call after automatic rollback receives a bounded
+    # unavailable result from the broker and cannot fall through elsewhere.
+    hf_catalog_fail_closed_rollback = (
+        active_emits == 26
+        and active_accepts == 26
+        and candidate_emits == 27
+        and candidate_accepts == 26
+    )
+    if (
+        not active_accepts <= candidate_emits <= active_emits
+        and not hf_catalog_fail_closed_rollback
+    ):
         raise ValueError("active release cannot serve candidate workers on rollback")
     if active_database != candidate_database:
         raise ValueError("release database contracts are incompatible")

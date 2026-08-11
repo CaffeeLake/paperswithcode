@@ -283,8 +283,9 @@ def _contract(emits: int, accepts: int, database: int = 1) -> dict:
 
 def test_rolling_contract_requires_forward_and_rollback_compatibility():
     validate_rolling_compatibility(_contract(26, 25), _contract(26, 26))
+    validate_rolling_compatibility(_contract(26, 26), _contract(27, 26))
     with pytest.raises(ValueError, match="rollback"):
-        validate_rolling_compatibility(_contract(26, 26), _contract(27, 26))
+        validate_rolling_compatibility(_contract(26, 26), _contract(28, 26))
     with pytest.raises(ValueError, match="database"):
         validate_rolling_compatibility(_contract(26, 26), _contract(26, 26, 2))
 
