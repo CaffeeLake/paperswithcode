@@ -63,6 +63,7 @@ from backend.utils.urls import (
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
 from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
+from backend.services.paper_citation_refresh_service import PaperCitationRefreshService
 from backend.services.paper_relation_loader import PaperRelationLoader, PaperRelations
 from backend.services.paper_retrieval_service import PaperRetrievalService
 from backend.services.paper_version_refresh_service import (
@@ -1579,29 +1580,7 @@ class PaperService:
             raise DatabaseError(f"Error fetching paper statistics: {str(e)}")
 
     async def update_citation_counts(self, limit: int = 100) -> Dict[str, Any]:
-        """
-        Update citation counts for papers using Semantic Scholar API.
-
-        Args:
-            limit: Maximum number of papers to update
-
-        Returns:
-            Dictionary with update statistics
-        """
-        try:
-            semantic_scholar_service = SemanticScholarService(self.db)
-            updated_count = await semantic_scholar_service.batch_update_citation_counts(
-                limit
-            )
-
-            return {
-                "updated_count": updated_count,
-                "limit": limit,
-                "status": "completed",
-            }
-
-        except Exception as e:
-            raise DatabaseError(f"Error updating citation counts: {str(e)}")
+        return await PaperCitationRefreshService(self.db).update_citation_counts(limit)
 
     async def search_papers_with_semantic_scholar(
         self, query: str, limit: int = 10
@@ -1786,157 +1765,22 @@ class PaperService:
             return stats
 
     def get_papers_needing_citation_update_count(self, threshold_days: int = 7) -> int:
-        """Return the number of papers whose citation data needs refreshing."""
-        try:
-            from datetime import datetime, timedelta
-
-            threshold_date = datetime.now() - timedelta(days=threshold_days)
-            return (
-                self.db.query(DBPaper)
-                .filter(DBPaper.is_latest_version)
-                .filter(DBPaper.arxiv_id.is_not(None))
-                .filter(
-                    or_(
-                        DBPaper.citation_updated_at.is_(None),
-                        DBPaper.citation_updated_at < threshold_date,
-                    )
-                )
-                .count()
-            )
-        except Exception as e:
-            raise DatabaseError(
-                f"Error counting papers needing citation updates: {str(e)}"
-            )
+        return PaperCitationRefreshService(self.db).count_pending(threshold_days)
 
     def get_papers_needing_citation_update_chunk(
         self, offset: int, limit: int, threshold_days: int = 7
     ) -> List[Dict[str, Any]]:
-        """Return one priority-ordered chunk of papers needing citation updates."""
-        try:
-            from datetime import datetime, timedelta
-            from sqlalchemy import case
-
-            threshold_date = datetime.now() - timedelta(days=threshold_days)
-            priority_order = case(
-                (DBPaper.citation_updated_at.is_(None), 0),
-                (DBPaper.citation_count == 0, 1),
-                else_=2,
-            )
-            year_priority = case(
-                (func.extract("year", DBPaper.date_published).between(2019, 2022), 1),
-                (func.extract("year", DBPaper.date_published).between(2017, 2018), 2),
-                (func.extract("year", DBPaper.date_published).between(2023, 2024), 3),
-                else_=4,
-            )
-            db_papers = (
-                self.db.query(DBPaper)
-                .filter(DBPaper.is_latest_version)
-                .filter(DBPaper.arxiv_id.is_not(None))
-                .filter(
-                    or_(
-                        DBPaper.citation_updated_at.is_(None),
-                        DBPaper.citation_updated_at < threshold_date,
-                    )
-                )
-                .order_by(
-                    priority_order,
-                    year_priority,
-                    DBPaper.citation_updated_at.asc().nullsfirst(),
-                    DBPaper.id.asc(),
-                )
-                .offset(offset)
-                .limit(limit)
-                .all()
-            )
-            return [
-                {
-                    "id": paper.id,
-                    "arxiv_id": paper.arxiv_id,
-                    "title": paper.title,
-                    "citation_count": paper.citation_count or 0,
-                    "citation_updated_at": paper.citation_updated_at,
-                    "date_published": paper.date_published,
-                    "priority_type": (
-                        "NEVER_UPDATED"
-                        if paper.citation_updated_at is None
-                        else (
-                            "ZERO_CITATIONS" if paper.citation_count == 0 else "REFRESH"
-                        )
-                    ),
-                }
-                for paper in db_papers
-            ]
-        except Exception as e:
-            raise DatabaseError(
-                f"Error fetching papers chunk for citation updates: {str(e)}"
-            )
+        return PaperCitationRefreshService(self.db).pending_chunk(
+            offset, limit, threshold_days
+        )
 
     def update_citation_counts_batch(
         self, citation_updates: List[Dict[str, Any]]
     ) -> Dict[str, int]:
-        """Persist a batch of Semantic Scholar citation updates."""
-        try:
-            stats = {"updated": 0, "failed": 0}
-            for update in citation_updates:
-                try:
-                    db_paper = (
-                        self.db.query(DBPaper)
-                        .filter(DBPaper.id == update["paper_id"])
-                        .first()
-                    )
-                    if not db_paper:
-                        stats["failed"] += 1
-                        continue
-
-                    if update.get("success", True) and update.get(
-                        "semantic_scholar_id"
-                    ):
-                        db_paper.citation_count = update["citation_count"]
-                        db_paper.semantic_scholar_id = update["semantic_scholar_id"]
-                        stats["updated"] += 1
-                    else:
-                        stats["failed"] += 1
-
-                    db_paper.citation_updated_at = func.now()
-                    db_paper.updated_at = func.now()
-                except Exception as e:
-                    print(
-                        f"Error updating paper {update.get('paper_id', 'unknown')}: {e}"
-                    )
-                    stats["failed"] += 1
-
-            self.db.commit()
-            return stats
-        except Exception as e:
-            self.db.rollback()
-            raise DatabaseError(f"Error updating citation counts batch: {str(e)}")
+        return PaperCitationRefreshService(self.db).update_batch(citation_updates)
 
     def get_citation_statistics(self) -> Dict[str, Any]:
-        """Return aggregate citation-refresh coverage statistics."""
-        try:
-            latest_papers = self.db.query(DBPaper).filter(DBPaper.is_latest_version)
-            total_papers = latest_papers.count()
-            papers_processed = latest_papers.filter(
-                DBPaper.citation_updated_at.is_not(None)
-            ).count()
-            papers_with_citations = latest_papers.filter(
-                DBPaper.citation_count > 0
-            ).count()
-
-            return {
-                "total_papers": total_papers,
-                "papers_processed": papers_processed,
-                "papers_with_citations": papers_with_citations,
-                "processed_percentage": round(
-                    papers_processed / total_papers * 100 if total_papers else 0, 1
-                ),
-                "citations_percentage": round(
-                    papers_with_citations / total_papers * 100 if total_papers else 0,
-                    1,
-                ),
-            }
-        except Exception as e:
-            raise DatabaseError(f"Error getting citation statistics: {str(e)}")
+        return PaperCitationRefreshService(self.db).statistics()
 
     def update_paper_tasks(
         self, paper_id: int, task_ids: List[int], *, commit: bool = True
