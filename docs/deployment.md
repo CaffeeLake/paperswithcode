@@ -282,9 +282,10 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-Ordinary chat models require the signed-in user's Hugging Face billing. Both
-profiles use `deepseek-ai/DeepSeek-V4-Flash-0731:fastest`; staging additionally
-exposes the shared OpenRouter-backed Luna and Terra preview.
+Production chat uses the signed-in user's Hugging Face billing and the
+`deepseek-ai/DeepSeek-V4-Flash-0731:fastest` route. Staging exposes only
+DeepSeek V4 Flash through the shared OpenRouter-backed
+`deepseek/deepseek-v4-flash-0731` route.
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` staging workspace limit. Durable
 PostgreSQL reservations enforce the separate `$1` per-user ceiling before each

@@ -54,33 +54,33 @@ def _client(
 def test_deployed_model_registry_hides_disabled_shared_provider():
     settings = _settings(chat_openrouter_server_funded_enabled=False)
 
-    assert "deepseek-ai/DeepSeek-V4-Flash-0731" in {
-        choice["id"] for choice in settings.chat_model_choices
-    }
-    assert "openai/gpt-5.6-luna" not in {
-        choice["id"] for choice in settings.chat_model_choices
-    }
-    assert "openai/gpt-5.6-terra" not in settings.chat_model_routes
+    assert settings.chat_model_choices == ()
+    assert settings.chat_model_routes == {}
     assert (
         settings.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "huggingface"
+        == "openrouter"
     )
 
 
 def test_staging_exposes_explicitly_enabled_shared_provider():
     settings = _settings(chat_openrouter_server_funded_enabled=True)
 
-    assert {"openai/gpt-5.6-luna", "openai/gpt-5.6-terra"} <= {
-        choice["id"] for choice in settings.chat_model_choices
-    }
+    assert settings.chat_model_choices == (
+        {
+            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "label": "DeepSeek V4 Flash",
+            "route": "deepseek/deepseek-v4-flash-0731",
+            "provider": "openrouter",
+        },
+    )
 
 
 def test_development_keeps_model_available_for_explicit_local_testing():
     settings = Settings(_env_file=None, environment="development")
 
-    assert {"openai/gpt-5.6-luna", "openai/gpt-5.6-terra"} <= {
-        choice["id"] for choice in settings.chat_model_choices
-    }
+    assert [choice["id"] for choice in settings.chat_model_choices] == [
+        "deepseek-ai/DeepSeek-V4-Flash-0731"
+    ]
 
 
 def test_disabled_shared_provider_is_safe_without_network():

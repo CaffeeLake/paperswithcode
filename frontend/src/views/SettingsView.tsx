@@ -308,7 +308,7 @@ const SettingsView: React.FC = () => {
                 {usage.unavailable_reason === "personal_allowance_exhausted"
                   ? "Your free monthly allowance is depleted."
                   : `The shared OpenRouter credits are currently unavailable. ${usage.remaining_percent}% of your personal allowance remains.`}
-                {" Luna and Terra are temporarily unavailable unless you enable your own key below."}
+                {" DeepSeek V4 Flash is temporarily unavailable unless you enable your own key below."}
               </p>}
             </div> : <div className="settings-billing-loading">
               {usageQuery.isError || usage

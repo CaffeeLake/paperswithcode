@@ -75,7 +75,7 @@ def test_safe_maximum_is_integer_conservative_and_modality_closed():
     payload = {"messages": [{"role": "user", "content": "hello"}]}
     maximum = safe_maximum_microusd(
         settings,
-        settings.chat_terra_route,
+        settings.chat_deepseek_v4_flash_openrouter_route,
         RequestBounds(512 * 1024, 8_000, payload),
         now=datetime(2026, 8, 2, tzinfo=UTC),
     )
@@ -85,7 +85,7 @@ def test_safe_maximum_is_integer_conservative_and_modality_closed():
     with pytest.raises(OpenRouterPricingUnavailable):
         safe_maximum_microusd(
             settings,
-            settings.chat_terra_route,
+            settings.chat_deepseek_v4_flash_openrouter_route,
             RequestBounds(
                 100,
                 8_000,
@@ -112,7 +112,7 @@ def test_safe_maximum_accepts_nested_tool_schema_type_property():
 
     maximum = safe_maximum_microusd(
         settings,
-        settings.chat_luna_route,
+        settings.chat_deepseek_v4_flash_openrouter_route,
         RequestBounds(100, 8_000, payload),
         now=datetime(2026, 8, 2, tzinfo=UTC),
     )
@@ -126,7 +126,7 @@ def test_safe_maximum_fails_closed_for_stale_or_unknown_pricing():
     with pytest.raises(OpenRouterPricingUnavailable):
         safe_maximum_microusd(
             settings,
-            settings.chat_luna_route,
+            settings.chat_deepseek_v4_flash_openrouter_route,
             bounds,
             now=datetime(2026, 8, 2, tzinfo=UTC),
         )
@@ -240,7 +240,7 @@ def test_gateway_releases_capability_lock_before_openrouter_budget_check(monkeyp
     settings = _settings()
     row = SimpleNamespace(
         id=uuid.uuid4(),
-        model=settings.chat_luna_route,
+        model=settings.chat_deepseek_v4_flash_openrouter_route,
         provider_mode="openrouter_funded",
         provider_requests=0,
     )

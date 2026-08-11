@@ -76,15 +76,9 @@ export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   },
 ];
 export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
-  ...PRODUCTION_FALLBACK_CHAT_MODELS,
   {
-    id: "openai/gpt-5.6-luna",
-    label: "GPT-5.6 Luna (medium)",
-    provider: "openrouter",
-  },
-  {
-    id: "openai/gpt-5.6-terra",
-    label: "GPT-5.6 Terra (medium)",
+    id: DEFAULT_CHAT_MODEL,
+    label: "DeepSeek V4 Flash",
     provider: "openrouter",
   },
 ];

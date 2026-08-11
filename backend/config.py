@@ -263,6 +263,11 @@ class Settings(BaseSettings):
     chat_deepseek_v4_flash_route: str = Field(
         default="deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
+    chat_deepseek_v4_flash_openrouter_route: str = Field(
+        default="deepseek/deepseek-v4-flash-0731"
+    )
+    # Read-only compatibility inputs for rolling back releases whose staging
+    # registry still exposed the two GPT routes.
     chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
     chat_terra_route: str = Field(default="openai/gpt-5.6-terra")
     chat_openrouter_api_key: str = Field(
@@ -446,27 +451,20 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:
-        huggingface = (
+        if self.environment == "production":
+            return (
+                {
+                    "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "label": "DeepSeek V4 Flash",
+                    "route": self.chat_deepseek_v4_flash_route,
+                    "provider": "huggingface",
+                },
+            )
+        return (
             {
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
                 "label": "DeepSeek V4 Flash",
-                "route": self.chat_deepseek_v4_flash_route,
-                "provider": "huggingface",
-            },
-        )
-        if self.environment == "production":
-            return huggingface
-        return huggingface + (
-            {
-                "id": "openai/gpt-5.6-luna",
-                "label": "GPT-5.6 Luna (medium)",
-                "route": self.chat_luna_route,
-                "provider": "openrouter",
-            },
-            {
-                "id": "openai/gpt-5.6-terra",
-                "label": "GPT-5.6 Terra (medium)",
-                "route": self.chat_terra_route,
+                "route": self.chat_deepseek_v4_flash_openrouter_route,
                 "provider": "openrouter",
             },
         )
@@ -494,17 +492,22 @@ class Settings(BaseSettings):
     @property
     def chat_model_routes(self) -> dict[str, str]:
         routes = {choice["id"]: choice["route"] for choice in self.chat_model_choices}
+        canonical_route = routes.get("deepseek-ai/DeepSeek-V4-Flash-0731")
+        if canonical_route is None:
+            return routes
         # Existing sessions keep their persisted selected-model IDs but move to
-        # the sole qualified Hugging Face route. These aliases are intentionally
-        # absent from discovery and frontend defaults.
+        # the sole qualified route. These aliases are intentionally absent from
+        # discovery and frontend defaults.
         for legacy_model in (
             "google/gemma-4-31B-it",
             "zai-org/GLM-5.2",
             "moonshotai/Kimi-K3",
             "openai/gpt-oss-120b",
             "deepseek-ai/DeepSeek-V4-Flash",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-terra",
         ):
-            routes[legacy_model] = self.chat_deepseek_v4_flash_route
+            routes[legacy_model] = canonical_route
         return routes
 
     @property
@@ -512,14 +515,17 @@ class Settings(BaseSettings):
         providers = {
             choice["id"]: choice["provider"] for choice in self.chat_model_registry
         }
+        canonical_provider = providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
         for legacy_model in (
             "google/gemma-4-31B-it",
             "zai-org/GLM-5.2",
             "moonshotai/Kimi-K3",
             "openai/gpt-oss-120b",
             "deepseek-ai/DeepSeek-V4-Flash",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-terra",
         ):
-            providers[legacy_model] = "huggingface"
+            providers[legacy_model] = canonical_provider
         return providers
 
     @property

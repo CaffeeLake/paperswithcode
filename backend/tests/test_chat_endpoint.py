@@ -714,8 +714,6 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     )
     assert [choice["id"] for choice in staging.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "openai/gpt-5.6-luna",
-        "openai/gpt-5.6-terra",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
@@ -735,9 +733,16 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         production.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
         == "huggingface"
     )
-    assert staging.chat_model_routes["openai/gpt-5.6-luna"] == "openai/gpt-5.6-luna"
-    assert staging.chat_model_routes["openai/gpt-5.6-terra"] == "openai/gpt-5.6-terra"
-    assert staging.chat_route_providers[staging.chat_luna_route] == "openrouter"
+    assert staging.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
+        "deepseek/deepseek-v4-flash-0731"
+    )
+    assert staging.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
+        "openrouter"
+    )
+    for legacy_id in ("openai/gpt-5.6-luna", "openai/gpt-5.6-terra"):
+        assert staging.chat_model_routes[legacy_id] == (
+            "deepseek/deepseek-v4-flash-0731"
+        )
 
 
 def test_title_and_display_projection_bounds():
@@ -1345,9 +1350,9 @@ def test_agent_options_expose_only_search(tmp_path):
         tmp_path,
         provider_token="openrouter-token",
         provider_base_url="https://openrouter.ai/api",
-        model_route=settings.chat_luna_route,
+        model_route=settings.chat_deepseek_v4_flash_openrouter_route,
     )
-    assert openrouter.model == "openai/gpt-5.6-luna"
+    assert openrouter.model == "deepseek/deepseek-v4-flash-0731"
     assert openrouter.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert openrouter.env["ANTHROPIC_AUTH_TOKEN"] == "openrouter-token"
 

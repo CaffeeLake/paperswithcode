@@ -380,24 +380,32 @@ def validate_chat_provider_policy(
         raise RuntimeError(
             "enabled chat requires the Hugging Face OAuth inference credential path"
         )
-    expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-    if settings.chat_deepseek_v4_flash_route != expected_hf_route:
-        raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
     discovered = settings.chat_model_choices
     if settings.environment == "production":
+        expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        if settings.chat_deepseek_v4_flash_route != expected_hf_route:
+            raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
         if len(discovered) != 1 or any(
             choice["provider"] != "huggingface" for choice in discovered
         ):
             raise RuntimeError("production chat discovery must be Hugging Face-only")
     else:
-        expected_ids = {
-            "deepseek-ai/DeepSeek-V4-Flash-0731",
-            "openai/gpt-5.6-luna",
-            "openai/gpt-5.6-terra",
-        }
-        if {choice["id"] for choice in discovered} != expected_ids:
+        expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
+        if (
+            settings.chat_deepseek_v4_flash_openrouter_route
+            != expected_openrouter_route
+        ):
             raise RuntimeError(
-                "staging chat discovery must contain DeepSeek, Luna, and Terra"
+                "staging DeepSeek V4 Flash must use the reviewed OpenRouter route"
+            )
+        if len(discovered) != 1 or discovered[0] != {
+            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "label": "DeepSeek V4 Flash",
+            "route": expected_openrouter_route,
+            "provider": "openrouter",
+        }:
+            raise RuntimeError(
+                "staging chat discovery must contain only OpenRouter DeepSeek V4 Flash"
             )
     if settings.chat_default_backend != "modal_cli":
         raise RuntimeError("deployed chat must use the isolated Modal backend")

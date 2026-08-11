@@ -49,20 +49,11 @@ const renderAskAssistant = () => {
 };
 
 describe("AskAssistant", () => {
-  it("offers the Hugging Face DeepSeek and staging OpenRouter models", () => {
+  it("offers only DeepSeek through OpenRouter on staging", () => {
+    expect(FALLBACK_CHAT_MODELS).toHaveLength(1);
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
       id: "deepseek-ai/DeepSeek-V4-Flash-0731",
       label: "DeepSeek V4 Flash",
-      provider: "huggingface",
-    });
-    expect(FALLBACK_CHAT_MODELS).toContainEqual({
-      id: "openai/gpt-5.6-luna",
-      label: "GPT-5.6 Luna (medium)",
-      provider: "openrouter",
-    });
-    expect(FALLBACK_CHAT_MODELS).toContainEqual({
-      id: "openai/gpt-5.6-terra",
-      label: "GPT-5.6 Terra (medium)",
       provider: "openrouter",
     });
   });
@@ -213,8 +204,7 @@ describe("AskAssistant", () => {
     renderAskAssistant();
 
     const toggle = await screen.findByRole("switch", { name: "Web search" });
-    const modelPicker = screen.getByLabelText("Research model").closest(".chat-model-picker");
-    expect(modelPicker?.querySelector(".chat-model-picker-sizer"))
+    expect(screen.getByLabelText("Research model"))
       .toHaveTextContent("DeepSeek V4 Flash");
     await user.click(toggle);
     await user.type(
