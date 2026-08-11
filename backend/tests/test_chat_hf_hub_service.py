@@ -28,6 +28,7 @@ from backend.services.chat_capability_service import (
 from backend.services.chat_hf_hub_service import (
     ChatHfHubError,
     ChatHfHubService,
+    _TtlLruCache,
     validate_hf_request,
 )
 
@@ -123,6 +124,16 @@ def test_cache_is_success_only_and_discloses_hit_age(service):
     assert len([call for call in api.calls if call[0] == "model_info"]) == 1
 
 
+def test_cache_replacement_and_configured_lru_reduction_use_serialized_bytes():
+    cache = _TtlLruCache(max_entries=2, max_bytes=4096)
+    cache.put("first", {"value": "old"}, ttl=60)
+    cache.put("first", {"value": "new"}, ttl=60)
+    cache.put("second", {"value": "two"}, ttl=60)
+    cache.configure(max_entries=1, max_bytes=4096)
+    assert cache.get("first") is None
+    assert cache.get("second")[0] == {"value": "two"}
+
+
 def test_card_projections_share_one_normalized_anonymous_read(service):
     subject, api = service
     metadata = subject.execute(
@@ -173,6 +184,68 @@ def test_file_listing_is_bounded_metadata_only(service):
     tree_call = [call for call in api.calls if call[0] == "list_repo_tree"][0]
     assert tree_call[2]["token"] is False
     assert tree_call[2]["recursive"] is True
+
+
+def test_list_byte_ceiling_truncates_normalized_results_explicitly():
+    class LargeApi(FakeApi):
+        def list_models(self, **kwargs):
+            return [
+                SimpleNamespace(
+                    id=f"owner/model-{index}",
+                    tags=["x" * 3000],
+                    private=False,
+                )
+                for index in range(3)
+            ]
+
+    ChatHfHubService.reset_cache_for_tests()
+    subject = ChatHfHubService(
+        SimpleNamespace(chat_hf_response_max_bytes=4096), api=LargeApi()
+    )
+    result = subject.execute("model_list", {"limit": 3})
+    assert result["truncation"] == {
+        "truncated": True,
+        "reason": "maximum_bytes",
+    }
+    assert result["result_set"]["more_available"] is True
+    assert result["result_set"]["returned"] == len(result["data"])
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 4096
+
+
+def test_configured_total_deadline_is_passed_to_upstream_info():
+    ChatHfHubService.reset_cache_for_tests()
+    api = FakeApi()
+    subject = ChatHfHubService(
+        SimpleNamespace(chat_hf_catalog_timeout_seconds=0.25), api=api
+    )
+    subject.execute("model_info", {"repo_id": "owner/model"})
+    timeout = api.calls[0][2]["timeout"]
+    assert 0 < timeout <= 0.25
+
+
+def test_card_source_read_is_bounded_by_configured_total():
+    class LargeCardApi(FakeApi):
+        def hf_hub_download(self, repo_id, filename, **kwargs):
+            path = Path(kwargs["cache_dir"]) / "README.md"
+            path.write_text("x" * 10_000, encoding="utf-8")
+            return str(path)
+
+    ChatHfHubService.reset_cache_for_tests()
+    subject = ChatHfHubService(
+        SimpleNamespace(chat_hf_card_total_max_bytes=4096), api=LargeCardApi()
+    )
+    result = subject.execute("model_card", {"repo_id": "owner/model"})
+    source = next(
+        item
+        for item in result["truncation"]["components"]
+        if item["component"] == "source"
+    )
+    assert source == {
+        "component": "source",
+        "original_bytes": 10_000,
+        "returned_bytes": 4096,
+    }
+    assert len(result["data"]["text"].encode()) <= 4096
 
 
 @pytest.mark.parametrize(

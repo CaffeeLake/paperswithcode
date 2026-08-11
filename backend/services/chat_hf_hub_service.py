@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from huggingface_hub import HfApi
 from huggingface_hub.errors import HfHubHTTPError
@@ -331,9 +332,17 @@ class _TtlLruCache:
             self._purge(now)
             old = self._values.pop(key, None)
             if old:
-                self._bytes -= len(old[1])
+                self._bytes -= len(old[2])
             self._values[key] = (now, now + ttl, raw)
             self._bytes += len(raw)
+            while len(self._values) > self.max_entries or self._bytes > self.max_bytes:
+                _, (_, _, evicted) = self._values.popitem(last=False)
+                self._bytes -= len(evicted)
+
+    def configure(self, max_entries: int, max_bytes: int) -> None:
+        with self._lock:
+            self.max_entries = min(max_entries, MAX_CACHE_ENTRIES)
+            self.max_bytes = min(max_bytes, MAX_CACHE_BYTES)
             while len(self._values) > self.max_entries or self._bytes > self.max_bytes:
                 _, (_, _, evicted) = self._values.popitem(last=False)
                 self._bytes -= len(evicted)
@@ -362,6 +371,19 @@ class ChatHfHubService:
     def __init__(self, settings, api: HfApi | None = None):
         self.settings = settings
         self.api = api or HfApi(token=False)
+        self.deadline_seconds = min(
+            float(
+                getattr(
+                    settings, "chat_hf_catalog_timeout_seconds", MAX_UPSTREAM_SECONDS
+                )
+            ),
+            MAX_UPSTREAM_SECONDS,
+        )
+        self._deadline = threading.local()
+        self._cache.configure(
+            int(getattr(settings, "chat_hf_cache_max_entries", MAX_CACHE_ENTRIES)),
+            int(getattr(settings, "chat_hf_cache_max_bytes", MAX_CACHE_BYTES)),
+        )
 
     @classmethod
     def reset_cache_for_tests(cls) -> None:
@@ -405,7 +427,7 @@ class ChatHfHubService:
                 event = threading.Event()
                 self._flights[key] = event
         if not leader:
-            if not event.wait(MAX_UPSTREAM_SECONDS):
+            if not event.wait(self.deadline_seconds):
                 raise ChatHfHubError(
                     503, "hf_unavailable", "Hugging Face is unavailable"
                 )
@@ -417,7 +439,8 @@ class ChatHfHubService:
             raise ChatHfHubError(503, "hf_unavailable", "Hugging Face is unavailable")
         try:
             started = time.monotonic()
-            envelope = self._dispatch(operation, args, started)
+            self._deadline.value = started + self.deadline_seconds
+            envelope = self._dispatch(operation, args)
             envelope["cache"] = "miss"
             self._ensure_response_bound(envelope)
             self._cache.put(key, envelope, self._ttl(operation, args))
@@ -441,7 +464,7 @@ class ChatHfHubService:
             raise ChatHfHubError(
                 503, "hf_unavailable", "Hugging Face is unavailable"
             ) from None
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, httpx.TimeoutException):
             raise ChatHfHubError(
                 503, "hf_unavailable", "Hugging Face is unavailable"
             ) from None
@@ -450,9 +473,17 @@ class ChatHfHubService:
                 self._flights.pop(key, None)
                 event.set()
 
-    def _dispatch(self, operation: str, args: dict, started: float) -> dict:
-        if time.monotonic() - started >= MAX_UPSTREAM_SECONDS:
+    def _remaining_seconds(self) -> float:
+        remaining = getattr(self._deadline, "value", 0.0) - time.monotonic()
+        if remaining <= 0:
             raise TimeoutError
+        return remaining
+
+    def _check_deadline(self) -> None:
+        self._remaining_seconds()
+
+    def _dispatch(self, operation: str, args: dict) -> dict:
+        self._check_deadline()
         if operation.startswith("collection_"):
             return self._collection(operation, args)
         repo_type, command = operation.split("_", 1)
@@ -467,6 +498,7 @@ class ChatHfHubService:
     def _collection(self, operation: str, args: dict) -> dict:
         if operation == "collection_info":
             item = self.api.get_collection(args["collection_slug"], token=False)
+            self._check_deadline()
             if bool(getattr(item, "private", False)):
                 raise ChatHfHubError(
                     403,
@@ -479,19 +511,21 @@ class ChatHfHubService:
                 "url": f"https://huggingface.co/collections/{args['collection_slug']}",
             }
             return _envelope(operation, data, source=source)
-        items = [
-            item
-            for item in list(self.api.list_collections(**args, token=False))[
-                : args["limit"] + 1
-            ]
-            if not bool(getattr(item, "private", False))
-        ]
+        items = []
+        for item in self.api.list_collections(**args, token=False):
+            self._check_deadline()
+            if not bool(getattr(item, "private", False)):
+                items.append(item)
+            if len(items) > args["limit"]:
+                break
         more = len(items) > args["limit"]
         items = items[: args["limit"]]
-        return _envelope(
-            operation,
-            [_normalize_collection(v) for v in items],
-            result_set=_result_set(args["limit"], len(items), more),
+        return self._bound_list_envelope(
+            _envelope(
+                operation,
+                [_normalize_collection(v) for v in items],
+                result_set=_result_set(args["limit"], len(items), more),
+            )
         )
 
     def _info(self, repo_type: str, args: dict) -> dict:
@@ -500,9 +534,10 @@ class ChatHfHubService:
             args["repo_id"],
             revision=args.get("revision"),
             expand=args.get("expand") or None,
-            timeout=MAX_UPSTREAM_SECONDS,
+            timeout=self._remaining_seconds(),
             token=False,
         )
+        self._check_deadline()
         if bool(getattr(info, "private", False)):
             raise ChatHfHubError(
                 403, "hf_access_denied", "Resource is unavailable to anonymous access"
@@ -521,13 +556,22 @@ class ChatHfHubService:
         }
         limit = kwargs["limit"]
         kwargs["limit"] = limit + 1
-        items = list(method(**kwargs, token=False))[: limit + 1]
-        items = [item for item in items if not bool(getattr(item, "private", False))]
+        items = []
+        for item in method(**kwargs, token=False):
+            self._check_deadline()
+            if not bool(getattr(item, "private", False)):
+                items.append(item)
+            if len(items) > limit:
+                break
         more = len(items) > limit
         items = items[:limit]
         data = [_normalize_repo(v, repo_type, args.get("expand", [])) for v in items]
-        return _envelope(
-            f"{repo_type}_list", data, result_set=_result_set(limit, len(data), more)
+        return self._bound_list_envelope(
+            _envelope(
+                f"{repo_type}_list",
+                data,
+                result_set=_result_set(limit, len(data), more),
+            )
         )
 
     def _files(self, repo_type: str, args: dict) -> dict:
@@ -548,6 +592,7 @@ class ChatHfHubService:
             int(getattr(self.settings, "chat_hf_max_depth", MAX_DEPTH)), MAX_DEPTH
         )
         for entry in iterator:
+            self._check_deadline()
             path = str(getattr(entry, "path", ""))
             if path.count("/") + 1 > max_depth:
                 truncated_reason = "maximum_depth"
@@ -569,28 +614,31 @@ class ChatHfHubService:
             args["repo_id"],
             revision=args.get("revision"),
             repo_type=repo_type,
-            timeout=MAX_UPSTREAM_SECONDS,
+            timeout=self._remaining_seconds(),
             token=False,
         )
+        self._check_deadline()
         if bool(getattr(info, "private", False)):
             raise ChatHfHubError(
                 403, "hf_access_denied", "Resource is unavailable to anonymous access"
             )
         source = _source(repo_type, args["repo_id"], getattr(info, "sha", None))
-        return _envelope(
-            f"{repo_type}_list",
-            entries,
-            source=source,
-            result_set=_result_set(max_files, len(entries), bool(truncated_reason)),
-            truncation={
-                "truncated": bool(truncated_reason),
-                "reason": truncated_reason,
-            },
+        return self._bound_list_envelope(
+            _envelope(
+                f"{repo_type}_list",
+                entries,
+                source=source,
+                result_set=_result_set(max_files, len(entries), bool(truncated_reason)),
+                truncation={
+                    "truncated": bool(truncated_reason),
+                    "reason": truncated_reason,
+                },
+            )
         )
 
     def _card(self, repo_type: str, args: dict) -> dict:
         info = getattr(self.api, f"{repo_type}_info")(
-            args["repo_id"], timeout=MAX_UPSTREAM_SECONDS, token=False
+            args["repo_id"], timeout=self._remaining_seconds(), token=False
         )
         if bool(getattr(info, "private", False)):
             raise ChatHfHubError(
@@ -609,9 +657,23 @@ class ChatHfHubService:
                 revision=sha,
                 cache_dir=directory,
                 token=False,
-                etag_timeout=3,
+                etag_timeout=min(3, self._remaining_seconds()),
             )
-            raw = Path(path).read_bytes()
+            self._check_deadline()
+            card_path = Path(path)
+            source_bytes = card_path.stat().st_size
+            total_limit = min(
+                int(
+                    getattr(
+                        self.settings,
+                        "chat_hf_card_total_max_bytes",
+                        MAX_CARD_TOTAL_BYTES,
+                    )
+                ),
+                MAX_CARD_TOTAL_BYTES,
+            )
+            with card_path.open("rb") as card_file:
+                raw = card_file.read(total_limit + 1)
         text = raw.decode("utf-8", errors="replace")
         metadata, body = _split_card(text)
         metadata_limit = min(
@@ -636,11 +698,20 @@ class ChatHfHubService:
         metadata_bytes = len(
             json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode()
         )
-        text_limit = min(text_limit, max(0, MAX_CARD_TOTAL_BYTES - metadata_bytes))
+        text_limit = min(text_limit, max(0, total_limit - metadata_bytes))
         body, body_truncation = _bound_text(body, text_limit)
         data = {"metadata": metadata, "text": body}
         source = _source(repo_type, args["repo_id"], sha, card=True)
-        truncations = [v for v in (metadata_truncation, body_truncation) if v]
+        source_truncation = None
+        if source_bytes > total_limit:
+            source_truncation = {
+                "component": "source",
+                "original_bytes": source_bytes,
+                "returned_bytes": min(source_bytes, total_limit),
+            }
+        truncations = [
+            v for v in (source_truncation, metadata_truncation, body_truncation) if v
+        ]
         return _envelope(
             f"{repo_type}_card",
             data,
@@ -672,6 +743,34 @@ class ChatHfHubService:
                 "hf_unavailable",
                 "Normalized HF response exceeded its safety bound",
             )
+
+    def _bound_list_envelope(self, envelope: dict) -> dict:
+        maximum = min(
+            MAX_LIST_BYTES,
+            int(
+                getattr(self.settings, "chat_hf_response_max_bytes", MAX_RESPONSE_BYTES)
+            ),
+        )
+        data = envelope["data"]
+        original_count = len(data)
+        while (
+            data
+            and len(
+                json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
+            )
+            > maximum
+        ):
+            data.pop()
+        if len(data) != original_count:
+            envelope["truncation"] = {
+                "truncated": True,
+                "reason": "maximum_bytes",
+            }
+            result_set = envelope.get("result_set")
+            if result_set:
+                result_set["returned"] = len(data)
+                result_set["more_available"] = True
+        return envelope
 
     @staticmethod
     def _ttl(operation: str, args: dict) -> int:

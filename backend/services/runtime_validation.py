@@ -440,6 +440,9 @@ def validate_chat_provider_policy(
             or settings.chat_hf_max_depth != 10
             or settings.chat_hf_card_metadata_max_bytes != 32 * 1024
             or settings.chat_hf_card_text_max_bytes != 192 * 1024
+            or settings.chat_hf_card_total_max_bytes != 224 * 1024
+            or settings.chat_hf_cache_max_entries != 512
+            or settings.chat_hf_cache_max_bytes != 64 * 1024 * 1024
             or settings.chat_hf_response_max_bytes != 256 * 1024
         ):
             raise RuntimeError("HF catalog runtime descriptor is invalid")

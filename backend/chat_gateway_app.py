@@ -68,8 +68,17 @@ from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger(__name__)
+hf_telemetry_logger = logging.getLogger("uvicorn.error")
 MAX_PROVIDER_OUTPUT_TOKENS = PROVIDER_OUTPUT_TOKEN_LIMIT
 MAX_PROVIDER_TURN_TOKENS = 512_000
+
+
+def _hf_latency_bucket(elapsed_seconds: float) -> str:
+    elapsed_ms = elapsed_seconds * 1000
+    for ceiling in (100, 250, 500, 1000, 3000, 10_000):
+        if elapsed_ms < ceiling:
+            return f"lt_{ceiling}ms"
+    return "gte_10000ms"
 
 
 def _opaque_turn(turn_id: uuid.UUID) -> str:
@@ -410,26 +419,26 @@ def hf_catalog(
     started = time.perf_counter()
     try:
         result = ChatHfHubService(settings).execute(body.operation, arguments)
-        logger.info(
-            "chat hf catalog operation=%s repo_type=%s cache=%s status=2xx "
-            "latency_ms=%d result_count=%d response_bytes=%d truncated=%s",
+        hf_telemetry_logger.info(
+            "chat hf catalog operation=%s repo_type=%s cache=%s status_class=2xx "
+            "latency_bucket=%s result_count=%d response_bytes=%d truncated=%s",
             body.operation,
             body.operation.partition("_")[0],
             result.get("cache", "miss"),
-            round((time.perf_counter() - started) * 1000),
+            _hf_latency_bucket(time.perf_counter() - started),
             (result.get("result_set") or {}).get("returned", 1),
             len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()),
             bool((result.get("truncation") or {}).get("truncated")),
         )
         return result
     except ChatHfHubError as error:
-        logger.info(
-            "chat hf catalog operation=%s repo_type=%s cache=miss status=%s "
-            "latency_ms=%d result_count=0 response_bytes=0 truncated=false",
+        hf_telemetry_logger.info(
+            "chat hf catalog operation=%s repo_type=%s cache=miss status_class=%s "
+            "latency_bucket=%s result_count=0 response_bytes=0 truncated=false",
             body.operation,
             body.operation.partition("_")[0],
-            error.status_code,
-            round((time.perf_counter() - started) * 1000),
+            f"{error.status_code // 100}xx",
+            _hf_latency_bucket(time.perf_counter() - started),
         )
         raise HTTPException(
             status_code=error.status_code,

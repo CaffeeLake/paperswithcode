@@ -389,6 +389,13 @@ class Settings(BaseSettings):
         default=32 * 1024, ge=1024, le=32 * 1024
     )
     chat_hf_card_text_max_bytes: int = Field(default=192 * 1024, ge=4096, le=192 * 1024)
+    chat_hf_card_total_max_bytes: int = Field(
+        default=224 * 1024, ge=4096, le=224 * 1024
+    )
+    chat_hf_cache_max_entries: int = Field(default=512, ge=1, le=512)
+    chat_hf_cache_max_bytes: int = Field(
+        default=64 * 1024 * 1024, ge=4096, le=64 * 1024 * 1024
+    )
     chat_hf_response_max_bytes: int = Field(default=256 * 1024, ge=4096, le=256 * 1024)
     chat_sandbox_ready_timeout_seconds: float = Field(default=30, gt=0, le=120)
     chat_agent_timeout_seconds: float = Field(default=180, gt=0, le=600)
