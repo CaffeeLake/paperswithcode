@@ -245,6 +245,20 @@ describe("Markdown and chat policy", () => {
     expect(mockedGetPaper).not.toHaveBeenCalled();
   });
 
+  it("drops unresolved internal citation placeholders to plain text", () => {
+    renderWithProviders(
+      <ChatMarkdown
+        text="[DINO](paper:<cfg>)"
+        papers={{}}
+        citations={{}}
+      />,
+    );
+    expect(screen.getByText("DINO")).toHaveClass("chat-invalid-citation");
+    expect(screen.queryByRole("link", { name: "DINO" })).not.toBeInTheDocument();
+    expect(screen.queryByText("<cfg>")).not.toBeInTheDocument();
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       label: "microsoft/Mage-VL",

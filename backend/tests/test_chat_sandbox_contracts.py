@@ -2286,7 +2286,10 @@ def test_worker_protocol_allows_terminal_less_correlated_cancellation():
 
 
 def test_prompt_and_manifest_share_six_round_contract():
-    prompt = render(current_date=date(2026, 7, 28))
+    prompt = render(
+        current_date=date(2026, 7, 28),
+        selected_model="deepseek-ai/DeepSeek-V4-Flash-0731:fastest",
+    )
     assert "The current UTC date is 2026-07-28." in prompt
     assert "Judge publication recency relative to this date." in prompt
     assert "at most 6 executed tool-use rounds" in prompt
@@ -2299,6 +2302,11 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731:fastest" in prompt
+    assert "harness is not the model" in prompt
+    assert "never identify yourself as Claude" in prompt
+    assert "does not include `curl`" in prompt
+    assert "`command -v <name>` succeeds" in prompt
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
     assert "Never output a bare repository slug" in prompt
     assert "## Available research areas and representative tasks" in prompt
@@ -2320,9 +2328,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-sOkB0Jyg31sxOn7URbgxWh"
+    assert MODAL_IMAGE_ID == "im-1y8C9jNAn7rwgBBQry18sy"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "53"
+    assert WORKER_CONTRACT_VERSION == "54"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

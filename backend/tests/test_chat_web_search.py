@@ -227,6 +227,10 @@ def test_worker_options_omit_or_expose_the_exact_mcp_tool(monkeypatch):
     assert WEB_SEARCH_TOOL in disabled.disallowed_tools
     assert "web" not in disabled.mcp_servers
     assert "search_web" not in disabled.system_prompt
+    assert (
+        "General web search is not authorized for this turn" in disabled.system_prompt
+    )
+    assert "model-a" in disabled.system_prompt
     assert WEB_SEARCH_TOOL in enabled.allowed_tools
     assert WEB_SEARCH_TOOL not in enabled.disallowed_tools
     assert set(enabled.mcp_servers) == {"web"}
@@ -235,8 +239,8 @@ def test_worker_options_omit_or_expose_the_exact_mcp_tool(monkeypatch):
 
 def test_projection_persists_only_exact_authoritative_web_citations(monkeypatch):
     monkeypatch.setattr(
-        "backend.services.chat_stream_service.resolve_citations",
-        lambda _db, _text: [],
+        "backend.services.chat_stream_service.resolve_citation_targets",
+        lambda _db, _text: ([], {}),
     )
     projection = ChatTurnProjection()
     projection.apply(

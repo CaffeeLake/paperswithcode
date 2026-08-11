@@ -380,6 +380,7 @@ def _options(
         guide_path=GUIDE,
         max_web_searches=settings.chat_max_web_search_calls,
         web_search_enabled=web_search_enabled,
+        selected_model=model,
     )
     web_tools = [WEB_SEARCH_TOOL] if web_search_enabled and not finalizing else []
     web_servers = (

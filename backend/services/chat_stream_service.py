@@ -25,7 +25,11 @@ from claude_agent_sdk._internal.session_store import project_key_for_directory
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.services.chat_capability_service import ChatCapabilityService
-from backend.services.chat_citation_service import cited_route_ids, resolve_citations
+from backend.services.chat_citation_service import (
+    cited_route_ids,
+    normalize_paper_links,
+    resolve_citation_targets,
+)
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxError
 from backend.services.chat_session_service import (
@@ -241,7 +245,6 @@ class ChatTurnProjection:
             }
 
     def finalize(self, db) -> tuple[str, list[dict[str, Any]]]:
-        answer = "".join(self.answer_parts)
         if not any(block.get("kind") == "answer" for block in self.blocks):
             self.blocks.append({"kind": "answer", "text": "", "done": True})
         else:
@@ -253,7 +256,23 @@ class ChatTurnProjection:
             for block in self.blocks
             if block.get("kind") in {"reasoning", "answer"}
         )
-        resolved = resolve_citations(db, text)
+        resolved, resolved_targets = resolve_citation_targets(db, text)
+        for block in self.blocks:
+            if block.get("kind") in {"reasoning", "answer"}:
+                block["text"] = normalize_paper_links(
+                    block.get("text", ""), resolved_targets
+                )
+        self.answer_parts = [
+            block.get("text", "")
+            for block in self.blocks
+            if block.get("kind") == "answer"
+        ]
+        answer = "".join(self.answer_parts)
+        text = "\n".join(
+            block.get("text", "")
+            for block in self.blocks
+            if block.get("kind") in {"reasoning", "answer"}
+        )
         if resolved:
             self.citations = [{"kind": "paper", **item} for item in resolved]
         else:

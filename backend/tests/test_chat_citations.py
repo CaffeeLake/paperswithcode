@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from backend.models.chat import CitationSnapshot
 from backend.services import chat_citation_service
+from backend.services.paper_service import PaperNotFoundError
 
 
 def test_citation_snapshot_remains_compatible_with_legacy_rows():
@@ -63,3 +64,39 @@ def test_resolve_citations_includes_hover_preview_metadata(monkeypatch):
             "citation_count": 42,
         }
     ]
+
+
+def test_resolution_tracks_requested_aliases_and_strips_unresolved_links(monkeypatch):
+    paper = SimpleNamespace(
+        id="9",
+        arxiv_id="2501.00001",
+        title="Previewable paper",
+        source_url=None,
+        url_abs="https://arxiv.org/abs/2501.00001",
+        thumbnail_url=None,
+        authors=[],
+        published=None,
+        conference_name=None,
+        conference=None,
+        citation_count=0,
+    )
+
+    class FakePaperService:
+        def __init__(self, _db):
+            pass
+
+        def get_paper_by_id_or_arxiv(self, route_id):
+            if route_id == "9":
+                return paper
+            raise PaperNotFoundError(route_id)
+
+    monkeypatch.setattr(chat_citation_service, "PaperService", FakePaperService)
+    text = "[valid alias](paper:9) and [placeholder](paper:<cfg>)"
+
+    citations, targets = chat_citation_service.resolve_citation_targets(object(), text)
+
+    assert [item["route_id"] for item in citations] == ["2501.00001"]
+    assert targets == {"9": "2501.00001"}
+    assert chat_citation_service.normalize_paper_links(text, targets) == (
+        "[valid alias](paper:2501.00001) and placeholder"
+    )
