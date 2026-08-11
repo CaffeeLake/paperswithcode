@@ -228,7 +228,7 @@ def test_disposal_cannot_terminate_a_worker_after_claim_commit(monkeypatch):
 
     assert (
         asyncio.run(
-            manager._terminate_pool_row(
+            manager._pool_coordinator().terminate_pool_row(
                 claimed.id,
                 claimed.modal_sandbox_id,
                 failure_code="sandbox_lost",

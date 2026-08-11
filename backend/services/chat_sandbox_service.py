@@ -9,14 +9,13 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import cast
 
 import modal
 from modal.client import _Client
 from modal.exception import NotFoundError
 from modal_proto import api_pb2
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
 
@@ -24,12 +23,6 @@ from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
 from backend.chat_sandbox_worker.protocol import ProtocolError
 from backend.config import Settings
 from backend.database.connection import db_manager
-from backend.models.database import (
-    ChatSandboxComputeInterval,
-    ChatSandboxLease,
-    ChatSandboxPool,
-    ChatTurnCapability,
-)
 from backend.services.chat_capability_service import IssuedCapability
 from backend.services.chat_sandbox_capacity_repository import (
     CapacityUnavailable,
@@ -71,6 +64,10 @@ from backend.services.chat_sandbox_provider import (
 )
 from backend.services.chat_sandbox_spend_alert_dispatcher import (
     ChatSandboxSpendAlertDispatcher,
+)
+from backend.services.chat_sandbox_spend_cap_coordinator import (
+    ChatSandboxSpendCapCoordinator,
+    SpendCapPublicResult,
 )
 from backend.services.chat_sandbox_spend_reconciler import (
     ChatSandboxSpendReconciler,
@@ -232,6 +229,7 @@ class SandboxSessionManager:
         self._sandbox_spend_alerts = spend_alert_dispatcher
         self._sandbox_spend_reporter = spend_reporter
         self._sandbox_spend_reconciler = spend_reconciler
+        self._sandbox_spend_cap = None
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -425,6 +423,22 @@ class SandboxSessionManager:
             self._sandbox_spend_reconciler = reconciler
         return reconciler
 
+    def _spend_cap_coordinator(self) -> ChatSandboxSpendCapCoordinator:
+        coordinator = getattr(self, "_sandbox_spend_cap", None)
+        if coordinator is None:
+            transport = self._worker_transport()
+            coordinator = ChatSandboxSpendCapCoordinator(
+                self.settings,
+                session_factory=self.session_factory,
+                lifecycle=self._lease_lifecycle_coordinator(),
+                pool=self._pool_coordinator(),
+                transport=transport,
+                provider=cast(SandboxProvider, transport.provider),
+                termination_concurrency=self.MAINTENANCE_CONCURRENCY,
+            )
+            self._sandbox_spend_cap = coordinator
+        return coordinator
+
     async def _create_provider_sandbox(
         self,
         *,
@@ -470,19 +484,6 @@ class SandboxSessionManager:
         self, control: SessionControl, worker_generation: str
     ) -> bool:
         return await self._worker_transport().ping(control, worker_generation)
-
-    async def _terminate_pool_row(
-        self,
-        pool_id: uuid.UUID,
-        sandbox_id: str | None,
-        *,
-        failure_code: str | None,
-    ) -> bool:
-        return await self._pool_coordinator().terminate_pool_row(
-            pool_id,
-            sandbox_id,
-            failure_code=failure_code,
-        )
 
     async def claim_blank(
         self, chat_session_id: uuid.UUID
@@ -1353,166 +1354,13 @@ class SandboxSessionManager:
     async def enforce_warm_cap(self) -> int:
         return await self._lease_maintenance_coordinator().enforce_warm_cap()
 
-    async def enforce_spend_cap(self) -> dict[str, int | str]:
-        """Apply the durable trip time to every worker and tagged provider orphan."""
-        with self.session_factory() as db, db.begin():
-            status = ChatSandboxSpendService(db, self.settings).status()
-        if status["circuit_state"] != "tripped":
-            return {"state": status["circuit_state"], "terminated": 0, "uncertain": 0}
-        now = datetime.now(UTC)
-        tripped_at = status["tripped_at"] or now
-        if tripped_at.tzinfo is None:
-            tripped_at = tripped_at.replace(tzinfo=UTC)
-        deadline = tripped_at + timedelta(
-            seconds=self.settings.chat_sandbox_drain_grace_seconds
-        )
-        with self.session_factory() as db:
-            immediate = list(
-                db.execute(
-                    select(ChatSandboxLease.chat_session_id).where(
-                        ChatSandboxLease.state.in_(
-                            ["starting", "ready", "idle", "terminating"]
-                        )
-                    )
-                ).scalars()
-            )
-            blanks = list(
-                db.execute(
-                    select(ChatSandboxPool.id, ChatSandboxPool.modal_sandbox_id).where(
-                        ChatSandboxPool.state.in_(
-                            ["starting", "blank_ready", "draining"]
-                        )
-                    )
-                ).all()
-            )
-
-        async def terminate_budget_session(session_id: uuid.UUID) -> bool:
-            await self.terminate(session_id, failure_code="chat_disabled_interrupted")
-            return True
-
-        terminated = (
-            sum(
-                await asyncio.gather(
-                    *(terminate_budget_session(session_id) for session_id in immediate)
-                )
-            )
-            if immediate
-            else 0
-        )
-        for pool_id, sandbox_id in blanks:
-            terminated += bool(
-                await self._terminate_pool_row(
-                    pool_id, sandbox_id, failure_code="chat_disabled_interrupted"
-                )
-            )
-        remaining = (deadline - datetime.now(UTC)).total_seconds()
-        if remaining > 0:
-            await asyncio.sleep(
-                min(remaining, self.settings.chat_sandbox_watchdog_seconds)
-            )
-        if datetime.now(UTC) >= deadline:
-            transport = self._worker_transport()
-            for running in transport.running_workers():
-                try:
-                    await transport.signal_cancel(running)
-                except Exception:
-                    pass
-            with self.session_factory() as db, db.begin():
-                db.query(ChatTurnCapability).filter(
-                    ChatTurnCapability.revoked_at.is_(None)
-                ).update(
-                    {ChatTurnCapability.revoked_at: datetime.now(UTC)},
-                    synchronize_session=False,
-                )
-                busy = list(
-                    db.execute(
-                        select(ChatSandboxLease.chat_session_id).where(
-                            ChatSandboxLease.state == "busy"
-                        )
-                    ).scalars()
-                )
-            if busy:
-                terminated += sum(
-                    await asyncio.gather(
-                        *(terminate_budget_session(session_id) for session_id in busy)
-                    )
-                )
-        protected_busy_ids: set[str] = set()
-        if datetime.now(UTC) < deadline:
-            with self.session_factory() as db:
-                protected_busy_ids = set(
-                    db.execute(
-                        select(ChatSandboxLease.modal_sandbox_id).where(
-                            ChatSandboxLease.state == "busy",
-                            ChatSandboxLease.modal_sandbox_id.is_not(None),
-                        )
-                    ).scalars()
-                )
-        uncertain = 0
-        async for sandbox in self._provider_adapter().iter_sandboxes(
-            tags={"service": "pwc-chat", "environment": self.settings.environment},
-        ):
-            if sandbox.object_id in protected_busy_ids:
-                continue
-            try:
-                confirmed = await self._terminate_provider_sandbox(
-                    sandbox.object_id, sandbox
-                )
-                if not confirmed:
-                    raise RuntimeError("provider termination was not confirmed")
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        sandbox.object_id, "chat_disabled_interrupted", confirmed=True
-                    )
-                terminated += 1
-            except Exception:
-                uncertain += 1
-                with self.session_factory() as db, db.begin():
-                    ChatSandboxSpendService(db, self.settings).terminate(
-                        sandbox.object_id, "termination_uncertain", confirmed=False
-                    )
-        with self.session_factory() as db, db.begin():
-            remaining_live = (
-                db.scalar(
-                    select(func.count())
-                    .select_from(ChatSandboxLease)
-                    .where(
-                        ChatSandboxLease.state.in_(
-                            ["starting", "ready", "busy", "idle", "terminating"]
-                        )
-                    )
-                )
-                or 0
-            ) + (
-                db.scalar(
-                    select(func.count())
-                    .select_from(ChatSandboxPool)
-                    .where(
-                        ChatSandboxPool.state.in_(
-                            ["starting", "blank_ready", "draining"]
-                        )
-                    )
-                )
-                or 0
-            )
-            unresolved_intervals = (
-                db.scalar(
-                    select(func.count())
-                    .select_from(ChatSandboxComputeInterval)
-                    .where(
-                        ChatSandboxComputeInterval.environment
-                        == self.settings.environment,
-                        ChatSandboxComputeInterval.terminal_at.is_(None),
-                    )
-                )
-                or 0
-            )
-            ChatSandboxSpendService(db, self.settings).record_kill_sweep(
-                complete=(
-                    uncertain == 0 and remaining_live == 0 and unresolved_intervals == 0
-                )
-            )
-        return {"state": "tripped", "terminated": terminated, "uncertain": uncertain}
+    async def enforce_spend_cap(self) -> SpendCapPublicResult:
+        result = await self._spend_cap_coordinator().enforce()
+        return {
+            "state": result.state,
+            "terminated": result.terminated,
+            "uncertain": result.uncertain,
+        }
 
     async def deliver_spend_alerts(self) -> int:
         return await self._spend_alert_dispatcher().deliver_pending()

@@ -286,10 +286,10 @@ def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
         terminated.append(sandbox_id)
         return True
 
-    monkeypatch.setattr(chat_sandbox_service.asyncio, "sleep", no_wait)
     monkeypatch.setattr(chat_sandbox_service.modal.Sandbox, "list", ListCall())
     manager = SandboxSessionManager(configured, session_factory=sessions)
     manager._terminate_provider_sandbox = terminate_provider
+    manager._spend_cap_coordinator().sleeper = no_wait
 
     result = asyncio.run(manager.enforce_spend_cap())
 
