@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.routers.auth import decode_request_session
-from backend.services.catalog_mutation_service import CatalogMutationService
+from backend.services.submitter_moderation_service import SubmitterModerationService
 from backend.services.user_profile_service import UserProfileError, UserProfileService
 from backend.utils.auth import require_hf_admin
 
@@ -90,28 +90,17 @@ def set_submission_suspension(
     actor: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ):
-    service = UserProfileService(db)
     try:
-        after, _, _ = CatalogMutationService(db).mutate(
+        result = SubmitterModerationService(db).set_suspension(
+            hf_subject=hf_subject,
+            suspended=body.suspended,
+            reason=body.reason,
             actor=actor,
-            operation="moderate",
-            entity_type="submitter_moderation",
-            entity_id=hf_subject,
-            request_payload=body.model_dump(),
-            idempotency_key=None,
-            expected_version=None,
-            snapshot=lambda: service.moderation_snapshot(hf_subject, lock=True),
-            apply=lambda: service.suspend(
-                hf_subject=hf_subject,
-                suspended=body.suspended,
-                reason=body.reason,
-                actor=actor,
-            ),
             request_id=request.headers.get("X-Request-ID") or str(id(request)),
         )
     except UserProfileError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    return {"hf_subject": hf_subject, "suspended": after["is_submission_suspended"]}
+    return {"hf_subject": result.hf_subject, "suspended": result.suspended}
 
 
 @router.post("/admin/submitters/{hf_subject}/reject-spam")
@@ -124,19 +113,9 @@ def reject_submitter_spam(
 ):
     if body.confirm != "REJECT_ACTIVE_SUBMISSIONS_AS_SPAM":
         raise HTTPException(status_code=400, detail="Confirmation value is required")
-    service = UserProfileService(db)
-    before = service.moderation_snapshot(hf_subject)
-    CatalogMutationService(db).mutate(
+    count = SubmitterModerationService(db).reject_active_as_spam(
+        hf_subject=hf_subject,
         actor=actor,
-        operation="moderate",
-        entity_type="submitter_moderation",
-        entity_id=hf_subject,
-        request_payload={"reject_active_as_spam": True},
-        idempotency_key=None,
-        expected_version=None,
-        snapshot=lambda: service.moderation_snapshot(hf_subject, lock=True),
-        apply=lambda: service.reject_active_as_spam(hf_subject=hf_subject, actor=actor),
         request_id=request.headers.get("X-Request-ID") or str(id(request)),
     )
-    count = sum(1 for row in before["submissions"] if row["status"] == "pending")
     return {"rejected": count}
