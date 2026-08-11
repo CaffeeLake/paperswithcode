@@ -258,62 +258,20 @@ def get_dataset_tasks(
     """
     try:
         # Parse dataset_id (can be ID or slug)
+        dataset_service = DatasetService(db)
         try:
             dataset_id_int = int(dataset_id)
         except ValueError:
             # Try to resolve slug to ID
-            dataset_service = DatasetService(db)
-            dataset = dataset_service.get_dataset_by_slug(dataset_id)
-            if not dataset:
+            resolved_dataset_id = dataset_service.resolve_dataset_id_by_slug(dataset_id)
+            if resolved_dataset_id is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Dataset with slug '{dataset_id}' not found",
                 )
-            dataset_id_int = int(dataset.id)
+            dataset_id_int = resolved_dataset_id
 
-        # Get tasks for this dataset via task_datasets display membership.
-        from backend.models.database import Task as DBTask, TaskDataset
-        from backend.models.api import Task
-
-        tasks_query = (
-            db.query(DBTask)
-            .join(TaskDataset, DBTask.id == TaskDataset.task_id)
-            .filter(TaskDataset.dataset_id == dataset_id_int)
-            .distinct()
-            .order_by(DBTask.name)
-            .all()
-        )
-
-        # Convert to API models
-        tasks = []
-        for task in tasks_query:
-            # Get paper count for this task
-            from backend.models.database import PaperTask
-            from sqlalchemy import func
-
-            paper_count = (
-                db.query(func.count(PaperTask.paper_id))
-                .filter(PaperTask.task_id == task.id)
-                .scalar()
-                or 0
-            )
-
-            task_dict = {
-                "id": str(task.id),
-                "name": task.name,
-                "description": task.description,
-                "slug": task.slug,
-                "keywords": task.keywords,
-                "parent_id": str(task.parent_id) if task.parent_id else None,
-                "area_id": str(task.area_id) if task.area_id else None,
-                "level": task.level,
-                "paper_count": paper_count,
-                "image_url": task.image_url,
-                "image_credit": task.image_credit,
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-            }
-            tasks.append(Task(**task_dict))
+        tasks = dataset_service.list_task_summaries(dataset_id_int)
 
         return {"count": len(tasks), "results": tasks}
 

@@ -16,6 +16,7 @@ from backend.models.database import (
     Metric as DBMetric,
     TaskDataset,
     Task as DBTask,
+    PaperTask,
     Paper as DBPaper,
     PaperRepository as DBPaperRepository,
     Repository as DBRepository,
@@ -27,6 +28,7 @@ from backend.models.api import (
     DatasetUpdateRequest,
     DatasetLeaderboardSummary,
     IntroducingPaper,
+    Task,
 )
 from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
@@ -855,6 +857,54 @@ class DatasetService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve dataset by slug: {str(e)}")
+
+    def resolve_dataset_id_by_slug(self, slug: str) -> int | None:
+        """Resolve one dataset slug case-insensitively without hydrating it."""
+        try:
+            row = (
+                self.db.query(DBDataset.id)
+                .filter(func.lower(DBDataset.slug) == slug.lower())
+                .first()
+            )
+            return int(row[0]) if row is not None else None
+        except Exception as e:  # noqa: BLE001
+            raise DatabaseError(f"Failed to retrieve dataset by slug: {e!s}")
+
+    def list_task_summaries(self, dataset_id: int) -> list[Task]:
+        """Return task-list projections for one dataset in a grouped query."""
+        try:
+            rows = (
+                self.db.query(
+                    DBTask,
+                    func.count(PaperTask.paper_id).label("paper_count"),
+                )
+                .join(TaskDataset, DBTask.id == TaskDataset.task_id)
+                .outerjoin(PaperTask, PaperTask.task_id == DBTask.id)
+                .filter(TaskDataset.dataset_id == dataset_id)
+                .group_by(DBTask.id)
+                .order_by(DBTask.name)
+                .all()
+            )
+            return [
+                Task(
+                    id=str(task.id),
+                    name=task.name,
+                    description=task.description,
+                    slug=task.slug,
+                    keywords=task.keywords,
+                    parent_id=str(task.parent_id) if task.parent_id else None,
+                    area_id=str(task.area_id) if task.area_id else None,
+                    level=task.level,
+                    paper_count=int(paper_count or 0),
+                    image_url=task.image_url,
+                    image_credit=task.image_credit,
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                )
+                for task, paper_count in rows
+            ]
+        except Exception as e:  # noqa: BLE001
+            raise DatabaseError(f"Failed to retrieve tasks for dataset: {e!s}")
 
     def get_dataset_tasks(self, dataset_id: int) -> List[int]:
         """
