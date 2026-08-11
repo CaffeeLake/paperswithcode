@@ -6,8 +6,6 @@ original PapersWithCode API specification.
 """
 
 import logging
-import re
-import time
 from datetime import date
 from typing import Optional, List, Literal
 from urllib.parse import quote, urlencode
@@ -57,11 +55,15 @@ from backend.utils.auth import (
     require_user,
 )
 from backend.services.paper_curation_service import PaperCurationService
-from backend.services.pending_edit_service import (
-    PendingEditError,
-    PendingEditService,
-    SubmissionRateLimitError,
-    SubmissionSuspendedError,
+from backend.services.paper_submission_service import (
+    PaperSubmissionArxivMetadataError,
+    PaperSubmissionCommand,
+    PaperSubmissionDatabaseError,
+    PaperSubmissionForbiddenError,
+    PaperSubmissionInternalError,
+    PaperSubmissionRateLimitError,
+    PaperSubmissionService,
+    PaperSubmissionValidationError,
 )
 from backend.services.hf_inference_billing_service import decrypt_oauth_credential
 from backend.services.paper_bucket_service import (
@@ -76,7 +78,6 @@ from backend.utils.client_ip import get_client_ip
 from backend.utils.public_urls import normalize_public_url
 from backend.utils.urls import (
     get_paper_route_identifier,
-    parse_arxiv_url,
     validate_arxiv_id,
     validate_version,
 )
@@ -722,33 +723,14 @@ async def _fetch_and_persist_arxiv_paper(
     Caller is responsible for checking that ``arxiv_id`` is valid and that no
     row with that ArXiv ID already exists. Returns the API ``Paper`` model.
     """
-    started_at = time.monotonic()
     try:
-        db_paper, _ = await PaperIngestionService(db).get_or_import_arxiv_paper(
-            arxiv_id
+        return await PaperIngestionService(db).get_or_import_api_paper(
+            arxiv_id,
+            source_endpoint=source_endpoint,
+            indexing_logger=logger,
         )
     except PaperIngestionError as exc:
-        elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        logger.info(
-            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=%s elapsed_ms=%d fallback_used=%s",
-            arxiv_id,
-            source_endpoint,
-            exc.error_type or "upstream_error",
-            elapsed_ms,
-            False,
-        )
         raise _arxiv_metadata_error(arxiv_id, exc.error_type)
-
-    paper = PaperService(db).get_paper_by_id(db_paper.id, include_resources=True)
-    elapsed_ms = int((time.monotonic() - started_at) * 1000)
-    logger.info(
-        "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=success elapsed_ms=%d fallback_used=%s",
-        arxiv_id,
-        source_endpoint,
-        elapsed_ms,
-        False,
-    )
-    return paper
 
 
 @router.post(
@@ -878,25 +860,6 @@ class PaperSubmitResponse(BaseModel):
     pending_review: bool = False
 
 
-_ARXIV_ID_WITH_VERSION_RE = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
-
-
-def _normalize_arxiv_id(raw: str) -> Optional[str]:
-    """Strip a trailing version suffix from a modern ArXiv ID and validate.
-
-    Returns ``None`` if the input does not look like a usable ArXiv ID.
-    """
-    candidate = raw.strip()
-    if not candidate:
-        return None
-
-    match = _ARXIV_ID_WITH_VERSION_RE.match(candidate)
-    if match:
-        candidate = match.group(1)
-
-    return candidate if validate_arxiv_id(candidate) else None
-
-
 @router.post(
     "/papers/submit",
     response_model=PaperSubmitResponse,
@@ -920,103 +883,29 @@ async def submit_paper(
         ``ExternalResourceService.add_from_url`` which performs AI-assisted
         metadata extraction with the supplied overrides.
     """
-    arxiv_id_input = (request.arxiv_id or "").strip()
-    source_url = (request.source_url or "").strip()
-
-    if not arxiv_id_input and not source_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide an ArXiv ID or a paper URL to submit.",
-        )
-
-    arxiv_id: Optional[str] = None
-    if arxiv_id_input:
-        arxiv_id = _normalize_arxiv_id(arxiv_id_input)
-        if not arxiv_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid ArXiv ID: {arxiv_id_input}",
-            )
-    elif source_url:
-        parsed = parse_arxiv_url(source_url)
-        if parsed is not None:
-            arxiv_id = parsed[0]
-            source_url = ""
-
-    if arxiv_id:
-        if get_settings().environment == "staging":
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "ArXiv submissions mutate the canonical catalog and are disabled "
-                    "on staging. External paper URLs may still be queued for "
-                    "staging-local review."
-                ),
-            )
-        paper_service = PaperService(db)
-        try:
-            existing = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
-        except PaperNotFoundError:
-            existing = None
-
-        if existing is not None:
-            try:
-                result = await paper_service.refresh_arxiv_paper(arxiv_id)
-            except DatabaseError as exc:
-                message = str(exc)
-                if message.startswith("arxiv_metadata_error:"):
-                    error_type = message.split(":", 1)[1]
-                    raise _arxiv_metadata_error(arxiv_id, error_type)
-                raise HTTPException(status_code=500, detail=message)
-
-            return PaperSubmitResponse(
-                paper=result.paper,
-                route_identifier=result.paper.arxiv_id or str(result.paper.id),
-                created=result.created,
-                refreshed=result.refreshed,
-                previous_version=result.previous_version,
-                latest_version=result.latest_version,
-            )
-
-        try:
-            paper = await _fetch_and_persist_arxiv_paper(arxiv_id, db, "submit")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error indexing paper: {str(e)}"
-            )
-
-        return PaperSubmitResponse(
-            paper=paper,
-            route_identifier=paper.arxiv_id or str(paper.id),
-            created=True,
-            refreshed=False,
-            latest_version=paper.version,
-        )
-
     try:
-        row = PendingEditService(db).submit(
-            paper_id=None,
-            hf_username=user["username"],
-            hf_subject=user["hf_subject"],
-            source_ip=get_client_ip(http_request),
-            idempotency_key=idempotency_key,
-            exempt_from_limits=user["role"] in {"admin", "contributor"},
-            edit_type="new_external_paper",
-            proposed_payload={
-                "source_url": source_url,
-                "title": request.title,
-                "abstract": request.abstract,
-                "authors": list(request.authors or []),
-                "date_published": (
-                    request.date_published.isoformat()
-                    if request.date_published is not None
-                    else None
-                ),
-            },
+        result = await PaperSubmissionService(db, indexing_logger=logger).submit(
+            PaperSubmissionCommand(
+                arxiv_id=request.arxiv_id,
+                source_url=request.source_url,
+                title=request.title,
+                abstract=request.abstract,
+                authors=tuple(request.authors or ()),
+                date_published=request.date_published,
+                actor_username=user["username"],
+                actor_subject=user["hf_subject"],
+                actor_role=user["role"],
+                source_ip=get_client_ip(http_request),
+                idempotency_key=idempotency_key,
+            )
         )
-    except SubmissionRateLimitError as exc:
+    except PaperSubmissionArxivMetadataError as exc:
+        raise _arxiv_metadata_error(exc.arxiv_id, exc.error_type) from exc
+    except PaperSubmissionDatabaseError as exc:
+        raise DatabaseError(str(exc)) from exc
+    except PaperSubmissionInternalError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except PaperSubmissionRateLimitError as exc:
         response.headers["Retry-After"] = str(exc.retry_after)
         response.headers["RateLimit"] = "0"
         response.headers["RateLimit-Policy"] = "submission;w=3600"
@@ -1024,15 +913,20 @@ async def submit_paper(
             status_code=429,
             detail=f"{exc}. See /rate-limits for help.",
             headers=dict(response.headers),
-        )
-    except SubmissionSuspendedError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except PendingEditError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        ) from exc
+    except PaperSubmissionForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except PaperSubmissionValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return PaperSubmitResponse(
-        created=False,
-        submission_id=row.id,
-        pending_review=True,
+        paper=result.paper,
+        route_identifier=result.route_identifier,
+        created=result.created,
+        refreshed=result.refreshed,
+        previous_version=result.previous_version,
+        latest_version=result.latest_version,
+        submission_id=result.submission_id,
+        pending_review=result.pending_review,
     )
 
 

@@ -8,10 +8,10 @@ import pytest
 from fastapi import Response
 from starlette.requests import Request
 
-import backend.routers.papers as papers_router
 from backend.cli import build_parser
 from backend.cli_submissions import decide_submission
 from backend.routers.papers import PaperSubmitRequest, submit_paper
+from backend.services import paper_submission_service as paper_submission_module
 from backend.services.pending_edit_errors import PendingEditError
 from backend.services.pending_edit_payloads import validate_payload
 from backend.services.thumbnail_service import ThumbnailService
@@ -79,7 +79,9 @@ def test_external_paper_date_is_normalized_as_a_date():
 def test_external_paper_submission_returns_pending_review_response(monkeypatch):
     submitted = SimpleNamespace(id=42)
     service = SimpleNamespace(submit=lambda **_kwargs: submitted)
-    monkeypatch.setattr(papers_router, "PendingEditService", lambda _db: service)
+    monkeypatch.setattr(
+        paper_submission_module, "PendingEditService", lambda _db: service
+    )
 
     result = asyncio.run(
         submit_paper(

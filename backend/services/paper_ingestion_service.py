@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
 from sqlalchemy.orm import Session
 
+from backend.models.api import Paper as ApiPaper
 from backend.models.database import Author, Paper, PaperAuthor
 from backend.services.arxiv_service import ArxivService
 from backend.services.author_service import normalize_arxiv_author_name
@@ -87,3 +90,39 @@ class PaperIngestionService:
         self.db.commit()
         self.db.refresh(paper)
         return paper, True
+
+    async def get_or_import_api_paper(
+        self,
+        arxiv_id: str,
+        *,
+        source_endpoint: str,
+        indexing_logger: logging.Logger,
+    ) -> ApiPaper:
+        """Import and hydrate one paper while recording the HTTP workflow result."""
+        started_at = time.monotonic()
+        try:
+            db_paper, _ = await self.get_or_import_arxiv_paper(arxiv_id)
+        except PaperIngestionError as exc:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            indexing_logger.info(
+                "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=%s elapsed_ms=%d fallback_used=%s",
+                arxiv_id,
+                source_endpoint,
+                exc.error_type or "upstream_error",
+                elapsed_ms,
+                False,
+            )
+            raise
+
+        paper = PaperService(self.db).get_paper_by_id(
+            db_paper.id, include_resources=True
+        )
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        indexing_logger.info(
+            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=success elapsed_ms=%d fallback_used=%s",
+            arxiv_id,
+            source_endpoint,
+            elapsed_ms,
+            False,
+        )
+        return paper
