@@ -15,9 +15,11 @@ from backend.chat_sandbox_worker.protocol import (
 )
 from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 from backend.config import Settings
+from backend.services.chat_sandbox_acquisition_coordinator import SandboxCreated
 from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_state_repository import WorkerClaim
+from backend.services.chat_sandbox_turn_coordinator import ChatSandboxTurnRequest
 from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
     RunningWorker,
@@ -28,6 +30,7 @@ from backend.services.chat_sandbox_worker_transport import (
     WorkerTurnMode,
     WorkerTurnRequest,
 )
+from backend.tests.chat_sandbox_turn_harness import build_turn_coordinator
 
 
 class _AsyncConnection:
@@ -1415,7 +1418,7 @@ def test_accepted_cancel_wins_concurrent_stream_failure_and_cleans_execution():
         (False, 0, ["cancelled"]),
     ],
 )
-def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
+def test_turn_coordinator_cancelled_milestone_preserves_release_vs_terminate_contract(
     terminal,
     expected_releases,
     expected_termination,
@@ -1430,19 +1433,22 @@ def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
             chat_gateway_url="https://gateway.example.test",
         )
         provider = _TurnProvider(process=_OneShotProcess())
-        manager = SandboxSessionManager(settings, sandbox_provider=provider)
+        transport = ChatSandboxWorkerTransport(provider)
         sandbox = SimpleNamespace(object_id="sb-manager-cancel")
 
-        async def ensure_ready(*_args, **_kwargs):
-            return sandbox, 0, False, "cold_start", None
+        async def acquire(*_args, **_kwargs):
+            return SandboxCreated(
+                sandbox=sandbox,
+                elapsed_ms=0,
+                after_pool_miss=False,
+                pool_lookup_ms=None,
+            )
 
-        manager.ensure_ready = ensure_ready
         claim = WorkerClaim(sandbox.object_id, "claim-token")
-        manager._claim_worker = lambda *_args: claim
         releases = 0
         terminations: list[str] = []
 
-        def release_worker(*_args):
+        def release_worker(*_args, **_kwargs):
             nonlocal releases
             releases += 1
             return True
@@ -1450,10 +1456,6 @@ def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
         async def terminate_worker(_session_id, _claim, *, failure_code):
             terminations.append(failure_code)
             return True
-
-        manager._release_worker = release_worker
-        manager._terminate_worker = terminate_worker
-        manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
 
         class Execution:
             sdk_dispatched = False
@@ -1475,19 +1477,28 @@ def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
                 self.closed = True
 
         execution = Execution()
-        transport = manager._worker_transport()
         transport.create_execution = lambda *_args, **_kwargs: execution
+        coordinator = build_turn_coordinator(
+            settings,
+            transport,
+            acquire=acquire,
+            claim_worker=lambda *_args, **_kwargs: claim,
+            release_worker=release_worker,
+            terminate_worker=terminate_worker,
+        )
 
         events = [
             event
-            async for event in manager.run_turn(
-                chat_session_id=uuid.uuid4(),
-                turn_id=uuid.uuid4(),
-                request_id="manager-cancel",
-                prompt="prompt",
-                model="model",
-                resume=None,
-                capability=SimpleNamespace(token="capability"),
+            async for event in coordinator.run(
+                ChatSandboxTurnRequest(
+                    chat_session_id=uuid.uuid4(),
+                    turn_id=uuid.uuid4(),
+                    request_id="manager-cancel",
+                    prompt="prompt",
+                    model="model",
+                    resume=None,
+                    capability_token="capability",
+                )
             )
         ]
 
@@ -1499,16 +1510,14 @@ def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
     asyncio.run(exercise())
 
 
-def test_manager_cancel_maps_timeout_and_not_found_without_changing_boolean_contract():
+def test_turn_coordinator_cancel_maps_timeout_and_not_found_to_typed_status():
     async def exercise():
-        manager = SandboxSessionManager(
-            Settings(
-                _env_file=None,
-                chat_workspace_snapshots_enabled=False,
-                chat_cancel_grace_seconds=0.01,
-            )
+        settings = Settings(
+            _env_file=None,
+            chat_workspace_snapshots_enabled=False,
+            chat_cancel_grace_seconds=0.01,
         )
-        transport = manager._worker_transport()
+        transport = _transport()
         session_id = uuid.uuid4()
         turn_id = uuid.uuid4()
         claim = _turn_claim()
@@ -1525,11 +1534,25 @@ def test_manager_cancel_maps_timeout_and_not_found_without_changing_boolean_cont
             terminations.append((candidate_session, candidate_claim, failure_code))
             return True
 
-        manager._terminate_worker = terminate_worker
+        async def unexpected_acquire(*_args, **_kwargs):
+            raise AssertionError("cancellation must not acquire a sandbox")
 
-        assert await manager.cancel(session_id, turn_id) is True
+        coordinator = build_turn_coordinator(
+            settings,
+            transport,
+            acquire=unexpected_acquire,
+            terminate_worker=terminate_worker,
+        )
+
+        assert (
+            await coordinator.cancel(session_id, turn_id)
+            is WorkerCancelStatus.TIMED_OUT
+        )
         assert terminations == [(session_id, claim, "cancel_timeout")]
-        assert await manager.cancel(session_id, uuid.uuid4()) is False
+        assert (
+            await coordinator.cancel(session_id, uuid.uuid4())
+            is WorkerCancelStatus.NOT_FOUND
+        )
 
         transport.remove_running_worker(turn_id, expected=running)
 

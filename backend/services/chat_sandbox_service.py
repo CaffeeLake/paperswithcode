@@ -1,13 +1,10 @@
-"""Durable Modal sandbox lifecycle and framed worker transport."""
+"""Compatibility façade for durable chat sandbox components."""
 
 from __future__ import annotations
 
 import os
-import secrets
-import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
 from typing import cast
 
 import modal
@@ -18,7 +15,6 @@ from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
 
 from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
-from backend.chat_sandbox_worker.protocol import ProtocolError
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.services.chat_capability_service import IssuedCapability
@@ -75,26 +71,19 @@ from backend.services.chat_sandbox_spend_reporter import (
     ModalProviderSpendReporter,
     ProviderSpendReporter,
 )
-from backend.services.chat_sandbox_spend_service import (
-    ChatComputeDisabled,
-    ChatSandboxSpendService,
-)
+from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
 from backend.services.chat_sandbox_state_repository import (
-    ChatSandboxStateRepository,
-    LeaseUnavailable,
-    WorkerClaim,
-    WorkerGenerationUnavailable,
+    WorkerClaim as WorkerClaim,  # noqa: PLC0414
+)
+from backend.services.chat_sandbox_turn_coordinator import (
+    ChatSandboxTurnCoordinator,
+    ChatSandboxTurnRequest,
 )
 from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
     RunningWorker,
     SessionControl,
     WorkerCancelStatus,
-    WorkerTurnDispatchOutcome,
-    WorkerTurnExecution,
-    WorkerTurnMilestone,
-    WorkerTurnMode,
-    WorkerTurnRequest,
 )
 
 
@@ -227,6 +216,7 @@ class SandboxSessionManager:
         self._sandbox_spend_reconciler = spend_reconciler
         self._sandbox_spend_cap = None
         self._sandbox_acquisition = None
+        self._sandbox_turn = None
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -456,6 +446,21 @@ class SandboxSessionManager:
             self._sandbox_acquisition = coordinator
         return coordinator
 
+    def _turn_coordinator(self) -> ChatSandboxTurnCoordinator:
+        coordinator = getattr(self, "_sandbox_turn", None)
+        if coordinator is None:
+            coordinator = ChatSandboxTurnCoordinator(
+                self.settings,
+                session_factory=self.session_factory,
+                state_repository=self._state_repository(),
+                acquisition=self._acquisition_coordinator(),
+                transport=self._worker_transport(),
+                lifecycle=self._lease_lifecycle_coordinator(),
+                maintenance=self._lease_maintenance_coordinator(),
+            )
+            self._sandbox_turn = coordinator
+        return coordinator
+
     def pool_budget_status(self) -> PoolBudgetStatus:
         return self._spend_reconciler().pool_budget_status()
 
@@ -594,9 +599,6 @@ class SandboxSessionManager:
                 "The pinned sandbox image could not be resolved",
             ) from error
 
-    def _lease(self, db: Session, chat_session_id: uuid.UUID, *, lock: bool):
-        return self._state_repository().load_lease(db, chat_session_id, lock=lock)
-
     async def ensure_ready(
         self,
         chat_session_id: uuid.UUID,
@@ -615,49 +617,6 @@ class SandboxSessionManager:
                 budget_prechecked=budget_prechecked,
             )
         )
-
-    def _claim_worker(self, chat_session_id: uuid.UUID, sandbox_id: str) -> WorkerClaim:
-        assignment_token = secrets.token_urlsafe(24)
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            try:
-                return self._state_repository().claim_worker(
-                    lease,
-                    sandbox_id=sandbox_id,
-                    assignment_token=assignment_token,
-                    now=datetime.now(UTC),
-                )
-            except LeaseUnavailable as error:
-                raise SandboxError(
-                    "sandbox_lost", "Secure workspace is unavailable"
-                ) from error
-            except WorkerGenerationUnavailable as error:
-                raise SandboxError(
-                    "sandbox_lost", "Secure workspace generation is unavailable"
-                ) from error
-
-    def _release_worker(self, chat_session_id: uuid.UUID, claim: WorkerClaim) -> bool:
-        with self.session_factory() as db, db.begin():
-            lease = self._lease(db, chat_session_id, lock=True)
-            return self._state_repository().release_worker(
-                lease,
-                claim=claim,
-                now=datetime.now(UTC),
-            )
-
-    async def _terminate_worker(
-        self,
-        chat_session_id: uuid.UUID,
-        claim: WorkerClaim,
-        *,
-        failure_code: str,
-    ) -> bool:
-        outcome = await self._lease_lifecycle_coordinator().terminate_worker(
-            chat_session_id,
-            claim,
-            failure_code=failure_code,
-        )
-        return outcome.acquired
 
     def _drop_control(self, chat_session_id: uuid.UUID) -> None:
         self._worker_transport().drop_session_control(chat_session_id)
@@ -678,254 +637,23 @@ class SandboxSessionManager:
         web_search_enabled: bool = False,
         fetchable_urls: list[str] | None = None,
     ) -> AsyncIterator[dict]:
-        if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
-            with self.session_factory() as db:
-                try:
-                    ChatSandboxSpendService(db, self.settings).assert_available()
-                except ChatComputeDisabled as error:
-                    db.commit()
-                    raise SandboxError(error.code, str(error)) from error
-                db.commit()
-        retrying_pool_assignment = False
-        while True:
-            try:
-                async for event in self._run_turn_once(
-                    chat_session_id=chat_session_id,
-                    turn_id=turn_id,
-                    request_id=request_id,
-                    prompt=prompt,
-                    model=model,
-                    resume=resume,
-                    capability=capability,
-                    web_search_enabled=web_search_enabled,
-                    fetchable_urls=fetchable_urls or [],
-                    allow_pool=not retrying_pool_assignment,
-                    forced_pool_miss=retrying_pool_assignment,
-                ):
-                    if (
-                        retrying_pool_assignment
-                        and event.get("type") == "sandbox_start"
-                    ):
-                        continue
-                    yield event
-                return
-            except SandboxError as error:
-                if error.code != "pool_assignment_failed" or retrying_pool_assignment:
-                    raise
-                retrying_pool_assignment = True
-
-    async def _run_turn_once(
-        self,
-        *,
-        chat_session_id: uuid.UUID,
-        turn_id: uuid.UUID,
-        request_id: str,
-        prompt: str,
-        model: str,
-        resume: str | None,
-        capability: IssuedCapability,
-        web_search_enabled: bool = False,
-        fetchable_urls: list[str] | None = None,
-        allow_pool: bool,
-        forced_pool_miss: bool,
-    ) -> AsyncIterator[dict]:
-        turn_started = time.perf_counter()
-        transport = self._worker_transport()
-        yield {"type": "sandbox_start", "session_id": str(chat_session_id)}
-        persistent = bool(
-            getattr(self.settings, "chat_persistent_worker_enabled", False)
+        request = ChatSandboxTurnRequest(
+            chat_session_id=chat_session_id,
+            turn_id=turn_id,
+            request_id=request_id,
+            prompt=prompt,
+            model=model,
+            resume=resume,
+            capability_token=capability.token,
+            web_search_enabled=web_search_enabled,
+            fetchable_urls=tuple(fetchable_urls or ()),
         )
-        reusable_sandbox = (
-            transport.reusable_sandbox(chat_session_id, resume) if persistent else None
-        )
-        if reusable_sandbox is not None:
-            sandbox = reusable_sandbox
-            cold_start_ms = 0
-            created = False
-            acquisition_outcome = "reused_session"
-            pool_lookup_ms = None
-        else:
-            (
-                sandbox,
-                cold_start_ms,
-                created,
-                acquisition_outcome,
-                pool_lookup_ms,
-            ) = await self.ensure_ready(
-                chat_session_id,
-                pool_miss=forced_pool_miss,
-                budget_prechecked=True,
-                allow_pool=bool(
-                    allow_pool
-                    and persistent
-                    and self.blank_pool_enabled
-                    and resume is None
-                ),
-            )
-        if pool_lookup_ms is not None:
-            yield {
-                "type": "_latency",
-                "phase": "pool_lookup_completed",
-                "elapsed_ms": pool_lookup_ms,
-            }
-        yield {
-            "type": "_latency",
-            "phase": "sandbox_acquisition_ms",
-            "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
-            "acquisition_outcome": acquisition_outcome,
-        }
-        if acquisition_outcome == "pool_hit":
-            yield {
-                "type": "_latency",
-                "phase": "session_assignment_completed",
-                "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
-            }
-        if created:
-            yield {
-                "type": "_latency",
-                "phase": "modal_create_ms",
-                "elapsed_ms": cold_start_ms,
-            }
-        yield {
-            "type": "sandbox_ready",
-            "session_id": str(chat_session_id),
-            "cold_start_ms": cold_start_ms,
-        }
-        claim: WorkerClaim | None = None
-        execution: WorkerTurnExecution | None = None
-        try:
-            claim = self._claim_worker(chat_session_id, sandbox.object_id)
-            execution = transport.create_execution(
-                sandbox,
-                claim,
-                WorkerTurnRequest(
-                    chat_session_id=chat_session_id,
-                    turn_id=turn_id,
-                    request_id=request_id,
-                    prompt=prompt,
-                    model=model,
-                    resume=resume,
-                    capability_token=capability.token,
-                    gateway_url=self.settings.chat_gateway_url,
-                    web_search_enabled=web_search_enabled,
-                    fetchable_urls=tuple(fetchable_urls or ()),
-                ),
-                (WorkerTurnMode.PERSISTENT if persistent else WorkerTurnMode.ONE_SHOT),
-                process_timeout_seconds=round(
-                    self.settings.chat_agent_timeout_seconds + 15
-                ),
-            )
-            dispatch = await execution.dispatch()
-            if dispatch is WorkerTurnDispatchOutcome.CANCELLED:
-                yield {"type": "_cancelled"}
-                return
-            yield {
-                "type": "_latency",
-                "phase": "capability_install_ms",
-                "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
-            }
-            async for output in execution.events(
-                timeout_seconds=self.settings.chat_agent_timeout_seconds
-            ):
-                if output is WorkerTurnMilestone.SDK_DISPATCHED:
-                    elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
-                    yield {
-                        "type": "_latency",
-                        "phase": "worker_ready_ms",
-                        "elapsed_ms": elapsed_ms,
-                    }
-                    yield {
-                        "type": "_latency",
-                        "phase": "sdk_dispatch_ms",
-                        "elapsed_ms": elapsed_ms,
-                    }
-                elif output is WorkerTurnMilestone.FIRST_DELTA:
-                    yield {
-                        "type": "_latency",
-                        "phase": "first_worker_delta",
-                        "elapsed_ms": round(
-                            (time.perf_counter() - turn_started) * 1000
-                        ),
-                    }
-                elif output is WorkerTurnMilestone.CANCELLED:
-                    yield {"type": "_cancelled"}
-                else:
-                    yield output
-        except (TimeoutError, ProtocolError, SandboxError) as error:
-            if acquisition_outcome in {"pool_hit", "reused_session"} and not (
-                execution is not None and execution.sdk_dispatched
-            ):
-                raise SandboxError(
-                    "pool_assignment_failed",
-                    "The secure workspace assignment failed",
-                    uncertain=True,
-                ) from error
-            if isinstance(error, TimeoutError):
-                raise SandboxError(
-                    "sandbox_timeout", "The research run timed out", uncertain=True
-                ) from error
-            if isinstance(error, ProtocolError):
-                raise SandboxError(
-                    "sandbox_worker_failed",
-                    "The worker protocol failed",
-                    uncertain=True,
-                ) from error
-            raise
-        except Exception as error:
-            if acquisition_outcome in {"pool_hit", "reused_session"} and not (
-                execution is not None and execution.sdk_dispatched
-            ):
-                raise SandboxError(
-                    "pool_assignment_failed",
-                    "The secure workspace assignment failed",
-                    uncertain=True,
-                ) from error
-            raise
-        finally:
-            if execution is not None:
-                await execution.close()
-            if execution is None or not execution.terminal:
-                if claim is not None:
-                    await self._terminate_worker(
-                        chat_session_id,
-                        claim,
-                        failure_code=(
-                            "cancelled"
-                            if execution is not None and execution.cancel_requested
-                            else "sandbox_worker_failed"
-                        ),
-                    )
-                elif acquisition_outcome == "pool_hit":
-                    await self.terminate(
-                        chat_session_id, failure_code="pool_assignment_failed"
-                    )
-            elif claim is not None and self._release_worker(chat_session_id, claim):
-                await self.enforce_warm_cap()
+        async for event in self._turn_coordinator().run(request):
+            yield event
 
     async def cancel(self, chat_session_id: uuid.UUID, turn_id: uuid.UUID) -> bool:
-        transport = self._worker_transport()
-        outcome = await transport.cancel(
-            turn_id,
-            grace_seconds=self.settings.chat_cancel_grace_seconds,
-        )
-        if outcome.status is WorkerCancelStatus.NOT_FOUND:
-            return False
-        if outcome.status is WorkerCancelStatus.CONTROL_LOST:
-            assert outcome.claim is not None
-            await self._terminate_worker(
-                chat_session_id,
-                outcome.claim,
-                failure_code="cancel_control_lost",
-            )
-            transport.complete_control_loss(outcome)
-        elif outcome.status is WorkerCancelStatus.TIMED_OUT:
-            assert outcome.claim is not None
-            await self._terminate_worker(
-                chat_session_id,
-                outcome.claim,
-                failure_code="cancel_timeout",
-            )
-        return True
+        outcome = await self._turn_coordinator().cancel(chat_session_id, turn_id)
+        return outcome is not WorkerCancelStatus.NOT_FOUND
 
     async def terminate(
         self, chat_session_id: uuid.UUID, *, failure_code: str | None = None

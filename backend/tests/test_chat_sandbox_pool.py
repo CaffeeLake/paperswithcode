@@ -18,6 +18,10 @@ from backend.models.database import (
     ChatSession,
 )
 from backend.services import chat_sandbox_service
+from backend.services.chat_sandbox_acquisition_coordinator import (
+    PoolAcquired,
+    SandboxCreated,
+)
 from backend.services.chat_sandbox_capacity_repository import (
     ChatSandboxCapacityRepository,
 )
@@ -25,9 +29,17 @@ from backend.services.chat_sandbox_pool_coordinator import PoolMaintenanceResult
 from backend.services.chat_sandbox_service import (
     SandboxError,
     SandboxSessionManager,
+)
+from backend.services.chat_sandbox_state_repository import (
+    ChatSandboxStateRepository,
+    LeaseUnavailable,
     WorkerClaim,
 )
-from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
+from backend.services.chat_sandbox_turn_coordinator import (
+    ChatSandboxTurnRequest,
+)
+from backend.services.chat_sandbox_worker_transport import ChatSandboxWorkerTransport
+from backend.tests.chat_sandbox_turn_harness import build_turn_coordinator
 
 
 def _settings(**overrides) -> Settings:
@@ -169,7 +181,6 @@ def test_claim_blank_facade_does_not_spawn_refill_on_miss():
     class Coordinator:
         async def claim_blank(self, candidate_session_id):
             assert candidate_session_id == session_id
-            return None
 
     manager._sandbox_pool_coordinator = Coordinator()
 
@@ -715,64 +726,74 @@ def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
         stderr = Output()
         wait = SimpleNamespace(aio=lambda: asyncio.sleep(0))
 
-    class Sandbox:
-        def __init__(self, sandbox_id: str):
-            self.object_id = sandbox_id
+    class Provider:
+        async def open_persistent_connection(self, *_args, **_kwargs):
+            raise AssertionError("non-persistent turns must not open a control")
 
-            async def execute(*_args, **_kwargs):
-                return Process()
+        async def open_turn_process(self, _sandbox, *, timeout_seconds):
+            assert timeout_seconds == 17
+            return Process()
 
-            self.exec = SimpleNamespace(aio=execute)
-
-    manager = SandboxSessionManager.__new__(SandboxSessionManager)
-    manager.settings = SimpleNamespace(
+    settings = _settings(
         chat_persistent_worker_enabled=False,
         chat_blank_pool_enabled=True,
+        chat_sandbox_spend_enforcement_enabled=False,
         chat_agent_timeout_seconds=2,
         chat_gateway_url="https://gateway.example.test",
     )
-    manager._processes = {}
-    manager._controls = {}
-    manager._background_tasks = set()
+    transport = ChatSandboxWorkerTransport(Provider())
     acquisitions = [
-        (Sandbox("sb-blank"), 5, False, "pool_hit", 2),
-        (Sandbox("sb-cold"), 25, True, "pool_miss", None),
+        PoolAcquired(
+            SimpleNamespace(object_id="sb-blank"),
+            elapsed_ms=5,
+            pool_lookup_ms=2,
+        ),
+        SandboxCreated(
+            SimpleNamespace(object_id="sb-cold"),
+            elapsed_ms=25,
+            after_pool_miss=True,
+            pool_lookup_ms=None,
+        ),
     ]
 
-    async def ensure_ready(*_args, **_kwargs):
+    async def acquire(*_args, **_kwargs):
         return acquisitions.pop(0)
 
-    manager.ensure_ready = ensure_ready
     claim_calls = 0
 
-    def claim_worker(_session_id, sandbox_id):
+    def claim_worker(_lease, *, sandbox_id, **_kwargs):
         nonlocal claim_calls
         claim_calls += 1
         if claim_calls == 1:
-            raise SandboxError("sandbox_lost", "simulated assignment loss")
+            raise LeaseUnavailable("simulated assignment loss")
         return WorkerClaim(sandbox_id=sandbox_id, token_hash="claim")
 
-    manager._claim_worker = claim_worker
     terminations: list[tuple] = []
 
     async def terminate(*args, **kwargs):
         terminations.append((args, kwargs))
 
-    manager.terminate = terminate
-    manager._release_worker = lambda *_args: True
-    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+    coordinator = build_turn_coordinator(
+        settings,
+        transport=transport,
+        acquire=acquire,
+        claim_worker=claim_worker,
+        terminate=terminate,
+    )
 
     async def run():
         return [
             event
-            async for event in manager.run_turn(
-                chat_session_id=session_id,
-                turn_id=turn_id,
-                request_id=request_id,
-                prompt="prompt",
-                model="model",
-                resume=None,
-                capability=SimpleNamespace(token="capability"),
+            async for event in coordinator.run(
+                ChatSandboxTurnRequest(
+                    chat_session_id=session_id,
+                    turn_id=turn_id,
+                    request_id=request_id,
+                    prompt="prompt",
+                    model="model",
+                    resume=None,
+                    capability_token="capability",
+                )
             )
         ]
 
@@ -817,41 +838,60 @@ def test_reused_control_loss_before_sdk_dispatch_is_retryable():
         resume_id="sdk-session",
     )
     control.process = SimpleNamespace(stdin=Input(control))
-    manager = SandboxSessionManager.__new__(SandboxSessionManager)
-    manager.settings = SimpleNamespace(
+    settings = _settings(
         chat_persistent_worker_enabled=True,
+        chat_blank_pool_enabled=False,
+        chat_sandbox_spend_enforcement_enabled=False,
         chat_agent_timeout_seconds=2,
         chat_gateway_url="https://gateway.example.test",
     )
-    manager._controls = {session_id: control}
-    manager._processes = {}
-    manager._background_tasks = set()
-    manager._claim_worker = lambda *_args: WorkerClaim(
-        sandbox_id=sandbox.object_id,
-        token_hash="claim",
-        assignment_token="assignment",
-        worker_generation="generation",
+    provider = SimpleNamespace(
+        open_persistent_connection=None,
+        open_turn_process=None,
     )
+    transport = ChatSandboxWorkerTransport(provider)
+    transport.register_session_control(session_id, control)
+
+    def claim_worker(*_args, **_kwargs):
+        return WorkerClaim(
+            sandbox_id=sandbox.object_id,
+            token_hash="claim",
+            assignment_token="assignment",
+            worker_generation="generation",
+        )
+
     terminations: list[str] = []
 
     async def terminate_worker(_session_id, _claim, *, failure_code):
         terminations.append(failure_code)
-        manager._controls.pop(session_id, None)
+        transport.session_controls.pop(session_id, None)
 
-    manager._terminate_worker = terminate_worker
+    acquisition_calls: list[tuple[uuid.UUID, dict]] = []
+
+    async def acquire(candidate_session_id, **kwargs):
+        acquisition_calls.append((candidate_session_id, kwargs))
+        raise SandboxError("pool_assignment_failed", "simulated cold retry failure")
+
+    coordinator = build_turn_coordinator(
+        settings,
+        transport=transport,
+        acquire=acquire,
+        claim_worker=claim_worker,
+        terminate_worker=terminate_worker,
+    )
 
     async def run():
         with pytest.raises(SandboxError) as raised:
-            async for _event in manager._run_turn_once(
-                chat_session_id=session_id,
-                turn_id=turn_id,
-                request_id=request_id,
-                prompt="prompt",
-                model="model",
-                resume="sdk-session",
-                capability=SimpleNamespace(token="capability"),
-                allow_pool=False,
-                forced_pool_miss=False,
+            async for _event in coordinator.run(
+                ChatSandboxTurnRequest(
+                    chat_session_id=session_id,
+                    turn_id=turn_id,
+                    request_id=request_id,
+                    prompt="prompt",
+                    model="model",
+                    resume="sdk-session",
+                    capability_token="capability",
+                )
             ):
                 pass
         return raised.value
@@ -859,3 +899,13 @@ def test_reused_control_loss_before_sdk_dispatch_is_retryable():
     error = asyncio.run(run())
     assert error.code == "pool_assignment_failed"
     assert terminations == ["sandbox_worker_failed"]
+    assert acquisition_calls == [
+        (
+            session_id,
+            {
+                "pool_miss": True,
+                "budget_prechecked": True,
+                "allow_pool": False,
+            },
+        )
+    ]

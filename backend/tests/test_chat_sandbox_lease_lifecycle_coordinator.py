@@ -746,9 +746,7 @@ def test_deleted_cleanup_failure_stops_at_the_exact_operational_boundary(
             harness.coordinator.cleanup_deleted("sb-current", "snapshot-current")
         )
 
-    if failure_stage == "provider":
-        assert harness.snapshots.deleted == []
-    elif failure_stage == "spend":
+    if failure_stage in {"provider", "spend"}:
         assert harness.snapshots.deleted == []
     else:
         assert harness.snapshots.deleted == ["snapshot-current"]
@@ -800,28 +798,16 @@ def test_coordinator_rejects_mismatched_provider_transport_and_idle_eviction():
         )
 
 
-def test_manager_lifecycle_facades_preserve_void_bool_and_count_contracts():
+def test_manager_lifecycle_facades_preserve_void_contracts():
     session_id = uuid.uuid4()
-    worker_claim = WorkerClaim("sb-current", "worker-token")
 
     class Lifecycle:
         def __init__(self) -> None:
-            self.worker_outcomes = iter(
-                [
-                    LeaseTerminationOutcome.FINISHED,
-                    LeaseTerminationOutcome.OWNERSHIP_CHANGED,
-                    LeaseTerminationOutcome.NOT_CLAIMED,
-                ]
-            )
             self.calls: list[tuple] = []
 
         async def terminate(self, candidate_session_id, *, failure_code):
             self.calls.append(("terminate", candidate_session_id, failure_code))
             return LeaseTerminationOutcome.FINISHED
-
-        async def terminate_worker(self, candidate_session_id, claim, *, failure_code):
-            self.calls.append(("worker", candidate_session_id, claim, failure_code))
-            return next(self.worker_outcomes)
 
         async def cleanup_deleted(self, sandbox_id, snapshot_id):
             self.calls.append(("cleanup", sandbox_id, snapshot_id))
@@ -837,25 +823,10 @@ def test_manager_lifecycle_facades_preserve_void_bool_and_count_contracts():
     async def run():
         return (
             await manager.terminate(session_id, failure_code="requested"),
-            await manager._terminate_worker(
-                session_id,
-                worker_claim,
-                failure_code="worker-a",
-            ),
-            await manager._terminate_worker(
-                session_id,
-                worker_claim,
-                failure_code="worker-b",
-            ),
-            await manager._terminate_worker(
-                session_id,
-                worker_claim,
-                failure_code="worker-c",
-            ),
             await manager.cleanup_deleted("sb-current", "snapshot-current"),
         )
 
-    assert asyncio.run(run()) == (None, True, True, False, None)
+    assert asyncio.run(run()) == (None, None)
     assert lifecycle.calls[0] == ("terminate", session_id, "requested")
     assert lifecycle.calls[-1] == ("cleanup", "sb-current", "snapshot-current")
     assert LegacySandboxCleanupUnverified is SandboxCleanupUnverified

@@ -7,12 +7,26 @@ from types import SimpleNamespace
 
 from backend.chat_sandbox_worker.protocol import encode_frame
 from backend.config import Settings
-from backend.services import chat_sandbox_service, chat_turn_runner
-from backend.services.chat_sandbox_service import (
-    SandboxSessionManager,
+from backend.services import chat_turn_runner
+from backend.services.chat_sandbox_acquisition_coordinator import LeaseReused
+from backend.services.chat_sandbox_state_repository import (
+    ChatSandboxStateRepository,
     WorkerClaim,
 )
-from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepository
+from backend.services.chat_sandbox_turn_coordinator import ChatSandboxTurnRequest
+from backend.services.chat_sandbox_worker_transport import (
+    ChatSandboxWorkerTransport,
+    RunningWorker,
+    WorkerCancelStatus,
+)
+from backend.tests.chat_sandbox_turn_harness import (
+    TurnHarnessSession,
+    build_turn_coordinator,
+)
+
+
+async def _unexpected_turn_termination(*_args, **_kwargs):
+    raise AssertionError("turn unexpectedly terminated its lease")
 
 
 class _AsyncCall:
@@ -136,50 +150,109 @@ def test_persistent_turns_reuse_one_control_attachment():
             chat_agent_timeout_seconds=2,
             chat_gateway_url="https://gateway.example.test",
         )
-        manager = SandboxSessionManager(settings, sandbox_provider=Provider())
-        ensure_calls = 0
+        transport = ChatSandboxWorkerTransport(Provider())
+        session_factory = TurnHarnessSession
+        acquisition_calls = 0
+        lease = object()
+        claims: list[WorkerClaim] = []
 
-        async def ensure_ready(_session_id, **kwargs):
-            nonlocal ensure_calls
-            assert kwargs["budget_prechecked"] is True
-            ensure_calls += 1
-            return sandbox, 1, False, "reused_session", None
+        class StateRepository:
+            def __init__(self):
+                self.settings = settings
 
-        manager.ensure_ready = ensure_ready
-        manager._claim_worker = lambda *_args: WorkerClaim(
-            sandbox_id="sb-persistent",
-            token_hash="claim",
-            worker_generation="generation-a",
-        )
+            @staticmethod
+            def load_lease(_db, loaded_session_id, *, lock):
+                assert loaded_session_id == session_id
+                assert lock is True
+                return lease
+
+            @staticmethod
+            def claim_worker(
+                loaded_lease,
+                *,
+                sandbox_id,
+                assignment_token,
+                now,
+            ):
+                assert loaded_lease is lease
+                assert sandbox_id == "sb-persistent"
+                assert assignment_token == "assignment-token"
+                assert now.tzinfo is UTC
+                claim = WorkerClaim(
+                    sandbox_id=sandbox_id,
+                    token_hash="claim",
+                    assignment_token=assignment_token,
+                    worker_generation="generation-a",
+                )
+                claims.append(claim)
+                return claim
+
+            @staticmethod
+            def release_worker(loaded_lease, *, claim, now):
+                nonlocal released
+                assert loaded_lease is lease
+                assert claim is claims[-1]
+                assert now.tzinfo is UTC
+                released += 1
+                return True
+
+        async def acquire(loaded_session_id, **kwargs):
+            nonlocal acquisition_calls
+            assert loaded_session_id == session_id
+            assert kwargs == {
+                "pool_miss": False,
+                "budget_prechecked": True,
+                "allow_pool": False,
+            }
+            acquisition_calls += 1
+            return LeaseReused(sandbox, elapsed_ms=1, pool_lookup_ms=None)
+
         released = 0
+        warm_cap_calls = 0
 
-        def release_worker(*_args):
-            nonlocal released
-            released += 1
-            return True
+        async def unexpected_terminate_worker(*_args, **_kwargs):
+            raise AssertionError("completed turn unexpectedly terminated its worker")
 
-        manager._release_worker = release_worker
-        manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+        async def enforce_warm_cap():
+            nonlocal warm_cap_calls
+            warm_cap_calls += 1
+            return 0
 
         session_id = uuid.uuid4()
+        repository = StateRepository()
+        coordinator = build_turn_coordinator(
+            settings,
+            session_factory=session_factory,
+            state_repository=repository,
+            transport=transport,
+            acquire=acquire,
+            terminate_worker=unexpected_terminate_worker,
+            terminate=_unexpected_turn_termination,
+            enforce_warm_cap=enforce_warm_cap,
+            blank_pool_enabled=False,
+        )
         for index in (1, 2):
             if index == 2:
-                manager._controls[session_id].resume_id = "failed-branch"
+                transport.session_controls[session_id].resume_id = "failed-branch"
             events = []
             turn_id = uuid.uuid4()
-            stream = manager.run_turn(
-                chat_session_id=session_id,
-                turn_id=turn_id,
-                request_id=f"request-{index}",
-                prompt="prompt",
-                model="model",
-                resume="durable-branch",
-                capability=SimpleNamespace(token="capability"),
+            stream = coordinator.run(
+                ChatSandboxTurnRequest(
+                    chat_session_id=session_id,
+                    turn_id=turn_id,
+                    request_id=f"request-{index}",
+                    prompt="prompt",
+                    model="model",
+                    resume="durable-branch",
+                    capability_token="capability",
+                )
             )
             async for event in stream:
                 events.append(event)
                 if event["type"] == "done":
-                    assert manager._processes[turn_id].done.is_set()
+                    running = transport.running_worker(turn_id)
+                    assert running is not None
+                    assert running.done is not None and running.done.is_set()
             assert [(event["type"], event.get("phase")) for event in events] == [
                 ("sandbox_start", None),
                 ("_latency", "sandbox_acquisition_ms"),
@@ -191,12 +264,13 @@ def test_persistent_turns_reuse_one_control_attachment():
                 ("done", None),
             ]
             assert released == index
-        manager._drop_control(session_id)
-        transport = manager._worker_transport()
+        assert transport.session_controls[session_id].resume_id is None
+        transport.drop_session_control(session_id)
         if transport.close_tasks:
             await asyncio.gather(*transport.close_tasks, return_exceptions=True)
         assert start_calls == 1
-        assert ensure_calls == 1
+        assert acquisition_calls == 1
+        assert warm_cap_calls == 2
         assert len(connection.sent) == 2
         assert connection.closed is True
 
@@ -226,11 +300,6 @@ def test_turn_runners_share_session_manager_for_one_settings_instance(monkeypatc
 
 
 def test_cancel_control_write_failure_terminates_worker():
-    session_id = uuid.uuid4()
-    turn_id = uuid.uuid4()
-    claim = WorkerClaim(sandbox_id="sb-cancel", token_hash="claim")
-    terminated: list[str] = []
-
     class Input:
         def __init__(self):
             self.drain = _AsyncCall(self._drain)
@@ -241,27 +310,70 @@ def test_cancel_control_write_failure_terminates_worker():
         async def _drain(self):
             raise RuntimeError("control closed")
 
-    manager = SandboxSessionManager(
-        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
-    )
-    manager._worker_transport_state.register_running_worker(
-        turn_id,
-        chat_sandbox_service.RunningWorker(
-            process=SimpleNamespace(stdin=Input()),
-            request_id="request",
-            claim=claim,
-            done=asyncio.Event(),
-        ),
-    )
+    async def run():
+        settings = Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+        session_factory = TurnHarnessSession
+        session_id = uuid.uuid4()
+        turn_id = uuid.uuid4()
+        claim = WorkerClaim(sandbox_id="sb-cancel", token_hash="claim")
+        terminated: list[str] = []
 
-    async def terminate(_session_id, _claim, *, failure_code):
-        terminated.append(failure_code)
-        return True
+        class Provider:
+            pass
 
-    manager._terminate_worker = terminate
+        class StateRepository:
+            def __init__(self):
+                self.settings = settings
 
-    assert asyncio.run(manager.cancel(session_id, turn_id)) is True
-    assert terminated == ["cancel_control_lost"]
+        transport = ChatSandboxWorkerTransport(Provider())
+        done = asyncio.Event()
+        transport.register_running_worker(
+            turn_id,
+            RunningWorker(
+                process=SimpleNamespace(stdin=Input()),
+                request_id="request",
+                claim=claim,
+                done=done,
+            ),
+        )
+
+        async def unused_acquire(*_args, **_kwargs):
+            raise AssertionError("cancel unexpectedly acquired a sandbox")
+
+        async def terminate_worker(
+            loaded_session_id,
+            loaded_claim,
+            *,
+            failure_code,
+        ):
+            assert loaded_session_id == session_id
+            assert loaded_claim is claim
+            terminated.append(failure_code)
+            return True
+
+        async def unused_warm_cap():
+            raise AssertionError("cancel unexpectedly enforced the warm cap")
+
+        coordinator = build_turn_coordinator(
+            settings,
+            session_factory=session_factory,
+            state_repository=StateRepository(),
+            transport=transport,
+            acquire=unused_acquire,
+            terminate_worker=terminate_worker,
+            terminate=_unexpected_turn_termination,
+            enforce_warm_cap=unused_warm_cap,
+            blank_pool_enabled=False,
+        )
+
+        assert (
+            await coordinator.cancel(session_id, turn_id)
+            is WorkerCancelStatus.CONTROL_LOST
+        )
+        assert terminated == ["cancel_control_lost"]
+        assert done.is_set()
+
+    asyncio.run(run())
 
 
 def test_stale_successful_worker_cannot_release_a_successor_or_termination():
