@@ -289,7 +289,7 @@ DeepSeek V4 Flash through the shared OpenRouter-backed
 `deepseek/deepseek-v4-flash-0731` route.
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` staging workspace limit. Durable
-PostgreSQL reservations enforce the separate `$1` per-user ceiling before each
+PostgreSQL reservations enforce the separate `$5` per-user ceiling before each
 funded gateway dispatch. Production permanently prohibits shared OpenRouter
 models, credentials, allowance state, percentage UI, and BYOK controls.
 

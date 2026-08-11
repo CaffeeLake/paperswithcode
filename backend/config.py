@@ -276,7 +276,7 @@ class Settings(BaseSettings):
     )
     chat_openrouter_server_funded_enabled: bool = Field(default=False)
     chat_openrouter_monthly_user_budget_usd: Decimal = Field(
-        default=Decimal("1.00"), gt=0, le=1000
+        default=Decimal("5.00"), gt=0, le=1000
     )
     chat_openrouter_workspace_monthly_budget_usd: Decimal = Field(
         default=Decimal("200.00"), gt=0, le=10000

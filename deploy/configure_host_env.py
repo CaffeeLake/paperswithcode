@@ -264,7 +264,7 @@ def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, s
         current, "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"
     )
     return {
-        "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "1.00",
+        "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "5.00",
         "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD": "200.00",
         "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": keyring,
         "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": "1",

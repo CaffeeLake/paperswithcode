@@ -74,6 +74,7 @@ describe("SettingsView organization billing", () => {
   });
 
   it("lets a connected user select an organization billing account", async () => {
+    vi.stubEnv("MODE", "production");
     const fetchMock = vi.spyOn(globalThis, "fetch");
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -124,6 +125,7 @@ describe("SettingsView organization billing", () => {
   });
 
   it("uses OAuth authorization instead of asking for a manual token", async () => {
+    vi.stubEnv("MODE", "production");
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/me/inference-billing")) return new Response(JSON.stringify({
@@ -152,8 +154,9 @@ describe("SettingsView organization billing", () => {
     expect(screen.getByText(/Reconnect with Hugging Face/)).toBeVisible();
   });
 
-  it("renders exactly two billing providers and exposes percentage-only OpenRouter usage", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+  it("shows only OpenRouter on staging and exposes percentage-only usage", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       const payload = url.includes("/me/inference-billing")
         ? personalStatus
@@ -178,15 +181,17 @@ describe("SettingsView organization billing", () => {
 
     renderSettings();
 
-    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "OpenRouter" })).toBeVisible();
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
     expect(await screen.findByText("96% left")).toBeVisible();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "96");
-    expect(screen.getByText(/pay-as-you-go billing applies once it is depleted/)).toBeVisible();
     expect(screen.getByText(/stored securely using AES-256 encryption/)).toBeVisible();
-    expect(screen.queryByText(/\$1|dollar|USD/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$\d|dollar|USD/i)).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).includes("/me/inference-billing")
+    ))).toBe(false);
   });
 
   it("does not present personal allowance as usable when shared credits are depleted", async () => {
@@ -286,7 +291,7 @@ describe("SettingsView organization billing", () => {
 
     renderSettings();
 
-    expect(screen.getByText(/Sign in to connect your Hugging Face account/)).toBeVisible();
+    expect(screen.getByText(/Sign in to use the Papers With Code-funded OpenRouter allowance/)).toBeVisible();
     expect(screen.getByText(/You are browsing as a guest/)).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Sign in with Hugging Face" })).toHaveLength(2);
   });

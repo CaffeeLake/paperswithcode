@@ -1,9 +1,8 @@
 /**
  * Account settings view (`/settings`).
  *
- * Houses display preferences and the user-funded Hugging Face Inference
- * Providers connection used by research chat. Display preferences persist
- * server-side for signed-in users and remain session-local for guests.
+ * Houses display preferences and chat provider settings. Display preferences
+ * persist server-side for signed-in users and remain session-local for guests.
  */
 
 import React from "react";
@@ -67,7 +66,7 @@ const SettingsView: React.FC = () => {
   const queryClient = useQueryClient();
   const billingQuery = useQuery({
     queryKey: ["inference-billing", user?.hf_subject],
-    enabled: chatEnabled && Boolean(user),
+    enabled: chatEnabled && !staging && Boolean(user),
     queryFn: async () => {
       const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
         credentials: "include",
@@ -203,15 +202,16 @@ const SettingsView: React.FC = () => {
         ) : !user ? (
           <div className="settings-note settings-note-flush">
             <span>
-              Sign in to connect your Hugging Face account for research chat.
-              Model usage is billed by Hugging Face, not Papers With Code.
+              {staging
+                ? "Sign in to use the Papers With Code-funded OpenRouter allowance for research chat."
+                : "Sign in to connect your Hugging Face account for research chat. Model usage is billed by Hugging Face, not Papers With Code."}
             </span>
             <div className="settings-note-action">
-              <HfSignInButton returnTo="/settings" authorizeInference />
+              <HfSignInButton returnTo="/settings" authorizeInference={!staging} />
             </div>
           </div>
         ) : <div className="settings-provider-grid">
-          <section className="settings-provider-card" aria-labelledby="inference-providers-heading">
+          {!staging && <section className="settings-provider-card" aria-labelledby="inference-providers-heading">
             <div className="settings-provider-heading">
               <div>
                 <h3 id="inference-providers-heading">Inference Providers</h3>
@@ -270,7 +270,7 @@ const SettingsView: React.FC = () => {
                 <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
               </div>
             </div>}
-          </section>
+          </section>}
 
           {staging && <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
             <div className="settings-provider-heading">

@@ -395,7 +395,7 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
             "test-only-openrouter-token" if environment == "staging" else ""
         ),
         chat_openrouter_server_funded_enabled=environment == "staging",
-        chat_openrouter_monthly_user_budget_usd=1,
+        chat_openrouter_monthly_user_budget_usd=5,
         chat_openrouter_workspace_monthly_budget_usd=200,
         chat_openrouter_credential_keyring=(
             json.dumps({"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()})
@@ -548,7 +548,7 @@ def test_staging_rejects_openrouter_request_bound_above_user_budget(tmp_path: Pa
     settings.chat_openrouter_server_funded_enabled = True
     settings.chat_openrouter_monthly_user_budget_usd = 0.1
 
-    with pytest.raises(RuntimeError, match=r"per-user budget must equal \$1"):
+    with pytest.raises(RuntimeError, match=r"per-user budget must equal \$5"):
         validate_runtime(settings)
 
 
@@ -572,7 +572,7 @@ def test_staging_openrouter_values_preserve_secrets(
 
     assert json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"]) == {"1": key}
     assert values["PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"] == "stable-secret"
-    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "1.00"
+    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "5.00"
     assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "200.00"
 
 
@@ -2724,7 +2724,7 @@ def test_staging_openrouter_credential_gets_a_chat_only_name(
     )
     assert values["PWC_CHAT_OPENROUTER_API_KEY"] == "secret"
     assert values["PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED"] == "true"
-    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "1.00"
+    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "5.00"
     assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "200.00"
     encoded_key = json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"])["1"]
     assert (
