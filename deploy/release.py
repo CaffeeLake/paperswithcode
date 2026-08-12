@@ -403,12 +403,30 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
         and candidate_emits == 27
         and candidate_accepts == 26
     )
+    # The first Pi-aware release is an additive, zero-assignment bridge.  Its
+    # rollback target cannot interpret Pi-only gateway/store operations, but no
+    # Pi session can exist yet: assignment is stopped, Claude remains the
+    # default, and the schema migration preserves defaults used by old Claude
+    # writers.  A second identical-contract release must displace this bridge
+    # before operators may assign even an admin Pi session.
+    pi_zero_assignment_bridge = (
+        active_emits == 27
+        and active_accepts == 26
+        and active_database == 1
+        and candidate_emits == 28
+        and candidate_accepts == 27
+        and candidate_database == 2
+        and candidate_runtime.get("supported_agent_harnesses") == ["claude", "pi"]
+        and candidate_runtime.get("default_agent_harness") == "claude"
+        and candidate_runtime.get("new_session_pi_percentage") == 0
+    )
     if (
         not active_accepts <= candidate_emits <= active_emits
         and not hf_catalog_fail_closed_rollback
+        and not pi_zero_assignment_bridge
     ):
         raise ValueError("active release cannot serve candidate workers on rollback")
-    if active_database != candidate_database:
+    if active_database != candidate_database and not pi_zero_assignment_bridge:
         raise ValueError("release database contracts are incompatible")
 
 
