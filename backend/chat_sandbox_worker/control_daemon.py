@@ -59,7 +59,7 @@ def _broker_control(payload: dict) -> dict:
     return response
 
 
-def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
+def _start_broker() -> tuple[subprocess.Popen, str]:
     proxy_token = secrets.token_urlsafe(32)
     read_fd, write_fd = os.pipe()
     broker_environment = _safe_environment("/var/empty/pwc-broker")
@@ -86,18 +86,32 @@ def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
     )
     os.close(write_fd)
     _wait_for_broker(broker)
+    return broker, proxy_token
 
+
+def _start_agent(agent_harness: str, proxy_token: str) -> subprocess.Popen:
+    if agent_harness not in {"claude", "pi"}:
+        raise RuntimeError("Invalid persistent agent harness")
     agent_read_fd, agent_write_fd = os.pipe()
     agent_environment = _agent_environment()
-    agent_environment["PWC_WEBFETCH_TOKEN_FD"] = str(agent_read_fd)
     agent_environment["PWC_CHAT_PERSISTENT_AGENT"] = "1"
+    if agent_harness == "claude":
+        agent_environment["PWC_WEBFETCH_TOKEN_FD"] = str(agent_read_fd)
+        pass_fds = (agent_read_fd,)
+        command = [sys.executable, "-m", "backend.chat_sandbox_worker.agent"]
+    else:
+        pass_fds = ()
+        command = [
+            "node",
+            "/opt/pwc/backend/chat_sandbox_worker/pi_worker/dist/src/main.js",
+        ]
     agent = subprocess.Popen(
-        [sys.executable, "-m", "backend.chat_sandbox_worker.agent"],
+        command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,
         env=agent_environment,
-        pass_fds=(agent_read_fd,),
+        pass_fds=pass_fds,
         preexec_fn=_demote(  # noqa: PLW1509
             "pwc-chat",
             pids_max=int(os.environ.get("PWC_CHAT_SANDBOX_PIDS_MAX", "64")),
@@ -105,7 +119,8 @@ def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
         bufsize=0,
     )
     os.close(agent_read_fd)
-    os.write(agent_write_fd, proxy_token.encode())
+    if agent_harness == "claude":
+        os.write(agent_write_fd, proxy_token.encode())
     os.close(agent_write_fd)
     assert agent.stdout is not None
     ready, _, _ = select.select([agent.stdout], [], [], 30)
@@ -118,7 +133,7 @@ def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
         "request_id": "startup",
     }:
         raise RuntimeError("Persistent agent readiness failed")
-    return broker, agent
+    return agent
 
 
 def _stop(process: subprocess.Popen) -> None:
@@ -135,7 +150,8 @@ def _validate_assignment(
     run: dict,
     *,
     assigned_session_id: str | None,
-) -> str:
+    assigned_agent_harness: str | None,
+) -> tuple[str, str]:
     required = {
         "capability",
         "gateway_url",
@@ -143,6 +159,7 @@ def _validate_assignment(
         "turn_id",
         "assignment_token",
         "worker_generation",
+        "agent_harness",
     }
     if set(launch) != required:
         raise RuntimeError("Invalid persistent control launch frame")
@@ -157,13 +174,19 @@ def _validate_assignment(
     if not assignment_token:
         raise RuntimeError("Persistent worker assignment token is missing")
     session_id = str(launch["session_id"])
+    agent_harness = str(launch["agent_harness"])
+    if agent_harness not in {"claude", "pi"}:
+        raise RuntimeError("Persistent worker harness is invalid")
     if assigned_session_id and assigned_session_id != session_id:
         raise RuntimeError("Persistent worker session ownership mismatch")
+    if assigned_agent_harness and assigned_agent_harness != agent_harness:
+        raise RuntimeError("Persistent worker harness ownership mismatch")
     if (
         run.get("type") != "run_turn"
         or run.get("chat_session_id") != session_id
         or run.get("request_id") is None
         or run.get("turn_id") != str(launch["turn_id"])
+        or run.get("agent_harness") != agent_harness
         or run.get("worker_generation") != str(launch["worker_generation"])
         or not hmac.compare_digest(
             str(run.get("assignment_token") or ""),
@@ -171,16 +194,18 @@ def _validate_assignment(
         )
     ):
         raise RuntimeError("Invalid persistent run frame")
-    return session_id
+    return session_id, agent_harness
 
 
 def _serve_turn(
     connection: socket.socket,
     *,
     broker: subprocess.Popen,
-    agent: subprocess.Popen,
+    agent: subprocess.Popen | None,
+    proxy_token: str,
     assigned_session_id: str | None,
-) -> str:
+    assigned_agent_harness: str | None,
+) -> tuple[str, str, subprocess.Popen | None]:
     launch_line = _readline(connection, MAX_PRIVATE_FRAME_BYTES)
     if not launch_line.startswith(SUPERVISOR_PREFIX):
         raise RuntimeError("Missing persistent control launch frame")
@@ -194,7 +219,9 @@ def _serve_turn(
             os.environ["PWC_CHAT_WORKER_GENERATION"],
         ):
             raise RuntimeError("Persistent worker generation mismatch")
-        if broker.poll() is not None or agent.poll() is not None:
+        if broker.poll() is not None or (
+            agent is not None and agent.poll() is not None
+        ):
             raise RuntimeError("Persistent worker child exited")
         broker_status = _broker_control({"operation": "status"})
         if broker_status.get("active"):
@@ -213,14 +240,17 @@ def _serve_turn(
                     }
                 )
             )
-        return assigned_session_id or ""
+        return assigned_session_id or "", assigned_agent_harness or "", agent
     run_line = _readline(connection, MAX_WIRE_FRAME_BYTES)
     run = decode_frame(run_line)
-    session_id = _validate_assignment(
+    session_id, agent_harness = _validate_assignment(
         launch,
         run,
         assigned_session_id=assigned_session_id,
+        assigned_agent_harness=assigned_agent_harness,
     )
+    if agent is None:
+        agent = _start_agent(agent_harness, proxy_token)
     _broker_control(
         {
             "operation": "install",
@@ -278,7 +308,7 @@ def _serve_turn(
         )
         stage = "worker_done_send"
         connection.sendall(worker_done)
-        return session_id
+        return session_id, agent_harness, agent
     except BaseException:
         try:
             connection.sendall(
@@ -310,14 +340,16 @@ def _serve_connections(
     server: socket.socket,
     *,
     broker: subprocess.Popen,
-    agent: subprocess.Popen,
+    proxy_token: str,
 ) -> None:
     """Serve one active relay and let a new backend replace it only while idle."""
 
     assigned_session_id: str | None = None
+    assigned_agent_harness: str | None = None
+    agent: subprocess.Popen | None = None
     connection: socket.socket | None = None
     try:
-        while broker.poll() is None and agent.poll() is None:
+        while broker.poll() is None and (agent is None or agent.poll() is None):
             if connection is None:
                 connection, _ = server.accept()
             readable, _, _ = select.select([connection, server], [], [], 1)
@@ -326,14 +358,17 @@ def _serve_connections(
                     connection.close()
                     connection = None
                     continue
-                assigned = _serve_turn(
+                assigned, harness, agent = _serve_turn(
                     connection,
                     broker=broker,
                     agent=agent,
+                    proxy_token=proxy_token,
                     assigned_session_id=assigned_session_id,
+                    assigned_agent_harness=assigned_agent_harness,
                 )
                 if assigned:
                     assigned_session_id = assigned
+                    assigned_agent_harness = harness
                 continue
             if server in readable:
                 replacement, _ = server.accept()
@@ -343,12 +378,14 @@ def _serve_connections(
     finally:
         if connection is not None:
             connection.close()
+        if agent is not None:
+            _stop(agent)
 
 
 def main() -> int:
     _not_dumpable()
     _harden_proc()
-    broker, agent = _start_children()
+    broker, proxy_token = _start_broker()
     CONTROL_SOCKET.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     CONTROL_SOCKET.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -357,13 +394,12 @@ def main() -> int:
     server.listen(2)
     websocket_server, websocket_thread = start_server()
     try:
-        _serve_connections(server, broker=broker, agent=agent)
+        _serve_connections(server, broker=broker, proxy_token=proxy_token)
     finally:
         websocket_server.shutdown()
         websocket_thread.join(timeout=2)
         server.close()
         CONTROL_SOCKET.unlink(missing_ok=True)
-        _stop(agent)
         _stop(broker)
 
 

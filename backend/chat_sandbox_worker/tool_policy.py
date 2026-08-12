@@ -15,7 +15,7 @@ from backend.chat_execution_policy import (
 )
 
 WEB_SEARCH_TOOL = "mcp__web__search_web"
-ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep", "WebFetch", WEB_SEARCH_TOOL})
+ALLOWED_TOOLS = frozenset({"Bash", "Read", WEB_SEARCH_TOOL})
 _HINT = "\n[output truncated; narrow, filter, or paginate the request and try again]\n"
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
 _SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)

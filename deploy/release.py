@@ -11,13 +11,22 @@ from pathlib import Path
 
 from backend.chat_sandbox_worker.contract import (
     DATABASE_CONTRACT_VERSION,
+    DEFAULT_AGENT_HARNESS,
     DEFAULT_BACKEND,
     GATEWAY_COMPATIBLE_FROM,
     GATEWAY_CONTRACT_VERSION,
     MODAL_IMAGE_ID,
     NEW_CHAT_MODAL_PERCENTAGE,
+    NEW_SESSION_PI_PERCENTAGE,
+    PI_NODE_SHA256,
+    PI_NODE_VERSION,
+    PI_SOURCE_COMMIT,
+    PI_VERSION,
     PRODUCTION_MODAL_IMAGE_ID,
     PWC_CLI_VERSION,
+    RESTRICTED_HF_CLI_VERSION,
+    SDK_VERSION,
+    SUPPORTED_AGENT_HARNESSES,
     WORKER_CONTRACT_VERSION,
 )
 from backend.services.chat_runtime_contract import require_immutable_image_id
@@ -38,8 +47,17 @@ def legacy_production_chat_runtime() -> dict[str, object]:
         "worker_contract_version": "",
         "gateway_contract_version": 1,
         "gateway_compatible_from": 1,
-        "database_contract_version": DATABASE_CONTRACT_VERSION,
+        "database_contract_version": 1,
         "system_prompt_sha256": "",
+        "supported_agent_harnesses": ["claude"],
+        "default_agent_harness": "claude",
+        "new_session_pi_percentage": 0,
+        "claude_sdk_version": "",
+        "pi_version": "",
+        "pi_source_commit": "",
+        "pi_node_version": "",
+        "pi_node_sha256": "",
+        "restricted_hf_cli_version": "",
     }
 
 
@@ -114,8 +132,17 @@ def chat_runtime(
             "worker_contract_version": WORKER_CONTRACT_VERSION,
             "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
             "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
-            "database_contract_version": DATABASE_CONTRACT_VERSION,
+            "database_contract_version": 1,
             "system_prompt_sha256": sha256(),
+            "supported_agent_harnesses": ["claude"],
+            "default_agent_harness": "claude",
+            "new_session_pi_percentage": 0,
+            "claude_sdk_version": SDK_VERSION,
+            "pi_version": "",
+            "pi_source_commit": "",
+            "pi_node_version": "",
+            "pi_node_sha256": "",
+            "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
         }
     from backend.chat_sandbox_worker.prompt import sha256
 
@@ -130,6 +157,15 @@ def chat_runtime(
         "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
         "database_contract_version": DATABASE_CONTRACT_VERSION,
         "system_prompt_sha256": sha256(),
+        "supported_agent_harnesses": list(SUPPORTED_AGENT_HARNESSES),
+        "default_agent_harness": DEFAULT_AGENT_HARNESS,
+        "new_session_pi_percentage": NEW_SESSION_PI_PERCENTAGE,
+        "claude_sdk_version": SDK_VERSION,
+        "pi_version": PI_VERSION,
+        "pi_source_commit": PI_SOURCE_COMMIT,
+        "pi_node_version": PI_NODE_VERSION,
+        "pi_node_sha256": PI_NODE_SHA256,
+        "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
     }
 
 
@@ -234,10 +270,22 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "gateway_compatible_from",
         "database_contract_version",
     }
+    pi_runtime_keys = rolling_runtime_keys | {
+        "supported_agent_harnesses",
+        "default_agent_harness",
+        "new_session_pi_percentage",
+        "claude_sdk_version",
+        "pi_version",
+        "pi_source_commit",
+        "pi_node_version",
+        "pi_node_sha256",
+        "restricted_hf_cli_version",
+    }
     runtime_keys = frozenset(runtime) if isinstance(runtime, dict) else frozenset()
     if not isinstance(runtime, dict) or runtime_keys not in {
         frozenset(legacy_runtime_keys),
         frozenset(rolling_runtime_keys),
+        frozenset(pi_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
@@ -269,7 +317,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat runtime system prompt hash is invalid")
         if runtime["enabled"] is not True:
             raise ValueError("enabled chat runtime must be active")
-    if set(runtime) == rolling_runtime_keys and runtime["enabled"]:
+    if set(runtime) in (rolling_runtime_keys, pi_runtime_keys) and runtime["enabled"]:
         gateway_version = runtime["gateway_contract_version"]
         compatible_from = runtime["gateway_compatible_from"]
         database_version = runtime["database_contract_version"]
@@ -283,6 +331,37 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat gateway rolling contract is invalid")
         if not isinstance(database_version, int) or database_version < 1:
             raise ValueError("chat database contract is invalid")
+    if set(runtime) == pi_runtime_keys:
+        supported = runtime["supported_agent_harnesses"]
+        if supported not in (["claude"], ["claude", "pi"]):
+            raise ValueError("chat runtime harness set is invalid")
+        if runtime["default_agent_harness"] not in supported:
+            raise ValueError("default chat harness is not supported")
+        pi_percentage = runtime["new_session_pi_percentage"]
+        if pi_percentage not in (0, 100):
+            raise ValueError("Pi rollout must be stopped or fully cut over")
+        if pi_percentage == 100 and runtime["default_agent_harness"] != "pi":
+            raise ValueError("full Pi rollout must default to Pi")
+        if pi_percentage == 0 and runtime["default_agent_harness"] != "claude":
+            raise ValueError("stopped Pi rollout must default to Claude")
+        if "pi" in supported:
+            required_pi = (
+                "claude_sdk_version",
+                "pi_version",
+                "pi_source_commit",
+                "pi_node_version",
+                "pi_node_sha256",
+                "restricted_hf_cli_version",
+            )
+            if any(
+                not isinstance(runtime[key], str) or not runtime[key]
+                for key in required_pi
+            ):
+                raise ValueError("Pi runtime identity is incomplete")
+            if len(runtime["pi_source_commit"]) != 40:
+                raise ValueError("Pi source commit is invalid")
+            if len(runtime["pi_node_sha256"]) != 64:
+                raise ValueError("Pi Node digest is invalid")
     return _validate_release_files(release_dir, manifest, expected)
 
 

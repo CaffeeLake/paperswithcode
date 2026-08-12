@@ -81,8 +81,10 @@ from backend.services.chat_sandbox_turn_coordinator import (
 )
 from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
-    RunningWorker as RunningWorker,  # noqa: PLC0414
     WorkerCancelStatus,
+)
+from backend.services.chat_sandbox_worker_transport import (
+    RunningWorker as RunningWorker,  # noqa: PLC0414
 )
 
 
@@ -579,6 +581,7 @@ class SandboxSessionManager:
         model: str,
         resume: str | None,
         capability: IssuedCapability,
+        agent_harness: str = "claude",
         web_search_enabled: bool = False,
         reasoning_effort: str = "high",
         fetchable_urls: list[str] | None = None,
@@ -592,6 +595,7 @@ class SandboxSessionManager:
             model=model,
             resume=resume,
             capability_token=capability.token,
+            agent_harness=agent_harness,
             web_search_enabled=web_search_enabled,
             reasoning_effort=reasoning_effort,
             fetchable_urls=tuple(fetchable_urls or ()),

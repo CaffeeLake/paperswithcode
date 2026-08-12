@@ -26,7 +26,6 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk import query as sdk_query
 
-from backend.chat_sandbox_worker.config import WorkerSettings
 from backend.chat_execution_policy import (
     FINALIZER_MAX_TURNS,
     FINALIZER_MIN_REMAINING_SECONDS,
@@ -34,6 +33,7 @@ from backend.chat_execution_policy import (
     effective_tool_rounds,
     validate_url_seed,
 )
+from backend.chat_sandbox_worker.config import WorkerSettings
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
@@ -345,6 +345,8 @@ def _validate_run_frame(
     frame: dict[str, Any],
 ) -> tuple[str, str, str, bool, str, list[str], str]:
     prompt = frame.get("prompt")
+    if frame.get("agent_harness", "claude") != "claude":
+        raise ValueError("Invalid agent harness")
     if (
         not isinstance(prompt, str)
         or not prompt.strip()
@@ -410,8 +412,8 @@ def _options(
     )
     web_tools = [] if finalizing else [WEB_SEARCH_TOOL]
     web_servers = {} if finalizing else {"web": _create_web_mcp_server(hooks)}
-    hook_matcher = "|".join(["Bash", "Read", "Grep", "WebFetch", *web_tools])
-    research_tools = ["Bash", "Read", "Grep", "WebFetch"]
+    hook_matcher = "|".join(["Bash", "Read", *web_tools])
+    research_tools = ["Bash", "Read"]
     disallowed = [
         "Bash",
         "Read",
@@ -427,22 +429,24 @@ def _options(
         "mcp__papers__search_papers",
     ]
     return ClaudeAgentOptions(
-        tools=[] if finalizing else ["Bash", "Read", "Grep", "WebFetch"],
+        tools=[] if finalizing else ["Bash", "Read"],
         allowed_tools=[] if finalizing else [*research_tools, *web_tools],
         disallowed_tools=(
             disallowed
             if finalizing
             else [
                 "Glob",
+                "Grep",
                 "Write",
                 "Edit",
+                "WebFetch",
                 "WebSearch",
                 "Task",
                 "AskUserQuestion",
             ]
         ),
         system_prompt=prompt_text,
-        settings=json.dumps({"skipWebFetchPreflight": True}),
+        settings=json.dumps({}),
         mcp_servers=web_servers,
         strict_mcp_config=True,
         permission_mode="dontAsk",

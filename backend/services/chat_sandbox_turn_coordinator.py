@@ -66,6 +66,7 @@ class ChatSandboxTurnRequest:
     model: str
     resume: str | None
     capability_token: str = field(repr=False)
+    agent_harness: str = "claude"
     web_search_enabled: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
@@ -259,6 +260,7 @@ class ChatSandboxTurnCoordinator:
                     model=request.model,
                     resume=request.resume,
                     capability_token=request.capability_token,
+                    agent_harness=request.agent_harness,
                     gateway_url=self.settings.chat_gateway_url,
                     web_search_enabled=request.web_search_enabled,
                     reasoning_effort=request.reasoning_effort,

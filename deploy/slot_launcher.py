@@ -67,6 +67,27 @@ def configure_release(manifest: dict, release: Path) -> None:
                     runtime["worker_contract_version"]
                 ),
                 "PWC_CHAT_SYSTEM_PROMPT_SHA256": str(runtime["system_prompt_sha256"]),
+                "PWC_CHAT_DEFAULT_AGENT_HARNESS": str(
+                    runtime.get("default_agent_harness", "claude")
+                ),
+                "PWC_CHAT_NEW_SESSION_PI_PERCENTAGE": str(
+                    runtime.get("new_session_pi_percentage", 0)
+                ),
+                "PWC_CHAT_CLAUDE_SDK_VERSION": str(
+                    runtime.get("claude_sdk_version", "")
+                ),
+                "PWC_CHAT_PI_VERSION": str(runtime.get("pi_version", "")),
+                "PWC_CHAT_PI_RUNTIME_ENABLED": (
+                    "true"
+                    if "pi" in runtime.get("supported_agent_harnesses", [])
+                    else "false"
+                ),
+                "PWC_CHAT_PI_SOURCE_COMMIT": str(runtime.get("pi_source_commit", "")),
+                "PWC_CHAT_PI_NODE_VERSION": str(runtime.get("pi_node_version", "")),
+                "PWC_CHAT_PI_NODE_SHA256": str(runtime.get("pi_node_sha256", "")),
+                "PWC_CHAT_RESTRICTED_HF_CLI_VERSION": str(
+                    runtime.get("restricted_hf_cli_version", "")
+                ),
             }
         )
     os.environ.update(values)

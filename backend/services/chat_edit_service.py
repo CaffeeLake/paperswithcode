@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import (
     ChatMessageRecord,
+    ChatPiPreparedFork,
+    ChatPiSession,
+    ChatPiTranscriptEntry,
     ChatSDKSessionSummary,
     ChatSDKTranscriptEntry,
     ChatSession,
@@ -245,6 +248,9 @@ class ChatEditService:
         sdk_session_id: uuid.UUID | None,
         project_key: str,
     ) -> None:
+        if getattr(session, "agent_harness", "claude") == "pi":
+            self._activate_pi_transcript(session, sdk_session_id)
+            return
         session.sdk_session_id = sdk_session_id
         session.sdk_project_key = project_key if sdk_session_id else None
         session.transcript_status = "ready" if sdk_session_id else "pending"
@@ -262,11 +268,90 @@ class ChatEditService:
                 or 0
             )
 
+    def _activate_pi_transcript(
+        self, session: ChatSession, fork_session_id: uuid.UUID | None
+    ) -> None:
+        active = self.db.execute(
+            select(ChatPiSession)
+            .where(ChatPiSession.chat_session_id == session.id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if fork_session_id is None:
+            if active is not None:
+                self.db.delete(active)
+            session.sdk_session_id = None
+            session.sdk_project_key = None
+            session.transcript_status = "pending"
+            session.transcript_bytes = 0
+            return
+        prepared = self.db.execute(
+            select(ChatPiPreparedFork)
+            .where(
+                ChatPiPreparedFork.chat_session_id == session.id,
+                ChatPiPreparedFork.fork_session_id == fork_session_id,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if prepared is None:
+            raise RuntimeError("prepared Pi transcript fork is missing")
+        if active is not None:
+            self.db.delete(active)
+            self.db.flush()
+        self.db.add(
+            ChatPiSession(
+                agent_session_id=fork_session_id,
+                chat_session_id=session.id,
+                current_leaf_id=prepared.boundary_entry_id,
+                entry_count=prepared.entry_count,
+                byte_size=prepared.byte_size,
+                format_version=prepared.format_version,
+            )
+        )
+        self.db.flush()
+        for ordinal, entry in enumerate(prepared.entries):
+            entry_type = str(entry.get("type") or "")
+            entry_id = None if entry_type == "session" else entry.get("id")
+            parent_entry_id = None if entry_type == "session" else entry.get("parentId")
+            byte_size = len(
+                json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode()
+            )
+            self.db.add(
+                ChatPiTranscriptEntry(
+                    agent_session_id=fork_session_id,
+                    ordinal=ordinal,
+                    entry_id=entry_id,
+                    parent_entry_id=parent_entry_id,
+                    entry_type=entry_type,
+                    entry=entry,
+                    byte_size=byte_size,
+                )
+            )
+        self.db.delete(prepared)
+        session.sdk_session_id = fork_session_id
+        session.sdk_project_key = None
+        session.transcript_status = "ready"
+        session.transcript_bytes = prepared.byte_size
+
     def _delete_recorded_fork(self, message: ChatMessageRecord) -> None:
         if (
             message.prepared_fork_sdk_session_id is None
             or message.prepared_fork_sdk_project_key is None
         ):
+            return
+        session = (
+            self.db.get(ChatSession, message.session_id)
+            if hasattr(self.db, "get")
+            else None
+        )
+        if session and getattr(session, "agent_harness", "claude") == "pi":
+            self.db.execute(
+                delete(ChatPiPreparedFork).where(
+                    ChatPiPreparedFork.chat_session_id == session.id,
+                    ChatPiPreparedFork.fork_session_id
+                    == message.prepared_fork_sdk_session_id,
+                )
+            )
+            self._clear_recorded_fork(message)
             return
         self.db.execute(
             delete(ChatSDKTranscriptEntry).where(

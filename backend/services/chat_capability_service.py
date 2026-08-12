@@ -54,6 +54,7 @@ class ChatCapabilityService:
         model: str,
         scopes: set[str],
         sdk_session_id: uuid.UUID | None = None,
+        agent_harness: str = "claude",
         lifetime_seconds: int = 240,
     ) -> IssuedCapability:
         allowed = {
@@ -68,6 +69,8 @@ class ChatCapabilityService:
             raise ValueError("Capability scopes are invalid")
         if reasoning_effort not in {"low", "high", "max"}:
             raise ValueError("Capability reasoning effort is invalid")
+        if agent_harness not in {"claude", "pi"}:
+            raise ValueError("Capability agent harness is invalid")
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + timedelta(seconds=lifetime_seconds)
         row = ChatTurnCapability(
@@ -75,6 +78,7 @@ class ChatCapabilityService:
             token_hash=_digest(token),
             chat_session_id=chat_session_id,
             turn_id=turn_id,
+            agent_harness=agent_harness,
             sdk_session_id=sdk_session_id,
             owner_hash=_digest(owner_id),
             provider_token_encrypted=(
@@ -123,6 +127,7 @@ class ChatCapabilityService:
         chat_session_id: uuid.UUID,
         turn_id: uuid.UUID,
         model: str | None = None,
+        agent_harness: str | None = None,
         gateway_call_limit: int = 64,
     ) -> ChatTurnCapability:
         row = self.db.execute(
@@ -139,6 +144,7 @@ class ChatCapabilityService:
             or row.turn_id != turn_id
             or scope not in row.scopes
             or (model is not None and row.model != model)
+            or (agent_harness is not None and row.agent_harness != agent_harness)
         ):
             raise CapabilityError("Capability is invalid, expired, or out of scope")
         if row.gateway_calls >= gateway_call_limit:

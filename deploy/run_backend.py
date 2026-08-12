@@ -54,6 +54,25 @@ def configure_release_environment(release: Path) -> dict:
             "worker_contract_version"
         ]
         os.environ["PWC_CHAT_SYSTEM_PROMPT_SHA256"] = runtime["system_prompt_sha256"]
+        os.environ["PWC_CHAT_DEFAULT_AGENT_HARNESS"] = runtime.get(
+            "default_agent_harness", "claude"
+        )
+        os.environ["PWC_CHAT_NEW_SESSION_PI_PERCENTAGE"] = str(
+            runtime.get("new_session_pi_percentage", 0)
+        )
+        os.environ["PWC_CHAT_CLAUDE_SDK_VERSION"] = runtime.get(
+            "claude_sdk_version", ""
+        )
+        os.environ["PWC_CHAT_PI_VERSION"] = runtime.get("pi_version", "")
+        os.environ["PWC_CHAT_PI_RUNTIME_ENABLED"] = (
+            "true" if "pi" in runtime.get("supported_agent_harnesses", []) else "false"
+        )
+        os.environ["PWC_CHAT_PI_SOURCE_COMMIT"] = runtime.get("pi_source_commit", "")
+        os.environ["PWC_CHAT_PI_NODE_VERSION"] = runtime.get("pi_node_version", "")
+        os.environ["PWC_CHAT_PI_NODE_SHA256"] = runtime.get("pi_node_sha256", "")
+        os.environ["PWC_CHAT_RESTRICTED_HF_CLI_VERSION"] = runtime.get(
+            "restricted_hf_cli_version", ""
+        )
     expected_dist = (release / manifest["frontend_entrypoint"]).parent
     configured_dist = Path(os.environ["PWC_FRONTEND_DIST_DIR"]).resolve()
     if configured_dist != expected_dist.resolve():

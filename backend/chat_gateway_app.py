@@ -10,7 +10,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -36,12 +36,16 @@ from backend.services.chat_hf_hub_service import (
     validate_hf_request,
 )
 from backend.services.chat_latency_service import ChatLatencyService
-from backend.services.chat_tracing_service import start_provider_request_trace
+from backend.services.chat_pi_transcript_service import (
+    ChatPiTranscriptService,
+    PiTranscriptError,
+)
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
     SessionStoreGatewayError,
 )
+from backend.services.chat_tracing_service import start_provider_request_trace
 from backend.services.chat_web_fetch_service import (
     ChatWebFetchError,
     fetch_catalog_url,
@@ -132,6 +136,9 @@ class StoreRequest(BaseModel):
     key: dict[str, Any] | None = None
     entries: list[dict[str, Any]] | None = None
     project_key: str | None = None
+    format: Literal["claude", "pi"] = "claude"
+    agent_session_id: uuid.UUID | None = None
+    current_leaf_id: str | None = Field(default=None, max_length=255)
 
 
 class WebFetchRequest(BaseModel):
@@ -474,6 +481,68 @@ def session_store(
 ):
     token = _bearer(authorization)
     capability = _scope(token, "session_store", x_pwc_session, x_pwc_turn, db)
+    if body.format == "pi":
+        if (
+            getattr(capability, "agent_harness", "claude") != "pi"
+            or body.agent_session_id is None
+        ):
+            raise HTTPException(status_code=403, detail="Session store scope rejected")
+        service = ChatPiTranscriptService(db, settings)
+        try:
+            if body.action == "create_or_bind_session":
+                row = service.create_or_bind_session(
+                    capability.chat_session_id, body.agent_session_id
+                )
+                result: object = {
+                    "agent_session_id": str(row.agent_session_id),
+                    "current_leaf_id": row.current_leaf_id,
+                    "entry_count": row.entry_count,
+                    "byte_size": row.byte_size,
+                    "format_version": row.format_version,
+                }
+            elif body.action == "append_entries":
+                row = service.append_entries(
+                    capability.chat_session_id,
+                    body.agent_session_id,
+                    body.entries or [],
+                    current_leaf_id=body.current_leaf_id,
+                )
+                result = {
+                    "agent_session_id": str(row.agent_session_id),
+                    "current_leaf_id": row.current_leaf_id,
+                    "entry_count": row.entry_count,
+                    "byte_size": row.byte_size,
+                    "format_version": row.format_version,
+                }
+            elif body.action == "load_session":
+                snapshot = service.load_session(
+                    capability.chat_session_id, body.agent_session_id
+                )
+                result = {
+                    "agent_session_id": str(snapshot.agent_session_id),
+                    "current_leaf_id": snapshot.current_leaf_id,
+                    "entry_count": snapshot.entry_count,
+                    "byte_size": snapshot.byte_size,
+                    "format_version": snapshot.format_version,
+                    "entries": list(snapshot.entries),
+                }
+            elif body.action == "delete_session":
+                result = service.delete_session(
+                    capability.chat_session_id, body.agent_session_id
+                )
+            else:
+                raise PiTranscriptError("Unsupported Pi session store action")
+            db.commit()
+            return {"result": result}
+        except PiTranscriptError as error:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(error)) from None
+    if body.agent_session_id is not None or body.current_leaf_id is not None:
+        raise HTTPException(
+            status_code=422, detail="Invalid Claude session store request"
+        )
+    if getattr(capability, "agent_harness", "claude") != "claude":
+        raise HTTPException(status_code=403, detail="Session store scope rejected")
     try:
         result = ChatSessionStoreGateway(db, settings).execute(
             capability,

@@ -14,11 +14,13 @@ from typing import Literal
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.config import Settings
 from backend.chat_execution_policy import bounded_url_seed
+from backend.config import Settings
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, CitationSnapshot
 from backend.models.database import (
+    ChatHarnessAssignmentAudit,
     ChatMessageRecord,
+    ChatPiSession,
     ChatSandboxLease,
     ChatSDKSessionSummary,
     ChatSDKTranscriptEntry,
@@ -78,9 +80,11 @@ class TurnAdmission:
     model_route: str
     sdk_session_id: uuid.UUID | None
     sdk_project_key: str | None
-    is_first_turn: bool
+    agent_harness: str = "claude"
+    is_first_turn: bool = False
     replay_assistant: ReplayAssistant | None = None
     resume_boundary_id: uuid.UUID | None = None
+    agent_resume_boundary_id: str | None = None
     is_replacement: bool = False
     replacement_target_id: uuid.UUID | None = None
     replacement_target_sequence: int | None = None
@@ -132,6 +136,7 @@ class _QuotaCalculation:
 @dataclass(frozen=True, slots=True)
 class _TranscriptResumeBoundary:
     id: uuid.UUID | None
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +273,7 @@ def _build_replacement_plan(
     active_suffix_ids: tuple[uuid.UUID, ...],
     sdk_session_id: uuid.UUID | None,
     sdk_project_key: str | None,
+    agent_harness: str = "claude",
 ) -> _ReplacementPlan:
     if not replacement_requested:
         return _ReplacementPlan(
@@ -291,11 +297,15 @@ def _build_replacement_plan(
             409,
             "Edit the first prompt by starting a new chat",
         )
-    if prior.sequence > 1 and (
+    transcript_unavailable = (
         sdk_session_id is None
-        or not sdk_project_key
-        or prior.sdk_resume_boundary_id is None
-    ):
+        or (agent_harness == "pi" and prior.agent_resume_boundary_id is None)
+        or (
+            agent_harness == "claude"
+            and (not sdk_project_key or prior.sdk_resume_boundary_id is None)
+        )
+    )
+    if prior.sequence > 1 and transcript_unavailable:
         raise ChatServiceError(
             "chat_transcript_unavailable",
             409,
@@ -446,6 +456,9 @@ class ChatSessionService:
         owner: ChatOwner,
         selected_model: str | None = None,
         reasoning_effort: str = "low",
+        *,
+        agent_harness_override: Literal["claude", "pi"] | None = None,
+        operator_subject: str | None = None,
     ) -> ChatSession:
         model, _ = self._validate_model(selected_model)
         effort = self._validate_reasoning_effort(reasoning_effort)
@@ -473,11 +486,20 @@ class ChatSessionService:
                 "Archive old chats or delete a chat to create another.",
             )
         session_id = uuid.uuid4()
+        if agent_harness_override is not None:
+            agent_harness = agent_harness_override
+            assignment_source = "admin_override"
+        elif self.settings.chat_new_session_pi_percentage == 100:
+            agent_harness = "pi"
+            assignment_source = "cutover"
+        else:
+            agent_harness = self.settings.chat_default_agent_harness
+            assignment_source = "default"
         allocation_bucket = (
             int.from_bytes(hashlib.sha256(session_id.bytes).digest()[:4], "big") % 100
         )
         provider = self.settings.chat_model_providers[model]
-        if provider == "openrouter":
+        if agent_harness == "pi" or provider == "openrouter":
             # Trusted cost extraction and per-call reservation live at the
             # private gateway. Funded OpenRouter must never use local_mcp.
             execution_backend = "modal_cli"
@@ -498,10 +520,24 @@ class ChatSessionService:
             selected_model=model,
             reasoning_effort=effort,
             execution_backend=execution_backend,
+            agent_harness=agent_harness,
             updated_at=_now(),
         )
         self.db.add(session)
         self.db.flush()
+        self.db.add(
+            ChatHarnessAssignmentAudit(
+                chat_session_id=session.id,
+                agent_harness=agent_harness,
+                assignment_source=assignment_source,
+                operator_subject_hash=(
+                    hashlib.sha256(operator_subject.encode()).hexdigest()
+                    if assignment_source == "admin_override" and operator_subject
+                    else None
+                ),
+                app_release_id=self.settings.release_id,
+            )
+        )
         return session
 
     def list_sessions(
@@ -735,6 +771,7 @@ class ChatSessionService:
                     ),
                     sdk_session_id=session.sdk_session_id,
                     sdk_project_key=session.sdk_project_key,
+                    agent_harness=getattr(session, "agent_harness", "claude"),
                     is_first_turn=existing.sequence == 1,
                     replay_assistant=ReplayAssistant(
                         content=assistant.content,
@@ -917,6 +954,7 @@ class ChatSessionService:
                 active_suffix_ids=(),
                 sdk_session_id=session.sdk_session_id,
                 sdk_project_key=session.sdk_project_key,
+                agent_harness=getattr(session, "agent_harness", "claude"),
             )
         prior = self.db.execute(
             select(ChatMessageRecord).where(
@@ -934,6 +972,7 @@ class ChatSessionService:
                 active_suffix_ids=(),
                 sdk_session_id=session.sdk_session_id,
                 sdk_project_key=session.sdk_project_key,
+                agent_harness=getattr(session, "agent_harness", "claude"),
             )
         active_suffix_ids = tuple(
             self.db.execute(
@@ -952,6 +991,7 @@ class ChatSessionService:
             active_suffix_ids=active_suffix_ids,
             sdk_session_id=session.sdk_session_id,
             sdk_project_key=session.sdk_project_key,
+            agent_harness=getattr(session, "agent_harness", "claude"),
         )
 
     def _load_reclaimed_projection_bytes(self, replacement: _ReplacementPlan) -> int:
@@ -1005,9 +1045,25 @@ class ChatSessionService:
         self, session: ChatSession, replacement: _ReplacementPlan
     ) -> _TranscriptResumeBoundary:
         if replacement.prior is not None:
-            return _TranscriptResumeBoundary(
-                id=replacement.prior.sdk_resume_boundary_id
+            agent_boundary = getattr(
+                replacement.prior,
+                "agent_resume_boundary_id",
+                str(replacement.prior.sdk_resume_boundary_id)
+                if replacement.prior.sdk_resume_boundary_id
+                else None,
             )
+            return _TranscriptResumeBoundary(
+                id=replacement.prior.sdk_resume_boundary_id,
+                agent_id=agent_boundary,
+            )
+        if getattr(session, "agent_harness", "claude") == "pi":
+            leaf = self.db.scalar(
+                select(ChatPiSession.current_leaf_id).where(
+                    ChatPiSession.chat_session_id == session.id,
+                    ChatPiSession.agent_session_id == session.sdk_session_id,
+                )
+            )
+            return _TranscriptResumeBoundary(id=None, agent_id=leaf)
         resume_boundary: uuid.UUID | None = None
         if session.sdk_session_id and session.sdk_project_key:
             boundary = self.db.scalar(
@@ -1026,7 +1082,10 @@ class ChatSessionService:
             )
             with contextlib.suppress(ValueError):
                 resume_boundary = uuid.UUID(boundary) if boundary else None
-        return _TranscriptResumeBoundary(id=resume_boundary)
+        return _TranscriptResumeBoundary(
+            id=resume_boundary,
+            agent_id=str(resume_boundary) if resume_boundary else None,
+        )
 
     def _turn_runtime_descriptor(self, session: ChatSession) -> _TurnRuntimeDescriptor:
         return _TurnRuntimeDescriptor(
@@ -1107,6 +1166,8 @@ class ChatSessionService:
             revision=plan.replacement.revision,
             supersedes_message_id=prior.id if prior else None,
             sdk_resume_boundary_id=plan.resume_boundary.id,
+            agent_resume_boundary_id=plan.resume_boundary.agent_id,
+            agent_harness=getattr(session, "agent_harness", "claude"),
             status=PREPARING_STATUS if prior is not None else "generating",
             model=plan.model,
             model_route=plan.model_route,
@@ -1143,8 +1204,10 @@ class ChatSessionService:
             model_route=plan.model_route,
             sdk_session_id=session.sdk_session_id,
             sdk_project_key=session.sdk_project_key,
+            agent_harness=getattr(session, "agent_harness", "claude"),
             is_first_turn=plan.is_first_turn,
             resume_boundary_id=plan.resume_boundary.id,
+            agent_resume_boundary_id=plan.resume_boundary.agent_id,
             is_replacement=prior is not None,
             replacement_target_id=prior.id if prior else None,
             replacement_target_sequence=prior.sequence if prior else None,
@@ -1427,6 +1490,7 @@ class ChatSessionService:
             turn_id=admission.turn_id,
             sequence=session.last_sequence,
             role="assistant",
+            agent_harness=admission.agent_harness,
             content=answer,
             citations=validated_citations,
             followups=followups[:5],

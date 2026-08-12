@@ -290,6 +290,7 @@ def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
         "turn_id": turn_id,
         "assignment_token": "assignment-a",
         "worker_generation": "generation-a",
+        "agent_harness": "claude",
     }
     run = {
         "v": 1,
@@ -299,29 +300,35 @@ def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
         "turn_id": turn_id,
         "assignment_token": "assignment-a",
         "worker_generation": "generation-a",
+        "agent_harness": "claude",
     }
 
-    assert (
-        control_daemon._validate_assignment(launch, run, assigned_session_id=None)
-        == session_id
-    )
+    assert control_daemon._validate_assignment(
+        launch,
+        run,
+        assigned_session_id=None,
+        assigned_agent_harness=None,
+    ) == (session_id, "claude")
     with pytest.raises(RuntimeError, match="generation mismatch"):
         control_daemon._validate_assignment(
             {**launch, "worker_generation": "generation-b"},
             run,
             assigned_session_id=None,
+            assigned_agent_harness=None,
         )
     with pytest.raises(RuntimeError, match="Invalid persistent run frame"):
         control_daemon._validate_assignment(
             launch,
             {**run, "assignment_token": "assignment-b"},
             assigned_session_id=None,
+            assigned_agent_harness=None,
         )
     with pytest.raises(RuntimeError, match="session ownership mismatch"):
         control_daemon._validate_assignment(
             launch,
             run,
             assigned_session_id=str(uuid.uuid4()),
+            assigned_agent_harness=None,
         )
 
 
@@ -354,15 +361,14 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
     )
     child = SimpleNamespace(poll=lambda: None)
     try:
-        assert (
-            control_daemon._serve_turn(
-                daemon_side,
-                broker=child,
-                agent=child,
-                assigned_session_id=None,
-            )
-            == ""
-        )
+        assert control_daemon._serve_turn(
+            daemon_side,
+            broker=child,
+            agent=child,
+            proxy_token="unused",
+            assigned_session_id=None,
+            assigned_agent_harness=None,
+        ) == ("", "", child)
         assert decode_frame(relay_side.recv(4096)) == {
             "v": 1,
             "type": "worker_health",
@@ -394,7 +400,9 @@ def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path
 
     def serve():
         try:
-            control_daemon._serve_connections(server, broker=child, agent=child)
+            control_daemon._serve_connections(
+                server, broker=child, proxy_token="unused"
+            )
         except BaseException as error:
             errors.append(error)
 
@@ -451,6 +459,7 @@ def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
         "turn_id": turn_id,
         "assignment_token": "opaque-assignment",
         "worker_generation": "generation-a",
+        "agent_harness": "claude",
     }
     run = {
         "v": 1,
@@ -460,6 +469,7 @@ def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
         "turn_id": turn_id,
         "assignment_token": "opaque-assignment",
         "worker_generation": "generation-a",
+        "agent_harness": "claude",
     }
     daemon_side, relay_side = socket.socketpair()
     relay_side.sendall(
@@ -501,7 +511,9 @@ def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
                 daemon_side,
                 broker=child,
                 agent=child,
+                proxy_token="unused",
                 assigned_session_id=None,
+                assigned_agent_harness=None,
             )
         failure = decode_frame(relay_side.recv(4096))
         assert failure == {
@@ -2091,7 +2103,7 @@ def test_worker_finalizer_options_are_tool_free_and_single_turn(monkeypatch):
     )
 
 
-def test_web_fetch_allows_arxiv_or_observed_public_urls():
+def test_web_fetch_is_disabled_during_controlled_comparison():
     budget = ToolBudget(
         maximum_calls=12,
         maximum_direct_searches=4,
@@ -2100,10 +2112,10 @@ def test_web_fetch_allows_arxiv_or_observed_public_urls():
     )
     budget.observe_urls("Read https://example.com/paper and http://127.0.0.1/private")
 
-    assert budget.authorize(
+    assert not budget.authorize(
         "fetch", "WebFetch", {"url": "https://arxiv.org/abs/2607.12345"}
     ).allowed
-    assert budget.authorize(
+    assert not budget.authorize(
         "observed", "WebFetch", {"url": "https://example.com/paper"}
     ).allowed
     assert not budget.authorize(
@@ -2135,7 +2147,7 @@ def test_tool_results_make_returned_urls_fetchable():
         exit_code=0,
     )
 
-    assert budget.authorize(
+    assert not budget.authorize(
         "fetch", "WebFetch", {"url": "https://example.com/project"}
     ).allowed
 
@@ -2149,7 +2161,7 @@ def test_web_fetch_results_do_not_authorize_discovered_links():
     )
     source = "https://arxiv.org/abs/2607.12345"
     budget.observe_urls(source)
-    assert budget.authorize("fetch", "WebFetch", {"url": source}).allowed
+    assert not budget.authorize("fetch", "WebFetch", {"url": source}).allowed
     budget.result(
         "fetch",
         "Discovered https://example.com/not-catalog-authorized",
@@ -2226,10 +2238,10 @@ def test_catalog_web_fetch_rejects_private_dns_redirects_and_unsupported_content
     assert _validate_origin_metadata(200, "text/html; charset=utf-8") == "text/html"
 
 
-def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
+def test_worker_disables_native_web_fetch_and_uses_supported_proxy_settings():
     source = Path(agent.__file__).read_text()
-    assert 'else ["Bash", "Read", "Grep", "WebFetch"]' in source
-    assert '"skipWebFetchPreflight": True' in source
+    assert 'else ["Bash", "Read"]' in source
+    assert '"skipWebFetchPreflight": True' not in source
     assert '"HTTPS_PROXY": "http://127.0.0.1:8766"' in source
     assert '"NO_PROXY": "127.0.0.1,localhost"' in source
     assert '"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"' in source
@@ -2433,8 +2445,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "already installed" in prompt
     assert "deepseek-ai/DeepSeek-V4-Flash-0731:fastest" in prompt
     assert "harness is orchestration, not the model" in prompt
-    assert "never identify yourself as Claude" in prompt
-    assert "does not include `curl`" in prompt
+    assert "never identify yourself as Pi or Claude" in prompt
+    assert "direct network clients" in prompt
     assert "`command -v <name>` succeeds" in prompt
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
     assert "Never output a bare repository slug" in prompt
@@ -2452,7 +2464,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "# pwc CLI skill" in prompt
     assert "name: pwc-cli" in prompt
     assert prompt.index("# pwc CLI skill") < prompt.index("# Turn metadata")
-    assert '"harness":"Claude Agent SDK-compatible"' in prompt
+    assert '"harness":"PwC research agent"' in prompt
+    assert '"agent_harness":"claude"' in prompt
     assert '"sandbox":"secure disposable sandbox with writable /workspace"' in prompt
     assert '"web_search_enabled":true' in prompt
     assert '"hf_username":"nielsrogge"' in prompt
@@ -2470,9 +2483,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-nRA45etxHMwHLwFSLEIF56"
+    assert MODAL_IMAGE_ID == "im-jQv1CUE3u9L0IDMrpIgLe4"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-k6sP99TktiwSwGI6C87iMU"
-    assert WORKER_CONTRACT_VERSION == "63"
+    assert WORKER_CONTRACT_VERSION == "64"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

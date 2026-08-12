@@ -653,6 +653,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "turn_id": str(request.turn_id),
             "assignment_token": claim.assignment_token,
             "worker_generation": claim.worker_generation,
+            "agent_harness": "claude",
         }
         assert run == {
             "v": 1,
@@ -669,6 +670,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "turn_id": str(request.turn_id),
             "assignment_token": claim.assignment_token,
             "worker_generation": claim.worker_generation,
+            "agent_harness": "claude",
         }
         running = transport.running_worker(request.turn_id)
         assert running is not None
@@ -788,6 +790,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "gateway_url": request.gateway_url,
             "session_id": str(request.chat_session_id),
             "turn_id": str(request.turn_id),
+            "agent_harness": "claude",
         }
         assert run == {
             "v": 1,
@@ -801,6 +804,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
+            "agent_harness": "claude",
         }
 
         assert [event async for event in execution.events(timeout_seconds=1)] == [

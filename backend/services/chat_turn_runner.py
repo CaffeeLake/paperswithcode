@@ -16,8 +16,8 @@ from backend.services.chat_capability_service import (
 )
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import ChatOwner, TurnAdmission
-from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
 from backend.services.chat_web_search_service import opaque_owner
+from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
 
 
 class ChatTurnRunner(Protocol):
@@ -117,6 +117,7 @@ class ModalChatTurnRunner:
             model=self.admission.model_route,
             resume=str(self.resume_id) if self.resume_id else None,
             capability=self.capability,
+            agent_harness=self.admission.agent_harness,
             web_search_enabled=self.admission.web_search_enabled,
             fetchable_urls=list(self.admission.fetchable_urls),
             hf_username=self.hf_username,
@@ -192,7 +193,9 @@ def create_chat_turn_runner(
             "openrouter_byok",
         }:
             raise ValueError("OpenRouter turn has no typed credential admission")
-        scopes = {"model", "catalog", "session_store", "web_fetch"}
+        # WebFetch is intentionally dormant for both harnesses during the
+        # controlled Pi comparison. The trusted gateway route remains intact.
+        scopes = {"model", "catalog", "session_store"}
         if admission.web_search_enabled:
             scopes.add("web_search")
         if settings.chat_hf_catalog_enabled:
@@ -218,6 +221,7 @@ def create_chat_turn_runner(
             model=admission.model_route,
             scopes=scopes,
             sdk_session_id=resume_id,
+            agent_harness=admission.agent_harness,
             lifetime_seconds=round(settings.chat_agent_timeout_seconds + 60),
         )
         db.commit()

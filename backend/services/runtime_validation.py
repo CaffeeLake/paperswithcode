@@ -18,7 +18,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from sqlalchemy import text
 
-from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
+from backend.chat_sandbox_worker.contract import (
+    PI_NODE_SHA256,
+    PI_NODE_VERSION,
+    PI_SOURCE_COMMIT,
+    PI_VERSION,
+    PROVIDER_OUTPUT_TOKEN_LIMIT,
+    RESTRICTED_HF_CLI_VERSION,
+    SDK_VERSION,
+)
 from backend.config import Settings
 from backend.services.chat_runtime_contract import (
     dedicated_gateway_hostname,
@@ -566,6 +574,42 @@ def _validate_chat_runtime_identity(settings: Settings) -> None:
         raise RuntimeError(f"chat runtime is invalid: {error}") from error
     if settings.chat_workspace_snapshots_enabled:
         raise RuntimeError("directory snapshots must remain disabled")
+    if settings.chat_new_session_pi_percentage not in (0, 100):
+        raise RuntimeError("Pi admission must be stopped or fully cut over")
+    if (
+        settings.chat_new_session_pi_percentage == 100
+        and settings.chat_default_agent_harness != "pi"
+    ):
+        raise RuntimeError("full Pi admission must default to Pi")
+    if (
+        settings.chat_new_session_pi_percentage == 0
+        and settings.chat_default_agent_harness != "claude"
+    ):
+        raise RuntimeError("stopped Pi admission must default to Claude")
+    pi_identity_present = settings.chat_pi_runtime_enabled
+    if pi_identity_present:
+        expected_pi_identity = (
+            settings.chat_claude_sdk_version == SDK_VERSION
+            and settings.chat_pi_version == PI_VERSION
+            and settings.chat_pi_source_commit == PI_SOURCE_COMMIT
+            and settings.chat_pi_node_version == PI_NODE_VERSION
+            and settings.chat_pi_node_sha256 == PI_NODE_SHA256
+            and settings.chat_restricted_hf_cli_version == RESTRICTED_HF_CLI_VERSION
+        )
+        if not expected_pi_identity:
+            raise RuntimeError(
+                "dual-harness runtime identity is incomplete or mismatched"
+            )
+        if any(
+            (
+                settings.chat_pi_self_extension_enabled,
+                settings.chat_pi_durable_extensions_enabled,
+                settings.chat_pi_max_extension_files,
+                settings.chat_pi_max_extension_bytes,
+                settings.chat_pi_max_reloads_per_turn,
+            )
+        ):
+            raise RuntimeError("Pi extension surfaces must remain disabled")
     if (
         settings.chat_session_limit != 100
         or settings.chat_user_byte_limit != 100 * 1024 * 1024
@@ -747,6 +791,19 @@ def validate_release_manifest(settings: Settings) -> None:
         "worker_contract_version": settings.chat_worker_contract_version,
         "system_prompt_sha256": settings.chat_system_prompt_sha256,
     }
+    if isinstance(runtime, dict) and settings.chat_pi_runtime_enabled:
+        expected_runtime.update(
+            {
+                "default_agent_harness": settings.chat_default_agent_harness,
+                "new_session_pi_percentage": settings.chat_new_session_pi_percentage,
+                "claude_sdk_version": settings.chat_claude_sdk_version,
+                "pi_version": settings.chat_pi_version,
+                "pi_source_commit": settings.chat_pi_source_commit,
+                "pi_node_version": settings.chat_pi_node_version,
+                "pi_node_sha256": settings.chat_pi_node_sha256,
+                "restricted_hf_cli_version": settings.chat_restricted_hf_cli_version,
+            }
+        )
     projected_runtime = (
         {key: runtime.get(key) for key in expected_runtime}
         if isinstance(runtime, dict)
@@ -807,6 +864,12 @@ def validate_chat_schema(db, settings: Settings) -> None:
         "chat_turn_capabilities",
         "chat_turn_latency",
     }
+    pi_tables = {
+        "chat_pi_sessions",
+        "chat_pi_transcript_entries",
+        "chat_pi_prepared_forks",
+        "chat_harness_assignment_audit",
+    }
     openrouter_tables = {
         "chat_openrouter_credentials",
         "chat_openrouter_monthly_usage",
@@ -826,6 +889,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
             else set()
         )
         | (web_search_tables if settings.chat_web_search_enabled else set())
+        | (pi_tables if settings.chat_pi_runtime_enabled else set())
     )
     rows = dict(
         db.execute(
@@ -852,6 +916,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ,('chat_web_search_budget_states')
                     ,('chat_web_search_circuit_events')
                     ,('chat_web_search_owner_usage')
+                    ,('chat_pi_sessions')
+                    ,('chat_pi_transcript_entries')
+                    ,('chat_pi_prepared_forks')
+                    ,('chat_harness_assignment_audit')
                 ) AS required(name)
                 """)
         ).all()
@@ -896,6 +964,15 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_capabilities", "provider_error_code"),
         ("chat_turn_capabilities", "reasoning_effort"),
     }
+    pi_columns = {
+        ("chat_sessions", "agent_harness"),
+        ("chat_messages", "agent_harness"),
+        ("chat_messages", "agent_resume_boundary_id"),
+        ("chat_turn_latency", "agent_harness"),
+        ("chat_turn_latency", "pi_version"),
+        ("chat_turn_latency", "first_semantic_event_class"),
+        ("chat_turn_capabilities", "agent_harness"),
+    }
     openrouter_columns = {
         ("chat_openrouter_credentials", "credential_revision"),
         ("chat_openrouter_monthly_usage", "reserved_microusd"),
@@ -921,6 +998,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
         )
         | (web_search_columns if settings.chat_web_search_enabled else set())
         | (hf_catalog_columns if settings.chat_hf_catalog_enabled else set())
+        | (pi_columns if settings.chat_pi_runtime_enabled else set())
     )
     present_columns = set(
         db.execute(
@@ -930,6 +1008,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
             WHERE (table_name, column_name) IN (
                 ('chat_sessions', 'execution_backend'),
                 ('chat_sessions', 'reasoning_effort'),
+                ('chat_sessions', 'agent_harness'),
                 ('chat_messages', 'finish_reason'),
                 ('chat_messages', 'reasoning_effort'),
                 ('chat_messages', 'prepared_fork_sdk_session_id'),
@@ -937,6 +1016,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_messages', 'paper_mentions'),
                 ('chat_messages', 'effective_prompt'),
                 ('chat_messages', 'langfuse_trace_id'),
+                ('chat_messages', 'agent_harness'),
+                ('chat_messages', 'agent_resume_boundary_id'),
                 ('chat_shares', 'snapshot_version'),
                 ('chat_shares', 'messages'),
                 ('chat_sandbox_leases', 'worker_generation'),
@@ -961,10 +1042,14 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_turn_latency', 'estimated_active_cost_usd'),
                 ('chat_turn_latency', 'qualification_run_id'),
                 ('chat_turn_latency', 'qualification_scenario'),
+                ('chat_turn_latency', 'agent_harness'),
+                ('chat_turn_latency', 'pi_version'),
+                ('chat_turn_latency', 'first_semantic_event_class'),
                 ('chat_turn_capabilities', 'provider_mode'),
                 ('chat_turn_capabilities', 'provider_credential_revision'),
                 ('chat_turn_capabilities', 'provider_error_code'),
                 ('chat_turn_capabilities', 'reasoning_effort'),
+                ('chat_turn_capabilities', 'agent_harness'),
                 ('chat_openrouter_credentials', 'credential_revision'),
                 ('chat_openrouter_monthly_usage', 'reserved_microusd'),
                 ('chat_openrouter_provider_calls', 'actual_microusd')

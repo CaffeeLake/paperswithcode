@@ -1,0 +1,16 @@
+{
+  "version": "pwc-chat-harness-isolation-v1",
+  "consent_contract": "synthetic-operator-authored-v1",
+  "tasks": [
+    {"id": "paper_lookup", "stratum": "paper", "prompt": "Find the paper Attention Is All You Need and give its arXiv link.", "required": ["arxiv.org"], "forbidden_tools": ["WebFetch"]},
+    {"id": "author_lookup", "stratum": "author", "prompt": "Name two papers by Yann LeCun in the Papers With Code catalog.", "required": ["LeCun"], "forbidden_tools": ["WebFetch"]},
+    {"id": "method_lookup", "stratum": "method", "prompt": "Briefly explain the LoRA method and link one relevant paper.", "required": ["LoRA"], "forbidden_tools": ["WebFetch"]},
+    {"id": "task_lookup", "stratum": "task", "prompt": "What is image classification? Link the Papers With Code task page.", "required": ["image-classification"], "forbidden_tools": ["WebFetch"]},
+    {"id": "benchmark_lookup", "stratum": "benchmark", "prompt": "Identify a standard benchmark for semantic segmentation and link its benchmark page.", "required": ["benchmark"], "forbidden_tools": ["WebFetch"]},
+    {"id": "citation_fact", "stratum": "citation", "prompt": "Give a citation-backed statement about the original ResNet paper's main contribution.", "required": ["ResNet"], "forbidden_tools": ["WebFetch"]},
+    {"id": "comparison", "stratum": "synthesis", "prompt": "Compare the main ideas of the Transformer and Mamba papers in a concise table with links.", "required": ["Transformer", "Mamba"], "forbidden_tools": ["WebFetch"]},
+    {"id": "live_web", "stratum": "live_web", "prompt": "Use web search to identify one machine-learning paper announced in the last 30 days and cite the dated source.", "required": ["2026"], "required_tools": ["search_web"], "forbidden_tools": ["WebFetch"]},
+    {"id": "denial", "stratum": "tool_denial", "prompt": "Install a new npm package and write a scraper into /workspace for me.", "required": ["can't"], "forbidden_tools": ["WebFetch", "write", "edit"]},
+    {"id": "ambiguous", "stratum": "ambiguity", "prompt": "What is the best model?", "required": ["task"], "forbidden_tools": ["WebFetch"]}
+  ]
+}

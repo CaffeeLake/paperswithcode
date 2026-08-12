@@ -1,0 +1,180 @@
+import path from "node:path";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+const ANSWER_NOW =
+  "Execution limit reached. Do not call more tools. Answer now from the evidence already gathered.";
+const SEARCH = /(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)/iu;
+const ANSI = /(?:\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~])/gu;
+const GUIDES = new Set(["/opt/pwc/PWC_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md"]);
+
+function inside(candidate: string, root: string): boolean {
+  const relative = path.relative(root, path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function clean(value: string, maximum: number): { text: string; truncated: boolean } {
+  const normalized = value
+    .replace(ANSI, "")
+    .split("")
+    .filter((character) => character === "\n" || character === "\t" || character.charCodeAt(0) >= 32)
+    .join("");
+  const encoded = Buffer.from(normalized);
+  if (encoded.length <= maximum) return { text: normalized, truncated: false };
+  const hint = "\n[output truncated; narrow, filter, or paginate and try again]\n";
+  if (maximum <= Buffer.byteLength(hint)) {
+    return { text: Buffer.from(hint).subarray(0, maximum).toString("utf8"), truncated: true };
+  }
+  const prefix = encoded.subarray(0, Math.max(0, maximum - Buffer.byteLength(hint)));
+  return { text: `${prefix.toString("utf8").replace(/\uFFFD$/u, "")}${hint}`, truncated: true };
+}
+
+export interface PolicyOptions {
+  maximumCalls: number;
+  maximumRounds: number;
+  maximumDirectSearches: number;
+  maximumWebSearches: number;
+  maximumResultBytes: number;
+  maximumTurnOutputBytes: number;
+  bashTimeoutSeconds: number;
+}
+
+export class PolicyController {
+  webSearchEnabled = false;
+  calls = 0;
+  rounds = 0;
+  searches = 0;
+  webSearches = 0;
+  outputBytes = 0;
+  toolingClosed = false;
+  answerAfterClose = false;
+  systemPrompt = "";
+  private active = new Set<string>();
+
+  constructor(readonly options: PolicyOptions) {}
+
+  reset(webSearchEnabled: boolean, systemPrompt = this.systemPrompt): void {
+    this.webSearchEnabled = webSearchEnabled;
+    this.systemPrompt = systemPrompt;
+    this.calls = 0;
+    this.rounds = 0;
+    this.searches = 0;
+    this.webSearches = 0;
+    this.outputBytes = 0;
+    this.toolingClosed = false;
+    this.answerAfterClose = false;
+    this.active.clear();
+  }
+
+  observeAnswer(): void {
+    if (this.toolingClosed) this.answerAfterClose = true;
+  }
+
+  private deny(id: string, reason: string): string {
+    this.active.delete(id);
+    return reason;
+  }
+
+  authorize(id: string, name: string, input: Record<string, unknown>): string | undefined {
+    if (!this.active.size) this.rounds += 1;
+    this.active.add(id);
+    if (this.toolingClosed || this.rounds > this.options.maximumRounds || this.calls >= this.options.maximumCalls) {
+      this.toolingClosed = true;
+      return this.deny(id, ANSWER_NOW);
+    }
+    if (!new Set(["bash", "read", "search_web"]).has(name)) {
+      return this.deny(id, "That tool is not available.");
+    }
+    if (name === "read") {
+      const requested = typeof input.path === "string" ? input.path : "";
+      const resolved = path.resolve("/workspace", requested);
+      if (!inside(resolved, "/workspace") && !GUIDES.has(resolved)) {
+        return this.deny(id, "Read may only access /workspace or the approved CLI guides.");
+      }
+    }
+    if (name === "bash") {
+      const command = typeof input.command === "string" ? input.command : "";
+      if (!command) return this.deny(id, "Invalid Bash command.");
+      input.timeout = Math.min(
+        this.options.bashTimeoutSeconds,
+        typeof input.timeout === "number" ? input.timeout : this.options.bashTimeoutSeconds,
+      );
+      if (SEARCH.test(command)) {
+        if (this.searches >= this.options.maximumDirectSearches) {
+          this.toolingClosed = true;
+          return this.deny(id, ANSWER_NOW);
+        }
+        this.searches += 1;
+      }
+    }
+    if (name === "search_web") {
+      const query = input.query;
+      if (!this.webSearchEnabled || typeof query !== "string" || !query.trim() || query.length > 500) {
+        return this.deny(id, "Web search is not available for this request.");
+      }
+      if (this.webSearches >= this.options.maximumWebSearches) {
+        this.toolingClosed = true;
+        return this.deny(id, ANSWER_NOW);
+      }
+      this.webSearches += 1;
+    }
+    this.calls += 1;
+    return undefined;
+  }
+
+  finish(id: string, content: unknown): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+    this.active.delete(id);
+    const raw = Array.isArray(content)
+      ? content
+          .map((part) =>
+            part && typeof part === "object" && "text" in part ? String((part as { text: unknown }).text) : "",
+          )
+          .join("")
+      : String(content ?? "");
+    const remaining = Math.max(0, this.options.maximumTurnOutputBytes - this.outputBytes);
+    const bounded = clean(raw, Math.min(remaining, this.options.maximumResultBytes));
+    this.outputBytes += Buffer.byteLength(bounded.text);
+    return {
+      content: [{ type: "text", text: bounded.text }],
+      ...(bounded.truncated ? { isError: false } : {}),
+    };
+  }
+}
+
+export function pwcExtension(policy: PolicyController): ExtensionFactory {
+  return (pi) => {
+    pi.on("before_agent_start", () => ({ systemPrompt: policy.systemPrompt }));
+    pi.registerTool({
+      name: "search_web",
+      label: "Search web",
+      description: "Search public web evidence through the trusted PwC gateway.",
+      parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }),
+      async execute(_id, input, signal) {
+        const response = await fetch("http://127.0.0.1:8765/web-search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: input.query }),
+          ...(signal ? { signal } : {}),
+        });
+        if (!response.ok) {
+          return {
+            content: [{ type: "text" as const, text: "Web search is temporarily unavailable." }],
+            details: { failed: true },
+          };
+        }
+        const payload = (await response.json()) as { result?: unknown };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(payload.result ?? {}) }],
+          details: { failed: false },
+        };
+      },
+    });
+    pi.on("tool_call", (event) => {
+      const reason = policy.authorize(event.toolCallId, event.toolName, event.input as Record<string, unknown>);
+      return reason ? { block: true, reason } : undefined;
+    });
+    pi.on("tool_result", (event) => policy.finish(event.toolCallId, event.content));
+  };
+}
+
+export { ANSWER_NOW };

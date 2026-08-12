@@ -58,6 +58,11 @@ class ChatSessionStoreGateway:
         ).scalar_one_or_none()
         if chat is None:
             raise SessionStoreGatewayError(403, "Session store scope rejected")
+        if (
+            getattr(capability, "agent_harness", "claude") != "claude"
+            or getattr(chat, "agent_harness", "claude") != "claude"
+        ):
+            raise SessionStoreGatewayError(403, "Session store scope rejected")
 
         key = self._bind_key(capability, chat, command.key)
         if command.project_key not in {None, EXPECTED_PROJECT_KEY}:

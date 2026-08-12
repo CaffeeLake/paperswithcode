@@ -357,6 +357,22 @@ class Settings(BaseSettings):
         default="local_mcp", pattern=r"^(local_mcp|modal_cli)$"
     )
     chat_new_chat_modal_percentage: int = Field(default=0, ge=0, le=100)
+    chat_default_agent_harness: Literal["claude", "pi"] = Field(default="claude")
+    # The migration deliberately supports only the protected stop/full-cutover
+    # states. Pi qualification uses an authenticated per-session override.
+    chat_new_session_pi_percentage: int = Field(default=0, ge=0, le=100)
+    chat_pi_version: str = Field(default="", max_length=64)
+    chat_pi_runtime_enabled: bool = Field(default=False)
+    chat_pi_source_commit: str = Field(default="", pattern=r"^(?:[0-9a-f]{40})?$")
+    chat_claude_sdk_version: str = Field(default="", max_length=64)
+    chat_pi_node_version: str = Field(default="", max_length=64)
+    chat_pi_node_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+    chat_restricted_hf_cli_version: str = Field(default="", max_length=64)
+    chat_pi_self_extension_enabled: Literal[False] = Field(default=False)
+    chat_pi_durable_extensions_enabled: Literal[False] = Field(default=False)
+    chat_pi_max_extension_files: Literal[0] = Field(default=0)
+    chat_pi_max_extension_bytes: Literal[0] = Field(default=0)
+    chat_pi_max_reloads_per_turn: Literal[0] = Field(default=0)
     chat_modal_image_version: str = Field(default="", max_length=255)
     chat_pwc_cli_version: str = Field(default="", max_length=64)
     chat_worker_contract_version: str = Field(default="", max_length=64)

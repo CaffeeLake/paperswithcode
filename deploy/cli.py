@@ -192,6 +192,9 @@ from backend.chat_sandbox_worker.contract import (
     DATABASE_CONTRACT_VERSION, DEFAULT_BACKEND, GATEWAY_COMPATIBLE_FROM,
     GATEWAY_CONTRACT_VERSION, MODAL_IMAGE_ID, NEW_CHAT_MODAL_PERCENTAGE,
     PRODUCTION_MODAL_IMAGE_ID, PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
+    DEFAULT_AGENT_HARNESS, NEW_SESSION_PI_PERCENTAGE, PI_NODE_SHA256,
+    PI_NODE_VERSION, PI_SOURCE_COMMIT, PI_VERSION, RESTRICTED_HF_CLI_VERSION,
+    SDK_VERSION, SUPPORTED_AGENT_HARNESSES,
 )
 from backend.chat_sandbox_worker.prompt import sha256
 enabled = os.environ["PWC_RELEASE_CHAT_ENABLED"] == "true"
@@ -210,6 +213,15 @@ print(json.dumps({
     "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
     "database_contract_version": DATABASE_CONTRACT_VERSION,
     "system_prompt_sha256": sha256(),
+    "supported_agent_harnesses": list(SUPPORTED_AGENT_HARNESSES) if enabled else ["claude"],
+    "default_agent_harness": DEFAULT_AGENT_HARNESS if enabled else "claude",
+    "new_session_pi_percentage": NEW_SESSION_PI_PERCENTAGE if enabled else 0,
+    "claude_sdk_version": SDK_VERSION if enabled else "",
+    "pi_version": PI_VERSION if enabled else "",
+    "pi_source_commit": PI_SOURCE_COMMIT if enabled else "",
+    "pi_node_version": PI_NODE_VERSION if enabled else "",
+    "pi_node_sha256": PI_NODE_SHA256 if enabled else "",
+    "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION if enabled else "",
 }, sort_keys=True))
 """
     environment_values = {

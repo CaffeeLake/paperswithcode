@@ -1972,6 +1972,9 @@ class ChatSession(Base):
     execution_backend: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="local_mcp"
     )
+    agent_harness: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="claude"
+    )
     web_search_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
@@ -2034,6 +2037,10 @@ class ChatSession(Base):
             name="chat_sessions_execution_backend_check",
         ),
         CheckConstraint(
+            "agent_harness IN ('claude', 'pi')",
+            name="chat_sessions_agent_harness_check",
+        ),
+        CheckConstraint(
             "reasoning_effort IN ('low','high','max')",
             name="chat_sessions_reasoning_effort_check",
         ),
@@ -2089,6 +2096,8 @@ class ChatMessageRecord(Base):
     sdk_resume_boundary_id: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    agent_resume_boundary_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    agent_harness: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     citations: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     followups: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     display_blocks: Mapped[list] = mapped_column(
@@ -2130,6 +2139,10 @@ class ChatMessageRecord(Base):
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')", name="chat_messages_role_check"
+        ),
+        CheckConstraint(
+            "agent_harness IS NULL OR agent_harness IN ('claude', 'pi')",
+            name="chat_messages_agent_harness_check",
         ),
         CheckConstraint(
             "reasoning_effort IN ('low','high','max')",
@@ -2630,6 +2643,13 @@ class ChatTurnLatency(Base):
     )
     traffic_class: Mapped[str] = mapped_column(String(24), nullable=False)
     execution_backend: Mapped[str] = mapped_column(String(24), nullable=False)
+    agent_harness: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="claude"
+    )
+    pi_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    first_semantic_event_class: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     acquisition_outcome: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="pending"
     )
@@ -2703,6 +2723,15 @@ class ChatTurnLatency(Base):
             name="chat_turn_latency_backend_check",
         ),
         CheckConstraint(
+            "agent_harness IN ('claude','pi')",
+            name="chat_turn_latency_agent_harness_check",
+        ),
+        CheckConstraint(
+            "first_semantic_event_class IS NULL OR "
+            "first_semantic_event_class IN ('reasoning','tool','answer')",
+            name="chat_turn_latency_semantic_event_check",
+        ),
+        CheckConstraint(
             "acquisition_outcome IN "
             "('pending','created','reused_session','pool_hit','pool_miss')",
             name="chat_turn_latency_acquisition_check",
@@ -2740,6 +2769,9 @@ class ChatTurnCapability(Base):
         nullable=False,
     )
     turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    agent_harness: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="claude"
+    )
     sdk_session_id: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
@@ -2792,6 +2824,10 @@ class ChatTurnCapability(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        CheckConstraint(
+            "agent_harness IN ('claude','pi')",
+            name="chat_turn_capabilities_agent_harness_check",
+        ),
         CheckConstraint(
             "provider_mode IS NULL OR provider_mode IN "
             "('huggingface','openrouter_funded','openrouter_byok')",
@@ -3084,6 +3120,147 @@ class ChatSDKSessionSummary(Base):
     sdk_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
     mtime: Mapped[int] = mapped_column(BigInteger, nullable=False)
     data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class ChatPiSession(Base):
+    """Server-owned index for one opaque native Pi JSONL session."""
+
+    __tablename__ = "chat_pi_sessions"
+
+    agent_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    current_leaf_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    entry_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    byte_size: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    format_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "entry_count >= 0 AND byte_size >= 0",
+            name="chat_pi_sessions_nonnegative_check",
+        ),
+        CheckConstraint(
+            "format_version = 1", name="chat_pi_sessions_format_version_check"
+        ),
+    )
+
+
+class ChatPiTranscriptEntry(Base):
+    """One ordered, otherwise opaque Pi session record."""
+
+    __tablename__ = "chat_pi_transcript_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    agent_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_pi_sessions.agent_session_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    entry_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parent_entry_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    entry_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal >= 0 AND byte_size >= 2 AND byte_size <= 1048576",
+            name="chat_pi_transcript_entries_bounds_check",
+        ),
+        UniqueConstraint(
+            "agent_session_id",
+            "ordinal",
+            name="uq_chat_pi_transcript_entries_ordinal",
+        ),
+        Index(
+            "idx_chat_pi_transcript_entries_entry_id",
+            "agent_session_id",
+            "entry_id",
+            unique=True,
+            postgresql_where=text("entry_id IS NOT NULL"),
+        ),
+    )
+
+
+class ChatPiPreparedFork(Base):
+    """Inactive native Pi branch awaiting transactional edit activation."""
+
+    __tablename__ = "chat_pi_prepared_forks"
+
+    fork_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    boundary_entry_id: Mapped[str] = mapped_column(Text, nullable=False)
+    entries: Mapped[list] = mapped_column(JSONB, nullable=False)
+    entry_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    format_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "entry_count >= 1 AND byte_size >= 2 AND format_version = 1",
+            name="chat_pi_prepared_forks_bounds_check",
+        ),
+        Index("idx_chat_pi_prepared_forks_chat", "chat_session_id"),
+    )
+
+
+class ChatHarnessAssignmentAudit(Base):
+    """Content-free audit of protected harness overrides and cutover assignment."""
+
+    __tablename__ = "chat_harness_assignment_audit"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    agent_harness: Mapped[str] = mapped_column(String(16), nullable=False)
+    assignment_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    operator_subject_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "agent_harness IN ('claude','pi')",
+            name="chat_harness_assignment_audit_harness_check",
+        ),
+        CheckConstraint(
+            "assignment_source IN ('default','cutover','admin_override')",
+            name="chat_harness_assignment_audit_source_check",
+        ),
+    )
 
 
 class UserPreference(Base):

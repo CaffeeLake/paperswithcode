@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from itertools import count
+from typing import Literal
 
 from fastapi import (
     APIRouter,
@@ -65,6 +66,7 @@ from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
 )
 from backend.services.chat_session_service import (
+    ChatOwner,
     ChatServiceError,
     ChatSessionService,
     owner_from_user,
@@ -177,6 +179,15 @@ class ConnectOpenRouterKey(BaseModel):
 class SetOpenRouterFallback(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
+
+
+class AdminCreateHarnessSession(BaseModel):
+    """Protected qualification-only session creation contract."""
+
+    model_config = ConfigDict(extra="forbid")
+    agent_harness: Literal["claude", "pi"]
+    selected_model: str | None = None
+    reasoning_effort: Literal["low", "high", "max"] = "low"
 
 
 OPENROUTER_UNAVAILABLE_MESSAGE = (
@@ -624,6 +635,44 @@ def create_session(
     try:
         session = ChatSessionService(db, settings).create_session(
             owner_from_user(user), body.selected_model, body.reasoning_effort
+        )
+        db.commit()
+        db.refresh(session)
+        return _summary(session)
+    except ChatServiceError as exc:
+        db.rollback()
+        _raise(exc)
+
+
+@router.post(
+    "/admin/sessions",
+    response_model=ChatSessionSummary,
+    status_code=201,
+    dependencies=[],
+)
+def create_admin_harness_session(
+    body: AdminCreateHarnessSession,
+    admin: dict = Depends(require_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Create a fresh pinned qualification chat without exposing a public picker."""
+
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
+    subject = str(admin.get("hf_subject") or "admin-api-token")
+    owner_id = subject if admin.get("source") == "cookie" else f"operator:{subject}"
+    owner = ChatOwner(
+        hf_user_id=owner_id,
+        hf_username=str(admin.get("username") or "operator"),
+    )
+    try:
+        session = ChatSessionService(db, settings).create_session(
+            owner,
+            body.selected_model,
+            body.reasoning_effort,
+            agent_harness_override=body.agent_harness,
+            operator_subject=subject,
         )
         db.commit()
         db.refresh(session)
@@ -1129,6 +1178,7 @@ async def stream_chat(
                         model_route=admission.model_route,
                         execution_backend=admission.execution_backend,
                         is_new_chat=body.session_id is None,
+                        agent_harness=admission.agent_harness,
                     )
                 db.commit()
             except ChatServiceError as exc:

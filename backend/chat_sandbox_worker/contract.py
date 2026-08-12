@@ -3,13 +3,24 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "63"
+WORKER_CONTRACT_VERSION = "64"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
-GATEWAY_CONTRACT_VERSION = 27
-GATEWAY_COMPATIBLE_FROM = 26
-DATABASE_CONTRACT_VERSION = 1
+GATEWAY_CONTRACT_VERSION = 28
+GATEWAY_COMPATIBLE_FROM = 27
+DATABASE_CONTRACT_VERSION = 2
 SDK_VERSION = "0.2.115"
+PI_VERSION = "0.84.1"
+PI_SOURCE_COMMIT = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
+PI_NPM_INTEGRITY = (
+    "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/"
+    "KWvsZDVNa5XGsdZ7fkC7w7A=="
+)
+PI_NODE_VERSION = "22.19.0"
+PI_NODE_SHA256 = "c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2"
+SUPPORTED_AGENT_HARNESSES = ("claude", "pi")
+DEFAULT_AGENT_HARNESS = "claude"
+NEW_SESSION_PI_PERCENTAGE = 0
 PWC_CLI_VERSION = "0.1.12"
 RESTRICTED_HF_CLI_VERSION = "0.1.0"
 RESTRICTED_HF_CLI_SHA256 = (
@@ -26,7 +37,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-nRA45etxHMwHLwFSLEIF56"
+MODAL_IMAGE_ID = "im-jQv1CUE3u9L0IDMrpIgLe4"
 # Production chat remains disabled and pinned to its previously qualified
 # contract; the distinct ID avoids cross-Environment image lookup.
 PRODUCTION_MODAL_IMAGE_ID = "im-k6sP99TktiwSwGI6C87iMU"

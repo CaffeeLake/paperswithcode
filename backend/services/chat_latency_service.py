@@ -106,9 +106,12 @@ class ChatLatencyService:
         model_route: str,
         execution_backend: str,
         is_new_chat: bool,
+        agent_harness: str = "claude",
     ) -> ChatTurnLatency:
         if execution_backend not in {"local_mcp", "modal_cli"}:
             raise ValueError("Unsupported chat execution backend")
+        if agent_harness not in {"claude", "pi"}:
+            raise ValueError("Unsupported chat agent harness")
         try:
             request_uuid = uuid.UUID(request_id)
         except ValueError:
@@ -127,6 +130,8 @@ class ChatLatencyService:
             chat_session_id=session_id,
             traffic_class="new_chat" if is_new_chat else "followup",
             execution_backend=execution_backend,
+            agent_harness=agent_harness,
+            pi_version=settings.chat_pi_version if agent_harness == "pi" else None,
             model_route=model_route,
             app_release_id=settings.release_id,
             sandbox_image_version=settings.chat_modal_image_version or None,
@@ -155,6 +160,7 @@ class ChatLatencyService:
         elapsed_ms: int,
         *,
         acquisition_outcome: str | None = None,
+        first_semantic_event_class: str | None = None,
     ) -> bool:
         column_name = PHASE_COLUMNS.get(phase)
         if column_name is None:
@@ -168,6 +174,10 @@ class ChatLatencyService:
             if acquisition_outcome not in ACQUISITION_OUTCOMES - {"pending"}:
                 raise ValueError("Unsupported sandbox acquisition outcome")
             values["acquisition_outcome"] = acquisition_outcome
+        if first_semantic_event_class is not None:
+            if first_semantic_event_class not in {"reasoning", "tool", "answer"}:
+                raise ValueError("Unsupported first semantic event class")
+            values["first_semantic_event_class"] = first_semantic_event_class
         result = self.db.execute(
             update(ChatTurnLatency)
             .where(

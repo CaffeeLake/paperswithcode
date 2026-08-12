@@ -31,6 +31,7 @@ from backend.services.chat_citation_service import (
     resolve_citation_targets,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_pi_transcript_service import ChatPiTranscriptService
 from backend.services.chat_sandbox_service import SandboxError
 from backend.services.chat_session_service import (
     ChatOwner,
@@ -392,6 +393,7 @@ async def _prepare_replacement(
     )
     project_key = project_key_for_directory(session_directory)
     replacement_id: uuid.UUID | None = None
+    is_pi = getattr(admission, "agent_harness", "claude") == "pi"
     logger.info(
         "chat edit preparing session_id=%s target_id=%s source_sdk_id=%s cutoff_id=%s",
         admission.session_id,
@@ -400,28 +402,53 @@ async def _prepare_replacement(
         admission.resume_boundary_id,
     )
     try:
-        if old_id is not None and admission.resume_boundary_id:
-            result = await fork_session_via_store(
-                store,
-                str(old_id),
-                directory=session_directory,
-                up_to_message_id=str(admission.resume_boundary_id),
-            )
-            replacement_id = uuid.UUID(result.session_id)
-            with db_manager.session_local() as db:
-                recorded = ChatSessionService(db, settings).record_prepared_fork(
-                    owner, admission, replacement_id, project_key
+        if old_id is not None and (
+            admission.agent_resume_boundary_id
+            if is_pi
+            else admission.resume_boundary_id
+        ):
+            if is_pi:
+                replacement_id = uuid.uuid4()
+                with db_manager.session_local() as db:
+                    ChatPiTranscriptService(db, settings).prepare_fork(
+                        admission.session_id,
+                        old_id,
+                        str(admission.agent_resume_boundary_id),
+                        replacement_id,
+                    )
+                    recorded = ChatSessionService(db, settings).record_prepared_fork(
+                        owner, admission, replacement_id, "pi"
+                    )
+                    if not recorded:
+                        db.rollback()
+                        raise ChatServiceError(
+                            "stale_turn", 409, "The edit turn changed"
+                        )
+                    db.commit()
+            else:
+                result = await fork_session_via_store(
+                    store,
+                    str(old_id),
+                    directory=session_directory,
+                    up_to_message_id=str(admission.resume_boundary_id),
                 )
-                if not recorded:
-                    db.rollback()
-                    raise ChatServiceError("stale_turn", 409, "The edit turn changed")
-                db.commit()
+                replacement_id = uuid.UUID(result.session_id)
+                with db_manager.session_local() as db:
+                    recorded = ChatSessionService(db, settings).record_prepared_fork(
+                        owner, admission, replacement_id, project_key
+                    )
+                    if not recorded:
+                        db.rollback()
+                        raise ChatServiceError(
+                            "stale_turn", 409, "The edit turn changed"
+                        )
+                    db.commit()
         with db_manager.session_local() as db:
             activated = ChatSessionService(db, settings).activate_edit(
                 owner,
                 admission,
                 replacement_id,
-                project_key,
+                "pi" if is_pi and replacement_id else project_key,
             )
             if not activated:
                 db.rollback()
@@ -429,10 +456,18 @@ async def _prepare_replacement(
             db.commit()
     except BaseException:
         if replacement_id:
-            with contextlib.suppress(Exception):
-                await store.delete(
-                    {"project_key": project_key, "session_id": str(replacement_id)}
-                )
+            if is_pi:
+                with contextlib.suppress(Exception):
+                    with db_manager.session_local() as db:
+                        ChatPiTranscriptService(db, settings).delete_prepared_fork(
+                            admission.session_id, replacement_id
+                        )
+                        db.commit()
+            else:
+                with contextlib.suppress(Exception):
+                    await store.delete(
+                        {"project_key": project_key, "session_id": str(replacement_id)}
+                    )
         logger.info(
             "chat edit activation outcome session_id=%s target_id=%s outcome=failed",
             admission.session_id,
@@ -447,7 +482,7 @@ async def _prepare_replacement(
     )
     if on_activated:
         on_activated()
-    if old_id is not None:
+    if old_id is not None and not is_pi:
         try:
             await store.delete(
                 {
@@ -968,7 +1003,15 @@ class ChatStreamOrchestrator:
                 "answer_delta",
             }:
                 self.first_application_delta_recorded = True
-                self._record_latency_phase("first_worker_delta", elapsed_ms)
+                self._record_latency_phase(
+                    "first_worker_delta",
+                    elapsed_ms,
+                    first_semantic_event_class={
+                        "reasoning_delta": "reasoning",
+                        "tool_call": "tool",
+                        "answer_delta": "answer",
+                    }[kind],
+                )
                 self._record_latency_phase("first_application_sse_delta", elapsed_ms)
 
             self.projection.apply(kind, event)
@@ -1288,6 +1331,7 @@ class ChatStreamOrchestrator:
         elapsed_ms: int,
         *,
         acquisition_outcome: str | None = None,
+        first_semantic_event_class: str | None = None,
     ) -> None:
         if self.settings.environment != "staging":
             return
@@ -1298,6 +1342,7 @@ class ChatStreamOrchestrator:
                     phase,
                     elapsed_ms,
                     acquisition_outcome=acquisition_outcome,
+                    first_semantic_event_class=first_semantic_event_class,
                 )
                 db.commit()
         except Exception as exc:

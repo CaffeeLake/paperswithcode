@@ -75,6 +75,7 @@ class WorkerTurnRequest:
     resume: str | None
     capability_token: str = field(repr=False)
     gateway_url: str
+    agent_harness: str = "claude"
     web_search_enabled: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
@@ -601,6 +602,7 @@ class WorkerTurnExecution:
             "gateway_url": self.request.gateway_url,
             "session_id": str(self.request.chat_session_id),
             "turn_id": str(self.request.turn_id),
+            "agent_harness": self.request.agent_harness,
         }
         run = {
             "v": 1,
@@ -614,6 +616,7 @@ class WorkerTurnExecution:
             "reasoning_effort": self.request.reasoning_effort,
             "fetchable_urls": list(self.request.fetchable_urls),
             "hf_username": self.request.hf_username,
+            "agent_harness": self.request.agent_harness,
         }
         if self.mode is WorkerTurnMode.PERSISTENT:
             identity = {

@@ -207,6 +207,62 @@ def test_create_session_fails_closed_when_public_admission_is_disabled():
     assert exc_info.value.detail["code"] == "chat_temporarily_disabled"
 
 
+def test_admin_harness_session_is_staging_only_and_returns_neutral_summary(
+    monkeypatch,
+):
+    captured = {}
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="New chat",
+        title_status="pending",
+        selected_model="model",
+        reasoning_effort="low",
+        execution_backend="modal_cli",
+        agent_harness="pi",
+        web_search_enabled=False,
+        message_count=0,
+        active_turn_id=None,
+        active_turn_expires_at=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        archived_at=None,
+    )
+
+    class Service:
+        def __init__(self, _db, _settings):
+            pass
+
+        def create_session(self, owner, model, effort, **options):
+            captured.update(owner=owner, model=model, effort=effort, **options)
+            return session
+
+    db = SimpleNamespace(
+        commit=lambda: None, refresh=lambda _row: None, rollback=lambda: None
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    response = chat_router.create_admin_harness_session(
+        chat_router.AdminCreateHarnessSession(
+            agent_harness="pi", selected_model="model", reasoning_effort="low"
+        ),
+        admin={"source": "cookie", "hf_subject": "admin-subject", "username": "admin"},
+        db=db,
+        settings=Settings(environment="staging"),
+    )
+
+    assert captured["owner"].hf_user_id == "admin-subject"
+    assert captured["agent_harness_override"] == "pi"
+    assert "agent_harness" not in response.model_dump()
+
+    with pytest.raises(Exception) as exc_info:
+        chat_router.create_admin_harness_session(
+            chat_router.AdminCreateHarnessSession(agent_harness="pi"),
+            admin={"source": "cookie", "hf_subject": "admin-subject"},
+            db=db,
+            settings=Settings(environment="production"),
+        )
+    assert exc_info.value.status_code == 404
+
+
 def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
     monkeypatch,
 ):

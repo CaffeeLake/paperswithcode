@@ -13,6 +13,9 @@ import modal
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     MODAL_APP_NAME,
+    PI_NODE_SHA256,
+    PI_NODE_VERSION,
+    PI_VERSION,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
     SDK_VERSION,
@@ -27,7 +30,23 @@ RESTRICTED_HF = REPOSITORY / "restricted_hf_cli"
 app = modal.App(MODAL_APP_NAME)
 image = (
     modal.Image.from_registry(BASE_IMAGE)
-    .apt_install("bash", "ripgrep", "jq", "coreutils", "util-linux", "procps")
+    .apt_install(
+        "bash",
+        "ripgrep",
+        "jq",
+        "coreutils",
+        "util-linux",
+        "procps",
+        "curl",
+        "xz-utils",
+        "ca-certificates",
+    )
+    .run_commands(
+        f"curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v{PI_NODE_VERSION}/node-v{PI_NODE_VERSION}-linux-x64.tar.xz",
+        f"echo '{PI_NODE_SHA256}  /tmp/node.tar.xz' | sha256sum -c -",
+        "tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz",
+        f"node --version | grep -Fx 'v{PI_NODE_VERSION}'",
+    )
     .pip_install(
         f"claude-agent-sdk=={SDK_VERSION}",
         "cryptography==48.0.0",
@@ -53,7 +72,14 @@ image = (
         "/opt/pwc/backend/chat_sandbox_worker",
         copy=True,
         ignore=lambda path: (
-            path.name in {"image.py", "publish_image.py", "__pycache__"}
+            path.name
+            in {
+                "image.py",
+                "publish_image.py",
+                "__pycache__",
+                "node_modules",
+                "dist",
+            }
         ),
     )
     .add_local_file(WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md", copy=True)
@@ -67,6 +93,10 @@ image = (
     .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
+        "cd /opt/pwc/backend/chat_sandbox_worker/pi_worker && npm ci --ignore-scripts && npm run build && npm prune --omit=dev --ignore-scripts",
+        f"node -e \"const p=require('/opt/pwc/backend/chat_sandbox_worker/pi_worker/node_modules/@earendil-works/pi-coding-agent/package.json'); if(p.version !== '{PI_VERSION}') process.exit(1)\"",
+        "PYTHONPATH=/opt/pwc python -m backend.chat_sandbox_worker.render_pi_prompt_asset /opt/pwc/pi-system-prompt.txt",
+        "chmod 0644 /opt/pwc/pi-system-prompt.txt",
         "chmod -R a+rX /opt/pwc/restricted_hf_cli",
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
         "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
