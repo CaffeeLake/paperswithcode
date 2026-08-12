@@ -260,7 +260,7 @@ async def _run(
                     }
                 )
                 if turn["request_id"]:
-                    requests[turn["request_id"]] = "paired_quality"
+                    requests[turn["request_id"]] = "reliability"
 
         pi_sessions: list[str] = []
         for index in range(new_turns):
@@ -271,7 +271,7 @@ async def _run(
             turn = await _turn(client, session_id, task["prompt"])
             new_results.append(turn)
             if turn["request_id"]:
-                requests[turn["request_id"]] = "admin_new_chat"
+                requests[turn["request_id"]] = "reliability"
 
         for index in range(followups):
             session_id = pi_sessions[index % len(pi_sessions)]
@@ -286,7 +286,9 @@ async def _run(
             )
             followup_results.append(turn)
             if turn["request_id"]:
-                requests[turn["request_id"]] = "admin_followup"
+                requests[turn["request_id"]] = (
+                    "forced_failure" if index < min(5, followups) else "reliability"
+                )
 
         for session_id in pi_sessions[:3]:
             detail = (await client.get(f"/api/v1/chat/sessions/{session_id}")).json()
@@ -306,7 +308,7 @@ async def _run(
             if turn["terminal"] == "done":
                 replacements += 1
             if turn["request_id"]:
-                requests[turn["request_id"]] = "edit_retry"
+                requests[turn["request_id"]] = "reliability"
 
         deletion_session = await _create(client, "pi", model)
         deleted = await client.delete(f"/api/v1/chat/sessions/{deletion_session}")

@@ -83,3 +83,19 @@ def test_qualification_scripts_do_not_reference_retired_fixed_port():
         "qualify_chat_cutover.py",
     ):
         assert "127.0.0.1:8001" not in (scripts / name).read_text()
+
+
+def test_pi_qualification_uses_persisted_scenario_taxonomy():
+    source = (
+        Path(__file__).resolve().parents[1] / "scripts" / "qualify_chat_pi.py"
+    ).read_text()
+
+    for retired_label in (
+        '"paired_quality"',
+        '"admin_new_chat"',
+        '"admin_followup"',
+        '"edit_retry"',
+    ):
+        assert retired_label not in source
+    assert '"reliability"' in source
+    assert '"forced_failure"' in source
