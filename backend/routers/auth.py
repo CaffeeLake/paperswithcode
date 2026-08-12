@@ -202,6 +202,14 @@ def _encode_legacy_session(user: dict) -> str:
         "is_admin": _is_admin(user),
         "exp": int(time.time()) + SESSION_TTL_SECONDS,
     }
+    qualification_owner = user.get("chat_qualification_owner")
+    if (
+        settings.environment == "staging"
+        and isinstance(qualification_owner, str)
+        and qualification_owner.startswith("operator:pi-qualification:")
+        and len(qualification_owner) <= 128
+    ):
+        payload["chat_qualification_owner"] = qualification_owner
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
