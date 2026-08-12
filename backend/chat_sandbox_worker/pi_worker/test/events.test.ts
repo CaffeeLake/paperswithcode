@@ -14,7 +14,7 @@ test("maps hidden thinking, text, tools, usage, and correlations", () => {
   );
   assert.deepEqual(
     adapter.feed({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "pwc version" } }),
-    [{ type: "tool_call", id: "t1", name: "bash", args: { command: "pwc version" } }],
+    [{ type: "tool_call", id: "t1", name: "Bash", args: { command: "pwc version" } }],
   );
   assert.equal(adapter.feed({ type: "tool_execution_end", toolCallId: "t1", result: { content: [{ type: "text", text: "ok" }] }, isError: false })[0]?.type, "tool_result");
   assert.deepEqual(

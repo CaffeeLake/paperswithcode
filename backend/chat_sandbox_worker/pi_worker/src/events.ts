@@ -19,6 +19,13 @@ function textContent(value: unknown): string {
     .join("");
 }
 
+function publicToolName(value: unknown): string {
+  const name = String(value ?? "");
+  if (name === "bash") return "Bash";
+  if (name === "read") return "Read";
+  return name;
+}
+
 export class PiEventAdapter {
   private reasoningOpen = false;
   private answerStarted = false;
@@ -76,7 +83,7 @@ export class PiEventAdapter {
         {
           type: "tool_call",
           id,
-          name: String(event.toolName ?? ""),
+          name: publicToolName(event.toolName),
           args,
         },
       ];
