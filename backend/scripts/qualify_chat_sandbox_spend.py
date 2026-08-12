@@ -33,6 +33,19 @@ from backend.services.chat_title_budget_service import (
 )
 
 
+async def deliver_all_spend_alerts(settings) -> int:
+    """Drain the bounded dispatcher batches produced by one qualification."""
+
+    delivered = 0
+    manager = SandboxSessionManager(settings)
+    for _ in range(3):
+        batch = await manager.deliver_spend_alerts()
+        delivered += batch
+        if batch == 0:
+            break
+    return delivered
+
+
 def confirmation_for(environment: str) -> str:
     return f"QUALIFY_{environment.upper()}_CHAT_SPEND"
 
@@ -129,7 +142,7 @@ def main() -> int:
         )
         if rearmed.circuit_state != "armed":
             raise RuntimeError("synthetic next-cycle re-arm failed")
-    delivered = asyncio.run(SandboxSessionManager(settings).deliver_spend_alerts())
+    delivered = asyncio.run(deliver_all_spend_alerts(settings))
     with db_manager.session_local() as db:
         events = list(
             db.execute(
