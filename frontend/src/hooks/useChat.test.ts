@@ -5,8 +5,9 @@ import { ChatStreamError, type ChatEvent, type ChatMessage, type ChatStreamReque
 import type { ChatSessionDetail } from "@/lib/chatSessions";
 import { useChat } from "@/hooks/useChat";
 
-const { streamChatMock, getSessionMock, reportChatLatencyMock } = vi.hoisted(() => ({
+const { streamChatMock, resumeChatMock, getSessionMock, reportChatLatencyMock } = vi.hoisted(() => ({
   streamChatMock: vi.fn(),
+  resumeChatMock: vi.fn(),
   getSessionMock: vi.fn(),
   reportChatLatencyMock: vi.fn(),
 }));
@@ -16,6 +17,7 @@ vi.mock("@/lib/chat", async (importOriginal) => {
   return {
     ...actual,
     streamChat: streamChatMock,
+    resumeChat: resumeChatMock,
     reportChatLatency: reportChatLatencyMock,
   };
 });
@@ -120,8 +122,45 @@ const renderChat = (
 
 beforeEach(() => {
   streamChatMock.mockReset();
+  resumeChatMock.mockReset();
   getSessionMock.mockReset();
   reportChatLatencyMock.mockReset();
+});
+
+describe("useChat reload recovery", () => {
+  it("replays and follows an active turn after the session is reloaded", async () => {
+    resumeChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r-active", session_id: "session-1" },
+      { type: "reasoning_start" },
+      { type: "reasoning_delta", text: "Checking the evidence" },
+      { type: "reasoning_end" },
+      { type: "answer_delta", text: "Recovered answer" },
+      { type: "done", finish_reason: "success" },
+    )());
+    getSessionMock.mockResolvedValue(sessionDetail("session-1", [
+      persistedUser("user-active", 1, "Active question"),
+      persistedAssistant("assistant-active", 2, "Recovered answer"),
+    ]));
+    const restored = [{
+      ...uiTurn("user-active", "Active question")[0],
+      status: "generating",
+    }];
+    const { result } = renderChat();
+
+    act(() => result.current.load(restored, "session-1", true));
+
+    expect(result.current.busy).toBe(true);
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      streaming: true,
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(resumeChatMock).toHaveBeenCalledWith("session-1", expect.any(Object));
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      blocks: [{ kind: "answer", text: "Recovered answer", done: true }],
+    });
+  });
 });
 
 afterEach(() => {

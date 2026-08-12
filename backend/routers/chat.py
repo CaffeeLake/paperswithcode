@@ -48,6 +48,7 @@ from backend.models.chat import (
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_live_stream_service import live_chat_stream_registry
 from backend.services.chat_paper_context_service import (
     ChatPaperContextService,
     PreparedPaperTurn,
@@ -142,6 +143,12 @@ async def _run_prewarm(settings: Settings, route_id: str) -> None:
 
 async def _release_durable_admission() -> None:
     """The database lease is released by turn finalization, not this callback."""
+
+
+async def _never_disconnected() -> bool:
+    """A durable turn outlives any one browser transport."""
+
+    return False
 
 
 def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None:
@@ -699,6 +706,62 @@ def get_session(
         _raise(exc)
 
 
+@router.get(
+    "/sessions/{session_id}/stream",
+    summary="Reconnect to an active research-assistant response",
+)
+def reconnect_active_stream(
+    session_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    owner = owner_from_user(user)
+    try:
+        session, _messages = ChatSessionService(db, settings).get_session(
+            owner, session_id
+        )
+    except ChatServiceError as exc:
+        _raise(exc)
+    if session.active_turn_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "chat_not_busy",
+                "message": "This chat is not generating.",
+            },
+        )
+    stream = live_chat_stream_registry().get(
+        session_id, session.active_turn_id, owner.hf_user_id
+    )
+    if stream is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "chat_stream_unavailable",
+                "message": "The active response cannot be reconnected.",
+            },
+        )
+
+    async def event_stream():
+        yield b": " + (b" " * SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
+        async for frame in stream.subscribe():
+            if frame.event is None:
+                yield b": ping\n\n"
+            else:
+                yield sse_event(frame.event, **frame.payload)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post(
     "/sessions/{session_id}/share",
     response_model=ChatShareSummary,
@@ -1095,8 +1158,14 @@ async def stream_chat(
         display_message=prepared.display_message,
         request_id=request_id,
         title_token=title_token,
-        is_disconnected=request.is_disconnected,
+        is_disconnected=_never_disconnected,
         release_admission=_release_durable_admission,
+    )
+    live_stream = live_chat_stream_registry().start(
+        session_id=admission.session_id,
+        turn_id=admission.turn_id,
+        owner_id=owner.hf_user_id,
+        source=orchestrator.events(),
     )
 
     async def event_stream():
@@ -1105,7 +1174,7 @@ async def stream_chat(
         # comment above the common 2 KiB threshold forces those intermediaries
         # to flush the response before the first model delta arrives.
         yield b": " + (b" " * SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
-        async for frame in orchestrator.events():
+        async for frame in live_stream.subscribe():
             if frame.event is None:
                 yield b": ping\n\n"
             else:

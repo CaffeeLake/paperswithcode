@@ -269,6 +269,14 @@ export function streamChat(
   return streamChatOverSSE(request, opts.signal);
 }
 
+/** Reattach to a durable turn after navigation or a full page reload. */
+export function resumeChat(
+  sessionId: string,
+  opts: StreamChatOptions = {},
+): AsyncGenerator<ChatEvent> {
+  return resumeChatOverSSE(sessionId, opts.signal);
+}
+
 /**
  * Real transport: POST the history, parse the `text/event-stream` response.
  * `EventSource` can't POST a body, so we read the stream off `fetch` directly.
@@ -284,6 +292,26 @@ async function* streamChatOverSSE(
     body: JSON.stringify(request),
     signal,
   });
+  yield* readChatSSE(res);
+}
+
+async function* resumeChatOverSSE(
+  sessionId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
+  const res = await fetch(
+    apiUrl(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/stream`),
+    {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      credentials: "include",
+      signal,
+    },
+  );
+  yield* readChatSSE(res);
+}
+
+async function* readChatSSE(res: Response): AsyncGenerator<ChatEvent> {
   if (!res.ok || !res.body) {
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail;

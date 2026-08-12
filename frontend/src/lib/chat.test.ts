@@ -4,6 +4,7 @@ import {
   ChatStreamError,
   isChatSmoothStreamingEnabled,
   reportChatLatency,
+  resumeChat,
   streamChat,
 } from "@/lib/chat";
 
@@ -102,5 +103,26 @@ describe("streamChat access failures", () => {
       code: "staging_access_required",
       message: expect.stringContaining("limited to approved Hugging Face users"),
     } satisfies Partial<ChatStreamError>);
+  });
+});
+
+describe("resumeChat", () => {
+  it("uses the authenticated session reconnect stream and parses replayed events", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      `data: ${JSON.stringify({ type: "answer_delta", text: "replayed" })}\n\n`,
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = resumeChat("session/id");
+
+    await expect(events.next()).resolves.toEqual({
+      done: false,
+      value: { type: "answer_delta", text: "replayed" },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/chat/sessions/session%2Fid/stream"),
+      expect.objectContaining({ method: "GET", credentials: "include" }),
+    );
   });
 });

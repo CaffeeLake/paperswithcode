@@ -12,6 +12,7 @@ import {
   isChatLive,
   isChatSmoothStreamingEnabled,
   reportChatLatency,
+  resumeChat,
   streamChat,
 } from "@/lib/chat";
 import {
@@ -467,6 +468,7 @@ export function useChat(options: UseChatOptions) {
     optimistic: ChatMessage[],
     original: ChatMessage[],
     edit?: EditRequest,
+    resumeSessionId?: string,
   ) => {
     const messagesGeneration = ++messagesGenerationRef.current;
     activeMessagesGenerationRef.current = messagesGeneration;
@@ -481,7 +483,7 @@ export function useChat(options: UseChatOptions) {
     setMessages(optimistic);
     activeMessagesRef.current = optimistic;
     setBusy(true);
-    browserTimingRef.current = {
+    browserTimingRef.current = resumeSessionId ? null : {
       controller,
       submittedAt: performance.now(),
       streamStartReported: false,
@@ -497,8 +499,12 @@ export function useChat(options: UseChatOptions) {
       let streamFailed = false;
       let admissionRejected = false;
       try {
-        const source = streamChat(request, { signal: controller.signal });
-        const smooth = isChatLive() && isChatSmoothStreamingEnabled();
+        const source = resumeSessionId
+          ? resumeChat(resumeSessionId, { signal: controller.signal })
+          : streamChat(request, { signal: controller.signal });
+        // Replayed deltas should catch the UI up immediately. Newly arriving
+        // deltas continue to render as they reach the reconnecting browser.
+        const smooth = !resumeSessionId && isChatLive() && isChatSmoothStreamingEnabled();
         const smoothed = smooth
           ? createSmoothedChatStream(source, {
               signal: controller.signal,
@@ -902,7 +908,11 @@ export function useChat(options: UseChatOptions) {
     setBusy(false);
     setSessionError("");
   }, []);
-  const load = useCallback((restored: ChatMessage[], sessionId?: string | null) => {
+  const load = useCallback((
+    restored: ChatMessage[],
+    sessionId?: string | null,
+    resumeActive = false,
+  ) => {
     messagesGenerationRef.current += 1;
     if (preparingTimerRef.current !== null) {
       window.clearTimeout(preparingTimerRef.current);
@@ -937,10 +947,37 @@ export function useChat(options: UseChatOptions) {
       activeMessagesGenerationRef.current = null;
       activeProjectionVisibleRef.current = false;
     }
+    if (resumeActive && sessionId) {
+      const lastUser = [...restored].reverse().find((message) => message.role === "user");
+      if (lastUser) {
+        const draft: ChatDraft = {
+          text: lastUser.text ?? "",
+          paperMentions: lastUser.paperMentions ?? [],
+        };
+        const optimistic = [
+          ...restored,
+          {
+            id: `${lastUser.id}-active`,
+            role: "assistant" as const,
+            streaming: true,
+            blocks: [],
+          },
+        ];
+        run(draft, {
+          message: draft.text,
+          session_id: sessionId,
+          client_message_id: "reconnect",
+          web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
+          reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
+        }, optimistic, restored, undefined, sessionId);
+        return;
+      }
+    }
     setMessages(restored);
+    messagesRef.current = restored;
     if (!busyRef.current) setBusy(false);
     setSessionError("");
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     messages,

@@ -515,7 +515,7 @@ const ChatView: React.FC = () => {
     setSessionError("");
     void getSession(routeSessionId).then((detail) => {
       if (cancelled) return;
-      chat.load(toUiMessages(detail), routeSessionId);
+      chat.load(toUiMessages(detail), routeSessionId, detail.is_busy);
       setSelectedModel(detail.selected_model);
       setWebSearchEnabled(
         queuedLaunchRef.current && detail.messages.length === 0
