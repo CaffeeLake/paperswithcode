@@ -95,6 +95,7 @@ class ChatTurnTrace:
         prompt: str,
         model: str,
         execution_backend: str,
+        reasoning_effort: str = "high",
         display_prompt: str | None = None,
     ) -> None:
         self.root = root
@@ -109,6 +110,7 @@ class ChatTurnTrace:
             metadata={
                 "aggregation": "agent-run",
                 "ttft_semantics": "first-worker-delta",
+                "reasoning_effort": reasoning_effort,
             },
         )
         self.title_generation: Any | None = None
@@ -385,6 +387,136 @@ class NullChatTurnTrace:
         return
 
 
+class ProviderRequestTrace:
+    """Content-free Langfuse generation for one gateway provider request."""
+
+    def __init__(
+        self,
+        observation: Any,
+        *,
+        started: datetime,
+        metadata: dict[str, Any],
+    ) -> None:
+        self.observation = observation
+        self.started = started
+        self.metadata = metadata
+        self.first_byte_ms: int | None = None
+        self.closed = False
+
+    def first_byte(self, elapsed_ms: int) -> None:
+        if self.first_byte_ms is not None:
+            return
+        self.first_byte_ms = elapsed_ms
+        try:
+            self.observation.update(
+                completion_start_time=datetime.now(UTC),
+                metadata={**self.metadata, "ttft_ms": elapsed_ms},
+            )
+        except Exception:
+            logger.exception("chat provider-request TTFT tracing failed")
+
+    def finish(
+        self,
+        *,
+        usage: Any,
+        status_code: int | None,
+        error_code: str | None = None,
+    ) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        usage_details = {
+            key: value
+            for key, value in {
+                "input": getattr(usage, "prompt_tokens", None),
+                "output": getattr(usage, "completion_tokens", None),
+                "cache_read_input": getattr(usage, "cache_read_tokens", None),
+                "cache_creation_input": getattr(usage, "cache_creation_tokens", None),
+                "reasoning": getattr(usage, "reasoning_tokens", None),
+            }.items()
+            if isinstance(value, int)
+        }
+        cost = getattr(usage, "cost_microusd", None)
+        metadata = {
+            **self.metadata,
+            "duration_ms": round(
+                (datetime.now(UTC) - self.started).total_seconds() * 1000
+            ),
+            "ttft_ms": self.first_byte_ms,
+            "http_status": status_code,
+            "generation_id": getattr(usage, "generation_id", None),
+            "upstream_provider": getattr(usage, "provider", None),
+        }
+        try:
+            self.observation.update(
+                usage_details=usage_details or None,
+                cost_details=(
+                    {"total": cost / 1_000_000} if isinstance(cost, int) else None
+                ),
+                metadata=metadata,
+                level=(
+                    "ERROR" if error_code or (status_code or 500) >= 400 else "DEFAULT"
+                ),
+                status_message=(
+                    error_code or (str(status_code) if status_code else None)
+                ),
+            ).end()
+        except Exception:
+            logger.exception("chat provider-request Langfuse finalization failed")
+
+
+class NullProviderRequestTrace:
+    def first_byte(self, _elapsed_ms: int) -> None:
+        return
+
+    def finish(
+        self,
+        *,
+        usage: Any,
+        status_code: int | None,
+        error_code: str | None = None,
+    ) -> None:
+        del usage, status_code, error_code
+
+
+def start_provider_request_trace(
+    *,
+    settings: Settings,
+    trace_id: str | None,
+    turn_id: str,
+    call_sequence: int,
+    model: str,
+    provider_mode: str,
+    reasoning_effort: str,
+) -> ProviderRequestTrace | NullProviderRequestTrace:
+    if not trace_id:
+        return NullProviderRequestTrace()
+    try:
+        client = _configured_client(settings)
+        if client is None:
+            return NullProviderRequestTrace()
+        started = datetime.now(UTC)
+        metadata = {
+            "aggregation": "provider-request",
+            "turn_id": turn_id,
+            "model_round": call_sequence,
+            "provider_mode": provider_mode,
+            "reasoning_effort": reasoning_effort,
+            "routing_policy": "throughput",
+        }
+        observation = client.start_observation(
+            trace_context={"trace_id": trace_id},
+            name="provider-request",
+            as_type="generation",
+            model=model,
+            metadata=metadata,
+        )
+        return ProviderRequestTrace(observation, started=started, metadata=metadata)
+    except Exception:
+        logger.exception("chat provider-request Langfuse initialization failed")
+        return NullProviderRequestTrace()
+
+
 @contextmanager
 def trace_chat_turn(
     *,
@@ -397,6 +529,7 @@ def trace_chat_turn(
     execution_backend: str,
     is_replacement: bool,
     display_prompt: str | None = None,
+    reasoning_effort: str = "high",
 ) -> Iterator[ChatTurnTrace | NullChatTurnTrace]:
     """Create one trace per turn and one Langfuse session per conversation."""
 
@@ -419,6 +552,7 @@ def trace_chat_turn(
                 "request_id": request_id,
                 "execution_backend": execution_backend,
                 "is_replacement": str(is_replacement).lower(),
+                "reasoning_effort": reasoning_effort,
             },
             version=settings.release_id,
             tags=["chat", "research-assistant", execution_backend],
@@ -438,6 +572,7 @@ def trace_chat_turn(
                 display_prompt=display_prompt or prompt,
                 model=model,
                 execution_backend=execution_backend,
+                reasoning_effort=reasoning_effort,
             )
             try:
                 yield trace

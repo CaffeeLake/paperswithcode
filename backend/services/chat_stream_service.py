@@ -646,6 +646,7 @@ class ChatStreamOrchestrator:
             model=self.admission.model_route,
             execution_backend=self.admission.execution_backend,
             is_replacement=self.admission.is_replacement,
+            reasoning_effort=getattr(self.admission, "reasoning_effort", "high"),
         ) as trace:
             self.trace = trace
             _persist_trace_id(

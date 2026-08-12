@@ -346,6 +346,7 @@ def _summary(session: ChatSession) -> ChatSessionSummary:
         message_count=session.message_count,
         is_busy=_busy(session),
         web_search_enabled=session.web_search_enabled,
+        reasoning_effort=getattr(session, "reasoning_effort", None) or "high",
     )
 
 
@@ -363,6 +364,7 @@ def _message(row: ChatMessageRecord) -> ChatMessageResponse:
         followups=row.followups or [],
         display_blocks=row.display_blocks or [],
         model=row.model,
+        reasoning_effort=getattr(row, "reasoning_effort", None) or "high",
         finish_reason=row.finish_reason,
         error_code=row.error_code,
         created_at=row.created_at,
@@ -380,6 +382,7 @@ def list_models(
                 "id": choice["id"],
                 "label": choice["label"],
                 "provider": choice["provider"],
+                "reasoning_efforts": ["low", "high", "max"],
             }
             for choice in settings.chat_model_choices
         ],
@@ -613,7 +616,7 @@ def create_session(
         )
     try:
         session = ChatSessionService(db, settings).create_session(
-            owner_from_user(user), body.selected_model
+            owner_from_user(user), body.selected_model, body.reasoning_effort
         )
         db.commit()
         db.refresh(session)
@@ -753,6 +756,10 @@ def update_session(
             session = service.rename_session(owner, session_id, body.title)
         if body.selected_model is not None:
             session = service.select_model(owner, session_id, body.selected_model)
+        if body.reasoning_effort is not None:
+            session = service.select_reasoning_effort(
+                owner, session_id, body.reasoning_effort
+            )
         assert session is not None
         db.commit()
         db.refresh(session)
@@ -1014,6 +1021,7 @@ async def stream_chat(
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,
                     web_search_enabled=body.web_search_enabled,
+                    reasoning_effort=body.reasoning_effort,
                     update_web_search_preference=search_is_available,
                 )
                 provider = settings.chat_model_providers[admission.selected_model]

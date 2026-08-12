@@ -663,6 +663,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "model": request.model,
             "resume": request.resume,
             "web_search_enabled": True,
+            "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
             "turn_id": str(request.turn_id),
@@ -797,6 +798,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "model": request.model,
             "resume": None,
             "web_search_enabled": False,
+            "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
         }

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from backend.config import Settings
 from backend.services import chat_tracing_service as tracing
@@ -188,6 +189,52 @@ def test_tracing_is_staging_only(monkeypatch):
     monkeypatch.setenv("LANGFUSE_BASE_URL", "https://example.com")
     settings = Settings(environment="production", chat_langfuse_enabled=True)
     assert tracing._configured_client(settings) is None
+
+
+def test_provider_request_trace_is_content_free_and_records_usage(monkeypatch):
+    client = Client()
+    monkeypatch.setattr(tracing, "_configured_client", lambda _settings: client)
+    settings = Settings(environment="staging", chat_langfuse_enabled=True)
+
+    trace = tracing.start_provider_request_trace(
+        settings=settings,
+        trace_id="b" * 32,
+        turn_id="turn-1",
+        call_sequence=2,
+        model="provider/model",
+        provider_mode="openrouter_funded",
+        reasoning_effort="low",
+    )
+    trace.first_byte(125)
+    trace.finish(
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=40,
+            cache_read_tokens=75,
+            cache_creation_tokens=None,
+            reasoning_tokens=30,
+            cost_microusd=2500,
+            generation_id="gen-1",
+            provider="Baseten",
+        ),
+        status_code=200,
+    )
+
+    assert client.root is not None and client.root.ended
+    assert "input" not in client.root.fields
+    assert "output" not in client.root.fields
+    assert client.root.fields["trace_context"] == {"trace_id": "b" * 32}
+    assert client.root.fields["metadata"]["reasoning_effort"] == "low"
+    assert client.root.fields["metadata"]["ttft_ms"] == 125
+    assert client.root.fields["metadata"]["upstream_provider"] == "Baseten"
+    assert client.root.fields["usage_details"] == {
+        "input": 100,
+        "output": 40,
+        "cache_read_input": 75,
+        "reasoning": 30,
+    }
+    assert client.root.fields["cost_details"] == {"total": 0.0025}
+    assert isinstance(client.root.fields["completion_start_time"], datetime)
 
 
 def test_unfinished_operational_spans_close_as_warnings():

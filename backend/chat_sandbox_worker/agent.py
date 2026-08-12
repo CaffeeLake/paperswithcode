@@ -343,7 +343,7 @@ class WorkerToolHooks:
 
 def _validate_run_frame(
     frame: dict[str, Any],
-) -> tuple[str, str, str, bool, list[str], str]:
+) -> tuple[str, str, str, bool, str, list[str], str]:
     prompt = frame.get("prompt")
     if (
         not isinstance(prompt, str)
@@ -358,6 +358,9 @@ def _validate_run_frame(
     web_search_enabled = frame.get("web_search_enabled", False)
     if not isinstance(web_search_enabled, bool):
         raise ValueError("Invalid web search authorization")
+    reasoning_effort = str(frame.get("reasoning_effort") or "high")
+    if reasoning_effort not in {"low", "high", "max"}:
+        raise ValueError("Invalid reasoning effort")
     fetchable_urls = validate_url_seed(frame.get("fetchable_urls", []))
     hf_username = str(frame.get("hf_username") or "unknown")
     if (
@@ -368,7 +371,15 @@ def _validate_run_frame(
         )
     ):
         raise ValueError("Invalid Hugging Face username")
-    return prompt, request_id, model, web_search_enabled, fetchable_urls, hf_username
+    return (
+        prompt,
+        request_id,
+        model,
+        web_search_enabled,
+        reasoning_effort,
+        fetchable_urls,
+        hf_username,
+    )
 
 
 def _persistent_stdin_reader() -> asyncio.StreamReader:
@@ -583,6 +594,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         request_id,
         model,
         web_search_enabled,
+        _reasoning_effort,
         fetchable_urls,
         hf_username,
     ) = _validate_run_frame(frame)
@@ -892,6 +904,7 @@ class PersistentAgent:
             request_id,
             model,
             web_search_enabled,
+            _reasoning_effort,
             fetchable_urls,
             hf_username,
         ) = _validate_run_frame(frame)

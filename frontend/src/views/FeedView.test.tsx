@@ -9,6 +9,7 @@ import {
   CHAT_AUTO_SEND_KEY,
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
+  CHAT_REASONING_EFFORT_KEY,
   CHAT_WEB_SEARCH_KEY,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
@@ -58,8 +59,8 @@ describe("AskAssistant", () => {
     });
     renderAskAssistant();
 
-    expect(screen.getByRole("link", { name: "OpenRouter" }))
-      .toHaveAttribute("href", "https://openrouter.ai");
+    expect(screen.queryByRole("link", { name: "OpenRouter" }))
+      .not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Inference Providers" }))
       .not.toBeInTheDocument();
   });
@@ -117,12 +118,53 @@ describe("AskAssistant", () => {
       expect.stringContaining("/api/v1/chat/sessions"),
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ selected_model: DEFAULT_CHAT_MODEL }),
+        body: JSON.stringify({
+          selected_model: DEFAULT_CHAT_MODEL,
+          reasoning_effort: "low",
+        }),
       }),
     );
     expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe(question);
     expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBe(DEFAULT_CHAT_MODEL);
     expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
+    expect(sessionStorage.getItem(CHAT_REASONING_EFFORT_KEY)).toBe("low");
+  });
+
+  it("carries the selected reasoning effort into the first chat request", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "New chat",
+      selected_model: DEFAULT_CHAT_MODEL,
+      reasoning_effort: "max",
+      created_at: "2026-08-03T00:00:00Z",
+      updated_at: "2026-08-03T00:00:00Z",
+      message_count: 0,
+      is_busy: false,
+      web_search_enabled: false,
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    const user = userEvent.setup();
+    renderAskAssistant();
+
+    await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
+    expect(screen.getByRole("option", { name: /Low Faster and more concise/ }))
+      .toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("option", { name: /Max Deepest and slowest/ }));
+    expect(screen.getByRole("button", { name: "Reasoning effort: Max" }))
+      .toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Ask the assistant" }), "Deep comparison");
+    await user.click(screen.getByRole("button", { name: "Ask the assistant" }));
+
+    expect(await screen.findByText("Dedicated chat launched")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/chat/sessions"),
+      expect.objectContaining({
+        body: JSON.stringify({
+          selected_model: DEFAULT_CHAT_MODEL,
+          reasoning_effort: "max",
+        }),
+      }),
+    );
+    expect(readQueuedChatLaunch()?.reasoningEffort).toBe("max");
   });
 
   it("selects an inline paper and carries its structured mention into chat", async () => {

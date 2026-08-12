@@ -50,6 +50,7 @@ interface UseChatOptions {
   sessionId: string | null;
   initialModel?: string;
   webSearchEnabled?: boolean;
+  reasoningEffort?: "low" | "high" | "max";
   onSessionId: (id: string) => void;
   onTitle: (title: string) => void;
   onSettled: (sessionId: string | null) => void;
@@ -747,6 +748,7 @@ export function useChat(options: UseChatOptions) {
       session_id: optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
       web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
+      reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
     }, optimistic, current);
@@ -788,6 +790,7 @@ export function useChat(options: UseChatOptions) {
       session_id: first ? null : optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
       web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
+      reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
       ...(first && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(!first ? {
         replace_message_id: target.id,

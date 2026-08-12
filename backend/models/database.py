@@ -1975,6 +1975,9 @@ class ChatSession(Base):
     web_search_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="high"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2030,6 +2033,10 @@ class ChatSession(Base):
             "execution_backend IN ('local_mcp', 'modal_cli')",
             name="chat_sessions_execution_backend_check",
         ),
+        CheckConstraint(
+            "reasoning_effort IN ('low','high','max')",
+            name="chat_sessions_reasoning_effort_check",
+        ),
         Index(
             "idx_chat_sessions_owner_updated",
             "hf_user_id",
@@ -2069,6 +2076,9 @@ class ChatMessageRecord(Base):
     client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     web_search_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
+    )
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="high"
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     supersedes_message_id: Mapped[Optional[str]] = mapped_column(
@@ -2120,6 +2130,10 @@ class ChatMessageRecord(Base):
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')", name="chat_messages_role_check"
+        ),
+        CheckConstraint(
+            "reasoning_effort IN ('low','high','max')",
+            name="chat_messages_reasoning_effort_check",
         ),
         CheckConstraint(
             "(prepared_fork_sdk_session_id IS NULL) = "
@@ -2732,6 +2746,9 @@ class ChatTurnCapability(Base):
     owner_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     provider_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="high"
+    )
     provider_credential_revision: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
@@ -2779,6 +2796,10 @@ class ChatTurnCapability(Base):
             "provider_mode IS NULL OR provider_mode IN "
             "('huggingface','openrouter_funded','openrouter_byok')",
             name="chat_turn_capabilities_provider_mode_check",
+        ),
+        CheckConstraint(
+            "reasoning_effort IN ('low','high','max')",
+            name="chat_turn_capabilities_reasoning_effort_check",
         ),
         Index(
             "idx_chat_turn_capabilities_scope",
@@ -2954,6 +2975,9 @@ class ChatOpenRouterProviderCall(Base):
     hf_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     month_start: Mapped[date] = mapped_column(Date, nullable=False)
     model_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="high"
+    )
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
     actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
@@ -2977,6 +3001,10 @@ class ChatOpenRouterProviderCall(Base):
         CheckConstraint(
             "state IN ('reserved','dispatched','settled','released','cost_unknown')",
             name="chat_openrouter_provider_calls_state_check",
+        ),
+        CheckConstraint(
+            "reasoning_effort IN ('low','high','max')",
+            name="chat_openrouter_provider_calls_reasoning_effort_check",
         ),
         CheckConstraint(
             "reserved_microusd >= 0 AND "

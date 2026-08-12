@@ -76,6 +76,7 @@ class WorkerTurnRequest:
     capability_token: str = field(repr=False)
     gateway_url: str
     web_search_enabled: bool = False
+    reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
 
@@ -610,6 +611,7 @@ class WorkerTurnExecution:
             "model": self.request.model,
             "resume": self.request.resume,
             "web_search_enabled": self.request.web_search_enabled,
+            "reasoning_effort": self.request.reasoning_effort,
             "fetchable_urls": list(self.request.fetchable_urls),
             "hf_username": self.request.hf_username,
         }

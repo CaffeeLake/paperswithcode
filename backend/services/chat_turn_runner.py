@@ -70,6 +70,7 @@ class LocalChatTurnRunner:
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,
             web_search_enabled=self.admission.web_search_enabled,
+            reasoning_effort=self.admission.reasoning_effort,
             owner_hash=opaque_owner(self.owner.hf_user_id),
         ):
             yield event
@@ -213,6 +214,7 @@ def create_chat_turn_runner(
             settings=settings,
             provider_mode=provider_mode,
             provider_credential_revision=owner.openrouter_credential_revision,
+            reasoning_effort=admission.reasoning_effort,
             model=admission.model_route,
             scopes=scopes,
             sdk_session_id=resume_id,

@@ -27,6 +27,8 @@
 import { apiUrl } from "@/lib/apiUrl";
 import { mockChatStream } from "@/lib/chatMock";
 
+export type ReasoningEffort = "low" | "high" | "max";
+
 /** Structured metadata for one search hit (PLAN_CHAT_ENDPOINT.md, decision 12).
  * Keys are always present; unavailable values are null / empty lists. */
 export interface ChatPaperMetadata {
@@ -115,6 +117,7 @@ export interface ChatStreamRequest {
   prior_revision?: number;
   paper_mentions?: PaperMentionWire[];
   web_search_enabled: boolean;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface PaperMentionDraft {

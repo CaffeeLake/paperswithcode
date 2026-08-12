@@ -893,7 +893,9 @@ class _ChatSchemaDB:
         if "information_schema.columns" in sql:
             rows = [
                 ("chat_sessions", "execution_backend"),
+                ("chat_sessions", "reasoning_effort"),
                 ("chat_messages", "finish_reason"),
+                ("chat_messages", "reasoning_effort"),
                 ("chat_messages", "paper_mentions"),
                 ("chat_messages", "effective_prompt"),
                 ("chat_messages", "langfuse_trace_id"),
@@ -917,9 +919,11 @@ class _ChatSchemaDB:
                 ("chat_turn_capabilities", "provider_mode"),
                 ("chat_turn_capabilities", "provider_credential_revision"),
                 ("chat_turn_capabilities", "provider_error_code"),
+                ("chat_turn_capabilities", "reasoning_effort"),
                 ("chat_openrouter_credentials", "credential_revision"),
                 ("chat_openrouter_monthly_usage", "reserved_microusd"),
                 ("chat_openrouter_provider_calls", "actual_microusd"),
+                ("chat_openrouter_provider_calls", "reasoning_effort"),
             ]
             if self.include_edit_columns:
                 rows.extend(
@@ -1128,7 +1132,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "61"
+    assert descriptor["worker_contract_version"] == "62"
     dormant = _chat_descriptor_from_source(source, "production")
     assert dormant is not None
     assert dormant["enabled"] is False

@@ -20,6 +20,7 @@ from pydantic import (
 StrictText = Annotated[str, StringConstraints(max_length=8000)]
 AuthorName = Annotated[str, StringConstraints(max_length=300)]
 FinishReason = Literal["success", "max_turns", "tool_limit"]
+ReasoningEffort = Literal["low", "high", "max"]
 
 
 class PaperMentionRequest(BaseModel):
@@ -80,6 +81,7 @@ class ChatRequest(BaseModel):
     replace_message_id: uuid.UUID | None = None
     prior_revision: int | None = Field(default=None, ge=1)
     web_search_enabled: bool = False
+    reasoning_effort: ReasoningEffort | None = None
     paper_mentions: list[PaperMentionRequest] = Field(
         default_factory=list, max_length=10
     )
@@ -274,6 +276,7 @@ class ChatMessageResponse(BaseModel):
     followups: list[str] = Field(default_factory=list)
     display_blocks: list[DisplayBlock] = Field(default_factory=list)
     model: str | None = None
+    reasoning_effort: ReasoningEffort = "high"
     finish_reason: FinishReason | None = None
     error_code: str | None = None
     created_at: datetime
@@ -324,6 +327,7 @@ class ChatSessionSummary(BaseModel):
     message_count: int
     is_busy: bool = False
     web_search_enabled: bool = False
+    reasoning_effort: ReasoningEffort = "high"
 
 
 class ChatSessionDetail(ChatSessionSummary):
@@ -342,17 +346,23 @@ class ArchiveOldChatsResponse(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     selected_model: str | None = None
+    reasoning_effort: ReasoningEffort = "low"
 
 
 class UpdateSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str | None = Field(default=None, max_length=80)
     selected_model: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
     @model_validator(mode="after")
     def one_change(self) -> "UpdateSessionRequest":
-        if self.title is None and self.selected_model is None:
-            raise ValueError("Supply a title or selected_model")
+        if (
+            self.title is None
+            and self.selected_model is None
+            and self.reasoning_effort is None
+        ):
+            raise ValueError("Supply a title, selected_model, or reasoning_effort")
         if self.title is not None and not " ".join(self.title.split()):
             raise ValueError("Title must not be empty")
         return self

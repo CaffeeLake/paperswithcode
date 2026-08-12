@@ -95,6 +95,7 @@ class TurnAdmission:
     pwc_cli_version: str = ""
     system_prompt_sha256: str = ""
     web_search_enabled: bool = False
+    reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
 
 
@@ -432,10 +433,22 @@ class ChatSessionService:
             )
         return selected, route
 
+    @staticmethod
+    def _validate_reasoning_effort(effort: str) -> str:
+        if effort not in {"low", "high", "max"}:
+            raise ChatServiceError(
+                "invalid_reasoning_effort", 422, "Unsupported reasoning effort"
+            )
+        return effort
+
     def create_session(
-        self, owner: ChatOwner, selected_model: str | None = None
+        self,
+        owner: ChatOwner,
+        selected_model: str | None = None,
+        reasoning_effort: str = "low",
     ) -> ChatSession:
         model, _ = self._validate_model(selected_model)
+        effort = self._validate_reasoning_effort(reasoning_effort)
         self.db.execute(
             select(
                 func.pg_advisory_xact_lock(func.hashtextextended(owner.hf_user_id, 0))
@@ -483,6 +496,7 @@ class ChatSessionService:
             title="New chat",
             title_status="pending",
             selected_model=model,
+            reasoning_effort=effort,
             execution_backend=execution_backend,
             updated_at=_now(),
         )
@@ -647,12 +661,32 @@ class ChatSessionService:
         self.db.flush()
         return session
 
+    def select_reasoning_effort(
+        self, owner: ChatOwner, session_id: uuid.UUID, reasoning_effort: str
+    ) -> ChatSession:
+        effort = self._validate_reasoning_effort(reasoning_effort)
+        session = self._owned(owner, session_id, lock=True)
+        if (
+            session.active_turn_id
+            and session.active_turn_expires_at
+            and session.active_turn_expires_at > _now()
+        ):
+            raise ChatServiceError(
+                "session_busy", 409, "This chat is generating a response"
+            )
+        session.reasoning_effort = effort
+        session.hf_username = owner.hf_username
+        session.updated_at = _now()
+        self.db.flush()
+        return session
+
     def _resolve_replay(
         self,
         session: ChatSession | None,
         *,
         client_message_id: str,
         web_search_enabled: bool,
+        reasoning_effort: str,
         now: datetime,
     ) -> _ReplayOutcome:
         if session is None:
@@ -672,6 +706,13 @@ class ChatSessionService:
                 "idempotency_conflict",
                 409,
                 "This request ID was already used with different Search permission",
+            )
+        existing_reasoning_effort = getattr(existing, "reasoning_effort", "high")
+        if existing_reasoning_effort != reasoning_effort:
+            raise ChatServiceError(
+                "idempotency_conflict",
+                409,
+                "This request ID was already used with different reasoning effort",
             )
         assistant = self.db.execute(
             select(ChatMessageRecord).where(
@@ -702,6 +743,7 @@ class ChatSessionService:
                     prompt_revision=existing.revision,
                     execution_backend=session.execution_backend,
                     web_search_enabled=existing_web_search_enabled,
+                    reasoning_effort=existing_reasoning_effort,
                 ),
             )
         if (
@@ -1032,6 +1074,7 @@ class ChatSessionService:
         client_message_id: str,
         text: str,
         web_search_enabled: bool,
+        reasoning_effort: str,
         update_web_search_preference: bool,
         now: datetime,
     ) -> ChatMessageRecord:
@@ -1046,6 +1089,7 @@ class ChatSessionService:
         session.hf_username = owner.hf_username
         if update_web_search_preference:
             session.web_search_enabled = web_search_enabled
+        session.reasoning_effort = reasoning_effort
         session.updated_at = now
         session.projection_bytes += plan.quota.new_projection_bytes
         message = ChatMessageRecord(
@@ -1059,6 +1103,7 @@ class ChatSessionService:
             effective_prompt=plan.effective_prompt,
             client_message_id=client_message_id,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=reasoning_effort,
             revision=plan.replacement.revision,
             supersedes_message_id=prior.id if prior else None,
             sdk_resume_boundary_id=plan.resume_boundary.id,
@@ -1087,6 +1132,7 @@ class ChatSessionService:
         fetchable_urls: tuple[str, ...],
         *,
         web_search_enabled: bool,
+        reasoning_effort: str,
     ) -> TurnAdmission:
         prior = plan.replacement.prior
         return TurnAdmission(
@@ -1113,6 +1159,7 @@ class ChatSessionService:
             pwc_cli_version=plan.runtime.pwc_cli_version,
             system_prompt_sha256=plan.runtime.system_prompt_sha256,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=reasoning_effort,
             fetchable_urls=fetchable_urls,
         )
 
@@ -1129,16 +1176,26 @@ class ChatSessionService:
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
         web_search_enabled: bool = False,
+        reasoning_effort: str | None = None,
         update_web_search_preference: bool = True,
     ) -> TurnAdmission:
         session = (
             None if session_id is None else self._owned(owner, session_id, lock=True)
+        )
+        effective_reasoning_effort = self._validate_reasoning_effort(
+            reasoning_effort
+            or (
+                getattr(session, "reasoning_effort", None) or "high"
+                if session is not None
+                else "low"
+            )
         )
         now = _now()
         replay = self._resolve_replay(
             session,
             client_message_id=client_message_id,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=effective_reasoning_effort,
             now=now,
         )
         if replay.kind == "admitted":
@@ -1169,7 +1226,9 @@ class ChatSessionService:
         # Capacity admission precedes creation so a rejected new-chat request
         # cannot leave behind a session or any message state.
         if session is None:
-            session = self.create_session(owner, initial_model)
+            session = self.create_session(
+                owner, initial_model, effective_reasoning_effort
+            )
 
         stale = self._load_expired_active_message(session, now)
         recovered_expired_lease = self._apply_expired_active_turn(session, stale)
@@ -1236,6 +1295,7 @@ class ChatSessionService:
             client_message_id=client_message_id,
             text=text,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=effective_reasoning_effort,
             update_web_search_preference=update_web_search_preference,
             now=now,
         )
@@ -1253,6 +1313,7 @@ class ChatSessionService:
             plan,
             fetchable_urls,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=effective_reasoning_effort,
         )
 
     def bind_sdk_session(
@@ -1373,6 +1434,7 @@ class ChatSessionService:
             status="complete",
             model=admission.selected_model,
             model_route=admission.model_route,
+            reasoning_effort=admission.reasoning_effort,
             app_release_id=admission.app_release_id or None,
             sandbox_image_version=admission.image_version or None,
             worker_contract_version=admission.worker_contract_version or None,

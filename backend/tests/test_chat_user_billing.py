@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.chat_gateway_app import (
+    _apply_openrouter_reasoning_policy,
     _byok_provider_error_code,
     _huggingface_provider_error_code,
     _prefer_fastest_openrouter_provider,
@@ -120,6 +121,16 @@ def test_gateway_uses_openrouter_nitro_routing():
     _prefer_fastest_openrouter_provider(payload)
 
     assert payload["provider"] == {"sort": "throughput"}
+
+
+def test_gateway_enforces_reasoning_effort_and_hides_reasoning():
+    payload = {"reasoning": {"effort": "high", "exclude": False}}
+
+    _apply_openrouter_reasoning_policy(payload, "low", show_reasoning=False)
+
+    assert payload["reasoning"] == {"effort": "low", "exclude": True}
+    with pytest.raises(ValueError):
+        _apply_openrouter_reasoning_policy(payload, "medium", show_reasoning=False)
 
 
 def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():

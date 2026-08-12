@@ -18,7 +18,7 @@ def _number(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class WorkerSettings:
-    chat_show_reasoning: bool = True
+    chat_show_reasoning: bool = False
     chat_max_turns: int = 8
     chat_max_tool_calls: int = 12
     chat_max_direct_search_calls: int = 4
@@ -40,7 +40,7 @@ class WorkerSettings:
     def from_environment(cls) -> "WorkerSettings":
         return cls(
             chat_show_reasoning=os.environ.get(
-                "PWC_CHAT_SHOW_REASONING", "true"
+                "PWC_CHAT_SHOW_REASONING", "false"
             ).lower()
             in {"1", "true", "yes"},
             chat_max_turns=_integer("PWC_CHAT_MAX_TURNS", 8),

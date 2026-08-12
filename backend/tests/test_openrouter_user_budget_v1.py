@@ -213,6 +213,21 @@ def test_streaming_usage_extraction_handles_chunks_duplicates_and_bytes():
     assert result.completion_tokens == 34
 
 
+def test_usage_extraction_captures_provider_reasoning_and_cache_details():
+    extractor = OpenRouterUsageExtractor()
+    extractor.inspect_complete_response(
+        b'{"id":"gen-2","provider":"Baseten","usage":{'
+        b'"prompt_tokens":100,"completion_tokens":40,'
+        b'"prompt_tokens_details":{"cached_tokens":75},'
+        b'"completion_tokens_details":{"reasoning_tokens":30}}}'
+    )
+
+    result = extractor.result()
+    assert result.provider == "Baseten"
+    assert result.cache_read_tokens == 75
+    assert result.reasoning_tokens == 30
+
+
 def test_gateway_releases_capability_lock_before_openrouter_budget_check(monkeypatch):
     class FakeDB:
         commits = 0

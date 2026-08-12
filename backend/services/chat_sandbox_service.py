@@ -580,6 +580,7 @@ class SandboxSessionManager:
         resume: str | None,
         capability: IssuedCapability,
         web_search_enabled: bool = False,
+        reasoning_effort: str = "high",
         fetchable_urls: list[str] | None = None,
         hf_username: str = "unknown",
     ) -> AsyncIterator[dict]:
@@ -592,6 +593,7 @@ class SandboxSessionManager:
             resume=resume,
             capability_token=capability.token,
             web_search_enabled=web_search_enabled,
+            reasoning_effort=reasoning_effort,
             fetchable_urls=tuple(fetchable_urls or ()),
             hf_username=hf_username,
         )

@@ -2317,6 +2317,7 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         "request-1",
         "model-a",
         False,
+        "high",
         [],
         "unknown",
     )
@@ -2403,7 +2404,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert '"current_date_utc":"2026-07-28"' in prompt
     assert "at most 6 executed tool-use rounds" in prompt
     assert "hard failure ceilings, not retrieval targets" in prompt
-    assert "within 5 rounds and 3 searches" in prompt
+    assert "within 2 rounds and 2 searches" in prompt
+    assert "aim to stay within\n400 words" in prompt
     assert "title-based `pwc paper info` lookup can consume a search" in prompt
     assert "If any tool reports a 429" in prompt
     assert "Every Bash command runs with `set -eo pipefail`" in prompt
@@ -2450,9 +2452,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-YQKX5F3zFPo8JnZWF4ZVt5"
+    assert MODAL_IMAGE_ID == "im-9U5jxPL5KYfgl14BHPoe1D"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "61"
+    assert WORKER_CONTRACT_VERSION == "62"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

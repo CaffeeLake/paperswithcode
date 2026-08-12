@@ -84,6 +84,27 @@ def test_chat_quota_configuration_and_billing_api_fields_are_removed():
     assert "requests_per_day" not in payload
 
 
+def test_reasoning_effort_request_contract_accepts_native_values_only():
+    assert (
+        ChatRequest(message="hello", client_message_id="request-1").reasoning_effort
+        is None
+    )
+    assert (
+        ChatRequest(
+            message="hello",
+            client_message_id="request-2",
+            reasoning_effort="max",
+        ).reasoning_effort
+        == "max"
+    )
+    with pytest.raises(ValueError):
+        ChatRequest(
+            message="hello",
+            client_message_id="request-3",
+            reasoning_effort="medium",
+        )
+
+
 def test_require_user_returns_immutable_oauth_subject(monkeypatch):
     from backend.routers import auth
 

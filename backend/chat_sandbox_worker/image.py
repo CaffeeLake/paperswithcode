@@ -96,6 +96,7 @@ image = (
         {
             "PYTHONPATH": "/opt/pwc",
             "PWC_CHAT_MAX_TURNS": "8",
+            "PWC_CHAT_SHOW_REASONING": "false",
             "PWC_CHAT_MAX_TOOL_CALLS": "12",
             "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": "4",
             "PWC_CHAT_MAX_WEB_SEARCH_CALLS": "3",

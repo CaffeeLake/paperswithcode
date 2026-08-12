@@ -293,7 +293,13 @@ class OpenRouterUserBudgetService:
         model_route: str,
         request_bounds: RequestBounds,
         now: datetime | None = None,
+        *,
+        reasoning_effort: str = "high",
     ) -> ReservedCall:
+        if reasoning_effort not in {"low", "high", "max"}:
+            raise OpenRouterAccountingInvariantError(
+                "Provider-call reasoning effort is invalid"
+            )
         current = (now or datetime.now(UTC)).astimezone(UTC)
         month_start, reset = utc_month(current)
         reserved = safe_maximum_microusd(
@@ -306,8 +312,15 @@ class OpenRouterUserBudgetService:
                 existing.turn_id,
                 existing.call_sequence,
                 existing.model_route,
+                existing.reasoning_effort,
             )
-            expected = (owner_id, turn_id, call_sequence, model_route)
+            expected = (
+                owner_id,
+                turn_id,
+                call_sequence,
+                model_route,
+                reasoning_effort,
+            )
             if identity != expected:
                 raise OpenRouterAccountingInvariantError(
                     "Provider-call id was reused with different ownership"
@@ -344,6 +357,7 @@ class OpenRouterUserBudgetService:
             hf_user_id=owner_id,
             month_start=month_start,
             model_route=model_route,
+            reasoning_effort=reasoning_effort,
             state="reserved",
             reserved_microusd=reserved,
             reserved_at=current,

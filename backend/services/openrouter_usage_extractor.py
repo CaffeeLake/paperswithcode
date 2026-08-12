@@ -16,6 +16,10 @@ class ExtractedOpenRouterUsage:
     generation_id: str | None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    provider: str | None = None
 
 
 class OpenRouterUsageExtractor:
@@ -27,6 +31,10 @@ class OpenRouterUsageExtractor:
         self._generation_id: str | None = None
         self._prompt_tokens: int | None = None
         self._completion_tokens: int | None = None
+        self._cache_read_tokens: int | None = None
+        self._cache_creation_tokens: int | None = None
+        self._reasoning_tokens: int | None = None
+        self._provider: str | None = None
         self._conflicting_cost = False
 
     def feed(self, chunk: bytes) -> None:
@@ -80,13 +88,22 @@ class OpenRouterUsageExtractor:
     def _inspect(self, payload: object) -> None:
         if not isinstance(payload, dict):
             return
-        generation_id = payload.get("id")
+        nested = payload.get("data")
+        message = payload.get("message")
+        source = (
+            message
+            if isinstance(message, dict)
+            else nested
+            if isinstance(nested, dict)
+            else payload
+        )
+        generation_id = source.get("id", payload.get("id"))
         if isinstance(generation_id, str) and generation_id:
             self._generation_id = generation_id[:1000]
-        usage = payload.get("usage")
-        if not isinstance(usage, dict):
-            nested = payload.get("data")
-            usage = nested.get("usage") if isinstance(nested, dict) else None
+        provider = payload.get("provider", source.get("provider"))
+        if isinstance(provider, str) and provider:
+            self._provider = provider[:255]
+        usage = payload.get("usage", source.get("usage"))
         if not isinstance(usage, dict):
             return
         cost = parse_provider_cost_microusd(usage.get("cost", usage.get("total_cost")))
@@ -100,6 +117,36 @@ class OpenRouterUsageExtractor:
         )
         self._completion_tokens = self._integer(
             usage.get("completion_tokens", usage.get("output_tokens"))
+        )
+        input_details = usage.get("input_tokens_details")
+        prompt_details = usage.get("prompt_tokens_details")
+        cache_details = (
+            input_details
+            if isinstance(input_details, dict)
+            else prompt_details
+            if isinstance(prompt_details, dict)
+            else {}
+        )
+        self._cache_read_tokens = self._integer(
+            usage.get(
+                "cache_read_input_tokens",
+                usage.get("cache_read_tokens", cache_details.get("cached_tokens")),
+            )
+        )
+        self._cache_creation_tokens = self._integer(
+            usage.get("cache_creation_input_tokens", usage.get("cache_write_tokens"))
+        )
+        output_details = usage.get("output_tokens_details")
+        completion_details = usage.get("completion_tokens_details")
+        reasoning_details = (
+            output_details
+            if isinstance(output_details, dict)
+            else completion_details
+            if isinstance(completion_details, dict)
+            else {}
+        )
+        self._reasoning_tokens = self._integer(
+            reasoning_details.get("reasoning_tokens", usage.get("reasoning_tokens"))
         )
 
     @staticmethod
@@ -116,4 +163,8 @@ class OpenRouterUsageExtractor:
             generation_id=self._generation_id,
             prompt_tokens=self._prompt_tokens,
             completion_tokens=self._completion_tokens,
+            cache_read_tokens=self._cache_read_tokens,
+            cache_creation_tokens=self._cache_creation_tokens,
+            reasoning_tokens=self._reasoning_tokens,
+            provider=self._provider,
         )

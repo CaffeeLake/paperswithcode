@@ -13,12 +13,13 @@ import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons
 import { hfLoginUrl } from "@/components/HfSignInButton";
 import { useToast } from "@/components/ui/use-toast";
 import { useChat } from "@/hooks/useChat";
-import { isChatLive, type ChatDraft } from "@/lib/chat";
+import { isChatLive, type ChatDraft, type ReasoningEffort } from "@/lib/chat";
 import {
   CHAT_AUTO_SEND_KEY,
   CHAT_AUTH_ATTEMPTED_KEY,
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
+  CHAT_REASONING_EFFORT_KEY,
   clearQueuedChatLaunch,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
@@ -261,6 +262,9 @@ const ChatView: React.FC = () => {
   const [webSearchEnabled, setWebSearchEnabled] = useState(
     () => queuedLaunchRef.current?.webSearchEnabled ?? false,
   );
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
+    () => queuedLaunchRef.current?.reasoningEffort ?? "low",
+  );
   const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
   const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => {
     const queryPrompt = searchParams.get("q")?.trim();
@@ -313,6 +317,7 @@ const ChatView: React.FC = () => {
     sessionId: routeSessionId ?? null,
     initialModel: selectedModel,
     webSearchEnabled: webSearchAvailable && webSearchEnabled,
+    reasoningEffort,
     onSessionId: (id) => {
       activeStreamSessionIdRef.current = id;
       const isNewSession = id !== routeSessionIdRef.current;
@@ -331,6 +336,7 @@ const ChatView: React.FC = () => {
             message_count: 1,
             is_busy: true,
             web_search_enabled: webSearchEnabled,
+            reasoning_effort: reasoningEffort,
           }, ...previous]);
       if (isNewSession && shouldFollowStream) {
         setLiveTitle("New chat");
@@ -384,13 +390,14 @@ const ChatView: React.FC = () => {
   const authorizeInference = useCallback((nextDraft: ChatDraft) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
+    sessionStorage.setItem(CHAT_REASONING_EFFORT_KEY, reasoningEffort);
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
     const returnTo = routeSessionIdRef.current
       ? `/chat/${routeSessionIdRef.current}`
       : "/chat";
     window.location.href = hfLoginUrl(returnTo, true);
-  }, [selectedModel]);
+  }, [reasoningEffort, selectedModel]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -493,6 +500,7 @@ const ChatView: React.FC = () => {
         loadedRouteSessionIdRef.current = null;
         chat.reset();
         setWebSearchEnabled(false);
+        setReasoningEffort("low");
       }
       setRouteSessionState(null);
       return;
@@ -513,6 +521,11 @@ const ChatView: React.FC = () => {
         queuedLaunchRef.current && detail.messages.length === 0
           ? queuedLaunchRef.current.webSearchEnabled
           : detail.web_search_enabled,
+      );
+      setReasoningEffort(
+        queuedLaunchRef.current && detail.messages.length === 0
+          ? queuedLaunchRef.current.reasoningEffort
+          : detail.reasoning_effort ?? "high",
       );
       setLiveTitle(detail.title);
       loadedRouteSessionIdRef.current = routeSessionId;
@@ -596,6 +609,7 @@ const ChatView: React.FC = () => {
     chat.reset();
     setDraft(emptyDraft());
     setWebSearchEnabled(false);
+    setReasoningEffort("low");
     setLiveTitle("");
     navigate("/chat");
   };
@@ -695,6 +709,25 @@ const ChatView: React.FC = () => {
       setSessionError("");
     }
     catch (error) { setSelectedModel(previousModel); setSessionError(error instanceof Error ? error.message : "Model change failed"); }
+  };
+
+  const changeReasoningEffort = async (effort: ReasoningEffort) => {
+    const previousEffort = reasoningEffort;
+    setReasoningEffort(effort);
+    if (!routeSessionId) return;
+    try {
+      const updated = await updateSession(routeSessionId, {
+        reasoning_effort: effort,
+      });
+      setSessions((previous) => previous.map((session) => (
+        session.id === routeSessionId ? updated : session
+      )));
+    } catch (error) {
+      setReasoningEffort(previousEffort);
+      setSessionError(
+        error instanceof Error ? error.message : "Effort change failed",
+      );
+    }
   };
   const shareChat = async () => {
     if (!routeSessionId || chat.busy || sharePending) return;
@@ -877,7 +910,7 @@ const ChatView: React.FC = () => {
             byokExpected={byokExpected}
           />
           {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} />
+          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} reasoningEffort={reasoningEffort} onReasoningEffortChange={(effort) => void changeReasoningEffort(effort)} />
           <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" disabled={chatPaused} onClick={() => send(emptyDraft(example))}>{example}</button>)}</div>
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
@@ -933,7 +966,7 @@ const ChatView: React.FC = () => {
               byokExpected={byokExpected}
             />
             {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft.text ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} />
+            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft.text ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} reasoningEffort={reasoningEffort} onReasoningEffortChange={(effort) => void changeReasoningEffort(effort)} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               {selectedProvider === "openrouter"
                 ? <span className="chat-provider-attribution">Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>.</span>

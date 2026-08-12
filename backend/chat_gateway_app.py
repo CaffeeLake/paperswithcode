@@ -17,13 +17,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
-from backend.models.database import ChatSession, ChatTurnCapability
+from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnCapability
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -35,6 +36,7 @@ from backend.services.chat_hf_hub_service import (
     validate_hf_request,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_tracing_service import start_provider_request_trace
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
@@ -236,6 +238,17 @@ def _provider_target(
 
 def _prefer_fastest_openrouter_provider(payload: dict[str, Any]) -> None:
     payload["provider"] = {"sort": "throughput"}
+
+
+def _apply_openrouter_reasoning_policy(
+    payload: dict[str, Any], effort: str, *, show_reasoning: bool
+) -> None:
+    if effort not in {"low", "high", "max"}:
+        raise ValueError("Unsupported reasoning effort")
+    payload["reasoning"] = {
+        "effort": effort,
+        "exclude": not show_reasoning,
+    }
 
 
 def _capability_owner(row: ChatTurnCapability, db: Session) -> str:
@@ -542,6 +555,13 @@ async def messages(
         # the HF subject at OpenRouter.
         payload["user"] = opaque_owner(owner_id, settings)
         _prefer_fastest_openrouter_provider(payload)
+        effort = getattr(row, "reasoning_effort", None) or "high"
+        try:
+            _apply_openrouter_reasoning_policy(
+                payload, effort, show_reasoning=settings.chat_show_reasoning
+            )
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Capability rejected")
         raw = json.dumps(payload, separators=(",", ":")).encode()
         if len(raw) > 512 * 1024:
             raise HTTPException(status_code=413, detail="Model request is too large")
@@ -556,6 +576,19 @@ async def messages(
             maximum_tokens=MAX_PROVIDER_TURN_TOKENS,
         )
         call_sequence = row.provider_requests
+        trace_id = (
+            db.scalar(
+                select(ChatMessageRecord.langfuse_trace_id)
+                .where(
+                    ChatMessageRecord.turn_id == turn_id,
+                    ChatMessageRecord.role == "user",
+                )
+                .order_by(ChatMessageRecord.sequence.desc())
+                .limit(1)
+            )
+            if hasattr(db, "scalar")
+            else None
+        )
         # Capability validation takes a row lock so concurrent SDK model calls
         # receive distinct request counters. Land that bounded mutation before
         # any provider network check; otherwise a slow OpenRouter budget lookup
@@ -597,6 +630,7 @@ async def messages(
                     maximum_output_tokens=maximum_tokens,
                     payload=payload,
                 ),
+                reasoning_effort=effort,
             )
             db.commit()
         except OpenRouterMonthlyBudgetExhausted as error:
@@ -642,6 +676,15 @@ async def messages(
         db.commit()
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
+    provider_trace = start_provider_request_trace(
+        settings=settings,
+        trace_id=trace_id,
+        turn_id=str(turn_id),
+        call_sequence=call_sequence,
+        model=model,
+        provider_mode=provider_mode,
+        reasoning_effort=getattr(row, "reasoning_effort", None) or "high",
+    )
     upstream_headers = _provider_headers(
         provider_token,
         request,
@@ -665,6 +708,11 @@ async def messages(
                     funded_call_id
                 )
                 accounting_db.commit()
+        provider_trace.finish(
+            usage=OpenRouterUsageExtractor().result(),
+            status_code=None,
+            error_code="provider_transport_error",
+        )
         raise HTTPException(status_code=502, detail="Model provider failed") from None
     _record_gateway_timing(
         settings,
@@ -701,17 +749,16 @@ async def messages(
         first_byte = True
         try:
             async for chunk in upstream.aiter_bytes():
-                if funded_call_id is not None:
-                    extractor.feed(chunk)
+                extractor.feed(chunk)
                 if first_byte:
                     first_byte = False
+                    elapsed_ms = round((time.perf_counter() - gateway_started) * 1000)
+                    provider_trace.first_byte(elapsed_ms)
                     _record_gateway_timing(
                         settings,
                         turn_id,
                         phase="upstream_first_body_byte",
-                        elapsed_ms=round(
-                            (time.perf_counter() - gateway_started) * 1000
-                        ),
+                        elapsed_ms=elapsed_ms,
                     )
                 yield chunk
         finally:
@@ -726,6 +773,15 @@ async def messages(
                         funded_call_id,
                         type(error).__name__,
                     )
+            provider_trace.finish(
+                usage=extractor.result(),
+                status_code=upstream.status_code,
+                error_code=(
+                    None
+                    if upstream.status_code < 400
+                    else f"provider_http_{upstream.status_code}"
+                ),
+            )
             logger.info(
                 "chat provider stream complete call_class=research turn=%s "
                 "duration_ms=%.1f",
@@ -743,13 +799,14 @@ async def messages(
             chunks(), status_code=upstream.status_code, headers=headers
         )
     body = await upstream.aread()
-    if funded_call_id is not None:
-        extractor.inspect_complete_response(body)
+    extractor.inspect_complete_response(body)
+    elapsed_ms = round((time.perf_counter() - gateway_started) * 1000)
+    provider_trace.first_byte(elapsed_ms)
     _record_gateway_timing(
         settings,
         turn_id,
         phase="upstream_first_body_byte",
-        elapsed_ms=round((time.perf_counter() - gateway_started) * 1000),
+        elapsed_ms=elapsed_ms,
     )
     await upstream.aclose()
     await client.aclose()
@@ -762,4 +819,13 @@ async def messages(
                 funded_call_id,
                 type(error).__name__,
             )
+    provider_trace.finish(
+        usage=extractor.result(),
+        status_code=upstream.status_code,
+        error_code=(
+            None
+            if upstream.status_code < 400
+            else f"provider_http_{upstream.status_code}"
+        ),
+    )
     return Response(body, status_code=upstream.status_code, headers=headers)

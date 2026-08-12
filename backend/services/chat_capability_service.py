@@ -49,6 +49,7 @@ class ChatCapabilityService:
         provider_bill_to: str | None = None,
         provider_mode: str | None = None,
         provider_credential_revision: uuid.UUID | None = None,
+        reasoning_effort: str = "high",
         settings: Settings | None = None,
         model: str,
         scopes: set[str],
@@ -65,6 +66,8 @@ class ChatCapabilityService:
         }
         if not scopes or not scopes <= allowed:
             raise ValueError("Capability scopes are invalid")
+        if reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("Capability reasoning effort is invalid")
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + timedelta(seconds=lifetime_seconds)
         row = ChatTurnCapability(
@@ -84,6 +87,7 @@ class ChatCapabilityService:
                 else None
             ),
             provider_mode=provider_mode,
+            reasoning_effort=reasoning_effort,
             provider_credential_revision=provider_credential_revision,
             model=model,
             scopes=sorted(scopes),

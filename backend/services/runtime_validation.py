@@ -859,7 +859,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
     missing = [name for name in required_tables if rows.get(name) is None]
     common_columns = {
         ("chat_sessions", "execution_backend"),
+        ("chat_sessions", "reasoning_effort"),
         ("chat_messages", "finish_reason"),
+        ("chat_messages", "reasoning_effort"),
         ("chat_messages", "prepared_fork_sdk_session_id"),
         ("chat_messages", "prepared_fork_sdk_project_key"),
         ("chat_messages", "paper_mentions"),
@@ -892,11 +894,13 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_capabilities", "provider_mode"),
         ("chat_turn_capabilities", "provider_credential_revision"),
         ("chat_turn_capabilities", "provider_error_code"),
+        ("chat_turn_capabilities", "reasoning_effort"),
     }
     openrouter_columns = {
         ("chat_openrouter_credentials", "credential_revision"),
         ("chat_openrouter_monthly_usage", "reserved_microusd"),
         ("chat_openrouter_provider_calls", "actual_microusd"),
+        ("chat_openrouter_provider_calls", "reasoning_effort"),
     }
     web_search_columns = {
         ("chat_sessions", "web_search_enabled"),
@@ -925,7 +929,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
             FROM information_schema.columns
             WHERE (table_name, column_name) IN (
                 ('chat_sessions', 'execution_backend'),
+                ('chat_sessions', 'reasoning_effort'),
                 ('chat_messages', 'finish_reason'),
+                ('chat_messages', 'reasoning_effort'),
                 ('chat_messages', 'prepared_fork_sdk_session_id'),
                 ('chat_messages', 'prepared_fork_sdk_project_key'),
                 ('chat_messages', 'paper_mentions'),
@@ -958,9 +964,11 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_turn_capabilities', 'provider_mode'),
                 ('chat_turn_capabilities', 'provider_credential_revision'),
                 ('chat_turn_capabilities', 'provider_error_code'),
+                ('chat_turn_capabilities', 'reasoning_effort'),
                 ('chat_openrouter_credentials', 'credential_revision'),
                 ('chat_openrouter_monthly_usage', 'reserved_microusd'),
                 ('chat_openrouter_provider_calls', 'actual_microusd')
+                ,('chat_openrouter_provider_calls', 'reasoning_effort')
                 ,('chat_sessions', 'web_search_enabled')
                 ,('chat_messages', 'web_search_enabled')
                 ,('chat_turn_capabilities', 'web_search_calls')

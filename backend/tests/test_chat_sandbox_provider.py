@@ -102,6 +102,7 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     assert options["unencrypted_ports"] == []
     assert options["include_oidc_identity_token"] is False
     assert options["env"]["PWC_CHAT_WORKER_GENERATION"] == "generation-a"
+    assert options["env"]["PWC_CHAT_SHOW_REASONING"] == "false"
 
 
 def test_create_persistent_sandbox_waits_for_successful_worker_health(monkeypatch):

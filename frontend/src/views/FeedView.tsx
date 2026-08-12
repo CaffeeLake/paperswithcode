@@ -5,6 +5,7 @@ import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
+import ReasoningEffortPicker from "@/components/chat/ReasoningEffortPicker";
 import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
@@ -12,7 +13,7 @@ import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import { apiClient } from "@/lib/api";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
-import type { ChatDraft } from "@/lib/chat";
+import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import {
@@ -135,6 +136,7 @@ export const AskAssistant: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
   const selectedProvider = models.find((model) => model.id === selectedModel)?.provider;
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [launching, setLaunching] = useState(false);
   const placeholder = useRotatingChatPlaceholder(!question);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -168,9 +170,10 @@ export const AskAssistant: React.FC = () => {
     setLaunching(true);
     queueChatLaunch(nextDraft, selectedModel, {
       webSearchEnabled: webSearchAvailable && webSearchEnabled,
+      reasoningEffort,
     });
     try {
-      const session = await createSession(selectedModel);
+      const session = await createSession(selectedModel, reasoningEffort);
       navigate(`/chat/${session.id}`);
     } catch {
       // Anonymous users still need the chat route to begin OAuth. Network and
@@ -231,6 +234,11 @@ export const AskAssistant: React.FC = () => {
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
           />
+          <ReasoningEffortPicker
+            value={reasoningEffort}
+            onChange={setReasoningEffort}
+            disabled={launching}
+          />
           {webSearchAvailable && (
             <WebSearchToggle
               enabled={webSearchEnabled}
@@ -238,13 +246,8 @@ export const AskAssistant: React.FC = () => {
               disabled={launching}
             />
           )}
-          <span className="ask-home-hint">
-            {selectedProvider === "openrouter" ? <>
-              Via{" "}
-              <a href="https://openrouter.ai" target="_blank" rel="noreferrer">
-                OpenRouter
-              </a>
-            </> : <>
+          {selectedProvider !== "openrouter" && (
+            <span className="ask-home-hint">
               Via 🤗{" "}
               <a
                 href="https://huggingface.co/docs/inference-providers/en/index"
@@ -253,8 +256,8 @@ export const AskAssistant: React.FC = () => {
               >
                 Inference Providers
               </a>
-            </>}
-          </span>
+            </span>
+          )}
         </div>
         <button
           type="button"

@@ -1,5 +1,5 @@
 import { apiUrl } from "@/lib/apiUrl";
-import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft } from "@/lib/chat";
+import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft, ReasoningEffort } from "@/lib/chat";
 
 export interface ChatSession {
   id: string;
@@ -10,6 +10,7 @@ export interface ChatSession {
   message_count: number;
   is_busy: boolean;
   web_search_enabled: boolean;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface ChatSessionDetail extends ChatSession {
@@ -28,6 +29,7 @@ export interface ChatSessionDetail extends ChatSession {
     followups: string[];
     finish_reason?: string | null;
     error_code: string | null;
+    reasoning_effort?: ReasoningEffort;
   }>;
 }
 
@@ -65,6 +67,7 @@ export interface ChatModelChoice {
   id: string;
   label: string;
   provider: "huggingface" | "openrouter";
+  reasoning_efforts?: ReasoningEffort[];
 }
 
 export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
@@ -136,10 +139,16 @@ export async function listSessions(): Promise<ChatSession[]> {
   return sessions;
 }
 
-export function createSession(selectedModel?: string): Promise<ChatSession> {
+export function createSession(
+  selectedModel?: string,
+  reasoningEffort: ReasoningEffort = "low",
+): Promise<ChatSession> {
   return request("/api/v1/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ selected_model: selectedModel || null }),
+    body: JSON.stringify({
+      selected_model: selectedModel || null,
+      reasoning_effort: reasoningEffort,
+    }),
   });
 }
 
@@ -147,7 +156,10 @@ export function getSession(id: string): Promise<ChatSessionDetail> {
   return request(`/api/v1/chat/sessions/${id}`);
 }
 
-export function updateSession(id: string, patch: { title?: string; selected_model?: string }): Promise<ChatSession> {
+export function updateSession(
+  id: string,
+  patch: { title?: string; selected_model?: string; reasoning_effort?: ReasoningEffort },
+): Promise<ChatSession> {
   return request(`/api/v1/chat/sessions/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
 }
 
