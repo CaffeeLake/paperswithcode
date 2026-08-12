@@ -54,6 +54,10 @@ from backend.services.chat_paper_context_service import (
     ChatPaperContextService,
     PreparedPaperTurn,
 )
+from backend.services.chat_pi_release_window import (
+    PiReleaseWindowUnavailable,
+    require_pi_release_window,
+)
 from backend.services.chat_sandbox_service import (
     SandboxCleanupUnverified,
     SandboxSessionManager,
@@ -660,6 +664,17 @@ def create_admin_harness_session(
 
     if settings.environment != "staging":
         raise HTTPException(status_code=404, detail="Not found")
+    if body.agent_harness == "pi":
+        try:
+            require_pi_release_window()
+        except PiReleaseWindowUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "pi_qualification_unavailable",
+                    "message": str(exc),
+                },
+            ) from exc
     subject = str(admin.get("hf_subject") or "admin-api-token")
     owner_id = subject if admin.get("source") == "cookie" else f"operator:{subject}"
     owner = ChatOwner(

@@ -240,6 +240,7 @@ def test_admin_harness_session_is_staging_only_and_returns_neutral_summary(
         commit=lambda: None, refresh=lambda _row: None, rollback=lambda: None
     )
     monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "require_pi_release_window", lambda: None)
     response = chat_router.create_admin_harness_session(
         chat_router.AdminCreateHarnessSession(
             agent_harness="pi", selected_model="model", reasoning_effort="low"
