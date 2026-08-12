@@ -4,7 +4,8 @@ the legacy `/papers/{id}` route.
 
 These tests focus on:
   - Resolving the social image URL from an existing paper thumbnail.
-  - Falling back to the static default image when no thumbnail is on disk.
+  - Using Hugging Face's paper preview when an arXiv thumbnail is not on disk.
+  - Falling back to the static default image for other papers.
   - Injecting properly escaped meta tags into the SPA shell HTML.
   - The end-to-end response surface of the FastAPI routes, including a
     smoke check that the default OG image endpoint returns a PNG payload.
@@ -156,8 +157,38 @@ def test_resolve_social_image_uses_existing_arxiv_thumbnail():
     assert (result.width, result.height) == (400, 550)
 
 
-def test_resolve_social_image_falls_back_when_thumbnail_missing():
-    paper = _make_paper()
+@pytest.mark.parametrize(
+    "thumbnail_url",
+    [
+        None,
+        "/api/thumbnails/2504_12516_v1.jpg?fit=fit2",
+    ],
+)
+def test_resolve_social_image_uses_hf_preview_when_arxiv_thumbnail_missing(
+    thumbnail_url,
+):
+    paper = _make_paper(thumbnail_url=thumbnail_url)
+    fake = _FakeThumbnailService(present=set())
+
+    result = resolve_social_image_url(
+        paper, "https://paperswithcode.co", thumbnail_service=fake
+    )
+
+    assert result.is_fallback is False
+    assert result.absolute_url == (
+        "https://cdn-thumbnails.huggingface.co/social-thumbnails/"
+        "papers/2504.12516/gradient.png"
+    )
+    assert result.mime_type == "image/png"
+    assert (result.width, result.height) == (1200, 630)
+
+
+def test_resolve_social_image_falls_back_for_external_paper_without_thumbnail():
+    paper = _make_paper(
+        source="external",
+        arxiv_id=None,
+        thumbnail_url=None,
+    )
     fake = _FakeThumbnailService(present=set())
 
     result = resolve_social_image_url(
@@ -165,7 +196,7 @@ def test_resolve_social_image_falls_back_when_thumbnail_missing():
     )
 
     assert result.is_fallback is True
-    assert result.absolute_url == ("https://paperswithcode.co/api/og/default.png")
+    assert result.absolute_url == "https://paperswithcode.co/api/og/default.png"
     assert result.mime_type == "image/png"
     assert (result.width, result.height) == (1200, 630)
 
@@ -282,7 +313,7 @@ def test_inject_paper_meta_escapes_user_supplied_strings():
     )
 
 
-def test_inject_paper_meta_uses_fallback_image_when_disk_misses():
+def test_inject_paper_meta_uses_hf_preview_when_arxiv_thumbnail_disk_misses():
     paper = _make_paper()
     fake = _FakeThumbnailService(present=set())
 
@@ -294,15 +325,24 @@ def test_inject_paper_meta_uses_fallback_image_when_disk_misses():
     )
     html = inject_paper_meta("<html><head></head><body></body></html>", meta)
 
-    assert 'og:image" content="https://paperswithcode.co/api/og/default.png"' in html
-    # Fallback image carries explicit dimensions and type so
+    assert (
+        'og:image" content="https://cdn-thumbnails.huggingface.co/'
+        'social-thumbnails/papers/2504.12516/gradient.png"'
+    ) in html
+    # The upstream image carries explicit dimensions and type so
     # summary_large_image cards render cleanly even before the platform has
     # scraped the asset.
     assert 'og:image:type" content="image/png"' in html
     assert 'og:image:width" content="1200"' in html
     assert 'og:image:height" content="630"' in html
-    assert 'og:image:alt" content="Papers with Code"' in html
-    assert 'twitter:image:alt" content="Papers with Code"' in html
+    assert (
+        'og:image:alt" content="First page preview of '
+        'A &lt;Great&gt; Paper &amp; Friends"' in html
+    )
+    assert (
+        'twitter:image:alt" content="First page preview of '
+        'A &lt;Great&gt; Paper &amp; Friends"' in html
+    )
 
 
 _STATIC_INDEX_HEAD = (
@@ -454,6 +494,22 @@ def test_paper_route_returns_html_with_paper_specific_meta(client, monkeypatch):
         '2504_12516_v1.jpg?fit=fit2"'
     ) in body
     assert response.headers["vary"] == "Accept"
+
+
+def test_new_arxiv_paper_route_uses_hf_preview_before_local_preload(
+    client, monkeypatch
+):
+    paper = _make_paper(thumbnail_url=None)
+    _stub_paper_lookup(monkeypatch, paper)
+    _stub_thumbnail_present(monkeypatch, set())
+
+    response = client.get("/paper/2504.12516")
+
+    assert response.status_code == 200
+    assert (
+        'twitter:image" content="https://cdn-thumbnails.huggingface.co/'
+        'social-thumbnails/papers/2504.12516/gradient.png"'
+    ) in response.text
 
 
 def test_paper_markdown_is_available_without_frontend_bundle(client, monkeypatch):

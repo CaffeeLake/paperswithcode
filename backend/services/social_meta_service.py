@@ -9,8 +9,9 @@ the same generic preview for every paper URL.
 This module returns a per-paper variant of the SPA HTML with paper-specific
 `<title>`, `description`, `og:*` and `twitter:*` tags injected, including
 an absolute image URL pointing at the paper's existing thumbnail when the
-image is already on disk. When no thumbnail is available we point at a
-shared static fallback that always exists.
+image is already on disk. Newly imported arXiv papers use Hugging Face's
+first-page social preview until the local thumbnail is ready; other missing
+images use a shared static fallback that always exists.
 
 Nothing here touches the React bundle or runtime behaviour. The injected
 HTML still references the same Vite-built `index.html`, and React takes over
@@ -25,16 +26,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from PIL import Image as PILImage
 
 from backend.models.api import Paper
-from backend.services.thumbnail_service import ThumbnailService
 from backend.services.paper_seo_service import (
     PaperSeoDocument,
     render_bibliographic_meta,
 )
+from backend.services.thumbnail_service import ThumbnailService
 from backend.utils.latex_text import latex_to_plain_text
 
 logger = logging.getLogger(__name__)
@@ -43,12 +44,19 @@ logger = logging.getLogger(__name__)
 PRODUCTION_ORIGIN = "https://paperswithcode.co"
 FALLBACK_IMAGE_PATH = "/api/og/default.png"
 MAX_DESCRIPTION_CHARS = 280
+HF_PAPER_SOCIAL_THUMBNAIL_TEMPLATE = (
+    "https://cdn-thumbnails.huggingface.co/social-thumbnails/"
+    "papers/{arxiv_id}/gradient.png"
+)
 
 # The default OG image (backend/services/default_og_image.py) is a 1200x630 PNG,
 # the standard summary_large_image size.
 FALLBACK_IMAGE_MIME = "image/png"
 FALLBACK_IMAGE_WIDTH = 1200
 FALLBACK_IMAGE_HEIGHT = 630
+HF_PAPER_SOCIAL_THUMBNAIL_MIME = "image/png"
+HF_PAPER_SOCIAL_THUMBNAIL_WIDTH = 1200
+HF_PAPER_SOCIAL_THUMBNAIL_HEIGHT = 630
 
 
 @dataclass(frozen=True)
@@ -156,6 +164,27 @@ def _fallback_image(origin: str) -> _ResolvedImage:
     )
 
 
+def _hugging_face_paper_image(arxiv_id: str) -> _ResolvedImage:
+    """Return Hugging Face's landscape first-page preview for an arXiv paper."""
+    return _ResolvedImage(
+        HF_PAPER_SOCIAL_THUMBNAIL_TEMPLATE.format(
+            arxiv_id=quote(arxiv_id.strip(), safe="")
+        ),
+        is_fallback=False,
+        mime_type=HF_PAPER_SOCIAL_THUMBNAIL_MIME,
+        width=HF_PAPER_SOCIAL_THUMBNAIL_WIDTH,
+        height=HF_PAPER_SOCIAL_THUMBNAIL_HEIGHT,
+    )
+
+
+def _missing_paper_image(paper: Paper, origin: str) -> _ResolvedImage:
+    """Choose the best social image when the local paper thumbnail is absent."""
+    arxiv_id = (paper.arxiv_id or "").strip()
+    if paper.source == "arxiv" and arxiv_id:
+        return _hugging_face_paper_image(arxiv_id)
+    return _fallback_image(origin)
+
+
 def resolve_social_image_url(
     paper: Paper,
     origin: str,
@@ -165,12 +194,14 @@ def resolve_social_image_url(
     Pick an absolute image URL for ``og:image`` / ``twitter:image``.
 
     Prefers the paper's existing thumbnail (the same JPEG the site already
-    displays in feed cards). If that file is not yet on disk locally we use
-    the shared default image so crawlers always receive a working URL.
+    displays in feed cards). If a newly imported arXiv paper is not on disk
+    yet, use Hugging Face's already-generated first-page social image. This
+    closes the race between the hourly paper import, social posts, and our
+    thumbnail preload. Other papers use the shared default image.
     """
     raw_thumb = (paper.thumbnail_url or "").strip()
     if not raw_thumb:
-        return _fallback_image(origin)
+        return _missing_paper_image(paper, origin)
 
     if raw_thumb.startswith(("http://", "https://")):
         return _ResolvedImage(
@@ -198,7 +229,7 @@ def resolve_social_image_url(
                     height=height,
                 )
 
-    return _fallback_image(origin)
+    return _missing_paper_image(paper, origin)
 
 
 def _check_thumbnail_on_disk(
