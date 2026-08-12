@@ -86,7 +86,8 @@ into both backend and frontend manifests with the active immutable runtime
 descriptor. The deploy rejects an existing same-SHA release whose activation
 mode differs, so operators must use a new exact source SHA rather than mutate an
 immutable bundle. Runtime readiness still fails closed until every production
-chat prerequisite is configured; OpenRouter remains prohibited in either mode.
+chat prerequisite is configured; OpenRouter remains prohibited for production
+research calls in either mode.
 
 For the one-time migration from a legacy service, install the committed tools
 and slot units. A source-only compatibility landing may use the explicit
@@ -291,18 +292,15 @@ Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` staging workspace limit. Durable
 PostgreSQL reservations enforce the separate `$5` per-user ceiling before each
 funded gateway dispatch. Production permanently prohibits shared OpenRouter
-models, credentials, allowance state, percentage UI, and BYOK controls.
+research models, allowance state, percentage UI, and BYOK controls; the title
+path is the only permitted server-funded OpenRouter exception.
 
-Automatic title generation is the sole server-funded Hugging Face exception.
-Staging uses a staging-specific `nielsr` credential, pins
-`openai/gpt-oss-120b` to Cerebras, and reserves against a persistent,
-environment-isolated `$25/month` circuit before dispatch. The title request
-also names the reviewed `huggingface` organization as its explicit billing
-target; it must not silently fall back to personal billing. The research prompt
-path never receives this credential or billing target. Missing credentials,
-ledger uncertainty, provider failure, or exhaustion falls back to a local
-prompt-derived title. Production requires a different credential and ledger and
-remains disabled.
+Automatic title generation uses the server-funded OpenRouter credential and
+pins `deepseek/deepseek-v4-flash-0731`. It reserves against a persistent,
+environment-isolated `$25/month` title circuit before dispatch. Missing
+credentials, ledger uncertainty, provider failure, or exhaustion falls back to
+a local prompt-derived title. Production requires its own credential and ledger
+and remains disabled.
 The two environments may share the same `$1,000/month` account-level backstop,
 but neither may read or borrow the other's `$25` application budget; aggregate
 account monitoring must cover their combined title spend.
@@ -385,16 +383,17 @@ sudo python deploy/configure_host_env.py \
 ```
 
 The installer reads only the previously sealed root-owned bundle, rejects
-missing, stale, or added keys, and revalidates title-token isolation, Modal
-policy, alert separation, capacity, and the OpenRouter prohibition before an
-atomic write. Disabled bridge manifests override chat and Modal rollout to
+missing, stale, or added keys, and revalidates title metadata, Modal policy,
+alert separation, capacity, and the research-call OpenRouter prohibition before
+an atomic write. Disabled bridge manifests override chat and Modal rollout to
 zero, so the same installed configuration remains rollback-compatible without
 editing secrets during an incident.
 
-Install the already-provisioned staging title credential from a protected local
-environment file through the narrow staging-only helper. It validates the exact
-owner, environment, billing target, model, provider, and `$25` circuit, rejects
-reuse of a general or production title token, and does not write production:
+Install the staging title policy from a protected local environment file through
+the narrow staging-only helper. It validates the exact owner, environment,
+model, provider, and `$25` circuit and does not write production. Legacy HF
+credential fields remain temporarily required for rollback compatibility but
+are not used by the OpenRouter title call:
 
 ```bash
 sudo python deploy/configure_host_env.py \

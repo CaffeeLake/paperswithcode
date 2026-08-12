@@ -170,7 +170,7 @@ def test_chat_provider_policy_always_rejects_production_openrouter(
     with pytest.raises(RuntimeError) as exc_info:
         runtime_validation.validate_chat_provider_policy(settings)
     assert str(exc_info.value) == (
-        "production OpenRouter chat credentials are prohibited"
+        "production OpenRouter research chat credentials are prohibited"
     )
 
 
@@ -227,10 +227,10 @@ def test_chat_provider_policy_owns_gateway_and_openrouter(
     ("field", "value", "message"),
     [
         (
-            "chat_title_bill_to",
+            "chat_openrouter_api_key",
             "",
-            "an isolated nielsr title credential billed to the huggingface "
-            "organization is required",
+            "an environment-scoped OpenRouter title credential owned by nielsr "
+            "is required",
         ),
         (
             "chat_sandbox_cpu_limit",

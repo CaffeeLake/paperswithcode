@@ -7,7 +7,7 @@ import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from huggingface_hub import AsyncInferenceClient
+from openai import AsyncOpenAI
 
 from backend.config import Settings
 
@@ -53,17 +53,15 @@ async def stream_title(
     settings: Settings,
     *,
     provider_token: str,
-    bill_to: str | None = None,
     usage: TitleProviderUsage | None = None,
 ) -> AsyncIterator[str]:
-    client = AsyncInferenceClient(
-        model=settings.chat_title_model,
-        provider=settings.chat_title_provider,
-        token=provider_token,
+    client = AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=provider_token,
         timeout=settings.chat_title_timeout_seconds,
-        bill_to=bill_to,
     )
-    response = await client.chat_completion(
+    response = await client.chat.completions.create(
+        model=settings.chat_title_model,
         messages=[
             {"role": "system", "content": TITLE_INSTRUCTION},
             {
@@ -74,7 +72,7 @@ async def stream_title(
         stream=True,
         temperature=0.2,
         max_tokens=settings.chat_title_max_tokens,
-        extra_body={"reasoning_effort": "low"},
+        extra_body={"reasoning": {"effort": "low"}},
     )
     async with asyncio.timeout(settings.chat_title_timeout_seconds):
         async for chunk in response:

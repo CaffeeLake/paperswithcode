@@ -258,15 +258,22 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
 
 
 def _validate_production_openrouter_prohibition(settings: Settings) -> None:
+    title_only_key = (
+        settings.chat_openrouter_api_key
+        and settings.chat_title_generation_enabled
+        and settings.chat_title_provider == "openrouter"
+    )
     if settings.environment == "production" and any(
         (
             settings.chat_openrouter_server_funded_enabled,
-            settings.chat_openrouter_api_key,
+            settings.chat_openrouter_api_key and not title_only_key,
             settings.chat_openrouter_credential_keyring,
             settings.chat_openrouter_user_tracking_secret,
         )
     ):
-        raise RuntimeError("production OpenRouter chat credentials are prohibited")
+        raise RuntimeError(
+            "production OpenRouter research chat credentials are prohibited"
+        )
 
 
 def validate_environment_policy(settings: Settings) -> None:
@@ -582,24 +589,21 @@ def _validate_chat_gateway_policy(settings: Settings) -> None:
 
 
 def _validate_chat_title_policy(settings: Settings) -> None:
-    """Validate the isolated title credential and monthly spend circuit."""
+    """Validate the OpenRouter title credential and monthly spend circuit."""
 
     if (
         not settings.chat_title_generation_enabled
-        or not settings.chat_title_hf_token
-        or settings.chat_title_bill_to != "huggingface"
+        or not settings.chat_openrouter_api_key
         or settings.chat_title_credential_owner != "nielsr"
         or settings.chat_title_credential_environment != settings.environment
     ):
         raise RuntimeError(
-            "an isolated nielsr title credential billed to the huggingface "
-            "organization is required"
+            "an environment-scoped OpenRouter title credential owned by nielsr "
+            "is required"
         )
-    if settings.chat_title_hf_token == settings.hf_token:
-        raise RuntimeError("the title credential must not reuse PWC_HF_TOKEN")
     if (
-        settings.chat_title_model != "openai/gpt-oss-120b"
-        or settings.chat_title_provider != "cerebras"
+        settings.chat_title_model != "deepseek/deepseek-v4-flash-0731"
+        or settings.chat_title_provider != "openrouter"
         or settings.chat_title_max_tokens != 64
         or settings.chat_title_monthly_cap_microusd != 25_000_000
         or not 0

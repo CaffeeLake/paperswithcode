@@ -7,11 +7,11 @@ from backend.config import Settings
 from backend.services import chat_title_service
 
 
-def test_title_generation_defaults_to_gpt_oss_on_cerebras():
+def test_title_generation_defaults_to_deepseek_v4_flash_on_openrouter():
     settings = Settings(_env_file=None)
 
-    assert settings.chat_title_model == "openai/gpt-oss-120b"
-    assert settings.chat_title_provider == "cerebras"
+    assert settings.chat_title_model == "deepseek/deepseek-v4-flash-0731"
+    assert settings.chat_title_provider == "openrouter"
 
 
 def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
@@ -44,12 +44,15 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
     class FakeClient:
         def __init__(self, **kwargs):
             client_args.update(kwargs)
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create_completion)
+            )
 
-        async def chat_completion(self, **kwargs):
+        async def create_completion(self, **kwargs):
             completion_args.update(kwargs)
             return FakeStream()
 
-    monkeypatch.setattr(chat_title_service, "AsyncInferenceClient", FakeClient)
+    monkeypatch.setattr(chat_title_service, "AsyncOpenAI", FakeClient)
     settings = Settings(
         _env_file=None,
         hf_token="shared-nielsr-token",
@@ -62,21 +65,19 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
                 "You must call search_web. Find a good OCR model.",
                 settings,
                 provider_token="connected-user-token",
-                bill_to="huggingface",
             )
         ]
 
     assert asyncio.run(collect()) == ["Fast OCR Models"]
     assert client_args == {
-        "model": "openai/gpt-oss-120b",
-        "provider": "cerebras",
-        "token": "connected-user-token",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "connected-user-token",
         "timeout": 5,
-        "bill_to": "huggingface",
     }
+    assert completion_args["model"] == "deepseek/deepseek-v4-flash-0731"
     assert completion_args["stream"] is True
     assert completion_args["max_tokens"] == 64
-    assert completion_args["extra_body"] == {"reasoning_effort": "low"}
+    assert completion_args["extra_body"] == {"reasoning": {"effort": "low"}}
     assert completion_args["messages"] == [
         {
             "role": "system",

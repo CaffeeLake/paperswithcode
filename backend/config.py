@@ -272,7 +272,7 @@ class Settings(BaseSettings):
     chat_terra_route: str = Field(default="openai/gpt-5.6-terra")
     chat_openrouter_api_key: str = Field(
         default="",
-        description="OpenRouter API key reserved for server-funded research chat",
+        description="OpenRouter API key for server-funded research chat and titles",
     )
     chat_openrouter_server_funded_enabled: bool = Field(default=False)
     chat_openrouter_monthly_user_budget_usd: Decimal = Field(
@@ -316,19 +316,21 @@ class Settings(BaseSettings):
     chat_openrouter_input_microusd_per_token: int = Field(default=2, ge=1)
     chat_openrouter_output_microusd_per_token: int = Field(default=9, ge=1)
     chat_openrouter_request_fee_microusd: int = Field(default=10_000, ge=0)
-    chat_title_model: str = Field(default="openai/gpt-oss-120b")
-    chat_title_provider: str = Field(default="cerebras")
+    chat_title_model: str = Field(default="deepseek/deepseek-v4-flash-0731")
+    chat_title_provider: str = Field(default="openrouter")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
     chat_title_max_tokens: int = Field(default=64, ge=8, le=64)
     chat_title_generation_enabled: bool = Field(default=False)
+    # Read-only compatibility inputs retained while older protected title
+    # configuration can still be rolled back.
     chat_title_hf_token: str = Field(
         default="",
-        description="Environment-specific server credential used only for chat titles",
+        description="Legacy Hugging Face credential formerly used for chat titles",
     )
     chat_title_bill_to: str = Field(
         default="",
         max_length=128,
-        description="Hugging Face organization billed for server-funded chat titles",
+        description="Legacy Hugging Face billing target formerly used for chat titles",
     )
     chat_title_credential_owner: str = Field(default="", max_length=128)
     chat_title_credential_environment: str = Field(default="", max_length=32)

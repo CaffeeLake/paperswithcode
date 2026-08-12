@@ -385,8 +385,8 @@ def staging_title_values(
         )
     return {
         **values,
-        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
-        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
@@ -439,8 +439,8 @@ def production_title_values(
         )
     return {
         **values,
-        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
-        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",

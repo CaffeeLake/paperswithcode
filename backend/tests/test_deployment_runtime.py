@@ -468,12 +468,12 @@ def test_enabled_chat_does_not_require_general_server_hf_token(tmp_path: Path):
     assert validate_runtime(settings) == profile_features("staging")
 
 
-def test_enabled_chat_requires_title_organization_billing(tmp_path: Path):
+def test_enabled_chat_requires_openrouter_title_credential(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
-    settings.chat_title_bill_to = ""
+    settings.chat_openrouter_api_key = ""
 
-    with pytest.raises(RuntimeError, match="billed to the huggingface organization"):
+    with pytest.raises(RuntimeError, match="OpenRouter title credential"):
         validate_runtime(settings)
 
 
@@ -762,6 +762,7 @@ def test_disabled_production_accepts_armed_configuration_for_atomic_rollback(
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
+    settings.chat_openrouter_api_key = "test-only-production-title-token"
     settings.chat_title_hf_token = "test-only-production-title-token"
     settings.chat_title_bill_to = "huggingface"
     settings.chat_title_credential_owner = "nielsr"
@@ -1231,6 +1232,7 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
+    settings.chat_openrouter_api_key = "test-only-production-title-token"
     settings.chat_title_hf_token = "test-only-production-title-token"
     settings.chat_title_bill_to = "huggingface"
     settings.chat_title_credential_owner = "nielsr"
@@ -2464,8 +2466,8 @@ def test_staging_title_values_are_exact_and_isolated():
         "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "staging",
-        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
-        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",

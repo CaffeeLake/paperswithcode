@@ -492,9 +492,9 @@ async def _title_events(
             raise ChatTitleBudgetUnavailable(
                 "Server-funded title generation is disabled"
             )
-        if not settings.chat_title_hf_token:
+        if not settings.chat_openrouter_api_key:
             raise ChatTitleBudgetUnavailable(
-                "The isolated title credential is unavailable"
+                "The OpenRouter title credential is unavailable"
             )
         with db_manager.session_local() as db:
             try:
@@ -511,8 +511,7 @@ async def _title_events(
         async for delta in stream_title(
             prompt,
             settings,
-            provider_token=settings.chat_title_hf_token,
-            bill_to=settings.chat_title_bill_to or None,
+            provider_token=settings.chat_openrouter_api_key,
             usage=usage,
         ):
             pieces.append(delta)
