@@ -18,7 +18,9 @@ from scripts.hourly.update_github_stars import (  # noqa: E402
     fetch_github_stars,
     get_next_repository_group,
     rate_limit_reserve_reached,
+    require_successful_queues,
     run_queue,
+    summarize_queues,
     store_star_snapshot,
 )
 from scripts.hourly.update_hot_github_trending import resolve_hot_token  # noqa: E402
@@ -260,3 +262,80 @@ def test_run_queue_does_not_hold_database_session_during_github_fetch(monkeypatc
 
     assert result["successes"] == 1
     write_session.close.assert_called_once_with()
+
+
+def test_queue_summary_exposes_each_credential_without_token_values():
+    results = [
+        {
+            "queue": queue,
+            "eligible_groups": 2,
+            "selected_groups": 2,
+            "processed_groups": 2,
+            "successes": successes,
+            "failures": failures,
+            "credential_failures": credential_failures,
+            "updated_repositories": successes,
+            "snapshots_stored": successes,
+            "api_calls": 2,
+            "rate_limit_stops": 0,
+            "rate_limit_remaining": 4998,
+        }
+        for queue, successes, failures, credential_failures in (
+            ("fresh", 0, 2, 2),
+            ("weekly", 2, 0, 0),
+        )
+    ]
+
+    summary = summarize_queues(results)
+
+    assert summary["fresh_credential"] == "PWC_GITHUB_TOKEN"
+    assert summary["fresh_credential_failures"] == 2
+    assert summary["weekly_successes"] == 2
+    assert "secret" not in str(summary)
+
+
+def test_selected_queue_with_rejected_credential_fails_job():
+    results = [
+        {
+            "queue": "fresh",
+            "selected_groups": 2,
+            "successes": 0,
+            "failures": 2,
+            "credential_failures": 2,
+            "api_calls": 2,
+        },
+        {
+            "queue": "weekly",
+            "selected_groups": 2,
+            "successes": 2,
+            "failures": 0,
+            "credential_failures": 0,
+            "api_calls": 2,
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="PWC_GITHUB_TOKEN was rejected"):
+        require_successful_queues(results)
+
+
+def test_empty_or_partially_successful_queue_does_not_fail_job():
+    require_successful_queues(
+        [
+            {
+                "queue": "fresh",
+                "selected_groups": 0,
+                "successes": 0,
+                "failures": 0,
+                "credential_failures": 0,
+                "api_calls": 0,
+            },
+            {
+                "queue": "weekly",
+                "selected_groups": 2,
+                "successes": 1,
+                "failures": 1,
+                "credential_failures": 1,
+                "api_calls": 2,
+            },
+        ]
+    )

@@ -151,6 +151,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
             FROM repositories
             WHERE num_stars_updated_at IS NOT NULL
         """,
+        workflow_file="cron-update-github-stars.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="update_citations",

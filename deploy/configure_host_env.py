@@ -340,6 +340,11 @@ def staging_github_values(legacy: dict[str, str]) -> dict[str, str]:
     return {key: decoded_value(legacy[key]).strip()}
 
 
+def production_cron_github_values(source: dict[str, str]) -> dict[str, str]:
+    """Return the single validated credential allowed by the narrow rotation."""
+    return staging_github_values(source)
+
+
 def staging_title_values(
     source: dict[str, str],
     current_staging: dict[str, str],
@@ -762,6 +767,7 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
+    parser.add_argument("--production-cron-github-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
     parser.add_argument("--production-chat-install-only", action="store_true")
     parser.add_argument("--modal-profile")
@@ -777,6 +783,39 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if args.production_cron_github_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.staging_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+        )
+        if any(other_modes):
+            parser.error(
+                "--production-cron-github-only cannot be combined with other modes"
+            )
+        confirmation = "ROTATE_PRODUCTION_CRON_GITHUB"
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        try:
+            values = production_cron_github_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        cron = assign(read_lines(CONFIG_ROOT / "production-cron.env"), values)
+        write_env(CONFIG_ROOT / "production-cron.env", cron, "pwc-cron")
+        print("rotated production CRON GitHub credential")
+        return 0
     if args.production_chat_seal_only or args.production_chat_install_only:
         other_modes = (
             args.production_codex_only,

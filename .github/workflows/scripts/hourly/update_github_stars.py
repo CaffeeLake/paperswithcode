@@ -13,6 +13,7 @@ hourly adapter runs fresh and weekly concurrently with separate credentials.
 from __future__ import annotations
 
 import gc
+import json
 import os
 import random
 import time
@@ -33,6 +34,10 @@ FRESH_PAPER_WINDOW_DAYS = 180
 DEFAULT_RATE_LIMIT_RESERVE = 500
 MAX_RETRIES = 3
 MAX_RETRY_DELAY_SECONDS = 60.0
+QUEUE_CREDENTIALS = {
+    "fresh": "PWC_GITHUB_TOKEN",
+    "weekly": "GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE",
+}
 
 
 def log(message: str):
@@ -416,6 +421,7 @@ def run_queue(
         "api_calls": 0,
         "successes": 0,
         "failures": 0,
+        "credential_failures": 0,
         "retries": 0,
         "rate_limit_stops": 0,
         "rate_limit_limit": None,
@@ -473,6 +479,8 @@ def run_queue(
 
                 if result.stars is None:
                     stats["failures"] += 1
+                    if result.failure in {"http_401", "http_403"}:
+                        stats["credential_failures"] += 1
                     if result.failure == "rate_limit":
                         stats["rate_limit_stops"] += 1
                         break
@@ -502,7 +510,54 @@ def run_queue(
     return stats
 
 
+def summarize_queues(results: list[Dict]) -> Dict:
+    """Flatten per-queue results for log parsing and the admin dashboard."""
+    summary: Dict = {}
+    fields = (
+        "eligible_groups",
+        "selected_groups",
+        "processed_groups",
+        "successes",
+        "failures",
+        "credential_failures",
+        "updated_repositories",
+        "snapshots_stored",
+        "api_calls",
+        "rate_limit_stops",
+        "rate_limit_remaining",
+    )
+    for result in results:
+        queue = result["queue"]
+        summary[f"{queue}_credential"] = QUEUE_CREDENTIALS[queue]
+        for field in fields:
+            summary[f"{queue}_{field}"] = result[field]
+    return summary
+
+
+def require_successful_queues(results: list[Dict]) -> None:
+    """Fail when a selected queue produced no usable GitHub response."""
+    outages = []
+    for result in results:
+        if result["selected_groups"] == 0 or result["successes"] > 0:
+            continue
+        queue = result["queue"]
+        credential = QUEUE_CREDENTIALS[queue]
+        if result["credential_failures"]:
+            outages.append(
+                f"{queue} credential {credential} was rejected "
+                f"({result['credential_failures']} authentication/authorization failures)"
+            )
+        else:
+            outages.append(
+                f"{queue} queue failed every selected repository group "
+                f"({result['failures']} failures across {result['api_calls']} API calls)"
+            )
+    if outages:
+        raise RuntimeError("; ".join(outages))
+
+
 def main():
+    log("Starting GitHub Stars Update")
     token_config = {
         "fresh": os.getenv("PWC_GITHUB_TOKEN"),
         "weekly": os.getenv("GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE"),
@@ -537,6 +592,8 @@ def main():
         ]
         results = [future.result() for future in futures]
 
+    log(f"GITHUB_STARS_SUMMARY {json.dumps(summarize_queues(results))}")
+    require_successful_queues(results)
     log("GitHub Stars Update Completed")
     log(
         "Repositories processed: "
@@ -553,4 +610,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        log(f"GitHub Stars Update job failed: {error}")
+        raise

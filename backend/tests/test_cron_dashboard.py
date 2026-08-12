@@ -157,10 +157,45 @@ def test_hot_job_has_dedicated_lock_and_operational_metrics():
 
 def test_action_backed_jobs_expose_workflow_health():
     paper_trending = _job("calculate_paper_trending_scores")
+    github_stars = _job("update_github_stars")
     thumbnails = _job("preload_thumbnails")
 
     assert paper_trending.workflow_file == "cron-calculate-paper-trending-scores.yml"
+    assert github_stars.workflow_file == "cron-update-github-stars.yml"
     assert thumbnails.workflow_file == "cron-preload-thumbnails.yml"
+
+
+def test_github_stars_health_identifies_failed_fresh_credential():
+    job = _job("update_github_stars")
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "failed",
+                "is_running": False,
+                "work_metrics": {
+                    "fresh_credential": "PWC_GITHUB_TOKEN",
+                    "fresh_selected_groups": 2,
+                    "fresh_successes": 0,
+                    "fresh_failures": 2,
+                    "fresh_credential_failures": 2,
+                    "weekly_credential": (
+                        "GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE"
+                    ),
+                    "weekly_selected_groups": 2,
+                    "weekly_successes": 2,
+                    "weekly_failures": 0,
+                    "weekly_credential_failures": 0,
+                },
+            },
+            db_metrics={"last_write": recent, "recent_writes": 2},
+            lock_state={"exists": False, "stale": False},
+        )
+
+    assert evaluated["status"] == "broken"
+    assert "PWC_GITHUB_TOKEN was rejected" in evaluated["status_reason"]
+    assert "weekly" not in evaluated["status_reason"]
 
 
 def test_successful_workflow_is_health_evidence_without_logs_or_database():

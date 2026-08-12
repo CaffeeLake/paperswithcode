@@ -504,6 +504,8 @@ def evaluate_job_health(
         reserve_stops = work_metrics.get("rate_limit_stops", 0)
         remaining = work_metrics.get("rate_limit_remaining")
         reserve = work_metrics.get("rate_limit_reserve")
+        credential_failures = work_metrics.get("credential_failures", 0)
+        credential = work_metrics.get("credential", "GitHub credential")
 
         if oldest_wait > 30:
             status = "broken"
@@ -511,6 +513,12 @@ def evaluate_job_health(
         if stale_scores:
             status = "broken"
             reasons.append(f"{stale_scores} hot paper scores are missing or stale")
+        if credential_failures:
+            status = "broken"
+            reasons.append(
+                f"{credential} was rejected by GitHub "
+                f"({credential_failures} failed requests)"
+            )
         if one_snapshot and status == "healthy":
             status = "degraded"
             reasons.append(
@@ -529,6 +537,36 @@ def evaluate_job_health(
             reasons.append(
                 f"rate-limit reserve violated ({remaining} remaining < {reserve})"
             )
+
+    if job.id == "update_github_stars" and not running:
+        for queue in ("fresh", "weekly"):
+            selected = int(work_metrics.get(f"{queue}_selected_groups", 0) or 0)
+            successes = int(work_metrics.get(f"{queue}_successes", 0) or 0)
+            failures = int(work_metrics.get(f"{queue}_failures", 0) or 0)
+            credential_failures = int(
+                work_metrics.get(f"{queue}_credential_failures", 0) or 0
+            )
+            credential = work_metrics.get(
+                f"{queue}_credential", f"{queue} GitHub credential"
+            )
+            if selected and successes == 0 and failures:
+                status = "broken"
+                if credential_failures:
+                    reasons.append(
+                        f"{credential} was rejected by GitHub; "
+                        f"the {queue} queue had no successful fetches"
+                    )
+                else:
+                    reasons.append(
+                        f"{queue} GitHub queue had no successful fetches "
+                        f"({failures} failures)"
+                    )
+            elif credential_failures:
+                if status == "healthy":
+                    status = "degraded"
+                reasons.append(
+                    f"{credential} had {credential_failures} rejected request(s)"
+                )
 
     if dependency_status and dependency_status not in {"healthy", "running"}:
         if status == "healthy":

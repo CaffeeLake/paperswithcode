@@ -120,3 +120,35 @@ def test_evaluate_job_health_does_not_mark_recent_run_as_stuck():
         )
     assert evaluated["status"] == "running"
     assert evaluated["status"] != "stuck"
+
+
+def test_get_cron_job_status_parses_queue_specific_github_metrics():
+    cron_helpers = _load_cron_helpers()
+    logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    test_date = "20990103"
+    log_file = logs_dir / f"github_stars_cron_{test_date}.log"
+    log_file.write_text(
+        "2099-01-03 08:00:00 - Starting GitHub Stars Update\n"
+        '2099-01-03 08:00:01 - GITHUB_STARS_SUMMARY {"fresh_credential": '
+        '"PWC_GITHUB_TOKEN", "fresh_selected_groups": 2, '
+        '"fresh_successes": 0, "fresh_failures": 2, '
+        '"fresh_credential_failures": 2}\n'
+        "2099-01-03 08:00:02 - GitHub Stars Update job failed: credential rejected\n",
+        encoding="utf-8",
+    )
+
+    try:
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            status = cron_helpers.get_cron_job_status("github_stars_cron", test_date)
+    finally:
+        log_file.unlink(missing_ok=True)
+
+    assert status["status"] == "failed"
+    assert status["work_metrics"]["fresh_credential"] == "PWC_GITHUB_TOKEN"
+    assert status["work_metrics"]["fresh_credential_failures"] == 2

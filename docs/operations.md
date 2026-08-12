@@ -86,6 +86,21 @@ health checks; it is not an environment override.
 `/etc/paperswithcode/production-cron.env`; when absent, hot requests use
 `PWC_GITHUB_TOKEN` and preserve a 500-call reserve.
 
+Rotate only the production CRON copy from the already-protected application
+environment, then let the next invocation load it without exposing the value:
+
+```bash
+sudo python /srv/paperswithcode/environments/production/current/deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-cron-github-only \
+  --confirm ROTATE_PRODUCTION_CRON_GITHUB
+```
+
+The updater emits queue-specific credential and fetch counters. A selected
+fresh or weekly queue with zero successful GitHub responses fails the workflow;
+the admin dashboard reports the affected credential name and queue while never
+returning the token value.
+
 1. `update_hot_github_trending.py` is the targeted path that snapshots hot repositories, calculates their
    EMA scores, and updates only their linked latest papers in the same run.
 2. `update_github_stars.py` snapshots the fresh and weekly queues into
