@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
-from backend.config import DEEPSEEK_V4_FLASH_PROVIDER, Settings, get_settings
+from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
 from backend.models.database import ChatSession, ChatTurnCapability
 from backend.services.chat_capability_service import (
@@ -232,13 +232,6 @@ def _provider_target(
             credential.bill_to,
         )
     raise HTTPException(status_code=422, detail="Unsupported model provider")
-
-
-def _pin_openrouter_provider(payload: dict[str, Any]) -> None:
-    payload["provider"] = {
-        "only": [DEEPSEEK_V4_FLASH_PROVIDER],
-        "allow_fallbacks": False,
-    }
 
 
 def _capability_owner(row: ChatTurnCapability, db: Session) -> str:
@@ -544,7 +537,6 @@ async def messages(
         # Supplemental reconciliation metadata is opaque and cannot identify
         # the HF subject at OpenRouter.
         payload["user"] = opaque_owner(owner_id, settings)
-        _pin_openrouter_provider(payload)
         raw = json.dumps(payload, separators=(",", ":")).encode()
         if len(raw) > 512 * 1024:
             raise HTTPException(status_code=413, detail="Model request is too large")
