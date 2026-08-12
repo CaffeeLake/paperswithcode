@@ -11,6 +11,8 @@ from typing import List, Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEEPSEEK_V4_FLASH_PROVIDER = "baseten"
+
 
 class Settings(BaseSettings):
     """Application settings."""
@@ -261,7 +263,7 @@ class Settings(BaseSettings):
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
     chat_deepseek_v4_flash_route: str = Field(
-        default="deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        default="deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     chat_deepseek_v4_flash_openrouter_route: str = Field(
         default="deepseek/deepseek-v4-flash-0731"

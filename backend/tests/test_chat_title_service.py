@@ -77,7 +77,10 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
     assert completion_args["model"] == "deepseek/deepseek-v4-flash-0731"
     assert completion_args["stream"] is True
     assert completion_args["max_tokens"] == 64
-    assert completion_args["extra_body"] == {"reasoning": {"effort": "low"}}
+    assert completion_args["extra_body"] == {
+        "reasoning": {"effort": "low"},
+        "provider": {"only": ["baseten"], "allow_fallbacks": False},
+    }
     assert completion_args["messages"] == [
         {
             "role": "system",

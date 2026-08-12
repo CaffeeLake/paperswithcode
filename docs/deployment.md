@@ -285,9 +285,10 @@ The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
 Production chat uses the signed-in user's Hugging Face billing and the
-`deepseek-ai/DeepSeek-V4-Flash-0731:fastest` route. Staging exposes only
+`deepseek-ai/DeepSeek-V4-Flash-0731:baseten` route. Staging exposes only
 DeepSeek V4 Flash through the shared OpenRouter-backed
-`deepseek/deepseek-v4-flash-0731` route.
+`deepseek/deepseek-v4-flash-0731` route. Both paths hard-pin Baseten as the
+upstream inference provider and do not allow provider fallback.
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` staging workspace limit. Durable
 PostgreSQL reservations enforce the separate `$5` per-user ceiling before each
@@ -296,7 +297,8 @@ research models, allowance state, percentage UI, and BYOK controls; the title
 path is the only permitted server-funded OpenRouter exception.
 
 Automatic title generation uses the server-funded OpenRouter credential and
-pins `deepseek/deepseek-v4-flash-0731`. It reserves against a persistent,
+pins `deepseek/deepseek-v4-flash-0731` to Baseten without provider fallback. It
+reserves against a persistent,
 environment-isolated `$25/month` title circuit before dispatch. Missing
 credentials, ledger uncertainty, provider failure, or exhaustion falls back to
 a local prompt-derived title. Production requires its own credential and ledger

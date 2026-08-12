@@ -2358,7 +2358,7 @@ def test_worker_protocol_allows_terminal_less_correlated_cancellation():
 def test_prompt_and_manifest_share_six_round_contract():
     prompt = render(
         current_date=date(2026, 7, 28),
-        selected_model="deepseek-ai/DeepSeek-V4-Flash-0731:fastest",
+        selected_model="deepseek-ai/DeepSeek-V4-Flash-0731:baseten",
         web_search_enabled=True,
         hf_username="nielsrogge",
     )
@@ -2373,7 +2373,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
-    assert "deepseek-ai/DeepSeek-V4-Flash-0731:fastest" in prompt
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731:baseten" in prompt
     assert "harness is orchestration, not the model" in prompt
     assert "never identify yourself as Claude" in prompt
     assert "does not include `curl`" in prompt

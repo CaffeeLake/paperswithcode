@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from sqlalchemy import text
 
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
-from backend.config import Settings
+from backend.config import DEEPSEEK_V4_FLASH_PROVIDER, Settings
 from backend.services.chat_runtime_contract import (
     dedicated_gateway_hostname,
     require_immutable_image_id,
@@ -389,9 +389,11 @@ def validate_chat_provider_policy(
         )
     discovered = settings.chat_model_choices
     if settings.environment == "production":
-        expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        expected_hf_route = (
+            f"deepseek-ai/DeepSeek-V4-Flash-0731:{DEEPSEEK_V4_FLASH_PROVIDER}"
+        )
         if settings.chat_deepseek_v4_flash_route != expected_hf_route:
-            raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
+            raise RuntimeError("DeepSeek V4 Flash must use the reviewed Baseten route")
         if len(discovered) != 1 or any(
             choice["provider"] != "huggingface" for choice in discovered
         ):

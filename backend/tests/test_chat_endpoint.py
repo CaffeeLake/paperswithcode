@@ -716,7 +716,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "deepseek-ai/DeepSeek-V4-Flash-0731",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     for legacy_id in (
         "google/gemma-4-31B-it",
