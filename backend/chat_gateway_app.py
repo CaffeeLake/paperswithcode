@@ -536,6 +536,11 @@ def session_store(
             return {"result": result}
         except PiTranscriptError as error:
             db.rollback()
+            logger.warning(
+                "Pi transcript store rejected action=%s reason=%s",
+                body.action,
+                error,
+            )
             raise HTTPException(status_code=409, detail=str(error)) from None
     if body.agent_session_id is not None or body.current_leaf_id is not None:
         raise HTTPException(
