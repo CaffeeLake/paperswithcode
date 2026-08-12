@@ -53,6 +53,11 @@ def test_list_modes_and_selectors_are_strict(captured):
         "model_list",
         {"repo_id": "owner/name", "tree": True, "recursive": True},
     )
+    assert cli.main(["models", "list", "--author", "moonshotai", "--limit", "30"]) == 0
+    assert captured[-1] == (
+        "model_list",
+        {"author": "moonshotai", "limit": 30},
+    )
     for argv in (
         ["models", "list", "owner/name", "--search", "bad"],
         ["models", "list", "--recursive"],

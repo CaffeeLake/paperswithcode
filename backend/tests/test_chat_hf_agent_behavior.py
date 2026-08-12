@@ -18,7 +18,7 @@ SKILL = Path(__file__).resolve().parents[1] / "chat_sandbox_worker" / "HF_CLI_SK
         ("compare model cards", "card-reported rather than"),
         ("dataset license and limitations", "hf datasets card DATASET_ID"),
         ("understand public demo", "hf spaces card SPACE_ID"),
-        ("discover popular models", "hf models list [MODEL_ID]"),
+        ("discover popular models", "hf models list --author moonshotai --limit 30"),
         ("inspect bounded repository tree", "bounded path metadata"),
         ("connect PwC paper to artifact", "Prefer `pwc` for PwC papers"),
         (
@@ -44,6 +44,14 @@ def test_behavior_contract_has_canonical_links_and_correction_reserve():
     assert "https://huggingface.co/spaces/owner/space" in combined
     assert "retain one operation for correction" in combined
     assert "at most 6 HF operations and 2 recursive file listings" in combined
+
+
+def test_behavior_contract_distinguishes_discovery_from_exact_repository_mode():
+    guide = SKILL.read_text(encoding="utf-8")
+    assert "positional ID after `list` always selects an exact repository" in guide
+    assert "it is never an owner or organization discovery" in guide
+    assert "hf models list moonshotai" in guide
+    assert "hf models card moonshotai/Kimi-K3 --text" in guide
 
 
 def test_worker_environment_never_receives_hub_or_application_credentials():

@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 import yaml
 from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 HF_OPERATIONS = frozenset(
     {
@@ -447,7 +447,7 @@ class ChatHfHubService:
             return self._project_card(deepcopy(envelope), args)
         except HfHubHTTPError as error:
             status = getattr(error.response, "status_code", 503)
-            if status == 404:
+            if isinstance(error, RepositoryNotFoundError) or status == 404:
                 raise ChatHfHubError(
                     404, "hf_not_found", "Public Hugging Face resource was not found"
                 ) from None

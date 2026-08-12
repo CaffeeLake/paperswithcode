@@ -11,7 +11,9 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 from backend.chat_gateway_app import HfCatalogRequest, hf_catalog
 from backend.chat_sandbox_worker.contract import (
@@ -184,6 +186,51 @@ def test_file_listing_is_bounded_metadata_only(service):
     tree_call = [call for call in api.calls if call[0] == "list_repo_tree"][0]
     assert tree_call[2]["token"] is False
     assert tree_call[2]["recursive"] is True
+
+
+def test_repository_not_found_401_is_reported_as_not_found():
+    class MissingApi(FakeApi):
+        def list_repo_tree(self, repo_id, **kwargs):
+            response = httpx.Response(
+                401,
+                request=httpx.Request("GET", f"https://huggingface.co/{repo_id}"),
+            )
+            raise RepositoryNotFoundError("missing", response=response)
+
+    ChatHfHubService.reset_cache_for_tests()
+    subject = ChatHfHubService(SimpleNamespace(), api=MissingApi())
+    with pytest.raises(ChatHfHubError) as error:
+        subject.execute("model_list", {"repo_id": "moonshotai"})
+    assert (error.value.status_code, error.value.code) == (404, "hf_not_found")
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_status", "expected_code"),
+    [
+        (401, 503, "hf_unavailable"),
+        (403, 403, "hf_access_denied"),
+        (429, 429, "hf_upstream_rate_limit"),
+    ],
+)
+def test_other_http_errors_keep_existing_classification(
+    upstream_status, expected_status, expected_code
+):
+    class ErrorApi(FakeApi):
+        def list_repo_tree(self, repo_id, **kwargs):
+            response = httpx.Response(
+                upstream_status,
+                request=httpx.Request("GET", f"https://huggingface.co/{repo_id}"),
+            )
+            raise HfHubHTTPError("upstream error", response=response)
+
+    ChatHfHubService.reset_cache_for_tests()
+    subject = ChatHfHubService(SimpleNamespace(), api=ErrorApi())
+    with pytest.raises(ChatHfHubError) as error:
+        subject.execute("model_list", {"repo_id": "owner/model"})
+    assert (error.value.status_code, error.value.code) == (
+        expected_status,
+        expected_code,
+    )
 
 
 def test_list_byte_ceiling_truncates_normalized_results_explicitly():

@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "58"
+WORKER_CONTRACT_VERSION = "59"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 27
@@ -15,7 +15,7 @@ RESTRICTED_HF_CLI_VERSION = "0.1.0"
 RESTRICTED_HF_CLI_SHA256 = (
     "4151cd20e415958e6ef7b3d15a21d1837feb9867ecbea7e079a09dadef56f4bc"
 )
-HF_CLI_SKILL_SHA256 = "048688214baf58cbb4ea5820e2ebeaea980b48fde43afabd860f5f74ccd8bbcb"
+HF_CLI_SKILL_SHA256 = "c7ae849c4580e21842b10a66b01ed2b1283383daae1a5aea8aa7f110e8cf6303"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
 IMAGE_PUBLISH_NAME = "pwc-chat-v1"
 CHAT_SANDBOX_REGION = "eu-west"
