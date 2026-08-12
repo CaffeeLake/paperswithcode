@@ -28,6 +28,7 @@ def test_hot_job_fetches_scores_and_propagates_in_one_run(monkeypatch):
             "api_calls": 1,
             "successes": 1,
             "failures": 0,
+            "credential_failures": 0,
             "retries": 0,
             "snapshots_stored": 1,
             "rate_limit_stops": 0,
@@ -46,8 +47,10 @@ def test_hot_job_fetches_scores_and_propagates_in_one_run(monkeypatch):
     monkeypatch.setattr(
         hot,
         "calculate_repository_scores",
-        lambda db, ids, **kwargs: repository_calls.append((db, ids, kwargs))
-        or {"updated": 1, "insufficient": 0, "skipped": 0},
+        lambda db, ids, **kwargs: (
+            repository_calls.append((db, ids, kwargs))
+            or {"updated": 1, "insufficient": 0, "skipped": 0}
+        ),
     )
     monkeypatch.setattr(
         hot, "get_latest_paper_ids_for_repositories", lambda db, ids: [101]
@@ -56,8 +59,10 @@ def test_hot_job_fetches_scores_and_propagates_in_one_run(monkeypatch):
     monkeypatch.setattr(
         hot,
         "calculate_paper_scores",
-        lambda db, paper_ids: paper_calls.append((db, paper_ids))
-        or {"population": 2, "selected": 1, "written": 1, "cleared": 0},
+        lambda db, paper_ids: (
+            paper_calls.append((db, paper_ids))
+            or {"population": 2, "selected": 1, "written": 1, "cleared": 0}
+        ),
     )
 
     job = hot.HotGitHubTrendingJob.__new__(hot.HotGitHubTrendingJob)
@@ -90,6 +95,7 @@ def test_hot_job_fails_when_every_selected_fetch_fails(monkeypatch):
             "api_calls": 2,
             "successes": 0,
             "failures": 2,
+            "credential_failures": 2,
             "retries": 0,
             "snapshots_stored": 0,
             "rate_limit_stops": 0,

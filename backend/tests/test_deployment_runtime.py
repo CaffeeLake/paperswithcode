@@ -2763,6 +2763,52 @@ def test_staging_github_configuration_is_single_key_and_non_empty():
         configure_host_env.staging_github_values({})
 
 
+def test_production_cron_github_rotation_is_single_key_and_preserves_overlay(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "source.env"
+    source.write_text("PWC_GITHUB_TOKEN=new-secret\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production-cron.env").write_text(
+        "PWC_GITHUB_TOKEN=old-secret\nPWC_HF_TOKEN=keep-me\n",
+        encoding="utf-8",
+    )
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-cron-github-only",
+            "--confirm",
+            "ROTATE_PRODUCTION_CRON_GITHUB",
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == config_root / "production-cron.env"
+    assert written["group"] == "pwc-cron"
+    assert (
+        configure_host_env.decoded_value(written["lines"]["PWC_GITHUB_TOKEN"])
+        == "new-secret"
+    )
+    assert configure_host_env.decoded_value(written["lines"]["PWC_HF_TOKEN"]) == (
+        "keep-me"
+    )
+
+
 def test_staging_openrouter_disable_removes_key_and_pins_flag_off():
     assert configure_host_env.without_staging_openrouter(
         {

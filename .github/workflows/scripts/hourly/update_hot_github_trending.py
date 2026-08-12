@@ -133,11 +133,15 @@ class HotGitHubTrendingJob(DatabaseCronJob):
         summary = {
             "selection_only": False,
             "shared_token": shared_token,
+            "credential": (
+                "PWC_GITHUB_TOKEN" if shared_token else "PWC_GITHUB_TOKEN_HOT"
+            ),
             "eligible_repository_groups": fetch["eligible_groups"],
             "selected_repository_groups": fetch["selected_groups"],
             "api_calls": fetch["api_calls"],
             "successes": fetch["successes"],
             "failures": fetch["failures"],
+            "credential_failures": fetch["credential_failures"],
             "retries": fetch["retries"],
             "snapshots_written": fetch["snapshots_stored"],
             "repository_scores_updated": repository_result["updated"],

@@ -476,6 +476,12 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                     work_metrics.update(json.loads(payload))
                 except json.JSONDecodeError:
                     pass
+            elif "GITHUB_STARS_SUMMARY " in line:
+                payload = line.split("GITHUB_STARS_SUMMARY ", 1)[1]
+                try:
+                    work_metrics.update(json.loads(payload))
+                except json.JSONDecodeError:
+                    pass
             # Papers processed
             elif re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)
