@@ -40,6 +40,15 @@ def resolve_hot_token(*, allow_missing: bool = False) -> tuple[str, bool]:
     return token or "", hot_token is None
 
 
+def require_successful_fetch(fetch: dict) -> None:
+    """Fail the job when selected GitHub work produced no usable response."""
+    if fetch["selected_groups"] > 0 and fetch["successes"] == 0:
+        raise RuntimeError(
+            "Hot GitHub refresh failed for every selected repository group "
+            f"({fetch['failures']} failures across {fetch['api_calls']} API calls)"
+        )
+
+
 class HotGitHubTrendingJob(DatabaseCronJob):
     def __init__(self, selection_only: bool = False):
         super().__init__(job_name="update_hot_github_trending", log_level="INFO")
@@ -153,6 +162,7 @@ class HotGitHubTrendingJob(DatabaseCronJob):
         self.logger.info("HOT_GITHUB_TRENDING_SUMMARY %s", json.dumps(summary))
         self.logger.info("Repositories processed: %d", fetch["processed_groups"])
         self.logger.info("Trending scores updated: %d", repository_result["updated"])
+        require_successful_fetch(fetch)
         self.logger.info("Hot GitHub Trending Update Completed successfully")
 
 
