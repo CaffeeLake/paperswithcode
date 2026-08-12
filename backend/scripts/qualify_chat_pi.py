@@ -25,7 +25,6 @@ from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.scripts.staging_qualification_http import client as staging_client
 from backend.services.chat_latency_service import ChatLatencyService
-from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
 
 CONFIRMATION = "QUALIFY_STAGING_PI_ADMIN"
 SUITE = Path(__file__).parents[1] / "chat_sandbox_worker" / "quality_suite_v1.json"
@@ -38,9 +37,9 @@ def _percentile(values: list[int], quantile: float) -> int | None:
     return ordered[max(0, math.ceil(len(ordered) * quantile) - 1)]
 
 
-def _cookie(subject: str) -> str:
+def _cookie(subject: str, username: str) -> str:
     return _encode_legacy_session(
-        {"sub": subject, "username": subject, "iat": int(time.time())}
+        {"sub": subject, "username": username, "iat": int(time.time())}
     )
 
 
@@ -205,7 +204,14 @@ def _latency_report(session_ids: set[uuid.UUID], started_at: datetime) -> dict:
     return result
 
 
-async def _run(settings, *, admin_subject: str, new_turns: int, followups: int):
+async def _run(
+    settings,
+    *,
+    qualification_subject: str,
+    admin_username: str,
+    new_turns: int,
+    followups: int,
+):
     suite = json.loads(SUITE.read_text())
     tasks = suite["tasks"]
     model = settings.chat_model_choices[0]["id"]
@@ -224,10 +230,8 @@ async def _run(settings, *, admin_subject: str, new_turns: int, followups: int):
     followup_results: list[dict] = []
     replacements = 0
     sandbox_replacements = 0
-    billing = encrypt_token(settings.hf_token, admin_subject, settings)
     cookies = {
-        settings.session_cookie_name: _cookie(admin_subject),
-        COOKIE_NAME: billing,
+        settings.session_cookie_name: _cookie(qualification_subject, admin_username),
     }
     async with staging_client(timeout=240, cookies=cookies) as client:
         for task in tasks:
@@ -371,7 +375,8 @@ async def _run(settings, *, admin_subject: str, new_turns: int, followups: int):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release-dir", type=Path, required=True)
-    parser.add_argument("--admin-subject", required=True)
+    parser.add_argument("--qualification-subject", required=True)
+    parser.add_argument("--admin-username", required=True)
     parser.add_argument("--new-turns", type=int, default=25)
     parser.add_argument("--followups", type=int, default=25)
     parser.add_argument("--confirm", required=True)
@@ -393,7 +398,8 @@ def main() -> int:
     report, passed = asyncio.run(
         _run(
             settings,
-            admin_subject=args.admin_subject,
+            qualification_subject=args.qualification_subject,
+            admin_username=args.admin_username,
             new_turns=args.new_turns,
             followups=args.followups,
         )
