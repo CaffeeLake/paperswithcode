@@ -146,11 +146,12 @@ describe("AskAssistant", () => {
     renderAskAssistant();
 
     await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
+    expect(screen.getByText("Reasoning effort")).toBeVisible();
     expect(screen.getByRole("option", { name: /Low Faster and more concise/ }))
       .toHaveAttribute("aria-selected", "true");
     await user.click(screen.getByRole("option", { name: /Max Deepest and slowest/ }));
     expect(screen.getByRole("button", { name: "Reasoning effort: Max" }))
-      .toBeInTheDocument();
+      .toHaveTextContent("Effort: Max");
     await user.type(screen.getByRole("textbox", { name: "Ask the assistant" }), "Deep comparison");
     await user.click(screen.getByRole("button", { name: "Ask the assistant" }));
 

@@ -59,11 +59,14 @@ const ReasoningEffortPicker: React.FC<ReasoningEffortPickerProps> = ({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        <span>{selected.label}</span>
+        <span>Effort: {selected.label}</span>
         <ChevronDown size={13} aria-hidden="true" />
       </button>
       {open && (
         <div className="chat-effort-menu" role="listbox" aria-label="Reasoning effort">
+          <div className="chat-effort-menu-label" aria-hidden="true">
+            Reasoning effort
+          </div>
           {OPTIONS.map((option) => (
             <button
               type="button"
