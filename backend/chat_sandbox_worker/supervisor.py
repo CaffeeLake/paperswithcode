@@ -63,6 +63,7 @@ def _agent_environment() -> dict[str, str]:
     environment["HTTPS_PROXY"] = "http://127.0.0.1:8766"
     environment["NO_PROXY"] = "127.0.0.1,localhost"
     environment["NODE_EXTRA_CA_CERTS"] = "/tmp/pwc-webfetch-ca.pem"
+    environment["PWC_API_URL"] = "http://127.0.0.1:8765/api/v1"
     return environment
 
 

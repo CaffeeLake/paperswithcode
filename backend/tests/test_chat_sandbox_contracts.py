@@ -2485,7 +2485,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-iIYJFPHz7eKUue7iW2BbUI"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-k6sP99TktiwSwGI6C87iMU"
-    assert WORKER_CONTRACT_VERSION == "68"
+    assert WORKER_CONTRACT_VERSION == "69"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2866,6 +2866,7 @@ def test_supervisor_child_environment_preserves_packaged_worker_path(monkeypatch
     assert agent_environment["HTTPS_PROXY"] == "http://127.0.0.1:8766"
     assert agent_environment["NO_PROXY"] == "127.0.0.1,localhost"
     assert agent_environment["NODE_EXTRA_CA_CERTS"] == "/tmp/pwc-webfetch-ca.pem"
+    assert agent_environment["PWC_API_URL"] == "http://127.0.0.1:8765/api/v1"
     assert "PWC_WEBFETCH_TOKEN_FD" not in agent_environment
 
 
