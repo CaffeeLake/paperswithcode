@@ -11,6 +11,7 @@ import { ANSWER_NOW, PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
 import { renderPrompt } from "./prompt.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
+import { shouldResetSession } from "./session.js";
 
 export interface RunTurn {
   request_id: string;
@@ -56,11 +57,11 @@ export class PiWorker {
     if (this.boundChatSession && this.boundChatSession !== run.chat_session_id) {
       throw new Error("Pi worker session ownership mismatch");
     }
-    if (this.boundAgentSession && run.resume && this.boundAgentSession !== run.resume) {
+    if (shouldResetSession(this.boundAgentSession, run.resume)) {
       // An edit atomically activates a prepared native fork for the same chat.
-      // Drop only the harness-local transcript/session state; the worker stays
-      // pinned to boundChatSession and the gateway capability enforces the new
-      // agent session identity.
+      // A retry of an interrupted initial prompt may instead deliberately
+      // activate a blank transcript (run.resume is null). Drop only the
+      // harness-local state in both cases; the worker stays pinned to the chat.
       this.session?.dispose();
       this.session = undefined;
       this.manager = undefined;
