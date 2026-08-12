@@ -26,7 +26,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-9U5jxPL5KYfgl14BHPoe1D"
+MODAL_IMAGE_ID = "im-nRA45etxHMwHLwFSLEIF56"
 # Production chat remains disabled and pinned to its previously qualified
 # contract; the distinct ID avoids cross-Environment image lookup.
 PRODUCTION_MODAL_IMAGE_ID = "im-5NdYXJpSJfcypOXwVJM1a7"
