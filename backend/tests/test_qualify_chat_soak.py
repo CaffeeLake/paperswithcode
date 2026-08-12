@@ -99,3 +99,4 @@ def test_pi_qualification_uses_persisted_scenario_taxonomy():
         assert retired_label not in source
     assert '"reliability"' in source
     assert '"forced_failure"' in source
+    assert "prior_compute_exists is not None" in source

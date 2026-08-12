@@ -20,7 +20,11 @@ from sqlalchemy import select
 from backend.chat_sandbox_worker.comparison_control import sha256 as control_sha256
 from backend.config import get_settings
 from backend.database.connection import db_manager
-from backend.models.database import ChatSandboxLease, ChatTurnLatency
+from backend.models.database import (
+    ChatSandboxComputeInterval,
+    ChatSandboxLease,
+    ChatTurnLatency,
+)
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.scripts.staging_qualification_http import client as staging_client
@@ -143,8 +147,16 @@ async def _terminate_session_sandbox(session_id: str) -> bool:
                 ChatSandboxLease.chat_session_id == uuid.UUID(session_id)
             )
         )
+        prior_compute_exists = db.scalar(
+            select(ChatSandboxComputeInterval.id)
+            .where(ChatSandboxComputeInterval.chat_session_id == uuid.UUID(session_id))
+            .limit(1)
+        )
     if not sandbox_id:
-        return False
+        # Snapshot/reclaim between turns is already a sandbox replacement: the
+        # follow-up must acquire a new provider sandbox. Count it when durable
+        # compute history proves the prior sandbox existed.
+        return prior_compute_exists is not None
     sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
     await sandbox.terminate.aio(wait=False)
     return True
