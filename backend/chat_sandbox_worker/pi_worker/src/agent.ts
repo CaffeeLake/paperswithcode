@@ -29,6 +29,7 @@ export class PiWorker {
   private session: AgentSession | undefined;
   private manager: SessionManager | undefined;
   private mirror: TranscriptMirror | undefined;
+  private mirroredEntryCount = 0;
   private boundChatSession: string | undefined;
   private boundAgentSession: string | undefined;
   private activeRequest: string | undefined;
@@ -91,6 +92,9 @@ export class PiWorker {
     });
     this.policy.reset(run.web_search_enabled, prompt);
     if (!this.mirror) {
+      // The remote count includes the session header; getEntries() contains
+      // only tree entries.
+      this.mirroredEntryCount = Math.max(0, state.initialCount - 1);
       this.mirror = new TranscriptMirror(
         state.manager.getSessionId(),
         state.initialCount,
@@ -137,6 +141,18 @@ export class PiWorker {
     this.session = created.session;
   }
 
+  private mirrorNativeEntries(): void {
+    if (!this.manager || !this.mirror) throw new Error("Pi transcript mirror is unavailable");
+    const entries = this.manager.getEntries();
+    if (entries.length < this.mirroredEntryCount) {
+      throw new Error("Pi native transcript moved backwards");
+    }
+    for (const entry of entries.slice(this.mirroredEntryCount)) {
+      this.mirror.append(entry as unknown as Record<string, unknown>);
+    }
+    this.mirroredEntryCount = entries.length;
+  }
+
   async run(run: RunTurn): Promise<void> {
     if (this.activeRequest) throw new Error("Pi worker already has an active turn");
     this.activeRequest = run.request_id;
@@ -152,13 +168,11 @@ export class PiWorker {
         if (kind === "answer") this.policy.observeAnswer();
       });
       const unsubscribe = this.session.subscribe((event) => {
-        if (event.type === "entry_appended") {
-          this.mirror?.append(event.entry as unknown as Record<string, unknown>);
-        }
         for (const adapted of adapter.feed(event)) this.emit(run.request_id, adapted);
       });
       this.emit(run.request_id, { type: "_sdk_session", session_id: this.boundAgentSession });
       this.emit(run.request_id, { type: "workspace_ready" });
+      let mirrorFailed = false;
       try {
         await this.session.prompt(run.prompt, { expandPromptTemplates: false, source: "interactive" });
         if (this.policy.toolingClosed && !this.policy.answerAfterClose && !this.cancelled) {
@@ -167,14 +181,18 @@ export class PiWorker {
         }
       } finally {
         unsubscribe();
+        try {
+          this.mirrorNativeEntries();
+          await this.mirror.flush();
+        } catch {
+          mirrorFailed = true;
+        }
       }
       if (this.cancelled) {
         this.emit(run.request_id, { type: "worker_done", status: "stopped" });
         return;
       }
-      try {
-        await this.mirror.flush();
-      } catch {
+      if (mirrorFailed) {
         this.emit(run.request_id, { type: "_mirror_error" });
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
