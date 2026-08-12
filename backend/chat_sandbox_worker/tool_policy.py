@@ -25,6 +25,16 @@ _HARD_FAILURE = re.compile(
     re.IGNORECASE,
 )
 _ALWAYS_FETCHABLE_HOSTS = frozenset({"arxiv.org"})
+_UNAVAILABLE_TOOL_REASON = "That tool is not available."
+_INVALID_WEB_SEARCH_REASON = "Web search is not available for this request."
+_INVALID_WEB_FETCH_REASON = (
+    "WebFetch requires an approved public HTTPS URL from the user or a prior "
+    "catalog tool result."
+)
+_READ_SCOPE_REASON = (
+    "Read and Grep may only access /workspace or the approved CLI guides. "
+    "Rerun the source command with output redirected to /workspace, then try again."
+)
 
 
 def _prefix(payload: bytes, maximum: int) -> bytes:
@@ -141,9 +151,8 @@ class ToolBudget:
             self.denied_calls += 1
             return Decision(False, self.close_reason or ANSWER_NOW_REASON)
         if name not in ALLOWED_TOOLS:
-            self.close()
             self.denied_calls += 1
-            return Decision(False, "That tool is not available. " + ANSWER_NOW_REASON)
+            return Decision(False, _UNAVAILABLE_TOOL_REASON)
         if self.calls >= self.maximum_calls:
             self.close()
             self.denied_calls += 1
@@ -157,9 +166,8 @@ class ToolBudget:
                 or len(query) > 500
                 or set(args) != {"query"}
             ):
-                self.close()
                 self.denied_calls += 1
-                return Decision(False, ANSWER_NOW_REASON)
+                return Decision(False, _INVALID_WEB_SEARCH_REASON)
             if self.web_search_failed:
                 self.close()
                 self.denied_calls += 1
@@ -172,17 +180,15 @@ class ToolBudget:
             url = args.get("url")
             normalized = _public_url(url) if isinstance(url, str) else None
             if normalized is None:
-                self.close()
                 self.denied_calls += 1
-                return Decision(False, ANSWER_NOW_REASON)
+                return Decision(False, _INVALID_WEB_FETCH_REASON)
             hostname = urlsplit(normalized).hostname
             if (
                 normalized not in self.fetchable_urls
                 and hostname not in _ALWAYS_FETCHABLE_HOSTS
             ):
-                self.close()
                 self.denied_calls += 1
-                return Decision(False, ANSWER_NOW_REASON)
+                return Decision(False, _INVALID_WEB_FETCH_REASON)
         if name in {"Read", "Grep"}:
             path = args.get("file_path") or args.get("path")
             if isinstance(path, str):
@@ -192,9 +198,8 @@ class ToolBudget:
                     or candidate.resolve(strict=False)
                     in {guide.resolve(strict=False), hf_guide.resolve(strict=False)}
                 ):
-                    self.close()
                     self.denied_calls += 1
-                    return Decision(False, ANSWER_NOW_REASON)
+                    return Decision(False, _READ_SCOPE_REASON)
         search = (
             name == "Bash"
             and isinstance(args.get("command"), str)

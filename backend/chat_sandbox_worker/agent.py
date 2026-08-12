@@ -249,7 +249,7 @@ class WorkerToolHooks:
                 _authorize_web_fetch_proxy(normalized_url)
             except (KeyError, OSError, RuntimeError):
                 reason = "WebFetch secure transport is unavailable."
-                self.budget.close()
+                self.budget.close(reason)
                 self.budget.denied_calls += 1
                 self.results[tool_id] = self.budget.result(
                     tool_id, reason, status="denied"

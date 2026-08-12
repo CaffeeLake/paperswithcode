@@ -2230,7 +2230,18 @@ def test_tool_policy_rejects_traversal_and_enforces_aggregate_bytes(tmp_path):
         guide=guide,
     )
     assert not denied.allowed
-    assert budget.tooling_closed
+    assert denied.reason == (
+        "Read and Grep may only access /workspace or the approved CLI guides. "
+        "Rerun the source command with output redirected to /workspace, then try again."
+    )
+    assert not budget.tooling_closed
+    assert budget.authorize(
+        "recovery",
+        "Bash",
+        {"command": "printf data > /workspace/result.txt"},
+        workspace=workspace,
+        guide=guide,
+    ).allowed
     budget = ToolBudget(
         maximum_calls=12,
         maximum_direct_searches=4,
@@ -2414,7 +2425,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-SJbcgobqUWWjIxVriWYJzw"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "59"
+    assert WORKER_CONTRACT_VERSION == "60"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
