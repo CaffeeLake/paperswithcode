@@ -9,6 +9,7 @@ from starlette.requests import Request
 from backend.chat_gateway_app import (
     _byok_provider_error_code,
     _huggingface_provider_error_code,
+    _prefer_fastest_openrouter_provider,
     _provider_headers,
     _provider_target,
     _user_provider_credential,
@@ -111,6 +112,14 @@ def test_gateway_routes_deepseek_to_server_funded_openrouter():
         "openrouter-token",
         None,
     )
+
+
+def test_gateway_uses_openrouter_nitro_routing():
+    payload = {"provider": {"only": ["baseten"]}}
+
+    _prefer_fastest_openrouter_provider(payload)
+
+    assert payload["provider"] == {"sort": "throughput"}
 
 
 def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():

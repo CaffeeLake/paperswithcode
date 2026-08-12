@@ -262,7 +262,7 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_CHAT_ENABLED` | false | Enable the authenticated SSE research-chat endpoint |
 | `PWC_CHAT_PAPER_MENTIONS_ENABLED` | false | Enable inline paper mention creation, prewarming, and mention-bearing sends |
 | `PWC_CHAT_DEEPSEEK_V4_FLASH_ROUTE` | deepseek-ai/DeepSeek-V4-Flash-0731:fastest | Qualified user-funded HF Inference Providers route |
-| `PWC_CHAT_DEEPSEEK_V4_FLASH_OPENROUTER_ROUTE` | deepseek/deepseek-v4-flash-0731 | Qualified staging OpenRouter route |
+| `PWC_CHAT_DEEPSEEK_V4_FLASH_OPENROUTER_ROUTE` | deepseek/deepseek-v4-flash-0731 | Qualified staging OpenRouter route; requests use Nitro throughput sorting |
 | `PWC_CHAT_TITLE_HF_TOKEN` | | Environment-specific server credential used only for automatic titles |
 | `PWC_CHAT_TITLE_BILL_TO` | | Explicit Hugging Face organization billed for automatic titles |
 | `PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD` | 25000000 | Persistent per-environment title-generation application cap |

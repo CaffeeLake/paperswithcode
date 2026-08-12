@@ -234,6 +234,10 @@ def _provider_target(
     raise HTTPException(status_code=422, detail="Unsupported model provider")
 
 
+def _prefer_fastest_openrouter_provider(payload: dict[str, Any]) -> None:
+    payload["provider"] = {"sort": "throughput"}
+
+
 def _capability_owner(row: ChatTurnCapability, db: Session) -> str:
     session = db.get(ChatSession, row.chat_session_id)
     if session is None:
@@ -537,6 +541,7 @@ async def messages(
         # Supplemental reconciliation metadata is opaque and cannot identify
         # the HF subject at OpenRouter.
         payload["user"] = opaque_owner(owner_id, settings)
+        _prefer_fastest_openrouter_provider(payload)
         raw = json.dumps(payload, separators=(",", ":")).encode()
         if len(raw) > 512 * 1024:
             raise HTTPException(status_code=413, detail="Model request is too large")
