@@ -688,6 +688,7 @@ def test_chat_projection_preserves_sse_block_order():
     projection.apply("answer_delta", {"text": "After tool."})
 
     blocks = projection.completed_blocks()
+    DISPLAY_BLOCKS_ADAPTER.validate_python(blocks)
 
     assert [block["kind"] for block in blocks] == [
         "answer",
