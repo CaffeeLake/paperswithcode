@@ -57,7 +57,16 @@ export class PiWorker {
       throw new Error("Pi worker session ownership mismatch");
     }
     if (this.boundAgentSession && run.resume && this.boundAgentSession !== run.resume) {
-      throw new Error("Pi worker resume identity mismatch");
+      // An edit atomically activates a prepared native fork for the same chat.
+      // Drop only the harness-local transcript/session state; the worker stays
+      // pinned to boundChatSession and the gateway capability enforces the new
+      // agent session identity.
+      this.session?.dispose();
+      this.session = undefined;
+      this.manager = undefined;
+      this.mirror = undefined;
+      this.mirroredEntryCount = 0;
+      this.boundAgentSession = undefined;
     }
     if (this.manager) {
       return { manager: this.manager, initialCount: this.manager.getEntries().length + 1, created: false };
