@@ -103,6 +103,7 @@ class ToolBudget:
     tool_rounds_executed: int = 0
     executed_round_numbers: set[int] = field(default_factory=set)
     round_by_tool_id: dict[str, int] = field(default_factory=dict)
+    active_round_tool_ids: set[str] = field(default_factory=set)
     tooling_closed: bool = False
     close_reason: str | None = None
     denied_calls: int = 0
@@ -124,6 +125,24 @@ class ToolBudget:
         if round_number > self.maximum_rounds:
             self.tool_rounds_denied += 1
             self.close(ANSWER_NOW_REASON)
+
+    def register_call(self, tool_id: str) -> None:
+        # Pre-tool hooks run before the streamed assistant-message boundary that
+        # registers the complete batch. Starts without an intervening result are
+        # therefore parallel calls from the same assistant turn.
+        if tool_id in self.round_by_tool_id:
+            self.active_round_tool_ids.add(tool_id)
+            return
+        if self.active_round_tool_ids:
+            round_number = self.round_by_tool_id[next(iter(self.active_round_tool_ids))]
+            self.round_by_tool_id[tool_id] = round_number
+        else:
+            self.register_round([tool_id])
+        self.active_round_tool_ids.add(tool_id)
+
+    def complete_call(self, tool_id: str) -> None:
+        self.active_round_tool_ids.discard(tool_id)
+        self.round_by_tool_id.pop(tool_id, None)
 
     def close(self, reason: str = ANSWER_NOW_REASON) -> None:
         self.tooling_closed = True
@@ -246,6 +265,8 @@ class ToolBudget:
         if name not in {"WebFetch", WEB_SEARCH_TOOL}:
             self.observe_urls(text)
         started = self.started.pop(tool_id, None)
+        if status != "denied":
+            self.complete_call(tool_id)
         if started is not None:
             self.completed_calls += 1
         took_ms = round((time.monotonic() - started) * 1000) if started else 0

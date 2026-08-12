@@ -228,6 +228,7 @@ class WorkerToolHooks:
         tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
         name = str(hook_input.get("tool_name") or "")
         arguments = hook_input.get("tool_input") or {}
+        self.budget.register_call(tool_id)
         decision = self.budget.authorize(tool_id, name, arguments)
         if not decision.allowed:
             self.results[tool_id] = self.budget.result(
@@ -590,7 +591,6 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     hooks.budget.observe_urls(prompt)
     adapter = SDKEventAdapter(
         show_reasoning=settings.chat_show_reasoning,
-        on_tool_batch=hooks.budget.register_round,
     )
     options = _options(
         settings,
@@ -908,7 +908,6 @@ class PersistentAgent:
         self.hooks.budget.observe_urls(prompt)
         adapter = SDKEventAdapter(
             show_reasoning=self.settings.chat_show_reasoning,
-            on_tool_batch=self.hooks.budget.register_round,
         )
         yield {"v": 1, "type": "workspace_ready", "request_id": request_id}
         await self.client.query(prompt)

@@ -979,6 +979,45 @@ def test_local_tool_limiter_denies_seventh_parallel_batch_without_call_slots():
     assert limiter.tooling_closed
 
 
+def test_local_tool_limiter_counts_parallel_calls_as_one_round_then_sequential():
+    limiter = SearchCallLimiter(
+        maximum=12, maximum_web=12, maximum_total=12, maximum_rounds=1
+    )
+
+    for tool_id in ("parallel-a", "parallel-b"):
+        decision = asyncio.run(
+            limiter(
+                {"tool_name": SEARCH_TOOL_NAME, "tool_use_id": tool_id},
+                tool_id,
+                None,
+            )
+        )
+        assert decision["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    assert limiter.rounds_started == 1
+    assert limiter.rounds_executed == 1
+    for tool_id in ("parallel-a", "parallel-b"):
+        asyncio.run(
+            limiter.post(
+                {"tool_name": SEARCH_TOOL_NAME, "tool_use_id": tool_id},
+                tool_id,
+                None,
+            )
+        )
+
+    decision = asyncio.run(
+        limiter(
+            {"tool_name": SEARCH_TOOL_NAME, "tool_use_id": "parallel-a"},
+            "parallel-a",
+            None,
+        )
+    )
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert limiter.rounds_started == 2
+    assert limiter.rounds_executed == 1
+    assert limiter.rounds_denied == 1
+
+
 def test_sdk_adapter_complete_messages_do_not_need_partial_events():
     adapter = SDKEventAdapter(show_reasoning=True)
     events = adapter.feed(

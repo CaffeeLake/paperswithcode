@@ -1976,6 +1976,33 @@ def test_tool_budget_counts_parallel_batches_and_denies_seventh_round_in_full():
     assert budget.tooling_closed
 
 
+def test_worker_tool_budget_counts_parallel_calls_as_one_round_then_sequential():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=12,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+        maximum_rounds=1,
+    )
+
+    for tool_id in ("parallel-a", "parallel-b"):
+        budget.register_call(tool_id)
+        assert budget.authorize(tool_id, "Bash", {"command": "pwc tasks list"}).allowed
+
+    assert budget.tool_rounds_started == 1
+    assert budget.tool_rounds_executed == 1
+    for tool_id in ("parallel-a", "parallel-b"):
+        budget.result(tool_id, "ok", status="success")
+
+    budget.register_call("parallel-a")
+    assert not budget.authorize(
+        "parallel-a", "Bash", {"command": "pwc tasks list"}
+    ).allowed
+    assert budget.tool_rounds_started == 2
+    assert budget.tool_rounds_executed == 1
+    assert budget.tool_rounds_denied == 1
+
+
 def test_fetchable_url_seed_is_strict_sorted_and_bounded():
     urls = sorted(f"https://example.com/{index}" for index in range(MAX_FETCHABLE_URLS))
     assert validate_url_seed(urls) == urls

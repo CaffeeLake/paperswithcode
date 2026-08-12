@@ -105,6 +105,7 @@ class SearchCallLimiter:
         self.completed_calls = 0
         self.executed_round_numbers: set[int] = set()
         self.allowed_tool_ids: set[str] = set()
+        self.active_round_tool_ids: set[str] = set()
 
     def register_round(self, tool_ids: list[str]) -> None:
         pending = [
@@ -119,6 +120,24 @@ class SearchCallLimiter:
             self.rounds_denied += 1
             self.tooling_closed = True
 
+    def register_call(self, tool_id: str) -> None:
+        # Pre-tool hooks run before the streamed assistant-message boundary that
+        # registers the complete batch. Starts without an intervening result are
+        # therefore parallel calls from the same assistant turn.
+        if tool_id in self.round_by_tool_id:
+            self.active_round_tool_ids.add(tool_id)
+            return
+        if self.active_round_tool_ids:
+            round_number = self.round_by_tool_id[next(iter(self.active_round_tool_ids))]
+            self.round_by_tool_id[tool_id] = round_number
+        else:
+            self.register_round([tool_id])
+        self.active_round_tool_ids.add(tool_id)
+
+    def complete_call(self, tool_id: str) -> None:
+        self.active_round_tool_ids.discard(tool_id)
+        self.round_by_tool_id.pop(tool_id, None)
+
     async def __call__(
         self, hook_input: dict[str, Any], tool_use_id: str | None, _context: Any
     ) -> dict[str, Any]:
@@ -126,8 +145,7 @@ class SearchCallLimiter:
         if name not in {SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME}:
             return {}
         tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
-        if tool_id not in self.round_by_tool_id:
-            self.register_round([tool_id])
+        self.register_call(tool_id)
         if self.tooling_closed:
             reason = ANSWER_NOW_REASON
         elif self.total_calls >= self.maximum_total:
@@ -164,8 +182,10 @@ class SearchCallLimiter:
         }
 
     async def post(
-        self, hook_input: dict[str, Any], _tool_use_id: str | None, _context: Any
+        self, hook_input: dict[str, Any], tool_use_id: str | None, _context: Any
     ) -> dict[str, Any]:
+        tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
+        self.complete_call(tool_id)
         self.completed_calls += 1
         if hook_input.get("tool_name") != WEB_SEARCH_TOOL_NAME:
             return {}
@@ -178,8 +198,10 @@ class SearchCallLimiter:
         return {}
 
     async def failure(
-        self, hook_input: dict[str, Any], _tool_use_id: str | None, _context: Any
+        self, hook_input: dict[str, Any], tool_use_id: str | None, _context: Any
     ) -> dict[str, Any]:
+        tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
+        self.complete_call(tool_id)
         if hook_input.get("tool_name") == WEB_SEARCH_TOOL_NAME:
             self.web_failed = True
             self.tooling_closed = True
@@ -661,7 +683,6 @@ async def stream_agent_events(
         adapter = SDKEventAdapter(
             show_reasoning=settings.chat_show_reasoning,
             maximum_search_calls=settings.chat_max_search_calls,
-            on_tool_batch=limiter.register_round,
         )
         deadline = time.monotonic() + settings.chat_timeout_seconds
         stream = sdk_query(prompt=prompt, options=options)
