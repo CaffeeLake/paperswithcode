@@ -29,6 +29,7 @@ function publicToolName(value: unknown): string {
 export class PiEventAdapter {
   private reasoningOpen = false;
   private answerStarted = false;
+  private terminalFailure = false;
   private readonly toolIds = new Set<string>();
   private readonly resultIds = new Set<string>();
 
@@ -36,6 +37,10 @@ export class PiEventAdapter {
     private readonly showReasoning: boolean,
     private readonly onSemantic?: (kind: "reasoning" | "tool" | "answer") => void,
   ) {}
+
+  get failed(): boolean {
+    return this.terminalFailure;
+  }
 
   private closeReasoning(): PwCEvent[] {
     if (!this.reasoningOpen) return [];
@@ -110,6 +115,17 @@ export class PiEventAdapter {
     if (type === "message_end") {
       const message = record(event.message);
       if (message.role !== "assistant") return [];
+      if (message.stopReason === "error" || typeof message.errorMessage === "string") {
+        this.terminalFailure = true;
+        return [
+          ...this.closeReasoning(),
+          {
+            type: "error",
+            code: "provider_error",
+            message: "The model provider is unavailable.",
+          },
+        ];
+      }
       const usage = record(message.usage);
       return [
         {

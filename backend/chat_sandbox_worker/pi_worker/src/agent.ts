@@ -238,6 +238,10 @@ export class PiWorker {
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }
+      if (adapter.failed) {
+        this.emit(run.request_id, { type: "worker_done", status: "complete" });
+        return;
+      }
       this.emit(run.request_id, {
         type: "_execution_telemetry",
         tool_calls: this.policy.calls,

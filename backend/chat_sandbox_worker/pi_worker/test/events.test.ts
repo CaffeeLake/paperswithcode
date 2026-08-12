@@ -36,3 +36,26 @@ test("closes visible reasoning before answer", () => {
     [{ type: "reasoning_end" }, { type: "answer_delta", text: "y" }],
   );
 });
+
+test("surfaces terminal provider errors without exposing provider details", () => {
+  const adapter = new PiEventAdapter(false);
+  assert.deepEqual(
+    adapter.feed({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "sensitive upstream response",
+        content: [],
+      },
+    }),
+    [
+      {
+        type: "error",
+        code: "provider_error",
+        message: "The model provider is unavailable.",
+      },
+    ],
+  );
+  assert.equal(adapter.failed, true);
+});
