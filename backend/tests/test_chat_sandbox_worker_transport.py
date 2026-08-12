@@ -717,7 +717,6 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
                 assert running.done is not None and running.done.is_set()
 
         assert observed == [
-            {"type": "worker_ready"},
             {"type": "_sdk_session", "session_id": "sdk-session-a"},
             WorkerTurnMilestone.SDK_DISPATCHED,
             {"type": "workspace_ready"},
@@ -808,7 +807,6 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
         }
 
         assert [event async for event in execution.events(timeout_seconds=1)] == [
-            {"type": "worker_ready"},
             {"type": "done"},
         ]
         assert process.wait_calls == 1

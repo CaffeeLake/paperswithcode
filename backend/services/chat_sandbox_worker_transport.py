@@ -687,6 +687,12 @@ class WorkerTurnExecution:
                         self.control.resume_id = sdk_session_id
                     if self.running.cancel_requested:
                         continue
+                    if event["type"] == "worker_ready":
+                        # Persistent Pi controls emit readiness for every run so
+                        # dispatch can prove that the harness accepted the
+                        # correlated request. It is transport-only and must
+                        # never reach the browser event schema.
+                        continue
                     if event["type"] == "workspace_ready":
                         self.sdk_dispatched = True
                         yield WorkerTurnMilestone.SDK_DISPATCHED
