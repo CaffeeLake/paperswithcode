@@ -29,7 +29,7 @@ BASE_IMAGE = (
 MODAL_IMAGE_ID = "im-nRA45etxHMwHLwFSLEIF56"
 # Production chat remains disabled and pinned to its previously qualified
 # contract; the distinct ID avoids cross-Environment image lookup.
-PRODUCTION_MODAL_IMAGE_ID = "im-5NdYXJpSJfcypOXwVJM1a7"
+PRODUCTION_MODAL_IMAGE_ID = "im-k6sP99TktiwSwGI6C87iMU"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
 
