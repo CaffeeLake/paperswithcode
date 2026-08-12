@@ -590,6 +590,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class _CertificateAuthority:
+    SANDBOX_LIFETIME = timedelta(hours=24)
+    VALIDITY_MARGIN = timedelta(hours=1)
+
     def __init__(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory(
             prefix="pwc-webfetch-", dir="/var/empty/pwc-broker"
@@ -597,6 +600,7 @@ class _CertificateAuthority:
         self.directory = Path(self.temporary_directory.name)
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         now = datetime.now(UTC)
+        self.not_valid_after = now + self.SANDBOX_LIFETIME + self.VALIDITY_MARGIN
         name = x509.Name(
             [x509.NameAttribute(NameOID.COMMON_NAME, "PwC WebFetch Ephemeral CA")]
         )
@@ -607,7 +611,7 @@ class _CertificateAuthority:
             .public_key(self.key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=1))
-            .not_valid_after(now + timedelta(hours=1))
+            .not_valid_after(self.not_valid_after)
             .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
             .sign(self.key, hashes.SHA256())
         )
@@ -630,7 +634,7 @@ class _CertificateAuthority:
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=1))
-            .not_valid_after(now + timedelta(minutes=30))
+            .not_valid_after(self.not_valid_after)
             .add_extension(
                 x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False
             )
