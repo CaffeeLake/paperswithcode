@@ -37,9 +37,14 @@ def _percentile(values: list[int], quantile: float) -> int | None:
     return ordered[max(0, math.ceil(len(ordered) * quantile) - 1)]
 
 
-def _cookie(subject: str, username: str) -> str:
+def _cookie(subject: str, username: str, qualification_owner: str) -> str:
     return _encode_legacy_session(
-        {"sub": subject, "username": username, "iat": int(time.time())}
+        {
+            "sub": subject,
+            "username": username,
+            "iat": int(time.time()),
+            "chat_qualification_owner": qualification_owner,
+        }
     )
 
 
@@ -207,7 +212,8 @@ def _latency_report(session_ids: set[uuid.UUID], started_at: datetime) -> dict:
 async def _run(
     settings,
     *,
-    qualification_subject: str,
+    admin_subject: str,
+    qualification_owner: str,
     admin_username: str,
     new_turns: int,
     followups: int,
@@ -231,7 +237,9 @@ async def _run(
     replacements = 0
     sandbox_replacements = 0
     cookies = {
-        settings.session_cookie_name: _cookie(qualification_subject, admin_username),
+        settings.session_cookie_name: _cookie(
+            admin_subject, admin_username, qualification_owner
+        ),
     }
     async with staging_client(timeout=240, cookies=cookies) as client:
         for task in tasks:
@@ -375,7 +383,8 @@ async def _run(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release-dir", type=Path, required=True)
-    parser.add_argument("--qualification-subject", required=True)
+    parser.add_argument("--admin-subject", required=True)
+    parser.add_argument("--qualification-owner", required=True)
     parser.add_argument("--admin-username", required=True)
     parser.add_argument("--new-turns", type=int, default=25)
     parser.add_argument("--followups", type=int, default=25)
@@ -398,7 +407,8 @@ def main() -> int:
     report, passed = asyncio.run(
         _run(
             settings,
-            qualification_subject=args.qualification_subject,
+            admin_subject=args.admin_subject,
+            qualification_owner=args.qualification_owner,
             admin_username=args.admin_username,
             new_turns=args.new_turns,
             followups=args.followups,

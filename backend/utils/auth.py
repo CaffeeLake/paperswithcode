@@ -70,13 +70,23 @@ def _session_actor(request: Request) -> Optional[dict]:
     role = role_for_hf_subject(subject, username=username)
     if role is None:
         return None
-    return {
+    actor = {
         "source": "cookie",
         "hf_subject": subject.strip(),
         "username": username,
         "role": role,
         "session_iat": payload.get("iat"),
     }
+    qualification_owner = payload.get("chat_qualification_owner")
+    if (
+        role == "admin"
+        and get_settings().environment == "staging"
+        and isinstance(qualification_owner, str)
+        and qualification_owner.startswith("operator:pi-qualification:")
+        and len(qualification_owner) <= 128
+    ):
+        actor["chat_qualification_owner"] = qualification_owner
+    return actor
 
 
 def require_admin(
@@ -286,7 +296,7 @@ def require_user(request: Request) -> dict:
             detail="Sign in with Hugging Face to use this feature",
         )
     role = role_for_hf_subject(hf_user_id, username=username)
-    return {
+    actor = {
         "source": "cookie",
         "username": username.lower(),
         "hf_user_id": hf_user_id,
@@ -294,3 +304,13 @@ def require_user(request: Request) -> dict:
         "role": role,
         "can_directly_edit_catalog": can_directly_edit_catalog(role),
     }
+    qualification_owner = (payload or {}).get("chat_qualification_owner")
+    if (
+        role == "admin"
+        and get_settings().environment == "staging"
+        and isinstance(qualification_owner, str)
+        and qualification_owner.startswith("operator:pi-qualification:")
+        and len(qualification_owner) <= 128
+    ):
+        actor["hf_user_id"] = qualification_owner
+    return actor

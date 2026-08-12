@@ -676,7 +676,11 @@ def create_admin_harness_session(
                 },
             ) from exc
     subject = str(admin.get("hf_subject") or "admin-api-token")
-    owner_id = subject if admin.get("source") == "cookie" else f"operator:{subject}"
+    owner_id = (
+        str(admin.get("chat_qualification_owner") or subject)
+        if admin.get("source") == "cookie"
+        else f"operator:{subject}"
+    )
     owner = ChatOwner(
         hf_user_id=owner_id,
         hf_username=str(admin.get("username") or "operator"),
