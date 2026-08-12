@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,7 @@ MAX_ENTRY_BYTES = 1024 * 1024
 MAX_ENTRY_TYPE_CHARS = 64
 FORMAT_VERSION = 1
 _PATH_METADATA_TYPES = {"session", "model_change", "thinking_level_change"}
+_OPAQUE_ENTRY_KEY = "__pwc_pi_native_json_b64_v1"
 
 
 class PiTranscriptError(RuntimeError):
@@ -47,6 +49,28 @@ def _serialized(entry: object) -> tuple[dict[str, Any], int]:
     if not 2 <= len(raw) <= MAX_ENTRY_BYTES:
         raise PiTranscriptError("Pi transcript entry is outside the byte limit")
     return entry, len(raw)
+
+
+def _database_entry(entry: dict[str, Any]) -> dict[str, str]:
+    """Encode native JSON losslessly for PostgreSQL JSONB, which rejects NUL."""
+
+    raw = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode()
+    return {_OPAQUE_ENTRY_KEY: b64encode(raw).decode("ascii")}
+
+
+def _native_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    encoded = entry.get(_OPAQUE_ENTRY_KEY)
+    if encoded is None:
+        return entry
+    if set(entry) != {_OPAQUE_ENTRY_KEY} or not isinstance(encoded, str):
+        raise PiTranscriptError("Pi transcript storage envelope is invalid")
+    try:
+        decoded = json.loads(b64decode(encoded, validate=True))
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise PiTranscriptError("Pi transcript storage envelope is invalid") from error
+    if not isinstance(decoded, dict):
+        raise PiTranscriptError("Pi transcript storage envelope is invalid")
+    return decoded
 
 
 def _envelope(entry: dict[str, Any]) -> tuple[str | None, str | None, str]:
@@ -159,7 +183,7 @@ class ChatPiTranscriptService:
                 )
             ).scalar_one_or_none()
             if existing is not None:
-                if existing.entry != entry:
+                if _native_entry(existing.entry) != entry:
                     raise PiTranscriptError("Pi transcript ordinal conflicts")
                 continue
             if ordinal != expected_ordinal:
@@ -185,7 +209,7 @@ class ChatPiTranscriptService:
                     entry_id=entry_id,
                     parent_entry_id=parent_id,
                     entry_type=entry_type,
-                    entry=entry,
+                    entry=_database_entry(entry),
                     byte_size=byte_size,
                 )
             )
@@ -239,7 +263,7 @@ class ChatPiTranscriptService:
         if row is None:
             raise PiTranscriptError("Pi session was not found")
         entries = tuple(
-            item.entry
+            _native_entry(item.entry)
             for item in self.db.execute(
                 select(ChatPiTranscriptEntry)
                 .where(ChatPiTranscriptEntry.agent_session_id == agent_session_id)
@@ -301,7 +325,7 @@ class ChatPiTranscriptService:
         copied_entries: list[dict[str, Any]] = []
         copied_bytes = 0
         for record in selected:
-            entry = dict(record.entry)
+            entry = dict(_native_entry(record.entry))
             if record.entry_type == "session":
                 entry["id"] = str(fork_session_id)
                 entry["parentSession"] = str(source_session_id)

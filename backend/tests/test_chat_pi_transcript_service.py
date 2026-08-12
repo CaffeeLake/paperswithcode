@@ -2,7 +2,9 @@ import pytest
 
 from backend.services.chat_pi_transcript_service import (
     PiTranscriptError,
+    _database_entry,
     _envelope,
+    _native_entry,
     _serialized,
 )
 
@@ -37,3 +39,12 @@ def test_pi_transcript_envelope_preserves_native_tree_ids():
 def test_pi_transcript_rejects_invalid_native_envelopes(entry):
     with pytest.raises(PiTranscriptError):
         _envelope(entry)
+
+
+def test_pi_transcript_storage_envelope_round_trips_postgres_forbidden_nul():
+    native = {"type": "message", "id": "entry", "content": "a\x00b"}
+
+    stored = _database_entry(native)
+
+    assert "\x00" not in str(stored)
+    assert _native_entry(stored) == native

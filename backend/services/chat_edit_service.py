@@ -19,6 +19,7 @@ from backend.models.database import (
     ChatSDKTranscriptEntry,
     ChatSession,
 )
+from backend.services.chat_pi_transcript_service import _database_entry
 
 if TYPE_CHECKING:
     from backend.services.chat_session_service import TurnAdmission
@@ -322,7 +323,7 @@ class ChatEditService:
                     entry_id=entry_id,
                     parent_entry_id=parent_entry_id,
                     entry_type=entry_type,
-                    entry=entry,
+                    entry=_database_entry(entry),
                     byte_size=byte_size,
                 )
             )
