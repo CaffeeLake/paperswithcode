@@ -14,7 +14,7 @@ def test_title_generation_defaults_to_deepseek_v4_flash_on_openrouter():
     assert settings.chat_title_provider == "openrouter"
 
 
-def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
+def test_stream_title_uses_nitro_routing_and_low_reasoning(monkeypatch):
     client_args = {}
     completion_args = {}
 
@@ -79,7 +79,7 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
     assert completion_args["max_tokens"] == 64
     assert completion_args["extra_body"] == {
         "reasoning": {"effort": "low"},
-        "provider": {"only": ["baseten"], "allow_fallbacks": False},
+        "provider": {"sort": "throughput"},
     }
     assert completion_args["messages"] == [
         {

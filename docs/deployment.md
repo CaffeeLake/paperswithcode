@@ -298,7 +298,7 @@ research models, allowance state, percentage UI, and BYOK controls; the title
 path is the only permitted server-funded OpenRouter exception.
 
 Automatic title generation uses the server-funded OpenRouter credential and
-pins `deepseek/deepseek-v4-flash-0731` to Baseten without provider fallback. It
+routes `deepseek/deepseek-v4-flash-0731` through Nitro throughput sorting. It
 reserves against a persistent,
 environment-isolated `$25/month` title circuit before dispatch. Missing
 credentials, ledger uncertainty, provider failure, or exhaustion falls back to

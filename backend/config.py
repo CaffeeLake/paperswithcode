@@ -11,8 +11,6 @@ from typing import List, Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEEPSEEK_V4_FLASH_TITLE_PROVIDER = "baseten"
-
 
 class Settings(BaseSettings):
     """Application settings."""
