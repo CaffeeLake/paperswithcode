@@ -188,41 +188,48 @@ def _chat_descriptor_from_source(
     script = """
 import json
 import os
-from backend.chat_sandbox_worker.contract import (
-    DATABASE_CONTRACT_VERSION, DEFAULT_BACKEND, GATEWAY_COMPATIBLE_FROM,
-    GATEWAY_CONTRACT_VERSION, MODAL_IMAGE_ID, NEW_CHAT_MODAL_PERCENTAGE,
-    PRODUCTION_MODAL_IMAGE_ID, PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
-    DEFAULT_AGENT_HARNESS, NEW_SESSION_PI_PERCENTAGE, PI_NODE_SHA256,
-    PI_NODE_VERSION, PI_SOURCE_COMMIT, PI_VERSION, RESTRICTED_HF_CLI_VERSION,
-    SDK_VERSION, SUPPORTED_AGENT_HARNESSES,
-)
+from backend.chat_sandbox_worker import contract
 from backend.chat_sandbox_worker.prompt import sha256
 enabled = os.environ["PWC_RELEASE_CHAT_ENABLED"] == "true"
-print(json.dumps({
+descriptor = {
     "enabled": enabled,
-    "new_chat_modal_percentage": NEW_CHAT_MODAL_PERCENTAGE if enabled else 0,
-    "default_backend": DEFAULT_BACKEND,
+    "new_chat_modal_percentage": contract.NEW_CHAT_MODAL_PERCENTAGE if enabled else 0,
+    "default_backend": contract.DEFAULT_BACKEND,
     "modal_image_version": (
-        PRODUCTION_MODAL_IMAGE_ID
+        contract.PRODUCTION_MODAL_IMAGE_ID
         if os.environ["PWC_RELEASE_ENVIRONMENT"] == "production"
-        else MODAL_IMAGE_ID
+        else contract.MODAL_IMAGE_ID
     ),
-    "pwc_cli_version": PWC_CLI_VERSION,
-    "worker_contract_version": WORKER_CONTRACT_VERSION,
-    "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
-    "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
-    "database_contract_version": DATABASE_CONTRACT_VERSION,
+    "pwc_cli_version": contract.PWC_CLI_VERSION,
+    "worker_contract_version": contract.WORKER_CONTRACT_VERSION,
+    "gateway_contract_version": contract.GATEWAY_CONTRACT_VERSION,
+    "gateway_compatible_from": contract.GATEWAY_COMPATIBLE_FROM,
+    "database_contract_version": contract.DATABASE_CONTRACT_VERSION,
     "system_prompt_sha256": sha256(),
-    "supported_agent_harnesses": list(SUPPORTED_AGENT_HARNESSES) if enabled else ["claude"],
-    "default_agent_harness": DEFAULT_AGENT_HARNESS if enabled else "claude",
-    "new_session_pi_percentage": NEW_SESSION_PI_PERCENTAGE if enabled else 0,
-    "claude_sdk_version": SDK_VERSION if enabled else "",
-    "pi_version": PI_VERSION if enabled else "",
-    "pi_source_commit": PI_SOURCE_COMMIT if enabled else "",
-    "pi_node_version": PI_NODE_VERSION if enabled else "",
-    "pi_node_sha256": PI_NODE_SHA256 if enabled else "",
-    "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION if enabled else "",
-}, sort_keys=True))
+}
+pi_fields = (
+    "DEFAULT_AGENT_HARNESS", "NEW_SESSION_PI_PERCENTAGE", "PI_NODE_SHA256",
+    "PI_NODE_VERSION", "PI_SOURCE_COMMIT", "PI_VERSION",
+    "SUPPORTED_AGENT_HARNESSES",
+)
+present_pi_fields = [field for field in pi_fields if hasattr(contract, field)]
+if present_pi_fields and len(present_pi_fields) != len(pi_fields):
+    raise RuntimeError("source chat contract has an incomplete Pi descriptor")
+if present_pi_fields:
+    descriptor.update({
+        "supported_agent_harnesses": (
+            list(contract.SUPPORTED_AGENT_HARNESSES) if enabled else ["claude"]
+        ),
+        "default_agent_harness": contract.DEFAULT_AGENT_HARNESS if enabled else "claude",
+        "new_session_pi_percentage": contract.NEW_SESSION_PI_PERCENTAGE if enabled else 0,
+        "claude_sdk_version": contract.SDK_VERSION if enabled else "",
+        "pi_version": contract.PI_VERSION if enabled else "",
+        "pi_source_commit": contract.PI_SOURCE_COMMIT if enabled else "",
+        "pi_node_version": contract.PI_NODE_VERSION if enabled else "",
+        "pi_node_sha256": contract.PI_NODE_SHA256 if enabled else "",
+        "restricted_hf_cli_version": contract.RESTRICTED_HF_CLI_VERSION if enabled else "",
+    })
+print(json.dumps(descriptor, sort_keys=True))
 """
     environment_values = {
         "PATH": os.defpath,

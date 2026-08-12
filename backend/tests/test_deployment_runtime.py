@@ -1187,6 +1187,47 @@ def test_disabled_production_manifest_uses_selected_source_descriptor():
     assert manifest["backend_features"]["chat"] is False
 
 
+def test_disabled_production_descriptor_supports_pre_pi_source(tmp_path: Path):
+    source = tmp_path / "source"
+    package = source / "backend" / "chat_sandbox_worker"
+    package.mkdir(parents=True)
+    (source / "backend" / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "contract.py").write_text(
+        "\n".join(
+            [
+                "DATABASE_CONTRACT_VERSION = 1",
+                'DEFAULT_BACKEND = "modal_cli"',
+                "GATEWAY_COMPATIBLE_FROM = 26",
+                "GATEWAY_CONTRACT_VERSION = 27",
+                'MODAL_IMAGE_ID = "im-staging"',
+                "NEW_CHAT_MODAL_PERCENTAGE = 100",
+                'PRODUCTION_MODAL_IMAGE_ID = "im-production"',
+                'PWC_CLI_VERSION = "0.1.12"',
+                'WORKER_CONTRACT_VERSION = "59"',
+            ]
+        )
+    )
+    (package / "prompt.py").write_text('def sha256():\n    return "a" * 64\n')
+
+    descriptor = _chat_descriptor_from_source(source, "production", chat_enabled=False)
+
+    assert set(descriptor) == {
+        "enabled",
+        "new_chat_modal_percentage",
+        "default_backend",
+        "modal_image_version",
+        "pwc_cli_version",
+        "worker_contract_version",
+        "gateway_contract_version",
+        "gateway_compatible_from",
+        "database_contract_version",
+        "system_prompt_sha256",
+    }
+    assert descriptor["enabled"] is False
+    assert descriptor["database_contract_version"] == 1
+
+
 def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     sha = "a" * 40
