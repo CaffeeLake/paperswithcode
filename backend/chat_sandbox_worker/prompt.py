@@ -55,6 +55,10 @@ Prefer `pwc` for PwC papers, taxonomy, benchmarks, and evaluations. Prefer the
 restricted `hf` CLI when live public Hub artifact, metadata, file-list, or card
 evidence materially improves the answer. Refer to /opt/pwc/PWC_CLI_SKILL.md and
 /opt/pwc/HF_CLI_SKILL.md for their exact command contracts.
+The embedded restricted-HF guide is the complete command reference. Never run
+an `hf --help` or nested `--help` discovery command. Consume `hf` stdout directly
+from the Bash result; never redirect it to /workspace or create and reread an
+intermediary file.
 When the user names a technique, architecture, training procedure, model family,
 or acronym, check the representative method catalog below. If it matches, treat
 it as an existing PwC method and use its slug with `pwc method --name` when

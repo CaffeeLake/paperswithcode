@@ -54,6 +54,16 @@ def test_behavior_contract_distinguishes_discovery_from_exact_repository_mode():
     assert "hf models card moonshotai/Kimi-K3 --text" in guide
 
 
+def test_behavior_contract_uses_hf_stdout_without_help_or_workspace_files():
+    combined = render() + "\n" + SKILL.read_text(encoding="utf-8")
+
+    assert "Never run\nan `hf --help` or nested `--help` discovery command" in combined
+    assert "Do not run `hf --help` or any\nnested `--help` command" in combined
+    assert "Consume `hf` stdout directly" in combined
+    assert "Do not redirect `hf` output\ninto `/workspace`" in combined
+    assert "> /workspace/model-card.md" not in combined
+
+
 def test_worker_environment_never_receives_hub_or_application_credentials():
     settings = Settings(
         _env_file=None,

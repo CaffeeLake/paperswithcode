@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "60"
+WORKER_CONTRACT_VERSION = "61"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 27
@@ -15,7 +15,7 @@ RESTRICTED_HF_CLI_VERSION = "0.1.0"
 RESTRICTED_HF_CLI_SHA256 = (
     "4151cd20e415958e6ef7b3d15a21d1837feb9867ecbea7e079a09dadef56f4bc"
 )
-HF_CLI_SKILL_SHA256 = "c7ae849c4580e21842b10a66b01ed2b1283383daae1a5aea8aa7f110e8cf6303"
+HF_CLI_SKILL_SHA256 = "5980017378b3127842309439e6a2961948b60f258578d07aa58aa50daa0fca73"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
 IMAGE_PUBLISH_NAME = "pwc-chat-v1"
 CHAT_SANDBOX_REGION = "eu-west"
@@ -26,7 +26,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-qkMhZjHpkCcgm2unNLfghO"
+MODAL_IMAGE_ID = "im-YQKX5F3zFPo8JnZWF4ZVt5"
 # Production chat remains disabled and pinned to its previously qualified
 # contract; the distinct ID avoids cross-Environment image lookup.
 PRODUCTION_MODAL_IMAGE_ID = "im-sARh8uQCMV2hQmjXxckrtI"
