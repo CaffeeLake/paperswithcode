@@ -151,7 +151,7 @@ describe("AskAssistant", () => {
       .toHaveAttribute("aria-selected", "true");
     await user.click(screen.getByRole("option", { name: /Max Deepest and slowest/ }));
     expect(screen.getByRole("button", { name: "Reasoning effort: Max" }))
-      .toHaveTextContent("Effort: Max");
+      .toHaveTextContent("Max");
     await user.type(screen.getByRole("textbox", { name: "Ask the assistant" }), "Deep comparison");
     await user.click(screen.getByRole("button", { name: "Ask the assistant" }));
 

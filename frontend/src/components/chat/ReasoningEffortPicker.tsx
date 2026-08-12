@@ -59,7 +59,7 @@ const ReasoningEffortPicker: React.FC<ReasoningEffortPickerProps> = ({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        <span>Effort: {selected.label}</span>
+        <span>{selected.label}</span>
         <ChevronDown size={13} aria-hidden="true" />
       </button>
       {open && (
