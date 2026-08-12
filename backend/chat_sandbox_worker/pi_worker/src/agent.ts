@@ -85,8 +85,39 @@ export class PiWorker {
     const id = randomUUID();
     const manager = SessionManager.create("/workspace", "/home/pwc-chat/.pi-sessions", { id });
     const bound = await createOrBind(id);
-    if (bound.agent_session_id !== id || bound.entry_count !== 0) {
-      throw new Error("Pi session bind contract mismatch");
+    if (bound.agent_session_id !== id) {
+      if (bound.entry_count === 0) {
+        const reboundManager = SessionManager.create(
+          "/workspace",
+          "/home/pwc-chat/.pi-sessions",
+          { id: bound.agent_session_id },
+        );
+        this.manager = reboundManager;
+        this.boundAgentSession = bound.agent_session_id;
+        return { manager: reboundManager, initialCount: 0, created: true };
+      }
+      const restored = await restoreFile(bound.agent_session_id, "/home/pwc-chat/.pi-sessions");
+      const restoredManager = SessionManager.open(
+        restored.file,
+        "/home/pwc-chat/.pi-sessions",
+        "/workspace",
+      );
+      if (
+        restoredManager.getSessionId() !== bound.agent_session_id ||
+        restoredManager.getLeafId() !== restored.snapshot.current_leaf_id
+      ) {
+        throw new Error("Pi retry restore identity mismatch");
+      }
+      this.manager = restoredManager;
+      this.boundAgentSession = bound.agent_session_id;
+      return {
+        manager: restoredManager,
+        initialCount: restored.snapshot.entry_count,
+        created: false,
+      };
+    }
+    if (bound.entry_count !== 0) {
+      throw new Error("Pi new session bind contract mismatch");
     }
     this.manager = manager;
     this.boundAgentSession = id;

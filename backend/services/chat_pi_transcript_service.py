@@ -95,8 +95,10 @@ class ChatPiTranscriptService:
             .with_for_update()
         ).scalar_one_or_none()
         if row is not None:
-            if row.agent_session_id != agent_session_id:
-                raise PiTranscriptError("Pi session is already bound")
+            # A failed reusable-sandbox assignment may have durably created the
+            # native session before the coordinator retries the same admitted
+            # turn in a replacement sandbox. Return that binding so the new
+            # worker restores it instead of inventing a conflicting transcript.
             return row
         if chat.sdk_session_id not in {None, agent_session_id}:
             raise PiTranscriptError("Chat already has a different agent session")
