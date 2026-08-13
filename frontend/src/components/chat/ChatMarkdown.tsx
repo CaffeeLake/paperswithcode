@@ -181,6 +181,18 @@ export const ChatMarkdown: React.FC<{
               </WebPreviewLink>
             );
           }
+          if (href?.startsWith("https://")) {
+            return (
+              <a
+                href={href}
+                className="chat-external-link"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {children}
+              </a>
+            );
+          }
           return <span>{children}</span>;
         },
       }}

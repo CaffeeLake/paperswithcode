@@ -300,21 +300,32 @@ describe("Markdown and chat policy", () => {
     );
   });
 
-  it("continues to suppress non-repository external chat links", () => {
+  it("renders generic HTTPS chat links in a new tab", () => {
     renderWithProviders(
       <ChatMarkdown
         text={
           "[settings](https://huggingface.co/settings/profile) " +
-          "[external](https://example.com)"
+          "[external](https://example.com/docs) " +
+          "Bare: https://patch-policy.github.io/, then text."
         }
         papers={{}}
         citations={{}}
       />,
     );
 
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.getByText("settings")).toBeInTheDocument();
-    expect(screen.getByText("external")).toBeInTheDocument();
+    for (const [name, href] of [
+      ["settings", "https://huggingface.co/settings/profile"],
+      ["external", "https://example.com/docs"],
+      ["https://patch-policy.github.io/", "https://patch-policy.github.io/"],
+    ]) {
+      expect(screen.getByRole("link", { name })).toHaveAttribute("href", href);
+      expect(screen.getByRole("link", { name })).toHaveAttribute("target", "_blank");
+      expect(screen.getByRole("link", { name })).toHaveAttribute(
+        "rel",
+        "noopener noreferrer",
+      );
+      expect(screen.getByRole("link", { name })).toHaveClass("chat-external-link");
+    }
   });
 
   it("renders and previews GitHub repository links in a new tab", async () => {
@@ -379,7 +390,7 @@ describe("Markdown and chat policy", () => {
     expect(mockedPreloadImage).not.toHaveBeenCalled();
   });
 
-  it("does not allow lookalike GitHub hosts", () => {
+  it("renders lookalike GitHub hosts as generic links without GitHub branding", () => {
     renderWithProviders(
       <ChatMarkdown
         text="[fake](https://github.com.example.org/owner/repo)"
@@ -388,10 +399,13 @@ describe("Markdown and chat policy", () => {
       />,
     );
 
-    expect(screen.queryByRole("link", { name: "fake" })).not.toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "fake" });
+    expect(link).toHaveClass("chat-external-link");
+    expect(link).not.toHaveClass("chat-github-link");
+    expect(link.querySelector("svg")).not.toBeInTheDocument();
   });
 
-  it("renders only exact authoritative HTTPS web citations as external links", () => {
+  it("distinguishes authoritative web citations from generic HTTPS links", () => {
     const source = "https://example.com/official-release";
     renderWithProviders(
       <ChatMarkdown
@@ -417,7 +431,12 @@ describe("Markdown and chat policy", () => {
     expect(screen.getByRole("link", { name: "official" })).toHaveClass(
       "chat-web-citation",
     );
-    expect(screen.queryByRole("link", { name: "unverified" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "unverified" })).toHaveClass(
+      "chat-external-link",
+    );
+    expect(screen.getByRole("link", { name: "unverified" })).not.toHaveClass(
+      "chat-web-citation",
+    );
   });
 
   it("previews authoritative web citations with search-supplied metadata", async () => {

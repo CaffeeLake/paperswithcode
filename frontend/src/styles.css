@@ -5923,6 +5923,13 @@ html { scroll-behavior: smooth; }
   margin-right: 0.3em;
   vertical-align: -0.14em;
 }
+.chat-external-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.chat-external-link:hover { text-decoration-thickness: 2px; }
 .chat-error {
   display: flex;
   align-items: center;
