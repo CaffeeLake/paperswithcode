@@ -2441,6 +2441,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "Every Bash command runs with `set -eo pipefail`" in prompt
     assert "do not place multiple `pwc search` executions" in prompt
     assert "secure, disposable sandbox" in prompt
+    assert "Every Bash command already starts in /workspace" in prompt
+    assert "never prefix a command with `cd /workspace`" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
     assert "deepseek-ai/DeepSeek-V4-Flash-0731:fastest" in prompt
@@ -2485,7 +2487,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-adW5qFC6StLPkD3oIP5GJK"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-k6sP99TktiwSwGI6C87iMU"
-    assert WORKER_CONTRACT_VERSION == "71"
+    assert WORKER_CONTRACT_VERSION == "72"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
