@@ -1,5 +1,5 @@
-import json
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -214,6 +214,10 @@ def test_workflow_isolates_modal_discovery_from_vps_persistence():
     jobs = workflow["jobs"]
     assert jobs["discover"]["needs"] == "select"
     assert jobs["persist"]["needs"] == "discover"
+    assert jobs["persist"]["if"] == "${{ inputs.persist == true }}"
+    dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert dispatch_inputs["persist"]["type"] == "boolean"
+    assert dispatch_inputs["persist"]["default"] is False
     discover_env = jobs["discover"]["env"]
     assert set(discover_env) == {
         "MODAL_TOKEN_ID",

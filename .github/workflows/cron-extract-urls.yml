@@ -12,6 +12,11 @@ on:
         description: Maximum papers to process
         required: false
         default: "100"
+      persist:
+        description: Persist validated URL findings to production
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: cron-extract-urls
@@ -115,6 +120,7 @@ jobs:
 
   persist:
     needs: discover
+    if: ${{ inputs.persist == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
