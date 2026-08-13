@@ -2252,6 +2252,10 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
     prompt = render()
 
     assert "When comparing papers, prefer a Markdown table." in prompt
+    assert (
+        "Always favor native paper hyperlinks instead of arXiv links, unless the user "
+        "explicitly asks for an arXiv link." in prompt
+    )
     assert "use `--page-size`, never `--limit`" in prompt
     assert "This subcommand has no `--search` or `--limit` flag" in prompt
     assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
