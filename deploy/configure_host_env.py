@@ -737,6 +737,44 @@ def production_chat_install_values(
     return values
 
 
+def production_chat_admission_values(
+    sealed: dict[str, str],
+    current_production: dict[str, str],
+    current_staging: dict[str, str],
+) -> dict[str, str]:
+    """Open production admission only from the exact installed sealed bundle."""
+
+    values = production_chat_install_values(
+        sealed,
+        current_production,
+        current_staging,
+    )
+    admission_keys = {
+        "PWC_CHAT_PUBLIC_ADMISSION_ENABLED",
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED",
+    }
+    mismatched = sorted(
+        key
+        for key, value in values.items()
+        if key not in admission_keys
+        and decoded_value(current_production.get(key, "")).strip() != value
+    )
+    if mismatched:
+        raise ValueError(
+            "installed production chat preparation has drifted: "
+            + ", ".join(mismatched)
+        )
+    admission = {
+        key: decoded_value(current_production.get(key, "false")).strip().lower()
+        for key in admission_keys
+    }
+    if set(admission.values()) - {"true", "false"}:
+        raise ValueError("production chat admission controls are invalid")
+    if len(set(admission.values())) != 1:
+        raise ValueError("production chat admission controls must change together")
+    return {key: "true" for key in admission_keys}
+
+
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
@@ -770,6 +808,7 @@ def main() -> int:
     parser.add_argument("--production-cron-github-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
     parser.add_argument("--production-chat-install-only", action="store_true")
+    parser.add_argument("--production-chat-admission-enable-only", action="store_true")
     parser.add_argument("--modal-profile")
     parser.add_argument(
         "--modal-profile-config",
@@ -783,6 +822,53 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if args.production_chat_admission_enable_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+        )
+        if any(other_modes):
+            parser.error(
+                "--production-chat-admission-enable-only cannot be combined "
+                "with other modes"
+            )
+        confirmation = "ENABLE_PRODUCTION_CHAT_ADMISSION"
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        current_production = read_lines(CONFIG_ROOT / "production.env")
+        current_staging = read_lines(CONFIG_ROOT / "staging.env")
+        try:
+            values = production_chat_admission_values(
+                read_lines(PRODUCTION_CHAT_SEALED_CONFIG),
+                current_production,
+                current_staging,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "production.env",
+            assign(current_production, values),
+            "pwc-production",
+        )
+        print(
+            "enabled production public and sandbox chat admission; "
+            "no service was restarted and the blank pool remains disabled"
+        )
+        return 0
     if args.production_cron_github_only:
         other_modes = (
             args.production_codex_only,

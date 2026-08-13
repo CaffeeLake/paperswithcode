@@ -2749,6 +2749,38 @@ def test_production_chat_install_revalidates_exact_sealed_bundle():
     )
 
 
+def test_production_chat_admission_requires_exact_installed_bundle():
+    source = _production_chat_preparation_source()
+    values = configure_host_env.production_chat_preparation_values(
+        source,
+        {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+    )
+    sealed = {key: f"{key}={value}" for key, value in values.items()}
+    current = {
+        **{"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        **sealed,
+    }
+
+    assert configure_host_env.production_chat_admission_values(
+        sealed,
+        current,
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+    ) == {
+        "PWC_CHAT_PUBLIC_ADMISSION_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "true",
+    }
+
+    drifted = dict(current)
+    drifted["PWC_CHAT_BLANK_POOL_ENABLED"] = "PWC_CHAT_BLANK_POOL_ENABLED=true"
+    with pytest.raises(ValueError, match="has drifted"):
+        configure_host_env.production_chat_admission_values(
+            sealed,
+            drifted,
+            {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "match"),
     [

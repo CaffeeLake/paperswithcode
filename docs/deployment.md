@@ -392,6 +392,19 @@ an atomic write. Disabled bridge manifests override chat and Modal rollout to
 zero, so the same installed configuration remains rollback-compatible without
 editing secrets during an incident.
 
+After the enabled release passes production smoke with admission closed, open
+public and sandbox admission together through the guarded configuration path.
+This revalidates the exact sealed bundle, rejects drift, keeps the blank pool
+disabled, and does not restart a service; refresh the exact active release so
+the new admission state is loaded:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/production.env \
+  --production-chat-admission-enable-only \
+  --confirm ENABLE_PRODUCTION_CHAT_ADMISSION
+```
+
 Install the staging title policy from a protected local environment file through
 the narrow staging-only helper. It validates the exact owner, environment,
 model, provider, and `$25` circuit and does not write production. Legacy HF
