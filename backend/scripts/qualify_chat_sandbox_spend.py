@@ -50,6 +50,22 @@ def confirmation_for(environment: str) -> str:
     return f"QUALIFY_{environment.upper()}_CHAT_SPEND"
 
 
+def fallback_spend_event_statement(environment: str):
+    """Select the warning transition deliberately routed to fallback."""
+
+    return (
+        select(ChatSandboxCircuitEvent)
+        .join(
+            ChatSandboxBudgetState,
+            ChatSandboxBudgetState.id == ChatSandboxCircuitEvent.budget_state_id,
+        )
+        .where(
+            ChatSandboxBudgetState.environment == environment,
+            ChatSandboxCircuitEvent.event_type == "warning_entered",
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -177,12 +193,7 @@ def main() -> int:
         # transition visible to the verification query in this transaction.
         db.flush()
         fallback_event = db.execute(
-            select(ChatSandboxCircuitEvent)
-            .join(
-                ChatSandboxBudgetState,
-                ChatSandboxBudgetState.id == ChatSandboxCircuitEvent.budget_state_id,
-            )
-            .where(ChatSandboxBudgetState.environment == fallback_environment)
+            fallback_spend_event_statement(fallback_environment)
         ).scalar_one()
         # Exercise the real fallback destination without sending five deliberate
         # failures to the primary endpoint first.
