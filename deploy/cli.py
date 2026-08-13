@@ -191,6 +191,7 @@ import os
 from backend.chat_sandbox_worker import contract
 from backend.chat_sandbox_worker.prompt import sha256
 enabled = os.environ["PWC_RELEASE_CHAT_ENABLED"] == "true"
+production = os.environ["PWC_RELEASE_ENVIRONMENT"] == "production"
 descriptor = {
     "enabled": enabled,
     "new_chat_modal_percentage": contract.NEW_CHAT_MODAL_PERCENTAGE if enabled else 0,
@@ -204,7 +205,15 @@ descriptor = {
     "worker_contract_version": contract.WORKER_CONTRACT_VERSION,
     "gateway_contract_version": contract.GATEWAY_CONTRACT_VERSION,
     "gateway_compatible_from": contract.GATEWAY_COMPATIBLE_FROM,
-    "database_contract_version": contract.DATABASE_CONTRACT_VERSION,
+    "database_contract_version": (
+        getattr(
+            contract,
+            "PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION",
+            contract.DATABASE_CONTRACT_VERSION,
+        )
+        if production and not enabled
+        else contract.DATABASE_CONTRACT_VERSION
+    ),
     "system_prompt_sha256": sha256(),
 }
 pi_fields = (
@@ -220,8 +229,24 @@ if present_pi_fields:
         "supported_agent_harnesses": (
             list(contract.SUPPORTED_AGENT_HARNESSES) if enabled else ["claude"]
         ),
-        "default_agent_harness": contract.DEFAULT_AGENT_HARNESS if enabled else "claude",
-        "new_session_pi_percentage": contract.NEW_SESSION_PI_PERCENTAGE if enabled else 0,
+        "default_agent_harness": (
+            getattr(
+                contract,
+                "PRODUCTION_DEFAULT_AGENT_HARNESS",
+                contract.DEFAULT_AGENT_HARNESS,
+            )
+            if production and enabled
+            else contract.DEFAULT_AGENT_HARNESS if enabled else "claude"
+        ),
+        "new_session_pi_percentage": (
+            getattr(
+                contract,
+                "PRODUCTION_NEW_SESSION_PI_PERCENTAGE",
+                contract.NEW_SESSION_PI_PERCENTAGE,
+            )
+            if production and enabled
+            else contract.NEW_SESSION_PI_PERCENTAGE if enabled else 0
+        ),
         "claude_sdk_version": contract.SDK_VERSION if enabled else "",
         "pi_version": contract.PI_VERSION if enabled else "",
         "pi_source_commit": contract.PI_SOURCE_COMMIT if enabled else "",

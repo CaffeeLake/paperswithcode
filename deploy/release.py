@@ -22,6 +22,7 @@ from backend.chat_sandbox_worker.contract import (
     PI_NODE_VERSION,
     PI_SOURCE_COMMIT,
     PI_VERSION,
+    PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION,
     PRODUCTION_MODAL_IMAGE_ID,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
@@ -132,7 +133,7 @@ def chat_runtime(
             "worker_contract_version": WORKER_CONTRACT_VERSION,
             "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
             "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
-            "database_contract_version": 1,
+            "database_contract_version": PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION,
             "system_prompt_sha256": sha256(),
             "supported_agent_harnesses": ["claude"],
             "default_agent_harness": "claude",
@@ -410,8 +411,14 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
     # writers.  A second identical-contract release must displace this bridge
     # before operators may assign even an admin Pi session.
     pi_zero_assignment_bridge = (
-        active_emits == 27
-        and active_accepts == 26
+        (
+            (active_emits == 27 and active_accepts == 26)
+            or (
+                active_runtime.get("enabled") is False
+                and active_emits == 28
+                and active_accepts == 27
+            )
+        )
         and active_database == 1
         and candidate_emits == 28
         and candidate_accepts == 27

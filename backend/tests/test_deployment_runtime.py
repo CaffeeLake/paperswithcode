@@ -857,6 +857,34 @@ def test_pi_upgrade_allows_only_zero_assignment_additive_bridge():
         validate_rolling_compatibility(active, candidate)
 
 
+def test_disabled_pi_gateway_bridge_can_open_only_with_zero_assignment():
+    active = {
+        "chat_runtime": {
+            "enabled": False,
+            "gateway_contract_version": 28,
+            "gateway_compatible_from": 27,
+            "database_contract_version": 1,
+        }
+    }
+    candidate = {
+        "chat_runtime": {
+            "enabled": True,
+            "gateway_contract_version": 28,
+            "gateway_compatible_from": 27,
+            "database_contract_version": 2,
+            "supported_agent_harnesses": ["claude", "pi"],
+            "default_agent_harness": "claude",
+            "new_session_pi_percentage": 0,
+        }
+    }
+
+    validate_rolling_compatibility(active, candidate)
+    candidate["chat_runtime"]["new_session_pi_percentage"] = 100
+    candidate["chat_runtime"]["default_agent_harness"] = "pi"
+    with pytest.raises(ValueError, match="database contracts"):
+        validate_rolling_compatibility(active, candidate)
+
+
 class _ChatSchemaResult:
     def __init__(self, *, scalar=None, rows=None, first=None):
         self._scalar = scalar
@@ -1165,10 +1193,14 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert dormant is not None
     assert dormant["enabled"] is False
     assert dormant["new_chat_modal_percentage"] == 0
+    assert dormant["database_contract_version"] == 1
     assert dormant["system_prompt_sha256"] == descriptor["system_prompt_sha256"]
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
     assert production["enabled"] is True
+    assert production["database_contract_version"] == 2
+    assert production["default_agent_harness"] == "claude"
+    assert production["new_session_pi_percentage"] == 0
     assert (
         production["new_chat_modal_percentage"]
         == descriptor["new_chat_modal_percentage"]
