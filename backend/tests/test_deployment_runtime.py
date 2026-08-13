@@ -762,8 +762,9 @@ def test_disabled_production_accepts_armed_configuration_for_atomic_rollback(
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
-    settings.chat_openrouter_api_key = "test-only-production-title-token"
     settings.chat_title_hf_token = "test-only-production-title-token"
+    settings.chat_title_provider = "huggingface"
+    settings.chat_title_model = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     settings.chat_title_bill_to = "huggingface"
     settings.chat_title_credential_owner = "nielsr"
     settings.chat_title_credential_environment = "production"
@@ -1337,8 +1338,9 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
-    settings.chat_openrouter_api_key = "test-only-production-title-token"
     settings.chat_title_hf_token = "test-only-production-title-token"
+    settings.chat_title_provider = "huggingface"
+    settings.chat_title_model = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     settings.chat_title_bill_to = "huggingface"
     settings.chat_title_credential_owner = "nielsr"
     settings.chat_title_credential_environment = "production"

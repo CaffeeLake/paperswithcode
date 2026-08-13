@@ -55,8 +55,19 @@ async def stream_title(
     provider_token: str,
     usage: TitleProviderUsage | None = None,
 ) -> AsyncIterator[str]:
+    if settings.chat_title_provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+        extra_body = {
+            "reasoning": {"effort": "low"},
+            "provider": {"sort": "throughput"},
+        }
+    elif settings.chat_title_provider == "huggingface":
+        base_url = "https://router.huggingface.co/v1"
+        extra_body = {"reasoning": {"effort": "low"}}
+    else:
+        raise ValueError("unsupported title provider")
     client = AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
+        base_url=base_url,
         api_key=provider_token,
         timeout=settings.chat_title_timeout_seconds,
     )
@@ -72,10 +83,7 @@ async def stream_title(
         stream=True,
         temperature=0.2,
         max_tokens=settings.chat_title_max_tokens,
-        extra_body={
-            "reasoning": {"effort": "low"},
-            "provider": {"sort": "throughput"},
-        },
+        extra_body=extra_body,
     )
     async with asyncio.timeout(settings.chat_title_timeout_seconds):
         async for chunk in response:

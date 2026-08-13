@@ -321,16 +321,14 @@ class Settings(BaseSettings):
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
     chat_title_max_tokens: int = Field(default=64, ge=8, le=64)
     chat_title_generation_enabled: bool = Field(default=False)
-    # Read-only compatibility inputs retained while older protected title
-    # configuration can still be rolled back.
     chat_title_hf_token: str = Field(
         default="",
-        description="Legacy Hugging Face credential formerly used for chat titles",
+        description="Dedicated Hugging Face credential used for production titles",
     )
     chat_title_bill_to: str = Field(
         default="",
         max_length=128,
-        description="Legacy Hugging Face billing target formerly used for chat titles",
+        description="Hugging Face billing target for production titles",
     )
     chat_title_credential_owner: str = Field(default="", max_length=128)
     chat_title_credential_environment: str = Field(default="", max_length=32)

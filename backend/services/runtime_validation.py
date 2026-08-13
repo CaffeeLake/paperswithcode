@@ -633,22 +633,34 @@ def _validate_chat_gateway_policy(settings: Settings) -> None:
 
 
 def _validate_chat_title_policy(settings: Settings) -> None:
-    """Validate the OpenRouter title credential and monthly spend circuit."""
+    """Validate the environment-specific title provider and spend circuit."""
 
     if (
         not settings.chat_title_generation_enabled
-        or not settings.chat_openrouter_api_key
         or settings.chat_title_credential_owner != "nielsr"
         or settings.chat_title_credential_environment != settings.environment
     ):
         raise RuntimeError(
-            "an environment-scoped OpenRouter title credential owned by nielsr "
-            "is required"
+            "an environment-scoped title credential owned by nielsr is required"
         )
+    if settings.environment == "staging":
+        if not (
+            settings.chat_title_provider == "openrouter"
+            and settings.chat_title_model == "deepseek/deepseek-v4-flash-0731"
+            and settings.chat_openrouter_api_key
+        ):
+            raise RuntimeError("an OpenRouter title credential is required")
+    else:
+        if not (
+            settings.chat_title_provider == "huggingface"
+            and settings.chat_title_model
+            == "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+            and settings.chat_title_bill_to == "huggingface"
+            and settings.chat_title_hf_token
+        ):
+            raise RuntimeError("a Hugging Face title credential is required")
     if (
-        settings.chat_title_model != "deepseek/deepseek-v4-flash-0731"
-        or settings.chat_title_provider != "openrouter"
-        or settings.chat_title_max_tokens != 64
+        settings.chat_title_max_tokens != 64
         or settings.chat_title_monthly_cap_microusd != 25_000_000
         or not 0
         < settings.chat_title_warning_microusd
