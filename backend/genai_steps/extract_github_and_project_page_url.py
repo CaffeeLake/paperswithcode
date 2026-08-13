@@ -141,18 +141,6 @@ class FewShotManager:
 
     async def get_few_shot_messages(self, generator=None) -> list[Message]:
         """Get cached few-shot messages, creating them if necessary."""
-        # Check if we need to regenerate based on generator type
-        from backend.generators.hf_generator import HFGenerator
-
-        is_hf = generator is not None and isinstance(generator, HFGenerator)
-
-        # For HF, use zero-shot due to HTTP request size limits (not context window)
-        if is_hf:
-            logger.debug(
-                "Using zero-shot for HF Generator (API request size limit, not context)"
-            )
-            return []  # HF API has HTTP request size limits even with 200k context models
-
         # Use cached messages if available
         if self._cached_messages is not None:
             logger.debug("Using cached few-shot messages")
@@ -162,15 +150,9 @@ class FewShotManager:
         messages = []
         all_image_paths = []
 
-        # Determine how many examples to create
-        max_examples = 0 if is_hf else 10  # HF has HTTP request size limits
-
         for idx, (few_shot_arxiv_id, response_content) in enumerate(
             zip(arxiv_ids, responses)
         ):
-            if idx >= max_examples:
-                break
-
             try:
                 # Get cached PDF path
                 pdf_file_path = await self.pdf_cache.get_pdf_path(idx)
@@ -466,10 +448,9 @@ async def _extract_urls_with_llm(
     try:
         # Check if generator supports use_reasoning parameter
         from backend.generators.google_generator import GoogleGenerator
-        from backend.generators.hf_generator import HFGenerator
 
-        if isinstance(generator, (GoogleGenerator, HFGenerator)):
-            # GoogleGenerator and HFGenerator don't support use_reasoning
+        if isinstance(generator, GoogleGenerator):
+            # GoogleGenerator doesn't support use_reasoning
             response_str, _ = await generator.generate(
                 messages=messages, schema=Response
             )

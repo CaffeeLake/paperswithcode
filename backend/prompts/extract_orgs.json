@@ -1,5 +1,0 @@
-{
-    "_type": "prompt",
-    "input_variables": ["arxiv_id", "paper_title", "paper_authors"],
-    "template_path": "extract_orgs.txt"
-}
