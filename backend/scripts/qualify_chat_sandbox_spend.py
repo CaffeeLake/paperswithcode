@@ -199,15 +199,13 @@ def main() -> int:
         # failures to the primary endpoint first.
         fallback_event.delivery_state = "failed"
         fallback_event.delivery_attempts = 5
+        fallback_event_id = fallback_event.id
     asyncio.run(SandboxSessionManager(fallback_settings).deliver_spend_alerts())
     with db_manager.session_local() as db:
         fallback_state = db.execute(
-            select(ChatSandboxCircuitEvent.fallback_delivery_state)
-            .join(
-                ChatSandboxBudgetState,
-                ChatSandboxBudgetState.id == ChatSandboxCircuitEvent.budget_state_id,
+            select(ChatSandboxCircuitEvent.fallback_delivery_state).where(
+                ChatSandboxCircuitEvent.id == fallback_event_id
             )
-            .where(ChatSandboxBudgetState.environment == fallback_environment)
         ).scalar_one()
     if fallback_state != "delivered":
         raise RuntimeError("the synthetic fallback alert was not delivered")
