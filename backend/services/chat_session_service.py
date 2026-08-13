@@ -286,17 +286,6 @@ def _build_replacement_plan(
         raise ChatServiceError(
             "invalid_replacement", 409, "This prompt can no longer be edited"
         )
-    legacy_initial_retry = (
-        prior.sequence == 1
-        and prior.status in ("interrupted", "error")
-        and active_suffix_ids == (prior.id,)
-    )
-    if prior.sequence == 1 and not legacy_initial_retry:
-        raise ChatServiceError(
-            "invalid_replacement",
-            409,
-            "Edit the first prompt by starting a new chat",
-        )
     transcript_unavailable = (
         sdk_session_id is None
         or (agent_harness == "pi" and prior.agent_resume_boundary_id is None)
@@ -1109,7 +1098,11 @@ class ChatSessionService:
         effective_prompt: str,
         paper_mentions: list[dict],
     ) -> _TurnCreationPlan:
-        is_first_turn = replacement.prior is None and session.message_count == 0
+        is_first_turn = (
+            replacement.prior.sequence == 1
+            if replacement.prior is not None
+            else session.message_count == 0
+        )
         return _TurnCreationPlan(
             message_id=uuid.uuid4(),
             replacement=replacement,

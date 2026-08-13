@@ -932,7 +932,7 @@ const ChatView: React.FC = () => {
                   editingAllowed={!chat.busy && Boolean(message.revision)}
                   editing={editingMessageId === message.id}
                   editNotice={message.id === firstUserId
-                    ? "Sending will start a new chat."
+                    ? "Sending will replace this conversation."
                     : message.id === latestUserId
                       ? "Sending will replace the response."
                       : "Sending will replace the response and all messages after it."}

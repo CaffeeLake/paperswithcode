@@ -446,16 +446,16 @@ describe("useChat reasoning projection", () => {
 });
 
 describe("useChat editAndResend", () => {
-  it("edits the first prompt through the new-session path, including unchanged text", async () => {
+  it("edits the first prompt in place, including unchanged text", async () => {
     let request: ChatStreamRequest | undefined;
     streamChatMock.mockImplementation((next: ChatStreamRequest) => {
       request = next;
       return stream(
-        { type: "stream_start", request_id: "r1", session_id: "session-2" },
+        { type: "stream_start", request_id: "r1", session_id: "session-1" },
         { type: "done", followups: [], finish_reason: "success" },
       )();
     });
-    getSessionMock.mockResolvedValue(sessionDetail("session-2", [
+    getSessionMock.mockResolvedValue(sessionDetail("session-1", [
       persistedUser("new-user", 1, "Same prompt"),
       persistedAssistant("new-answer", 2, "New answer"),
     ]));
@@ -468,12 +468,12 @@ describe("useChat editAndResend", () => {
 
     expect(request).toMatchObject({
       message: "Same prompt",
-      session_id: null,
-      initial_model: "zai-org/GLM-5.2",
+      session_id: "session-1",
+      replace_message_id: "user-1",
+      prior_revision: 1,
     });
-    expect(request).not.toHaveProperty("replace_message_id");
     await waitFor(() => expect(result.current.busy).toBe(false));
-    expect(onSessionId).toHaveBeenCalledWith("session-2");
+    expect(onSessionId).toHaveBeenCalledWith("session-1");
     expect(result.current.messages[0]).toMatchObject({
       id: "new-user",
       text: "Same prompt",

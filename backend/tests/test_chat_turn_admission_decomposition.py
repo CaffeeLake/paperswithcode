@@ -16,6 +16,7 @@ from backend.services.chat_session_service import (
     ChatOwner,
     ChatServiceError,
     ChatSessionService,
+    _TranscriptResumeBoundary,
     _build_replacement_plan,
     _calculate_turn_quota,
 )
@@ -153,17 +154,67 @@ def test_build_replacement_plan_is_pure_and_preserves_the_active_suffix():
     assert prior.status == "complete"
 
 
+def test_build_replacement_plan_allows_replacing_the_first_prompt_without_a_boundary():
+    prior = _replacement_message(sequence=1, sdk_resume_boundary_id=None)
+    suffix_ids = (prior.id, uuid.uuid4())
+
+    plan = _build_replacement_plan(
+        replacement_requested=True,
+        prior=prior,
+        active_suffix_ids=suffix_ids,
+        sdk_session_id=uuid.uuid4(),
+        sdk_project_key="project-key",
+    )
+
+    assert plan.prior is prior
+    assert plan.active_suffix_ids == suffix_ids
+    assert plan.revision == 5
+
+
+def test_first_prompt_replacement_regenerates_the_title_in_the_same_session():
+    settings = get_settings()
+    prior = _replacement_message(sequence=1, sdk_resume_boundary_id=None)
+    replacement = _build_replacement_plan(
+        replacement_requested=True,
+        prior=prior,
+        active_suffix_ids=(prior.id, uuid.uuid4()),
+        sdk_session_id=uuid.uuid4(),
+        sdk_project_key="project-key",
+    )
+    session = SimpleNamespace(
+        message_count=2,
+        title_source="fallback",
+        execution_backend="modal_cli",
+    )
+
+    plan = ChatSessionService(SimpleNamespace(), settings)._build_turn_creation_plan(
+        session,
+        replacement=replacement,
+        quota=_calculate_turn_quota(
+            session_transcript_bytes=100,
+            session_projection_bytes=100,
+            owner_total_bytes=100,
+            reclaimed_projection_bytes=100,
+            new_projection_bytes=50,
+            current_message_count=2,
+            replacement_prefix_count=0,
+        ),
+        resume_boundary=_TranscriptResumeBoundary(id=None, agent_id=None),
+        model=settings.chat_model_choices[0]["id"],
+        model_route=settings.chat_model_choices[0]["route"],
+        effective_prompt="edited first prompt",
+        paper_mentions=[],
+    )
+
+    assert plan.is_first_turn is True
+    assert plan.title_should_generate is True
+    assert plan.replacement.revision == 5
+
+
 @pytest.mark.parametrize(
     ("prior", "suffix_ids", "sdk_session_id", "sdk_project_key", "expected_code"),
     [
         (None, (), None, None, "invalid_replacement"),
-        (
-            _replacement_message(sequence=1),
-            (),
-            None,
-            None,
-            "invalid_replacement",
-        ),
         (
             _replacement_message(sdk_resume_boundary_id=None),
             (),

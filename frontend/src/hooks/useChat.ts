@@ -62,7 +62,6 @@ interface UseChatOptions {
 interface EditRequest {
   targetId: string;
   snapshot: ChatMessage[];
-  first: boolean;
 }
 
 interface PendingGeneration {
@@ -698,7 +697,7 @@ export function useChat(options: UseChatOptions) {
             } else if (canonicalId) {
               if (
                 messagesGenerationRef.current === messagesGeneration
-                && edit && !edit.first && (streamFailed || !sawTerminalEvent)
+                && edit && (streamFailed || !sawTerminalEvent)
               ) {
                 setMessages(edit.snapshot);
                 messagesRef.current = edit.snapshot;
@@ -707,7 +706,6 @@ export function useChat(options: UseChatOptions) {
                 const canonical = await reloadCanonical(canonicalId, messagesGeneration);
                 if (
                   canonical && edit
-                  && !edit.first
                   && canonical.some((message) => message.id === edit.targetId)
                 ) {
                   setSessionError("Couldn’t resend this message. Your original conversation was restored.");
@@ -770,15 +768,13 @@ export function useChat(options: UseChatOptions) {
     );
     if (targetIndex < 0) return false;
     const target = snapshot[targetIndex];
-    const firstUserIndex = snapshot.findIndex((message) => message.role === "user");
-    const first = targetIndex === firstUserIndex;
-    if (!first && (!optionsRef.current.sessionId || !target.revision)) return false;
+    if (!optionsRef.current.sessionId || !target.revision) return false;
     const nextUser: ChatMessage = {
       id: target.id,
       role: "user",
       text: question,
       paperMentions: draft.paperMentions,
-      revision: first ? undefined : target.revision! + 1,
+      revision: target.revision + 1,
       status: "generating",
     };
     const nextAssistant: ChatMessage = {
@@ -787,25 +783,19 @@ export function useChat(options: UseChatOptions) {
       streaming: true,
       blocks: [],
     };
-    const optimistic = first
-      ? [nextUser, nextAssistant]
-      : [...snapshot.slice(0, targetIndex), nextUser, nextAssistant];
+    const optimistic = [...snapshot.slice(0, targetIndex), nextUser, nextAssistant];
     return run(draft, {
       message: question,
       paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
-      session_id: first ? null : optionsRef.current.sessionId,
+      session_id: optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
       web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
       reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
-      ...(first && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
-      ...(!first ? {
-        replace_message_id: target.id,
-        prior_revision: target.revision!,
-      } : {}),
+      replace_message_id: target.id,
+      prior_revision: target.revision,
     }, optimistic, snapshot, {
       targetId: target.id,
       snapshot,
-      first,
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
