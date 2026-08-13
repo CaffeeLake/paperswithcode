@@ -32,10 +32,12 @@ export class PiEventAdapter {
   private terminalFailure = false;
   private readonly toolIds = new Set<string>();
   private readonly resultIds = new Set<string>();
+  private readonly toolStartedAt = new Map<string, number>();
 
   constructor(
     private readonly showReasoning: boolean,
     private readonly onSemantic?: (kind: "reasoning" | "tool" | "answer") => void,
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   get failed(): boolean {
@@ -82,6 +84,7 @@ export class PiEventAdapter {
       if (!id || this.toolIds.has(id)) throw new Error("invalid Pi tool call id");
       const args = record(event.args);
       this.toolIds.add(id);
+      this.toolStartedAt.set(id, this.now());
       this.onSemantic?.("tool");
       return [
         ...this.closeReasoning(),
@@ -99,6 +102,8 @@ export class PiEventAdapter {
         throw new Error("uncorrelated Pi tool result");
       }
       this.resultIds.add(id);
+      const startedAt = this.toolStartedAt.get(id);
+      this.toolStartedAt.delete(id);
       const result = record(event.result);
       const content = textContent(result.content ?? event.result);
       return [
@@ -106,7 +111,7 @@ export class PiEventAdapter {
           type: "tool_result",
           id,
           status: event.isError ? "error" : "success",
-          took_ms: 0,
+          took_ms: startedAt === undefined ? 0 : Math.max(0, Math.round(this.now() - startedAt)),
           content: [{ type: "text", text: content, truncated: false }],
           metadata: { output_truncated: false },
         },

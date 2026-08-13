@@ -50,6 +50,24 @@ test("closes visible reasoning before answer", () => {
   );
 });
 
+test("measures each tool from execution start to end", () => {
+  let now = 100;
+  const adapter = new PiEventAdapter(false, undefined, () => now);
+  adapter.feed({ type: "tool_execution_start", toolCallId: "slow", toolName: "bash", args: {} });
+  now = 125.4;
+  adapter.feed({ type: "tool_execution_start", toolCallId: "fast", toolName: "read", args: {} });
+  now = 138.8;
+  assert.equal(
+    adapter.feed({ type: "tool_execution_end", toolCallId: "fast", result: {}, isError: false })[0]?.took_ms,
+    13,
+  );
+  now = 161.6;
+  assert.equal(
+    adapter.feed({ type: "tool_execution_end", toolCallId: "slow", result: {}, isError: false })[0]?.took_ms,
+    62,
+  );
+});
+
 test("surfaces terminal provider errors without exposing provider details", () => {
   const adapter = new PiEventAdapter(false);
   assert.deepEqual(
