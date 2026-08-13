@@ -169,6 +169,83 @@ def test_build_replacement_plan_allows_replacing_the_first_prompt_without_a_boun
     assert plan.prior is prior
     assert plan.active_suffix_ids == suffix_ids
     assert plan.revision == 5
+    assert plan.is_first_prompt is True
+
+
+def test_build_replacement_plan_allows_reediting_the_logical_first_prompt():
+    prior = _replacement_message(
+        sequence=3,
+        revision=2,
+        sdk_resume_boundary_id=None,
+        agent_resume_boundary_id=None,
+    )
+
+    plan = _build_replacement_plan(
+        replacement_requested=True,
+        prior=prior,
+        active_suffix_ids=(prior.id, uuid.uuid4()),
+        sdk_session_id=uuid.uuid4(),
+        sdk_project_key="project-key",
+        agent_harness="pi",
+        is_first_prompt=True,
+    )
+
+    assert plan.revision == 3
+    assert plan.is_first_prompt is True
+
+
+def test_load_replacement_plan_recognizes_an_appended_first_prompt_revision():
+    prior = _replacement_message(
+        sequence=3,
+        revision=2,
+        sdk_resume_boundary_id=None,
+        agent_resume_boundary_id=None,
+    )
+    answer_id = uuid.uuid4()
+    db = _ScriptedDB(
+        execute_results=(
+            _Result(one=prior),
+            _Result(rows=(prior.id, answer_id)),
+        )
+    )
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        message_count=2,
+        sdk_session_id=uuid.uuid4(),
+        sdk_project_key="project-key",
+        agent_harness="pi",
+    )
+
+    plan = ChatSessionService(db, get_settings())._load_replacement_plan(
+        session,
+        replace_message_id=prior.id,
+        prior_revision=prior.revision,
+    )
+
+    assert plan.active_suffix_ids == (prior.id, answer_id)
+    assert plan.is_first_prompt is True
+
+
+def test_build_replacement_plan_still_requires_a_boundary_for_later_prompts():
+    prior = _replacement_message(
+        sequence=3,
+        revision=2,
+        sdk_resume_boundary_id=None,
+        agent_resume_boundary_id=None,
+    )
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        _build_replacement_plan(
+            replacement_requested=True,
+            prior=prior,
+            active_suffix_ids=(prior.id, uuid.uuid4()),
+            sdk_session_id=uuid.uuid4(),
+            sdk_project_key="project-key",
+            agent_harness="pi",
+            is_first_prompt=False,
+        )
+
+    assert exc_info.value.code == "chat_transcript_unavailable"
 
 
 def test_first_prompt_replacement_regenerates_the_title_in_the_same_session():
@@ -209,6 +286,53 @@ def test_first_prompt_replacement_regenerates_the_title_in_the_same_session():
     assert plan.is_first_turn is True
     assert plan.title_should_generate is True
     assert plan.replacement.revision == 5
+
+
+def test_reedited_first_prompt_regenerates_the_title_in_the_same_session():
+    settings = get_settings()
+    prior = _replacement_message(
+        sequence=3,
+        revision=2,
+        sdk_resume_boundary_id=None,
+        agent_resume_boundary_id=None,
+    )
+    replacement = _build_replacement_plan(
+        replacement_requested=True,
+        prior=prior,
+        active_suffix_ids=(prior.id, uuid.uuid4()),
+        sdk_session_id=uuid.uuid4(),
+        sdk_project_key="project-key",
+        agent_harness="pi",
+        is_first_prompt=True,
+    )
+    session = SimpleNamespace(
+        message_count=2,
+        title_source="fallback",
+        execution_backend="modal_cli",
+    )
+
+    plan = ChatSessionService(SimpleNamespace(), settings)._build_turn_creation_plan(
+        session,
+        replacement=replacement,
+        quota=_calculate_turn_quota(
+            session_transcript_bytes=100,
+            session_projection_bytes=100,
+            owner_total_bytes=100,
+            reclaimed_projection_bytes=100,
+            new_projection_bytes=50,
+            current_message_count=2,
+            replacement_prefix_count=0,
+        ),
+        resume_boundary=_TranscriptResumeBoundary(id=None, agent_id=None),
+        model=settings.chat_model_choices[0]["id"],
+        model_route=settings.chat_model_choices[0]["route"],
+        effective_prompt="edited first prompt again",
+        paper_mentions=[],
+    )
+
+    assert plan.is_first_turn is True
+    assert plan.title_should_generate is True
+    assert plan.replacement.revision == 3
 
 
 @pytest.mark.parametrize(

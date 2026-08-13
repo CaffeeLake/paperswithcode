@@ -122,6 +122,7 @@ class _ReplacementPlan:
     active_suffix_ids: tuple[uuid.UUID, ...]
     turn_id: uuid.UUID
     revision: int
+    is_first_prompt: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +275,7 @@ def _build_replacement_plan(
     sdk_session_id: uuid.UUID | None,
     sdk_project_key: str | None,
     agent_harness: str = "claude",
+    is_first_prompt: bool | None = None,
 ) -> _ReplacementPlan:
     if not replacement_requested:
         return _ReplacementPlan(
@@ -281,11 +283,15 @@ def _build_replacement_plan(
             active_suffix_ids=(),
             turn_id=uuid.uuid4(),
             revision=1,
+            is_first_prompt=False,
         )
     if prior is None:
         raise ChatServiceError(
             "invalid_replacement", 409, "This prompt can no longer be edited"
         )
+    logical_first_prompt = (
+        prior.sequence == 1 if is_first_prompt is None else is_first_prompt
+    )
     transcript_unavailable = (
         sdk_session_id is None
         or (agent_harness == "pi" and prior.agent_resume_boundary_id is None)
@@ -294,7 +300,7 @@ def _build_replacement_plan(
             and (not sdk_project_key or prior.sdk_resume_boundary_id is None)
         )
     )
-    if prior.sequence > 1 and transcript_unavailable:
+    if not logical_first_prompt and transcript_unavailable:
         raise ChatServiceError(
             "chat_transcript_unavailable",
             409,
@@ -305,6 +311,7 @@ def _build_replacement_plan(
         active_suffix_ids=active_suffix_ids,
         turn_id=uuid.uuid4(),
         revision=prior.revision + 1,
+        is_first_prompt=logical_first_prompt,
     )
 
 
@@ -981,6 +988,9 @@ class ChatSessionService:
             sdk_session_id=session.sdk_session_id,
             sdk_project_key=session.sdk_project_key,
             agent_harness=getattr(session, "agent_harness", "claude"),
+            is_first_prompt=(
+                prior.sequence == 1 or len(active_suffix_ids) == session.message_count
+            ),
         )
 
     def _load_reclaimed_projection_bytes(self, replacement: _ReplacementPlan) -> int:
@@ -1099,7 +1109,7 @@ class ChatSessionService:
         paper_mentions: list[dict],
     ) -> _TurnCreationPlan:
         is_first_turn = (
-            replacement.prior.sequence == 1
+            replacement.is_first_prompt
             if replacement.prior is not None
             else session.message_count == 0
         )
