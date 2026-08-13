@@ -1,5 +1,5 @@
 {
-  "phase": "disabled-bridge-1",
+  "phase": "disabled-bridge-operator",
   "chat_enabled": false,
   "public_admission_enabled": false,
   "sandbox_admission_enabled": false,

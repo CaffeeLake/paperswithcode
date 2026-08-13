@@ -22,7 +22,6 @@ from backend.chat_sandbox_worker.contract import (
     PI_NODE_VERSION,
     PI_SOURCE_COMMIT,
     PI_VERSION,
-    PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION,
     PRODUCTION_MODAL_IMAGE_ID,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
@@ -31,6 +30,7 @@ from backend.chat_sandbox_worker.contract import (
     WORKER_CONTRACT_VERSION,
 )
 from backend.services.chat_runtime_contract import require_immutable_image_id
+from deploy.production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
 
 ENVIRONMENTS = ("production", "staging")
 FEATURE_CONTRACT_VERSION = 4
@@ -133,7 +133,7 @@ def chat_runtime(
             "worker_contract_version": WORKER_CONTRACT_VERSION,
             "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
             "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
-            "database_contract_version": PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION,
+            "database_contract_version": DISABLED_DATABASE_CONTRACT_VERSION,
             "system_prompt_sha256": sha256(),
             "supported_agent_harnesses": ["claude"],
             "default_agent_harness": "claude",

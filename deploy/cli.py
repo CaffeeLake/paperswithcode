@@ -190,6 +190,10 @@ import json
 import os
 from backend.chat_sandbox_worker import contract
 from backend.chat_sandbox_worker.prompt import sha256
+try:
+    from deploy import production_chat_contract as production_contract
+except ImportError:
+    production_contract = None
 enabled = os.environ["PWC_RELEASE_CHAT_ENABLED"] == "true"
 production = os.environ["PWC_RELEASE_ENVIRONMENT"] == "production"
 descriptor = {
@@ -206,11 +210,7 @@ descriptor = {
     "gateway_contract_version": contract.GATEWAY_CONTRACT_VERSION,
     "gateway_compatible_from": contract.GATEWAY_COMPATIBLE_FROM,
     "database_contract_version": (
-        getattr(
-            contract,
-            "PRODUCTION_DISABLED_DATABASE_CONTRACT_VERSION",
-            contract.DATABASE_CONTRACT_VERSION,
-        )
+        getattr(production_contract, "DISABLED_DATABASE_CONTRACT_VERSION", 1)
         if production and not enabled
         else contract.DATABASE_CONTRACT_VERSION
     ),
@@ -230,20 +230,12 @@ if present_pi_fields:
             list(contract.SUPPORTED_AGENT_HARNESSES) if enabled else ["claude"]
         ),
         "default_agent_harness": (
-            getattr(
-                contract,
-                "PRODUCTION_DEFAULT_AGENT_HARNESS",
-                contract.DEFAULT_AGENT_HARNESS,
-            )
+            getattr(production_contract, "DEFAULT_AGENT_HARNESS", "claude")
             if production and enabled
             else contract.DEFAULT_AGENT_HARNESS if enabled else "claude"
         ),
         "new_session_pi_percentage": (
-            getattr(
-                contract,
-                "PRODUCTION_NEW_SESSION_PI_PERCENTAGE",
-                contract.NEW_SESSION_PI_PERCENTAGE,
-            )
+            getattr(production_contract, "NEW_SESSION_PI_PERCENTAGE", 0)
             if production and enabled
             else contract.NEW_SESSION_PI_PERCENTAGE if enabled else 0
         ),
