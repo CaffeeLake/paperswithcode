@@ -79,6 +79,7 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      URL_EXTRACTION_MODAL_SECRET: url-extraction-deepseek-v4-flash-deepinfra
     steps:
       - uses: actions/checkout@v4
 
@@ -110,7 +111,7 @@ jobs:
           name: url-results
           path: results.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   persist:
     needs: discover

@@ -1,6 +1,7 @@
 """Modal deployment: one isolated URL-research agent per paper."""
 
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from url_extraction_agent.schema import AgentAttempt, PaperCandidate
 APP_NAME = "paperswithcode-url-extraction"
 MAX_CONTAINERS = 20
 FUNCTION_TIMEOUT_SECONDS = 15 * 60
+SECRET_NAME = os.environ.get("URL_EXTRACTION_MODAL_SECRET", "anthropic")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -55,7 +57,7 @@ def _is_transient(attempt: AgentAttempt) -> bool:
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("anthropic")],
+    secrets=[modal.Secret.from_name(SECRET_NAME)],
     env={"IS_SANDBOX": "1"},
     cpu=1.0,
     memory=1024,

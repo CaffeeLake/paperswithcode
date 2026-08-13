@@ -27,7 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "system_prompt.txt").read_text()
 ALLOWED_TOOLS = ["Skill", "Bash", "Read", "Grep", "Glob", "WebFetch"]
 DEFAULT_MAX_TURNS = 20
-MAX_BUDGET_USD = 3.0
+MAX_BUDGET_USD = float(os.environ.get("URL_EXTRACTION_MAX_BUDGET_USD", "3.0"))
+if not 0 < MAX_BUDGET_USD <= 3.0:
+    raise ValueError(
+        "URL_EXTRACTION_MAX_BUDGET_USD must be greater than 0 and at most 3"
+    )
 
 
 def _log(arxiv_id: str, message: str) -> None:

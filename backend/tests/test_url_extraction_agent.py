@@ -215,7 +215,15 @@ def test_workflow_isolates_modal_discovery_from_vps_persistence():
     assert jobs["discover"]["needs"] == "select"
     assert jobs["persist"]["needs"] == "discover"
     discover_env = jobs["discover"]["env"]
-    assert set(discover_env) == {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"}
+    assert set(discover_env) == {
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "URL_EXTRACTION_MODAL_SECRET",
+    }
+    assert (
+        discover_env["URL_EXTRACTION_MODAL_SECRET"]
+        == "url-extraction-deepseek-v4-flash-deepinfra"
+    )
     assert "VPS_SSH_PRIVATE_KEY" not in str(jobs["discover"])
 
 
