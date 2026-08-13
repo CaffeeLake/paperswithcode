@@ -2281,6 +2281,37 @@ def test_production_openrouter_migration_is_role_isolated_and_idempotent():
     assert "FROM pwc_staging" in migration
 
 
+def test_production_web_search_migration_is_role_isolated_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_web_search_production.sql"
+    ).read_text()
+
+    assert "SET LOCAL search_path = public" in migration
+    assert "current_schema() <> 'public'" in migration
+    assert "ADD COLUMN IF NOT EXISTS web_search_enabled" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_web_search_budget_states" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_web_search_circuit_events" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_web_search_owner_usage" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "TO paperswithcode_user" in migration
+    assert "FROM pwc_staging" in migration
+
+
+def test_production_hf_catalog_migration_is_role_isolated_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_hf_catalog_production.sql"
+    ).read_text()
+
+    assert "SET LOCAL search_path = public" in migration
+    assert "current_schema() <> 'public'" in migration
+    assert "ADD COLUMN IF NOT EXISTS hf_catalog_calls" in migration
+    assert "ADD COLUMN IF NOT EXISTS hf_recursive_list_calls" in migration
+    assert "TO paperswithcode_user" in migration
+    assert "FROM pwc_staging" in migration
+
+
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
     first = tmp_path / "first"
     second = tmp_path / "second"

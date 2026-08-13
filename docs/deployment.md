@@ -382,6 +382,15 @@ explicitly revokes `pwc_staging`. Audit table/sequence ownership, columns,
 constraints, and both role boundaries before continuing. This migration does
 not enable chat or dispatch a provider request.
 
+The common production chat schema must also include the guarded public
+counterparts `add_chat_web_search_production.sql`,
+`add_chat_hf_catalog_production.sql`, and
+`add_chat_reasoning_effort_production.sql`. They keep disabled feature columns
+compatible with the shared ORM, complete OpenRouter reasoning accounting, own
+new objects with `paperswithcode_user`, and deny staging writes. Apply them in
+that order after the base chat/OpenRouter tables exist and before opening
+production admission.
+
 Only after the two disabled production bridge releases are active, the sealed
 bundle has passed qualification, and the exact activation SHA has separate
 production authorization, install the same revalidated bundle into the live

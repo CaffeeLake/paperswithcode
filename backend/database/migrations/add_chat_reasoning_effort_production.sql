@@ -24,6 +24,8 @@ ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS reasoning_effort VARCHAR(16) NOT NULL DEFAULT 'high';
 ALTER TABLE chat_turn_capabilities
     ADD COLUMN IF NOT EXISTS reasoning_effort VARCHAR(16) NOT NULL DEFAULT 'high';
+ALTER TABLE chat_openrouter_provider_calls
+    ADD COLUMN IF NOT EXISTS reasoning_effort VARCHAR(16) NOT NULL DEFAULT 'high';
 
 DO $$
 BEGIN
@@ -52,16 +54,28 @@ BEGIN
             ADD CONSTRAINT chat_turn_capabilities_reasoning_effort_check
             CHECK (reasoning_effort IN ('low','high','max'));
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'chat_openrouter_provider_calls'::regclass
+          AND conname = 'chat_openrouter_provider_calls_reasoning_effort_check'
+    ) THEN
+        ALTER TABLE chat_openrouter_provider_calls
+            ADD CONSTRAINT chat_openrouter_provider_calls_reasoning_effort_check
+            CHECK (reasoning_effort IN ('low','high','max'));
+    END IF;
 END $$;
 
 ALTER TABLE chat_sessions OWNER TO paperswithcode_user;
 ALTER TABLE chat_messages OWNER TO paperswithcode_user;
 ALTER TABLE chat_turn_capabilities OWNER TO paperswithcode_user;
+ALTER TABLE chat_openrouter_provider_calls OWNER TO paperswithcode_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    chat_sessions, chat_messages, chat_turn_capabilities
+    chat_sessions, chat_messages, chat_turn_capabilities,
+    chat_openrouter_provider_calls
 TO paperswithcode_user;
 REVOKE ALL ON
-    chat_sessions, chat_messages, chat_turn_capabilities
+    chat_sessions, chat_messages, chat_turn_capabilities,
+    chat_openrouter_provider_calls
 FROM pwc_staging;
 
 COMMIT;
