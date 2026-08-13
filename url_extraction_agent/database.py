@@ -25,22 +25,15 @@ from url_extraction_agent.schema import (
     PersistResult,
 )
 
-LOG_DIR = (
-    Path(__file__).resolve().parent.parent
-    / ".github"
-    / "workflows"
-    / "scripts"
-    / "logs"
-)
-
 
 def _logger() -> logging.Logger:
     logger = logging.getLogger("extract_urls_hourly")
     if logger.handlers:
         return logger
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(get_settings().cron_log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(
-        LOG_DIR / f"extract_urls_hourly_{datetime.now():%Y%m%d}.log"
+        log_dir / f"extract_urls_hourly_{datetime.now():%Y%m%d}.log"
     )
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(handler)
