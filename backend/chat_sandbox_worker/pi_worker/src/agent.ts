@@ -7,9 +7,10 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { PiEventAdapter, type PwCEvent } from "./events.js";
-import { ANSWER_NOW, PolicyController, pwcExtension } from "./policy.js";
+import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
 import { renderPrompt } from "./prompt.js";
+import { recoverIncompleteResponse, type RecoverySummary } from "./recovery.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
 import { shouldResetSession } from "./session.js";
 
@@ -23,8 +24,6 @@ export interface RunTurn {
   reasoning_effort: "low" | "high" | "max";
   hf_username: string;
 }
-
-const FINALIZER_PROMPT = `${ANSWER_NOW} Produce only the best concise final answer now.`;
 
 export class PiWorker {
   private session: AgentSession | undefined;
@@ -214,12 +213,22 @@ export class PiWorker {
       this.emit(run.request_id, { type: "_sdk_session", session_id: this.boundAgentSession });
       this.emit(run.request_id, { type: "workspace_ready" });
       let mirrorFailed = false;
+      let recovery: RecoverySummary = {
+        reason: null,
+        attempts: 0,
+        outcome: "not_needed",
+      };
       try {
         await this.session.prompt(run.prompt, { expandPromptTemplates: false, source: "interactive" });
-        if (this.policy.needsFinalAnswer() && !adapter.failed && !this.cancelled) {
-          this.session.setActiveToolsByName([]);
-          await this.session.prompt(FINALIZER_PROMPT, { expandPromptTemplates: false, source: "extension" });
-        }
+        recovery = await recoverIncompleteResponse(this.policy, {
+          prompt: (value) =>
+            this.session!.prompt(value, {
+              expandPromptTemplates: false,
+              source: "extension",
+            }),
+          disableTools: () => this.session!.setActiveToolsByName([]),
+          canContinue: () => !adapter.failed && !this.cancelled,
+        });
       } finally {
         unsubscribe();
         try {
@@ -243,6 +252,7 @@ export class PiWorker {
         return;
       }
       if (this.policy.needsFinalAnswer()) {
+        this.emit(run.request_id, this.executionTelemetry(recovery));
         this.emit(run.request_id, {
           type: "error",
           code: "provider_error",
@@ -251,14 +261,7 @@ export class PiWorker {
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }
-      this.emit(run.request_id, {
-        type: "_execution_telemetry",
-        tool_calls: this.policy.calls,
-        tool_rounds_executed: this.policy.rounds,
-        direct_search_calls: this.policy.searches,
-        web_search_calls: this.policy.webSearches,
-        compaction_enabled: true,
-      });
+      this.emit(run.request_id, this.executionTelemetry(recovery));
       this.emit(run.request_id, { type: "done", finish_reason: "success", followups: [] });
       this.emit(run.request_id, { type: "worker_done", status: "complete" });
     } catch (error) {
@@ -275,5 +278,20 @@ export class PiWorker {
     } finally {
       this.activeRequest = undefined;
     }
+  }
+
+  private executionTelemetry(recovery: RecoverySummary): PwCEvent {
+    return {
+      type: "_execution_telemetry",
+      tool_calls: this.policy.calls,
+      tool_rounds_executed: this.policy.rounds,
+      direct_search_calls: this.policy.searches,
+      web_search_calls: this.policy.webSearches,
+      compaction_enabled: true,
+      execution_limit_reached: this.policy.toolingClosed,
+      recovery_reason: recovery.reason,
+      recovery_attempts: recovery.attempts,
+      recovery_outcome: recovery.outcome,
+    };
   }
 }
