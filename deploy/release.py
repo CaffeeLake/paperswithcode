@@ -30,7 +30,11 @@ from backend.chat_sandbox_worker.contract import (
     WORKER_CONTRACT_VERSION,
 )
 from backend.services.chat_runtime_contract import require_immutable_image_id
-from deploy.production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
+
+try:
+    from deploy.production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
+except ModuleNotFoundError:
+    from production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
 
 ENVIRONMENTS = ("production", "staging")
 FEATURE_CONTRACT_VERSION = 4
