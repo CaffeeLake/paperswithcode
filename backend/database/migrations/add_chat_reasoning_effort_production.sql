@@ -1,7 +1,7 @@
 BEGIN;
 
--- Production is HF-only and deliberately has no OpenRouter accounting tables.
--- Keep this migration confined to the common chat schema in public.
+-- Keep this provider-independent migration confined to the common production
+-- chat schema in public.
 SET LOCAL search_path = public;
 
 DO $$

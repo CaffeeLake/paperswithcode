@@ -253,21 +253,24 @@ def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, s
     """Preserve or generate the durable, non-provider staging secrets."""
 
     keyring_line = current.get("PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING")
-    if keyring_line:
+    if keyring_line and decoded_value(keyring_line).strip():
         keyring = decoded_value(keyring_line)
     else:
         encryption_key = (
             base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
         )
         keyring = json.dumps({"1": encryption_key}, separators=(",", ":"))
-    tracking_secret = existing_or_random(
-        current, "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"
-    )
+    tracking_line = current.get("PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET")
+    tracking_secret = (
+        decoded_value(tracking_line).strip() if tracking_line else ""
+    ) or secrets.token_urlsafe(48)
+    active_line = current.get("PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION")
+    active_version = (decoded_value(active_line).strip() if active_line else "") or "1"
     return {
         "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "5.00",
         "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD": "200.00",
         "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": keyring,
-        "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": active_version,
         "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET": tracking_secret,
     }
 
@@ -404,12 +407,10 @@ def production_title_values(
     current_production: dict[str, str],
     current_staging: dict[str, str],
 ) -> dict[str, str]:
-    """Validate the distinct production-only server-funded title credential."""
+    """Validate the production OpenRouter title policy."""
 
     required = {
         "PWC_CHAT_TITLE_GENERATION_ENABLED",
-        "PWC_CHAT_TITLE_HF_TOKEN",
-        "PWC_CHAT_TITLE_BILL_TO",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
     }
@@ -419,37 +420,59 @@ def production_title_values(
     values = {key: decoded_value(source[key]).strip() for key in required}
     expected = {
         "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
-        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
     }
     for key, value in expected.items():
         if values[key] != value:
             raise ValueError(f"{key} must be {value}")
-    token = values["PWC_CHAT_TITLE_HF_TOKEN"]
-    if not token:
-        raise ValueError("PWC_CHAT_TITLE_HF_TOKEN must be non-empty")
-    forbidden_tokens = {
-        decoded_value(lines[key])
-        for lines, key in (
-            (source, "PWC_HF_TOKEN"),
-            (current_production, "PWC_HF_TOKEN"),
-            (current_staging, "PWC_CHAT_TITLE_HF_TOKEN"),
-        )
-        if key in lines and decoded_value(lines[key])
-    }
-    if token in forbidden_tokens:
-        raise ValueError(
-            "the production title token must be distinct from general and staging tokens"
-        )
     return {
         **values,
-        "PWC_CHAT_TITLE_MODEL": "deepseek-ai/DeepSeek-V4-Flash-0731:fastest",
-        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
+        "PWC_CHAT_TITLE_HF_TOKEN": "",
+        "PWC_CHAT_TITLE_BILL_TO": "",
+        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
         "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+    }
+
+
+def production_openrouter_values(
+    source: dict[str, str], current_staging: dict[str, str]
+) -> dict[str, str]:
+    """Build an isolated production OpenRouter preparation contract."""
+
+    key_name = "PWC_CHAT_OPENROUTER_API_KEY"
+    provider_line = source.get(key_name)
+    provider_key = decoded_value(provider_line).strip() if provider_line else ""
+    if not provider_key:
+        raise ValueError(f"{key_name} must be non-empty")
+    staging_line = current_staging.get(key_name)
+    staging_key = decoded_value(staging_line).strip() if staging_line else ""
+    if staging_key and provider_key == staging_key:
+        raise ValueError("production must not reuse the staging OpenRouter key")
+    values = staging_openrouter_accounting_values(source)
+    try:
+        keyring = json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"])
+        active_version = str(
+            int(values["PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION"])
+        )
+        encoded_key = keyring[active_version]
+        decoded_key = base64.urlsafe_b64decode(
+            encoded_key + "=" * (-len(encoded_key) % 4)
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "production OpenRouter credential keyring is invalid"
+        ) from error
+    if len(decoded_key) != 32:
+        raise ValueError("production OpenRouter credential key must be 32 bytes")
+    return {
+        **values,
+        key_name: provider_key,
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "false",
     }
 
 
@@ -609,19 +632,6 @@ def production_chat_preparation_values(
     empty = sorted(key for key, value in protected.items() if not value)
     if empty:
         raise ValueError("production chat environment is empty: " + ", ".join(empty))
-    forbidden_openrouter = sorted(
-        key
-        for key in (
-            "PWC_CHAT_OPENROUTER_API_KEY",
-            "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING",
-            "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET",
-        )
-        if key in source and decoded_value(source[key]).strip()
-    )
-    if forbidden_openrouter:
-        raise ValueError(
-            "production chat preparation prohibits: " + ", ".join(forbidden_openrouter)
-        )
     workspace = protected["PWC_CHAT_SANDBOX_MODAL_WORKSPACE"]
     expected_attestation = f"modal-workspace-{workspace}-250-production-starter-v1"
     if protected["PWC_CHAT_SANDBOX_BUDGET_ATTESTATION"] != expected_attestation:
@@ -631,6 +641,7 @@ def production_chat_preparation_values(
     return {
         **protected,
         **production_title_values(source, current_production, current_staging),
+        **production_openrouter_values(source, current_staging),
         **chat_alert_values(source, environment="production"),
         **staging_chat_capacity_values(),
         "PWC_CHAT_ENABLED": "true",
@@ -643,8 +654,6 @@ def production_chat_preparation_values(
         "PWC_CHAT_GATEWAY_URL": (
             "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
         ),
-        "PWC_CHAT_HF_BILL_TO": "huggingface",
-        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "false",
         "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "75000000",
         "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED": "true",
         "PWC_CHAT_SANDBOX_PROVIDER_MODE": "starter_workspace",
@@ -749,14 +758,16 @@ def production_chat_admission_values(
         current_production,
         current_staging,
     )
-    admission_keys = {
+    activation_keys = {
         "PWC_CHAT_PUBLIC_ADMISSION_ENABLED",
         "PWC_CHAT_SANDBOX_ADMISSION_ENABLED",
+        "PWC_CHAT_BLANK_POOL_ENABLED",
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED",
     }
     mismatched = sorted(
         key
         for key, value in values.items()
-        if key not in admission_keys
+        if key not in activation_keys
         and decoded_value(current_production.get(key, "")).strip() != value
     )
     if mismatched:
@@ -764,15 +775,15 @@ def production_chat_admission_values(
             "installed production chat preparation has drifted: "
             + ", ".join(mismatched)
         )
-    admission = {
+    activation = {
         key: decoded_value(current_production.get(key, "false")).strip().lower()
-        for key in admission_keys
+        for key in activation_keys
     }
-    if set(admission.values()) - {"true", "false"}:
-        raise ValueError("production chat admission controls are invalid")
-    if len(set(admission.values())) != 1:
-        raise ValueError("production chat admission controls must change together")
-    return {key: "true" for key in admission_keys}
+    if set(activation.values()) - {"true", "false"}:
+        raise ValueError("production chat activation controls are invalid")
+    if len(set(activation.values())) != 1:
+        raise ValueError("production chat activation controls must change together")
+    return {key: "true" for key in activation_keys}
 
 
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
@@ -865,8 +876,8 @@ def main() -> int:
             "pwc-production",
         )
         print(
-            "enabled production public and sandbox chat admission; "
-            "no service was restarted and the blank pool remains disabled"
+            "enabled production funded dispatch, public and sandbox admission, "
+            "and the one-blank pool; no service was restarted"
         )
         return 0
     if args.production_cron_github_only:

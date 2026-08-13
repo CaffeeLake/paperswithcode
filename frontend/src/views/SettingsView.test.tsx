@@ -57,7 +57,7 @@ const renderSettings = () => {
   );
 };
 
-describe("SettingsView organization billing", () => {
+describe("SettingsView chat billing", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
@@ -73,7 +73,7 @@ describe("SettingsView organization billing", () => {
     vi.unstubAllEnvs();
   });
 
-  it("lets a connected user select an organization billing account", async () => {
+  it("shows the funded OpenRouter allowance in production", async () => {
     vi.stubEnv("MODE", "production");
     const fetchMock = vi.spyOn(globalThis, "fetch");
     fetchMock.mockImplementation(async (input, init) => {
@@ -90,68 +90,34 @@ describe("SettingsView organization billing", () => {
         verified_at: null,
         fallback_enabled: false,
       }), { status: 200, headers: { "Content-Type": "application/json" } });
-      const body = init?.method === "PATCH" ? {
-        ...personalStatus,
-        account_type: "Organization",
-        monthly_credits_usd: null,
-        bill_to: "huggingface",
-      } : personalStatus;
-      return new Response(JSON.stringify(body), {
-        status: 200,
+      return new Response(JSON.stringify({ detail: "unexpected request" }), {
+        status: 500,
         headers: { "Content-Type": "application/json" },
       });
     });
 
     renderSettings();
-    const selector = await screen.findByRole("combobox", {
-      name: "Bill chat usage to",
-    });
-    expect(selector).toHaveValue("");
-    expect(screen.getByRole("option", { name: "Hugging Face (huggingface)" })).toBeVisible();
-
-    await userEvent.selectOptions(selector, "huggingface");
-
-    await waitFor(() => expect(selector).toHaveValue("huggingface"));
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      expect.stringContaining("/api/v1/me/inference-billing"),
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ bill_to: "huggingface" }),
-      }),
-    );
-    expect(screen.getByText("Organization · huggingface")).toBeVisible();
-    expect(screen.queryByText(/chat starts \/ minute/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("img", { name: /monthly Hugging Face inference credit/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
+    expect(await screen.findByText("96% left")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).includes("/me/inference-billing")
+    ))).toBe(false);
   });
 
-  it("uses OAuth authorization instead of asking for a manual token", async () => {
+  it("uses Hugging Face only for authentication in production", async () => {
     vi.stubEnv("MODE", "production");
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes("/me/inference-billing")) return new Response(JSON.stringify({
-        ...personalStatus,
-        connected: false,
-        account_type: null,
-        monthly_credits_usd: null,
-        organizations: [],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-      if (url.includes("/chat/usage")) return new Response(JSON.stringify({
-        used_percent: 4, remaining_percent: 96,
-        resets_at: "2026-09-01T00:00:00Z", available: true,
-        as_of: "2026-08-02T00:00:00Z",
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({
-        connected: false, verified_at: null, fallback_enabled: false,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    });
+    mockAuth.state = { user: null, isLoading: false };
+    mockCanPersist.value = false;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+    }));
 
     renderSettings();
-
-    expect(
-      await screen.findByRole("button", { name: "Sign in with Hugging Face" }),
-    ).toHaveTextContent("Re-sign in with Hugging Face");
-    expect(screen.queryByLabelText("Hugging Face token")).not.toBeInTheDocument();
-    expect(screen.getByText(/Reconnect with Hugging Face/)).toBeVisible();
+    expect(screen.getByText(/Papers With Code-funded OpenRouter allowance/)).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Sign in with Hugging Face" })).not.toHaveLength(0);
+    expect(screen.queryByText(/Inference Providers/)).not.toBeInTheDocument();
   });
 
   it("shows only OpenRouter on staging and exposes percentage-only usage", async () => {
@@ -324,22 +290,26 @@ describe("SettingsView production boundary", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("shows Hugging Face and retention policy but no OpenRouter when production chat is previewed", async () => {
+  it("shows OpenRouter parity and retention policy when production chat is previewed", async () => {
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
     vi.stubEnv("MODE", "production");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify(personalStatus), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const payload = String(input).includes("/chat/usage") ? {
+        used_percent: 4, remaining_percent: 96,
+        resets_at: "2026-09-01T00:00:00Z", available: true,
+        as_of: "2026-08-02T00:00:00Z",
+      } : { connected: false, verified_at: null, fallback_enabled: false };
+      return new Response(JSON.stringify(payload), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
 
     renderSettings();
 
-    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Monthly OpenRouter usage/)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("OpenRouter API key")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
+    expect(await screen.findByText(/Monthly OpenRouter usage/)).toBeVisible();
+    expect(screen.getByLabelText("OpenRouter API key")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Chat privacy & retention" })).toBeVisible();
     expect(screen.getByText(/retained until you delete them/i)).toBeVisible();
     expect(screen.getByText(/no dedicated private-chat export format/i)).toBeVisible();

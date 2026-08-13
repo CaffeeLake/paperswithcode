@@ -265,25 +265,6 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             )
 
 
-def _validate_production_openrouter_prohibition(settings: Settings) -> None:
-    title_only_key = (
-        settings.chat_openrouter_api_key
-        and settings.chat_title_generation_enabled
-        and settings.chat_title_provider == "openrouter"
-    )
-    if settings.environment == "production" and any(
-        (
-            settings.chat_openrouter_server_funded_enabled,
-            settings.chat_openrouter_api_key and not title_only_key,
-            settings.chat_openrouter_credential_keyring,
-            settings.chat_openrouter_user_tracking_secret,
-        )
-    ):
-        raise RuntimeError(
-            "production OpenRouter research chat credentials are prohibited"
-        )
-
-
 def validate_environment_policy(settings: Settings) -> None:
     """Validate production/staging isolation and mutation ownership."""
 
@@ -306,8 +287,6 @@ def validate_environment_policy(settings: Settings) -> None:
             raise RuntimeError("staging must not reuse the production JWT secret")
         if not settings.chat_enabled:
             raise RuntimeError("staging chat feature must be enabled")
-
-    _validate_production_openrouter_prohibition(settings)
 
 
 def validate_chat_runtime_descriptor(settings: Settings) -> bool:
@@ -383,8 +362,6 @@ def validate_chat_provider_policy(
 ) -> None:
     """Validate inference credentials, discovery, gateway, search, and OpenRouter."""
 
-    _validate_production_openrouter_prohibition(settings)
-
     if not all(
         (
             settings.hf_oauth_client_id,
@@ -393,35 +370,21 @@ def validate_chat_provider_policy(
         )
     ):
         raise RuntimeError(
-            "enabled chat requires the Hugging Face OAuth inference credential path"
+            "enabled chat requires the Hugging Face OAuth authentication path"
         )
     discovered = settings.chat_model_choices
-    if settings.environment == "production":
-        expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-        if settings.chat_deepseek_v4_flash_route != expected_hf_route:
-            raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
-        if len(discovered) != 1 or any(
-            choice["provider"] != "huggingface" for choice in discovered
-        ):
-            raise RuntimeError("production chat discovery must be Hugging Face-only")
-    else:
-        expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
-        if (
-            settings.chat_deepseek_v4_flash_openrouter_route
-            != expected_openrouter_route
-        ):
-            raise RuntimeError(
-                "staging DeepSeek V4 Flash must use the reviewed OpenRouter route"
-            )
-        if len(discovered) != 1 or discovered[0] != {
-            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-            "label": "DeepSeek V4 Flash",
-            "route": expected_openrouter_route,
-            "provider": "openrouter",
-        }:
-            raise RuntimeError(
-                "staging chat discovery must contain only OpenRouter DeepSeek V4 Flash"
-            )
+    expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
+    if settings.chat_deepseek_v4_flash_openrouter_route != expected_openrouter_route:
+        raise RuntimeError("DeepSeek V4 Flash must use the reviewed OpenRouter route")
+    if len(discovered) != 1 or discovered[0] != {
+        "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "label": "DeepSeek V4 Flash",
+        "route": expected_openrouter_route,
+        "provider": "openrouter",
+    }:
+        raise RuntimeError(
+            "chat discovery must contain only OpenRouter DeepSeek V4 Flash"
+        )
     if settings.chat_default_backend != "modal_cli":
         raise RuntimeError("deployed chat must use the isolated Modal backend")
     expected_modal_percentage = 100 if settings.chat_enabled else 0
@@ -643,22 +606,12 @@ def _validate_chat_title_policy(settings: Settings) -> None:
         raise RuntimeError(
             "an environment-scoped title credential owned by nielsr is required"
         )
-    if settings.environment == "staging":
-        if not (
-            settings.chat_title_provider == "openrouter"
-            and settings.chat_title_model == "deepseek/deepseek-v4-flash-0731"
-            and settings.chat_openrouter_api_key
-        ):
-            raise RuntimeError("an OpenRouter title credential is required")
-    else:
-        if not (
-            settings.chat_title_provider == "huggingface"
-            and settings.chat_title_model
-            == "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-            and settings.chat_title_bill_to == "huggingface"
-            and settings.chat_title_hf_token
-        ):
-            raise RuntimeError("a Hugging Face title credential is required")
+    if not (
+        settings.chat_title_provider == "openrouter"
+        and settings.chat_title_model == "deepseek/deepseek-v4-flash-0731"
+        and settings.chat_openrouter_api_key
+    ):
+        raise RuntimeError("an OpenRouter title credential is required")
     if (
         settings.chat_title_max_tokens != 64
         or settings.chat_title_monthly_cap_microusd != 25_000_000
@@ -678,18 +631,31 @@ def _validate_chat_title_policy(settings: Settings) -> None:
 
 
 def _validate_chat_openrouter_policy(settings: Settings) -> None:
-    """Validate staging OpenRouter credentials and durable accounting."""
+    """Validate deployed OpenRouter credentials and durable accounting."""
 
-    if settings.environment != "staging":
-        return
-    if not settings.chat_openrouter_server_funded_enabled:
+    if (
+        settings.environment == "staging"
+        and not settings.chat_openrouter_server_funded_enabled
+    ):
         raise RuntimeError("staging OpenRouter funded/BYOK paths must remain enabled")
+    if (
+        settings.environment == "production"
+        and (
+            settings.chat_public_admission_enabled
+            or settings.chat_sandbox_admission_enabled
+            or settings.chat_blank_pool_enabled
+        )
+        and not settings.chat_openrouter_server_funded_enabled
+    ):
+        raise RuntimeError(
+            "production admission requires server-funded OpenRouter dispatch"
+        )
     if not settings.chat_openrouter_api_key:
         raise RuntimeError("server-funded OpenRouter chat requires an OpenRouter key")
     if settings.chat_openrouter_workspace_monthly_budget_usd != 200:
-        raise RuntimeError("staging OpenRouter workspace budget must equal $200")
+        raise RuntimeError("OpenRouter workspace budget must equal $200")
     if settings.chat_openrouter_monthly_user_budget_usd != 5:
-        raise RuntimeError("staging OpenRouter per-user budget must equal $5")
+        raise RuntimeError("OpenRouter per-user budget must equal $5")
     if not settings.chat_openrouter_user_tracking_secret:
         raise RuntimeError("OpenRouter user tracking HMAC is required")
     from backend.services.openrouter_byok_service import credential_keyring

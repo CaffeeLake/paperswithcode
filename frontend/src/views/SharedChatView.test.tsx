@@ -151,14 +151,14 @@ describe("SharedChatView", () => {
     expect(JSON.stringify({ ...sessionStorage })).not.toContain("What is new?");
   });
 
-  it("explains staging access and HF token requirements before continuing", async () => {
+  it("explains staging access before continuing", async () => {
     vi.stubEnv("MODE", "staging");
     renderView();
 
     await screen.findByText("What is new?");
     expect(screen.getByText("Staging")).toBeVisible();
     expect(screen.getByText(/available only to approved Hugging Face users/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("renders the same non-enumerating not-found state for a missing capability", async () => {

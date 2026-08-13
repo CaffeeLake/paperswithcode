@@ -890,7 +890,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "deepseek-ai/DeepSeek-V4-Flash-0731",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        "deepseek/deepseek-v4-flash-0731"
     )
     for legacy_id in (
         "google/gemma-4-31B-it",
@@ -905,7 +905,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         )
     assert (
         production.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "huggingface"
+        == "openrouter"
     )
     assert staging.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek/deepseek-v4-flash-0731"
@@ -1945,12 +1945,23 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     monkeypatch.setattr(settings, "hf_token", "test-token")
     monkeypatch.setattr(settings, "chat_title_generation_enabled", True)
     monkeypatch.setattr(settings, "chat_openrouter_api_key", "title-test-token")
+    monkeypatch.setattr(settings, "chat_openrouter_server_funded_enabled", True)
     monkeypatch.setattr(settings, "chat_title_hf_token", "title-test-token")
     monkeypatch.setattr(settings, "chat_title_bill_to", "huggingface")
     monkeypatch.setattr(
         chat_router,
         "inference_credential_for_request",
         lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
+    )
+    monkeypatch.setattr(
+        chat_router,
+        "_authorize_openrouter",
+        lambda *_args: asyncio.sleep(
+            0,
+            result=chat_router.OpenRouterAdmission(
+                "openrouter_funded", "title-test-token", None
+            ),
+        ),
     )
 
     class FakeRunner:

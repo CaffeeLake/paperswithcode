@@ -7,7 +7,6 @@ import Composer from "@/components/chat/Composer";
 import {
   AssistantMessage,
   UserMessage,
-  type HfBillingGuidance,
 } from "@/components/chat/ChatMessage";
 import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons";
 import { hfLoginUrl } from "@/components/HfSignInButton";
@@ -221,19 +220,6 @@ const ChatView: React.FC = () => {
     retry: false,
     enabled: isChatLive() && Boolean(user),
   });
-  const billingQuery = useQuery({
-    queryKey: ["inference-billing", user?.hf_subject],
-    queryFn: async (): Promise<HfBillingGuidance & { connected: boolean }> => {
-      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-        credentials: "include",
-        cache: "no-store",
-      });
-      if (!response.ok) throw new Error("Could not load Hugging Face billing status.");
-      return response.json();
-    },
-    enabled: isChatLive() && Boolean(user),
-    retry: false,
-  });
   const chatPaused = availabilityQuery.data?.status === "paused";
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -396,8 +382,8 @@ const ChatView: React.FC = () => {
     const returnTo = routeSessionIdRef.current
       ? `/chat/${routeSessionIdRef.current}`
       : "/chat";
-    window.location.href = hfLoginUrl(returnTo, true);
-  }, [reasoningEffort, selectedModel]);
+    window.location.href = hfLoginUrl(returnTo, selectedProvider === "huggingface");
+  }, [reasoningEffort, selectedModel, selectedProvider]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -954,7 +940,7 @@ const ChatView: React.FC = () => {
                   onArchiveOldChats={() => void archiveOld()}
                   onArchiveOldestChats={() => void archiveOldest()}
                   archivePending={archivePending}
-                  hfBilling={billingQuery.data ?? null}
+                  hfBilling={null}
                   openRouterFallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
                 />)}
           </div></div>

@@ -486,15 +486,6 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:
-        if self.environment == "production":
-            return (
-                {
-                    "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-                    "label": "DeepSeek V4 Flash",
-                    "route": self.chat_deepseek_v4_flash_route,
-                    "provider": "huggingface",
-                },
-            )
         return (
             {
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -514,9 +505,7 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_choices(self) -> tuple[dict[str, str], ...]:
-        if not self.is_deployed or (
-            self.environment == "staging" and self.chat_openrouter_server_funded_enabled
-        ):
+        if not self.is_deployed or self.environment in {"production", "staging"}:
             return self.chat_model_registry
         return tuple(
             choice
@@ -565,9 +554,13 @@ class Settings(BaseSettings):
 
     @property
     def chat_route_providers(self) -> dict[str, str]:
-        return {
+        providers = {
             choice["route"]: choice["provider"] for choice in self.chat_model_registry
         }
+        # Rolling compatibility for capabilities issued by the immediately
+        # previous HF-backed release. Current model selection never chooses it.
+        providers.setdefault(self.chat_deepseek_v4_flash_route, "huggingface")
+        return providers
 
     # GitHub API configuration
     github_token: str = Field(

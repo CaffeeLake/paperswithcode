@@ -391,20 +391,14 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         ),
         github_token="test-only",
         hf_token="test-only-hf-token" if environment == "staging" else "",
-        chat_openrouter_api_key=(
-            "test-only-openrouter-token" if environment == "staging" else ""
-        ),
+        chat_openrouter_api_key="test-only-openrouter-token",
         chat_openrouter_server_funded_enabled=environment == "staging",
         chat_openrouter_monthly_user_budget_usd=5,
         chat_openrouter_workspace_monthly_budget_usd=200,
-        chat_openrouter_credential_keyring=(
-            json.dumps({"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()})
-            if environment == "staging"
-            else ""
+        chat_openrouter_credential_keyring=json.dumps(
+            {"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()}
         ),
-        chat_openrouter_user_tracking_secret=(
-            "test-only-tracking-secret" if environment == "staging" else ""
-        ),
+        chat_openrouter_user_tracking_secret="test-only-tracking-secret",
         catalog_mutations_enabled=environment == "production",
         thumbnail_mutations_enabled=False,
         cron_enabled=environment == "production",
@@ -451,12 +445,12 @@ def test_staging_runtime_rejects_unapproved_team_environment_policy(tmp_path: Pa
         validate_runtime(settings)
 
 
-def test_enabled_chat_rejects_missing_hf_inference_credential_path(tmp_path: Path):
+def test_enabled_chat_rejects_missing_hf_authentication_path(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.hf_oauth_credential_secret = ""
 
-    with pytest.raises(RuntimeError, match="OAuth inference credential path"):
+    with pytest.raises(RuntimeError, match="OAuth authentication path"):
         validate_runtime(settings)
 
 
@@ -604,13 +598,14 @@ def test_staging_openrouter_secret_rotation_preserves_decryption_versions():
     assert values["PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"] != "old-secret"
 
 
-def test_production_rejects_server_funded_openrouter(tmp_path: Path):
+def test_dormant_production_accepts_sealed_openrouter_with_dispatch_disabled(
+    tmp_path: Path,
+):
     release = make_bundle(tmp_path, chat=False)
     settings = deployed_settings(tmp_path, release, "production")
-    settings.chat_openrouter_server_funded_enabled = True
+    settings.chat_openrouter_server_funded_enabled = False
 
-    with pytest.raises(RuntimeError, match="production OpenRouter.*prohibited"):
-        validate_runtime(settings)
+    assert validate_runtime(settings) == profile_features("production")
 
 
 def test_staging_runtime_rejects_shared_session_signer(tmp_path: Path):
@@ -762,10 +757,8 @@ def test_disabled_production_accepts_armed_configuration_for_atomic_rollback(
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
-    settings.chat_title_hf_token = "test-only-production-title-token"
-    settings.chat_title_provider = "huggingface"
-    settings.chat_title_model = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-    settings.chat_title_bill_to = "huggingface"
+    settings.chat_title_provider = "openrouter"
+    settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
     settings.chat_title_credential_owner = "nielsr"
     settings.chat_title_credential_environment = "production"
 
@@ -1338,10 +1331,9 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
     settings.chat_title_generation_enabled = True
-    settings.chat_title_hf_token = "test-only-production-title-token"
-    settings.chat_title_provider = "huggingface"
-    settings.chat_title_model = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-    settings.chat_title_bill_to = "huggingface"
+    settings.chat_title_provider = "openrouter"
+    settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
+    settings.chat_openrouter_server_funded_enabled = True
     settings.chat_title_credential_owner = "nielsr"
     settings.chat_title_credential_environment = "production"
 
@@ -2271,6 +2263,24 @@ def test_chat_title_budget_migration_is_environment_isolated_and_idempotent():
     assert "FROM pwc_staging" in migration
 
 
+def test_production_openrouter_migration_is_role_isolated_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository
+        / "backend/database/migrations/add_chat_openrouter_user_budget_production.sql"
+    ).read_text()
+
+    assert "SET LOCAL search_path = public" in migration
+    assert "current_schema() <> 'public'" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openrouter_credentials" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openrouter_monthly_usage" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openrouter_provider_calls" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openrouter_credential_audit" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "TO paperswithcode_user" in migration
+    assert "FROM pwc_staging" in migration
+
+
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -2645,10 +2655,9 @@ def _production_chat_preparation_source() -> dict[str, str]:
             "https://alerts-fallback.test/production"
         ),
         "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
-        "PWC_CHAT_TITLE_HF_TOKEN": "production-title-secret",
-        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
+        "PWC_CHAT_OPENROUTER_API_KEY": "production-openrouter-secret",
     }
     return {key: f"{key}={value}" for key, value in values.items()}
 
@@ -2669,6 +2678,10 @@ def test_production_environment_example_exposes_sealed_preparation_contract():
         == "false"
     )
     assert (
+        configure_host_env.decoded_value(values["PWC_CHAT_BLANK_POOL_ENABLED"])
+        == "false"
+    )
+    assert (
         configure_host_env.decoded_value(
             values["PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED"]
         )
@@ -2676,6 +2689,9 @@ def test_production_environment_example_exposes_sealed_preparation_contract():
     )
     assert {
         "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_OPENROUTER_API_KEY",
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING",
+        "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET",
         "PWC_CHAT_SANDBOX_MODAL_WORKSPACE",
         "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME",
         "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES",
@@ -2708,7 +2724,11 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD"] == "100000000"
     assert values["PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD"] == "25000000"
-    assert values["PWC_CHAT_TITLE_HF_TOKEN"] == "production-title-secret"
+    assert values["PWC_CHAT_TITLE_HF_TOKEN"] == ""
+    assert values["PWC_CHAT_TITLE_PROVIDER"] == "openrouter"
+    assert values["PWC_CHAT_OPENROUTER_API_KEY"] == "production-openrouter-secret"
+    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "5.00"
+    assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "200.00"
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
     assert values["PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP"] == "3"
 
@@ -2808,11 +2828,13 @@ def test_production_chat_admission_requires_exact_installed_bundle():
     ) == {
         "PWC_CHAT_PUBLIC_ADMISSION_ENABLED": "true",
         "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
     }
 
     drifted = dict(current)
     drifted["PWC_CHAT_BLANK_POOL_ENABLED"] = "PWC_CHAT_BLANK_POOL_ENABLED=true"
-    with pytest.raises(ValueError, match="has drifted"):
+    with pytest.raises(ValueError, match="must change together"):
         configure_host_env.production_chat_admission_values(
             sealed,
             drifted,
@@ -2847,8 +2869,7 @@ def test_production_chat_install_rejects_tampered_bundle(mutation, match):
 @pytest.mark.parametrize(
     ("key", "value", "match"),
     [
-        ("PWC_CHAT_TITLE_HF_TOKEN", "general-secret", "distinct"),
-        ("PWC_CHAT_OPENROUTER_API_KEY", "forbidden", "prohibits"),
+        ("PWC_CHAT_OPENROUTER_API_KEY", "staging-secret", "must not reuse"),
         (
             "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL",
             "https://alerts-primary.test/production",
@@ -2869,7 +2890,9 @@ def test_production_chat_preparation_rejects_unsafe_inputs(key, value, match):
         configure_host_env.production_chat_preparation_values(
             source,
             {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
-            {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+            {
+                "PWC_CHAT_OPENROUTER_API_KEY": "PWC_CHAT_OPENROUTER_API_KEY=staging-secret"
+            },
         )
 
 

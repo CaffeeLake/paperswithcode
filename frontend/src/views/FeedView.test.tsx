@@ -73,9 +73,9 @@ describe("AskAssistant", () => {
       "DeepSeek V4 Flash",
     );
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Luna|Terra|OpenRouter/)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Inference Providers" }))
-      .toHaveAttribute("href", "https://huggingface.co/docs/inference-providers/en/index");
+    expect(screen.queryByText(/Luna|Terra/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Inference Providers" }))
+      .not.toBeInTheDocument();
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {

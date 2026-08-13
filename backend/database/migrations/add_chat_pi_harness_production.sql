@@ -1,7 +1,7 @@
 BEGIN;
 
--- Production is HF-only and receives Pi state only through an explicitly
--- authorized production migration. Keep every object confined to public.
+-- Production receives Pi state only through an explicitly authorized
+-- production migration. Keep every object confined to public.
 SET LOCAL search_path = public;
 
 DO $$

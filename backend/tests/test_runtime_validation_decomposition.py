@@ -143,7 +143,7 @@ def test_chat_provider_policy_isolated_from_capacity(settings_factory):
     with pytest.raises(RuntimeError) as exc_info:
         runtime_validation.validate_chat_provider_policy(settings)
     assert str(exc_info.value) == (
-        "enabled chat requires the Hugging Face OAuth inference credential path"
+        "enabled chat requires the Hugging Face OAuth authentication path"
     )
 
 
@@ -161,17 +161,15 @@ def test_environment_policy_isolated_from_storage(settings_factory):
     )
 
 
-def test_chat_provider_policy_always_rejects_production_openrouter(
+def test_chat_provider_policy_accepts_isolated_production_openrouter(
     settings_factory,
 ):
     settings, _release = settings_factory("production")
-    settings.chat_openrouter_api_key = "forbidden-production-key"
-
-    with pytest.raises(RuntimeError) as exc_info:
-        runtime_validation.validate_chat_provider_policy(settings)
-    assert str(exc_info.value) == (
-        "production OpenRouter research chat credentials are prohibited"
+    settings.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
+
+    runtime_validation.validate_chat_provider_policy(settings)
 
 
 def test_chat_capacity_and_spend_policy_isolated_from_provider(settings_factory):
@@ -229,8 +227,7 @@ def test_chat_provider_policy_owns_gateway_and_openrouter(
         (
             "chat_openrouter_api_key",
             "",
-            "an environment-scoped OpenRouter title credential owned by nielsr "
-            "is required",
+            "an OpenRouter title credential is required",
         ),
         (
             "chat_sandbox_cpu_limit",

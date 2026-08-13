@@ -86,8 +86,10 @@ into both backend and frontend manifests with the active immutable runtime
 descriptor. The deploy rejects an existing same-SHA release whose activation
 mode differs, so operators must use a new exact source SHA rather than mutate an
 immutable bundle. Runtime readiness still fails closed until every production
-chat prerequisite is configured; OpenRouter remains prohibited for production
-research calls in either mode.
+chat prerequisite is configured. A disabled production release may contain the
+sealed, production-isolated OpenRouter contract, but funded dispatch, public
+admission, sandbox admission, and the blank pool remain false until the guarded
+activation step changes all four together.
 
 For the one-time migration from a legacy service, install the committed tools
 and slot units. A source-only compatibility landing may use the explicit
@@ -284,29 +286,27 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-Production chat uses the signed-in user's Hugging Face billing and the
-`deepseek-ai/DeepSeek-V4-Flash-0731:fastest` route. Staging exposes only
-DeepSeek V4 Flash through the shared OpenRouter-backed
+Production and staging expose only DeepSeek V4 Flash through their respective,
+environment-isolated OpenRouter credentials, keyrings, ledgers, and gateways.
+Both use the stable
 `deepseek/deepseek-v4-flash-0731` route with Nitro throughput sorting. The
 explicit `provider.sort=throughput` request policy is equivalent to the
 `:nitro` suffix while preserving the stable route used by durable accounting.
 Admission checks provider-authoritative monthly usage before each turn, and the
-provider key must prove an exact monthly `$200` staging workspace limit. Durable
-PostgreSQL reservations enforce the separate `$5` per-user ceiling before each
-funded gateway dispatch. Production permanently prohibits shared OpenRouter
-research models, allowance state, percentage UI, and BYOK controls; the title
-path is the only permitted server-funded OpenRouter exception.
+provider key must prove an exact monthly `$200` environment workspace limit.
+Durable PostgreSQL reservations enforce the separate `$5` per-user ceiling
+before each funded gateway dispatch. Production exposes the same allowance and
+BYOK product behavior only after its production schema and protected secrets
+pass closed qualification; it never reuses staging credentials or state.
 
 Automatic title generation uses the server-funded OpenRouter credential and
 routes `deepseek/deepseek-v4-flash-0731` through Nitro throughput sorting. It
 reserves against a persistent,
 environment-isolated `$25/month` title circuit before dispatch. Missing
 credentials, ledger uncertainty, provider failure, or exhaustion falls back to
-a local prompt-derived title. Production requires its own credential and ledger
-and remains disabled.
-The two environments may share the same `$1,000/month` account-level backstop,
-but neither may read or borrow the other's `$25` application budget; aggregate
-account monitoring must cover their combined title spend.
+a local prompt-derived title. Production uses its production research key but a
+separate production `$25` title ledger and circuit. Neither environment may
+read or borrow the other's title or research budget.
 
 Production additionally uses the allowlisted
 `monitor_chat_operational_alerts` job once per minute. It advances a protected
@@ -344,8 +344,10 @@ sudo python deploy/configure_host_env.py \
 
 The helper rejects a missing or group/world-readable Modal profile, incomplete
 credentials, conflicts with an explicitly configured pair, unsafe alert URLs,
-title-token reuse, an invalid budget attestation, and any production-chat
-OpenRouter secret. It writes only
+an invalid budget attestation, a missing/invalid OpenRouter keyring contract,
+or reuse of the staging OpenRouter key. It generates or preserves production-
+only BYOK encryption and tracking secrets, fixes the `$5`/`$200` policy, and
+writes only
 `/etc/paperswithcode/production-chat-prepared.env`; no service loads that file
 implicitly.
 
@@ -371,6 +373,15 @@ Record human acknowledgement from both independently routed destinations. The
 synthetic rows remain environment-qualified and contain no prompt, answer,
 credential, capability, or provider compute.
 
+Before sealing an OpenRouter-capable production release, apply
+`backend/database/migrations/add_chat_openrouter_user_budget_production.sql` as
+PostgreSQL superuser with `search_path=public`. The guarded migration owns the
+four production OpenRouter tables and audit sequence with
+`paperswithcode_user`, grants only the production application role, and
+explicitly revokes `pwc_staging`. Audit table/sequence ownership, columns,
+constraints, and both role boundaries before continuing. This migration does
+not enable chat or dispatch a provider request.
+
 Only after the two disabled production bridge releases are active, the sealed
 bundle has passed qualification, and the exact activation SHA has separate
 production authorization, install the same revalidated bundle into the live
@@ -387,16 +398,16 @@ sudo python deploy/configure_host_env.py \
 
 The installer reads only the previously sealed root-owned bundle, rejects
 missing, stale, or added keys, and revalidates title metadata, Modal policy,
-alert separation, capacity, and the research-call OpenRouter prohibition before
-an atomic write. Disabled bridge manifests override chat and Modal rollout to
-zero, so the same installed configuration remains rollback-compatible without
-editing secrets during an incident.
+alert separation, capacity, and the isolated OpenRouter accounting contract
+before an atomic write. Funded dispatch and all three admission/capacity gates
+remain false, so the same installed configuration remains rollback-compatible
+without editing secrets during an incident.
 
 After the enabled release passes production smoke with admission closed, open
-public and sandbox admission together through the guarded configuration path.
-This revalidates the exact sealed bundle, rejects drift, keeps the blank pool
-disabled, and does not restart a service; refresh the exact active release so
-the new admission state is loaded:
+funded dispatch, public admission, sandbox admission, and the one-blank pool
+together through the guarded configuration path. This revalidates the exact
+sealed bundle, rejects drift, and does not restart a service; refresh the exact
+active release so the new activation state is loaded:
 
 ```bash
 sudo python deploy/configure_host_env.py \

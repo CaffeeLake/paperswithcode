@@ -6,14 +6,14 @@
  */
 
 import React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/api";
-import { apiUrl, isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
+import { isChatEnabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
 import {
@@ -23,17 +23,6 @@ import {
   useOpenRouterUsage,
 } from "@/lib/openrouter";
 import { usePreferences } from "@/lib/preferencesContext";
-
-interface InferenceBillingStatus {
-  connected: boolean;
-  account_type: string | null;
-  monthly_credits_usd: number | null;
-  pay_as_you_go: boolean;
-  usage_url: string;
-  token_url: string;
-  bill_to: string | null;
-  organizations: Array<{ name: string; display_name: string }>;
-}
 
 const OPENROUTER_KEY_SETTINGS_URL = "https://openrouter.ai/settings/keys";
 
@@ -58,63 +47,17 @@ const SettingsView: React.FC = () => {
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
   const chatEnabled = isChatEnabled();
-  const staging = isStagingEnvironment();
-  const [billingError, setBillingError] = React.useState("");
   const [openRouterError, setOpenRouterError] = React.useState("");
   const [openRouterErrorCode, setOpenRouterErrorCode] = React.useState("");
   const [openRouterKey, setOpenRouterKey] = React.useState("");
   const queryClient = useQueryClient();
-  const billingQuery = useQuery({
-    queryKey: ["inference-billing", user?.hf_subject],
-    enabled: chatEnabled && !staging && Boolean(user),
-    queryFn: async () => {
-      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-        credentials: "include",
-        cache: "no-store",
-      });
-      if (!response.ok) throw new Error("Could not load billing status.");
-      return (await response.json()) as InferenceBillingStatus;
-    },
-  });
-  const billing = billingQuery.data ?? null;
-  const usageQuery = useOpenRouterUsage(chatEnabled && staging && Boolean(user));
+  const usageQuery = useOpenRouterUsage(chatEnabled && Boolean(user));
   const credentialQuery = useOpenRouterCredential(
-    chatEnabled && staging && Boolean(user),
+    chatEnabled && Boolean(user),
   );
   const usage = usageQuery.data;
   const credential = credentialQuery.data;
   const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
-  const selectBillingAccountMutation = useMutation({
-    mutationFn: async (billTo: string | null) => {
-      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bill_to: billTo }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(
-          typeof payload.detail === "string"
-            ? payload.detail
-            : "Could not change the billing account.",
-        );
-      }
-      return payload as InferenceBillingStatus;
-    },
-    onSuccess: (status) => {
-      queryClient.setQueryData(["inference-billing", user?.hf_subject], status);
-      setBillingError("");
-    },
-    onError: (error) => {
-      setBillingError(
-        error instanceof Error ? error.message : "Could not change the billing account.",
-      );
-    },
-  });
-  const billingLoading =
-    billingQuery.isLoading ||
-    selectBillingAccountMutation.isPending;
   const setOpenRouterMutationError = (error: unknown, fallback: string) => {
     setOpenRouterError(openRouterErrorMessage(error, fallback));
     setOpenRouterErrorCode(error instanceof ApiError ? error.code ?? "" : "");
@@ -202,77 +145,14 @@ const SettingsView: React.FC = () => {
         ) : !user ? (
           <div className="settings-note settings-note-flush">
             <span>
-              {staging
-                ? "Sign in to use the Papers With Code-funded OpenRouter allowance for research chat."
-                : "Sign in to connect your Hugging Face account for research chat. Model usage is billed by Hugging Face, not Papers With Code."}
+              Sign in to use the Papers With Code-funded OpenRouter allowance for research chat.
             </span>
             <div className="settings-note-action">
-              <HfSignInButton returnTo="/settings" authorizeInference={!staging} />
+              <HfSignInButton returnTo="/settings" />
             </div>
           </div>
         ) : <div className="settings-provider-grid">
-          {!staging && <section className="settings-provider-card" aria-labelledby="inference-providers-heading">
-            <div className="settings-provider-heading">
-              <div>
-                <h3 id="inference-providers-heading">Inference Providers</h3>
-                <p>Hugging Face-billed model usage</p>
-              </div>
-              {billing?.connected && <span className="settings-connected-badge">Connected</span>}
-            </div>
-            {billingLoading && !billing ? (
-              <div className="settings-billing-loading">Checking Hugging Face billing…</div>
-            ) : billing?.connected ? <div className="settings-billing">
-              <div className="settings-row-label">
-                {billing.bill_to
-                  ? `Organization · ${billing.bill_to}`
-                  : `Personal account · @${user.username}`}
-              </div>
-              <p className="settings-row-desc">
-                Usage for Hugging Face Inference Providers is billed by Hugging Face
-                to your selected account. Your included Hugging Face usage is applied
-                first; pay-as-you-go billing applies once it is depleted, according to
-                your Hugging Face plan and billing settings. Papers With Code does not
-                fund, meter, or reset these credits.
-              </p>
-              <label className="settings-token-label" htmlFor="hf-billing-account">
-                Bill chat usage to
-              </label>
-              <select
-                id="hf-billing-account"
-                className="settings-billing-select"
-                value={billing.bill_to ?? ""}
-                onChange={(event) => {
-                  setBillingError("");
-                  selectBillingAccountMutation.mutate(event.target.value || null);
-                }}
-                disabled={billingLoading}
-              >
-                <option value="">Personal account (@{user.username})</option>
-                {billing.organizations.map((organization) => (
-                  <option key={organization.name} value={organization.name}>
-                    {organization.display_name} ({organization.name})
-                  </option>
-                ))}
-              </select>
-              {billingError && <div className="settings-token-error">{billingError}</div>}
-              <div className="settings-billing-actions">
-                <a className="button button-primary" href={billing.usage_url} target="_blank" rel="noreferrer">
-                  View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
-                </a>
-                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
-              </div>
-            </div> : <div className="settings-billing-connect">
-              <p className="settings-row-desc">
-                Reconnect with Hugging Face to authorize Inference Providers. Hugging
-                Face bills your personal account or the organization you select.
-              </p>
-              <div className="settings-billing-actions">
-                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
-              </div>
-            </div>}
-          </section>}
-
-          {staging && <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
+          <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
             <div className="settings-provider-heading">
               <div>
                 <h3 id="openrouter-heading">OpenRouter</h3>
@@ -386,7 +266,7 @@ const SettingsView: React.FC = () => {
                 </div>}
               </div>}
             </div>
-          </section>}
+          </section>
         </div>}
       </section>}
 

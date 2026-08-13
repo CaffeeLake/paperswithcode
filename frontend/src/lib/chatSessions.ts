@@ -75,7 +75,7 @@ export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: DEFAULT_CHAT_MODEL,
     label: "DeepSeek V4 Flash",
-    provider: "huggingface",
+    provider: "openrouter",
   },
 ];
 export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
