@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PiEventAdapter } from "../src/events.js";
+import { PolicyController } from "../src/policy.js";
+
+function policy(): PolicyController {
+  return new PolicyController({
+    maximumCalls: 3,
+    maximumRounds: 2,
+    maximumDirectSearches: 1,
+    maximumWebSearches: 1,
+    maximumResultBytes: 1024,
+    maximumTurnOutputBytes: 4096,
+    bashTimeoutSeconds: 5,
+  });
+}
 
 test("maps hidden thinking, text, tools, usage, and correlations", () => {
   const semantic: string[] = [];
@@ -58,4 +71,34 @@ test("surfaces terminal provider errors without exposing provider details", () =
     ],
   );
   assert.equal(adapter.failed, true);
+});
+
+test("reasoning-only tool markup requires a final answer", () => {
+  const completion = policy();
+  completion.reset(false);
+  const adapter = new PiEventAdapter(false, (kind) => {
+    if (kind === "answer") completion.observeAnswer();
+  });
+
+  assert.deepEqual(
+    adapter.feed({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        delta: "<｜DSML｜tool_calls>pwc paper info Patch Policy</｜DSML｜tool_calls>",
+      },
+    }),
+    [],
+  );
+  adapter.feed({
+    type: "message_end",
+    message: { role: "assistant", stopReason: "stop", usage: {} },
+  });
+  assert.equal(completion.needsFinalAnswer(), true);
+
+  adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta: "Recovered answer" },
+  });
+  assert.equal(completion.needsFinalAnswer(), false);
 });

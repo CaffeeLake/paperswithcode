@@ -34,3 +34,17 @@ test("enforces tool, path, search, timeout, and output bounds", () => {
   noWrite.reset(false);
   assert.match(noWrite.authorize("x", "write", {}) ?? "", /not available/iu);
 });
+
+test("requires a visible answer, including after tooling closes", () => {
+  const value = policy();
+  value.reset(false);
+  assert.equal(value.needsFinalAnswer(), true);
+  value.observeAnswer();
+  assert.equal(value.needsFinalAnswer(), false);
+
+  assert.equal(value.authorize("a", "bash", { command: "pwc search test" }), undefined);
+  assert.match(value.authorize("b", "bash", { command: "pwc search again" }) ?? "", /answer now/iu);
+  assert.equal(value.needsFinalAnswer(), true);
+  value.observeAnswer();
+  assert.equal(value.needsFinalAnswer(), false);
+});

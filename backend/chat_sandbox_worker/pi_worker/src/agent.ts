@@ -216,7 +216,7 @@ export class PiWorker {
       let mirrorFailed = false;
       try {
         await this.session.prompt(run.prompt, { expandPromptTemplates: false, source: "interactive" });
-        if (this.policy.toolingClosed && !this.policy.answerAfterClose && !this.cancelled) {
+        if (this.policy.needsFinalAnswer() && !adapter.failed && !this.cancelled) {
           this.session.setActiveToolsByName([]);
           await this.session.prompt(FINALIZER_PROMPT, { expandPromptTemplates: false, source: "extension" });
         }
@@ -239,6 +239,15 @@ export class PiWorker {
         return;
       }
       if (adapter.failed) {
+        this.emit(run.request_id, { type: "worker_done", status: "complete" });
+        return;
+      }
+      if (this.policy.needsFinalAnswer()) {
+        this.emit(run.request_id, {
+          type: "error",
+          code: "provider_error",
+          message: "The model provider returned an incomplete response.",
+        });
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }

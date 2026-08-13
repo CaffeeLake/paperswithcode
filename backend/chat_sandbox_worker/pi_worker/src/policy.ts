@@ -47,6 +47,7 @@ export class PolicyController {
   webSearches = 0;
   outputBytes = 0;
   toolingClosed = false;
+  answerProduced = false;
   answerAfterClose = false;
   systemPrompt = "";
   private active = new Set<string>();
@@ -62,12 +63,18 @@ export class PolicyController {
     this.webSearches = 0;
     this.outputBytes = 0;
     this.toolingClosed = false;
+    this.answerProduced = false;
     this.answerAfterClose = false;
     this.active.clear();
   }
 
   observeAnswer(): void {
+    this.answerProduced = true;
     if (this.toolingClosed) this.answerAfterClose = true;
+  }
+
+  needsFinalAnswer(): boolean {
+    return this.toolingClosed ? !this.answerAfterClose : !this.answerProduced;
   }
 
   private deny(id: string, reason: string): string {
