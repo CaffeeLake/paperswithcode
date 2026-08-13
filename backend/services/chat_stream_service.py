@@ -979,7 +979,8 @@ class ChatStreamOrchestrator:
                     "chat execution recovery request_id=%s turn_id=%s "
                     "rounds=%s/%s denied_rounds=%s calls=%s/%s denied_calls=%s "
                     "tooling_closed=%s limit_reached=%s finalizer_attempted=%s "
-                    "finalizer_outcome=%s finalization_latency_ms=%s",
+                    "finalizer_outcome=%s finalization_latency_ms=%s "
+                    "recovery_reason=%s recovery_attempts=%s recovery_outcome=%s",
                     self.request_id,
                     self.admission.turn_id,
                     event.get("tool_rounds_executed"),
@@ -993,6 +994,9 @@ class ChatStreamOrchestrator:
                     event.get("finalizer_attempted"),
                     event.get("finalizer_outcome"),
                     event.get("finalization_latency_ms"),
+                    event.get("recovery_reason"),
+                    event.get("recovery_attempts"),
+                    event.get("recovery_outcome"),
                 )
                 continue
             if kind == "usage":

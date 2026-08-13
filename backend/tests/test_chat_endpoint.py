@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -721,6 +722,52 @@ def test_pi_tool_timing_fallback_measures_parallel_calls_and_preserves_worker_ti
     slow = {"id": "slow", "took_ms": 73}
     timing.apply("tool_result", slow)
     assert slow["took_ms"] == 73
+
+
+def test_pi_recovery_telemetry_is_logged_without_becoming_a_public_frame(caplog):
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="smoke-model",
+        model_route="smoke-route",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        is_first_turn=True,
+        agent_harness="pi",
+    )
+    orchestrator = ChatStreamOrchestrator(
+        settings=get_settings().model_copy(update={"environment": "development"}),
+        owner=ChatOwner(hf_user_id="hf-user", hf_username="tester"),
+        admission=admission,
+        prompt="hello",
+        request_id="request-id",
+        title_token=None,
+        is_disconnected=lambda: asyncio.sleep(0, result=False),
+        release_admission=lambda: asyncio.sleep(0),
+    )
+
+    async def consume():
+        queue: asyncio.Queue = asyncio.Queue()
+        await queue.put(
+            {
+                "type": "_execution_telemetry",
+                "tool_calls": 2,
+                "tool_rounds_executed": 2,
+                "execution_limit_reached": False,
+                "recovery_reason": "incomplete_response",
+                "recovery_attempts": 1,
+                "recovery_outcome": "recovered_after_retry",
+            }
+        )
+        await queue.put({"type": "_research_finished"})
+        return [frame async for frame in orchestrator._consume(queue)]
+
+    caplog.set_level(logging.INFO, logger="backend.services.chat_stream_service")
+    assert asyncio.run(consume()) == []
+    assert "recovery_reason=incomplete_response" in caplog.text
+    assert "recovery_attempts=1" in caplog.text
+    assert "recovery_outcome=recovered_after_retry" in caplog.text
 
 
 def test_chat_projection_collapses_consecutive_duplicate_reasoning():
