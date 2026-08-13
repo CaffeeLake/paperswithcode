@@ -7,17 +7,48 @@ import re
 from sqlalchemy.orm import Session
 
 from backend.services.paper_service import PaperNotFoundError, PaperService
+from backend.utils.urls import parse_arxiv_url
 
 _PAPER_LINK = re.compile(
     r"\[(?P<label>[^\]\n]{1,500})\]\(paper:(?P<route_id>[^) \t\n]{1,200})\)"
 )
+_ARXIV_URL = (
+    r"https://(?:www\.)?arxiv\.org/(?:abs|pdf|html)/"
+    r"\d{4}\.\d{4,5}(?:v\d+)?(?:\.pdf)?(?:[?#][^\s<>)]+)?"
+)
+_ARXIV_LINK = re.compile(
+    rf"(?:"
+    rf"\[(?P<label>[^\]\n]{{1,500}})\]\((?P<markdown_url>{_ARXIV_URL})\)"
+    rf"|<(?P<autolink_url>{_ARXIV_URL})>"
+    rf"|(?P<bare_url>(?<![\[(]){_ARXIV_URL})"
+    rf")",
+    re.IGNORECASE,
+)
+
+
+def _arxiv_url(match: re.Match[str]) -> str:
+    return (
+        match.group("markdown_url")
+        or match.group("autolink_url")
+        or match.group("bare_url")
+    )
+
+
+def _cited_references(text: str) -> list[tuple[int, str]]:
+    references = [
+        (match.start(), match.group("route_id")) for match in _PAPER_LINK.finditer(text)
+    ]
+    for match in _ARXIV_LINK.finditer(text):
+        parsed = parse_arxiv_url(_arxiv_url(match))
+        if parsed is not None:
+            references.append((match.start(), parsed[0]))
+    return sorted(references)
 
 
 def cited_route_ids(text: str, maximum: int = 20) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
-    for match in _PAPER_LINK.finditer(text):
-        route_id = match.group("route_id")
+    for _position, route_id in _cited_references(text):
         if route_id not in seen:
             seen.add(route_id)
             result.append(route_id)
@@ -62,7 +93,7 @@ def resolve_citations(db: Session, text: str, maximum: int = 20) -> list[dict]:
 
 
 def normalize_paper_links(text: str, resolved_targets: dict[str, str]) -> str:
-    """Canonicalize resolved citations and render unresolved ones as plain text."""
+    """Canonicalize resolved paper citations, including trusted ArXiv URLs."""
 
     def replace(match: re.Match[str]) -> str:
         canonical_route_id = resolved_targets.get(match.group("route_id"))
@@ -70,4 +101,17 @@ def normalize_paper_links(text: str, resolved_targets: dict[str, str]) -> str:
             return match.group("label")
         return f"[{match.group('label')}](paper:{canonical_route_id})"
 
-    return _PAPER_LINK.sub(replace, text)
+    normalized = _PAPER_LINK.sub(replace, text)
+
+    def replace_arxiv(match: re.Match[str]) -> str:
+        url = _arxiv_url(match)
+        parsed = parse_arxiv_url(url)
+        canonical_route_id = (
+            resolved_targets.get(parsed[0]) if parsed is not None else None
+        )
+        if canonical_route_id is None:
+            return match.group(0)
+        label = match.group("label") or url
+        return f"[{label}](paper:{canonical_route_id})"
+
+    return _ARXIV_LINK.sub(replace_arxiv, normalized)

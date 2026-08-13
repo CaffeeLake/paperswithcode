@@ -758,6 +758,33 @@ def test_chat_projection_canonicalizes_resolved_paper_aliases(monkeypatch):
     assert projection.blocks[-1]["citations"] == citations
 
 
+def test_chat_projection_canonicalizes_arxiv_urls(monkeypatch):
+    citation = {
+        "position": 0,
+        "route_id": "2501.00001",
+        "title": "Paper",
+        "source_url": "https://arxiv.org/abs/2501.00001",
+    }
+    monkeypatch.setattr(
+        "backend.services.chat_stream_service.resolve_citation_targets",
+        lambda _db, _text: ([citation], {"2501.00001": "2501.00001"}),
+    )
+    projection = ChatTurnProjection()
+    projection.apply(
+        "answer_delta",
+        {
+            "text": "Read [https://arxiv.org/abs/2501.00001]"
+            "(https://arxiv.org/abs/2501.00001)."
+        },
+    )
+
+    answer, citations = projection.finalize(object())
+
+    assert answer == ("Read [https://arxiv.org/abs/2501.00001](paper:2501.00001).")
+    assert citations == [{"kind": "paper", **citation}]
+    assert projection.blocks[-1]["citations"] == citations
+
+
 def test_stream_boundary_normalizer_repairs_nested_and_extra_reasoning_events():
     async def source():
         for event in [
