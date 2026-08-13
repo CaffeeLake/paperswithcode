@@ -75,6 +75,26 @@ class ChatStreamFrame:
         return cls(event=None)
 
 
+class _ToolTimingFallback:
+    """Measure Pi tool lifecycles until the active worker image reports them."""
+
+    def __init__(self, *, enabled: bool, now: Callable[[], float] = time.perf_counter):
+        self.enabled = enabled
+        self.now = now
+        self.started: dict[str, float] = {}
+
+    def apply(self, kind: str, event: dict) -> None:
+        if not self.enabled:
+            return
+        tool_id = str(event.get("id") or "")
+        if kind == "tool_call" and tool_id:
+            self.started[tool_id] = self.now()
+        elif kind == "tool_result" and tool_id:
+            started = self.started.pop(tool_id, None)
+            if started is not None and int(event.get("took_ms") or 0) == 0:
+                event["took_ms"] = max(0, round((self.now() - started) * 1000))
+
+
 async def sequential_reasoning_events(events: AsyncIterator[dict[str, Any]]):
     """Repair delayed Luna reasoning boundaries before projection and SSE."""
     reasoning_open = False
@@ -665,6 +685,9 @@ class ChatStreamOrchestrator:
         self.first_application_delta_recorded = False
         self.interruption_reason: str | None = None
         self.trace: ChatTurnTrace | NullChatTurnTrace = NullChatTurnTrace()
+        self.tool_timing = _ToolTimingFallback(
+            enabled=getattr(admission, "agent_harness", "claude") == "pi"
+        )
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         if self.admission.replay_assistant:
@@ -907,6 +930,7 @@ class ChatStreamOrchestrator:
                 raise asyncio.CancelledError
             event = dict(event)
             kind = event.pop("type")
+            self.tool_timing.apply(kind, event)
             self.trace.record_event(kind, event)
             if kind == "_research_finished":
                 research_finished = True

@@ -704,6 +704,25 @@ def test_chat_projection_preserves_sse_block_order():
     ]
 
 
+def test_pi_tool_timing_fallback_measures_parallel_calls_and_preserves_worker_timing():
+    from backend.services.chat_stream_service import _ToolTimingFallback
+
+    now = 10.0
+    timing = _ToolTimingFallback(enabled=True, now=lambda: now)
+    timing.apply("tool_call", {"id": "slow"})
+    now = 10.025
+    timing.apply("tool_call", {"id": "fast"})
+    now = 10.04
+    fast = {"id": "fast", "took_ms": 0}
+    timing.apply("tool_result", fast)
+    assert fast["took_ms"] == 15
+
+    now = 10.08
+    slow = {"id": "slow", "took_ms": 73}
+    timing.apply("tool_result", slow)
+    assert slow["took_ms"] == 73
+
+
 def test_chat_projection_collapses_consecutive_duplicate_reasoning():
     projection = ChatTurnProjection()
     for _ in range(2):
