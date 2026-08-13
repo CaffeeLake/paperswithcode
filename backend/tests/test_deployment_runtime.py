@@ -1891,6 +1891,43 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
     ) == ["numeric paper API returned 500"]
 
 
+@pytest.mark.parametrize(
+    ("chat_enabled", "status", "expected"),
+    [
+        (False, 404, []),
+        (True, 401, []),
+        (False, 401, ["production chat API is not absent: 401"]),
+        (True, 404, ["production chat API is not auth-protected: 404"]),
+    ],
+)
+def test_production_smoke_uses_release_chat_boundary(
+    monkeypatch, chat_enabled, status, expected
+):
+    monkeypatch.setattr(smoke_test, "run_seo_http_smoke", lambda *_args: [])
+
+    def request(url, **_kwargs):
+        if url.endswith("/health"):
+            return 200, {}, b'{"release_id":"release-production"}'
+        if "/api/v1/papers/" in url:
+            return 200, {}, b"{}"
+        if url.endswith("/api/v1/chat/sessions"):
+            return status, {}, b""
+        raise AssertionError(url)
+
+    monkeypatch.setattr(smoke_test, "request", request)
+
+    assert (
+        smoke_test.run_http_smoke(
+            "production",
+            "http://127.0.0.1:8100",
+            expected_release="release-production",
+            candidate=True,
+            chat_enabled=chat_enabled,
+        )
+        == expected
+    )
+
+
 def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
     requested: list[str] = []
 

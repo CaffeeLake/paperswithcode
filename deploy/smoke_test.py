@@ -352,6 +352,7 @@ def run_http_smoke(
     expected_release: str | None = None,
     monitor_subset: bool = False,
     candidate: bool = False,
+    chat_enabled: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     status, _, body = request(urljoin(base_url, "/health"))
@@ -393,8 +394,10 @@ def run_http_smoke(
             except json.JSONDecodeError:
                 failures.append("paper API did not return JSON")
         status, _, _ = request(urljoin(base_url, "/api/v1/chat/sessions"))
-        if status not in {404, 405}:
-            failures.append(f"production chat API is reachable: {status}")
+        expected = {401, 403} if chat_enabled else {404, 405}
+        if status not in expected:
+            boundary = "auth-protected" if chat_enabled else "absent"
+            failures.append(f"production chat API is not {boundary}: {status}")
         return failures
 
     for path in ("/", "/paper/2605.13517"):
@@ -434,8 +437,10 @@ def run_http_smoke(
         except json.JSONDecodeError:
             failures.append("paper API did not return JSON")
     status, _, _ = request(urljoin(base_url, "/api/v1/chat/sessions"))
-    if status not in {404, 405}:
-        failures.append(f"production chat API is reachable: {status}")
+    expected = {401, 403} if chat_enabled else {404, 405}
+    if status not in expected:
+        boundary = "auth-protected" if chat_enabled else "absent"
+        failures.append(f"production chat API is not {boundary}: {status}")
     return failures
 
 
@@ -477,8 +482,10 @@ def main() -> int:
     global _UNIX_SOCKET
     _UNIX_SOCKET = args.unix_socket
     failures = []
+    chat_enabled = False
     if args.release_dir:
         manifest = validate_manifest(args.release_dir, args.environment)
+        chat_enabled = bool(manifest["backend_features"]["chat"])
         failures.extend(
             validate_local_bundle(args.release_dir, manifest["frontend_features"])
         )
@@ -489,6 +496,7 @@ def main() -> int:
             expected_release=args.expected_release,
             monitor_subset=args.monitor_subset,
             candidate=args.candidate,
+            chat_enabled=chat_enabled,
         )
     )
     if args.gateway_url:
