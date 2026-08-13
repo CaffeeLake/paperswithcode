@@ -19,6 +19,8 @@ SKILL = Path(__file__).resolve().parents[1] / "chat_sandbox_worker" / "HF_CLI_SK
         ("dataset license and limitations", "hf datasets card DATASET_ID"),
         ("understand public demo", "hf spaces card SPACE_ID"),
         ("discover popular models", "hf models list --author moonshotai --limit 30"),
+        ("discover newest releases", "use `--sort created_at`"),
+        ("discover recently updated models", "use `--sort last_modified`"),
         ("inspect bounded repository tree", "bounded path metadata"),
         ("connect PwC paper to artifact", "Prefer `pwc` for PwC papers"),
         (
@@ -52,6 +54,18 @@ def test_behavior_contract_distinguishes_discovery_from_exact_repository_mode():
     assert "it is never an owner or organization discovery" in guide
     assert "hf models list moonshotai" in guide
     assert "hf models card moonshotai/Kimi-K3 --text" in guide
+
+
+def test_behavior_contract_documents_exact_list_sorts_and_naming_exception():
+    guide = SKILL.read_text(encoding="utf-8")
+
+    assert "[supported discovery flags or file-list flags]" not in guide
+    assert "--sort created_at|downloads|last_modified|likes|trending_score" in guide
+    assert "--sort created_at|last_modified|likes|trending_score" in guide
+    assert "camelCase value `lastModified`" in guide
+    assert "Never use `lastModified` with those lists" in guide
+    assert "Do not treat `last_modified` as a release date" in guide
+    assert "hf models list --author Qwen --sort created_at --limit 10" in guide
 
 
 def test_behavior_contract_uses_hf_stdout_without_help_or_workspace_files():
