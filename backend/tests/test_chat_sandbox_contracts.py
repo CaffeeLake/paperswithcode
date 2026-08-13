@@ -2483,7 +2483,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-QWluCXxGvCl0XrOAZoRqkG"
+    assert MODAL_IMAGE_ID == "im-fi5qcyii6SD28tCAFQ7J8B"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-k6sP99TktiwSwGI6C87iMU"
     assert WORKER_CONTRACT_VERSION == "70"
     assert CHAT_SANDBOX_REGION == "eu-west"
