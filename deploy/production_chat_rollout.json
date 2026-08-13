@@ -1,11 +1,11 @@
 {
-  "phase": "hf-title-zero-assignment-bridge-2",
+  "phase": "hf-title-pi-default-final",
   "chat_enabled": true,
   "public_admission_enabled": false,
   "sandbox_admission_enabled": false,
   "blank_pool_enabled": false,
   "database_contract_version": 2,
   "gateway_contract_version": 28,
-  "default_agent_harness": "claude",
-  "new_session_pi_percentage": 0
+  "default_agent_harness": "pi",
+  "new_session_pi_percentage": 100
 }
