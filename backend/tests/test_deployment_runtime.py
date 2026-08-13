@@ -1199,8 +1199,8 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
     assert production["enabled"] is True
     assert production["database_contract_version"] == 2
-    assert production["default_agent_harness"] == "claude"
-    assert production["new_session_pi_percentage"] == 0
+    assert production["default_agent_harness"] == "pi"
+    assert production["new_session_pi_percentage"] == 100
     assert (
         production["new_chat_modal_percentage"]
         == descriptor["new_chat_modal_percentage"]
