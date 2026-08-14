@@ -96,9 +96,9 @@ def _session() -> Session:
     )
     session = Session(engine)
     task = Task(id=15, name="Coding Agents", slug="coding-agents")
-    main = Dataset(id=726, name="FrontierCode Main", slug="frontiercode-main")
+    main = Dataset(id=726, name="FrontierCode 1.1 Main", slug="frontiercode-main")
     extended = Dataset(
-        id=727, name="FrontierCode Extended", slug="frontiercode-extended"
+        id=727, name="FrontierCode 1.1 Extended", slug="frontiercode-extended"
     )
     score = Metric(id=94, name="Score", direction="higher_is_better")
     pass_rate = Metric(id=250, name="Pass Rate", direction="higher_is_better")

@@ -68,7 +68,7 @@ SOURCE_ABSTRACT = (
 TASK_SLUG = "coding-agents"
 DATASETS = (
     {
-        "name": "FrontierCode Main",
+        "name": "FrontierCode 1.1 Main",
         "slug": "frontiercode-main",
         "short_description": "The current 100-task FrontierCode main benchmark.",
         "description": (
@@ -80,7 +80,7 @@ DATASETS = (
         "homepage": LEADERBOARD_URL,
     },
     {
-        "name": "FrontierCode Extended",
+        "name": "FrontierCode 1.1 Extended",
         "slug": "frontiercode-extended",
         "short_description": "The current 150-task FrontierCode extended benchmark.",
         "description": (
