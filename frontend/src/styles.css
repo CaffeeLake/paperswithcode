@@ -4873,6 +4873,18 @@ html { scroll-behavior: smooth; }
 .action-btn.is-saved:hover { background: color-mix(in oklch, var(--ink) 88%, var(--accent)); }
 
 /* === HOME ASK BOX (assistant entry point) === */
+.ask-home-new {
+  max-width: 640px;
+  margin: 0 auto 6px;
+  padding-left: 9px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+.ask-home-new a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+.ask-home-new a:hover { color: var(--ink-soft); }
 .ask-home {
   position: relative;
   max-width: 640px;
@@ -4915,29 +4927,6 @@ html { scroll-behavior: smooth; }
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-.ask-home-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.ask-home-open-chat {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 8px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-}
-.ask-home-open-chat:hover {
-  border-color: var(--ink-faint);
-  color: var(--ink);
-  background: var(--bg-subtle);
 }
 .ask-home-hint {
   display: flex;

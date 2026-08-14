@@ -50,10 +50,11 @@ const renderAskAssistant = () => {
 };
 
 describe("AskAssistant", () => {
-  it("links directly to the dedicated chat page", () => {
+  it("links to the new chat interface above the chat window", () => {
     renderAskAssistant();
 
-    expect(screen.getByRole("link", { name: "Open chat" }))
+    expect(screen.getByText("New:")).toBeVisible();
+    expect(screen.getByRole("link", { name: "chat interface" }))
       .toHaveAttribute("href", "/chat");
   });
 
