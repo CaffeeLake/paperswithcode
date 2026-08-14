@@ -312,7 +312,7 @@ export function EditEvaluationsDialog({
 
     const configuredMetrics =
       leaderboardMetricsQueries.data?.[leaderboardKey(taskId, datasetId)] || [];
-    const options = configuredMetrics.map((metric) => ({
+    const options: SearchableSelectOption[] = configuredMetrics.map((metric) => ({
       value: metric.metric_name,
       label: metric.metric_name,
       description:
@@ -328,7 +328,6 @@ export function EditEvaluationsDialog({
       options.unshift({
         value: currentMetricName,
         label: `${currentMetricName} (legacy)`,
-        description: undefined,
       });
     }
 

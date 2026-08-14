@@ -22,6 +22,14 @@ const contributionLevel = (count: number, thresholds: number[]) => {
   return thresholdIndex === -1 ? 4 : thresholdIndex + 1;
 };
 
+interface ContributionDay {
+  key: string;
+  date: Date;
+  count: number;
+  inRange: boolean;
+  level: number;
+}
+
 const buildGraph = (data: OrganizationContributions) => {
   const start = parseDate(data.start_date);
   const end = parseDate(data.end_date);
@@ -44,7 +52,7 @@ const buildGraph = (data: OrganizationContributions) => {
         )
       ] ?? 1,
   );
-  const days = [];
+  const days: ContributionDay[] = [];
 
   for (
     let timestamp = gridStart.getTime();

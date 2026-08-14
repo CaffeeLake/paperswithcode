@@ -201,16 +201,16 @@ describe("OrganizationPaperFeed task filtering", () => {
       "/api/v1/organizations/nvidia/logo.webp",
     );
     expect(
-      await screen.findByText("3 papers published in the last year"),
+      await screen.findByText("3 papers recorded in the last year"),
     ).toBeVisible();
     expect(
       screen.getByRole("img", {
-        name: "NVIDIA published 3 papers in the last year",
+        name: "NVIDIA recorded 3 papers in the last year",
       }),
     ).toBeVisible();
     expect(heading.closest("header")).toContainElement(
       screen.getByRole("img", {
-        name: "NVIDIA published 3 papers in the last year",
+        name: "NVIDIA recorded 3 papers in the last year",
       }),
     );
   });

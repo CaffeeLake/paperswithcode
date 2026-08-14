@@ -359,7 +359,7 @@ export interface OrganizationContributions {
 export interface OrganizationAreaWithTasks {
   id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   tasks: ConferenceTaskSummary[];
 }
 
@@ -907,7 +907,7 @@ export interface PendingPaperEdit {
 export interface PendingPaperEditSubmitPayload {
   paper_id: number | null;
   edit_type: PendingEditType;
-  proposed_payload: Record<string, unknown>;
+  proposed_payload: object;
 }
 
 export interface PendingPaperEditsResponse {

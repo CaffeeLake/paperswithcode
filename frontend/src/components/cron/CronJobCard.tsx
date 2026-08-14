@@ -244,7 +244,7 @@ function PaperMarkdownJobs({
           <Loader2 className="h-4 w-4 animate-spin" /> Loading remote Jobs…
         </div>
       )}
-      {error && (
+      {Boolean(error) && (
         <div className="cron-message cron-message--error">
           Could not load Hugging Face Jobs.
         </div>

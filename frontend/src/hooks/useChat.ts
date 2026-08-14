@@ -136,15 +136,16 @@ export function useChat(options: UseChatOptions) {
     if (!busyRef.current) activeSessionIdRef.current = options.sessionId;
   }, [options.sessionId]);
   useEffect(() => {
-    const visible = (
+    const visibleMessages = (
       busyRef.current
       && options.sessionId === activeSessionIdRef.current
-      && activeMessagesRef.current
+      ? activeMessagesRef.current
+      : null
     );
-    activeProjectionVisibleRef.current = Boolean(visible);
-    if (visible) {
-      setMessages(activeMessagesRef.current);
-      messagesRef.current = activeMessagesRef.current;
+    activeProjectionVisibleRef.current = visibleMessages !== null;
+    if (visibleMessages) {
+      setMessages(visibleMessages);
+      messagesRef.current = visibleMessages;
     }
   }, [options.sessionId]);
 

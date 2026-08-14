@@ -101,20 +101,30 @@ const MethodDetailView: React.FC = () => {
   const relatedQ = useQuery({
     queryKey: ["related-methods", methodQ.data?.slug, methodQ.data?.area_id, methodQ.data?.id],
     queryFn: async () => {
-      const curatedSlugs = RELATED_METHODS_BY_SLUG[methodQ.data!.slug];
+      const method = methodQ.data;
+      if (!method) return [];
+      const curatedSlugs = method.slug
+        ? RELATED_METHODS_BY_SLUG[method.slug]
+        : undefined;
       if (curatedSlugs) {
         return Promise.all(curatedSlugs.map((slug) => apiClient.getMethod(slug)));
       }
 
+      if (!method.area_id) return [];
+
       const res = await apiClient.getMethods({
-        area_id: methodQ.data!.area_id!,
-        exclude_id: methodQ.data!.id,
+        area_id: method.area_id,
+        exclude_id: method.id,
         ordering: "-paper_count",
         page_size: 8,
       });
       return res.results;
     },
-    enabled: !!methodQ.data && (!!RELATED_METHODS_BY_SLUG[methodQ.data.slug] || !!methodQ.data.area_id),
+    enabled: Boolean(
+      methodQ.data &&
+      ((methodQ.data.slug && RELATED_METHODS_BY_SLUG[methodQ.data.slug]) ||
+        methodQ.data.area_id),
+    ),
     staleTime: 10 * 60 * 1000,
   });
 

@@ -181,17 +181,18 @@ function SubmissionCard({
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const isDirectorySuggestion = submission.paper_id == null;
+  const paperId = submission.paper_id;
+  const isDirectorySuggestion = paperId === null;
   const directoryLabels = DIRECTORY_SUGGESTION_LABELS[submission.edit_type] ?? {
     title: "Taxonomy directory",
     subtitle: "Directory suggestion",
   };
   const routeIdentifier = isDirectorySuggestion
     ? null
-    : paperRouteIdentifier(paper, submission.paper_id);
+    : paperRouteIdentifier(paper, paperId);
   const paperTitle = isDirectorySuggestion
     ? directoryLabels.title
-    : paper?.title || `Paper #${submission.paper_id}`;
+    : paper?.title || `Paper #${paperId}`;
   const avatarUrl = `https://huggingface.co/${encodeURIComponent(submission.hf_username)}/avatar`;
   const isPending = submission.status === "pending";
 
