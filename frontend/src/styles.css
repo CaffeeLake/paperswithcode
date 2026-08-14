@@ -4878,7 +4878,8 @@ html { scroll-behavior: smooth; }
   margin: 0 auto 6px;
   padding-left: 9px;
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: 14px;
+  font-weight: 700;
 }
 .ask-home-new a {
   color: inherit;
