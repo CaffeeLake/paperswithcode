@@ -34,7 +34,10 @@ from backend.models.database import (
     TaskDataset,
     TaskDatasetMetric,
 )
-from backend.services.benchmark_trend_service import BenchmarkTrendService
+from backend.services.benchmark_trend_service import (
+    BenchmarkTrendService,
+    _support_weighted_score,
+)
 from backend.services.dataset_service import DatasetService
 from backend.services.evaluation_service import EvaluationService
 
@@ -275,6 +278,7 @@ def test_trending_benchmarks_default_to_ninety_days(db_session):
     )
 
     assert response.recent_days == 90
+    assert response.support_prior_papers == 2.0
     assert [item.name for item in response.results] == [
         "RisingBench",
         "EstablishedBench",
@@ -284,10 +288,31 @@ def test_trending_benchmarks_default_to_ninety_days(db_session):
     assert rising.baseline_paper_count == 1
     assert rising.all_time_paper_count == 5
     assert rising.rate_change == 8.0
+    assert rising.support_weighted_score == pytest.approx(3.8627)
     assert rising.best_model_name == "Model 500"
     assert established.recent_paper_count == 2
     assert established.baseline_paper_count == 5
     assert established.rate_change == 0.8
+    assert established.support_weighted_score == pytest.approx(0.9765)
+
+
+def test_support_weighted_score_rewards_stronger_recent_evidence():
+    sparse_higher_multiplier = _support_weighted_score(
+        1,
+        3,
+        recent_days=90,
+        baseline_days=180,
+    )
+    supported_lower_multiplier = _support_weighted_score(
+        4,
+        16,
+        recent_days=90,
+        baseline_days=180,
+    )
+
+    assert sparse_higher_multiplier == pytest.approx(0.5941, abs=1e-4)
+    assert supported_lower_multiplier == pytest.approx(0.9657, abs=1e-4)
+    assert supported_lower_multiplier > sparse_higher_multiplier
 
 
 def test_trending_benchmarks_resolve_exact_task_name(db_session):
@@ -303,7 +328,7 @@ def test_trending_benchmarks_resolve_exact_task_name(db_session):
     assert response.results[0].name == "RisingBench"
 
 
-def test_trending_benchmarks_sort_missing_baseline_scores_last(
+def test_trending_benchmarks_use_finite_prior_without_baseline_reports(
     db_session,
 ):
     today = date(2026, 7, 27)
@@ -356,11 +381,12 @@ def test_trending_benchmarks_sort_missing_baseline_scores_last(
     )
 
     names = [item.name for item in response.results]
-    assert names == ["RisingBench", "EstablishedBench", "LegacyBench"]
+    assert names == ["RisingBench", "LegacyBench", "EstablishedBench"]
     legacy = next(item for item in response.results if item.name == "LegacyBench")
     assert legacy.recent_paper_count == 1
     assert legacy.all_time_paper_count == 8
     assert legacy.rate_change is None
+    assert legacy.support_weighted_score == pytest.approx(1.0397)
 
 
 def test_trending_benchmarks_endpoint_exposes_default_window(client):
@@ -379,7 +405,9 @@ def test_trending_benchmarks_endpoint_exposes_default_window(client):
     assert body["signal"] == "evaluation_reports"
     assert body["recent_days"] == 90
     assert body["baseline_days"] == 180
+    assert body["support_prior_papers"] == 2.0
     assert body["results"][0]["name"] == "RisingBench"
+    assert body["results"][0]["support_weighted_score"] == pytest.approx(3.8627)
     assert body["results"][0]["best_model_name"] == "Model 500"
     assert body["results"][0]["best_paper_title"] == "Paper 500"
     assert body["results"][0]["best_paper_route"] == "2607.00500"

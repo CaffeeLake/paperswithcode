@@ -1429,6 +1429,13 @@ class TrendingBenchmark(BaseModel):
         ...,
         description="Recent reporting velocity normalized to papers per 30 days",
     )
+    support_weighted_score: float = Field(
+        ...,
+        description=(
+            "Ranking score: ln(1 + recent papers) multiplied by the smoothed "
+            "recent-to-baseline reporting lift"
+        ),
+    )
     rate_change: Optional[float] = Field(
         None,
         description=(
@@ -1467,7 +1474,7 @@ class TrendingBenchmark(BaseModel):
 
 
 class TrendingBenchmarks(BaseModel):
-    """Benchmarks ranked by rate change, with reproducible window metadata."""
+    """Support-weighted benchmark trends with reproducible window metadata."""
 
     task_id: str = Field(..., description="Resolved task ID")
     task_slug: str = Field(..., description="Resolved task slug")
@@ -1478,13 +1485,16 @@ class TrendingBenchmarks(BaseModel):
     recent_days: int = Field(..., description="Length of the recent window")
     baseline_days: int = Field(..., description="Length of the preceding window")
     bucket_days: int = Field(..., description="Length of each history bucket")
+    support_prior_papers: float = Field(
+        ...,
+        description=(
+            "Neutral paper pseudocount applied to recent and baseline-equivalent counts"
+        ),
+    )
     generated_on: date = Field(..., description="Date used as the window endpoint")
     results: List[TrendingBenchmark] = Field(
         default_factory=list,
-        description=(
-            "Benchmarks sorted by descending rate change; benchmarks without "
-            "a baseline score sort last"
-        ),
+        description="Benchmarks sorted by descending support-weighted score",
     )
 
     @field_validator("task_id", mode="before")

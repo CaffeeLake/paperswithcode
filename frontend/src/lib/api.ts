@@ -444,6 +444,7 @@ export interface TrendingBenchmark {
   baseline_paper_count: number;
   all_time_paper_count: number;
   trend_score: number;
+  support_weighted_score: number;
   rate_change?: number | null;
   latest_reported_on?: string | null;
   best_model_name?: string | null;
@@ -460,6 +461,7 @@ export interface TrendingBenchmarksResponse {
   recent_days: number;
   baseline_days: number;
   bucket_days: number;
+  support_prior_papers: number;
   generated_on: string;
   results: TrendingBenchmark[];
 }

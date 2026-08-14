@@ -249,6 +249,7 @@ const TagBrowseView: React.FC = () => {
           baseline_paper_count: 0,
           all_time_paper_count: dataset.paper_count || 0,
           trend_score: 0,
+          support_weighted_score: 0,
           rate_change: null,
           latest_reported_on: null,
           best_model_name: dataset.best_model_name,

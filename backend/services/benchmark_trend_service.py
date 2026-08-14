@@ -1,5 +1,6 @@
 """Task-scoped benchmark trends derived from evaluation-reporting papers."""
 
+import math
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_
@@ -21,9 +22,25 @@ from backend.services.dataset_service import DatasetService
 from backend.utils.exceptions import PaperNotFoundError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
 
+_SUPPORT_PRIOR_PAPERS = 2.0
+
+
+def _support_weighted_score(
+    recent: int,
+    baseline: int,
+    *,
+    recent_days: int,
+    baseline_days: int,
+) -> float:
+    baseline_equivalent = baseline * recent_days / baseline_days
+    smoothed_lift = (recent + _SUPPORT_PRIOR_PAPERS) / (
+        baseline_equivalent + _SUPPORT_PRIOR_PAPERS
+    )
+    return math.log1p(recent) * smoothed_lift
+
 
 class BenchmarkTrendService:
-    """Rank benchmarks by changes in evaluation-reporting velocity."""
+    """Rank benchmarks by support-weighted reporting-velocity changes."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -49,10 +66,15 @@ class BenchmarkTrendService:
         evaluation-row creation timestamps, keep backfilled historical results
         from looking newly trendy.
 
-        Benchmarks rank by the displayed rate change: recent reporting velocity
-        divided by baseline reporting velocity. Benchmarks without baseline
-        reports have no comparable rate-change score and sort after benchmarks
-        with a numeric score.
+        The ranking score weights a smoothed rate change by recent evidence::
+
+            baseline_equivalent = baseline * recent_days / baseline_days
+            smoothed_lift = (recent + 2) / (baseline_equivalent + 2)
+            support_weighted_score = ln(1 + recent) * smoothed_lift
+
+        The raw rate change remains available for display. The two-paper neutral
+        prior keeps sparse and no-baseline benchmarks finite, while ``ln(1 +
+        recent)`` rewards trends supported by more recent reporting papers.
 
         The database currently has evaluation evidence but no paper-reference
         edge table. The response therefore identifies its signal as
@@ -138,6 +160,12 @@ class BenchmarkTrendService:
             baseline = int(baseline or 0)
             recent_velocity = recent * 30.0 / recent_days
             baseline_velocity = baseline * 30.0 / baseline_days
+            support_weighted_score = _support_weighted_score(
+                recent,
+                baseline,
+                recent_days=recent_days,
+                baseline_days=baseline_days,
+            )
             best_result = best_results.get(dataset.id, {})
             results.append(
                 TrendingBenchmark(
@@ -149,6 +177,7 @@ class BenchmarkTrendService:
                     baseline_paper_count=baseline,
                     all_time_paper_count=int(all_time or 0),
                     trend_score=round(recent_velocity, 4),
+                    support_weighted_score=round(support_weighted_score, 4),
                     rate_change=(
                         round(recent_velocity / baseline_velocity, 4)
                         if baseline_velocity
@@ -166,8 +195,7 @@ class BenchmarkTrendService:
         def ranking_key(item: TrendingBenchmark) -> tuple:
             latest_ordinal = (item.latest_reported_on or date.min).toordinal()
             return (
-                item.rate_change is None,
-                -(item.rate_change or 0),
+                -item.support_weighted_score,
                 -item.recent_paper_count,
                 -latest_ordinal,
                 -item.all_time_paper_count,
@@ -182,6 +210,7 @@ class BenchmarkTrendService:
             recent_days=recent_days,
             baseline_days=baseline_days,
             bucket_days=bucket_days,
+            support_prior_papers=_SUPPORT_PRIOR_PAPERS,
             generated_on=generated_on,
             results=results[:limit],
         )
