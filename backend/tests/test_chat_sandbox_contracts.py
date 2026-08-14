@@ -2489,9 +2489,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-v3kd7Zqg6CYDenh4yxSq9A"
-    assert PRODUCTION_MODAL_IMAGE_ID == "im-debJkByYqW2Ddues3wzeMT"
-    assert WORKER_CONTRACT_VERSION == "76"
+    assert MODAL_IMAGE_ID == "im-yKeJzyrpXfMrVB5TYi9lI7"
+    assert PRODUCTION_MODAL_IMAGE_ID == "im-t6wGyweUZ9OR2brUEfmGpx"
+    assert WORKER_CONTRACT_VERSION == "77"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
