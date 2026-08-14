@@ -29,7 +29,6 @@ interface HeaderProps {
 
 const FEEDBACK_URL =
   "https://github.com/huggingface/paperswithcode-feedback/issues";
-const PWC_CLI_URL = "https://github.com/huggingface/pwc-cli";
 
 const NAV_LINKS = [
   { to: "/", label: "Trending", end: true },
@@ -139,10 +138,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           </button>
         </div>
         <div className="site-announcement" role="status">
-          <span>New: Papers with Code CLI and Skill now </span>
-          <a href={PWC_CLI_URL} target="_blank" rel="noreferrer">
-            available
-          </a>
+          <span>Hint: type @ to bring papers into context</span>
         </div>
       </header>
       {mobileOpen && (
