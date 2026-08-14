@@ -6,6 +6,7 @@ import AppErrorBoundary from "./components/AppErrorBoundary";
 import "./index.css";
 import { installChunkReloadRecovery } from "./lib/chunkReload";
 import "./styles.css";
+import "./styles/features/index.css";
 import "./components/chat/styles/index.css";
 import App from "./App";
 
