@@ -338,7 +338,7 @@ pair is never printed or copied into the local source input:
 sudo python deploy/configure_host_env.py \
   --legacy-env deploy/env/production.env \
   --production-chat-seal-only \
-  --modal-profile nielsrogge \
+  --modal-profile pwc-production \
   --confirm SEAL_PRODUCTION_CHAT_PREPARATION
 ```
 
@@ -350,6 +350,14 @@ only BYOK encryption and tracking secrets, fixes the `$5`/`$200` policy, and
 writes only
 `/etc/paperswithcode/production-chat-prepared.env`; no service loads that file
 implicitly.
+
+Production uses the Team service user `pwc-production`, which must be
+Contributor on only `pwc-chat-production` and retain No Access on `main` and
+every other Environment. The provider-side production Environment budget is
+$125 per billing period, between the durable $100 application circuit and the
+$250 workspace backstop. Rotate the sealed pair only after both `current` and
+`previous` production releases accept the Team policy, so direct rollback does
+not depend on restoring an older owner credential.
 
 After a disabled production bridge release contains the qualification tooling,
 exercise all sandbox, title, provider-health, and runtime-alert transitions
