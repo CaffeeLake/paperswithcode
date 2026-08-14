@@ -39,6 +39,24 @@ describe("API transport", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("exposes raw responses with the same credential and cache defaults", async () => {
+    const response = new Response("stream", { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+
+    await expect(
+      new ApiTransport("https://example.test/api/v1").fetch("/chat/stream", {
+        headers: { Accept: "text/event-stream" },
+      }),
+    ).resolves.toBe(response);
+
+    const options = fetchMock.mock.calls[0][1];
+    expect(options).toEqual(expect.objectContaining({
+      cache: "default",
+      credentials: "include",
+    }));
+    expect(new Headers(options?.headers).get("Accept")).toBe("text/event-stream");
+  });
+
   it("includes browser credentials and the stored admin credential", async () => {
     setStoredAdminToken("secret-admin-token");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(

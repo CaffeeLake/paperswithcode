@@ -24,7 +24,9 @@
  * no relevance score until a calibrated reranker exists.
  */
 
-import { apiUrl } from "@/lib/apiUrl";
+import { chatApi } from "@/lib/api/chat";
+import { notifyStaleAuth } from "@/lib/apiAuth";
+import { ApiError } from "@/lib/apiTransport";
 import { mockChatStream } from "@/lib/chatMock";
 
 export type ReasoningEffort = "low" | "high" | "max";
@@ -243,13 +245,7 @@ export function reportChatLatency(
 ): void {
   if (!isChatLive()) return;
   try {
-    void fetch(apiUrl(`/api/v1/chat/latency/${encodeURIComponent(requestId)}`), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      keepalive: true,
-      body: JSON.stringify(update),
-    }).catch(() => undefined);
+    void chatApi.reportLatency(requestId, update).catch(() => undefined);
   } catch {
     // Telemetry must never affect the chat.
   }
@@ -285,13 +281,7 @@ async function* streamChatOverSSE(
   request: ChatStreamRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const res = await fetch(apiUrl("/api/v1/chat/stream"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    credentials: "include",
-    body: JSON.stringify(request),
-    signal,
-  });
+  const res = await chatApi.stream(request, signal);
   yield* readChatSSE(res);
 }
 
@@ -299,22 +289,16 @@ async function* resumeChatOverSSE(
   sessionId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const res = await fetch(
-    apiUrl(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/stream`),
-    {
-      method: "GET",
-      headers: { Accept: "text/event-stream" },
-      credentials: "include",
-      signal,
-    },
-  );
+  const res = await chatApi.resumeStream(sessionId, signal);
   yield* readChatSSE(res);
 }
 
 async function* readChatSSE(res: Response): AsyncGenerator<ChatEvent> {
   if (!res.ok || !res.body) {
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail;
+    const apiError = !res.ok ? new ApiError(res, await res.text()) : null;
+    if (apiError) notifyStaleAuth(apiError);
+    const detail = apiError?.detail;
+    const structuredDetail = typeof detail === "object" && detail !== null ? detail : null;
     const stagingDenied = res.status === 403 && !detail;
     const rawRetryAfter = Number(res.headers.get("Retry-After"));
     const retryAfterSeconds = Number.isFinite(rawRetryAfter) && rawRetryAfter >= 0
@@ -323,8 +307,10 @@ async function* readChatSSE(res: Response): AsyncGenerator<ChatEvent> {
     throw new ChatStreamError(
       stagingDenied
         ? "Chat on staging is limited to approved Hugging Face users. Sign in with an approved account and try again."
-        : detail?.message || detail || `Chat stream failed (${res.status})`,
-      detail?.code || (stagingDenied ? "staging_access_required" : undefined),
+        : apiError?.message || `Chat stream failed (${res.status})`,
+      structuredDetail && "code" in structuredDetail && typeof structuredDetail.code === "string"
+        ? structuredDetail.code
+        : stagingDenied ? "staging_access_required" : undefined,
       res.status,
       retryAfterSeconds,
     );

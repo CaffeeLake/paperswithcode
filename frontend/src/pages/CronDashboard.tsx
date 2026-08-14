@@ -15,8 +15,8 @@ import {
 import { CronJobCard } from "@/components/cron/CronJobCard";
 import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
 import { CatalogAuditPanel } from "@/components/admin/CatalogAuditPanel";
-import { apiClient } from "@/lib/api";
-import type { ChatSandboxSpendStatus, ChatWebSearchBudgetStatus, CronJobHealth, CronJobsResponse, CronJobStatus } from "@/lib/api";
+import { chatApi, type ChatSandboxSpendStatus, type ChatWebSearchBudgetStatus } from "@/lib/api/chat";
+import { operationsApi, type CronJobHealth, type CronJobsResponse, type CronJobStatus } from "@/lib/api/operations";
 import { formatCronDate } from "@/lib/cronStatus";
 import { useAuth } from "@/lib/authContext";
 import { isStagingEnvironment } from "@/lib/apiUrl";
@@ -141,7 +141,7 @@ const CronDashboard = () => {
     queryFn: () => {
       const forceRefresh = forceCronRefresh.current;
       forceCronRefresh.current = false;
-      return apiClient.getCronStatus(forceRefresh);
+      return operationsApi.getCronStatus(forceRefresh);
     },
     enabled: !!user?.is_admin,
     refetchInterval: (query) => cronStatusRefetchInterval(query.state.data, autoRefresh),
@@ -149,21 +149,21 @@ const CronDashboard = () => {
   });
   const paperMarkdownJobsQuery = useQuery({
     queryKey: ["paperMarkdownJobs", user?.username],
-    queryFn: () => apiClient.getPaperMarkdownJobs(),
+    queryFn: () => operationsApi.getPaperMarkdownJobs(),
     enabled: !!user?.is_admin,
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,
   });
   const chatSpendQuery = useQuery({
     queryKey: ["chatSandboxSpend", user?.username, chatEnvironment],
-    queryFn: () => apiClient.getChatSandboxSpend(chatEnvironment || undefined),
+    queryFn: () => chatApi.getSandboxSpend(chatEnvironment || undefined),
     enabled: !!user?.is_admin,
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,
   });
   const webSearchBudgetQuery = useQuery({
     queryKey: ["chatWebSearchBudget", user?.username],
-    queryFn: () => apiClient.getChatWebSearchBudget(),
+    queryFn: () => chatApi.getWebSearchBudget(),
     enabled: !!user?.is_admin && staging,
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,

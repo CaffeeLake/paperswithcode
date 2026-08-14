@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { UserPreferences } from "../api";
 import type { ApiRequest } from "../apiTransport";
-import { AccountApi } from "./account";
+import { AccountApi, type UserPreferences } from "./account";
 import { CatalogApi } from "./catalog";
+import { ChatApi } from "./chat";
 import { EvaluationsApi } from "./evaluations";
+import { OperationsApi } from "./operations";
 import { PapersApi } from "./papers";
+import { profilesApi } from "./profiles";
 import { SubmissionsApi } from "./submissions";
 
 describe("domain API clients", () => {
@@ -22,9 +24,7 @@ describe("domain API clients", () => {
   });
 
   it("encapsulates account preference mutation payloads", async () => {
-    const preferences: UserPreferences = {
-      hide_closed_source_evals: true,
-    };
+    const preferences: UserPreferences = { hide_closed_source_evals: true };
     const request = vi.fn().mockResolvedValue(preferences) as ApiRequest;
     const account = new AccountApi(request);
 
@@ -34,6 +34,14 @@ describe("domain API clients", () => {
       method: "PUT",
       body: JSON.stringify(preferences),
     });
+  });
+
+  it("makes account policy reads explicitly public", async () => {
+    const request = vi.fn().mockResolvedValue({ active_pending: 5 }) as ApiRequest;
+
+    await new AccountApi(request).getRateLimitPolicy();
+
+    expect(request).toHaveBeenCalledWith("/rate-limits", { credentials: "omit" });
   });
 
   it("keeps catalog filters on the canonical transport", async () => {
@@ -109,5 +117,61 @@ describe("domain API clients", () => {
     await expect(submissions.list()).rejects.toThrow(
       "Malformed pending-edit payload: results.0.proposed_payload.task_ids.0",
     );
+  });
+
+  it("states chat freshness, public-read, and prewarm policies", async () => {
+    const request = vi.fn().mockResolvedValue({}) as ApiRequest;
+    const chat = new ChatApi(request);
+
+    await chat.getAvailability();
+    await chat.getSharedChat("share/id");
+    await chat.prewarmPaperContext("2501.00001");
+
+    expect(request).toHaveBeenNthCalledWith(1, "/chat/availability", { cache: "no-store" });
+    expect(request).toHaveBeenNthCalledWith(2, "/chat/shares/share%2Fid", {
+      credentials: "omit",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "/chat/paper-context/prewarm", {
+      method: "POST",
+      body: JSON.stringify({ route_id: "2501.00001" }),
+      credentials: "omit",
+      cache: "no-store",
+    });
+  });
+
+  it("keeps operations snapshots uncached", async () => {
+    const request = vi.fn().mockResolvedValue({}) as ApiRequest;
+    const operations = new OperationsApi(request);
+
+    await operations.getCronStatus(true);
+    await operations.getPaperMarkdownJobs();
+
+    expect(request).toHaveBeenNthCalledWith(1, "/cron/status?force_refresh=true", {
+      cache: "no-store",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "/cron/paper-markdown-jobs", {
+      cache: "no-store",
+    });
+  });
+
+  it("preserves the canonical username from profile redirects", async () => {
+    const response = new Response(JSON.stringify({
+      username: "canonical",
+      redirected_from_alias: false,
+      calendar: {},
+      is_owner: false,
+      submissions: [],
+    }), { status: 200 });
+    Object.defineProperties(response, {
+      redirected: { value: true },
+      url: { value: "https://example.test/api/v1/profiles/canonical" },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+
+    await expect(profilesApi.get("old name")).resolves.toMatchObject({
+      username: "canonical",
+      redirected_from_alias: true,
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/profiles/old%20name");
   });
 });

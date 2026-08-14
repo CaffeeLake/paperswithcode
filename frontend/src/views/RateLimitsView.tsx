@@ -1,21 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { apiUrl } from "@/lib/apiUrl";
-
-interface Policy {
-  active_pending: number;
-  subject_per_hour: number;
-  ip_per_hour: number;
-}
+import { accountApi } from "@/lib/api/account";
 
 const RateLimitsView = () => {
   const query = useQuery({
     queryKey: ["submission-rate-limit-policy"],
-    queryFn: async () => {
-      const response = await fetch(apiUrl("/api/v1/rate-limits"));
-      if (!response.ok) throw new Error("Policy unavailable");
-      return response.json() as Promise<Policy>;
-    },
+    queryFn: () => accountApi.getRateLimitPolicy(),
   });
   const policy = query.data;
   return (

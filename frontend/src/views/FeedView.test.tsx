@@ -12,7 +12,8 @@ import {
   CHAT_WEB_SEARCH_KEY,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
-import { apiClient } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
+import { papersApi } from "@/lib/api/papers";
 import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { AskAssistant } from "@/views/FeedView";
@@ -176,14 +177,14 @@ describe("AskAssistant", () => {
 
   it("selects an inline paper and carries its structured mention into chat", async () => {
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
-    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+    vi.spyOn(chatApi, "getAvailability").mockResolvedValue({
       status: "available",
       reason: null,
       expected_recovery_at: null,
       paper_mentions_enabled: true,
       web_search_available: false,
     });
-    vi.spyOn(apiClient, "searchPapers").mockResolvedValue({
+    vi.spyOn(papersApi, "search").mockResolvedValue({
       next_page: null,
       previous_page: null,
       results: [{
@@ -202,7 +203,7 @@ describe("AskAssistant", () => {
         citation_count: 0,
       }],
     });
-    vi.spyOn(apiClient, "prewarmChatPaperContext").mockResolvedValue(undefined);
+    vi.spyOn(chatApi, "prewarmPaperContext").mockResolvedValue(undefined);
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
       id: "11111111-1111-4111-8111-111111111111",
       title: "New chat",
@@ -219,7 +220,7 @@ describe("AskAssistant", () => {
     expect(await screen.findByRole("option", { name: /Deep Paper/ })).toBeInTheDocument();
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(textarea).toHaveValue("Compare Deep Paper ");
-    expect(apiClient.prewarmChatPaperContext).toHaveBeenCalledWith("2501.00001");
+    expect(chatApi.prewarmPaperContext).toHaveBeenCalledWith("2501.00001");
     fireEvent.click(screen.getByRole("button", { name: "Ask the assistant" }));
 
     expect(await screen.findByText("Dedicated chat launched")).toBeInTheDocument();
@@ -240,7 +241,7 @@ describe("AskAssistant", () => {
 
   it("offers available web search and carries the choice into the new chat", async () => {
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
-    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+    vi.spyOn(chatApi, "getAvailability").mockResolvedValue({
       status: "available",
       reason: null,
       expected_recovery_at: null,
@@ -276,7 +277,7 @@ describe("AskAssistant", () => {
 
   it("hides web search when the feature is unavailable", async () => {
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
-    const availability = vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+    const availability = vi.spyOn(chatApi, "getAvailability").mockResolvedValue({
       status: "available",
       reason: null,
       expected_recovery_at: null,

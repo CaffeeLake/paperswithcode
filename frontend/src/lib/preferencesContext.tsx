@@ -9,7 +9,7 @@
 
 import React from "react";
 
-import { apiClient, type UserPreferences } from "./api";
+import { accountApi, type UserPreferences } from "./api/account";
 import { useAuth } from "./authContext";
 
 const DEFAULT_PREFERENCES: UserPreferences = {
@@ -41,8 +41,8 @@ export const PreferencesProvider: React.FC<{ children: React.ReactNode }> = ({
       return;
     }
     setIsLoading(true);
-    apiClient
-      .getMyPreferences()
+    accountApi
+      .getPreferences()
       .then((prefs) => {
         if (!cancelled) setPreferences(prefs);
       })
@@ -67,7 +67,7 @@ export const PreferencesProvider: React.FC<{ children: React.ReactNode }> = ({
       setPreferences(next);
       if (!user) return;
       try {
-        const saved = await apiClient.updateMyPreferences(next);
+        const saved = await accountApi.updatePreferences(next);
         setPreferences(saved);
       } catch {
         setPreferences(preferences);

@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
 
-import { apiClient, type Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
 import { papersApi } from "@/lib/api/papers";
 import type { ChatDraft, PaperMentionDraft } from "@/lib/chat";
 
@@ -142,7 +143,7 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
     });
     if (!prewarmed.current.has(routeId)) {
       prewarmed.current.add(routeId);
-      void apiClient.prewarmChatPaperContext(routeId).catch(() => undefined);
+      void chatApi.prewarmPaperContext(routeId).catch(() => undefined);
     }
     return true;
   }, [active, draft, onChange, textareaRef]);

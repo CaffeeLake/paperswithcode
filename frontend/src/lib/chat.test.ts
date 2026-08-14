@@ -61,6 +61,26 @@ describe("reportChatLatency", () => {
 });
 
 describe("streamChat access failures", () => {
+  it("uses the canonical stale-auth notification for an expired session", async () => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      detail: "Not authenticated",
+    }), { status: 401 })));
+    const stale = vi.fn();
+    window.addEventListener("pwc:auth-stale", stale);
+
+    const events = streamChat({
+      message: "Auth check",
+      session_id: null,
+      client_message_id: "message-auth",
+      web_search_enabled: false,
+    });
+
+    await expect(events.next()).rejects.toMatchObject({ status: 401 });
+    expect(stale).toHaveBeenCalledOnce();
+    window.removeEventListener("pwc:auth-stale", stale);
+  });
+
   it("keeps PwC capacity and Retry-After separate from provider errors", async () => {
     vi.stubEnv("VITE_CHAT_LIVE", "1");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({

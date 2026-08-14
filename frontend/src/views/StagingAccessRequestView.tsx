@@ -2,7 +2,7 @@ import React from "react";
 import { CheckCircle2 } from "lucide-react";
 
 import HfSignInButton from "@/components/HfSignInButton";
-import { apiUrl } from "@/lib/apiUrl";
+import { authApi } from "@/lib/api/auth";
 import { useAuth } from "@/lib/authContext";
 
 const StagingAccessRequestView: React.FC = () => {
@@ -16,14 +16,7 @@ const StagingAccessRequestView: React.FC = () => {
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(apiUrl("/api/v1/staging-access-request"), {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { detail?: string } | null;
-        throw new Error(body?.detail || "Could not submit your request. Please try again.");
-      }
+      await authApi.requestStagingAccess();
       setSubmitted(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not submit your request.");

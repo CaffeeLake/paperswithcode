@@ -24,7 +24,7 @@ import type {
   CronWorkflowStatus,
   PaperMarkdownJobsResponse,
   PaperMarkdownRemoteJob,
-} from "@/lib/api";
+} from "@/lib/api/operations";
 import { formatCronDate } from "@/lib/cronStatus";
 
 function formatDuration(duration: number | null): string {

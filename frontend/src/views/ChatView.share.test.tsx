@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
 import {
   CHAT_AUTO_SEND_KEY,
   CHAT_DRAFT_KEY,
@@ -549,7 +549,7 @@ describe("ChatView new-session sidebar", () => {
 describe("ChatView web search", () => {
   beforeEach(() => {
     vi.stubEnv("VITE_CHAT_LIVE", "1");
-    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+    vi.spyOn(chatApi, "getAvailability").mockResolvedValue({
       status: "available",
       reason: null,
       expected_recovery_at: null,

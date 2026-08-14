@@ -1,44 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Navigate, useParams } from "react-router-dom";
 
-import { apiUrl } from "@/lib/apiUrl";
-import type { OrganizationContributions } from "@/lib/api";
 import { ContributionGraphContent } from "@/components/OrganizationContributionGraph";
-
-interface ProfileResponse {
-  username: string;
-  redirected_from_alias: boolean;
-  calendar: OrganizationContributions;
-  is_owner: boolean;
-  submissions: Array<{
-    id: number;
-    edit_type: string;
-    status: string;
-    proposed_payload: Record<string, unknown>;
-    applied_payload?: Record<string, unknown> | null;
-    review_reason?: string | null;
-    created_at: string;
-  }>;
-}
-
-async function loadProfile(username: string): Promise<ProfileResponse> {
-  const response = await fetch(apiUrl(`/api/v1/profiles/${encodeURIComponent(username)}`), {
-    credentials: "include",
-  });
-  if (!response.ok) throw new Error("Profile not found");
-  const data = await response.json() as ProfileResponse;
-  if (response.redirected) {
-    const canonical = decodeURIComponent(new URL(response.url).pathname.split("/").pop() || data.username);
-    return { ...data, username: canonical, redirected_from_alias: true };
-  }
-  return data;
-}
+import { profilesApi } from "@/lib/api/profiles";
 
 const UserProfileView = () => {
   const { username = "" } = useParams();
   const query = useQuery({
     queryKey: ["user-profile", username.toLowerCase()],
-    queryFn: () => loadProfile(username),
+    queryFn: () => profilesApi.get(username),
   });
   if (query.isLoading) return <div className="page">Loading profile…</div>;
   if (!query.data) return <div className="page"><h1>Profile not found</h1></div>;

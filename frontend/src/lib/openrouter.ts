@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
 
 export const OPENROUTER_USAGE_QUERY_KEY = ["chat", "openrouter", "usage"] as const;
 export const OPENROUTER_CREDENTIAL_QUERY_KEY = ["chat", "openrouter", "credential"] as const;
@@ -8,7 +8,7 @@ export const OPENROUTER_CREDENTIAL_QUERY_KEY = ["chat", "openrouter", "credentia
 export function useOpenRouterUsage(enabled = true) {
   return useQuery({
     queryKey: OPENROUTER_USAGE_QUERY_KEY,
-    queryFn: () => apiClient.getOpenRouterUsage(),
+    queryFn: () => chatApi.getUsage(),
     enabled,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -18,7 +18,7 @@ export function useOpenRouterUsage(enabled = true) {
 export function useOpenRouterCredential(enabled = true) {
   return useQuery({
     queryKey: OPENROUTER_CREDENTIAL_QUERY_KEY,
-    queryFn: () => apiClient.getOpenRouterCredential(),
+    queryFn: () => chatApi.getOpenRouterCredential(),
     enabled,
     refetchOnWindowFocus: true,
   });

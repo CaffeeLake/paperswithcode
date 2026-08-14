@@ -23,8 +23,8 @@ import {
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
-import { apiClient } from "@/lib/api";
-import { apiUrl, isStagingEnvironment } from "@/lib/apiUrl";
+import { chatApi } from "@/lib/api/chat";
+import { isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
   OPENROUTER_CREDENTIAL_QUERY_KEY,
@@ -222,7 +222,7 @@ const ChatView: React.FC = () => {
   const staging = isStagingEnvironment();
   const availabilityQuery = useQuery({
     queryKey: ["chatAvailability"],
-    queryFn: () => apiClient.getChatAvailability(),
+    queryFn: () => chatApi.getAvailability(),
     refetchInterval: 30000,
     retry: false,
     enabled: isChatLive() && Boolean(user),
@@ -410,12 +410,7 @@ const ChatView: React.FC = () => {
       if (inferenceCheckPendingRef.current) return;
       inferenceCheckPendingRef.current = true;
       try {
-        const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-          credentials: "include",
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error("Could not check Hugging Face authorization.");
-        const billing = (await response.json()) as { connected: boolean };
+        const billing = await chatApi.getInferenceBilling();
         if (!billing.connected) {
           if (sessionStorage.getItem(CHAT_AUTH_ATTEMPTED_KEY) === "1") {
             restoreAuthorizationPrompt(

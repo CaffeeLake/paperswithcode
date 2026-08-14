@@ -4,7 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Composer from "./Composer";
-import { apiClient, type Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
+import { papersApi } from "@/lib/api/papers";
 import type { ChatDraft } from "@/lib/chat";
 
 const paper: Paper = {
@@ -22,8 +24,8 @@ function Harness({ onSend }: { onSend: (draft: ChatDraft) => void }) {
 
 describe("Composer paper mentions", () => {
   beforeEach(() => {
-    vi.spyOn(apiClient, "searchPapers").mockResolvedValue({ next_page: null, previous_page: null, results: [paper] });
-    vi.spyOn(apiClient, "prewarmChatPaperContext").mockResolvedValue(undefined);
+    vi.spyOn(papersApi, "search").mockResolvedValue({ next_page: null, previous_page: null, results: [paper] });
+    vi.spyOn(chatApi, "prewarmPaperContext").mockResolvedValue(undefined);
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
@@ -33,16 +35,16 @@ describe("Composer paper mentions", () => {
     const { container } = render(<QueryClientProvider client={client}><Harness onSend={onSend} /></QueryClientProvider>);
     const textarea = screen.getByRole("combobox");
     fireEvent.change(textarea, { target: { value: "@d", selectionStart: 2 } });
-    expect(apiClient.searchPapers).not.toHaveBeenCalled();
+    expect(papersApi.search).not.toHaveBeenCalled();
     expect(await screen.findByRole("option", { name: /Deep Paper/ })).toBeInTheDocument();
-    expect(apiClient.searchPapers).toHaveBeenCalledWith("d", 1, 10, "hybrid", expect.any(AbortSignal));
+    expect(papersApi.search).toHaveBeenCalledWith("d", 1, 10, "hybrid", expect.any(AbortSignal));
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Deep Paper ");
     await waitFor(() => expect((textarea as HTMLTextAreaElement).selectionStart).toBe(11));
     expect(container.querySelector(".chat-paper-inline-highlight")).toHaveTextContent("Deep Paper");
     expect(screen.queryByLabelText("Attached papers")).not.toBeInTheDocument();
-    expect(apiClient.prewarmChatPaperContext).toHaveBeenCalledTimes(1);
+    expect(chatApi.prewarmPaperContext).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       text: "Deep Paper",
@@ -97,7 +99,7 @@ describe("Composer paper mentions", () => {
   });
 
   it("highlights multiple selected papers in place inside a sentence", async () => {
-    vi.mocked(apiClient.searchPapers).mockImplementation(async (query) => ({
+    vi.mocked(papersApi.search).mockImplementation(async (query) => ({
       next_page: null,
       previous_page: null,
       results: query === "ovi" ? [secondPaper] : [paper],

@@ -1,4 +1,5 @@
-import { apiUrl } from "@/lib/apiUrl";
+import { chatApi } from "@/lib/api/chat";
+import { ApiError } from "@/lib/apiTransport";
 import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft, ReasoningEffort } from "@/lib/chat";
 
 export interface ChatSession {
@@ -89,50 +90,17 @@ export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
 // code must choose the environment-specific list explicitly.
 export const FALLBACK_CHAT_MODELS = STAGING_FALLBACK_CHAT_MODELS;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), {
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    const detail = payload?.detail;
-    throw new Error(detail?.message || detail || `Chat request failed (${response.status})`);
-  }
-  return response.status === 204 ? (undefined as T) : response.json();
-}
-
 export class ChatRequestError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
   }
 }
 
-async function publicRequest<T>(path: string): Promise<T> {
-  const response = await fetch(apiUrl(path), {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    const detail = payload?.detail;
-    throw new ChatRequestError(
-      detail?.message || detail || `Shared conversation request failed (${response.status})`,
-      response.status,
-    );
-  }
-  return response.json();
-}
-
 export async function listSessions(): Promise<ChatSession[]> {
   const sessions: ChatSession[] = [];
   let cursor: string | null = null;
   do {
-    const query = new URLSearchParams({ limit: "50" });
-    if (cursor) query.set("cursor", cursor);
-    const page = await request<{ items: ChatSession[]; next_cursor: string | null }>(
-      `/api/v1/chat/sessions?${query.toString()}`,
-    );
+    const page = await chatApi.listSessions(cursor);
     sessions.push(...page.items);
     cursor = page.next_cursor;
   } while (cursor && sessions.length < 100);
@@ -143,52 +111,51 @@ export function createSession(
   selectedModel?: string,
   reasoningEffort: ReasoningEffort = "low",
 ): Promise<ChatSession> {
-  return request("/api/v1/chat/sessions", {
-    method: "POST",
-    body: JSON.stringify({
-      selected_model: selectedModel || null,
-      reasoning_effort: reasoningEffort,
-    }),
-  });
+  return chatApi.createSession(selectedModel, reasoningEffort);
 }
 
 export function getSession(id: string): Promise<ChatSessionDetail> {
-  return request(`/api/v1/chat/sessions/${id}`);
+  return chatApi.getSession(id);
 }
 
 export function updateSession(
   id: string,
   patch: { title?: string; selected_model?: string; reasoning_effort?: ReasoningEffort },
 ): Promise<ChatSession> {
-  return request(`/api/v1/chat/sessions/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+  return chatApi.updateSession(id, patch);
 }
 
 export function removeSession(id: string): Promise<void> {
-  return request(`/api/v1/chat/sessions/${id}`, { method: "DELETE" });
+  return chatApi.removeSession(id);
 }
 
 export function archiveOldChats(): Promise<{ archived_count: number }> {
-  return request("/api/v1/chat/sessions/archive-old", { method: "POST" });
+  return chatApi.archiveOldChats();
 }
 
 export function archiveOldestChats(): Promise<{ archived_count: number }> {
-  return request("/api/v1/chat/sessions/archive-oldest", { method: "POST" });
+  return chatApi.archiveOldestChats();
 }
 
 export function cancelSession(id: string): Promise<void> {
-  return request(`/api/v1/chat/sessions/${id}/cancel`, { method: "POST" });
+  return chatApi.cancelSession(id);
 }
 
 export function createOrRefreshShare(id: string): Promise<ChatShareSummary> {
-  return request(`/api/v1/chat/sessions/${id}/share`, { method: "POST" });
+  return chatApi.createOrRefreshShare(id);
 }
 
-export function getSharedChat(id: string): Promise<ChatShareDetail> {
-  return publicRequest(`/api/v1/chat/shares/${encodeURIComponent(id)}`);
+export async function getSharedChat(id: string): Promise<ChatShareDetail> {
+  try {
+    return await chatApi.getSharedChat(id);
+  } catch (error) {
+    if (error instanceof ApiError) throw new ChatRequestError(error.message, error.status);
+    throw error;
+  }
 }
 
 export async function getChatModels(): Promise<{ items: ChatModelChoice[]; default_model: string }> {
-  return request("/api/v1/chat/models");
+  return chatApi.getModels();
 }
 
 function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlock[] {

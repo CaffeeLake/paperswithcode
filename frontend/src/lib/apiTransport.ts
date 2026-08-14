@@ -51,7 +51,7 @@ export type ApiRequest = <T>(endpoint: string, options?: RequestInit) => Promise
 export class ApiTransport {
   constructor(private readonly baseUrl: string) {}
 
-  async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  async fetch(endpoint: string, options?: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${endpoint}`;
     if (LOG_API_REQUESTS) console.log(`[API] Requesting: ${url}`);
 
@@ -77,20 +77,25 @@ export class ApiTransport {
       if (LOG_API_REQUESTS) {
         console.log(`[API] Response from ${url}:`, response.status, response.statusText);
       }
-      if (!response.ok) {
-        const error = new ApiError(response, await response.text());
-        console.error("[API] Error response:", error.response);
-        throw error;
-      }
-      if (response.status === 204) return undefined as T;
-
-      const data = await response.json();
-      if (LOG_API_REQUESTS) console.log("[API] Success:", data);
-      return data;
+      return response;
     } catch (error) {
       console.error(`[API] Request to ${url} failed:`, error);
       throw error;
     }
+  }
+
+  async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    const response = await this.fetch(endpoint, options);
+    if (!response.ok) {
+      const error = new ApiError(response, await response.text());
+      console.error("[API] Error response:", error.response);
+      throw error;
+    }
+    if (response.status === 204) return undefined as T;
+
+    const data = await response.json();
+    if (LOG_API_REQUESTS) console.log("[API] Success:", data);
+    return data;
   }
 }
 

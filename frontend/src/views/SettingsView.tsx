@@ -12,7 +12,8 @@ import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
-import { ApiError, apiClient } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
+import { ApiError } from "@/lib/apiTransport";
 import { isChatEnabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
@@ -63,7 +64,7 @@ const SettingsView: React.FC = () => {
     setOpenRouterErrorCode(error instanceof ApiError ? error.code ?? "" : "");
   };
   const connectOpenRouterMutation = useMutation({
-    mutationFn: (apiKey: string) => apiClient.connectOpenRouterCredential(apiKey),
+    mutationFn: (apiKey: string) => chatApi.connectOpenRouterCredential(apiKey),
     onSuccess: (status) => {
       queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
       setOpenRouterKey("");
@@ -75,7 +76,7 @@ const SettingsView: React.FC = () => {
     ),
   });
   const fallbackMutation = useMutation({
-    mutationFn: (enabled: boolean) => apiClient.setOpenRouterFallback(enabled),
+    mutationFn: (enabled: boolean) => chatApi.setOpenRouterFallback(enabled),
     onSuccess: (status) => {
       queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
       setOpenRouterError("");
@@ -86,7 +87,7 @@ const SettingsView: React.FC = () => {
     ),
   });
   const disconnectOpenRouterMutation = useMutation({
-    mutationFn: () => apiClient.disconnectOpenRouterCredential(),
+    mutationFn: () => chatApi.disconnectOpenRouterCredential(),
     onSuccess: () => {
       queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, {
         connected: false,

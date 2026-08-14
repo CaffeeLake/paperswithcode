@@ -10,7 +10,7 @@ import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import WebSearchToggle from "@/components/chat/WebSearchToggle";
-import { apiClient } from "@/lib/api";
+import { chatApi } from "@/lib/api/chat";
 import { catalogApi } from "@/lib/api/catalog";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
@@ -141,7 +141,7 @@ export const AskAssistant: React.FC = () => {
   const ref = useRef<HTMLTextAreaElement>(null);
   const availabilityQuery = useQuery({
     queryKey: ["chatAvailability"],
-    queryFn: () => apiClient.getChatAvailability(),
+    queryFn: () => chatApi.getAvailability(),
     retry: false,
     enabled: isChatEnabled(),
   });

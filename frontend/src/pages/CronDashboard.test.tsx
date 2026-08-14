@@ -2,12 +2,8 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CronJobCard } from "@/components/cron/CronJobCard";
-import {
-  apiClient,
-  type ChatSandboxSpendStatus,
-  type CronJobsResponse,
-  type CronJobStatus,
-} from "@/lib/api";
+import type { ChatSandboxSpendStatus } from "@/lib/api/chat";
+import { operationsApi, type CronJobsResponse, type CronJobStatus } from "@/lib/api/operations";
 import {
   ChatComputePanel,
   CronSnapshotNotice,
@@ -182,7 +178,7 @@ describe("CronSnapshotNotice", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await apiClient.getCronStatus(true);
+    await operationsApi.getCronStatus(true);
 
     expect(String(fetchMock.mock.calls[0][0])).toContain(
       "/cron/status?force_refresh=true",

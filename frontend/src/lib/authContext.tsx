@@ -12,18 +12,10 @@
 
 import React from "react";
 
-import { apiUrl, authUrl, isAuthDisabled } from "./apiUrl";
+import { authApi, type AuthUser } from "./api/auth";
+import { authUrl } from "./apiUrl";
 
-export interface AuthUser {
-  hf_subject: string;
-  username: string;
-  name: string | null;
-  avatar_url: string | null;
-  is_admin: boolean;
-  role: "admin" | "contributor" | null;
-  can_contribute: boolean;
-  can_directly_edit_catalog: boolean;
-}
+export type { AuthUser } from "./api/auth";
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -36,24 +28,13 @@ const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 export const AUTH_STALE_EVENT = "pwc:auth-stale";
 
-async function fetchMe(): Promise<AuthUser | null> {
-  if (isAuthDisabled()) return null;
-  const res = await fetch(apiUrl("/api/v1/auth/me"), {
-    credentials: "include",
-    cache: "no-store",
-  });
-  if (res.status === 401) return null;
-  if (!res.ok) return null;
-  return (await res.json()) as AuthUser;
-}
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
 
   const refresh = React.useCallback(async () => {
     setIsLoading(true);
-    const next = await fetchMe();
+    const next = await authApi.getCurrentUser();
     setUser(next);
     setIsLoading(false);
   }, []);
@@ -71,10 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       form.submit();
       return;
     }
-    await fetch(apiUrl("/api/v1/auth/logout"), {
-      method: "POST",
-      credentials: "include",
-    });
+    await authApi.logout();
     setUser(null);
   }, []);
 
