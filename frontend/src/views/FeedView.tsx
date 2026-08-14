@@ -257,15 +257,20 @@ export const AskAssistant: React.FC = () => {
             </span>
           )}
         </div>
-        <button
-          type="button"
-          className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-          onClick={() => void submit()}
-          disabled={!question.trim() || launching}
-          aria-label="Ask the assistant"
-        >
-          <ArrowUpIcon />
-        </button>
+        <div className="ask-home-actions">
+          <Link to="/chat" className="ask-home-open-chat">
+            Open chat
+          </Link>
+          <button
+            type="button"
+            className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+            onClick={() => void submit()}
+            disabled={!question.trim() || launching}
+            aria-label="Ask the assistant"
+          >
+            <ArrowUpIcon />
+          </button>
+        </div>
       </div>
       <PaperMentionPicker
         open={mentions.open}

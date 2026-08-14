@@ -50,6 +50,13 @@ const renderAskAssistant = () => {
 };
 
 describe("AskAssistant", () => {
+  it("links directly to the dedicated chat page", () => {
+    renderAskAssistant();
+
+    expect(screen.getByRole("link", { name: "Open chat" }))
+      .toHaveAttribute("href", "/chat");
+  });
+
   it("offers only DeepSeek through OpenRouter on staging", () => {
     expect(FALLBACK_CHAT_MODELS).toHaveLength(1);
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
