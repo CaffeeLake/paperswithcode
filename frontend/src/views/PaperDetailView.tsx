@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./PaperDetailView.css";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Icon, PaperPreview, SotaBadges } from "@/components";

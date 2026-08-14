@@ -1,4 +1,5 @@
 import React from "react";
+import "./SubmissionsDashboard.css";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
