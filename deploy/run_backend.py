@@ -25,11 +25,10 @@ def configure_release_environment(release: Path) -> dict:
     os.environ.setdefault("HF_XET_CACHE", str(hf_cache_dir / "xet"))
     os.environ["PWC_RELEASE_ID"] = manifest["release_id"]
     os.environ["PWC_CHAT_ENABLED"] = "true" if features["chat"] else "false"
-    os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] = (
-        "true"
-        if manifest["build_profile"] == "staging" and features["chat"]
-        else "false"
+    os.environ["PWC_CHAT_PAPER_MENTIONS_ENABLED"] = (
+        "true" if features["chat"] else "false"
     )
+    os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] = "true" if features["chat"] else "false"
     os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] = (
         "true" if features.get("codex_add_evals", False) else "false"
     )

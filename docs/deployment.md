@@ -422,6 +422,12 @@ new objects with `paperswithcode_user`, and deny staging writes. Apply them in
 that order after the base chat/OpenRouter tables exist and before opening
 production admission.
 
+Enabled immutable chat releases derive inline paper mentions and the bounded
+read-only Hugging Face catalog capability from the release manifest in both
+environments. Disabled releases force both capabilities off, so an ordinary
+release rollback also restores their prior activation state without editing
+protected configuration.
+
 Only after the two disabled production bridge releases are active, the sealed
 bundle has passed qualification, and the exact activation SHA has separate
 production authorization, install the same revalidated bundle into the live

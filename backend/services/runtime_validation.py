@@ -415,8 +415,7 @@ def validate_chat_provider_policy(
             raise RuntimeError("web-search runtime descriptor is invalid")
     if settings.chat_hf_catalog_enabled:
         if (
-            settings.environment != "staging"
-            or settings.chat_hf_catalog_timeout_seconds != 10
+            settings.chat_hf_catalog_timeout_seconds != 10
             or settings.chat_hf_catalog_max_calls != 6
             or settings.chat_hf_recursive_list_max_calls != 2
             or settings.chat_hf_discovery_max_limit != 50

@@ -37,11 +37,10 @@ def configure_release(manifest: dict, release: Path) -> None:
     values = {
         "PWC_FRONTEND_DIST_DIR": str(release / "frontend-dist"),
         "PWC_CHAT_ENABLED": "true" if features.get("chat") else "false",
-        "PWC_CHAT_HF_CATALOG_ENABLED": (
-            "true"
-            if manifest.get("build_profile") == "staging" and features.get("chat")
-            else "false"
+        "PWC_CHAT_PAPER_MENTIONS_ENABLED": (
+            "true" if features.get("chat") else "false"
         ),
+        "PWC_CHAT_HF_CATALOG_ENABLED": ("true" if features.get("chat") else "false"),
         "PWC_CODEX_ADD_EVALS_ENABLED": (
             "true" if features.get("codex_add_evals") else "false"
         ),

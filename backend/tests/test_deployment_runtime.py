@@ -19,6 +19,7 @@ import deploy.configure_host_env as configure_host_env
 import deploy.configure_role_allowlists as configure_role_allowlists
 import deploy.cron_launcher as cron_launcher
 import deploy.run_backend as run_backend
+import deploy.slot_launcher as slot_launcher
 import deploy.smoke_test as smoke_test
 from backend.chat_sandbox_worker.contract import (
     MODAL_IMAGE_ID,
@@ -28,6 +29,7 @@ from backend.config import Settings
 from backend.services import openrouter_budget_service as deploy_openrouter
 from backend.services.runtime_validation import (
     validate_chat_capacity_and_spend_policy,
+    validate_chat_provider_policy,
     validate_chat_schema,
     validate_runtime,
 )
@@ -421,9 +423,40 @@ def test_run_backend_derives_features_from_release(
 
     assert manifest["build_profile"] == "production"
     assert os.environ["PWC_CHAT_ENABLED"] == "false"
+    assert os.environ["PWC_CHAT_PAPER_MENTIONS_ENABLED"] == "false"
+    assert os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] == "false"
     assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_ENRICH_PAPER_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "true"
+
+
+def test_slot_launcher_enables_chat_catalog_features(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("PWC_CHAT_PAPER_MENTIONS_ENABLED", raising=False)
+    monkeypatch.delenv("PWC_CHAT_HF_CATALOG_ENABLED", raising=False)
+    manifest = build_manifest(
+        "a" * 40,
+        "production",
+        production_chat_enabled=True,
+    )
+
+    slot_launcher.configure_release(manifest, Path("/release"))
+
+    assert os.environ["PWC_CHAT_PAPER_MENTIONS_ENABLED"] == "true"
+    assert os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] == "true"
+
+
+def test_production_chat_accepts_bounded_hf_catalog_policy(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.environment = "production"
+    settings.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+    )
+    settings.chat_hf_catalog_enabled = True
+
+    validate_chat_provider_policy(settings, include_openrouter=False)
 
 
 def test_run_backend_prepends_immutable_release_root():
