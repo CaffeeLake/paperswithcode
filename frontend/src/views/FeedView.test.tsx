@@ -50,6 +50,13 @@ const renderAskAssistant = () => {
 };
 
 describe("AskAssistant", () => {
+  it("shows the paper mention hint above the chat window", () => {
+    renderAskAssistant();
+
+    expect(screen.getByText("Hint: type @ to bring papers into context"))
+      .toBeVisible();
+  });
+
   it("offers only DeepSeek through OpenRouter on staging", () => {
     expect(FALLBACK_CHAT_MODELS).toHaveLength(1);
     expect(FALLBACK_CHAT_MODELS).toContainEqual({

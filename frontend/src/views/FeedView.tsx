@@ -182,6 +182,9 @@ export const AskAssistant: React.FC = () => {
 
   return (
     <>
+      <div className="ask-home-new">
+        Hint: type @ to bring papers into context
+      </div>
       <div className="ask-home">
         <div className="ask-home-textarea-wrap">
           <PaperMentionHighlights
