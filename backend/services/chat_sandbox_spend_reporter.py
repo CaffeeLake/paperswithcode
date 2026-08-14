@@ -43,7 +43,7 @@ class ModalProviderSpendReporter:
         items = []
         chunk_start = start
         while chunk_start < end:
-            chunk_end = min(chunk_start + timedelta(days=7), end)
+            chunk_end = min(chunk_start + timedelta(days=1), end)
             items.extend(
                 await report.aio(
                     start=chunk_start,
