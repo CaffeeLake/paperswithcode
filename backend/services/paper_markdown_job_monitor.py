@@ -247,6 +247,16 @@ def get_paper_markdown_job_monitor() -> dict[str, Any]:
         return dict(result)
 
 
+def get_cached_paper_markdown_job_monitor() -> dict[str, Any]:
+    """Return cached monitor evidence without adding remote I/O to health scans."""
+
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        if _CACHE and now - _CACHE[0] < _CACHE_SECONDS:
+            return dict(_CACHE[1])
+    return {"available": False, "jobs": [], "summary": {}, "error": None}
+
+
 def clear_paper_markdown_job_monitor_cache() -> None:
     """Clear the process cache for tests and operator-triggered refreshes."""
     global _CACHE

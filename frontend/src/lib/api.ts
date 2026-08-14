@@ -751,6 +751,10 @@ export interface CronJobsResponse {
   timestamp: string;
   jobs: CronJobStatus[];
   manual_operations: CronJobStatus[];
+  snapshot_generated_at: string;
+  snapshot_age_seconds: number;
+  snapshot_stale: boolean;
+  refreshing: boolean;
   summary: Record<CronJobHealth, number> & {
     total_jobs: number;
     health_score: number;
@@ -2070,8 +2074,9 @@ class ApiClient {
     await this.request<void>('/chat/openrouter-key', { method: 'DELETE' });
   }
 
-  async getCronStatus(): Promise<CronJobsResponse> {
-    return this.request<CronJobsResponse>('/cron/status', { cache: 'no-store' });
+  async getCronStatus(forceRefresh = false): Promise<CronJobsResponse> {
+    const query = forceRefresh ? '?force_refresh=true' : '';
+    return this.request<CronJobsResponse>(`/cron/status${query}`, { cache: 'no-store' });
   }
 
   async getPaperMarkdownJobs(): Promise<PaperMarkdownJobsResponse> {

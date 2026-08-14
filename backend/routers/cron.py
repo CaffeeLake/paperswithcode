@@ -5,9 +5,13 @@ FastAPI router for CRON job monitoring endpoints.
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from backend.services.cron_dashboard_snapshot_service import (
+    CronDashboardSnapshotError,
+    CronDashboardSnapshotService,
+)
 from backend.services.cron_health import build_cron_dashboard, to_iso8601
 from backend.services.cron_registry import get_cron_job
 from backend.services.paper_markdown_job_monitor import (
@@ -53,6 +57,10 @@ class CronJobsResponse(BaseModel):
     jobs: List[CronJobStatus]
     manual_operations: List[CronJobStatus] = Field(default_factory=list)
     summary: Dict[str, Any]
+    snapshot_generated_at: str
+    snapshot_age_seconds: float
+    snapshot_stale: bool
+    refreshing: bool
 
 
 class PaperMarkdownJobsResponse(BaseModel):
@@ -71,13 +79,23 @@ class PaperMarkdownJobsResponse(BaseModel):
     dependencies=[Depends(require_admin)],
 )
 def get_cron_status(
+    background_tasks: BackgroundTasks,
     days: int = Query(
         1, ge=1, le=7, description="Number of days to look back for status"
     ),
+    force_refresh: bool = Query(
+        False, description="Synchronously refresh the shared health snapshot"
+    ),
 ):
-    """Return registry-backed CRON health with database freshness checks."""
+    """Return the shared registry-backed CRON health snapshot."""
     _ = days  # reserved for future history windows
-    payload = build_cron_dashboard()
+    service = CronDashboardSnapshotService()
+    try:
+        payload, schedule_refresh = service.get_status(force_refresh=force_refresh)
+    except CronDashboardSnapshotError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if schedule_refresh:
+        background_tasks.add_task(service.refresh_in_background)
     return CronJobsResponse(**payload)
 
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,7 @@ import { CronJobCard } from "@/components/cron/CronJobCard";
 import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
 import { CatalogAuditPanel } from "@/components/admin/CatalogAuditPanel";
 import { apiClient } from "@/lib/api";
-import type { ChatSandboxSpendStatus, ChatWebSearchBudgetStatus, CronJobHealth, CronJobStatus } from "@/lib/api";
+import type { ChatSandboxSpendStatus, ChatWebSearchBudgetStatus, CronJobHealth, CronJobsResponse, CronJobStatus } from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
 import { useAuth } from "@/lib/authContext";
 import { isStagingEnvironment } from "@/lib/apiUrl";
@@ -102,6 +102,30 @@ export const WebSearchBudgetPanel = ({ data, loading, error }: {
   </Card>;
 };
 
+export const CronSnapshotNotice = ({ data }: { data?: CronJobsResponse }) => {
+  if (!data?.snapshot_stale) return null;
+  return (
+    <Card className="mb-6 cron-status--degraded" role="status">
+      <CardContent className="pt-6">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>
+            Refreshing status… Current snapshot is {Math.ceil(data.snapshot_age_seconds)} seconds old.
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+export const cronStatusRefetchInterval = (
+  data: CronJobsResponse | undefined,
+  autoRefresh: boolean,
+) => {
+  if (data?.snapshot_stale || data?.refreshing) return 1000;
+  return autoRefresh ? 30000 : false;
+};
+
 const CronDashboard = () => {
   const staging = isStagingEnvironment();
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -109,13 +133,18 @@ const CronDashboard = () => {
   const [chatEnvironmentDraft, setChatEnvironmentDraft] = useState("");
   const [chatEnvironment, setChatEnvironment] = useState("");
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
+  const forceCronRefresh = useRef(false);
   const { user } = useAuth();
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ["cronStatus", user?.username],
-    queryFn: () => apiClient.getCronStatus(),
+    queryFn: () => {
+      const forceRefresh = forceCronRefresh.current;
+      forceCronRefresh.current = false;
+      return apiClient.getCronStatus(forceRefresh);
+    },
     enabled: !!user?.is_admin,
-    refetchInterval: autoRefresh ? 30000 : false,
+    refetchInterval: (query) => cronStatusRefetchInterval(query.state.data, autoRefresh),
     retry: false,
   });
   const paperMarkdownJobsQuery = useQuery({
@@ -201,6 +230,7 @@ const CronDashboard = () => {
 
   const refreshAll = () => {
     setRefreshToken((value) => value + 1);
+    forceCronRefresh.current = true;
     void refetch();
     void paperMarkdownJobsQuery.refetch();
     void chatSpendQuery.refetch();
@@ -246,6 +276,8 @@ const CronDashboard = () => {
             </p>
           </CardContent>
         </Card>
+
+        <CronSnapshotNotice data={data} />
 
         <Tabs defaultValue="critical-jobs">
           <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto sm:grid-cols-5">

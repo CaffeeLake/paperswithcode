@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import fcntl
 import re
@@ -11,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from posixpath import basename
 from typing import Any, Dict, List, Optional
 
 import psycopg2
@@ -24,6 +26,7 @@ SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
 GITHUB_REPOSITORY = "huggingface/paperswithcode"
 WORKFLOW_STATUS_CACHE_SECONDS = 60
 _WORKFLOW_STATUS_CACHE: Dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -68,9 +71,7 @@ def to_iso8601(value: Optional[datetime | str]) -> Optional[str]:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def is_process_running(patterns: tuple[str, ...]) -> bool:
-    if not patterns:
-        return False
+def _capture_processes() -> tuple[list[tuple[int, int, str]], set[int]]:
     result = subprocess.run(
         ["ps", "-eo", "pid=,ppid=,args="],
         capture_output=True,
@@ -78,7 +79,7 @@ def is_process_running(patterns: tuple[str, ...]) -> bool:
         timeout=5,
     )
     if result.returncode != 0:
-        return False
+        return [], set()
     processes: list[tuple[int, int, str]] = []
     for line in result.stdout.splitlines():
         fields = line.strip().split(maxsplit=2)
@@ -96,12 +97,27 @@ def is_process_running(patterns: tuple[str, ...]) -> bool:
         if parent == 1:
             break
         cursor = parent
+    return processes, diagnostic_ancestry
+
+
+def _patterns_are_running(
+    patterns: tuple[str, ...],
+    processes: list[tuple[int, int, str]],
+    diagnostic_ancestry: set[int],
+) -> bool:
+    if not patterns:
+        return False
     for pid, _parent_pid, command in processes:
         if pid in diagnostic_ancestry or "python" not in command or "grep" in command:
             continue
         if any(pattern in command for pattern in patterns):
             return True
     return False
+
+
+def is_process_running(patterns: tuple[str, ...]) -> bool:
+    processes, diagnostic_ancestry = _capture_processes()
+    return _patterns_are_running(patterns, processes, diagnostic_ancestry)
 
 
 def get_lock_state(
@@ -183,6 +199,51 @@ def fetch_db_freshness(query: str) -> Dict[str, Any]:
         return metrics
     finally:
         conn.close()
+
+
+def fetch_db_freshness_batch(
+    jobs: list[CronJobDefinition],
+) -> dict[str, Dict[str, Any]]:
+    """Run every configured freshness query through one database connection."""
+
+    settings = get_settings()
+    conn = psycopg2.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        database=settings.db_name,
+        user=settings.db_user,
+        password=settings.db_password,
+        connect_timeout=5,
+        options="-c statement_timeout=10000",
+    )
+    conn.autocommit = True
+    results: dict[str, Dict[str, Any]] = {}
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            for job in jobs:
+                if not job.db_freshness_query:
+                    continue
+                try:
+                    cursor.execute(job.db_freshness_query)
+                    row = cursor.fetchone() or {}
+                    metrics: Dict[str, Any] = {}
+                    last_write = row.get("last_write")
+                    if last_write is not None:
+                        metrics["last_write"] = last_write
+                        metrics["last_write_iso"] = to_iso8601(last_write)
+                    for key, value in row.items():
+                        if key != "last_write":
+                            metrics[key] = int(value or 0)
+                    results[job.id] = metrics
+                except Exception as exc:
+                    results[job.id] = {
+                        "freshness_error": _sanitized_adapter_error(
+                            exc, "database freshness"
+                        )
+                    }
+    finally:
+        conn.close()
+    return results
 
 
 def fetch_thumbnail_cache_freshness() -> Dict[str, Any]:
@@ -1036,6 +1097,247 @@ OUTPUT_EVALUATORS = {
 }
 
 
+def _workflow_status_from_run(
+    workflow_file: str,
+    run: dict[str, Any],
+    *,
+    jobs: list[dict[str, Any]] | None = None,
+    view_error: str | None = None,
+    scheduled_run: dict[str, Any] | None = None,
+    manual_run: dict[str, Any] | None = None,
+    active_run: dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    relevant_jobs = jobs or []
+    failed_jobs = [
+        job.get("name")
+        for job in relevant_jobs
+        if job.get("conclusion") not in {None, "", "success", "skipped"}
+    ]
+    running_jobs = [
+        job.get("name")
+        for job in relevant_jobs
+        if job.get("status") not in {None, "", "completed"}
+    ]
+    return {
+        "available": True,
+        "workflow_file": workflow_file,
+        "run_id": run.get("databaseId"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "created_at": run.get("createdAt"),
+        "updated_at": run.get("updatedAt"),
+        "event": run.get("event"),
+        "head_branch": run.get("headBranch"),
+        "failed_jobs": [name for name in failed_jobs if name],
+        "running_jobs": [name for name in running_jobs if name],
+        "job_conclusions": {
+            job.get("name"): job.get("conclusion")
+            for job in relevant_jobs
+            if job.get("name")
+        },
+        "view_error": view_error,
+        "manual_query_error": None,
+        "scheduled_run": scheduled_run,
+        "manual_run": manual_run,
+        "active_run": active_run,
+    }
+
+
+def _normalize_api_run(api_run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "databaseId": api_run.get("id"),
+        "status": api_run.get("status"),
+        "conclusion": api_run.get("conclusion"),
+        "createdAt": api_run.get("created_at"),
+        "updatedAt": api_run.get("updated_at"),
+        "event": api_run.get("event"),
+        "headBranch": api_run.get("head_branch"),
+    }
+
+
+def _fetch_workflow_status_for_job(job: CronJobDefinition) -> Dict[str, Any]:
+    """Bootstrap one workflow that was absent from the recent-runs batch."""
+
+    workflow_file = job.workflow_file or ""
+    payload, error = _gh_json(
+        [
+            "api",
+            (
+                f"repos/{GITHUB_REPOSITORY}/actions/workflows/"
+                f"{workflow_file}/runs?per_page=10&exclude_pull_requests=true"
+            ),
+        ],
+        timeout=8,
+    )
+    if error:
+        return {
+            "available": False,
+            "workflow_file": workflow_file,
+            "error": _sanitized_adapter_error(error, "GitHub Actions"),
+        }
+    api_runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    if not api_runs:
+        return {
+            "available": True,
+            "workflow_file": workflow_file,
+            "status": "unknown",
+            "conclusion": None,
+            "error": "no workflow runs found",
+        }
+    runs = [_normalize_api_run(api_run) for api_run in api_runs]
+    scheduled_run = next((run for run in runs if run.get("event") == "schedule"), None)
+    manual_run = next(
+        (run for run in runs if run.get("event") == "workflow_dispatch"), None
+    )
+    active_run = next(
+        (run for run in runs if run.get("status") not in {None, "", "completed"}),
+        None,
+    )
+    run = scheduled_run or runs[0]
+    detail_jobs = None
+    detail_error = None
+    if run["databaseId"] and len(job.workflow_jobs) > 1:
+        detail, detail_error = _gh_json(
+            ["run", "view", str(run["databaseId"]), "--json", "jobs"],
+            timeout=10,
+        )
+        if isinstance(detail, dict):
+            expected = set(job.workflow_jobs)
+            detail_jobs = [
+                item for item in detail.get("jobs", []) if item.get("name") in expected
+            ]
+    return _workflow_status_from_run(
+        workflow_file,
+        run,
+        jobs=detail_jobs,
+        view_error=(
+            _sanitized_adapter_error(detail_error, "GitHub Actions job")
+            if detail_error
+            else None
+        ),
+        scheduled_run=scheduled_run,
+        manual_run=manual_run,
+        active_run=active_run,
+    )
+
+
+def fetch_workflow_statuses(
+    jobs: list[CronJobDefinition],
+    *,
+    previous_dashboard: Dict[str, Any] | None = None,
+) -> dict[str, Dict[str, Any]]:
+    """Fetch recent workflow runs once and retain unchanged older statuses."""
+
+    workflow_jobs = [job for job in jobs if job.workflow_file]
+    previous = {
+        status["workflow_file"]: status
+        for row in (previous_dashboard or {}).get("jobs", [])
+        if isinstance(row, dict)
+        and isinstance((status := row.get("workflow_status")), dict)
+        and status.get("workflow_file")
+    }
+    payload, batch_error = _gh_json(
+        [
+            "api",
+            (
+                f"repos/{GITHUB_REPOSITORY}/actions/runs"
+                "?per_page=100&exclude_pull_requests=true"
+            ),
+        ],
+        timeout=10,
+    )
+    runs_by_file: dict[str, list[dict[str, Any]]] = {}
+    api_runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    for api_run in api_runs:
+        workflow_file = basename(api_run.get("path") or "")
+        if workflow_file:
+            runs_by_file.setdefault(workflow_file, []).append(
+                _normalize_api_run(api_run)
+            )
+
+    statuses: dict[str, Dict[str, Any]] = {}
+    bootstrap: list[CronJobDefinition] = []
+    for job in workflow_jobs:
+        workflow_file = job.workflow_file or ""
+        runs = runs_by_file.get(workflow_file, [])
+        if not runs:
+            if workflow_file in previous:
+                statuses[job.id] = dict(previous[workflow_file])
+            else:
+                bootstrap.append(job)
+            continue
+
+        previous_status = previous.get(workflow_file, {})
+        if not any(run.get("event") == "schedule" for run in runs) and not (
+            previous_status.get("scheduled_run")
+        ):
+            bootstrap.append(job)
+            continue
+        scheduled_run = next(
+            (run for run in runs if run.get("event") == "schedule"),
+            previous_status.get("scheduled_run"),
+        )
+        manual_run = next(
+            (run for run in runs if run.get("event") == "workflow_dispatch"),
+            previous_status.get("manual_run"),
+        )
+        active_run = next(
+            (run for run in runs if run.get("status") not in {None, "", "completed"}),
+            None,
+        )
+        run = scheduled_run or runs[0]
+
+        detail_jobs: list[dict[str, Any]] | None = None
+        detail_error = None
+        if run.get("databaseId") and len(job.workflow_jobs) > 1:
+            detail, detail_error = _gh_json(
+                [
+                    "run",
+                    "view",
+                    str(run["databaseId"]),
+                    "--json",
+                    "jobs",
+                ],
+                timeout=10,
+            )
+            if isinstance(detail, dict):
+                expected = set(job.workflow_jobs)
+                detail_jobs = [
+                    item
+                    for item in detail.get("jobs", [])
+                    if item.get("name") in expected
+                ]
+        statuses[job.id] = _workflow_status_from_run(
+            workflow_file,
+            run,
+            jobs=detail_jobs,
+            view_error=(
+                _sanitized_adapter_error(detail_error, "GitHub Actions job")
+                if detail_error
+                else None
+            ),
+            scheduled_run=scheduled_run,
+            manual_run=manual_run,
+            active_run=active_run,
+        )
+
+    if bootstrap:
+        with ThreadPoolExecutor(max_workers=min(8, len(bootstrap))) as executor:
+            futures = {
+                job.id: executor.submit(
+                    _fetch_workflow_status_for_job,
+                    job,
+                )
+                for job in bootstrap
+            }
+            for job_id, future in futures.items():
+                statuses[job_id] = future.result()
+
+    if batch_error:
+        logger.warning("cron workflow batch unavailable error=%s", batch_error)
+    return statuses
+
+
 def _minutes_since(value: Optional[datetime | str]) -> Optional[float]:
     dt = value if isinstance(value, datetime) else _parse_log_timestamp(value)
     if dt is None:
@@ -1091,6 +1393,7 @@ def evaluate_job_health(
     workflow_status: Optional[Dict[str, Any]] = None,
     systemd_status: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
+    process_running: bool | None = None,
 ) -> Dict[str, Any]:
     """Combine log, process, lock, and DB signals into a dashboard status."""
 
@@ -1098,8 +1401,10 @@ def evaluate_job_health(
         job.lock_file, job.expected_runtime_minutes
     )
     now = now or _utcnow()
-    running = bool(log_status.get("is_running")) or is_process_running(
-        job.process_patterns
+    running = bool(log_status.get("is_running")) or (
+        is_process_running(job.process_patterns)
+        if process_running is None
+        else process_running
     )
     log_result = log_status.get("status", "unknown")
     work_metrics = dict(log_status.get("work_metrics") or {})
@@ -1404,31 +1709,63 @@ def evaluate_job_health(
     }
 
 
-def build_cron_dashboard() -> Dict[str, Any]:
+def build_cron_dashboard(
+    previous_dashboard: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     import sys
 
     if str(WORKFLOWS_DIR) not in sys.path:
         sys.path.insert(0, str(WORKFLOWS_DIR))
     from scripts.utils.cron_helpers import get_cron_job_status
 
+    collection_started = time.perf_counter()
     today = _utcnow().strftime("%Y%m%d")
+    definitions = list(list_cron_jobs())
     jobs: List[Dict[str, Any]] = []
     status_by_id: Dict[str, str] = {}
-    definitions = list(list_cron_jobs())
-    workflow_definitions = [job for job in definitions if job.workflow_file]
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        workflow_results = dict(
-            zip(
-                (job.id for job in workflow_definitions),
-                executor.map(
-                    lambda job: fetch_workflow_status(
-                        job.workflow_file or "",
-                        expected_jobs=job.workflow_jobs,
-                    ),
-                    workflow_definitions,
-                ),
-            )
+
+    process_started = time.perf_counter()
+    processes, diagnostic_ancestry = _capture_processes()
+    running_by_id = {
+        job.id: _patterns_are_running(
+            job.process_patterns, processes, diagnostic_ancestry
         )
+        for job in definitions
+    }
+    process_ms = (time.perf_counter() - process_started) * 1000
+
+    def timed_collect(collector):
+        started = time.perf_counter()
+        return collector(), (time.perf_counter() - started) * 1000
+
+    def collect_database():
+        try:
+            return fetch_db_freshness_batch(definitions)
+        except Exception as exc:
+            return {
+                job.id: {
+                    "freshness_error": _sanitized_adapter_error(
+                        exc, "database freshness"
+                    )
+                }
+                for job in definitions
+                if job.db_freshness_query
+            }
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        database_future = executor.submit(timed_collect, collect_database)
+        workflow_future = executor.submit(
+            timed_collect,
+            lambda: fetch_workflow_statuses(
+                definitions, previous_dashboard=previous_dashboard
+            ),
+        )
+        thumbnail_future = executor.submit(
+            timed_collect, fetch_thumbnail_cache_freshness
+        )
+        database_by_id, database_ms = database_future.result()
+        workflow_by_id, workflow_ms = workflow_future.result()
+        thumbnail_metrics, thumbnail_ms = thumbnail_future.result()
 
     def get_recent_log_status(job: CronJobDefinition) -> Dict[str, Any]:
         max_days = max(0, min(14, job.stale_after_minutes // (24 * 60) + 1))
@@ -1447,10 +1784,10 @@ def build_cron_dashboard() -> Dict[str, Any]:
         log_status = get_recent_log_status(job)
         if job.id == "paper_markdown_backfill":
             from backend.services.paper_markdown_job_monitor import (
-                get_paper_markdown_job_monitor,
+                get_cached_paper_markdown_job_monitor,
             )
 
-            remote = get_paper_markdown_job_monitor()
+            remote = get_cached_paper_markdown_job_monitor()
             metrics = dict(log_status.get("work_metrics") or {})
             metrics["remote_monitor_available"] = bool(remote.get("available"))
             if remote.get("available"):
@@ -1466,31 +1803,16 @@ def build_cron_dashboard() -> Dict[str, Any]:
             metrics = dict(log_status.get("work_metrics") or {})
             metrics.update(fetch_chat_monitor_output())
             log_status["work_metrics"] = metrics
-        if job.process_patterns:
-            log_status["is_running"] = log_status.get(
-                "is_running"
-            ) or is_process_running(job.process_patterns)
 
-        db_metrics: Dict[str, Any] = {}
-        if job.db_freshness_query:
-            try:
-                db_metrics = fetch_db_freshness(job.db_freshness_query)
-            except Exception as exc:
-                db_metrics = {
-                    "freshness_error": _sanitized_adapter_error(
-                        exc, "database freshness"
-                    )
-                }
-        elif job.id == "mirror_thumbnails_to_disk":
-            db_metrics = fetch_thumbnail_cache_freshness()
+        db_metrics = database_by_id.get(job.id, {})
+        if job.id == "mirror_thumbnails_to_disk":
+            db_metrics = thumbnail_metrics
 
         lock_state = get_lock_state(job.lock_file, job.expected_runtime_minutes)
         dependency_status = None
         if job.id == "calculate_paper_trending_scores":
             dependency_status = status_by_id.get("calculate_trending_scores")
-        workflow_status = None
-        if job.workflow_file:
-            workflow_status = workflow_results[job.id]
+        workflow_status = workflow_by_id.get(job.id)
         systemd_status = (
             fetch_systemd_status(job) if job.scheduler == "systemd" else None
         )
@@ -1503,6 +1825,7 @@ def build_cron_dashboard() -> Dict[str, Any]:
             dependency_status=dependency_status,
             workflow_status=workflow_status,
             systemd_status=systemd_status,
+            process_running=running_by_id[job.id],
         )
         status_by_id[job.id] = evaluated["status"]
         jobs.append(evaluated)
@@ -1539,7 +1862,7 @@ def build_cron_dashboard() -> Dict[str, Any]:
     monitored_duties = len(registered_ids & discovered_ids)
     gap_ids = sorted(discovered_ids - registered_ids)
 
-    return {
+    payload = {
         "timestamp": to_iso8601(_utcnow()),
         "jobs": jobs,
         "manual_operations": manual_jobs,
@@ -1558,3 +1881,15 @@ def build_cron_dashboard() -> Dict[str, Any]:
             },
         },
     }
+    total_ms = (time.perf_counter() - collection_started) * 1000
+    logger.info(
+        "cron_dashboard_collection jobs=%d total_ms=%.1f workflow_ms=%.1f "
+        "database_ms=%.1f process_ms=%.1f thumbnail_ms=%.1f",
+        len(jobs),
+        total_ms,
+        workflow_ms,
+        database_ms,
+        process_ms,
+        thumbnail_ms,
+    )
+    return payload

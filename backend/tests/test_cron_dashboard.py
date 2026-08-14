@@ -622,23 +622,30 @@ def test_cron_status_requires_admin(client):
 
 
 def test_cron_status_accepts_admin_token(client):
-    with patch("backend.routers.cron.build_cron_dashboard") as build_dashboard:
-        build_dashboard.return_value = {
-            "timestamp": "2026-06-25T12:00:00Z",
-            "jobs": [],
-            "summary": {
-                "total_jobs": 0,
-                "healthy": 0,
-                "degraded": 0,
-                "broken": 0,
-                "running": 0,
-                "stuck": 0,
-                "unknown": 0,
-                "health_score": 0,
-                "critical_issues": [],
-                "what_to_check_next": "All monitored jobs look healthy",
+    with patch("backend.routers.cron.CronDashboardSnapshotService") as service:
+        service.return_value.get_status.return_value = (
+            {
+                "timestamp": "2026-06-25T12:00:00Z",
+                "jobs": [],
+                "summary": {
+                    "total_jobs": 0,
+                    "healthy": 0,
+                    "degraded": 0,
+                    "broken": 0,
+                    "running": 0,
+                    "stuck": 0,
+                    "unknown": 0,
+                    "health_score": 0,
+                    "critical_issues": [],
+                    "what_to_check_next": "All monitored jobs look healthy",
+                },
+                "snapshot_generated_at": "2026-06-25T12:00:00Z",
+                "snapshot_age_seconds": 0.0,
+                "snapshot_stale": False,
+                "refreshing": False,
             },
-        }
+            False,
+        )
         response = client.get(
             "/api/v1/cron/status",
             headers={"X-Admin-Token": "test-admin-token"},
@@ -646,6 +653,40 @@ def test_cron_status_accepts_admin_token(client):
     assert response.status_code == 200
     assert response.json()["summary"]["total_jobs"] == 0
     assert response.headers["Cache-Control"] == "no-store"
+    assert response.json()["snapshot_stale"] is False
+
+
+def test_cron_status_schedules_stale_refresh_and_supports_force(client):
+    payload = {
+        "timestamp": "2026-06-25T12:00:00Z",
+        "jobs": [],
+        "summary": {
+            "total_jobs": 0,
+            "healthy": 0,
+            "degraded": 0,
+            "broken": 0,
+            "running": 0,
+            "stuck": 0,
+            "unknown": 0,
+            "health_score": 0,
+            "critical_issues": [],
+            "what_to_check_next": "All monitored jobs look healthy",
+        },
+        "snapshot_generated_at": "2026-06-25T12:00:00Z",
+        "snapshot_age_seconds": 61.0,
+        "snapshot_stale": True,
+        "refreshing": True,
+    }
+    with patch("backend.routers.cron.CronDashboardSnapshotService") as service:
+        service.return_value.get_status.return_value = (payload, True)
+        response = client.get(
+            "/api/v1/cron/status?force_refresh=true",
+            headers={"X-Admin-Token": "test-admin-token"},
+        )
+
+    assert response.status_code == 200
+    service.return_value.get_status.assert_called_once_with(force_refresh=True)
+    service.return_value.refresh_in_background.assert_called_once()
 
 
 def test_paper_markdown_jobs_requires_admin(client):

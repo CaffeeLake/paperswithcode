@@ -8,6 +8,24 @@ from types import SimpleNamespace
 from backend.services import paper_markdown_job_monitor as monitor
 
 
+def test_cached_monitor_does_not_trigger_remote_collection(monkeypatch):
+    monitor.clear_paper_markdown_job_monitor_cache()
+    monkeypatch.setattr(
+        monitor,
+        "_fetch",
+        lambda _settings: (_ for _ in ()).throw(AssertionError("remote fetch")),
+    )
+
+    result = monitor.get_cached_paper_markdown_job_monitor()
+
+    assert result == {
+        "available": False,
+        "jobs": [],
+        "summary": {},
+        "error": None,
+    }
+
+
 def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     settings = SimpleNamespace(
         hf_token="private-token",

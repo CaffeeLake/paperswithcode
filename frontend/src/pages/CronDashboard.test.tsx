@@ -1,9 +1,22 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CronJobCard } from "@/components/cron/CronJobCard";
-import type { ChatSandboxSpendStatus, CronJobStatus } from "@/lib/api";
-import { ChatComputePanel } from "./CronDashboard";
+import {
+  apiClient,
+  type ChatSandboxSpendStatus,
+  type CronJobsResponse,
+  type CronJobStatus,
+} from "@/lib/api";
+import {
+  ChatComputePanel,
+  CronSnapshotNotice,
+  cronStatusRefetchInterval,
+} from "./CronDashboard";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const status = (overrides: Partial<ChatSandboxSpendStatus> = {}): ChatSandboxSpendStatus => ({
   environment: "staging",
@@ -100,5 +113,79 @@ describe("CronJobCard health axes", () => {
     expect(screen.getByText("github_actions")).toBeInTheDocument();
     rerender(<CronJobCard job={{ ...job, recent_write_count: 11 }} expanded={true} onToggle={() => undefined} />);
     expect(screen.getByText("Scheduler evidence")).toBeInTheDocument();
+  });
+});
+
+describe("CronSnapshotNotice", () => {
+  const snapshot = (overrides: Partial<CronJobsResponse> = {}): CronJobsResponse => ({
+    timestamp: "2026-08-14T12:00:00Z",
+    jobs: [],
+    manual_operations: [],
+    summary: {
+      total_jobs: 0,
+      healthy: 0,
+      degraded: 0,
+      broken: 0,
+      running: 0,
+      stuck: 0,
+      unknown: 0,
+      health_score: 100,
+      critical_issues: [],
+      what_to_check_next: "All monitored jobs look healthy",
+      coverage: {
+        registered_scheduled_duties: 0,
+        discovered_scheduled_duties: 0,
+        monitored_duties: 0,
+        coverage_gaps: 0,
+        gap_ids: [],
+      },
+    },
+    snapshot_generated_at: "2026-08-14T11:58:59Z",
+    snapshot_age_seconds: 61,
+    snapshot_stale: true,
+    refreshing: true,
+    ...overrides,
+  });
+
+  it("shows stale data while a refresh runs", () => {
+    render(<CronSnapshotNotice data={snapshot()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("61 seconds old");
+  });
+
+  it("stays hidden for a fresh snapshot", () => {
+    render(<CronSnapshotNotice data={snapshot({ snapshot_stale: false })} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("polls quickly until the replacement snapshot is fresh", () => {
+    expect(cronStatusRefetchInterval(snapshot(), false)).toBe(1000);
+    expect(
+      cronStatusRefetchInterval(
+        snapshot({ snapshot_stale: false, refreshing: false }),
+        true,
+      ),
+    ).toBe(30000);
+    expect(
+      cronStatusRefetchInterval(
+        snapshot({ snapshot_stale: false, refreshing: false }),
+        false,
+      ),
+    ).toBe(false);
+  });
+
+  it("uses the forced endpoint for a manual status refresh", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(snapshot()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiClient.getCronStatus(true);
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/cron/status?force_refresh=true",
+    );
   });
 });
