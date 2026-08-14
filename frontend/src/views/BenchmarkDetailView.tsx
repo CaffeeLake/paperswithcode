@@ -11,7 +11,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
-import { Icon } from "@/components";
 import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";

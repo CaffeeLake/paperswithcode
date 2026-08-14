@@ -61,37 +61,6 @@ const MFBox: React.FC<MFBoxProps> = ({ x, y, w, h, fill, stroke, label, fontSize
   </g>
 );
 
-const TransformerFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="14" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Output Probabilities</text>
-    <path d="M180 22 L180 32" stroke={C.ink} strokeWidth="1.2" />
-    <MFBox x={150} y={32} w={60} h={20} fill={C.green} stroke={C.greenS} label="Softmax" />
-    <path d="M180 52 L180 62" stroke={C.ink} strokeWidth="1.2" />
-    <MFBox x={150} y={62} w={60} h={20} fill={C.purple} stroke={C.purpleS} label="Linear" />
-    <path d="M180 82 L180 92" stroke={C.ink} strokeWidth="1.2" />
-    <rect x="50" y="170" width="120" height="120" rx="4" fill="#EFEBE0" stroke={C.faint} strokeWidth="1" strokeDasharray="3 2" />
-    <text x="20" y="232" fontSize="11" fontFamily="var(--serif)" fill={C.faint}>N×</text>
-    <MFBox x={70} y={180} w={80} h={18} fill={C.yellow} stroke={C.yellowS} label="Add & Norm" />
-    <MFBox x={70} y={200} w={80} h={28} fill={C.blue} stroke={C.blueS} multiline={["Feed", "Forward"]} />
-    <MFBox x={70} y={236} w={80} h={18} fill={C.yellow} stroke={C.yellowS} label="Add & Norm" />
-    <MFBox x={70} y={256} w={80} h={28} fill={C.orange} stroke={C.orangeS} multiline={["Multi-Head", "Attention"]} />
-    <rect x="190" y="92" width="120" height="200" rx="4" fill="#EFEBE0" stroke={C.faint} strokeWidth="1" strokeDasharray="3 2" />
-    <text x="320" y="195" fontSize="11" fontFamily="var(--serif)" fill={C.faint}>N×</text>
-    <MFBox x={210} y={102} w={80} h={18} fill={C.yellow} stroke={C.yellowS} label="Add & Norm" />
-    <MFBox x={210} y={122} w={80} h={28} fill={C.blue} stroke={C.blueS} multiline={["Feed", "Forward"]} />
-    <MFBox x={210} y={158} w={80} h={18} fill={C.yellow} stroke={C.yellowS} label="Add & Norm" />
-    <MFBox x={210} y={178} w={80} h={28} fill={C.orange} stroke={C.orangeS} multiline={["Multi-Head", "Attention"]} />
-    <MFBox x={210} y={216} w={80} h={18} fill={C.yellow} stroke={C.yellowS} label="Add & Norm" />
-    <MFBox x={210} y={236} w={80} h={28} fill={C.orange} stroke={C.orangeS} multiline={["Masked MH", "Attention"]} />
-    <path d="M150 220 L195 192" stroke={C.ink} strokeWidth="1.2" fill="none" />
-    <path d="M150 220 L195 200" stroke={C.ink} strokeWidth="1.2" fill="none" />
-    <MFBox x={70} y={340} w={80} h={26} fill={C.pink} stroke={C.pinkS} multiline={["Input", "Embedding"]} />
-    <MFBox x={210} y={340} w={80} h={26} fill={C.pink} stroke={C.pinkS} multiline={["Output", "Embedding"]} />
-    <text x="110" y="395" fontSize="11" fontFamily="var(--serif)" fill={C.ink} textAnchor="middle">Inputs</text>
-    <text x="250" y="395" fontSize="9" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Outputs (shifted right)</text>
-  </svg>
-);
-
 const AttentionFig: React.FC = () => (
   <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
     <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Scaled Dot-Product Attention</text>

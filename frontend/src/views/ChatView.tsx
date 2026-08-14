@@ -369,7 +369,6 @@ const ChatView: React.FC = () => {
       setDraft(interruptedDraft);
     },
   });
-  const loadChat = chat.load;
   const sendChat = chat.send;
 
   useEffect(() => {

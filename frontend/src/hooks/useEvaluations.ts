@@ -3,7 +3,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { getEvaluationsByPaper, getEvaluationsByDataset, getEvaluations, type Evaluation } from '@/lib/api';
+import { getEvaluationsByPaper, getEvaluationsByDataset, getEvaluations } from '@/lib/api';
 
 /**
  * Fetch all evaluations for a specific paper

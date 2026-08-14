@@ -13,7 +13,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
-import PaperThumbnail from "@/components/PaperThumbnail";
 import HfSignInButton from "@/components/HfSignInButton";
 import UserMenu from "@/components/UserMenu";
 import { chipColors, hueFromSlug } from "@/lib/colors";

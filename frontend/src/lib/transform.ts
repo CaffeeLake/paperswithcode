@@ -170,7 +170,7 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     publishedIso: paper.published || null,
     year: isoYear(paper.published),
     thumbnailUrl: assetUrl(paper.thumbnail_url) || null,
-    tldr: (paper as any).tldr || null,
+    tldr: paper.tldr || null,
     version: paper.version || "v1",
     velocity24h,
     hfKind,

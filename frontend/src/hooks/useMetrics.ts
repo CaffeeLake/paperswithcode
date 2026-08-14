@@ -3,7 +3,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { getMetricDirections, type MetricDirections } from '@/lib/api';
+import { getMetricDirections } from '@/lib/api';
 
 /**
  * Fetch metric directions mapping (optimized for quick lookup).

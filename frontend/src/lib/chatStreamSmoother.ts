@@ -55,12 +55,6 @@ const defaultClock: Clock = {
   }),
 };
 
-function deltaType(event: ChatEvent): DeltaType | null {
-  return event.type === "reasoning_delta" || event.type === "answer_delta"
-    ? event.type
-    : null;
-}
-
 function isStructural(event: ChatEvent): boolean {
   return ![
     "stream_start",

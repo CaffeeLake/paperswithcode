@@ -1,4 +1,3 @@
-import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -229,8 +228,18 @@ describe("ChatView inference authorization", () => {
   });
 
   it("starts inference authorization on the first chat when permission is missing", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ connected: false }), {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      new Response(JSON.stringify({
+        connected: false,
+        available: true,
+        remaining_percent: 100,
+        used_percent: 0,
+        resets_at: "2026-09-01T00:00:00Z",
+        as_of: "2026-08-14T00:00:00Z",
+        ...(String(input).includes("/me/inference-billing")
+          ? { connected: false }
+          : {}),
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -256,8 +265,15 @@ describe("ChatView inference authorization", () => {
   });
 
   it("sends directly when inference permission is already connected", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ connected: true }), {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      new Response(JSON.stringify({
+        connected: String(input).includes("/me/inference-billing"),
+        available: true,
+        remaining_percent: 100,
+        used_percent: 0,
+        resets_at: "2026-09-01T00:00:00Z",
+        as_of: "2026-08-14T00:00:00Z",
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -498,6 +514,7 @@ describe("ChatView navigation", () => {
     await waitFor(() => expect(mocks.load).toHaveBeenCalledWith(
       mocks.messages,
       earlierSession.id,
+      false,
     ));
     expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument();
   });
