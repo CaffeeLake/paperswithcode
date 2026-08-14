@@ -106,6 +106,7 @@ logger = logging.getLogger(__name__)
 
 
 CHAT_CAPACITY_RETRY_SECONDS = 5
+PRODUCTION_CHAT_URL = "https://paperswithcode.co/chat"
 SSE_PROXY_FLUSH_PADDING_BYTES = 2048
 _capacity_denials = count(1)
 _prewarm_requests: dict[str, deque[float]] = {}
@@ -199,6 +200,15 @@ OPENROUTER_UNAVAILABLE_MESSAGE = (
     "key in Settings."
 )
 
+STAGING_FUNDING_DISABLED_MESSAGE = (
+    "Shared staging credits have ended because chat is now live on "
+    "paperswithcode.co. Continue there with your included monthly allowance."
+)
+
+
+def _shared_openrouter_funding_allowed(settings: Settings, user: dict) -> bool:
+    return settings.environment != "staging" or user.get("role") == "admin"
+
 
 def _require_staging_openrouter(settings: Settings) -> None:
     if settings.environment != "staging":
@@ -264,7 +274,20 @@ async def _authorize_openrouter(
     settings: Settings,
     db: Session | None = None,
     owner_id: str | None = None,
+    *,
+    shared_funding_allowed: bool = True,
 ) -> OpenRouterAdmission:
+    if settings.environment == "staging" and not shared_funding_allowed:
+        if db is not None and owner_id is not None:
+            byok = _selected_byok(db, settings, owner_id)
+            if byok:
+                return OpenRouterAdmission("openrouter_byok", byok.token, byok.revision)
+        raise ChatServiceError(
+            "openrouter_staging_funding_disabled",
+            403,
+            STAGING_FUNDING_DISABLED_MESSAGE,
+            details={"production_chat_url": PRODUCTION_CHAT_URL},
+        )
     if not settings.chat_openrouter_server_funded_enabled:
         if db is not None and owner_id is not None:
             byok = _selected_byok(db, settings, owner_id)
@@ -512,6 +535,13 @@ async def get_openrouter_usage(
             },
         ) from None
     result = user_status.public_dict()
+    if not _shared_openrouter_funding_allowed(settings, user):
+        result.update(
+            available=False,
+            unavailable_reason="staging_funding_disabled",
+            production_chat_url=PRODUCTION_CHAT_URL,
+        )
+        return result
     try:
         shared_status = await openrouter_budget_status(settings)
     except OpenRouterBudgetUnavailable:
@@ -1165,7 +1195,12 @@ async def stream_chat(
                 if provider == "openrouter" and not admission.replay_assistant:
                     try:
                         openrouter = await _authorize_openrouter(
-                            settings, db, owner.hf_user_id
+                            settings,
+                            db,
+                            owner.hf_user_id,
+                            shared_funding_allowed=_shared_openrouter_funding_allowed(
+                                settings, user
+                            ),
                         )
                     except ChatServiceError as exc:
                         service.fail_turn(owner, admission, exc.code)

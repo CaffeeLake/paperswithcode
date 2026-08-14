@@ -731,7 +731,8 @@ export interface OpenRouterUsageStatus {
   remaining_percent: number;
   resets_at: string;
   available: boolean;
-  unavailable_reason: "personal_allowance_exhausted" | "workspace_limit_exhausted" | "shared_credits_exhausted" | "provider_status_unavailable" | null;
+  unavailable_reason: "personal_allowance_exhausted" | "workspace_limit_exhausted" | "shared_credits_exhausted" | "provider_status_unavailable" | "staging_funding_disabled" | null;
+  production_chat_url?: string;
   as_of: string;
 }
 

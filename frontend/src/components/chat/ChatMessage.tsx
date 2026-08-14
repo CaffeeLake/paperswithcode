@@ -27,6 +27,7 @@ import type {
 
 const HF_PRO_URL = "https://huggingface.co/pro";
 const HF_PRICING_URL = "https://huggingface.co/docs/inference-providers/pricing";
+const PRODUCTION_CHAT_URL = "https://paperswithcode.co/chat";
 
 export interface HfBillingGuidance {
   account_type: "Free" | "PRO" | "Organization" | null;
@@ -542,6 +543,9 @@ export const AssistantMessage: React.FC<{
             : <a href="/settings#openrouter-byok">Connect your own OpenRouter key</a>}
           <span>Or select a Hugging Face-backed model and explicitly retry.</span>
         </>}
+        {msg.errorCode === "openrouter_staging_funding_disabled" && (
+          <a href={PRODUCTION_CHAT_URL}>Continue on paperswithcode.co</a>
+        )}
         {msg.errorCode === "openrouter_unavailable" && <>
           <a href="/settings#openrouter-byok">Bring your own key in Settings</a>
           <a href="https://github.com/huggingface/paperswithcode-feedback" target="_blank" rel="noreferrer">File an issue</a>

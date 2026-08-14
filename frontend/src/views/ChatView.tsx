@@ -52,6 +52,7 @@ import {
 } from "@/lib/chatSessions";
 
 const HF_INFERENCE_USAGE_URL = "https://huggingface.co/settings/inference-providers";
+const PRODUCTION_CHAT_URL = "https://paperswithcode.co/chat";
 const BILLING_NOTICE_DISMISSED_KEY = "pwc.chat.billing-notice-dismissed.v1";
 const emptyDraft = (text = ""): ChatDraft => ({ text, paperMentions: [] });
 const readStoredDraft = (): ChatDraft | null => {
@@ -100,7 +101,7 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   );
 };
 
-const OpenRouterUsageNotice: React.FC<{
+export const OpenRouterUsageNotice: React.FC<{
   enabled: boolean;
   fallbackEnabled: boolean;
   byokExpected?: boolean;
@@ -109,16 +110,22 @@ const OpenRouterUsageNotice: React.FC<{
   if (!enabled || !usageQuery.data) return null;
   const usage = usageQuery.data;
   const reset = resetTimeLabels(usage.resets_at);
+  const stagingFundingDisabled = usage.unavailable_reason === "staging_funding_disabled";
   const sharedUnavailable = usage.unavailable_reason === "shared_credits_exhausted"
     || usage.unavailable_reason === "workspace_limit_exhausted"
     || usage.unavailable_reason === "provider_status_unavailable";
   return <div className="chat-openrouter-usage" role="status">
     <span>
-      {sharedUnavailable
+      {stagingFundingDisabled
+        ? <strong>Chat is now live on paperswithcode.co</strong>
+        : sharedUnavailable
         ? <><strong>Shared OpenRouter credits unavailable</strong> · {usage.remaining_percent}% of your allowance remains</>
         : <><strong>{usage.remaining_percent}% left</strong> this month · resets {reset.local}</>}
     </span>
-    {(!usage.available || byokExpected) && <span>
+    {stagingFundingDisabled ? <span>
+      <a href={usage.production_chat_url || PRODUCTION_CHAT_URL}>Continue on production</a>
+      {fallbackEnabled && " · Your connected OpenRouter key remains available on staging."}
+    </span> : (!usage.available || byokExpected) && <span>
       {fallbackEnabled
         ? "Your connected OpenRouter key will be used on your next explicit send."
         : <><a href="/settings#openrouter-byok">Connect your own key in Settings</a> to continue.</>}

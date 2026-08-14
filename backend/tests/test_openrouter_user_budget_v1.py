@@ -348,6 +348,61 @@ def test_byok_remains_available_when_funded_preview_is_disabled(monkeypatch):
     assert error.value.code == "openrouter_unavailable"
 
 
+def test_non_admin_staging_users_are_redirected_to_production_or_byok(monkeypatch):
+    monkeypatch.setattr(
+        "backend.routers.chat.OpenRouterBYOKService.selected",
+        lambda _service, _owner: None,
+    )
+    with pytest.raises(ChatServiceError) as moved:
+        asyncio.run(
+            _authorize_openrouter(
+                _settings(chat_openrouter_server_funded_enabled=True),
+                SimpleNamespace(),
+                "hf-user",
+                shared_funding_allowed=False,
+            )
+        )
+    assert moved.value.status_code == 403
+    assert moved.value.code == "openrouter_staging_funding_disabled"
+    assert moved.value.details == {
+        "production_chat_url": "https://paperswithcode.co/chat"
+    }
+
+    revision = uuid.uuid4()
+    monkeypatch.setattr(
+        "backend.routers.chat.OpenRouterBYOKService.selected",
+        lambda _service, _owner: SimpleNamespace(token="sk-or-user", revision=revision),
+    )
+    admission = asyncio.run(
+        _authorize_openrouter(
+            _settings(chat_openrouter_server_funded_enabled=True),
+            SimpleNamespace(),
+            "hf-user",
+            shared_funding_allowed=False,
+        )
+    )
+    assert admission == chat_router.OpenRouterAdmission(
+        "openrouter_byok", "sk-or-user", revision
+    )
+
+
+def test_production_funding_is_unchanged_for_non_admins(monkeypatch):
+    async def allow(_settings):
+        return None
+
+    monkeypatch.setattr(chat_router, "require_openrouter_budget", allow)
+    admission = asyncio.run(
+        _authorize_openrouter(
+            _settings(
+                environment="production",
+                chat_openrouter_server_funded_enabled=True,
+            ),
+            shared_funding_allowed=False,
+        )
+    )
+    assert admission.mode == "openrouter_funded"
+
+
 def test_recent_auth_and_same_origin_csrf_are_both_required(monkeypatch):
     settings = _settings(
         environment="staging",
@@ -571,7 +626,7 @@ def test_usage_reports_shared_credit_failure_separately_from_user_allowance(
 
     result = asyncio.run(
         chat_router.get_openrouter_usage(
-            {"hf_user_id": "hf-user"},
+            {"hf_user_id": "hf-user", "role": "admin"},
             SimpleNamespace(),
             _settings(chat_openrouter_server_funded_enabled=True),
         )
@@ -580,3 +635,44 @@ def test_usage_reports_shared_credit_failure_separately_from_user_allowance(
     assert result["remaining_percent"] == 43
     assert result["available"] is False
     assert result["unavailable_reason"] == "shared_credits_exhausted"
+
+
+def test_usage_redirects_non_admin_staging_users_without_provider_lookup(
+    monkeypatch,
+):
+    user_status = SimpleNamespace(
+        public_dict=lambda: {
+            "used_percent": 12,
+            "remaining_percent": 88,
+            "resets_at": datetime(2026, 9, 1, tzinfo=UTC),
+            "available": True,
+            "as_of": datetime(2026, 8, 4, tzinfo=UTC),
+        },
+    )
+
+    class UserBudget:
+        def __init__(self, *_args):
+            pass
+
+        def status_percentage(self, _owner):
+            return user_status
+
+    async def unexpected_provider_lookup(_settings):
+        raise AssertionError("non-admin staging status must not query shared credits")
+
+    monkeypatch.setattr(chat_router, "OpenRouterUserBudgetService", UserBudget)
+    monkeypatch.setattr(
+        chat_router, "openrouter_budget_status", unexpected_provider_lookup
+    )
+
+    result = asyncio.run(
+        chat_router.get_openrouter_usage(
+            {"hf_user_id": "hf-user", "role": None},
+            SimpleNamespace(),
+            _settings(chat_openrouter_server_funded_enabled=True),
+        )
+    )
+
+    assert result["available"] is False
+    assert result["unavailable_reason"] == "staging_funding_disabled"
+    assert result["production_chat_url"] == "https://paperswithcode.co/chat"

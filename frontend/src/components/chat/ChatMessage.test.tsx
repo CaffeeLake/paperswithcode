@@ -337,6 +337,21 @@ describe("AssistantMessage", () => {
     expect(screen.queryByRole("link", { name: /OpenRouter key/i })).not.toBeInTheDocument();
   });
 
+  it("redirects users when shared staging funding has ended", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "Shared staging credits have ended because chat is now live on paperswithcode.co.",
+      errorCode: "openrouter_staging_funding_disabled",
+    });
+
+    expect(screen.getByRole("link", { name: "Continue on paperswithcode.co" })).toHaveAttribute(
+      "href",
+      "https://paperswithcode.co/chat",
+    );
+    expect(screen.queryByRole("link", { name: /own OpenRouter key/i })).not.toBeInTheDocument();
+  });
+
   it("uses the generic OpenRouter-unavailable contract without pool details", () => {
     renderAssistant({
       id: "assistant-1",
