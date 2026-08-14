@@ -1,0 +1,318 @@
+import type { ChatBlock, ChatEvent, ChatMessage } from "./chat";
+
+export const WORKSPACE_STATUS = "Preparing research workspace…";
+
+export type ChatLifecyclePhase =
+  | "idle"
+  | "streaming"
+  | "complete"
+  | "failed"
+  | "stopped";
+
+export interface ChatLifecycleState {
+  messages: ChatMessage[];
+  sessionId: string | null;
+  title: string;
+  phase: ChatLifecyclePhase;
+}
+
+export type ChatLifecycleAction =
+  | { type: "start"; messages: ChatMessage[]; sessionId: string | null }
+  | { type: "event"; event: ChatEvent }
+  | { type: "load"; messages: ChatMessage[]; sessionId: string | null }
+  | { type: "workspace_status" }
+  | { type: "clear_workspace_status" }
+  | { type: "settle" }
+  | { type: "stop" }
+  | { type: "reset" };
+
+export const initialChatLifecycle = (): ChatLifecycleState => ({
+  messages: [],
+  sessionId: null,
+  title: "",
+  phase: "idle",
+});
+
+function findLastMatchingIndex<T>(
+  items: T[],
+  predicate: (item: T) => boolean,
+): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) return index;
+  }
+  return -1;
+}
+
+function withoutWorkspaceStatus(message: ChatMessage): ChatMessage {
+  if (message.status !== WORKSPACE_STATUS) return message;
+  const { status: _status, ...rest } = message;
+  return rest;
+}
+
+function patchLast(
+  messages: ChatMessage[],
+  patch: (message: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  if (!messages.length) return messages;
+  const next = messages.slice();
+  next[next.length - 1] = patch(next[next.length - 1]);
+  return next;
+}
+
+function patchBlock(
+  messages: ChatMessage[],
+  match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean,
+  patch: (block: ChatBlock) => ChatBlock,
+): ChatMessage[] {
+  return patchLast(messages, (message) => {
+    const visible = withoutWorkspaceStatus(message);
+    const blocks = visible.blocks ?? [];
+    return {
+      ...visible,
+      blocks: blocks.map((block, index) => (
+        match(block, index, blocks) ? patch(block) : block
+      )),
+    };
+  });
+}
+
+function reduceEvent(
+  state: ChatLifecycleState,
+  event: ChatEvent,
+): ChatLifecycleState {
+  switch (event.type) {
+    case "stream_start":
+      return event.session_id ? { ...state, sessionId: event.session_id } : state;
+    case "sandbox_start":
+    case "sandbox_ready":
+    case "workspace_ready":
+      return state;
+    case "session_title_start":
+      return { ...state, title: "" };
+    case "session_title_delta":
+      return {
+        ...state,
+        title: `${state.title}${event.text}`.replace(/\s+/g, " ").slice(0, 80),
+      };
+    case "session_title_done":
+      return { ...state, title: event.title };
+    case "reasoning_start":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return {
+            ...visible,
+            blocks: [
+              ...(visible.blocks ?? []).map((block) => (
+                block.kind === "reasoning" && block.active
+                  ? { ...block, active: false, open: false }
+                  : block
+              )),
+              { kind: "reasoning", text: "", active: true, open: true },
+            ],
+          };
+        }),
+      };
+    case "reasoning_delta":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block, index, blocks) => block.kind === "reasoning"
+            && findLastMatchingIndex(blocks, (candidate) => candidate.kind === "reasoning") === index,
+          (block) => block.kind === "reasoning"
+            ? { ...block, text: block.text + event.text }
+            : block,
+        ),
+      };
+    case "reasoning_end":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const blocks = message.blocks ?? [];
+          const currentIndex = findLastMatchingIndex(
+            blocks,
+            (block) => block.kind === "reasoning" && block.active,
+          );
+          if (currentIndex < 0) return message;
+          const current = blocks[currentIndex];
+          if (current.kind !== "reasoning") return message;
+          const previous = blocks[currentIndex - 1];
+          if (previous?.kind === "reasoning" && previous.text === current.text) {
+            return { ...message, blocks: blocks.filter((_block, index) => index !== currentIndex) };
+          }
+          return {
+            ...message,
+            blocks: blocks.map((block, index) => index === currentIndex
+              ? { ...current, active: false, open: false }
+              : block),
+          };
+        }),
+      };
+    case "tool_call":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return {
+            ...visible,
+            blocks: [...(visible.blocks ?? []), {
+              kind: "tool",
+              id: event.id,
+              name: event.name,
+              args: event.args,
+              status: "running",
+              open: false,
+            }],
+          };
+        }),
+      };
+    case "tool_result":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "tool" && block.id === event.id,
+          (block) => block.kind !== "tool"
+            ? block
+            : event.status
+              ? {
+                  ...block,
+                  schema_version: 2,
+                  status: event.status,
+                  took_ms: event.took_ms,
+                  content: event.content,
+                  metadata: event.metadata,
+                  open: event.status !== "success",
+                }
+              : {
+                  ...block,
+                  status: "done",
+                  hits: event.hits,
+                  took_ms: event.took_ms,
+                  results: event.results,
+                },
+        ),
+      };
+    case "answer_delta":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          const blocks = visible.blocks ?? [];
+          const last = blocks.at(-1);
+          if (last?.kind === "answer" && !last.done) {
+            return {
+              ...visible,
+              blocks: [...blocks.slice(0, -1), { ...last, text: last.text + event.text }],
+            };
+          }
+          return {
+            ...visible,
+            blocks: [...blocks, { kind: "answer", text: event.text, done: false }],
+          };
+        }),
+      };
+    case "done":
+      return {
+        ...state,
+        phase: "complete",
+        messages: patchLast(state.messages, (message) => ({
+          ...message,
+          streaming: false,
+          followups: event.followups,
+          finishReason: event.finish_reason,
+          citations: event.citations,
+          blocks: (message.blocks ?? []).map((block) => (
+            block.kind === "answer"
+              ? { ...block, done: true }
+              : block.kind === "reasoning" && block.active
+                ? { ...block, active: false, open: false }
+                : block
+          )),
+        })),
+      };
+    case "error":
+      return {
+        ...state,
+        phase: "failed",
+        messages: patchLast(state.messages, (message) => ({
+          ...message,
+          streaming: false,
+          error: event.message,
+          errorCode: event.code,
+          blocks: (message.blocks ?? []).map((block) => (
+            block.kind === "reasoning" && block.active
+              ? { ...block, active: false, open: false }
+              : block
+          )),
+        })),
+      };
+  }
+}
+
+function stopMessages(messages: ChatMessage[]): ChatMessage[] {
+  return patchLast(messages, (message) => {
+    if (message.role !== "assistant") return message;
+    const blocks = (message.blocks ?? []).flatMap((block): ChatBlock[] => {
+      if (block.kind === "tool" && block.status === "running") return [];
+      if (block.kind === "reasoning" && block.active) {
+        return block.text ? [{ ...block, active: false, open: false }] : [];
+      }
+      if (block.kind === "answer") return [{ ...block, done: true }];
+      return [block];
+    });
+    return { ...message, blocks, streaming: false, finishReason: "stopped" };
+  });
+}
+
+export function chatLifecycleReducer(
+  state: ChatLifecycleState,
+  action: ChatLifecycleAction,
+): ChatLifecycleState {
+  switch (action.type) {
+    case "start":
+      return {
+        messages: action.messages,
+        sessionId: action.sessionId,
+        title: "",
+        phase: "streaming",
+      };
+    case "event":
+      return reduceEvent(state, action.event);
+    case "load":
+      return {
+        messages: action.messages,
+        sessionId: action.sessionId,
+        title: state.title,
+        phase: "idle",
+      };
+    case "workspace_status":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => (
+          message.role === "assistant"
+          && message.streaming
+          && (message.blocks?.length ?? 0) === 0
+          && !message.error
+            ? { ...message, status: WORKSPACE_STATUS }
+            : message
+        )),
+      };
+    case "clear_workspace_status":
+      return { ...state, messages: patchLast(state.messages, withoutWorkspaceStatus) };
+    case "settle":
+      return {
+        ...state,
+        phase: "idle",
+        messages: patchLast(state.messages, (message) => (
+          message.streaming ? { ...message, streaming: false } : message
+        )),
+      };
+    case "stop":
+      return { ...state, messages: stopMessages(state.messages), phase: "stopped" };
+    case "reset":
+      return initialChatLifecycle();
+  }
+}

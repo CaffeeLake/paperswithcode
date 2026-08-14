@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
-  type ChatBlock,
-  type ChatBrowserLatencyUpdate,
   type ChatDraft,
   type ChatEvent,
   type ChatMessage,
@@ -11,24 +9,25 @@ import {
   ChatStreamError,
   isChatLive,
   isChatSmoothStreamingEnabled,
-  reportChatLatency,
   resumeChat,
   streamChat,
 } from "@/lib/chat";
+import {
+  ChatLatencyTracker,
+  type ChatTerminalClassification,
+} from "@/lib/chatLatency";
+import {
+  type ChatLifecycleAction,
+  chatLifecycleReducer,
+  initialChatLifecycle,
+} from "@/lib/chatLifecycle";
 import {
   createSmoothedChatStream,
   type SmoothedChatStream,
 } from "@/lib/chatStreamSmoother";
 import { cancelSession, getSession, toUiMessages } from "@/lib/chatSessions";
 
-const WORKSPACE_STATUS = "Preparing research workspace…";
 const WORKSPACE_STATUS_DELAY_MS = 750;
-
-function withoutWorkspaceStatus(message: ChatMessage): ChatMessage {
-  if (message.status !== WORKSPACE_STATUS) return message;
-  const { status: _status, ...rest } = message;
-  return rest;
-}
 
 function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -37,14 +36,14 @@ function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): 
   return -1;
 }
 
-interface BrowserTiming {
-  controller: AbortController;
-  submittedAt: number;
-  requestId?: string;
-  firstVisibleAt?: number;
-  streamStartReported: boolean;
-  firstVisibleReported: boolean;
-  terminalReported: boolean;
+function useStableCallback<Args extends unknown[], Result>(
+  callback: (...args: Args) => Result,
+): (...args: Args) => Result {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  });
+  return useCallback((...args: Args) => callbackRef.current(...args), []);
 }
 
 interface UseChatOptions {
@@ -94,7 +93,10 @@ export function useChat(options: UseChatOptions) {
   } | null>(null);
   const preparingTimerRef = useRef<number | null>(null);
   const workspaceStatusStateRef = useRef<"armed" | "shown" | "cleared">("cleared");
-  const browserTimingRef = useRef<BrowserTiming | null>(null);
+  const latencyRef = useRef<{
+    controller: AbortController;
+    tracker: ChatLatencyTracker;
+  } | null>(null);
   const pendingCapacityRef = useRef<PendingGeneration | null>(null);
   const [capacityRequest, setCapacityRequest] = useState<Pick<
     PendingGeneration,
@@ -102,12 +104,12 @@ export function useChat(options: UseChatOptions) {
   > | null>(null);
   const [disabledRequest, setDisabledRequest] = useState<{ question: string; draft: ChatDraft } | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const lifecycleRef = useRef(initialChatLifecycle());
   const activeMessagesRef = useRef<ChatMessage[] | null>(null);
   const activeMessagesGenerationRef = useRef<number | null>(null);
   const activeProjectionVisibleRef = useRef(false);
   const optionsRef = useRef(options);
   const promptRef = useRef<ChatDraft>({ text: "", paperMentions: [] });
-  const titleRef = useRef("");
   const idRef = useRef(0);
   const messagesGenerationRef = useRef(0);
   const activeSessionIdRef = useRef(options.sessionId);
@@ -116,7 +118,7 @@ export function useChat(options: UseChatOptions) {
     renderedSessionIdRef.current = options.sessionId;
     if (activeSessionIdRef.current !== options.sessionId) {
       messagesGenerationRef.current += 1;
-      browserTimingRef.current = null;
+      latencyRef.current = null;
     }
   }
   optionsRef.current = options;
@@ -162,31 +164,36 @@ export function useChat(options: UseChatOptions) {
   }, [messages]);
 
   const nextId = () => `m${++idRef.current}_${Date.now().toString(36)}`;
-  const patchLast = (
-    fn: (message: ChatMessage) => ChatMessage,
+  const transitionLifecycle = (
+    action: ChatLifecycleAction,
     projectToVisible = true,
   ) => {
-    const previous = activeMessagesRef.current ?? messagesRef.current;
-    if (!previous.length) return;
-    const copy = previous.slice();
-    copy[copy.length - 1] = fn(copy[copy.length - 1]);
-    if (activeMessagesRef.current) activeMessagesRef.current = copy;
-    if (projectToVisible) {
-      messagesRef.current = copy;
-      setMessages(copy);
+    const previous = {
+      ...lifecycleRef.current,
+      messages: activeMessagesRef.current ?? messagesRef.current,
+      sessionId: activeSessionIdRef.current,
+    };
+    const next = chatLifecycleReducer(previous, action);
+    lifecycleRef.current = next;
+    if (activeMessagesRef.current) activeMessagesRef.current = next.messages;
+    const announcedSessionId = action.type === "event"
+      && action.event.type === "stream_start"
+      ? action.event.session_id
+      : null;
+    if (announcedSessionId) {
+      activeSessionIdRef.current = announcedSessionId;
+      optionsRef.current.onSessionId(announcedSessionId);
+    } else if (next.sessionId && next.sessionId !== previous.sessionId) {
+      activeSessionIdRef.current = next.sessionId;
+      optionsRef.current.onSessionId(next.sessionId);
     }
+    if (next.title !== previous.title) optionsRef.current.onTitle(next.title);
+    if (projectToVisible) {
+      messagesRef.current = next.messages;
+      setMessages(next.messages);
+    }
+    return next;
   };
-  const addBlock = (block: ChatBlock, projectToVisible = true) => patchLast((message) => {
-    const visible = withoutWorkspaceStatus(message);
-    return { ...visible, blocks: [...(visible.blocks ?? []), block] };
-  }, projectToVisible);
-  const patchBlock = (match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean, patch: (block: ChatBlock) => ChatBlock, projectToVisible = true) =>
-    patchLast((message) => {
-      const visible = withoutWorkspaceStatus(message);
-      return { ...visible, blocks: (visible.blocks ?? []).map((block, index, all) => match(block, index, all) ? patch(block) : block) };
-    }, projectToVisible);
-  const isLastOfKind = (kind: ChatBlock["kind"]) => (block: ChatBlock, index: number, blocks: ChatBlock[]) =>
-    block.kind === kind && findLastMatchingIndex(blocks, (candidate) => candidate.kind === kind) === index;
 
   const projectsActiveStream = () => (
     activeMessagesGenerationRef.current === messagesGenerationRef.current
@@ -248,7 +255,7 @@ export function useChat(options: UseChatOptions) {
     const wasShown = workspaceStatusStateRef.current === "shown";
     workspaceStatusStateRef.current = "cleared";
     if (!wasShown) return;
-    patchLast(withoutWorkspaceStatus, projectsActiveStream());
+    transitionLifecycle({ type: "clear_workspace_status" }, projectsActiveStream());
   };
 
   const armWorkspaceStatus = (
@@ -268,58 +275,28 @@ export function useChat(options: UseChatOptions) {
         || messagesGenerationRef.current !== messagesGeneration
       ) return;
       workspaceStatusStateRef.current = "shown";
-      patchLast((message) => (
-        message.role === "assistant"
-        && message.streaming
-        && (message.blocks?.length ?? 0) === 0
-        && !message.error
-          ? { ...message, status: WORKSPACE_STATUS }
-          : message
-      ), projectsActiveStream());
+      transitionLifecycle({ type: "workspace_status" }, projectsActiveStream());
     }, WORKSPACE_STATUS_DELAY_MS);
   };
 
-  const reportTiming = (
-    timing: BrowserTiming,
-    update: ChatBrowserLatencyUpdate,
-  ) => {
-    if (timing.requestId) reportChatLatency(timing.requestId, update);
-  };
-
   const recordStreamStart = (controller: AbortController, requestId: string) => {
-    const timing = browserTimingRef.current;
-    if (!timing || timing.controller !== controller) return;
-    timing.requestId = requestId;
-    if (!timing.streamStartReported) {
-      timing.streamStartReported = true;
-      reportTiming(timing, {
-        submission_to_stream_start_ms: Math.max(0, performance.now() - timing.submittedAt),
-      });
-    }
-    if (timing.firstVisibleAt !== undefined && !timing.firstVisibleReported) {
-      timing.firstVisibleReported = true;
-      reportTiming(timing, {
-        submission_to_first_visible_delta_ms: Math.max(
-          0,
-          timing.firstVisibleAt - timing.submittedAt,
-        ),
-      });
-    }
+    const latency = latencyRef.current;
+    if (!latency || latency.controller !== controller) return;
+    latency.tracker.recordStreamStart(requestId, performance.now());
   };
 
   const recordTerminal = (
     controller: AbortController,
-    classification: NonNullable<ChatBrowserLatencyUpdate["terminal_classification"]>,
+    classification: ChatTerminalClassification,
   ) => {
-    const timing = browserTimingRef.current;
-    if (!timing || timing.controller !== controller || timing.terminalReported) return;
-    timing.terminalReported = true;
-    reportTiming(timing, { terminal_classification: classification });
+    const latency = latencyRef.current;
+    if (!latency || latency.controller !== controller) return;
+    latency.tracker.recordTerminal(classification);
   };
 
   useLayoutEffect(() => {
-    const timing = browserTimingRef.current;
-    if (!timing || timing.firstVisibleAt !== undefined) return;
+    const latency = latencyRef.current;
+    if (!latency) return;
     const assistant = messages.at(-1);
     if (assistant?.role !== "assistant") return;
     const visible = (assistant.blocks ?? []).some((block) => (
@@ -328,117 +305,11 @@ export function useChat(options: UseChatOptions) {
       || (block.kind === "answer" && Boolean(block.text.trim()))
     ));
     if (!visible) return;
-    timing.firstVisibleAt = performance.now();
-    if (timing.requestId && !timing.firstVisibleReported) {
-      timing.firstVisibleReported = true;
-      reportTiming(timing, {
-        submission_to_first_visible_delta_ms: Math.max(
-          0,
-          timing.firstVisibleAt - timing.submittedAt,
-        ),
-      });
-    }
+    latency.tracker.recordFirstVisible(performance.now());
   }, [messages]);
 
   const applyEvent = (event: ChatEvent, projectToVisible = true) => {
-    switch (event.type) {
-      case "stream_start":
-        if (event.session_id) {
-          activeSessionIdRef.current = event.session_id;
-          optionsRef.current.onSessionId(event.session_id);
-        }
-        break;
-      case "sandbox_start":
-      case "sandbox_ready":
-      case "workspace_ready":
-        break;
-      case "session_title_start":
-        titleRef.current = "";
-        break;
-      case "session_title_delta":
-        titleRef.current += event.text;
-        optionsRef.current.onTitle(titleRef.current.replace(/\s+/g, " ").slice(0, 80));
-        break;
-      case "session_title_done":
-        titleRef.current = event.title;
-        optionsRef.current.onTitle(event.title);
-        break;
-      case "reasoning_start":
-        patchLast((message) => {
-          const visible = withoutWorkspaceStatus(message);
-          return {
-            ...visible,
-            blocks: [
-              ...(visible.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
-                ? { ...block, active: false, open: false }
-                : block),
-              { kind: "reasoning", text: "", active: true, open: true },
-            ],
-          };
-        }, projectToVisible);
-        break;
-      case "reasoning_delta":
-        patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block, projectToVisible);
-        break;
-      case "reasoning_end":
-        patchLast((message) => {
-          const blocks = message.blocks ?? [];
-          const currentIndex = findLastMatchingIndex(
-            blocks,
-            (block) => block.kind === "reasoning" && block.active,
-          );
-          if (currentIndex < 0) return message;
-          const current = blocks[currentIndex];
-          if (current.kind !== "reasoning") return message;
-          const previous = blocks[currentIndex - 1];
-          if (previous?.kind === "reasoning" && previous.text === current.text) {
-            return {
-              ...message,
-              blocks: blocks.filter((_block, index) => index !== currentIndex),
-            };
-          }
-          return {
-            ...message,
-            blocks: blocks.map((block, index) => index === currentIndex
-              ? { ...current, active: false, open: false }
-              : block),
-          };
-        }, projectToVisible);
-        break;
-      case "tool_call":
-        addBlock({ kind: "tool", id: event.id, name: event.name, args: event.args, status: "running", open: false }, projectToVisible);
-        break;
-      case "tool_result":
-        patchBlock((block) => block.kind === "tool" && block.id === event.id, (block) => block.kind === "tool"
-          ? event.status
-            ? { ...block, schema_version: 2, status: event.status, took_ms: event.took_ms, content: event.content, metadata: event.metadata, open: event.status !== "success" }
-            : { ...block, status: "done", hits: event.hits, took_ms: event.took_ms, results: event.results }
-          : block, projectToVisible);
-        break;
-      case "answer_delta":
-        patchLast((message) => {
-          const visible = withoutWorkspaceStatus(message);
-          const blocks = visible.blocks ?? [];
-          const last = blocks.at(-1);
-          if (last?.kind === "answer" && !last.done) return { ...visible, blocks: [...blocks.slice(0, -1), { ...last, text: last.text + event.text }] };
-          return { ...visible, blocks: [...blocks, { kind: "answer", text: event.text, done: false }] };
-        }, projectToVisible);
-        break;
-      case "done":
-        patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block.kind === "reasoning" && block.active ? { ...block, active: false, open: false } : block) }), projectToVisible);
-        break;
-      case "error":
-        patchLast((message) => ({
-          ...message,
-          streaming: false,
-          error: event.message,
-          errorCode: event.code,
-          blocks: (message.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
-            ? { ...block, active: false, open: false }
-            : block),
-        }), projectToVisible);
-        break;
-    }
+    transitionLifecycle({ type: "event", event }, projectToVisible);
   };
 
   const reloadCanonical = async (sessionId: string, generation: number) => {
@@ -459,6 +330,11 @@ export function useChat(options: UseChatOptions) {
     setMessages(restored);
     messagesRef.current = restored;
     activeMessagesRef.current = restored;
+    lifecycleRef.current = chatLifecycleReducer(lifecycleRef.current, {
+      type: "load",
+      messages: restored,
+      sessionId,
+    });
     return restored;
   };
 
@@ -482,13 +358,15 @@ export function useChat(options: UseChatOptions) {
     setSessionError("");
     setMessages(optimistic);
     activeMessagesRef.current = optimistic;
+    lifecycleRef.current = chatLifecycleReducer(lifecycleRef.current, {
+      type: "start",
+      messages: optimistic,
+      sessionId: request.session_id,
+    });
     setBusy(true);
-    browserTimingRef.current = resumeSessionId ? null : {
+    latencyRef.current = resumeSessionId ? null : {
       controller,
-      submittedAt: performance.now(),
-      streamStartReported: false,
-      firstVisibleReported: false,
-      terminalReported: false,
+      tracker: new ChatLatencyTracker(performance.now()),
     };
     workspaceStatusStateRef.current = "cleared";
     void (async () => {
@@ -713,16 +591,16 @@ export function useChat(options: UseChatOptions) {
                 }
               } catch {
                 if (messagesGenerationRef.current === messagesGeneration) {
-                  patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+                  transitionLifecycle({ type: "settle" });
                 }
               }
             } else if (messagesGenerationRef.current === messagesGeneration) {
-              patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+              transitionLifecycle({ type: "settle" });
             }
             optionsRef.current.onSettled(canonicalId);
           }
-          if (browserTimingRef.current?.controller === controller) {
-            browserTimingRef.current = null;
+          if (latencyRef.current?.controller === controller) {
+            latencyRef.current = null;
           }
         }
       }
@@ -730,7 +608,7 @@ export function useChat(options: UseChatOptions) {
     return true;
   };
 
-  const send = useCallback((input: ChatDraft | string) => {
+  const send = useStableCallback((input: ChatDraft | string) => {
     const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
     const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
@@ -757,9 +635,9 @@ export function useChat(options: UseChatOptions) {
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
     }, optimistic, current);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
-  const editAndResend = useCallback((messageId: string, input: ChatDraft | string) => {
+  const editAndResend = useStableCallback((messageId: string, input: ChatDraft | string) => {
     const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
     const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
@@ -798,14 +676,14 @@ export function useChat(options: UseChatOptions) {
       targetId: target.id,
       snapshot,
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
   const cancelCapacity = useCallback(() => {
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
   }, []);
 
-  const retryCapacity = useCallback(() => {
+  const retryCapacity = useStableCallback(() => {
     const pending = pendingCapacityRef.current;
     if (!pending || Date.now() < pending.retryAt || busyRef.current) return false;
     pendingCapacityRef.current = null;
@@ -817,9 +695,9 @@ export function useChat(options: UseChatOptions) {
       pending.original,
       pending.edit,
     );
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
-  const stop = useCallback(() => {
+  const stop = useStableCallback(() => {
     if (!abortRef.current) return;
     const controller = abortRef.current;
     clearWorkspaceStatus(controller);
@@ -832,28 +710,12 @@ export function useChat(options: UseChatOptions) {
     for (const event of accepted) applyEvent(event, false);
     commitPresentation();
     abortRef.current = null;
-    if (browserTimingRef.current?.controller === controller) {
-      browserTimingRef.current = null;
+    if (latencyRef.current?.controller === controller) {
+      latencyRef.current = null;
     }
     busyRef.current = false;
     setBusy(false);
-    const stopProjection = (previous: ChatMessage[]) => {
-      const last = previous.at(-1);
-      if (last?.role !== "assistant") return previous;
-      const completed = (last.blocks ?? []).flatMap((block): ChatBlock[] => {
-        if (block.kind === "tool" && block.status === "running") return [];
-        if (block.kind === "reasoning" && block.active) {
-          return block.text ? [{ ...block, active: false, open: false }] : [];
-        }
-        if (block.kind === "answer") return [{ ...block, done: true }];
-        return [block];
-      });
-      return [
-        ...previous.slice(0, -1),
-        { ...last, blocks: completed, streaming: false, finishReason: "stopped" },
-      ];
-    };
-    const stopped = stopProjection(activeMessagesRef.current ?? messagesRef.current);
+    const stopped = transitionLifecycle({ type: "stop" }, false).messages;
     activeMessagesRef.current = stopped;
     messagesRef.current = stopped;
     setMessages(stopped);
@@ -871,7 +733,7 @@ export function useChat(options: UseChatOptions) {
         optionsRef.current.onSettled(null);
       }
     }, 450);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
   const toggleBlock = useCallback((messageId: string, blockIndex: number) => setMessages((previous) => previous.map((message) => message.id !== messageId ? message : { ...message, blocks: message.blocks?.map((block, index) => index === blockIndex && (block.kind === "reasoning" || block.kind === "tool") ? { ...block, open: !block.open } : block) })), []);
   const reset = useCallback(() => {
@@ -887,19 +749,20 @@ export function useChat(options: UseChatOptions) {
     cancelPresentationFrame();
     presentationDirtyRef.current = false;
     stoppedProjectionRef.current = null;
-    browserTimingRef.current = null;
+    latencyRef.current = null;
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
     busyRef.current = false;
     activeSessionIdRef.current = null;
     activeMessagesRef.current = null;
+    lifecycleRef.current = chatLifecycleReducer(lifecycleRef.current, { type: "reset" });
     activeMessagesGenerationRef.current = null;
     activeProjectionVisibleRef.current = false;
     setMessages([]);
     setBusy(false);
     setSessionError("");
   }, []);
-  const load = useCallback((
+  const load = useStableCallback((
     restored: ChatMessage[],
     sessionId?: string | null,
     resumeActive = false,
@@ -912,7 +775,7 @@ export function useChat(options: UseChatOptions) {
     workspaceStatusStateRef.current = "cleared";
     cancelPresentationFrame();
     presentationDirtyRef.current = false;
-    browserTimingRef.current = null;
+    latencyRef.current = null;
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
     if (
@@ -966,9 +829,14 @@ export function useChat(options: UseChatOptions) {
     }
     setMessages(restored);
     messagesRef.current = restored;
+    lifecycleRef.current = chatLifecycleReducer(lifecycleRef.current, {
+      type: "load",
+      messages: restored,
+      sessionId: sessionId ?? optionsRef.current.sessionId,
+    });
     if (!busyRef.current) setBusy(false);
     setSessionError("");
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  });
 
   return {
     messages,

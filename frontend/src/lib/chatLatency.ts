@@ -1,0 +1,68 @@
+import {
+  type ChatBrowserLatencyUpdate,
+  reportChatLatency,
+} from "./chat";
+
+export type ChatTerminalClassification = NonNullable<
+  ChatBrowserLatencyUpdate["terminal_classification"]
+>;
+
+type ReportLatency = (
+  requestId: string,
+  update: ChatBrowserLatencyUpdate,
+) => void;
+
+export class ChatLatencyTracker {
+  private requestId?: string;
+  private firstVisibleAt?: number;
+  private streamStartReported = false;
+  private firstVisibleReported = false;
+  private terminalReported = false;
+
+  constructor(
+    private readonly submittedAt: number,
+    private readonly report: ReportLatency = reportChatLatency,
+  ) {}
+
+  recordStreamStart(requestId: string, now: number): void {
+    this.requestId = requestId;
+    if (!this.streamStartReported) {
+      this.streamStartReported = true;
+      this.send({
+        submission_to_stream_start_ms: Math.max(0, now - this.submittedAt),
+      });
+    }
+    this.reportFirstVisible();
+  }
+
+  recordFirstVisible(now: number): void {
+    if (this.firstVisibleAt !== undefined) return;
+    this.firstVisibleAt = now;
+    this.reportFirstVisible();
+  }
+
+  recordTerminal(classification: ChatTerminalClassification): void {
+    if (this.terminalReported) return;
+    this.terminalReported = true;
+    this.send({ terminal_classification: classification });
+  }
+
+  private reportFirstVisible(): void {
+    if (
+      !this.requestId
+      || this.firstVisibleAt === undefined
+      || this.firstVisibleReported
+    ) return;
+    this.firstVisibleReported = true;
+    this.send({
+      submission_to_first_visible_delta_ms: Math.max(
+        0,
+        this.firstVisibleAt - this.submittedAt,
+      ),
+    });
+  }
+
+  private send(update: ChatBrowserLatencyUpdate): void {
+    if (this.requestId) this.report(this.requestId, update);
+  }
+}
