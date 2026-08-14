@@ -40,7 +40,7 @@ class ModalProviderSpendReporter:
             ).billing.report
         else:
             report = modal.Workspace.from_context().billing.report
-        items = await report.aio(start=start, end=end, resolution="h")
+        items = await report.aio(start=start, end=end, resolution="d")
         dollars = sum(
             item.cost
             for item in items

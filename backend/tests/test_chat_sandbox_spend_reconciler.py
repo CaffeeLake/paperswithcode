@@ -436,7 +436,7 @@ def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
     )
 
     assert result == 3_000_001
-    assert captured == [{"start": start, "end": end, "resolution": "h"}]
+    assert captured == [{"start": start, "end": end, "resolution": "d"}]
 
 
 def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
@@ -479,7 +479,7 @@ def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
     )
 
     assert result == 1_250_000
-    assert captured == [{"start": start, "end": end, "resolution": "h"}]
+    assert captured == [{"start": start, "end": end, "resolution": "d"}]
 
 
 def test_reconciler_skips_inside_hour_without_calling_provider():
