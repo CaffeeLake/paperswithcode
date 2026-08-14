@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -45,6 +46,18 @@ class RefreshPaperEmbeddingsJob(CronJobBase):
         self.logger.info("Embeddings updated: %d", result.embedded)
         self.logger.info("Stale during inference: %d", result.stale)
         self.logger.info("Run ID: %s", result.run_id)
+        self.logger.info(
+            "PAPER_EMBEDDINGS_SUMMARY %s",
+            json.dumps(
+                {
+                    "generation_id": result.generation_id,
+                    "candidates": result.candidates,
+                    "embeddings_updated": result.embedded,
+                    "stale_during_inference": result.stale,
+                    "run_id": str(result.run_id),
+                }
+            ),
+        )
 
 
 def main() -> int:

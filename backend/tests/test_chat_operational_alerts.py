@@ -145,6 +145,26 @@ def test_state_round_trip_is_private_and_atomic(tmp_path):
     assert not list(tmp_path.glob(".state.json.new-*"))
 
 
+def test_dashboard_health_record_is_content_free_and_group_readable(tmp_path):
+    monitor.write_health_record(
+        tmp_path,
+        {
+            "status": "healthy",
+            "completed_at": "2026-08-14T12:00:00Z",
+            "pending": 0,
+            "delivered": 1,
+        },
+    )
+    path = tmp_path / monitor.HEALTH_RECORD
+    assert json.loads(path.read_text()) == {
+        "status": "healthy",
+        "completed_at": "2026-08-14T12:00:00Z",
+        "pending": 0,
+        "delivered": 1,
+    }
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
 def test_journal_reader_advances_cursor_without_returning_records(monkeypatch):
     output = "\n".join(
         (

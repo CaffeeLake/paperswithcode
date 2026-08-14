@@ -450,6 +450,18 @@ def main():
         log(f"Scores written: {written}")
         log(f"Stale scores cleared: {cleared}")
         log(f"Decaying pins applied: {pinned}")
+        log(
+            "PAPER_TRENDING_SUMMARY "
+            + json.dumps(
+                {
+                    "eligible_population": result["population"],
+                    "selected": result["selected"],
+                    "scores_written": written,
+                    "stale_scores_cleared": cleared,
+                    "decaying_pins_applied": pinned,
+                }
+            )
+        )
         log(f"Runtime: {elapsed:.1f} minutes")
         log("=" * 80)
     except Exception as e:

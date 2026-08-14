@@ -20,6 +20,7 @@ Dependencies: PostgreSQL, Hugging Face API
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -62,6 +63,8 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             )
         self.lookback_days = max(1, lookback_days)
         self.processed_count = 0
+        self.fetched_count = 0
+        self.fetched_dates = 0
         self.error_count = 0
         self.new_papers_count = 0
         self.new_authors_count = 0
@@ -103,6 +106,8 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         for target_date in target_dates:
             self.logger.info(f"Fetching daily papers for date: {target_date}")
             daily_papers = asyncio.run(self.fetch_daily_papers(target_date))
+            self.fetched_dates += 1
+            self.fetched_count += len(daily_papers)
 
             if not daily_papers:
                 self.logger.info(f"No papers found for date: {target_date}")
@@ -134,6 +139,23 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             f"  - Unknown organizations seen: {self.unknown_organizations_seen}"
         )
         self.logger.info(f"  - Errors: {self.error_count}")
+        self.logger.info(
+            "HF_DAILY_PAPERS_SUMMARY %s",
+            json.dumps(
+                {
+                    "upstream_fetch_succeeded": True,
+                    "dates_fetched": self.fetched_dates,
+                    "fetched": self.fetched_count,
+                    "inserted": self.new_papers_count,
+                    "updated": max(
+                        0,
+                        self.processed_count - self.new_papers_count - self.error_count,
+                    ),
+                    "skipped": 0,
+                    "failed": self.error_count,
+                }
+            ),
+        )
 
         self.vacuum_analyze_table("papers")
         self.vacuum_analyze_table("authors")

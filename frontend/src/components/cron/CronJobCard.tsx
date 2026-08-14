@@ -18,6 +18,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import type {
+  CronHealthAxis,
   CronJobHealth,
   CronJobStatus,
   CronWorkflowStatus,
@@ -59,6 +60,18 @@ function Status({ status, isRunning }: { status: CronJobHealth; isRunning: boole
     <StatusIcon
       className={`cron-status-icon cron-status--${effectiveStatus}${effectiveStatus === "running" ? " animate-spin" : ""}`}
     />
+  );
+}
+
+function AxisBadge({ label, axis }: { label: string; axis: CronHealthAxis }) {
+  return (
+    <Badge
+      variant="outline"
+      className={`cron-status--${axis.status}`}
+      title={axis.reason}
+    >
+      {label}: {axis.status}
+    </Badge>
   );
 }
 
@@ -297,7 +310,7 @@ export function CronJobCard({
   const hasWorkMetrics = Boolean(job.work_metrics && Object.keys(job.work_metrics).length);
   const hasDbMetrics = Boolean(job.db_metrics && Object.keys(job.db_metrics).length);
   const hasRemoteJobs = job.job_name === "paper_markdown_backfill";
-  const hasDetails = hasWorkMetrics || hasDbMetrics || Boolean(job.workflow_status) || hasRemoteJobs;
+  const hasDetails = true;
 
   return (
     <div className="cron-job-card">
@@ -309,7 +322,9 @@ export function CronJobCard({
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <h3 className="font-semibold">{job.display_name}</h3>
                 {job.critical && <Badge variant="outline" className="text-[10px] uppercase tracking-wide">Critical</Badge>}
-                {job.lock_stale && <Badge variant="outline" className="cron-status--broken">Stale lock</Badge>}
+                {job.lock_stale && <Badge variant="outline" className="cron-status--broken">Held lock</Badge>}
+                <AxisBadge label="Execution" axis={job.execution_health} />
+                <AxisBadge label="Output" axis={job.output_health} />
                 {hasDetails && (expanded ? <ChevronUp className="h-4 w-4 cron-muted" /> : <ChevronDown className="h-4 w-4 cron-muted" />)}
               </div>
               <p className="text-sm cron-muted mb-2">{job.status_reason}</p>
@@ -334,6 +349,26 @@ export function CronJobCard({
       {expanded && hasDetails && (
         <div className="cron-job-details">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div className="cron-section-heading">
+                <Calendar className="h-4 w-4" />
+                <h4>Scheduler evidence</h4>
+              </div>
+              <div className="cron-metric-card space-y-2 text-sm">
+                {[
+                  ["Scheduler", job.execution_health.scheduler ?? "unknown"],
+                  ["Last expected", formatCronDate(job.execution_health.last_expected_at ?? null)],
+                  ["Last started", formatCronDate(job.execution_health.last_started_at ?? null)],
+                  ["Last completed", formatCronDate(job.execution_health.last_completed_at ?? null)],
+                  ["Next expected", formatCronDate(job.execution_health.next_expected_at ?? null)],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between gap-3">
+                    <span className="cron-label">{label}</span>
+                    <span>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             {job.work_metrics && hasWorkMetrics && <MetricGroup icon={FileText} title="Log Metrics" metrics={job.work_metrics} />}
             {job.db_metrics && hasDbMetrics && <MetricGroup icon={Database} title="Database Metrics" metrics={job.db_metrics} />}
             {job.workflow_status && <WorkflowDetails workflow={job.workflow_status} />}
@@ -343,6 +378,24 @@ export function CronJobCard({
                 loading={paperMarkdownJobsLoading}
                 error={paperMarkdownJobsError}
               />
+            )}
+            {job.diagnostic_groups && Object.values(job.diagnostic_groups).some((items) => items.length > 0) && (
+              <div className="md:col-span-2">
+                <div className="cron-section-heading">
+                  <AlertTriangle className="h-4 w-4" />
+                  <h4>Diagnostics by cause</h4>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {Object.entries(job.diagnostic_groups).filter(([, items]) => items.length > 0).map(([cause, items]) => (
+                    <div key={cause} className="cron-metric-card">
+                      <div className="cron-label mb-1">{metricLabel(cause)}</div>
+                      <ul className="list-disc pl-4 text-sm space-y-1">
+                        {items.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>

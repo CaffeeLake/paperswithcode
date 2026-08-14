@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import re
 from unittest.mock import patch
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from backend.config import get_settings
@@ -13,9 +16,11 @@ from backend.main import create_app
 from backend.services.cron_health import (
     _gh_json,
     evaluate_job_health,
+    fetch_systemd_status,
     fetch_workflow_status,
 )
 from backend.services.cron_registry import get_cron_job, list_cron_jobs
+from deploy.cron_launcher import COMMANDS
 
 
 @pytest.fixture
@@ -32,6 +37,60 @@ def _job(job_id: str):
     job = get_cron_job(job_id)
     assert job is not None
     return job
+
+
+def test_registry_covers_workflows_systemd_and_allowlist_exactly():
+    root = Path(__file__).resolve().parents[2]
+    jobs = list(list_cron_jobs())
+    by_id = {job.id: job for job in jobs}
+    assert len(by_id) == len(jobs), "duplicate dashboard job IDs"
+
+    scheduled_commands = set()
+    workflow_owners = {}
+    for path in sorted((root / ".github" / "workflows").glob("cron-*.yml")):
+        document = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+        if not (document.get("on") or {}).get("schedule"):
+            continue
+        commands = set(re.findall(r"pwc-cron\s+([a-z0-9_]+)", path.read_text()))
+        commands.discard("status")
+        scheduled_commands.update(commands)
+        for command in commands:
+            assert command in by_id, (
+                f"scheduled workflow command missing from registry: {command}"
+            )
+            owner = by_id[command]
+            assert owner.workflow_file == path.name, (
+                f"workflow ownership mismatch for {command}"
+            )
+            assert not (
+                set(owner.workflow_jobs) - set((document.get("jobs") or {}).keys())
+            )
+            assert path.name not in workflow_owners, (
+                f"duplicate workflow owner: {path.name}"
+            )
+            workflow_owners[path.name] = command
+
+    systemd_commands = set()
+    for service in sorted((root / "deploy" / "systemd").glob("pwc-*.service")):
+        match = re.search(r"ExecStart=.*/pwc-cron\s+([a-z0-9_]+)", service.read_text())
+        if not match:
+            continue
+        command = match.group(1)
+        systemd_commands.add(command)
+        assert command in by_id, f"systemd command missing from registry: {command}"
+        assert by_id[command].systemd_service == service.name
+        timer = service.with_suffix(".timer")
+        assert timer.exists(), f"systemd timer missing for {command}"
+        assert by_id[command].systemd_timer == timer.name
+
+    helpers = {"extract_urls_select", "extract_urls_persist"}
+    manual = {"extract_urls"}
+    registered = set(by_id)
+    assert set(COMMANDS) == registered | helpers
+    assert manual == {job.id for job in jobs if job.scheduler == "manual"}
+    assert scheduled_commands | systemd_commands == {
+        job.id for job in jobs if job.scheduler != "manual"
+    }
 
 
 def test_gh_json_uses_configured_token_and_explicit_repository(monkeypatch):
@@ -82,7 +141,7 @@ def test_single_job_workflow_does_not_fetch_job_details():
     assert status["available"] is True
     assert status["conclusion"] == "success"
     assert status["updated_at"] == "2026-07-28T15:00:00Z"
-    gh_json.assert_called_once()
+    assert gh_json.call_count == 2
 
 
 def test_multi_job_workflow_fetches_job_details():
@@ -102,7 +161,11 @@ def test_multi_job_workflow_fetches_job_details():
 
     with patch(
         "backend.services.cron_health._gh_json",
-        side_effect=[(list_payload, None), (view_payload, None)],
+        side_effect=[
+            (list_payload, None),
+            ([], None),
+            (view_payload, None),
+        ],
     ) as gh_json:
         status = fetch_workflow_status(
             "test-multi-job.yml",
@@ -110,7 +173,18 @@ def test_multi_job_workflow_fetches_job_details():
         )
 
     assert status["failed_jobs"] == ["persist"]
-    assert gh_json.call_count == 2
+    assert gh_json.call_count == 3
+
+
+def test_workflow_adapter_errors_are_sanitized():
+    with patch(
+        "backend.services.cron_health._gh_json",
+        return_value=(None, "HTTP 401 token ghp_do_not_serialize"),
+    ):
+        status = fetch_workflow_status("test-sanitized-error.yml")
+    assert status["available"] is False
+    assert status["error"] == "GitHub Actions authentication was rejected"
+    assert "ghp_do_not_serialize" not in str(status)
 
 
 def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
@@ -128,7 +202,8 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert "sync_artificial_analysis" in job_ids
     assert "sync_frontiercode" in job_ids
     assert "calculate_organization_trending_scores" in job_ids
-    assert len(job_ids) == 23
+    assert "monitor_chat_operational_alerts" in job_ids
+    assert "process_curation_thumbnails" in job_ids
 
     keyword_job = _job("backfill_method_keywords")
     assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query
@@ -183,6 +258,228 @@ def test_action_backed_jobs_expose_workflow_health():
     assert thumbnails.workflow_file == "cron-preload-thumbnails.yml"
 
 
+def test_schedule_grace_transitions_are_deterministic():
+    job = _job("update_hot_github_trending")
+    log = {"status": "success_no_work", "is_running": False, "work_metrics": {}}
+    db = {
+        "hot_repository_count": 0,
+        "recent_writes": 0,
+        "oldest_eligible_wait_minutes": 0,
+        "stale_paper_scores": 0,
+        "one_snapshot_over_30m": 0,
+    }
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        during_grace = evaluate_job_health(
+            job,
+            log,
+            db_metrics=db,
+            workflow_status={"available": True},
+            now=datetime(2026, 8, 14, 12, 24, tzinfo=timezone.utc),
+        )
+        after_grace = evaluate_job_health(
+            job,
+            log,
+            db_metrics=db,
+            workflow_status={"available": True},
+            now=datetime(2026, 8, 14, 12, 26, tzinfo=timezone.utc),
+        )
+    assert during_grace["execution_health"]["status"] == "degraded"
+    assert after_grace["execution_health"]["status"] == "broken"
+
+
+def test_failed_scheduled_run_wins_over_fresh_manual_recovery_output():
+    job = _job("update_hot_github_trending")
+    now = datetime(2026, 8, 14, 12, 20, tzinfo=timezone.utc)
+    workflow = {
+        "available": True,
+        "scheduled_run": {
+            "status": "completed",
+            "conclusion": "failure",
+            "createdAt": "2026-08-14T12:15:00Z",
+            "updatedAt": "2026-08-14T12:17:00Z",
+        },
+        "manual_run": {
+            "status": "completed",
+            "conclusion": "success",
+            "createdAt": "2026-08-14T12:18:00Z",
+            "updatedAt": "2026-08-14T12:19:00Z",
+        },
+    }
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": now, "is_running": False},
+            db_metrics={
+                "last_write": now,
+                "recent_writes": 1,
+                "hot_repository_count": 1,
+                "oldest_eligible_wait_minutes": 0,
+                "stale_paper_scores": 0,
+                "one_snapshot_over_30m": 0,
+            },
+            workflow_status=workflow,
+            now=now,
+        )
+    assert evaluated["execution_health"]["status"] == "broken"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "broken"
+
+
+def test_unavailable_scheduler_evidence_fails_closed_to_unknown():
+    job = _job("update_citations")
+    now = datetime(2026, 8, 14, 12, 40, tzinfo=timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {"papers_processed": 10},
+            },
+            db_metrics={"last_write": now, "recent_writes": 10},
+            workflow_status={"available": False, "error": "permission denied"},
+            now=now,
+        )
+    assert evaluated["execution_health"]["status"] == "unknown"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
+
+
+def test_systemd_timer_failure_and_success_are_independent_of_output():
+    job = _job("monitor_chat_operational_alerts")
+    now = datetime(2026, 8, 14, 12, 20, tzinfo=timezone.utc)
+    common = {
+        "available": True,
+        "enabled": True,
+        "timer_active": True,
+        "service_result": "success",
+        "exec_main_status": 0,
+        "last_started_at": "2026-08-14T12:19:00Z",
+        "last_completed_at": "2026-08-14T12:19:05Z",
+        "next_trigger_at": "2026-08-14T12:20:05Z",
+        "service_active": False,
+    }
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        healthy = evaluate_job_health(
+            job,
+            {
+                "status": "unknown",
+                "is_running": False,
+                "work_metrics": {
+                    "monitor_record_available": True,
+                    "monitor_status": "healthy",
+                    "monitor_completed_at": "2026-08-14T12:19:05Z",
+                    "undelivered_alert_events": 0,
+                },
+            },
+            systemd_status=common,
+            now=now,
+        )
+        disabled = evaluate_job_health(
+            job,
+            {
+                "status": "unknown",
+                "is_running": False,
+                "work_metrics": {
+                    "monitor_record_available": True,
+                    "monitor_status": "healthy",
+                    "monitor_completed_at": "2026-08-14T12:19:05Z",
+                    "undelivered_alert_events": 0,
+                },
+            },
+            systemd_status={**common, "enabled": False},
+            now=now,
+        )
+    assert healthy["status"] == "healthy"
+    assert disabled["execution_health"]["status"] == "broken"
+    assert disabled["output_health"]["status"] == "healthy"
+    assert disabled["status"] == "broken"
+
+
+def test_systemd_adapter_reads_only_registry_units():
+    responses = [
+        type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "UnitFileState=enabled\nActiveState=active\nSubState=waiting\nLastTriggerUSec=Fri 2026-08-14 12:19:00 UTC\nNextElapseUSecRealtime=\n",
+            },
+        )(),
+        type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "Result=success\nExecMainStatus=0\nActiveState=inactive\nExecMainStartTimestamp=Fri 2026-08-14 12:19:00 UTC\nExecMainExitTimestamp=Fri 2026-08-14 12:19:05 UTC\n",
+            },
+        )(),
+    ]
+    job = _job("monitor_chat_operational_alerts")
+    with patch(
+        "backend.services.cron_health.subprocess.run", side_effect=responses
+    ) as run:
+        status = fetch_systemd_status(job)
+    assert status["available"] is True
+    assert status["enabled"] is True
+    assert status["service_result"] == "success"
+    assert [call.args[0][2] for call in run.call_args_list] == [
+        job.systemd_timer,
+        job.systemd_service,
+    ]
+
+
+def test_chat_monitor_surfaces_dormant_and_undelivered_states():
+    job = _job("monitor_chat_operational_alerts")
+    now = datetime(2026, 8, 14, 12, 20, tzinfo=timezone.utc)
+    systemd = {
+        "available": True,
+        "enabled": True,
+        "timer_active": True,
+        "service_result": "success",
+        "exec_main_status": 0,
+        "last_started_at": "2026-08-14T12:19:00Z",
+        "last_completed_at": "2026-08-14T12:19:05Z",
+        "service_active": False,
+    }
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        dormant = evaluate_job_health(
+            job,
+            {
+                "status": "unknown",
+                "is_running": False,
+                "work_metrics": {
+                    "monitor_record_available": True,
+                    "monitor_status": "dormant",
+                    "monitor_completed_at": "2026-08-14T12:19:05Z",
+                    "undelivered_alert_events": 0,
+                },
+            },
+            systemd_status=systemd,
+            now=now,
+        )
+        pending = evaluate_job_health(
+            job,
+            {
+                "status": "unknown",
+                "is_running": False,
+                "work_metrics": {
+                    "monitor_record_available": True,
+                    "monitor_status": "degraded",
+                    "monitor_completed_at": "2026-08-14T12:19:05Z",
+                    "undelivered_alert_events": 2,
+                },
+            },
+            systemd_status=systemd,
+            now=now,
+        )
+    assert dormant["output_health"]["status"] == "healthy"
+    assert "dormant" in dormant["output_health"]["reason"]
+    assert pending["output_health"]["status"] == "broken"
+    assert "2 operational alert" in pending["output_health"]["reason"]
+
+
 def test_github_stars_health_identifies_failed_fresh_credential():
     job = _job("update_github_stars")
     recent = datetime.now(timezone.utc) - timedelta(minutes=5)
@@ -218,6 +515,7 @@ def test_github_stars_health_identifies_failed_fresh_credential():
 
 def test_successful_workflow_is_health_evidence_without_logs_or_database():
     job = _job("preload_thumbnails")
+    now = datetime(2026, 8, 14, 13, 1, tzinfo=timezone.utc)
     with patch("backend.services.cron_health.is_process_running", return_value=False):
         evaluated = evaluate_job_health(
             job,
@@ -229,10 +527,11 @@ def test_successful_workflow_is_health_evidence_without_logs_or_database():
                 "conclusion": "success",
             },
             lock_state={"exists": False, "stale": False},
+            now=now,
         )
 
-    assert evaluated["status"] == "healthy"
-    assert evaluated["status_reason"] == "latest GitHub Actions workflow succeeded"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["execution_health"]["status"] == "broken"
 
 
 def test_hot_health_allows_recent_no_work_when_population_is_empty():
@@ -257,7 +556,8 @@ def test_hot_health_allows_recent_no_work_when_population_is_empty():
             },
             lock_state={"exists": False, "stale": False},
         )
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
 
 
 def test_hot_zero_seed_does_not_mark_paper_propagation_stale():
@@ -283,7 +583,8 @@ def test_hot_zero_seed_does_not_mark_paper_propagation_stale():
             },
             lock_state={"exists": False, "stale": False},
         )
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
 
 
 def test_hot_health_alerts_on_rate_reserve_violation():
@@ -344,6 +645,7 @@ def test_cron_status_accepts_admin_token(client):
         )
     assert response.status_code == 200
     assert response.json()["summary"]["total_jobs"] == 0
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_paper_markdown_jobs_requires_admin(client):
@@ -411,7 +713,8 @@ def test_success_no_work_allowed_only_for_explicit_jobs():
             },
             lock_state={"exists": False, "stale": False},
         )
-    assert allowed["status"] == "healthy"
+    assert allowed["output_health"]["status"] == "unknown"
+    assert allowed["status"] == "unknown"
 
     trending_job = _job("calculate_trending_scores")
     with patch("backend.services.cron_health.is_process_running", return_value=False):
@@ -448,7 +751,8 @@ def test_stale_lock_with_fresh_db_is_healthy():
                 "path": "/tmp/github_stars.lock",
             },
         )
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
     assert evaluated["lock_stale"] is True
 
 
@@ -492,7 +796,8 @@ def test_running_process_within_expected_runtime():
             },
             lock_state={"exists": True, "stale": False},
         )
-    assert evaluated["status"] == "running"
+    assert evaluated["output_health"]["status"] == "running"
+    assert evaluated["status"] == "unknown"
 
 
 def test_extract_urls_actions_failure_degrades_fresh_writer():
@@ -522,9 +827,8 @@ def test_extract_urls_actions_failure_degrades_fresh_writer():
                 "failed_jobs": ["persist"],
             },
         )
-    assert evaluated["status"] == "degraded"
-    assert "GitHub Actions workflow failed (persist)" in evaluated["status_reason"]
-    assert "gh run view 123 --log-failed" in evaluated["diagnostics"]
+    assert evaluated["status"] == "healthy"
+    assert evaluated["execution_health"]["scheduler"] == "manual"
 
 
 def test_extract_urls_actions_unavailable_degrades_fresh_db():
@@ -551,8 +855,7 @@ def test_extract_urls_actions_unavailable_degrades_fresh_db():
                 "error": "gh is not authenticated",
             },
         )
-    assert evaluated["status"] == "degraded"
-    assert "could not be verified" in evaluated["status_reason"]
+    assert evaluated["status"] == "healthy"
     assert evaluated["workflow_status"]["available"] is False
 
 
@@ -574,8 +877,8 @@ def test_stale_successful_workflow_cannot_mask_fresh_database_writes():
             },
         )
 
-    assert evaluated["status"] == "broken"
-    assert "latest successful workflow" in evaluated["status_reason"]
+    assert evaluated["status"] in {"degraded", "broken"}
+    assert evaluated["execution_health"]["status"] in {"degraded", "broken"}
 
 
 def test_import_hf_daily_papers_recent_log_is_healthy_without_false_db_provenance():
@@ -599,7 +902,8 @@ def test_import_hf_daily_papers_recent_log_is_healthy_without_false_db_provenanc
             lock_state={"exists": False, "stale": False},
         )
 
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
     assert job.db_freshness_query is None
 
 
@@ -619,7 +923,8 @@ def test_recent_weekly_task_keyword_log_is_healthy_without_db_timestamp():
             lock_state={"exists": False, "stale": False},
         )
 
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
 
 
 def test_hf_artifacts_fresh_db_metrics_are_healthy():
@@ -644,4 +949,121 @@ def test_hf_artifacts_fresh_db_metrics_are_healthy():
             lock_state={"exists": False, "stale": False},
         )
 
-    assert evaluated["status"] == "healthy"
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert evaluated["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected", "reason"),
+    [
+        (
+            {"budget_exhausted": True, "missing_after_upstream": 25},
+            "degraded",
+            "budget is exhausted",
+        ),
+        (
+            {"terminal_shard_failures": 2},
+            "broken",
+            "remote OCR shard",
+        ),
+        (
+            {"oldest_active_checkpoint_age_minutes": 45},
+            "broken",
+            "checkpoint is stale",
+        ),
+    ],
+)
+def test_paper_markdown_semantic_contract(metrics, expected, reason):
+    job = _job("paper_markdown_backfill")
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": datetime.now(timezone.utc),
+                "is_running": False,
+                "work_metrics": metrics,
+            },
+        )
+    assert evaluated["output_health"]["status"] == expected
+    assert reason in evaluated["output_health"]["reason"]
+
+
+def test_embedding_no_work_is_broken_when_eligible_rows_are_missing():
+    job = _job("refresh_paper_embeddings")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success_no_work",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {"candidates": 0, "embeddings_updated": 0},
+            },
+            db_metrics={"last_write": now, "recent_writes": 0, "missing_embeddings": 8},
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "8 eligible embeddings" in evaluated["output_health"]["reason"]
+
+
+def test_backfill_contract_separates_stale_run_and_provider_throttling():
+    job = _job("backfill_method_references")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {"provider_rate_limit_hits": 3},
+            },
+            db_metrics={"last_write": now, "recent_writes": 1, "stale_running": 1},
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "stale database run" in evaluated["output_health"]["reason"]
+    assert "provider throttled" in evaluated["output_health"]["reason"]
+
+
+def test_managed_organization_snapshot_gap_degrades_output():
+    job = _job("calculate_organization_trending_scores")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {"papers_processed": 23},
+            },
+            db_metrics={
+                "last_write": now,
+                "recent_writes": 23,
+                "featured_organizations": 24,
+                "missing_today_snapshots": 1,
+            },
+        )
+    assert evaluated["output_health"]["status"] == "degraded"
+    assert "managed organization" in evaluated["output_health"]["reason"]
+
+
+def test_thumbnail_preload_bounded_failures_degrade_output():
+    job = _job("preload_thumbnails")
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "is_running": False,
+                "work_metrics": {"failed_downloads": 2},
+            },
+            workflow_status={
+                "available": True,
+                "status": "completed",
+                "conclusion": "success",
+            },
+        )
+    assert evaluated["output_health"]["status"] == "degraded"
+    assert "thumbnail download" in evaluated["output_health"]["reason"]

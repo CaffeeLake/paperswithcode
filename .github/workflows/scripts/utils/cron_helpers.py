@@ -482,6 +482,43 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                     work_metrics.update(json.loads(payload))
                 except json.JSONDecodeError:
                     pass
+            elif any(
+                marker in line
+                for marker in (
+                    "HF_DAILY_PAPERS_SUMMARY ",
+                    "HF_ARTIFACTS_SUMMARY ",
+                    "PAPER_EMBEDDINGS_SUMMARY ",
+                    "THUMBNAIL_PRELOAD_SUMMARY ",
+                    "THUMBNAIL_MIRROR_SUMMARY ",
+                    "CURATION_THUMBNAILS_SUMMARY ",
+                    "CITATION_UPDATE_SUMMARY ",
+                    "TRENDING_SCORES_SUMMARY ",
+                    "PAPER_TRENDING_SUMMARY ",
+                    "ORGANIZATION_SYNC_SUMMARY ",
+                    "ORGANIZATION_TRENDING_SUMMARY ",
+                )
+            ):
+                marker = next(
+                    item
+                    for item in (
+                        "HF_DAILY_PAPERS_SUMMARY ",
+                        "HF_ARTIFACTS_SUMMARY ",
+                        "PAPER_EMBEDDINGS_SUMMARY ",
+                        "THUMBNAIL_PRELOAD_SUMMARY ",
+                        "THUMBNAIL_MIRROR_SUMMARY ",
+                        "CURATION_THUMBNAILS_SUMMARY ",
+                        "CITATION_UPDATE_SUMMARY ",
+                        "TRENDING_SCORES_SUMMARY ",
+                        "PAPER_TRENDING_SUMMARY ",
+                        "ORGANIZATION_SYNC_SUMMARY ",
+                        "ORGANIZATION_TRENDING_SUMMARY ",
+                    )
+                    if item in line
+                )
+                try:
+                    work_metrics.update(json.loads(line.split(marker, 1)[1]))
+                except json.JSONDecodeError:
+                    pass
             # Papers processed
             elif re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)

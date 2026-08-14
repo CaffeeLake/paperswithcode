@@ -2,8 +2,61 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from typing import Literal, Optional, Sequence, Tuple
+
+
+@dataclass(frozen=True)
+class SchedulePolicy:
+    """A deterministic UTC schedule contract, independent of display text."""
+
+    kind: Literal["fixed_interval", "daily", "weekly"]
+    interval_minutes: Optional[int] = None
+    minute_of_day: Optional[int] = None
+    weekday: Optional[int] = None
+
+    @classmethod
+    def fixed(cls, minutes: int, *, offset_minutes: int = 0) -> "SchedulePolicy":
+        return cls(
+            "fixed_interval",
+            interval_minutes=minutes,
+            minute_of_day=offset_minutes,
+        )
+
+    @classmethod
+    def daily(cls, hour: int, minute: int) -> "SchedulePolicy":
+        return cls("daily", minute_of_day=hour * 60 + minute)
+
+    @classmethod
+    def weekly(cls, weekday: int, hour: int, minute: int) -> "SchedulePolicy":
+        return cls("weekly", minute_of_day=hour * 60 + minute, weekday=weekday)
+
+    def slots(self, now: datetime) -> tuple[datetime, datetime]:
+        now = now.astimezone(timezone.utc)
+        if self.kind == "fixed_interval":
+            interval = timedelta(minutes=int(self.interval_minutes or 1))
+            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            anchor = epoch + timedelta(minutes=int(self.minute_of_day or 0))
+            periods = (now - anchor) // interval
+            previous = anchor + periods * interval
+            return previous, previous + interval
+
+        minute_of_day = int(self.minute_of_day or 0)
+        candidate = now.replace(
+            hour=minute_of_day // 60,
+            minute=minute_of_day % 60,
+            second=0,
+            microsecond=0,
+        )
+        if self.kind == "daily":
+            previous = candidate if candidate <= now else candidate - timedelta(days=1)
+            return previous, previous + timedelta(days=1)
+
+        days_since = (now.weekday() - int(self.weekday or 0)) % 7
+        candidate -= timedelta(days=days_since)
+        previous = candidate if candidate <= now else candidate - timedelta(days=7)
+        return previous, previous + timedelta(days=7)
 
 
 @dataclass(frozen=True)
@@ -25,6 +78,12 @@ class CronJobDefinition:
     workflow_jobs: Tuple[str, ...] = ()
     workflow_freshness_required: bool = True
     dashboard_group: str = "operations"
+    scheduler: Literal["github_actions", "systemd", "manual"] = "github_actions"
+    schedule_policies: Tuple[SchedulePolicy, ...] = ()
+    schedule_grace_minutes: int = 20
+    systemd_timer: Optional[str] = None
+    systemd_service: Optional[str] = None
+    output_evaluator: Optional[str] = None
 
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
@@ -219,6 +278,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         healthy_no_work_allowed=False,
         db_freshness_query="""
             SELECT max(trending_score_updated_at) AS last_write,
+                   count(*) AS eligible_population,
                    count(*) FILTER (
                      WHERE trending_score_updated_at > now() - interval '6 hours'
                    ) AS recent_writes,
@@ -246,6 +306,10 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         healthy_no_work_allowed=False,
         db_freshness_query="""
             SELECT max(trending_score_updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE is_latest_version
+                       AND date_published >= CURRENT_DATE - interval '365 days'
+                   ) AS eligible_population,
                    count(*) FILTER (
                      WHERE trending_score_updated_at > now() - interval '6 hours'
                    ) AS recent_writes,
@@ -496,6 +560,13 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS recent_writes
             FROM organizations
             WHERE is_featured = TRUE
+              AND slug IN (
+                'microsoft','google','nvidia','anthropic','deepseek-ai','facebook',
+                'qwen','black-forest-labs','stabilityai','moonshotai','zai-org',
+                'bytedance','bytedance-seed','mistralai','allenai','xai-org',
+                'openai','apple','tencent','minimaxai','baidu','sensenova',
+                'ultralytics','openbmb'
+              )
         """,
         workflow_file="cron-sync-hf-organizations.yml",
         workflow_jobs=("run",),
@@ -530,6 +601,13 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
               ON h.organization_id = o.id
              AND h.snapshot_date = CURRENT_DATE
             WHERE o.is_featured = TRUE
+              AND o.slug IN (
+                'microsoft','google','nvidia','anthropic','deepseek-ai','facebook',
+                'qwen','black-forest-labs','stabilityai','moonshotai','zai-org',
+                'bytedance','bytedance-seed','mistralai','allenai','xai-org',
+                'openai','apple','tencent','minimaxai','baidu','sensenova',
+                'ultralytics','openbmb'
+              )
         """,
         workflow_file="cron-calculate-organization-trending-scores.yml",
         workflow_jobs=("run",),
@@ -648,9 +726,17 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         db_freshness_query="""
             SELECT max(updated_at) AS last_write,
                    count(*) FILTER (
+                     WHERE updated_at > now() - interval '26 hours'
+                   ) AS recent_writes,
+                   count(*) FILTER (
                      WHERE status = 'running'
-                       AND updated_at > now() - interval '12 hours'
-                   ) AS recent_writes
+                       AND updated_at < now() - interval '2 hours'
+                   ) AS stale_running,
+                   count(*) FILTER (WHERE status = 'failed') AS failed_runs,
+                   COALESCE(EXTRACT(EPOCH FROM (
+                     now() - min(started_at) FILTER (WHERE status = 'running')
+                   )) / 60, 0)::bigint AS blocking_run_age_minutes,
+                   max(cursor_paper_id) FILTER (WHERE status = 'running') AS resume_cursor
             FROM method_keyword_backfill_runs
         """,
     ),
@@ -672,9 +758,19 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         db_freshness_query="""
             SELECT max(updated_at) AS last_write,
                    count(*) FILTER (
+                     WHERE updated_at > now() - interval '12 hours'
+                   ) AS recent_writes,
+                   count(*) FILTER (
                      WHERE status = 'running'
-                       AND updated_at > now() - interval '12 hours'
-                   ) AS recent_writes
+                       AND updated_at < now() - interval '7 hours'
+                   ) AS stale_running,
+                   count(*) FILTER (WHERE status = 'failed') AS failed_runs,
+                   sum(retryable_failures) AS retryable_failures,
+                   count(*) FILTER (WHERE last_error ILIKE '%429%') AS provider_429_rows,
+                   COALESCE(EXTRACT(EPOCH FROM (
+                     now() - min(started_at) FILTER (WHERE status = 'running')
+                   )) / 60, 0)::bigint AS blocking_run_age_minutes,
+                   max(cursor_paper_id) FILTER (WHERE status = 'running') AS resume_cursor
             FROM method_reference_backfill_months
         """,
     ),
@@ -695,6 +791,145 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_file="cron-link-papers-by-task-keywords.yml",
         workflow_jobs=("run",),
     ),
+    CronJobDefinition(
+        id="monitor_chat_operational_alerts",
+        display_name="Chat Operational Alert Monitor",
+        category="systemd",
+        schedule="every minute (systemd)",
+        script_path="backend/scripts/monitor_chat_operational_alerts.py",
+        log_name="monitor_chat_operational_alerts",
+        process_patterns=("monitor_chat_operational_alerts",),
+        lock_file=None,
+        expected_runtime_minutes=1,
+        stale_after_minutes=5,
+        critical=False,
+        healthy_no_work_allowed=True,
+        scheduler="systemd",
+        schedule_policies=(SchedulePolicy.fixed(1),),
+        schedule_grace_minutes=3,
+        systemd_timer="pwc-chat-alert-monitor.timer",
+        systemd_service="pwc-chat-alert-monitor.service",
+        output_evaluator="chat_alert_monitor",
+    ),
+    CronJobDefinition(
+        id="process_curation_thumbnails",
+        display_name="Curation Thumbnail Queue",
+        category="systemd",
+        schedule="every minute (systemd)",
+        script_path="hourly/process_curation_thumbnails.py",
+        log_name="process_curation_thumbnails",
+        process_patterns=("process_curation_thumbnails",),
+        lock_file=None,
+        expected_runtime_minutes=30,
+        stale_after_minutes=35,
+        critical=False,
+        healthy_no_work_allowed=True,
+        scheduler="systemd",
+        schedule_policies=(SchedulePolicy.fixed(1),),
+        schedule_grace_minutes=3,
+        systemd_timer="pwc-curation-thumbnails.timer",
+        systemd_service="pwc-curation-thumbnails.service",
+        output_evaluator="curation_thumbnails",
+        db_freshness_query="""
+            SELECT max(COALESCE(thumbnail_finished_at, thumbnail_requested_at)) AS last_write,
+                   count(*) FILTER (
+                     WHERE thumbnail_finished_at > now() - interval '35 minutes'
+                   ) AS recent_writes,
+                   count(*) FILTER (WHERE thumbnail_status = 'queued') AS queued,
+                   count(*) FILTER (WHERE thumbnail_status = 'processing') AS processing,
+                   count(*) FILTER (
+                     WHERE thumbnail_status = 'processing'
+                       AND thumbnail_claimed_at < now() - interval '30 minutes'
+                   ) AS stale_processing,
+                   count(*) FILTER (WHERE thumbnail_status = 'failed') AS failed,
+                   COALESCE(EXTRACT(EPOCH FROM (
+                     now() - min(thumbnail_requested_at)
+                       FILTER (WHERE thumbnail_status = 'queued')
+                   )) / 60, 0)::bigint AS oldest_wait_minutes
+            FROM paper_curation_jobs
+            WHERE thumbnail_status IS NOT NULL
+        """,
+    ),
+)
+
+
+# Explicit machine-readable scheduler contracts.  Keeping them separate from the
+# human label makes schedule-boundary behavior deterministic and reviewable.
+_SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
+    "paper_markdown_backfill": (
+        (SchedulePolicy.fixed(60, offset_minutes=17), SchedulePolicy.daily(2, 43)),
+        20,
+    ),
+    "update_hot_github_trending": ((SchedulePolicy.fixed(15),), 10),
+    "update_github_stars": ((SchedulePolicy.fixed(60),), 20),
+    "update_citations": ((SchedulePolicy.fixed(60, offset_minutes=30),), 20),
+    "calculate_trending_scores": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
+    "calculate_paper_trending_scores": (
+        (SchedulePolicy.fixed(60, offset_minutes=45),),
+        20,
+    ),
+    "update_hf_artifacts": ((SchedulePolicy.fixed(60, offset_minutes=30),), 20),
+    "sync_3d_arena": ((SchedulePolicy.fixed(60, offset_minutes=5),), 20),
+    "sync_open_asr": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
+    "sync_deepswe": ((SchedulePolicy.fixed(60, offset_minutes=25),), 20),
+    "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
+    "sync_frontiercode": ((SchedulePolicy.fixed(60, offset_minutes=45),), 20),
+    "import_hf_daily_papers": ((SchedulePolicy.fixed(60),), 20),
+    "sync_hf_organizations": ((SchedulePolicy.daily(2, 20),), 60),
+    "calculate_organization_trending_scores": ((SchedulePolicy.daily(3, 40),), 60),
+    "refresh_paper_embeddings": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
+    # The three-hour lane and the four reviewed daily slots intentionally share
+    # a one-hour grace because GitHub runs them as one workflow duty.
+    "preload_thumbnails": (
+        (
+            SchedulePolicy.fixed(180),
+            SchedulePolicy.daily(4, 15),
+            SchedulePolicy.daily(4, 30),
+            SchedulePolicy.daily(4, 45),
+        ),
+        60,
+    ),
+    "mirror_thumbnails_to_disk": ((SchedulePolicy.daily(5, 0),), 60),
+    "link_methods_by_references": ((SchedulePolicy.weekly(6, 4, 0),), 180),
+    "backfill_method_keywords": ((SchedulePolicy.daily(1, 10),), 60),
+    "backfill_method_references": ((SchedulePolicy.fixed(360, offset_minutes=15),), 60),
+    "link_papers_by_task_keywords": ((SchedulePolicy.weekly(6, 5, 0),), 180),
+}
+
+_OUTPUT_EVALUATORS: dict[str, str] = {
+    "update_github_stars": "github_stars",
+    "update_hot_github_trending": "hot_github_trending",
+    "calculate_trending_scores": "repository_trending",
+    "calculate_paper_trending_scores": "paper_trending",
+    "import_hf_daily_papers": "hf_paper_import",
+    "update_citations": "citations",
+    "update_hf_artifacts": "hf_artifacts",
+    "paper_markdown_backfill": "paper_markdown",
+    "refresh_paper_embeddings": "paper_embeddings",
+    "sync_hf_organizations": "organization_sync",
+    "calculate_organization_trending_scores": "organization_trending",
+    "backfill_method_keywords": "backfill",
+    "backfill_method_references": "backfill",
+    "preload_thumbnails": "thumbnail_preload",
+    "mirror_thumbnails_to_disk": "thumbnail_mirror",
+    "link_methods_by_references": "weekly_linker",
+    "link_papers_by_task_keywords": "weekly_linker",
+}
+
+CRON_JOBS = tuple(
+    replace(
+        job,
+        scheduler="manual" if job.id == "extract_urls" else job.scheduler,
+        schedule_policies=_SCHEDULE_CONTRACTS.get(
+            job.id, (job.schedule_policies, job.schedule_grace_minutes)
+        )[0],
+        schedule_grace_minutes=_SCHEDULE_CONTRACTS.get(
+            job.id, (job.schedule_policies, job.schedule_grace_minutes)
+        )[1],
+        output_evaluator=job.output_evaluator
+        or _OUTPUT_EVALUATORS.get(job.id, "generic"),
+    )
+    for job in CRON_JOBS
 )
 
 

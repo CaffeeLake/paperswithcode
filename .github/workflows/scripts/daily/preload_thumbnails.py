@@ -47,6 +47,7 @@ PWC_HF_TOKEN.
 import argparse
 import asyncio
 import gc
+import json
 import sys
 import time
 from datetime import datetime, timedelta
@@ -68,7 +69,6 @@ from backend.services.thumbnail_service import (
 )
 from backend.utils.exceptions import ThumbnailGenerationError
 from scripts.utils.cron_helpers import CronJobBase
-
 
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_MAX_FAILURES = 50
@@ -253,8 +253,7 @@ class ThumbnailPreloadJob(CronJobBase):
         else:
             effective_limit = 1000
 
-        sql = text(
-            """
+        sql = text("""
             WITH ranked AS (
                 SELECT DISTINCT ON (tp.paper_id)
                     tp.paper_id,
@@ -275,8 +274,7 @@ class ThumbnailPreloadJob(CronJobBase):
             FROM ranked
             ORDER BY trending_score DESC NULLS LAST, current_stars DESC
             LIMIT :limit
-            """
-        )
+            """)
         rows = session.execute(
             sql,
             {
@@ -407,8 +405,7 @@ class ThumbnailPreloadJob(CronJobBase):
             return
 
         group_col = _GROUP_TOP_TABLES[join_table]
-        sql = text(
-            f"""
+        sql = text(f"""
             WITH scored AS (
                 SELECT
                     pg.{group_col} AS group_id,
@@ -457,8 +454,7 @@ class ThumbnailPreloadJob(CronJobBase):
                OR rn_newest    <= :per_group
                OR rn_citations <= :per_group
             ORDER BY paper_id
-            """
-        )
+            """)
         rows = session.execute(sql, {"per_group": per_group}).fetchall()
         candidates = [Candidate(row[0], row[1], row[2] or "v1") for row in rows]
         if self.limit is not None and self.limit > 0:
@@ -760,6 +756,18 @@ class ThumbnailPreloadJob(CronJobBase):
         self.logger.info("  - Generated:       %d", self.generated)
         self.logger.info("  - Would generate:  %d", self.would_generate)
         self.logger.info("  - Failures:        %d", self.failures)
+        self.logger.info(
+            "THUMBNAIL_PRELOAD_SUMMARY %s",
+            json.dumps(
+                {
+                    "candidates_seen": self.candidates_seen,
+                    "already_cached": self.already_cached,
+                    "generated": self.generated,
+                    "would_generate": self.would_generate,
+                    "failed_downloads": self.failures,
+                }
+            ),
+        )
 
 
 def _parse_shard(value: str) -> Tuple[int, int]:

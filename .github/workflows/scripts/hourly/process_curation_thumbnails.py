@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from backend.database.connection import get_database_session
 from backend.services.curation_thumbnail_queue_service import (
@@ -29,6 +30,10 @@ def main() -> int:
     finally:
         db.close()
     print(f"processed {processed} curation thumbnail request(s)")
+    print(
+        "CURATION_THUMBNAILS_SUMMARY "
+        + json.dumps({"processed": processed}, sort_keys=True)
+    )
     return 0
 
 

@@ -26,6 +26,7 @@ const categoryColors: Record<string, string> = {
   hourly: "cron-status--running",
   daily: "cron-status--healthy",
   weekly: "cron-status--degraded",
+  systemd: "cron-status--running",
 };
 
 const usd = (microusd: number) => `$${(microusd / 1_000_000).toFixed(2)}`;
@@ -156,11 +157,12 @@ const CronDashboard = () => {
   const leaderboardSyncJobs = data?.jobs.filter(
     (job) => job.dashboard_group === "leaderboard_sync",
   ) ?? [];
-  const operationsJobs = data?.jobs.filter(
-    (job) => job.dashboard_group !== "leaderboard_sync",
+  const scheduledJobs = data?.jobs.filter(
+    (job) => job.category !== "manual" && job.dashboard_group !== "leaderboard_sync",
   ) ?? [];
-  const criticalJobs = operationsJobs.filter((job) => job.critical);
-  const otherJobs = operationsJobs.filter((job) => !job.critical);
+  const criticalJobs = scheduledJobs.filter((job) => job.critical);
+  const otherJobs = scheduledJobs.filter((job) => !job.critical);
+  const manualOperations = data?.manual_operations ?? [];
 
   const jobsByCategory = otherJobs.reduce((acc, job) => {
     if (!acc[job.category]) acc[job.category] = [];
@@ -169,7 +171,7 @@ const CronDashboard = () => {
   }, {} as Record<string, CronJobStatus[]>);
 
   const sortedCategories = Object.keys(jobsByCategory).sort((a, b) => {
-    const order = ["hourly", "daily", "weekly"];
+    const order = ["systemd", "hourly", "daily", "weekly", "backfill"];
     return order.indexOf(a) - order.indexOf(b);
   });
 
@@ -324,6 +326,19 @@ const CronDashboard = () => {
               </CardContent>
             </Card>
 
+            <Card className={`mb-8 ${data.summary.coverage.coverage_gaps ? "cron-status--broken" : ""}`}>
+              <CardHeader>
+                <CardTitle className="text-base">Coverage</CardTitle>
+                <CardDescription>Registry and deployed scheduler inventory</CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div><span className="cron-label">Registered</span><div className="text-2xl font-bold">{data.summary.coverage.registered_scheduled_duties}</div></div>
+                <div><span className="cron-label">Discovered</span><div className="text-2xl font-bold">{data.summary.coverage.discovered_scheduled_duties}</div></div>
+                <div><span className="cron-label">Monitored</span><div className="text-2xl font-bold">{data.summary.coverage.monitored_duties}</div></div>
+                <div><span className="cron-label">Gaps</span><div className="text-2xl font-bold">{data.summary.coverage.coverage_gaps}</div></div>
+              </CardContent>
+            </Card>
+
             <Card className="mb-8">
               <CardHeader>
                 <CardTitle className="text-xl">Critical jobs</CardTitle>
@@ -357,6 +372,18 @@ const CronDashboard = () => {
                 </Card>
               ))}
             </div>
+
+            {manualOperations.length > 0 && (
+              <Card className="mt-6">
+                <CardHeader>
+                  <CardTitle className="text-xl">Manual operations</CardTitle>
+                  <CardDescription>Visible invocation history; excluded from scheduled health and coverage</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {manualOperations.map(renderJobCard)}
+                </CardContent>
+              </Card>
+            )}
               </>
             )}
           </TabsContent>

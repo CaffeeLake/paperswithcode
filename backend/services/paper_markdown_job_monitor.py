@@ -172,6 +172,27 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     for job in jobs:
         stages[job["stage"]] = stages.get(job["stage"], 0) + 1
     progress_rows = [job["progress"] for job in jobs if job["progress"]]
+    latest_run_id = next((job.get("run_id") for job in jobs if job.get("run_id")), None)
+    latest_run_jobs = [job for job in jobs if job.get("run_id") == latest_run_id]
+    active_checkpoint_ages = []
+    snapshot_now = datetime.now(timezone.utc)
+    for job in latest_run_jobs:
+        if job["stage"] not in {"SCHEDULING", "RUNNING"} or not job.get("progress"):
+            continue
+        updated_at = job["progress"].get("updated_at")
+        try:
+            parsed = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        active_checkpoint_ages.append(
+            max(
+                0,
+                int(
+                    (snapshot_now - parsed.astimezone(timezone.utc)).total_seconds()
+                    / 60
+                ),
+            )
+        )
     summary = {
         "visible_jobs": len(jobs),
         "active_jobs": sum(
@@ -185,6 +206,12 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         "succeeded_papers": sum(row["succeeded_papers"] for row in progress_rows),
         "failed_papers": sum(row["failed_papers"] for row in progress_rows),
         "extracted_images": sum(row["extracted_images"] for row in progress_rows),
+        "latest_run_failed_jobs": sum(
+            1 for job in latest_run_jobs if job["stage"] in {"ERROR", "CANCELED"}
+        ),
+        "oldest_active_checkpoint_age_minutes": (
+            max(active_checkpoint_ages) if active_checkpoint_ages else 0
+        ),
     }
     return {
         "available": True,

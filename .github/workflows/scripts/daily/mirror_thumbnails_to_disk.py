@@ -23,6 +23,7 @@ a writable PWC_THUMBNAIL_TEMP_CACHE_DIR.
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -122,6 +123,18 @@ class ThumbnailDiskMirrorJob(CronJobBase):
                 local_files,
                 local_bytes / (1024 * 1024),
                 dest,
+            )
+            self.logger.info(
+                "THUMBNAIL_MIRROR_SUMMARY %s",
+                json.dumps(
+                    {
+                        "downloads": downloads,
+                        "deletes": deletes,
+                        "skips": skips,
+                        "file_count": local_files,
+                        "file_bytes": local_bytes,
+                    }
+                ),
             )
         except Exception as exc:
             self.logger.warning("Could not summarise local cache size: %s", exc)

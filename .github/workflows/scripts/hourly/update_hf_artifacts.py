@@ -26,6 +26,7 @@ and is safely resumable by invoking it again.
 
 import argparse
 import gc
+import json
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -479,9 +480,11 @@ def main():
     log(
         "Starting Hugging Face Artifact Historical Backfill"
         if args.backfill
-        else "Starting Hugging Face Explicit Artifact Backfill"
-        if args.backfill_explicit
-        else "Starting Hugging Face Artifact Refresh"
+        else (
+            "Starting Hugging Face Explicit Artifact Backfill"
+            if args.backfill_explicit
+            else "Starting Hugging Face Artifact Refresh"
+        )
     )
     log("=" * 80)
 
@@ -493,9 +496,9 @@ def main():
     mode = (
         "historical backfill"
         if args.backfill
-        else "explicit artifact backfill"
-        if args.backfill_explicit
-        else "hourly refresh"
+        else (
+            "explicit artifact backfill" if args.backfill_explicit else "hourly refresh"
+        )
     )
     log(f"  - Mode: {mode}")
     log(f"  - Recent window: {RECENT_WINDOW_DAYS} days (cutoff {recent_cutoff})")
@@ -550,6 +553,20 @@ def main():
         log(f"Links synced: {discovery['links_created']}")
         log(f"Artifacts refreshed: {refresh['refreshed']}")
         log(f"Artifacts failed: {refresh['failed']}")
+        log(
+            "HF_ARTIFACTS_SUMMARY "
+            + json.dumps(
+                {
+                    "papers_selected": discovery.get("papers_selected", 0),
+                    "papers_scanned": discovery["papers_processed"],
+                    "papers_failed": discovery["papers_failed"],
+                    "links_created": discovery["links_created"],
+                    "artifacts_selected": refresh["selected"],
+                    "artifacts_refreshed": refresh["refreshed"],
+                    "artifacts_failed": refresh["failed"],
+                }
+            )
+        )
         log(f"Runtime: {elapsed:.1f} minutes")
         log(f"Final memory available: {check_memory_usage()}MB")
         log("=" * 80)

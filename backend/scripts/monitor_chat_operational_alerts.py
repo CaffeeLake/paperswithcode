@@ -31,6 +31,7 @@ PRODUCTION_JOURNAL_UNITS = (
 )
 STATE_VERSION = 1
 HISTORY_LIMIT = 100
+HEALTH_RECORD = "chat-operational-alert-health.json"
 
 
 def empty_state() -> dict[str, Any]:
@@ -62,6 +63,18 @@ def write_state(path: Path, state: dict[str, Any]) -> None:
         json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def write_health_record(directory: Path, payload: dict[str, Any]) -> None:
+    """Persist only bounded, content-free output evidence for the dashboard."""
+
+    path = directory / HEALTH_RECORD
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.new-{os.getpid()}")
+    temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    # The parent directory is traversable only by the production service group.
+    temporary.chmod(0o644)
     os.replace(temporary, path)
 
 
@@ -261,10 +274,21 @@ def main() -> int:
     )
     args = parser.parse_args()
     settings = get_settings()
+    completed_at = datetime.now(UTC).isoformat()
     if settings.environment != "production":
         parser.error("the operational alert monitor is production-only")
     if not settings.chat_enabled:
-        print(json.dumps({"environment": "production", "status": "dormant"}))
+        result = {
+            "environment": "production",
+            "status": "dormant",
+            "completed_at": completed_at,
+            "pending": 0,
+            "new_events": 0,
+            "delivered": 0,
+            "release_id": os.environ.get("PWC_RELEASE_ID"),
+        }
+        write_health_record(Path(settings.cron_log_dir), result)
+        print(json.dumps(result, sort_keys=True))
         return 0
     if not settings.chat_operational_alerts_enabled:
         parser.error("PWC_CHAT_OPERATIONAL_ALERTS_ENABLED is required")
@@ -284,18 +308,17 @@ def main() -> int:
         and event["fallback_delivery_state"] != "delivered"
         for event in state["events"]
     )
-    print(
-        json.dumps(
-            {
-                "environment": "production",
-                "status": "degraded" if collection_failed or pending else "healthy",
-                "new_events": len(events),
-                "delivered": delivered,
-                "pending": pending,
-            },
-            sort_keys=True,
-        )
-    )
+    result = {
+        "environment": "production",
+        "status": "degraded" if collection_failed or pending else "healthy",
+        "completed_at": datetime.now(UTC).isoformat(),
+        "new_events": len(events),
+        "delivered": delivered,
+        "pending": pending,
+        "release_id": os.environ.get("PWC_RELEASE_ID"),
+    }
+    write_health_record(Path(settings.cron_log_dir), result)
+    print(json.dumps(result, sort_keys=True))
     return 1 if collection_failed or pending else 0
 
 

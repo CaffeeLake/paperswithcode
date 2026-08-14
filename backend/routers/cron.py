@@ -15,7 +15,6 @@ from backend.services.paper_markdown_job_monitor import (
 )
 from backend.utils.auth import require_admin
 
-
 router = APIRouter()
 
 
@@ -40,13 +39,19 @@ class CronJobStatus(BaseModel):
     work_summary: Optional[str] = None
     db_metrics: Dict[str, Any] = Field(default_factory=dict)
     workflow_status: Optional[Dict[str, Any]] = None
+    systemd_status: Optional[Dict[str, Any]] = None
+    execution_health: Dict[str, Any]
+    output_health: Dict[str, Any]
+    lock_state: Dict[str, Any] = Field(default_factory=dict)
     lock_stale: bool = False
     diagnostics: Optional[str] = None
+    diagnostic_groups: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 class CronJobsResponse(BaseModel):
     timestamp: str
     jobs: List[CronJobStatus]
+    manual_operations: List[CronJobStatus] = Field(default_factory=list)
     summary: Dict[str, Any]
 
 
@@ -151,9 +156,9 @@ def get_job_detail(
             "total_runs": len(job_history),
             "successful_runs": len(successful_runs),
             "failed_runs": len(failed_runs),
-            "success_rate": (len(successful_runs) / len(job_history) * 100)
-            if job_history
-            else 0,
+            "success_rate": (
+                (len(successful_runs) / len(job_history) * 100) if job_history else 0
+            ),
             "avg_duration": avg_duration,
         },
     }
@@ -177,7 +182,9 @@ def get_cron_health():
         "issues": issues,
         "what_to_check_next": summary.get("what_to_check_next"),
         "summary": summary,
-        "message": "All critical jobs healthy"
-        if healthy
-        else f"{len(issues)} critical issue(s) detected",
+        "message": (
+            "All critical jobs healthy"
+            if healthy
+            else f"{len(issues)} critical issue(s) detected"
+        ),
     }

@@ -25,6 +25,7 @@ Schedule: Hourly (every hour)
 Dependencies: PostgreSQL, repository_star_history table with snapshots
 """
 
+import json
 import sys
 import time
 import gc
@@ -33,7 +34,6 @@ from sqlalchemy import text
 
 from backend.database.connection import db_manager
 from scripts.utils.cron_helpers import DatabaseCronJob
-
 
 # EMA smoothing factor (0.75 means 75% weight on new data, 25% on previous score)
 ALPHA = 0.75
@@ -463,6 +463,16 @@ class TrendingScoresCalculationJob(DatabaseCronJob):
             self.logger.info(f"Insufficient history: {total_insufficient_history}")
             self.logger.info(f"Runtime: {elapsed:.1f} minutes")
             self.logger.info(f"Final memory available: {final_memory}MB")
+            self.logger.info(
+                "TRENDING_SCORES_SUMMARY %s",
+                json.dumps(
+                    {
+                        "repositories_processed": total_processed,
+                        "scores_written": total_updated,
+                        "insufficient_history": total_insufficient_history,
+                    }
+                ),
+            )
             self.logger.info("=" * 80)
 
         except Exception as e:
