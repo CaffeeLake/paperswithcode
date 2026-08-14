@@ -3261,6 +3261,7 @@ def test_cron_status_reports_exact_production_release(
     assert status["jobs"]["sync_3d_arena"]["timeout"] == "30m"
     assert status["jobs"]["sync_open_asr"]["timeout"] == "30m"
     assert status["jobs"]["sync_artificial_analysis"]["timeout"] == "30m"
+    assert status["jobs"]["sync_frontiercode"]["timeout"] == "30m"
 
 
 def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):

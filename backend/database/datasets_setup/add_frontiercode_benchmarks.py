@@ -1,4 +1,4 @@
-"""Wire FrontierCode Diamond into the Coding Agents task.
+"""Wire FrontierCode benchmarks into the Coding Agents task.
 
 FrontierCode is Cognition's benchmark for measuring whether coding agents produce
 mergeable, production-quality patches. Diamond is the headline 50-task hardest
@@ -20,7 +20,11 @@ from sqlalchemy.orm import Session
 from backend.database.connection import db_manager
 from backend.models.database import (
     Dataset as DBDataset,
+)
+from backend.models.database import (
     Paper as DBPaper,
+)
+from backend.models.database import (
     Task as DBTask,
 )
 from backend.services.external_resource_service import (
@@ -33,7 +37,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE_URL = "https://cognition.ai/blog/frontier-code"
+SOURCE_URL = "https://cognition.com/blog/frontier-code"
+LEGACY_SOURCE_URL = "https://cognition.ai/blog/frontier-code"
+LEADERBOARD_URL = "https://cognition.com/frontiercode"
 SOURCE_TITLE = "Introducing FrontierCode"
 SOURCE_DATE = date(2026, 6, 8)
 SOURCE_AUTHORS = [
@@ -60,31 +66,59 @@ SOURCE_ABSTRACT = (
 )
 
 TASK_SLUG = "coding-agents"
-DATASET_NAME = "FrontierCode Diamond"
-DATASET_SLUG = "frontiercode-diamond"
-DATASET_FULL_NAME = "FrontierCode Diamond"
-DATASET_SHORT_DESCRIPTION = (
-    "50 hardest FrontierCode tasks measuring mergeable code quality."
+DATASETS = (
+    {
+        "name": "FrontierCode Main",
+        "slug": "frontiercode-main",
+        "short_description": "The current 100-task FrontierCode main benchmark.",
+        "description": (
+            "FrontierCode Main is the current 100-task benchmark for measuring "
+            "whether coding agents produce mergeable, production-quality patches. "
+            "FrontierCode 1.1 zeroes runs flagged for consulting solution-bearing "
+            "internet sources."
+        ),
+        "homepage": LEADERBOARD_URL,
+    },
+    {
+        "name": "FrontierCode Extended",
+        "slug": "frontiercode-extended",
+        "short_description": "The current 150-task FrontierCode extended benchmark.",
+        "description": (
+            "FrontierCode Extended is the current 150-task benchmark for measuring "
+            "whether coding agents produce mergeable, production-quality patches. "
+            "FrontierCode 1.1 zeroes runs flagged for consulting solution-bearing "
+            "internet sources."
+        ),
+        "homepage": LEADERBOARD_URL,
+    },
+    {
+        "name": "FrontierCode Diamond",
+        "slug": "frontiercode-diamond",
+        "short_description": (
+            "Deprecated 50-task FrontierCode 1.0 subset measuring mergeable code quality."
+        ),
+        "description": (
+            "FrontierCode Diamond is the deprecated hardest 50-task subset of "
+            "FrontierCode 1.0. It is retained for historical results; FrontierCode "
+            "1.1 reports the Main and Extended subsets instead."
+        ),
+        "homepage": SOURCE_URL,
+    },
 )
-DATASET_DESCRIPTION = (
-    "FrontierCode Diamond is the hardest 50-task subset of Cognition's "
-    "FrontierCode benchmark. Each task was built by an open-source maintainer "
-    "from a real repository and graded on mergeability: behavioral correctness, "
-    "regression safety, mechanical cleanliness, test quality, scope discipline, "
-    "and codebase-specific code quality. Solutions must pass all blocker criteria "
-    "to receive a non-zero weighted rubric score."
-)
-METRIC_NAME = "Score"
-HOMEPAGE = SOURCE_URL
+METRIC_NAMES = ("Score", "Pass Rate")
 
 
 def _ensure_source_paper(session: Session) -> DBPaper:
     paper = (
         session.query(DBPaper)
-        .filter(DBPaper.source == "external", DBPaper.source_url == SOURCE_URL)
+        .filter(
+            DBPaper.source == "external",
+            DBPaper.source_url.in_((SOURCE_URL, LEGACY_SOURCE_URL)),
+        )
         .one_or_none()
     )
     if paper is not None:
+        paper.source_url = SOURCE_URL
         logger.info("Reusing external paper id=%s title=%r", paper.id, paper.title)
         return paper
 
@@ -115,19 +149,21 @@ def _get_task(session: Session) -> DBTask:
     return task
 
 
-def _ensure_dataset(session: Session, paper: DBPaper) -> DBDataset:
+def _ensure_dataset(
+    session: Session, paper: DBPaper, spec: dict[str, str]
+) -> DBDataset:
     paper_url = _paper_url(paper)
     dataset = (
-        session.query(DBDataset).filter(DBDataset.slug == DATASET_SLUG).one_or_none()
+        session.query(DBDataset).filter(DBDataset.slug == spec["slug"]).one_or_none()
     )
     if dataset is None:
         dataset = DBDataset(
-            name=DATASET_NAME,
-            slug=DATASET_SLUG,
-            full_name=DATASET_FULL_NAME,
-            description=DATASET_DESCRIPTION,
-            short_description=DATASET_SHORT_DESCRIPTION,
-            homepage=HOMEPAGE,
+            name=spec["name"],
+            slug=spec["slug"],
+            full_name=spec["name"],
+            description=spec["description"],
+            short_description=spec["short_description"],
+            homepage=spec["homepage"],
             paper_url=paper_url,
             introducing_paper_id=paper.id,
             introducing_paper_title=paper.title,
@@ -138,10 +174,11 @@ def _ensure_dataset(session: Session, paper: DBPaper) -> DBDataset:
         logger.info("Created dataset %r (id=%s)", dataset.name, dataset.id)
         return dataset
 
-    dataset.full_name = DATASET_FULL_NAME
-    dataset.description = DATASET_DESCRIPTION
-    dataset.short_description = DATASET_SHORT_DESCRIPTION
-    dataset.homepage = HOMEPAGE
+    dataset.name = spec["name"]
+    dataset.full_name = spec["name"]
+    dataset.description = spec["description"]
+    dataset.short_description = spec["short_description"]
+    dataset.homepage = spec["homepage"]
     dataset.paper_url = paper_url
     dataset.introducing_paper_id = paper.id
     dataset.introducing_paper_title = paper.title
@@ -151,12 +188,12 @@ def _ensure_dataset(session: Session, paper: DBPaper) -> DBDataset:
     return dataset
 
 
-def _ensure_metric_id(session: Session) -> int:
+def _ensure_metric_id(session: Session, metric_name: str) -> int:
     row = session.execute(
-        text("SELECT id FROM metrics WHERE name = :n"), {"n": METRIC_NAME}
+        text("SELECT id FROM metrics WHERE name = :n"), {"n": metric_name}
     ).fetchone()
     if row is None:
-        raise RuntimeError(f"Metric {METRIC_NAME!r} not found")
+        raise RuntimeError(f"Metric {metric_name!r} not found")
     return int(row[0])
 
 
@@ -205,15 +242,27 @@ def main() -> None:
     with db_manager.session_local() as session:
         paper = _ensure_source_paper(session)
         task = _get_task(session)
-        dataset = _ensure_dataset(session, paper)
-        metric_id = _ensure_metric_id(session)
-        _link_task_dataset(session, task.id, dataset.id)
-        _link_metric(session, task.id, dataset.id, metric_id)
+        datasets = [_ensure_dataset(session, paper, spec) for spec in DATASETS]
+        metric_ids = {name: _ensure_metric_id(session, name) for name in METRIC_NAMES}
+        for dataset in datasets:
+            _link_task_dataset(session, task.id, dataset.id)
+            if dataset.slug != "frontiercode-diamond":
+                session.execute(
+                    text(
+                        "UPDATE task_datasets SET supports_harness = TRUE "
+                        "WHERE task_id = :task_id AND dataset_id = :dataset_id"
+                    ),
+                    {"task_id": task.id, "dataset_id": dataset.id},
+                )
+            for metric_name, metric_id in metric_ids.items():
+                if dataset.slug == "frontiercode-diamond" and metric_name != "Score":
+                    continue
+                _link_metric(session, task.id, dataset.id, metric_id)
         _tag_source_paper(session, paper.id, task.id)
         session.commit()
         logger.info(
-            "FrontierCode Diamond ready: dataset_id=%s task_id=%s paper_url=%s",
-            dataset.id,
+            "FrontierCode ready: dataset_ids=%s task_id=%s paper_url=%s",
+            [dataset.id for dataset in datasets],
             task.id,
             _paper_url(paper),
         )

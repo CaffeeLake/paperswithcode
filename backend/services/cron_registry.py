@@ -420,6 +420,38 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_jobs=("run",),
     ),
     CronJobDefinition(
+        id="sync_frontiercode",
+        display_name="Sync FrontierCode Leaderboard",
+        category="hourly",
+        schedule="45 * * * * (hourly)",
+        script_path="hourly/sync_frontiercode.py",
+        log_name="sync_frontiercode",
+        process_patterns=("scripts.hourly.sync_frontiercode",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_frontiercode.lock"
+        ),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug IN ('frontiercode-main', 'frontiercode-extended')
+              AND e.best_metric = 'Score'
+              AND e.external_source_url = 'https://cognition.com/frontiercode'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code FrontierCode live sync.%'
+        """,
+        workflow_file="cron-sync-frontiercode.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="import_hf_daily_papers",
         display_name="Import HF Daily Papers",
         category="daily",
