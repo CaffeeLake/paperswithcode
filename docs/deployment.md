@@ -70,6 +70,19 @@ The refresh mode accepts only the active release, always starts the inactive
 slot with the updated environment, and preserves the existing `previous`
 release pointer.
 
+Install production Langfuse credentials from the root-owned protected source
+without printing or manually copying them, then refresh the active release:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/production.env --production-langfuse-only
+sudo pwc-deploy production <exact-current-main-sha> \
+  --refresh-environment --confirm DEPLOY_PRODUCTION
+```
+
+The installer requires a mode-`0600` source, rejects staging-key reuse, and
+changes only the three Langfuse connection values plus the tracing flag.
+
 Production accepts only commits reachable from `origin/main`. Every slot deploy
 builds the selected frontend profile and immutable runtime, starts the inactive
 slot, checks its exact release/runtime/slot identity, validates rolling gateway

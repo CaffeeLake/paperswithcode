@@ -2987,6 +2987,82 @@ def test_staging_langfuse_credentials_are_bounded_and_preserved():
     assert configure_host_env.staging_runtime_passthrough(lines) == lines
 
 
+def test_production_langfuse_credentials_are_isolated_from_staging():
+    source = {
+        "LANGFUSE_BASE_URL": "LANGFUSE_BASE_URL=https://cloud.langfuse.com",
+        "LANGFUSE_PUBLIC_KEY": "LANGFUSE_PUBLIC_KEY=pk-production",
+        "LANGFUSE_SECRET_KEY": "LANGFUSE_SECRET_KEY=sk-production",
+    }
+    staging = {
+        "LANGFUSE_PUBLIC_KEY": "LANGFUSE_PUBLIC_KEY=pk-staging",
+        "LANGFUSE_SECRET_KEY": "LANGFUSE_SECRET_KEY=sk-staging",
+    }
+
+    assert configure_host_env.production_langfuse_values(source, staging) == {
+        "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
+        "LANGFUSE_PUBLIC_KEY": "pk-production",
+        "LANGFUSE_SECRET_KEY": "sk-production",
+        "PWC_CHAT_LANGFUSE_ENABLED": "true",
+    }
+
+    source["LANGFUSE_SECRET_KEY"] = "LANGFUSE_SECRET_KEY=sk-staging"
+    with pytest.raises(ValueError, match="must not reuse"):
+        configure_host_env.production_langfuse_values(source, staging)
+
+
+def test_production_langfuse_mode_preserves_unrelated_live_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.env"
+    source.write_text(
+        "LANGFUSE_BASE_URL=https://cloud.langfuse.com\n"
+        "LANGFUSE_PUBLIC_KEY=pk-production\n"
+        "LANGFUSE_SECRET_KEY=sk-production\n",
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text(
+        "PWC_CHAT_ENABLED=true\n", encoding="utf-8"
+    )
+    (config_root / "staging.env").write_text(
+        "LANGFUSE_PUBLIC_KEY=pk-staging\nLANGFUSE_SECRET_KEY=sk-staging\n",
+        encoding="utf-8",
+    )
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-langfuse-only",
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == config_root / "production.env"
+    assert written["group"] == "pwc-production"
+    assert (
+        configure_host_env.decoded_value(written["lines"]["PWC_CHAT_ENABLED"]) == "true"
+    )
+    assert (
+        configure_host_env.decoded_value(written["lines"]["PWC_CHAT_LANGFUSE_ENABLED"])
+        == "true"
+    )
+
+
 def test_staging_openrouter_credential_gets_a_chat_only_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

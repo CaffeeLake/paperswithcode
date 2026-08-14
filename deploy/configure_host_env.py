@@ -134,6 +134,7 @@ STAGING_LANGFUSE_KEYS = {
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
 }
+PRODUCTION_LANGFUSE_KEYS = STAGING_LANGFUSE_KEYS
 
 
 def read_lines(path: Path) -> dict[str, str]:
@@ -247,6 +248,30 @@ def staging_langfuse_values(legacy: dict[str, str]) -> dict[str, str]:
         **{key: decoded_value(legacy[key]) for key in STAGING_LANGFUSE_KEYS},
         "PWC_CHAT_LANGFUSE_ENABLED": "true",
     }
+
+
+def production_langfuse_values(
+    source: dict[str, str], current_staging: dict[str, str]
+) -> dict[str, str]:
+    """Install one non-staging project key into production tracing only."""
+
+    missing = sorted(PRODUCTION_LANGFUSE_KEYS - source.keys())
+    if missing:
+        raise ValueError("production environment is missing: " + ", ".join(missing))
+    values = {
+        key: decoded_value(source[key]).strip() for key in PRODUCTION_LANGFUSE_KEYS
+    }
+    empty = sorted(key for key, value in values.items() if not value)
+    if empty:
+        raise ValueError("production environment is empty: " + ", ".join(empty))
+    parsed = urlsplit(values["LANGFUSE_BASE_URL"])
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("LANGFUSE_BASE_URL must be an HTTPS URL")
+    for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        staging_line = current_staging.get(key)
+        if staging_line and decoded_value(staging_line) == values[key]:
+            raise ValueError(f"production {key} must not reuse the staging key")
+    return {**values, "PWC_CHAT_LANGFUSE_ENABLED": "true"}
 
 
 def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, str]:
@@ -812,6 +837,7 @@ def main() -> int:
     parser.add_argument("--production-codex-only", action="store_true")
     parser.add_argument("--staging-codex-too", action="store_true")
     parser.add_argument("--staging-langfuse-only", action="store_true")
+    parser.add_argument("--production-langfuse-only", action="store_true")
     parser.add_argument("--staging-title-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
@@ -840,6 +866,43 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if args.production_langfuse_only:
+        conflicting_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.production_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+            args.production_chat_admission_enable_only,
+        )
+        if any(conflicting_modes) or args.codex_jobs_namespace or args.modal_profile:
+            parser.error(
+                "--production-langfuse-only cannot be combined with other modes"
+            )
+        if args.legacy_env.stat().st_mode & 0o077:
+            parser.error("production Langfuse source must not be group/world readable")
+        try:
+            values = production_langfuse_values(
+                legacy, read_lines(CONFIG_ROOT / "staging.env")
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        production = assign(read_lines(CONFIG_ROOT / "production.env"), values)
+        write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
+        print("installed isolated production Langfuse credentials")
+        return 0
     if args.production_chat_admission_enable_only:
         other_modes = (
             args.production_codex_only,
