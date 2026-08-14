@@ -397,6 +397,8 @@ def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
     class Report:
         async def aio(self, **kwargs):
             captured.append(kwargs)
+            if len(captured) > 1:
+                return []
             return [
                 SimpleNamespace(
                     description=MODAL_APP_NAME,
@@ -436,7 +438,58 @@ def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
     )
 
     assert result == 3_000_001
-    assert captured == [{"start": start, "end": end, "resolution": "h"}]
+    assert captured == [
+        {"start": start, "end": start + timedelta(days=7), "resolution": "h"},
+        {"start": start + timedelta(days=7), "end": end, "resolution": "h"},
+    ]
+
+
+def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
+    configured = settings(chat_sandbox_provider_mode="team_environments")
+    captured = []
+
+    class Report:
+        async def aio(self, **kwargs):
+            captured.append(kwargs)
+            if len(captured) > 1:
+                return []
+            return [
+                SimpleNamespace(
+                    description=MODAL_APP_NAME,
+                    cost=Decimal("1.2500004"),
+                ),
+                SimpleNamespace(description="another-app", cost=Decimal("8")),
+            ]
+
+    environment = SimpleNamespace(billing=SimpleNamespace(report=Report()))
+
+    def from_name(name):
+        assert name == configured.chat_sandbox_modal_environment
+        return environment
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_spend_reporter.modal.Environment.from_name",
+        from_name,
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_spend_reporter.modal.Workspace.from_context",
+        lambda: pytest.fail("team reconciliation must not request workspace billing"),
+    )
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    end = datetime(2026, 8, 10, 12, tzinfo=UTC)
+
+    result = asyncio.run(
+        ModalProviderSpendReporter(configured).month_to_date_microusd(
+            start=start,
+            end=end,
+        )
+    )
+
+    assert result == 1_250_000
+    assert captured == [
+        {"start": start, "end": start + timedelta(days=7), "resolution": "h"},
+        {"start": start + timedelta(days=7), "end": end, "resolution": "h"},
+    ]
 
 
 def test_reconciler_skips_inside_hour_without_calling_provider():

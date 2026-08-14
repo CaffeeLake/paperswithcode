@@ -7,6 +7,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { PiEventAdapter, type PwCEvent } from "./events.js";
+import { createWebMcpExtension } from "./mcp.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
 import { renderPrompt } from "./prompt.js";
@@ -52,6 +53,13 @@ export class PiWorker {
     await this.session.abort();
   }
 
+  private async disposeSession(reason: "new" | "resume" = "new"): Promise<void> {
+    if (!this.session) return;
+    await this.session.extensionRunner.emit({ type: "session_shutdown", reason });
+    this.session.dispose();
+    this.session = undefined;
+  }
+
   private async sessionManager(run: RunTurn): Promise<{ manager: SessionManager; initialCount: number; created: boolean }> {
     if (this.boundChatSession && this.boundChatSession !== run.chat_session_id) {
       throw new Error("Pi worker session ownership mismatch");
@@ -61,8 +69,7 @@ export class PiWorker {
       // A retry of an interrupted initial prompt may instead deliberately
       // activate a blank transcript (run.resume is null). Drop only the
       // harness-local state in both cases; the worker stays pinned to the chat.
-      this.session?.dispose();
-      this.session = undefined;
+      await this.disposeSession("resume");
       this.manager = undefined;
       this.mirror = undefined;
       this.mirroredEntryCount = 0;
@@ -147,7 +154,7 @@ export class PiWorker {
         await this.mirror.flush();
       }
     }
-    this.session?.dispose();
+    await this.disposeSession();
     const provider = await createProvider(run.model);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: true },
@@ -163,7 +170,10 @@ export class PiWorker {
       noThemes: true,
       noContextFiles: true,
       systemPrompt: prompt,
-      extensionFactories: [{ name: "pwc-policy", factory: pwcExtension(this.policy), hidden: true }],
+      extensionFactories: [
+        { name: "pwc-policy", factory: pwcExtension(this.policy), hidden: true },
+        { name: "pwc-exa-mcp", factory: createWebMcpExtension(), hidden: true },
+      ],
     });
     await loader.reload();
     const created = await createAgentSession({
@@ -178,6 +188,8 @@ export class PiWorker {
       settingsManager: settings,
       sessionManager: state.manager,
     });
+    await created.session.bindExtensions({ mode: "print" });
+    created.extensionsResult.runtime.refreshTools();
     this.session = created.session;
   }
 

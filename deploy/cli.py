@@ -206,7 +206,11 @@ descriptor = {
         else contract.MODAL_IMAGE_ID
     ),
     "pwc_cli_version": contract.PWC_CLI_VERSION,
-    "worker_contract_version": contract.WORKER_CONTRACT_VERSION,
+    "worker_contract_version": (
+        getattr(production_contract, "WORKER_CONTRACT_VERSION", "")
+        if production
+        else contract.WORKER_CONTRACT_VERSION
+    ),
     "gateway_contract_version": contract.GATEWAY_CONTRACT_VERSION,
     "gateway_compatible_from": contract.GATEWAY_COMPATIBLE_FROM,
     "database_contract_version": (
