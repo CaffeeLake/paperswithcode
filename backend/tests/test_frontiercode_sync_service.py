@@ -1,5 +1,9 @@
 """Validation and idempotency tests for the FrontierCode live sync."""
 
+import asyncio
+from datetime import date
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from sqlalchemy import BigInteger, create_engine
@@ -17,16 +21,20 @@ from backend.models.database import (
     PaperHfArtifact,
     PaperProjectPage,
     PaperRepository,
+    PaperTask,
     ProjectPage,
     Repository,
     Task,
     TaskDataset,
     TaskDatasetMetric,
 )
+from backend.services import frontiercode_sync_service as fc
 from backend.services.frontiercode_sync_service import (
     FRONTIERCODE_ENDPOINT,
     FRONTIERCODE_SOURCE_URL,
     MANAGED_METHODOLOGY_PREFIX,
+    FrontierCodeDiscovery,
+    FrontierCodePaperDiscoveryService,
     FrontierCodeSyncService,
     fetch_frontiercode_leaderboard,
     parse_frontiercode_leaderboard,
@@ -74,6 +82,20 @@ def _payload() -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _reviewed_test_models(monkeypatch):
+    monkeypatch.setattr(
+        fc,
+        "MODEL_PAPER_IDENTITIES",
+        {
+            f"Model {index}": fc.PaperIdentity(
+                arxiv_id=f"2608.{index:05d}", is_open=index % 2 == 0
+            )
+            for index in range(20)
+        },
+    )
+
+
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
@@ -92,6 +114,7 @@ def _session() -> Session:
             TaskDataset.__table__,
             TaskDatasetMetric.__table__,
             Evaluation.__table__,
+            PaperTask.__table__,
         ],
     )
     session = Session(engine)
@@ -125,8 +148,27 @@ def _session() -> Session:
             is_latest_version=True,
         )
     )
+    session.add_all(
+        [
+            Paper(
+                id=1000 + index,
+                title=f"Model {index}",
+                arxiv_id=f"2608.{index:05d}",
+                source="arxiv",
+                version="v1",
+                is_latest_version=True,
+            )
+            for index in range(20)
+        ]
+    )
     session.commit()
     return session
+
+
+def _discovery() -> FrontierCodeDiscovery:
+    return FrontierCodeDiscovery(
+        papers={f"Model {index}": 1000 + index for index in range(20)}
+    )
 
 
 def test_parse_fetch_and_select_best_reasoning_effort_per_subset():
@@ -166,11 +208,11 @@ def test_parser_rejects_truncated_or_changed_upstream_data():
         parse_frontiercode_leaderboard(payload)
 
 
-def test_sync_upserts_paper_98109_rows_and_is_idempotent():
+def test_sync_attributes_rows_to_model_papers_and_is_idempotent():
     session = _session()
     leaderboard = parse_frontiercode_leaderboard(_payload())
 
-    first = FrontierCodeSyncService(session).sync(leaderboard)
+    first = FrontierCodeSyncService(session).sync(leaderboard, discovery=_discovery())
     assert first.created == 40
     assert first.updated == 0
     assert session.query(Evaluation).count() == 40
@@ -179,13 +221,16 @@ def test_sync_upserts_paper_98109_rows_and_is_idempotent():
         .filter(Evaluation.model_name == "Model 0", Evaluation.dataset_id == 726)
         .one()
     )
-    assert main_row.paper_id == 98109
+    assert main_row.paper_id == 1000
     assert main_row.metrics == {"Score": 50.0, "Pass Rate": 55.0}
     assert main_row.harness == "MiniSWE-Agent"
     assert main_row.external_source_url == FRONTIERCODE_SOURCE_URL
     assert main_row.methodology.startswith(MANAGED_METHODOLOGY_PREFIX)
+    assert main_row.is_open is True
+    assert session.query(Evaluation).filter(Evaluation.paper_id == 98109).count() == 0
+    assert session.query(PaperTask).count() == 20
 
-    second = FrontierCodeSyncService(session).sync(leaderboard)
+    second = FrontierCodeSyncService(session).sync(leaderboard, discovery=_discovery())
     assert second.created == 0
     assert second.updated == 40
     assert session.query(Evaluation).count() == 40
@@ -220,7 +265,7 @@ def test_sync_deletes_only_disappeared_managed_rows():
     session.commit()
 
     stats = FrontierCodeSyncService(session).sync(
-        parse_frontiercode_leaderboard(_payload())
+        parse_frontiercode_leaderboard(_payload()), discovery=_discovery()
     )
     assert stats.deleted == 1
     names = {row.model_name for row in session.query(Evaluation).all()}
@@ -232,7 +277,47 @@ def test_dry_run_rolls_back_all_changes():
     session = _session()
     leaderboard = parse_frontiercode_leaderboard(_payload())
 
-    stats = FrontierCodeSyncService(session).sync(leaderboard, commit=False)
+    stats = FrontierCodeSyncService(session).sync(
+        leaderboard, discovery=_discovery(), commit=False
+    )
 
     assert stats.created == 40
     assert session.query(Evaluation).count() == 0
+
+
+def test_parser_rejects_unreviewed_model(monkeypatch):
+    identities = dict(fc.MODEL_PAPER_IDENTITIES)
+    identities.pop("Model 19")
+    monkeypatch.setattr(fc, "MODEL_PAPER_IDENTITIES", identities)
+
+    with pytest.raises(ValueError, match="unreviewed=.*Model 19"):
+        parse_frontiercode_leaderboard(_payload())
+
+
+def test_discovery_indexes_missing_external_paper(monkeypatch):
+    session = _session()
+    identity = fc.external("https://example.com/model", "External Model", "2026-08-01")
+    monkeypatch.setattr(fc, "MODEL_PAPER_IDENTITIES", {"External Model": identity})
+
+    class External:
+        def add_external_resource(self, payload):
+            paper = Paper(
+                title=payload.title,
+                source="external",
+                source_url=payload.source_url,
+                date_published=date(2026, 8, 1),
+                version="v1",
+                is_latest_version=True,
+            )
+            session.add(paper)
+            session.flush()
+            return SimpleNamespace(paper=SimpleNamespace(id=paper.id))
+
+    result = asyncio.run(
+        FrontierCodePaperDiscoveryService(
+            session, external_service=External()
+        ).discover()
+    )
+
+    assert result.papers["External Model"]
+    assert result.indexed_papers == ["https://example.com/model"]

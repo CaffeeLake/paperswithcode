@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any
 
@@ -15,14 +16,19 @@ from backend.models.database import (
     Evaluation,
     Metric,
     Paper,
+    PaperTask,
     Task,
     TaskDatasetMetric,
 )
 from backend.services.evaluation_service import EvaluationService
+from backend.services.external_resource_service import (
+    ExternalResourceInput,
+    ExternalResourceService,
+)
+from backend.services.paper_ingestion_service import PaperIngestionService
 
 FRONTIERCODE_ENDPOINT = "https://cognition.com/data/frontiercode-leaderboard/data.json"
 FRONTIERCODE_SOURCE_URL = "https://cognition.com/frontiercode"
-SOURCE_PAPER_ID = 98109
 TASK_SLUG = "coding-agents"
 DATASET_SLUGS = {"main": "frontiercode-main", "extended": "frontiercode-extended"}
 METRIC_NAMES = ("Score", "Pass Rate")
@@ -42,6 +48,189 @@ HARNESS_NAMES = {
 
 
 @dataclass(frozen=True)
+class PaperIdentity:
+    arxiv_id: str | None = None
+    source_url: str | None = None
+    title: str | None = None
+    date_published: date | None = None
+    abstract: str | None = None
+    is_open: bool = False
+
+    def __post_init__(self) -> None:
+        if (self.arxiv_id is None) == (self.source_url is None):
+            raise ValueError("PaperIdentity requires exactly one stable identity")
+        if self.source_url and (not self.title or not self.date_published):
+            raise ValueError(
+                "External paper identities require title and publication date"
+            )
+
+
+def external(
+    source_url: str,
+    title: str,
+    published: str,
+    *,
+    abstract: str | None = None,
+    is_open: bool = False,
+) -> PaperIdentity:
+    return PaperIdentity(
+        source_url=source_url,
+        title=title,
+        date_published=date.fromisoformat(published),
+        abstract=abstract,
+        is_open=is_open,
+    )
+
+
+# Exact, reviewed introducing papers or official release pages for every model
+# currently present on FrontierCode 1.1. New upstream models must be reviewed
+# before the sync will publish them.
+MODEL_PAPER_IDENTITIES: dict[str, PaperIdentity] = {
+    "Claude Fable 5": external(
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+        "Claude Fable 5 and Claude Mythos 5",
+        "2026-06-09",
+    ),
+    "GPT-5.6 Sol": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "Claude Opus 4.8": external(
+        "https://www.anthropic.com/news/claude-opus-4-8",
+        "Claude Opus 4.8",
+        "2026-05-28",
+    ),
+    "GPT-5.5": external(
+        "https://openai.com/index/introducing-gpt-5-5/",
+        "Introducing GPT-5.5",
+        "2026-04-23",
+    ),
+    "Grok 4.5": external(
+        "https://x.ai/news/grok-4-5", "Introducing Grok 4.5", "2026-07-08"
+    ),
+    "Grok 4.6": external(
+        "https://x.ai/news/grok-4-6", "Introducing Grok 4.6", "2026-08-12"
+    ),
+    "Claude Sonnet 5": external(
+        "https://www.anthropic.com/news/claude-sonnet-5",
+        "Claude Sonnet 5",
+        "2026-06-30",
+    ),
+    "GPT-5.6 Terra": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "GPT-5.6 Luna": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "SWE-1.7": external(
+        "https://cognition.com/blog/swe-1-7",
+        "SWE-1.7: Frontier Intelligence at a Fraction of the Cost",
+        "2026-07-08",
+        abstract=(
+            "Cognition's SWE-1.7 coding-agent model improves frontier-level "
+            "software engineering performance and is available in Devin."
+        ),
+    ),
+    "Claude Opus 4.7": external(
+        "https://www.anthropic.com/news/claude-opus-4-7",
+        "Claude Opus 4.7",
+        "2026-04-16",
+    ),
+    "Kimi K2.7": external(
+        "https://huggingface.co/moonshotai/Kimi-K2.7-Code",
+        "Kimi K2.7 Code",
+        "2026-06-11",
+        is_open=True,
+    ),
+    "Composer 2.5": PaperIdentity(arxiv_id="2603.24477"),
+    "GLM 5.2": external(
+        "https://z.ai/blog/glm-5.2",
+        "GLM-5.2: Built for Long-Horizon Tasks",
+        "2026-06-16",
+        is_open=True,
+    ),
+    "DeepSeek V4 Pro": PaperIdentity(arxiv_id="2606.19348", is_open=True),
+    "MiniMax M3": external(
+        "https://www.minimax.io/blog/minimax-m3",
+        "MiniMax M3: Frontier Coding, 1M Context, Native Multimodality — All in One Model",
+        "2026-06-01",
+        is_open=True,
+    ),
+    "Inkling": external(
+        "https://thinkingmachines.ai/news/introducing-inkling/",
+        "Inkling: Our open-weights model",
+        "2026-07-15",
+        is_open=True,
+    ),
+    "Qwen 3.7 Plus": external(
+        "https://www.qwencloud.com/models/qwen3.7-plus",
+        "Qwen 3.7 Plus",
+        "2026-06-02",
+    ),
+    "Claude Opus 5": external(
+        "https://www.anthropic.com/news/claude-opus-5",
+        "Introducing Claude Opus 5",
+        "2026-07-24",
+    ),
+    "SWE-1.6": external(
+        "https://cognition.com/blog/swe-1-6",
+        "Introducing SWE 1.6: Improving Model UX",
+        "2026-04-07",
+        abstract=(
+            "Cognition's SWE-1.6 release improves coding-agent model user "
+            "experience, including reduced overthinking and better tool use."
+        ),
+    ),
+    "Kimi K3": PaperIdentity(arxiv_id="2607.24653", is_open=True),
+    "Gemini 3.6 Flash": external(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-6-flash-3-5-flash-lite-3-5-flash-cyber/",
+        "Introducing Gemini 3.6 Flash, 3.5 Flash-Lite, and 3.5 Flash Cyber",
+        "2026-07-21",
+    ),
+    "Gemini 3.7 Flash": external(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-3-7-flash/",
+        "Introducing Gemini 3.7 Flash",
+        "2026-08-13",
+    ),
+    "GPT-5.4-mini": external(
+        "https://openai.com/index/introducing-gpt-5-4-mini-and-nano/",
+        "Introducing GPT-5.4 mini and nano",
+        "2026-03-17",
+        abstract=(
+            "OpenAI's GPT-5.4 mini and nano release introduces smaller models "
+            "optimized for lower-latency and lower-cost workloads."
+        ),
+    ),
+    "Claude Opus 4.6": external(
+        "https://www.anthropic.com/news/claude-opus-4-6",
+        "Claude Opus 4.6",
+        "2026-02-05",
+    ),
+    "Claude Sonnet 4.6": external(
+        "https://www.anthropic.com/news/claude-sonnet-4-6",
+        "Claude Sonnet 4.6",
+        "2026-02-17",
+    ),
+    "DeepSeek V4 Flash 0731": PaperIdentity(arxiv_id="2606.19348", is_open=True),
+    "Mistral 3.5 Medium": external(
+        "https://docs.mistral.ai/models/mistral-medium-3-5-26-04",
+        "Mistral Medium 3.5",
+        "2026-04-28",
+        abstract=(
+            "Mistral Medium 3.5 is a general-purpose model release documented "
+            "for text and coding workloads."
+        ),
+        is_open=True,
+    ),
+}
+
+
+@dataclass(frozen=True)
 class FrontierCodeEntry:
     model: str
     effort: str
@@ -57,12 +246,29 @@ class FrontierCodeLeaderboard:
 
 
 @dataclass
+class FrontierCodeDiscovery:
+    papers: dict[str, int] = field(default_factory=dict)
+    indexed_papers: list[str] = field(default_factory=list)
+    would_index: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resolved": len(self.papers),
+            "indexed_papers": self.indexed_papers,
+            "would_index": self.would_index,
+        }
+
+
+@dataclass
 class FrontierCodeSyncStats:
     fetched_models: int = 0
     selected: int = 0
     created: int = 0
     updated: int = 0
     deleted: int = 0
+    matched: int = 0
+    indexed_papers: int = 0
+    missing_papers: list[str] = field(default_factory=list)
     datasets: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -103,6 +309,13 @@ def parse_frontiercode_leaderboard(payload: Any) -> FrontierCodeLeaderboard:
         raise ValueError(f"FrontierCode subset sizes changed: {subsets!r}")
     if len(set(models)) != len(models):
         raise ValueError("FrontierCode response contains duplicate models")
+    if set(models) != set(MODEL_PAPER_IDENTITIES):
+        missing = sorted(set(MODEL_PAPER_IDENTITIES) - set(models))
+        unreviewed = sorted(set(models) - set(MODEL_PAPER_IDENTITIES))
+        raise ValueError(
+            "FrontierCode reviewed model set changed; "
+            f"missing={missing!r}; unreviewed={unreviewed!r}"
+        )
 
     entries: list[FrontierCodeEntry] = []
     for model in models:
@@ -228,7 +441,11 @@ class FrontierCodeSyncService:
         return task, datasets  # type: ignore[return-value]
 
     def sync(
-        self, leaderboard: FrontierCodeLeaderboard, *, commit: bool = True
+        self,
+        leaderboard: FrontierCodeLeaderboard,
+        *,
+        discovery: FrontierCodeDiscovery,
+        commit: bool = True,
     ) -> FrontierCodeSyncStats:
         selected = select_best_entries(leaderboard.entries)
         if not selected:
@@ -238,18 +455,10 @@ class FrontierCodeSyncService:
         stats = FrontierCodeSyncStats(
             fetched_models=len({entry.model for entry in leaderboard.entries}),
             selected=len(selected),
+            indexed_papers=len(discovery.indexed_papers),
         )
         try:
             task, datasets = self._leaderboard_identity()
-            paper = (
-                self.db.query(Paper)
-                .filter(Paper.id == SOURCE_PAPER_ID, Paper.is_latest_version)
-                .one_or_none()
-            )
-            if paper is None:
-                raise RuntimeError(
-                    f"FrontierCode source paper {SOURCE_PAPER_ID} is missing"
-                )
             stats.datasets = {
                 subset: dataset.id for subset, dataset in datasets.items()
             }
@@ -270,8 +479,22 @@ class FrontierCodeSyncService:
                 for row in managed_rows
                 if (key := _managed_key(row)) is not None
             }
+            linked_paper_ids = {
+                paper_id
+                for (paper_id,) in self.db.query(PaperTask.paper_id)
+                .filter(PaperTask.task_id == task.id)
+                .all()
+            }
             upstream_keys = {(entry.model, entry.subset) for entry in selected}
             for entry in selected:
+                paper_id = discovery.papers.get(entry.model)
+                if paper_id is None:
+                    if commit:
+                        raise RuntimeError(
+                            f"No reviewed paper resolved for {entry.model}"
+                        )
+                    stats.missing_papers.append(entry.model)
+                    continue
                 key = (entry.model, entry.subset)
                 row = managed.get(key)
                 methodology = (
@@ -285,7 +508,7 @@ class FrontierCodeSyncService:
                 }
                 if row is None:
                     row = Evaluation(
-                        paper_id=paper.id,
+                        paper_id=paper_id,
                         task_id=task.id,
                         dataset_id=datasets[entry.subset].id,
                     )
@@ -293,19 +516,26 @@ class FrontierCodeSyncService:
                     stats.created += 1
                 else:
                     stats.updated += 1
-                row.paper_id = paper.id
+                identity = MODEL_PAPER_IDENTITIES[entry.model]
+                row.paper_id = paper_id
                 row.model_name = entry.model
                 row.harness = entry.harness
                 row.methodology = methodology
                 row.metrics = metrics
                 row.uses_additional_data = False
-                row.is_open = False
+                row.is_open = identity.is_open
                 row.best_metric = "Score"
                 row.evaluated_on = datetime.now(UTC).date()
                 row.external_source_url = FRONTIERCODE_SOURCE_URL
                 row.source_url = FRONTIERCODE_SOURCE_URL
                 row.external = True
                 row.updated_at = datetime.now(UTC)
+                if paper_id not in linked_paper_ids:
+                    self.db.add(
+                        PaperTask(paper_id=paper_id, task_id=task.id, source="auto")
+                    )
+                    linked_paper_ids.add(paper_id)
+                stats.matched += 1
             for key, row in managed.items():
                 if key not in upstream_keys:
                     self.db.delete(row)
@@ -328,3 +558,69 @@ class FrontierCodeSyncService:
         except Exception:
             self.db.rollback()
             raise
+
+
+class FrontierCodePaperDiscoveryService:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        ingestion_service: PaperIngestionService | None = None,
+        external_service: ExternalResourceService | None = None,
+    ):
+        self.db = db
+        self.ingestion_service = ingestion_service or PaperIngestionService(db)
+        self.external_service = external_service or ExternalResourceService(db)
+
+    async def discover(self, *, persist: bool = True) -> FrontierCodeDiscovery:
+        result = FrontierCodeDiscovery()
+        for model, identity in MODEL_PAPER_IDENTITIES.items():
+            query = self.db.query(Paper).filter(Paper.is_latest_version)
+            paper = (
+                (
+                    query.filter(Paper.arxiv_id == identity.arxiv_id)
+                    if identity.arxiv_id
+                    else query.filter(
+                        Paper.source == "external",
+                        Paper.source_url == identity.source_url,
+                    )
+                )
+                .order_by(Paper.id.desc())
+                .first()
+            )
+            if paper is None and not persist:
+                result.would_index.append(
+                    identity.arxiv_id or identity.source_url or model
+                )
+                continue
+            if paper is None and identity.arxiv_id:
+                paper, created = await self.ingestion_service.get_or_import_arxiv_paper(
+                    identity.arxiv_id
+                )
+                if created:
+                    result.indexed_papers.append(identity.arxiv_id)
+            elif paper is None:
+                ingestion = self.external_service.add_external_resource(
+                    ExternalResourceInput(
+                        source_url=identity.source_url or "",
+                        title=identity.title or model,
+                        abstract=identity.abstract,
+                        date_published=identity.date_published,
+                    )
+                )
+                paper = (
+                    self.db.query(Paper).filter(Paper.id == ingestion.paper.id).one()
+                )
+                result.indexed_papers.append(identity.source_url or model)
+            result.papers[model] = paper.id
+        return result
+
+
+async def discover_frontiercode_papers(
+    db: Session, *, persist: bool = True
+) -> FrontierCodeDiscovery:
+    return await FrontierCodePaperDiscoveryService(db).discover(persist=persist)
+
+
+def run_discovery(db: Session, *, persist: bool = True) -> FrontierCodeDiscovery:
+    return asyncio.run(discover_frontiercode_papers(db, persist=persist))

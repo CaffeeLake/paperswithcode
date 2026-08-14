@@ -1,4 +1,4 @@
-"""Refresh paper 98109 evaluations from Cognition's FrontierCode leaderboard."""
+"""Index reviewed model papers and refresh Cognition FrontierCode evaluations."""
 
 import argparse
 
@@ -6,6 +6,7 @@ from backend.database.connection import db_manager
 from backend.services.frontiercode_sync_service import (
     FrontierCodeSyncService,
     fetch_frontiercode_leaderboard,
+    run_discovery,
 )
 from scripts.utils.cron_helpers import CronJobBase
 
@@ -19,11 +20,15 @@ class SyncFrontierCodeJob(CronJobBase):
         leaderboard = fetch_frontiercode_leaderboard()
         session = db_manager.session_local()
         try:
+            discovery = run_discovery(session, persist=not self.dry_run)
+            self.logger.info("frontiercode_discovery %s", discovery.to_dict())
             stats = FrontierCodeSyncService(session).sync(
-                leaderboard, commit=not self.dry_run
+                leaderboard,
+                discovery=discovery,
+                commit=not self.dry_run,
             )
             self.logger.info("frontiercode_sync %s", stats.to_dict())
-            self.logger.info("Papers processed: %s", stats.selected)
+            self.logger.info("Papers processed: %s", stats.matched)
         finally:
             session.close()
 
