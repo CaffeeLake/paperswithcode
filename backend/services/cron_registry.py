@@ -24,6 +24,7 @@ class CronJobDefinition:
     workflow_file: Optional[str] = None
     workflow_jobs: Tuple[str, ...] = ()
     workflow_freshness_required: bool = True
+    dashboard_group: str = "operations"
 
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
@@ -323,6 +324,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-sync-3d-arena.yml",
         workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
         id="sync_open_asr",
@@ -354,6 +356,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-sync-open-asr.yml",
         workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
         id="sync_deepswe",
@@ -384,6 +387,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-sync-deepswe.yml",
         workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
         id="sync_artificial_analysis",
@@ -418,6 +422,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-sync-artificial-analysis.yml",
         workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
         id="sync_frontiercode",
@@ -450,6 +455,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-sync-frontiercode.yml",
         workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
         id="import_hf_daily_papers",

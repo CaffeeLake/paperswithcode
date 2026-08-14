@@ -686,6 +686,7 @@ def evaluate_job_health(
         "job_name": job.id,
         "display_name": job.display_name,
         "category": job.category,
+        "dashboard_group": job.dashboard_group,
         "status": status,
         "log_status": log_result,
         "status_reason": status_reason,

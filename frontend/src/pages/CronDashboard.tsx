@@ -153,8 +153,14 @@ const CronDashboard = () => {
     });
   };
 
-  const criticalJobs = data?.jobs.filter((job) => job.critical) ?? [];
-  const otherJobs = data?.jobs.filter((job) => !job.critical) ?? [];
+  const leaderboardSyncJobs = data?.jobs.filter(
+    (job) => job.dashboard_group === "leaderboard_sync",
+  ) ?? [];
+  const operationsJobs = data?.jobs.filter(
+    (job) => job.dashboard_group !== "leaderboard_sync",
+  ) ?? [];
+  const criticalJobs = operationsJobs.filter((job) => job.critical);
+  const otherJobs = operationsJobs.filter((job) => !job.critical);
 
   const jobsByCategory = otherJobs.reduce((acc, job) => {
     if (!acc[job.category]) acc[job.category] = [];
@@ -240,8 +246,9 @@ const CronDashboard = () => {
         </Card>
 
         <Tabs defaultValue="critical-jobs">
-          <TabsList className="grid w-full grid-cols-4 sm:w-auto">
+          <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto sm:grid-cols-5">
             <TabsTrigger value="critical-jobs">Critical Jobs</TabsTrigger>
+            <TabsTrigger value="leaderboard-syncs">Leaderboard Syncs</TabsTrigger>
             <TabsTrigger value="codex-paper-jobs">Codex Paper Jobs</TabsTrigger>
             <TabsTrigger value="catalog-audit">Catalog Audit</TabsTrigger>
             <TabsTrigger value="chat-compute">Chat Compute</TabsTrigger>
@@ -351,6 +358,43 @@ const CronDashboard = () => {
               ))}
             </div>
               </>
+            )}
+          </TabsContent>
+
+          <TabsContent value="leaderboard-syncs" className="mt-6">
+            {isLoading && (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin cron-info-text" />
+                <span className="ml-3 cron-muted">Loading leaderboard sync status...</span>
+              </div>
+            )}
+            {error && (
+              <Card className="cron-status--broken">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <XCircle className="h-5 w-5" />
+                    <p>{errorMessage ?? "Failed to load leaderboard sync status. Please try again."}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {data && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <CardTitle className="text-xl">Leaderboard syncs</CardTitle>
+                      <CardDescription>
+                        Recurring imports from externally maintained benchmark leaderboards
+                      </CardDescription>
+                    </div>
+                    <Badge>{leaderboardSyncJobs.length} jobs</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {leaderboardSyncJobs.map(renderJobCard)}
+                </CardContent>
+              </Card>
             )}
           </TabsContent>
 

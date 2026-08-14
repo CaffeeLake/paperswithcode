@@ -696,6 +696,7 @@ export interface CronJobStatus {
   job_name: string;
   display_name: string;
   category: string;
+  dashboard_group: 'operations' | 'leaderboard_sync';
   status: CronJobHealth;
   log_status?: string | null;
   status_reason: string;

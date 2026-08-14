@@ -140,6 +140,21 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert reference_job.workflow_file == "cron-backfill-method-references.yml"
 
 
+def test_registry_classifies_only_recurring_leaderboard_syncs():
+    leaderboard_jobs = {
+        job.id for job in list_cron_jobs() if job.dashboard_group == "leaderboard_sync"
+    }
+
+    assert leaderboard_jobs == {
+        "sync_3d_arena",
+        "sync_open_asr",
+        "sync_deepswe",
+        "sync_artificial_analysis",
+        "sync_frontiercode",
+    }
+    assert _job("sync_hf_organizations").dashboard_group == "operations"
+
+
 def test_hot_job_has_dedicated_lock_and_operational_metrics():
     job = _job("update_hot_github_trending")
     assert job.schedule.startswith("*/15")

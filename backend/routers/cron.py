@@ -23,6 +23,7 @@ class CronJobStatus(BaseModel):
     job_name: str
     display_name: str
     category: str
+    dashboard_group: str = "operations"
     status: str
     log_status: Optional[str] = None
     status_reason: str
