@@ -724,6 +724,12 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_file="cron-backfill-method-keywords.yml",
         workflow_jobs=("run",),
         db_freshness_query="""
+            WITH current_run AS (
+                SELECT keyword_catalog_sha256
+                FROM method_keyword_backfill_runs
+                ORDER BY started_at DESC NULLS LAST, updated_at DESC
+                LIMIT 1
+            )
             SELECT max(updated_at) AS last_write,
                    count(*) FILTER (
                      WHERE updated_at > now() - interval '26 hours'
@@ -738,6 +744,9 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    )) / 60, 0)::bigint AS blocking_run_age_minutes,
                    max(cursor_paper_id) FILTER (WHERE status = 'running') AS resume_cursor
             FROM method_keyword_backfill_runs
+            WHERE keyword_catalog_sha256 = (
+                SELECT keyword_catalog_sha256 FROM current_run
+            )
         """,
     ),
     CronJobDefinition(
@@ -756,21 +765,41 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_file="cron-backfill-method-references.yml",
         workflow_jobs=("run",),
         db_freshness_query="""
+            WITH frontier AS (
+                SELECT min(month_start) AS month_start
+                FROM method_reference_backfill_months
+                WHERE status != 'complete'
+            )
             SELECT max(updated_at) AS last_write,
                    count(*) FILTER (
                      WHERE updated_at > now() - interval '12 hours'
                    ) AS recent_writes,
                    count(*) FILTER (
                      WHERE status = 'running'
+                       AND month_start = (SELECT month_start FROM frontier)
                        AND updated_at < now() - interval '7 hours'
                    ) AS stale_running,
-                   count(*) FILTER (WHERE status = 'failed') AS failed_runs,
-                   sum(retryable_failures) AS retryable_failures,
-                   count(*) FILTER (WHERE last_error ILIKE '%429%') AS provider_429_rows,
+                   count(*) FILTER (
+                     WHERE status = 'failed'
+                       AND month_start = (SELECT month_start FROM frontier)
+                   ) AS failed_runs,
+                   sum(retryable_failures) FILTER (
+                     WHERE month_start = (SELECT month_start FROM frontier)
+                   ) AS retryable_failures,
+                   count(*) FILTER (
+                     WHERE month_start = (SELECT month_start FROM frontier)
+                       AND last_error ILIKE '%429%'
+                   ) AS provider_429_rows,
                    COALESCE(EXTRACT(EPOCH FROM (
-                     now() - min(started_at) FILTER (WHERE status = 'running')
+                     now() - min(started_at) FILTER (
+                       WHERE status = 'running'
+                         AND month_start = (SELECT month_start FROM frontier)
+                     )
                    )) / 60, 0)::bigint AS blocking_run_age_minutes,
-                   max(cursor_paper_id) FILTER (WHERE status = 'running') AS resume_cursor
+                   max(cursor_paper_id) FILTER (
+                     WHERE status = 'running'
+                       AND month_start = (SELECT month_start FROM frontier)
+                   ) AS resume_cursor
             FROM method_reference_backfill_months
         """,
     ),
