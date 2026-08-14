@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import type { LeaderboardMetric, MetricDirections, Task } from "@/lib/api";
+import type { Task } from "@/lib/api/catalog.types";
+import type { LeaderboardMetric, MetricDirections } from "@/lib/api/evaluations.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { evaluationsApi } from "@/lib/api/evaluations";
 import { usePreferences } from "@/lib/preferencesContext";

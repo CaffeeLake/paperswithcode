@@ -16,7 +16,7 @@ import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import HfSignInButton from "@/components/HfSignInButton";
 import UserMenu from "@/components/UserMenu";
 import { chipColors, hueFromSlug } from "@/lib/colors";
-import type { Method } from "@/lib/api";
+import type { Method } from "@/lib/api/catalog.types";
 import { papersApi } from "@/lib/api/papers";
 import { isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";

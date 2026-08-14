@@ -1,4 +1,4 @@
-import type { Paper } from "./api";
+import type { Paper } from "./api/papers.types";
 import type { HuggingFaceRepoCounts } from "@/hooks/useHuggingFaceRepos";
 import { copyableLeaderboardRanks } from "./leaderboardBadges";
 import { safeExternalHref } from "./safeExternalHref";

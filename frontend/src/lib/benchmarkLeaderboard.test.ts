@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Evaluation } from "./api";
+import type { Evaluation } from "./api/evaluations.types";
 import {
   computeSeries,
   mergeLeaderboardEvaluations,

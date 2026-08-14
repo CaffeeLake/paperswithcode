@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Conference } from "@/lib/api";
+import type { Conference } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";

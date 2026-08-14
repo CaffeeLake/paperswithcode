@@ -8,21 +8,23 @@ import type {
   ConferenceDeadlines,
   Conferences,
   Dataset,
-  LeaderboardMetric,
-  LeaderboardMetricsResponse,
   Method,
   MethodTrend,
-  MetricDirections,
   Organization,
   OrganizationAreasWithTasks,
   OrganizationContributions,
   Organizations,
-  PaginatedResponse,
   Task,
   TaskPage,
   TrendingBenchmarksResponse,
   TrendingTasksResponse,
-} from "../api";
+} from "./catalog.types";
+import type {
+  LeaderboardMetric,
+  LeaderboardMetricsResponse,
+  MetricDirections,
+} from "./evaluations.types";
+import type { PaginatedResponse } from "./shared.types";
 import type { ApiRequest } from "../apiTransport";
 import type { FrameworkCatalog } from "../frameworks";
 import { apiRequest } from "./request";

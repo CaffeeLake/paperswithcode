@@ -8,9 +8,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type Task as APITask,
   type Dataset,
+} from "@/lib/api/catalog.types";
+import {
   type Evaluation as APIEvaluation,
   type LeaderboardMetric,
-} from "@/lib/api";
+} from "@/lib/api/evaluations.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { evaluationsApi } from "@/lib/api/evaluations";
 import { submissionsApi } from "@/lib/api/submissions";

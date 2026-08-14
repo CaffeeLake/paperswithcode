@@ -1,6 +1,6 @@
 import React from "react";
 
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 
 interface PaperMentionPickerProps {
   open: boolean;

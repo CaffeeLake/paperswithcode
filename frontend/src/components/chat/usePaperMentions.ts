@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
 
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 import { chatApi } from "@/lib/api/chat";
 import { papersApi } from "@/lib/api/papers";
 import type { ChatDraft, PaperMentionDraft } from "@/lib/chat";

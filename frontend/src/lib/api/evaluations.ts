@@ -1,4 +1,5 @@
-import type { Evaluation, PaginatedResponse } from "../api";
+import type { Evaluation } from "./evaluations.types";
+import type { PaginatedResponse } from "./shared.types";
 import type { ApiRequest } from "../apiTransport";
 import { paperCuration } from "./curation";
 import { apiRequest } from "./request";

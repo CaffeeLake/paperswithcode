@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import LatexTitle from "@/components/LatexTitle";
-import type { RelatedPaperRecommendation } from "@/lib/api";
+import type { RelatedPaperRecommendation } from "@/lib/api/papers.types";
 
 export function RelatedPapersCard({
   isLoading,

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Organizations } from "@/lib/api";
+import type { Organizations } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import OrganizationsIndexView from "@/views/OrganizationsIndexView";
 

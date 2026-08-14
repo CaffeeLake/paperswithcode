@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { type Paper, type PaginatedResponse, type PaperOrderBy, type PaperTimeWindow, type TrendingPaper } from '@/lib/api';
+import type { Paper, PaperOrderBy, PaperTimeWindow, TrendingPaper } from '@/lib/api/papers.types';
+import type { PaginatedResponse } from '@/lib/api/shared.types';
 import { papersApi } from '@/lib/api/papers';
 
 interface UsePapersParams {

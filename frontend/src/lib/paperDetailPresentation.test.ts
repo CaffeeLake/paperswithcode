@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Paper } from "./api";
+import type { Paper } from "./api/papers.types";
 import { buildPaperDetailPresentation } from "./paperDetailPresentation";
 
 const paper: Paper = {

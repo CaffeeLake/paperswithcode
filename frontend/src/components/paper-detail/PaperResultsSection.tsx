@@ -5,7 +5,8 @@ import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { resultsTaskAnchorId, resultsTaskHash } from "@/hooks/usePaperDetailPageModel";
-import type { Evaluation, Paper } from "@/lib/api";
+import type { Evaluation } from "@/lib/api/evaluations.types";
+import type { Paper } from "@/lib/api/papers.types";
 import { isCodexAddEvalsEnabled } from "@/lib/codexAddEvals";
 import { formatMetricValue } from "@/lib/utils";
 

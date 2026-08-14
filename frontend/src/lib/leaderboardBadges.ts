@@ -1,4 +1,4 @@
-import type { LeaderboardRankSummary } from "@/lib/api";
+import type { LeaderboardRankSummary } from "@/lib/api/papers.types";
 
 export type CopyableLeaderboardRank = LeaderboardRankSummary & {
   dataset_slug: string;

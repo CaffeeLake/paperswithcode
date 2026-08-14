@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { Dataset } from '@/lib/api';
+import type { Dataset } from '@/lib/api/catalog.types';
 import { catalogApi } from '@/lib/api/catalog';
 
 export function useTaskDatasets(taskId: string | undefined, enabled: boolean = true) {

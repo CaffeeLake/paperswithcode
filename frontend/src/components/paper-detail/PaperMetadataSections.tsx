@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { MethodChip, TagChip } from "@/components";
 import { LatexText } from "@/components/LatexTitle";
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 
 import { PaperSectionRule } from "./PaperSectionRule";
 

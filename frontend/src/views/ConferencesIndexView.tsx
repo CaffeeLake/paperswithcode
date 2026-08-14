@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Conference } from "@/lib/api";
+import type { Conference } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";

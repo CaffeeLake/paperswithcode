@@ -123,7 +123,7 @@ describe("SharedChatView", () => {
     const fresh = screen.getByRole("heading", { name: "Start a new conversation" }).closest("section");
     expect(attribution?.nextElementSibling).toBe(fresh);
     const fetchInit = vi.mocked(fetch).mock.calls[0][1];
-    expect(fetchInit).not.toHaveProperty("credentials");
+    expect(fetchInit).toHaveProperty("credentials", "omit");
     expect(document.title).toBe("Shared conversation");
     expect(document.head.querySelector('meta[name="robots"]')).toHaveAttribute(
       "content",

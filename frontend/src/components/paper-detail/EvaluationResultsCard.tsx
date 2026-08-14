@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import type { Dataset } from "@/lib/api/catalog.types";
+import type { Evaluation as APIEvaluation } from "@/lib/api/evaluations.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { formatMetricValue } from "@/lib/utils";
 

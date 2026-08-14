@@ -7,7 +7,7 @@ import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
-import type { Dataset, RecommendedFramework, Task, TrendingBenchmark } from "@/lib/api";
+import type { Dataset, RecommendedFramework, Task, TrendingBenchmark } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
 import { usePreferences } from "@/lib/preferencesContext";

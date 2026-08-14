@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { Icon } from "@/components";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Paper, RelatedPaperRecommendation } from "@/lib/api";
+import type { Paper, RelatedPaperRecommendation } from "@/lib/api/papers.types";
 import type { AuthUser } from "@/lib/authContext";
 import type { HuggingFaceArtifactsViewer } from "@/lib/paperDetailPresentation";
 import { safeExternalHref } from "@/lib/safeExternalHref";

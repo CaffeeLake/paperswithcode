@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useQuery } from "@tanstack/react-query";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
-import { ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/apiTransport";
 
 type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [

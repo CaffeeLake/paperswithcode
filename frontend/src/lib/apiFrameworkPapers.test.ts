@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -14,7 +14,7 @@ describe("framework/repository paper API filters", () => {
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await apiClient.getPapers({
+    await papersApi.list({
       repository: "https://github.com/HuggingFace/LeRobot",
       search: "robot",
       order_by: "trending",

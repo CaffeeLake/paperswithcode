@@ -5,7 +5,7 @@
  * `data.js` with field names like `tags`, `github`, `date`, `institution`, …
  * (see PLAN.md §4 for the full mapping). After this migration, every view
  * fetches typed `Paper` / `Task` / `Method` / `Dataset` / `Evaluation` objects
- * from `lib/api.ts` and pipes them through these helpers so the rendered
+ * from the paper API client and pipes them through these helpers so the rendered
  * components keep working without surgery on every view.
  *
  * Decisions captured in PLAN.md §4.1:
@@ -17,7 +17,8 @@
 
 import { format, parseISO } from "date-fns";
 
-import type { Paper, Repository, Task, TrendingPaper } from "./api";
+import type { Task } from "./api/catalog.types";
+import type { Paper, Repository, TrendingPaper } from "./api/papers.types";
 import { assetUrl } from "./apiUrl";
 
 export interface PaperCardProps {

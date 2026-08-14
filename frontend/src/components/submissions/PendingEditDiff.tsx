@@ -2,7 +2,7 @@ import React from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
-import { type Method, type Task } from "@/lib/api";
+import type { Method, Task } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
 import type { PendingPaperEdit } from "@/lib/pendingEdits";

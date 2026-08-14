@@ -1,10 +1,8 @@
 import type { ApiRequest } from "../apiTransport";
 import { apiRequest } from "./request";
-
-export interface UserPreferences {
-  /** Hide closed-source model rows on evaluation tables. */
-  hide_closed_source_evals: boolean;
-}
+export type { UserPreferences } from "./account.types";
+import type { UserPreferences } from "./account.types";
+import type { BookmarkIdsResponse, SavedPapersResponse } from "./account.types";
 
 export interface RateLimitPolicy {
   active_pending: number;
@@ -28,6 +26,22 @@ export class AccountApi {
 
   getRateLimitPolicy(): Promise<RateLimitPolicy> {
     return this.request("/rate-limits", { credentials: "omit" });
+  }
+
+  getBookmarkIds(): Promise<BookmarkIdsResponse> {
+    return this.request("/me/bookmarks/ids");
+  }
+
+  getBookmarks(): Promise<SavedPapersResponse> {
+    return this.request("/me/bookmarks");
+  }
+
+  addBookmark(paperId: string | number): Promise<void> {
+    return this.request(`/me/bookmarks/${paperId}`, { method: "POST" });
+  }
+
+  removeBookmark(paperId: string | number): Promise<void> {
+    return this.request(`/me/bookmarks/${paperId}`, { method: "DELETE" });
   }
 }
 

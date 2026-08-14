@@ -17,18 +17,15 @@ import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
 import MarkdownText from "@/components/MarkdownText";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
-import { getPaper, type Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 import { preloadImage } from "@/lib/imagePreloader";
 
-vi.mock("@/lib/api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, getPaper: vi.fn() };
-});
+const mockedGetPaper = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api/papers", () => ({ papersApi: { get: mockedGetPaper } }));
 vi.mock("@/lib/imagePreloader", () => ({
   preloadImage: vi.fn().mockResolvedValue(undefined),
 }));
 
-const mockedGetPaper = vi.mocked(getPaper);
 const mockedPreloadImage = vi.mocked(preloadImage);
 
 const paper: Paper = {

@@ -1,13 +1,5 @@
-import type { CronJobsResponse, PaperMarkdownJobsResponse } from "../api";
-export type {
-  CronHealthAxis,
-  CronJobHealth,
-  CronJobsResponse,
-  CronJobStatus,
-  CronWorkflowStatus,
-  PaperMarkdownJobsResponse,
-  PaperMarkdownRemoteJob,
-} from "../api";
+import type { CronJobsResponse, PaperMarkdownJobsResponse } from "./operations.types";
+export type * from "./operations.types";
 import type { ApiRequest } from "../apiTransport";
 import { apiRequest } from "./request";
 

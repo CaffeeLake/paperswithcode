@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Organization } from "@/lib/api";
+import type { Organization } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import "./Organizations.css";
 

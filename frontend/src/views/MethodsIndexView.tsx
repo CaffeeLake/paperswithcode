@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Flame } from "lucide-react";
 
-import type { Method } from "@/lib/api";
+import type { Method } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { slugify } from "@/lib/slug";
 import { Skeleton } from "@/components/ui/skeleton";

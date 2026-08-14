@@ -17,8 +17,9 @@ import { PaperCard, TagChip } from "@/components";
 import HfSignInButton from "@/components/HfSignInButton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { ApiError, apiClient } from "@/lib/api";
-import type { SavedPapersResponse } from "@/lib/api";
+import { accountApi } from "@/lib/api/account";
+import type { SavedPapersResponse } from "@/lib/api/account.types";
+import { ApiError } from "@/lib/apiTransport";
 import { transformPaperForCard } from "@/lib/transform";
 import { useAuth } from "@/lib/authContext";
 import { savedPapersAuthorizationUrl } from "@/lib/savedPapersAuth";
@@ -28,7 +29,7 @@ const SavedPapersView: React.FC = () => {
 
   const query = useQuery<SavedPapersResponse, Error>({
     queryKey: ["my-bookmarks"],
-    queryFn: () => apiClient.getMyBookmarks(),
+    queryFn: () => accountApi.getBookmarks(),
     enabled: !!user,
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,

@@ -1,4 +1,4 @@
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 
 export interface PaperPreviewData {
   routeId: string;

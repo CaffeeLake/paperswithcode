@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import MethodUsageChart from "@/components/MethodUsageChart";
-import type { MethodTrendPoint } from "@/lib/api";
+import type { MethodTrendPoint } from "@/lib/api/catalog.types";
 
 const history: MethodTrendPoint[] = [
   {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { BenchmarkTrendPoint } from "@/lib/api";
+import type { BenchmarkTrendPoint } from "@/lib/api/catalog.types";
 
 interface BenchmarkTrendSparklineProps {
   history: BenchmarkTrendPoint[];

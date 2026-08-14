@@ -1,6 +1,6 @@
-import { apiClient } from "@/lib/api";
+import { statsApi } from "@/lib/api/stats";
 
-export type { TrendPoint, TrendsResponse } from "@/lib/api";
+export type { TrendPoint, TrendsResponse } from "@/lib/api/stats";
 
 export const formatTrendMonth = (month: string): string => {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
@@ -24,4 +24,4 @@ export const formatTrendMonth = (month: string): string => {
   return `${names[Number(monthNumber) - 1]} '${year.slice(2)}`;
 };
 
-export const fetchTrends = () => apiClient.getResearchTrends();
+export const fetchTrends = () => statsApi.trends();

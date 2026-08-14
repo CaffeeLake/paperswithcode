@@ -14,7 +14,9 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, apiClient, type BookmarkIdsResponse } from "@/lib/api";
+import { accountApi } from "@/lib/api/account";
+import type { BookmarkIdsResponse } from "@/lib/api/account.types";
+import { ApiError } from "@/lib/apiTransport";
 import { apiUrl, isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
@@ -35,7 +37,7 @@ export function useBookmarkIds() {
 
   const query = useQuery<BookmarkIdsResponse, Error>({
     queryKey: BOOKMARK_IDS_KEY,
-    queryFn: () => apiClient.getMyBookmarkIds(),
+    queryFn: () => accountApi.getBookmarkIds(),
     enabled: !!user,
     staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
@@ -67,9 +69,9 @@ export function useToggleBookmark() {
     {
       mutationFn: async ({ paperId, isBookmarked }) => {
         if (isBookmarked) {
-          await apiClient.removeBookmark(paperId);
+          await accountApi.removeBookmark(paperId);
         } else {
-          await apiClient.addBookmark(paperId);
+          await accountApi.addBookmark(paperId);
         }
       },
       onMutate: async ({ paperId, isBookmarked }) => {

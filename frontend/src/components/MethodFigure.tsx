@@ -9,7 +9,7 @@
 
 import React from "react";
 
-import type { Method } from "@/lib/api";
+import type { Method } from "@/lib/api/catalog.types";
 
 // Vaswani-style box palette
 const C = {

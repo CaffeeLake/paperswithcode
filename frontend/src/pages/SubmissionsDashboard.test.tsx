@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PendingPaperEdit } from "@/lib/api";
+import type { PendingPaperEdit } from "@/lib/pendingEdits";
 import { parsePendingPaperEdit } from "@/lib/pendingEdits";
 import SubmissionsDashboard from "@/pages/SubmissionsDashboard";
 

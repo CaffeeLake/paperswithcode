@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import type { OrganizationContributions } from "@/lib/api";
+import type { OrganizationContributions } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

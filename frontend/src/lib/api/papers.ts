@@ -8,11 +8,10 @@ import type {
   PaperSubmitPayload,
   PaperSubmitResponse,
   PaperTimeWindow,
-  PaginatedResponse,
   RelatedPaperRecommendation,
-  SearchPage,
   TrendingPaper,
-} from "../api";
+} from "./papers.types";
+import type { PaginatedResponse, SearchPage } from "./shared.types";
 import type { ApiRequest } from "../apiTransport";
 import { paperCuration } from "./curation";
 import { apiRequest } from "./request";

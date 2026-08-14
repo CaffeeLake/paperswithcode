@@ -6,7 +6,7 @@
  * asks `/auth/me` whether the cookie is valid and caches the result in a
  * React context so any component can read `useAuth()`.
  *
- * A custom `pwc:auth-stale` window event lets the API client (`lib/api.ts`)
+ * A custom `pwc:auth-stale` window event lets the canonical API transport
  * tell us when a write returned 401 so we can clear local state.
  */
 

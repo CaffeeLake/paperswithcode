@@ -15,12 +15,12 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/authContext";
 import {
-  type Paper,
   type PendingEditStatus,
   type PendingEditType,
   type PendingPaperEdit,
-} from "@/lib/api";
+} from "@/lib/pendingEdits";
 import { papersApi } from "@/lib/api/papers";
+import type { Paper } from "@/lib/api/papers.types";
 import { submissionsApi } from "@/lib/api/submissions";
 import { cn } from "@/lib/utils";
 

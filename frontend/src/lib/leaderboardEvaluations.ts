@@ -1,4 +1,4 @@
-import type { Evaluation } from "@/lib/api";
+import type { Evaluation } from "@/lib/api/evaluations.types";
 
 export interface LeaderboardEvaluationVisibility {
   visible: Evaluation[];

@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
-import { ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/apiTransport";
 import { papersApi } from "@/lib/api/papers";
 import { authUrl } from "@/lib/apiUrl";
 import { safeExternalHref } from "@/lib/safeExternalHref";

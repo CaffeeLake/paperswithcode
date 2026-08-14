@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import type { Conference, ConferenceDeadline } from "@/lib/api";
+import type { Conference, ConferenceDeadline } from "@/lib/api/catalog.types";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 import {
   Dialog,

@@ -1,0 +1,120 @@
+export type CronJobHealth = 'healthy' | 'degraded' | 'broken' | 'running' | 'stuck' | 'unknown';
+
+export interface CronHealthAxis {
+  status: CronJobHealth;
+  reason: string;
+  scheduler?: 'github_actions' | 'systemd' | 'manual';
+  last_expected_at?: string | null;
+  last_started_at?: string | null;
+  last_completed_at?: string | null;
+  next_expected_at?: string | null;
+  last_verified_at?: string | null;
+}
+
+export interface CronWorkflowStatus {
+  available: boolean;
+  workflow_file: string;
+  run_id?: number | null;
+  status?: string | null;
+  conclusion?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  event?: string | null;
+  failed_jobs?: string[];
+  running_jobs?: string[];
+  job_conclusions?: Record<string, string | null>;
+  error?: string | null;
+  view_error?: string | null;
+}
+
+export interface CronJobStatus {
+  job_name: string;
+  display_name: string;
+  category: string;
+  dashboard_group: 'operations' | 'leaderboard_sync';
+  status: CronJobHealth;
+  log_status?: string | null;
+  status_reason: string;
+  last_run: string | null;
+  last_db_write: string | null;
+  recent_write_count: number | null;
+  duration: number | null;
+  is_running: boolean;
+  error: string | null;
+  schedule: string | null;
+  critical: boolean;
+  work_metrics?: Record<string, string | number>;
+  work_summary?: string | null;
+  db_metrics?: Record<string, string | number>;
+  workflow_status?: CronWorkflowStatus | null;
+  systemd_status?: Record<string, string | number | boolean | null> | null;
+  execution_health: CronHealthAxis;
+  output_health: CronHealthAxis;
+  lock_state?: Record<string, string | number | boolean | null>;
+  lock_stale?: boolean;
+  diagnostics?: string | null;
+  diagnostic_groups?: Record<string, string[]>;
+}
+
+export interface CronJobsResponse {
+  timestamp: string;
+  jobs: CronJobStatus[];
+  manual_operations: CronJobStatus[];
+  snapshot_generated_at: string;
+  snapshot_age_seconds: number;
+  snapshot_stale: boolean;
+  refreshing: boolean;
+  summary: Record<CronJobHealth, number> & {
+    total_jobs: number;
+    health_score: number;
+    critical_issues: string[];
+    what_to_check_next: string;
+    coverage: {
+      registered_scheduled_duties: number;
+      discovered_scheduled_duties: number;
+      monitored_duties: number;
+      coverage_gaps: number;
+      gap_ids?: string[];
+    };
+  };
+}
+
+
+export interface PaperMarkdownJobProgress {
+  status: string;
+  total_papers: number;
+  processed_papers: number;
+  succeeded_papers: number;
+  failed_papers: number;
+  already_existed_papers: number;
+  extracted_images: number;
+  updated_at?: string | null;
+  started_at?: string | null;
+  fatal_error?: string | null;
+  error_samples: Array<{ arxiv_id: string; error: string }>;
+}
+
+export interface PaperMarkdownRemoteJob {
+  id: string;
+  url: string;
+  stage: string;
+  stage_message?: string | null;
+  mode?: string | null;
+  run_id?: string | null;
+  shard_id?: string | null;
+  hardware?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_seconds?: number | null;
+  progress?: PaperMarkdownJobProgress | null;
+}
+
+export interface PaperMarkdownJobsResponse {
+  available: boolean;
+  namespace: string;
+  updated_at?: string | null;
+  jobs: PaperMarkdownRemoteJob[];
+  summary: Record<string, number>;
+  error?: string | null;
+}

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 import { papersApi } from "@/lib/api/papers";
 import AuthorDetailView from "@/views/AuthorDetailView";
 

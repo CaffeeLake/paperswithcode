@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 import type { PaperEditSection } from "@/hooks/usePaperEditState";
 import { PaperDetailEditors } from "./PaperDetailEditors";
 

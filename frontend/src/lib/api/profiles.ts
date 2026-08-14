@@ -1,4 +1,4 @@
-import type { OrganizationContributions } from "../api";
+import type { OrganizationContributions } from "./catalog.types";
 import { ApiError } from "../apiTransport";
 import { apiFetch } from "./request";
 

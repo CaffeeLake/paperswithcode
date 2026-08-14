@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { PaperMentionPicker } from "./PaperMentionPicker";
-import type { Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api/papers.types";
 
 const paper = (id: string, title: string, arxivId: string | null): Paper => ({
   id, arxiv_id: arxivId, source: arxivId ? "arxiv" : "external",

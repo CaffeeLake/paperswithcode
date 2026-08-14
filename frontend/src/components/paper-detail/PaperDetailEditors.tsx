@@ -1,4 +1,5 @@
-import type { Evaluation, Paper } from "@/lib/api";
+import type { Evaluation } from "@/lib/api/evaluations.types";
+import type { Paper } from "@/lib/api/papers.types";
 import type { PaperEditSection } from "@/hooks/usePaperEditState";
 
 import { EditEvaluationsDialog } from "./EditEvaluationsDialog";

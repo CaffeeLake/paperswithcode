@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import type { PaperSubmitPayload, PaperSubmitResponse } from "@/lib/api";
+import type { PaperSubmitPayload, PaperSubmitResponse } from "@/lib/api/papers.types";
 import { papersApi } from "@/lib/api/papers";
 import { authUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";

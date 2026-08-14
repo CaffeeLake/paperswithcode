@@ -1,6 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import type { Evaluation, PaginatedResponse, Paper } from "@/lib/api";
+import type { Evaluation } from "@/lib/api/evaluations.types";
+import type { Paper } from "@/lib/api/papers.types";
+import type { PaginatedResponse } from "@/lib/api/shared.types";
 
 /**
  * Reconcile React Query caches after a paper edit mutation.

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { MethodTrendPoint } from "@/lib/api";
+import type { MethodTrendPoint } from "@/lib/api/catalog.types";
 
 interface MethodUsageChartProps {
   history: MethodTrendPoint[];

@@ -4,14 +4,8 @@ import type {
   ChatWebSearchBudgetStatus,
   OpenRouterCredentialStatus,
   OpenRouterUsageStatus,
-} from "../api";
-export type {
-  ChatAvailability,
-  ChatSandboxSpendStatus,
-  ChatWebSearchBudgetStatus,
-  OpenRouterCredentialStatus,
-  OpenRouterUsageStatus,
-} from "../api";
+} from "./chat.types";
+export type * from "./chat.types";
 import type { ChatBrowserLatencyUpdate, ReasoningEffort } from "../chat";
 import type {
   ChatModelChoice,

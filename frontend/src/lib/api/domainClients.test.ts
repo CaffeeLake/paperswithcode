@@ -8,6 +8,7 @@ import { EvaluationsApi } from "./evaluations";
 import { OperationsApi } from "./operations";
 import { PapersApi } from "./papers";
 import { profilesApi } from "./profiles";
+import { StatsApi } from "./stats";
 import { SubmissionsApi } from "./submissions";
 
 describe("domain API clients", () => {
@@ -42,6 +43,19 @@ describe("domain API clients", () => {
     await new AccountApi(request).getRateLimitPolicy();
 
     expect(request).toHaveBeenCalledWith("/rate-limits", { credentials: "omit" });
+  });
+
+  it("encapsulates bookmark reads and mutations", async () => {
+    const request = vi.fn().mockResolvedValue({ paper_ids: [] }) as ApiRequest;
+    const account = new AccountApi(request);
+
+    await account.getBookmarkIds();
+    await account.addBookmark(42);
+    await account.removeBookmark(42);
+
+    expect(request).toHaveBeenNthCalledWith(1, "/me/bookmarks/ids");
+    expect(request).toHaveBeenNthCalledWith(2, "/me/bookmarks/42", { method: "POST" });
+    expect(request).toHaveBeenNthCalledWith(3, "/me/bookmarks/42", { method: "DELETE" });
   });
 
   it("keeps catalog filters on the canonical transport", async () => {
@@ -152,6 +166,14 @@ describe("domain API clients", () => {
     expect(request).toHaveBeenNthCalledWith(2, "/cron/paper-markdown-jobs", {
       cache: "no-store",
     });
+  });
+
+  it("owns research trend reads in the stats client", async () => {
+    const request = vi.fn().mockResolvedValue({ code_availability: [], hf_artifacts: [] }) as ApiRequest;
+
+    await new StatsApi(request).trends();
+
+    expect(request).toHaveBeenCalledWith("/stats/trends");
   });
 
   it("preserves the canonical username from profile redirects", async () => {
