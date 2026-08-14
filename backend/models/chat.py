@@ -243,8 +243,6 @@ class ToolDisplayBlock(BaseModel):
                 raise ValueError("Unsupported search tool arguments")
             if self.hits is None or self.results is None:
                 raise ValueError("Legacy search blocks require hits and results")
-        elif self.name not in {"Bash", "Read", "Grep", "WebFetch", "search_web"}:
-            raise ValueError("Unsupported generic tool name")
         return self
 
 

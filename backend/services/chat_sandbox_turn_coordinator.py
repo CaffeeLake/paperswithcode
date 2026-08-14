@@ -370,7 +370,10 @@ class ChatSandboxTurnCoordinator:
         allow_pool: bool,
         forced_pool_miss: bool,
     ) -> SandboxAcquisitionOutcome:
-        if self.persistent_enabled:
+        # A retry reaches this path only after the existing control failed before
+        # SDK dispatch. Do not select that same in-memory control again even if
+        # lifecycle cleanup has not removed it from the transport yet.
+        if self.persistent_enabled and not forced_pool_miss:
             reusable = self.transport.reusable_sandbox(
                 request.chat_session_id,
                 request.resume,

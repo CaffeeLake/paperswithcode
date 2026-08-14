@@ -1892,7 +1892,7 @@ def test_worker_adapter_namespaces_reused_provider_tool_ids():
     validator.accept({"type": "worker_done", "status": "complete"})
 
 
-@pytest.mark.parametrize("name", ["Bash", "Read", "Grep", "WebFetch"])
+@pytest.mark.parametrize("name", ["Bash", "Read", "Grep", "WebFetch", "pwc"])
 def test_generic_tool_projection_and_event_are_v2_raw_text(name):
     block = DISPLAY_BLOCKS_ADAPTER.validate_python(
         [
