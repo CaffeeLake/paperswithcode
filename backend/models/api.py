@@ -1467,7 +1467,7 @@ class TrendingBenchmark(BaseModel):
 
 
 class TrendingBenchmarks(BaseModel):
-    """Trending benchmarks for a task, with reproducible window metadata."""
+    """Benchmarks ranked by rate change, with reproducible window metadata."""
 
     task_id: str = Field(..., description="Resolved task ID")
     task_slug: str = Field(..., description="Resolved task slug")
@@ -1479,7 +1479,13 @@ class TrendingBenchmarks(BaseModel):
     baseline_days: int = Field(..., description="Length of the preceding window")
     bucket_days: int = Field(..., description="Length of each history bucket")
     generated_on: date = Field(..., description="Date used as the window endpoint")
-    results: List[TrendingBenchmark] = Field(default_factory=list)
+    results: List[TrendingBenchmark] = Field(
+        default_factory=list,
+        description=(
+            "Benchmarks sorted by descending rate change; benchmarks without "
+            "a baseline score sort last"
+        ),
+    )
 
     @field_validator("task_id", mode="before")
     @classmethod

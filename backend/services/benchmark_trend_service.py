@@ -23,7 +23,7 @@ from backend.utils.task_hierarchy import collect_descendant_task_ids
 
 
 class BenchmarkTrendService:
-    """Rank benchmarks by distinct recent papers that report evaluations."""
+    """Rank benchmarks by changes in evaluation-reporting velocity."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -49,10 +49,10 @@ class BenchmarkTrendService:
         evaluation-row creation timestamps, keep backfilled historical results
         from looking newly trendy.
 
-        Benchmarks with at least three recent reporting papers rank by recent
-        activity. Below that support threshold, all-time distinct reporting
-        papers rank first so a single newer report does not displace an
-        established benchmark.
+        Benchmarks rank by the displayed rate change: recent reporting velocity
+        divided by baseline reporting velocity. Benchmarks without baseline
+        reports have no comparable rate-change score and sort after benchmarks
+        with a numeric score.
 
         The database currently has evaluation evidence but no paper-reference
         edge table. The response therefore identifies its signal as
@@ -165,19 +165,12 @@ class BenchmarkTrendService:
 
         def ranking_key(item: TrendingBenchmark) -> tuple:
             latest_ordinal = (item.latest_reported_on or date.min).toordinal()
-            if item.recent_paper_count >= 3:
-                return (
-                    0,
-                    -item.recent_paper_count,
-                    -latest_ordinal,
-                    -item.all_time_paper_count,
-                    item.name.casefold(),
-                )
             return (
-                1,
-                -item.all_time_paper_count,
+                item.rate_change is None,
+                -(item.rate_change or 0),
                 -item.recent_paper_count,
                 -latest_ordinal,
+                -item.all_time_paper_count,
                 item.name.casefold(),
             )
 

@@ -245,7 +245,7 @@ def _seed_benchmark_trends(db, today):
             evaluation_id += 1
             paper_id += 1
 
-    add_reports(500, [2, 8, 15, 22])
+    add_reports(500, [2, 8, 15, 22, 120])
     add_reports(501, [3, 45, 120, 145, 170, 200, 230])
 
     # A second metric row from the same paper must not inflate reporting count.
@@ -281,10 +281,13 @@ def test_trending_benchmarks_default_to_ninety_days(db_session):
     ]
     rising, established = response.results
     assert rising.recent_paper_count == 4
-    assert rising.all_time_paper_count == 4
+    assert rising.baseline_paper_count == 1
+    assert rising.all_time_paper_count == 5
+    assert rising.rate_change == 8.0
     assert rising.best_model_name == "Model 500"
     assert established.recent_paper_count == 2
     assert established.baseline_paper_count == 5
+    assert established.rate_change == 0.8
 
 
 def test_trending_benchmarks_resolve_exact_task_name(db_session):
@@ -300,7 +303,7 @@ def test_trending_benchmarks_resolve_exact_task_name(db_session):
     assert response.results[0].name == "RisingBench"
 
 
-def test_trending_benchmarks_use_all_time_support_for_sparse_recent_activity(
+def test_trending_benchmarks_sort_missing_baseline_scores_last(
     db_session,
 ):
     today = date(2026, 7, 27)
@@ -353,16 +356,11 @@ def test_trending_benchmarks_use_all_time_support_for_sparse_recent_activity(
     )
 
     names = [item.name for item in response.results]
-    assert names.index("RisingBench") < names.index("LegacyBench")
-    assert names.index("LegacyBench") < names.index("EstablishedBench")
+    assert names == ["RisingBench", "EstablishedBench", "LegacyBench"]
     legacy = next(item for item in response.results if item.name == "LegacyBench")
-    established = next(
-        item for item in response.results if item.name == "EstablishedBench"
-    )
     assert legacy.recent_paper_count == 1
-    assert established.recent_paper_count == 2
     assert legacy.all_time_paper_count == 8
-    assert established.all_time_paper_count == 7
+    assert legacy.rate_change is None
 
 
 def test_trending_benchmarks_endpoint_exposes_default_window(client):

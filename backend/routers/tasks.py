@@ -227,11 +227,11 @@ def get_trending_benchmarks(
     ),
     db: Session = Depends(get_database_session),
 ):
-    """Rank a task's benchmarks by distinct recent evaluation-reporting papers.
+    """Rank a task's benchmarks by reporting-velocity rate change.
 
-    The default 90-day ranking provides enough evidence for sparse task pages
-    without falling back to all-time leaderboard popularity. Each paper counts
-    once per benchmark even when it contributes multiple model or metric rows.
+    The displayed score compares the default 90-day reporting velocity with the
+    preceding 180 days. Each paper counts once per benchmark even when it
+    contributes multiple model or metric rows.
     """
     try:
         return BenchmarkTrendService(db).get_trending_benchmarks(
