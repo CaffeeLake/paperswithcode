@@ -423,7 +423,7 @@ def test_active_spend_status_requires_timezone_aware_now(db):
         ChatLatencyService(db).active_spend_status(now=datetime(2026, 7, 30))
 
 
-def test_latency_migration_is_staging_scoped_and_least_privilege():
+def test_latency_migration_is_environment_scoped_and_least_privilege():
     migration = (
         Path(__file__).parents[1]
         / "database"
@@ -431,13 +431,15 @@ def test_latency_migration_is_staging_scoped_and_least_privilege():
         / "add_chat_turn_latency.sql"
     ).read_text()
 
-    assert "current_schema() <> 'staging'" in migration
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "FROM pwc_staging;" in migration
 
 
-def test_qualification_metadata_migration_is_staging_scoped_and_least_privilege():
+def test_qualification_metadata_migration_is_environment_scoped_and_least_privilege():
     migration = (
         Path(__file__).parents[1]
         / "database"
@@ -445,9 +447,11 @@ def test_qualification_metadata_migration_is_staging_scoped_and_least_privilege(
         / "add_chat_qualification_metadata.sql"
     ).read_text()
 
-    assert "current_schema() <> 'staging'" in migration
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "FROM pwc_staging;" in migration
     assert "qualification_run_id" in migration
     assert "qualification_scenario" in migration

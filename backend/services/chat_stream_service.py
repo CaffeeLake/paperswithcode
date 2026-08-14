@@ -1338,21 +1338,20 @@ class ChatStreamOrchestrator:
             "stopped": "stopped",
             "error": "error",
         }.get(self.terminal, "interrupted")
-        if self.settings.environment == "staging":
-            try:
-                with db_manager.session_local() as db:
-                    ChatLatencyService(db).finalize(
-                        self.request_id,
-                        status,
-                        round((time.perf_counter() - self.started) * 1000),
-                    )
-                    db.commit()
-            except Exception as exc:
-                logger.warning(
-                    "chat latency finalize failed request_id=%s error=%s",
+        try:
+            with db_manager.session_local() as db:
+                ChatLatencyService(db).finalize(
                     self.request_id,
-                    type(exc).__name__,
+                    status,
+                    round((time.perf_counter() - self.started) * 1000),
                 )
+                db.commit()
+        except Exception as exc:
+            logger.warning(
+                "chat latency finalize failed request_id=%s error=%s",
+                self.request_id,
+                type(exc).__name__,
+            )
         await self.release_admission()
 
     def _record_latency_phase(
@@ -1363,8 +1362,6 @@ class ChatStreamOrchestrator:
         acquisition_outcome: str | None = None,
         first_semantic_event_class: str | None = None,
     ) -> None:
-        if self.settings.environment != "staging":
-            return
         try:
             with db_manager.session_local() as db:
                 ChatLatencyService(db).record_phase(

@@ -183,12 +183,13 @@ def test_langfuse_client_exports_trace_content_without_a_mask(monkeypatch):
     assert "mask_otel_spans" not in captured
 
 
-def test_tracing_is_staging_only(monkeypatch):
+def test_tracing_supports_production_when_explicitly_enabled(monkeypatch):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("LANGFUSE_BASE_URL", "https://example.com")
+    monkeypatch.setattr(tracing, "_client", lambda *_args: object())
     settings = Settings(environment="production", chat_langfuse_enabled=True)
-    assert tracing._configured_client(settings) is None
+    assert tracing._configured_client(settings) is not None
 
 
 def test_provider_request_trace_is_content_free_and_records_usage(monkeypatch):

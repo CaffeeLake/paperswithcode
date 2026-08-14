@@ -13,6 +13,7 @@ from backend.services.chat_sandbox_pool_creation_coordinator import (
 )
 from backend.services.chat_sandbox_pool_maintenance_coordinator import (
     ChatSandboxPoolMaintenanceCoordinator,
+    PoolHealthUnavailable,
 )
 from backend.services.chat_sandbox_pool_policy import ChatSandboxPoolPolicy
 from backend.services.chat_sandbox_pool_repository import (
@@ -97,10 +98,13 @@ class ChatSandboxPoolAcquisitionCoordinator:
                     failure_code="sandbox_lost",
                 )
                 continue
-            sandbox = await self.maintenance.pool_sandbox_health(
-                candidate.sandbox_id,
-                candidate.worker_generation,
-            )
+            try:
+                sandbox = await self.maintenance.pool_sandbox_health(
+                    candidate.sandbox_id,
+                    candidate.worker_generation,
+                )
+            except PoolHealthUnavailable:
+                continue
             if sandbox is None:
                 await self.maintenance.terminate_pool_row(
                     candidate.pool_id,

@@ -49,6 +49,10 @@ MaintenanceOwner = Callable[[], bool]
 MaintenanceLocker = Callable[[Session], bool]
 
 
+class PoolHealthUnavailable(RuntimeError):
+    """A provider health check failed without proving the sandbox is dead."""
+
+
 @dataclass(frozen=True)
 class PoolMaintenanceResult:
     drained: int = 0
@@ -152,8 +156,13 @@ class ChatSandboxPoolMaintenanceCoordinator:
                 worker_generation=worker_generation,
             )
             return sandbox if healthy else None
-        except Exception:
-            return None
+        except Exception as error:
+            logger.warning(
+                "chat blank pool health unavailable sandbox_id=%s error=%s",
+                sandbox_id,
+                type(error).__name__,
+            )
+            raise PoolHealthUnavailable from error
 
     async def terminate_pool_row(
         self,
@@ -524,10 +533,13 @@ class ChatSandboxPoolMaintenanceCoordinator:
         for candidate in candidates:
             if not self.maintenance_owner():
                 break
-            sandbox = await self.pool_sandbox_health(
-                candidate.sandbox_id,
-                candidate.worker_generation,
-            )
+            try:
+                sandbox = await self.pool_sandbox_health(
+                    candidate.sandbox_id,
+                    candidate.worker_generation,
+                )
+            except PoolHealthUnavailable:
+                continue
             if not self.maintenance_owner():
                 break
             if sandbox is None:

@@ -1,4 +1,4 @@
-"""Content-free persistence for staging chat latency measurements."""
+"""Content-free persistence for deployed chat latency measurements."""
 
 from __future__ import annotations
 

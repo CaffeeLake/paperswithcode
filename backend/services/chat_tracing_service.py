@@ -36,7 +36,7 @@ def _client(
 
 
 def _configured_client(settings: Settings) -> Langfuse | None:
-    if not settings.chat_langfuse_enabled or settings.environment != "staging":
+    if not settings.chat_langfuse_enabled:
         return None
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY", "")

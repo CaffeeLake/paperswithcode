@@ -39,7 +39,11 @@ def parser() -> argparse.ArgumentParser:
     rearm.add_argument(
         "--basis",
         required=True,
-        choices=("accounting-correction", "reviewed-higher-caps"),
+        choices=(
+            "accounting-correction",
+            "reviewed-higher-caps",
+            "reviewed-policy-transition",
+        ),
     )
     rearm.add_argument("--orphan-sweep-event-id", required=True)
     return root
@@ -69,6 +73,22 @@ def _event(
             **(details or {}),
         },
         created_at=now,
+    )
+
+
+def reviewed_policy_transition_allowed(state, settings: Settings) -> bool:
+    """Accept only the reviewed same-cap starter-to-Environment transition."""
+
+    return bool(
+        state.trip_reason == "accounting_integrity"
+        and state.warning_microusd == settings.chat_sandbox_warning_microusd
+        and state.application_cap_microusd
+        == settings.chat_sandbox_application_cap_microusd
+        and state.workspace_cap_microusd == settings.chat_sandbox_workspace_cap_microusd
+        and state.environment_cap_microusd == 0
+        and settings.chat_sandbox_environment_cap_microusd > 0
+        and state.policy_attestation.endswith(f"-{settings.environment}-starter-v1")
+        and state.policy_attestation != settings.chat_sandbox_budget_attestation
     )
 
 
@@ -153,9 +173,11 @@ def main() -> None:
             if reconciled_at is not None and reconciled_at.tzinfo is None:
                 reconciled_at = reconciled_at.replace(tzinfo=UTC)
             sweep = db.get(ChatSandboxCircuitEvent, sweep_event_id)
+            changes_caps = args.basis == "reviewed-higher-caps"
+            changes_policy = args.basis == "reviewed-policy-transition"
             active_cap = (
                 settings.chat_sandbox_application_cap_microusd
-                if args.basis == "reviewed-higher-caps"
+                if changes_caps
                 else state.application_cap_microusd
             )
             if state.circuit_state != "tripped":
@@ -182,15 +204,22 @@ def main() -> None:
                 failure = "a post-trip completed orphan sweep is required"
             elif effective >= active_cap:
                 failure = "effective spend is at or above the active cap"
-            elif args.basis == "reviewed-higher-caps" and (
+            elif changes_caps and (
                 settings.chat_sandbox_budget_attestation == state.policy_attestation
                 or active_cap <= state.application_cap_microusd
             ):
                 failure = (
                     "higher caps require a higher application cap and new attestation"
                 )
+            elif changes_policy and not reviewed_policy_transition_allowed(
+                state, settings
+            ):
+                failure = (
+                    "policy transition requires the exact starter-to-environment "
+                    "guardrail change"
+                )
             if failure is None:
-                if args.basis == "reviewed-higher-caps":
+                if changes_caps:
                     state.warning_microusd = settings.chat_sandbox_warning_microusd
                     state.application_cap_microusd = active_cap
                     state.environment_cap_microusd = (
@@ -198,6 +227,11 @@ def main() -> None:
                     )
                     state.workspace_cap_microusd = (
                         settings.chat_sandbox_workspace_cap_microusd
+                    )
+                    state.policy_attestation = settings.chat_sandbox_budget_attestation
+                elif changes_policy:
+                    state.environment_cap_microusd = (
+                        settings.chat_sandbox_environment_cap_microusd
                     )
                     state.policy_attestation = settings.chat_sandbox_budget_attestation
                 state.circuit_state = "armed"

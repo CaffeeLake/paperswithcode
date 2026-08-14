@@ -1188,7 +1188,7 @@ async def stream_chat(
                     and not admission.replay_assistant
                     else None
                 )
-                if settings.environment == "staging" and not admission.replay_assistant:
+                if not admission.replay_assistant:
                     ChatLatencyService(db).admit(
                         turn_id=admission.turn_id,
                         session_id=admission.session_id,

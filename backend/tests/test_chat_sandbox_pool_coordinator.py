@@ -144,6 +144,7 @@ class _Provider:
         self.probe = probe
         self.sandboxes: dict[str, object] = {}
         self.poll_result = None
+        self.resolve_error: BaseException | None = None
         self.health_result = True
         self.termination_confirmed = True
         self.termination_calls: list[str] = []
@@ -172,6 +173,8 @@ class _Provider:
     async def resolve(self, sandbox_id: str):
         self.probe.outside_transaction("provider.resolve")
         await asyncio.sleep(0)
+        if self.resolve_error is not None:
+            raise self.resolve_error
         return self.sandboxes.setdefault(
             sandbox_id,
             SimpleNamespace(object_id=sandbox_id),
@@ -663,6 +666,24 @@ def test_unhealthy_provider_blank_is_disposed_outside_the_claim_transaction():
         failed = db.get(ChatSandboxPool, row.id)
     assert failed.state == "failed"
     assert failed.failure_code == "sandbox_lost"
+
+
+def test_transient_provider_health_failure_preserves_blank_for_later_retry():
+    harness = _Harness()
+    harness.provider.resolve_error = TimeoutError("provider unavailable")
+    session_id = uuid.uuid4()
+    row = _pool(harness)
+    with harness.sessions() as db, db.begin():
+        db.add_all([_session(session_id), row])
+
+    assert asyncio.run(harness.coordinator.claim_blank(session_id)) is None
+
+    assert harness.probe.provider_calls == ["provider.resolve"]
+    assert harness.provider.termination_calls == []
+    with harness.sessions() as db:
+        preserved = db.get(ChatSandboxPool, row.id)
+    assert preserved.state == "blank_ready"
+    assert preserved.failure_code is None
 
 
 def test_termination_uses_persisted_sandbox_id_when_hint_is_none():
@@ -1446,8 +1467,8 @@ def test_start_cancellation_rethrows_the_exact_error_after_compensation(phase):
         harness.transport.ping_hook = cancel_create
     else:
         harness.repository.land_provider_creation = lambda *_args, **_kwargs: (
-            (_ for _ in ()).throw(cancellation)
-        )
+            _ for _ in ()
+        ).throw(cancellation)
 
     async def run():
         try:
@@ -1482,8 +1503,8 @@ def test_cancelled_ambiguous_landing_fences_successor_owned_provider():
         raise cancellation
 
     harness.repository.land_provider_creation = cancel_landing
-    harness.coordinator.creation._landing_durability = (
-        lambda *_args: PoolLandingDurability.OWNERSHIP_MOVED
+    harness.coordinator.creation._landing_durability = lambda *_args: (
+        PoolLandingDurability.OWNERSHIP_MOVED
     )
 
     async def run():
@@ -1609,8 +1630,8 @@ def test_cleanup_failure_does_not_mask_the_landing_database_error(caplog):
         raise LookupError("cleanup failed")
 
     harness.repository.land_provider_creation = fail_landing
-    harness.coordinator.creation._landing_durability = (
-        lambda *_args: PoolLandingDurability.NOT_DURABLE
+    harness.coordinator.creation._landing_durability = lambda *_args: (
+        PoolLandingDurability.NOT_DURABLE
     )
     harness.coordinator.creation._compensate_start = fail_cleanup
 
