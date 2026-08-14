@@ -123,6 +123,12 @@ COMMANDS: dict[str, Job] = {
         timeout="30m",
         idempotency="replace managed Open ASR evaluation rows from validated live data",
     ),
+    "sync_deepswe": job(
+        "-m",
+        "scripts.hourly.sync_deepswe",
+        timeout="30m",
+        idempotency="replace managed DeepSWE evaluation rows from validated live data",
+    ),
     "import_hf_daily_papers": job(
         "-m",
         "scripts.daily.import_hf_daily_papers",
