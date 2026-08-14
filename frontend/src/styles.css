@@ -4873,19 +4873,6 @@ html { scroll-behavior: smooth; }
 .action-btn.is-saved:hover { background: color-mix(in oklch, var(--ink) 88%, var(--accent)); }
 
 /* === HOME ASK BOX (assistant entry point) === */
-.ask-home-new {
-  max-width: 640px;
-  margin: 0 auto 6px;
-  padding-left: 9px;
-  color: var(--ink-faint);
-  font-size: 14px;
-  font-weight: 700;
-}
-.ask-home-new a {
-  color: inherit;
-  text-underline-offset: 2px;
-}
-.ask-home-new a:hover { color: var(--ink-soft); }
 .ask-home {
   position: relative;
   max-width: 640px;

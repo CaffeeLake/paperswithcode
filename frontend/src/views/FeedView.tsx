@@ -182,9 +182,6 @@ export const AskAssistant: React.FC = () => {
 
   return (
     <>
-      <div className="ask-home-new">
-        New: <Link to="/chat">chat interface</Link>
-      </div>
       <div className="ask-home">
         <div className="ask-home-textarea-wrap">
           <PaperMentionHighlights
