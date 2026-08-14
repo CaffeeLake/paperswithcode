@@ -884,7 +884,7 @@ const ChatView: React.FC = () => {
             setRouteLoadAttempt((attempt) => attempt + 1);
           }}>Try again</button>
         </div> : isEmpty && !pendingAutoDraft.text ? <div className="chat-empty"><div className="chat-empty-inner">
-          <div className="chat-empty-eyebrow">AI research assistant · Staging preview</div>
+          <div className="chat-empty-eyebrow">AI research assistant</div>
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
           {staging && <p className="chat-staging-access-note">
