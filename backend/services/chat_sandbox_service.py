@@ -8,8 +8,8 @@ from collections.abc import AsyncIterator, Callable
 from typing import cast
 
 import modal
+from google.protobuf.empty_pb2 import Empty
 from modal.client import _Client
-from modal.exception import NotFoundError
 from modal_proto import api_pb2
 from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
@@ -491,25 +491,32 @@ class SandboxSessionManager:
                             "sandbox_identity_unverified",
                             "The configured personal Workspace identity does not match deployment policy",
                         )
-                elif token.WhichOneof("identity") != "service_user_identity":
+                elif (
+                    token.WhichOneof("identity") != "service_user_identity"
+                    or token.workspace_name
+                    != self.settings.chat_sandbox_modal_workspace
+                ):
                     raise SandboxError(
                         "sandbox_identity_unverified",
                         "A restricted Environment service identity is required",
                     )
                 else:
-                    service_user = token.service_user_identity.service_user_name
-                    environment = modal.Environment.from_name(
+                    environments = await client.stub.EnvironmentList(Empty())
+                    visible_environments = {
+                        item.name: item.environment_id for item in environments.items
+                    }
+                    if set(visible_environments) != {
                         self.settings.chat_sandbox_modal_environment
-                    )
-                    members = await environment.members.list.aio()
-                    if members["service_users"].get(service_user) != "contributor":
+                    }:
                         raise SandboxError(
                             "sandbox_identity_unverified",
-                            "The service identity is not scoped to the chat Environment",
+                            "The service identity must see only the chat Environment",
                         )
                     budget = await client.stub.EnvironmentGetBudget(
                         api_pb2.EnvironmentGetBudgetRequest(
-                            environment_id=environment.object_id
+                            environment_id=visible_environments[
+                                self.settings.chat_sandbox_modal_environment
+                            ]
                         )
                     )
                     configured_budget_microusd = (
@@ -524,22 +531,6 @@ class SandboxSessionManager:
                         raise SandboxError(
                             "sandbox_budget_unverified",
                             "The provider Environment budget does not match deployment policy",
-                        )
-                    other_environment = (
-                        "pwc-chat-production"
-                        if self.settings.environment == "staging"
-                        else "pwc-chat-staging"
-                    )
-                    try:
-                        other_members = await modal.Environment.from_name(
-                            other_environment
-                        ).members.list.aio()
-                    except NotFoundError:
-                        other_members = {"service_users": {}}
-                    if service_user in other_members["service_users"]:
-                        raise SandboxError(
-                            "sandbox_identity_unverified",
-                            "The service identity must not access the other chat Environment",
                         )
             finally:
                 await client._close()

@@ -664,6 +664,80 @@ def test_startup_accepts_attested_starter_workspace_owner(monkeypatch):
     asyncio.run(manager.validate_image_reference())
 
 
+def test_startup_accepts_service_user_visible_only_in_chat_environment(monkeypatch):
+    configured = settings(
+        chat_sandbox_provider_mode="team_environments",
+        chat_sandbox_modal_environment="pwc-chat-production",
+        chat_sandbox_modal_workspace="paperswithcode",
+        chat_sandbox_environment_cap_microusd=125_000_000,
+    )
+    monkeypatch.setenv("MODAL_ENVIRONMENT", "pwc-chat-production")
+
+    class ServiceIdentity:
+        service_user_name = "pwc-production"
+
+    class Token:
+        workspace_name = "paperswithcode"
+        service_user_identity = ServiceIdentity()
+
+        def WhichOneof(self, _name):
+            return "service_user_identity"
+
+    class Environment:
+        name = "pwc-chat-production"
+        environment_id = "en-production"
+
+    class Environments:
+        items = [Environment()]
+
+    class Budget:
+        cycle_budget_dollars = 125
+
+        def HasField(self, name):
+            return name == "cycle_budget_dollars"
+
+    class Stub:
+        async def TokenInfoGet(self, _request):
+            return Token()
+
+        async def EnvironmentList(self, _request):
+            return Environments()
+
+        async def EnvironmentGetBudget(self, _request):
+            return Budget()
+
+    class Client:
+        stub = Stub()
+
+        async def _close(self):
+            return None
+
+    async def from_env():
+        return Client()
+
+    async def lookup(*_args, **_kwargs):
+        return object()
+
+    async def resolve_image(_image_id):
+        return object()
+
+    class Lookup:
+        aio = lookup
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service._Client.from_env", from_env
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.modal.App.lookup", Lookup()
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.resolve_modal_image", resolve_image
+    )
+
+    manager = SandboxSessionManager(configured, session_factory=factory())
+    asyncio.run(manager.validate_image_reference())
+
+
 def test_billing_cycle_is_utc_and_rejects_naive_time():
     assert (
         billing_cycle(datetime(2026, 8, 31, 23, tzinfo=UTC)).isoformat() == "2026-08-01"
