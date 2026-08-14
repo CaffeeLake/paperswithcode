@@ -479,6 +479,36 @@ def test_fresh_local_health_claim_promotes_the_exact_control():
     assert harness.transport.session_control(session_id) is control
 
 
+def test_stale_local_control_falls_back_to_provider_health():
+    harness = _Harness()
+    row = _pool(harness)
+    sandbox = SimpleNamespace(object_id=row.modal_sandbox_id)
+    harness.provider.sandboxes[row.modal_sandbox_id] = sandbox
+    control = _control(sandbox)
+    harness.transport.register_blank_control(
+        row.modal_sandbox_id,
+        control,
+        checked_at=0.0,
+    )
+    harness.transport.ping_result = False
+
+    result = asyncio.run(
+        harness.coordinator.maintenance.pool_sandbox_health(
+            row.modal_sandbox_id,
+            row.worker_generation,
+        )
+    )
+
+    assert result is sandbox
+    assert harness.transport.blank_control(row.modal_sandbox_id) is None
+    assert harness.probe.provider_calls == [
+        "transport.ping",
+        "provider.resolve",
+        "provider.poll",
+        "provider.health",
+    ]
+
+
 def test_provider_health_claim_is_release_agnostic_and_outside_transactions():
     harness = _Harness()
     session_id = uuid.uuid4()

@@ -128,7 +128,14 @@ class ChatSandboxPoolMaintenanceCoordinator:
                     <= POOL_LOCAL_HEALTH_MAX_AGE_SECONDS
                 ):
                     return control.sandbox
-                if await self.transport.ping(control, worker_generation):
+                try:
+                    local_healthy = await self.transport.ping(
+                        control,
+                        worker_generation,
+                    )
+                except Exception:
+                    local_healthy = False
+                if local_healthy:
                     if self.transport.mark_blank_healthy(
                         sandbox_id,
                         expected=control,
@@ -146,7 +153,10 @@ class ChatSandboxPoolMaintenanceCoordinator:
                         <= POOL_LOCAL_HEALTH_MAX_AGE_SECONDS
                     ):
                         return replacement.sandbox
-                return None
+                self.transport.drop_blank_control(
+                    sandbox_id,
+                    expected=control,
+                )
             sandbox = await self.provider.resolve(sandbox_id)
             if await self.provider.poll(sandbox) is not None:
                 return None
