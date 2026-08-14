@@ -32,15 +32,9 @@ from backend.chat_sandbox_worker.contract import (
 from backend.services.chat_runtime_contract import require_immutable_image_id
 
 try:
-    from deploy.production_chat_contract import (
-        DISABLED_DATABASE_CONTRACT_VERSION,
-        WORKER_CONTRACT_VERSION as PRODUCTION_WORKER_CONTRACT_VERSION,
-    )
+    from deploy.production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
 except ModuleNotFoundError:
-    from production_chat_contract import (  # type: ignore[no-redef]
-        DISABLED_DATABASE_CONTRACT_VERSION,
-        WORKER_CONTRACT_VERSION as PRODUCTION_WORKER_CONTRACT_VERSION,
-    )
+    from production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
 
 ENVIRONMENTS = ("production", "staging")
 FEATURE_CONTRACT_VERSION = 4
@@ -140,7 +134,7 @@ def chat_runtime(
             "default_backend": DEFAULT_BACKEND,
             "modal_image_version": PRODUCTION_MODAL_IMAGE_ID,
             "pwc_cli_version": PWC_CLI_VERSION,
-            "worker_contract_version": PRODUCTION_WORKER_CONTRACT_VERSION,
+            "worker_contract_version": WORKER_CONTRACT_VERSION,
             "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
             "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
             "database_contract_version": DISABLED_DATABASE_CONTRACT_VERSION,

@@ -172,8 +172,6 @@ def main() -> int:
     else:
         command = [
             "node",
-            "--import",
-            "/opt/pwc/backend/chat_sandbox_worker/pi_worker/node_modules/tsx/dist/loader.mjs",
             "/opt/pwc/backend/chat_sandbox_worker/pi_worker/dist/src/main.js",
         ]
     agent = subprocess.Popen(
