@@ -3025,6 +3025,13 @@ def test_staging_web_search_configuration_is_scoped_and_bounded():
         configure_host_env.staging_web_search_values({})
 
 
+def test_production_web_search_configuration_uses_the_same_bounded_contract():
+    legacy = {"EXA_API_KEY": "EXA_API_KEY=server-secret"}
+    assert configure_host_env.production_web_search_values(
+        legacy
+    ) == configure_host_env.staging_web_search_values(legacy)
+
+
 def test_staging_github_configuration_is_single_key_and_non_empty():
     assert configure_host_env.staging_github_values(
         {"PWC_GITHUB_TOKEN": "PWC_GITHUB_TOKEN=github-secret"}

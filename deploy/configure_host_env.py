@@ -336,6 +336,12 @@ def staging_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
     }
 
 
+def production_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
+    """Build production chat web-search settings from its server-owned key."""
+
+    return staging_web_search_values(legacy)
+
+
 def staging_github_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "PWC_GITHUB_TOKEN"
     if key not in legacy or not decoded_value(legacy[key]).strip():
@@ -815,6 +821,7 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
+    parser.add_argument("--production-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
     parser.add_argument("--production-cron-github-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
@@ -1015,6 +1022,38 @@ def main() -> int:
         staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
         write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
         print("installed staging GitHub credential")
+        return 0
+    if args.production_web_search_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+            args.production_chat_admission_enable_only,
+        )
+        if any(other_modes):
+            parser.error(
+                "--production-web-search-only cannot be combined with other modes"
+            )
+        try:
+            values = production_web_search_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        production = assign(read_lines(CONFIG_ROOT / "production.env"), values)
+        write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
+        print("installed production web-search configuration")
         return 0
     if args.staging_web_search_only:
         other_modes = (

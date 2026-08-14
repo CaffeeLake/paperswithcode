@@ -202,6 +202,16 @@ followed by `pwc-deploy staging <exact-current-sha> --refresh-environment` when
 the active source SHA is unchanged. These staging steps never enable or mutate
 the production web-search feature.
 
+After production rollout is explicitly approved, install the same bounded
+configuration from production's server-owned Exa key, then deploy or refresh
+the intended exact production release:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-web-search-only
+```
+
 GitHub repository previews use the server-owned GitHub token rather than
 exposing it to browsers. Install or rotate only the staging copy from a
 protected source, then deploy or refresh the intended exact staging release:
