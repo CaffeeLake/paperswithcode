@@ -26,7 +26,11 @@ from backend.chat_sandbox_worker.contract import (
 )
 from backend.config import Settings
 from backend.services import openrouter_budget_service as deploy_openrouter
-from backend.services.runtime_validation import validate_chat_schema, validate_runtime
+from backend.services.runtime_validation import (
+    validate_chat_capacity_and_spend_policy,
+    validate_chat_schema,
+    validate_runtime,
+)
 from deploy.cli import (
     _chat_descriptor_from_source,
     _configured_chat_enabled,
@@ -441,8 +445,38 @@ def test_staging_runtime_rejects_unapproved_team_environment_policy(tmp_path: Pa
     settings.chat_sandbox_environment_cap_microusd = 125_000_000
     settings.chat_sandbox_budget_attestation = "modal-workspace-250-staging-125-v1"
 
-    with pytest.raises(RuntimeError, match=r"\$75/\$100/\$250"):
+    with pytest.raises(RuntimeError, match="BUDGET_ATTESTATION"):
         validate_runtime(settings)
+
+
+def test_production_runtime_accepts_reviewed_team_environment_policy(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_max_concurrency = 2
+    settings.chat_persistent_worker_enabled = True
+    settings.chat_sandbox_spend_enforcement_enabled = True
+    settings.chat_sandbox_provider_mode = "team_environments"
+    settings.chat_sandbox_environment_cap_microusd = 125_000_000
+    settings.chat_sandbox_modal_environment = "pwc-chat-production"
+    settings.chat_sandbox_modal_workspace = "paperswithcode"
+    settings.chat_sandbox_modal_owner_username = "nielsrogge"
+    settings.chat_sandbox_budget_attestation = (
+        "modal-workspace-paperswithcode-250-production-125-v1"
+    )
+    settings.chat_sandbox_slack_webhook_url = "https://hooks.slack.test/production"
+    settings.chat_sandbox_alert_fallback_webhook_url = (
+        "https://alerts.test/production-fallback"
+    )
+    settings.chat_sandbox_runbook_url = "https://example.test/production-runbook"
+    settings.chat_sandbox_operator_usernames = "nielsr"
+    settings.chat_operational_alerts_enabled = True
+    settings.chat_title_generation_enabled = True
+    settings.chat_title_provider = "openrouter"
+    settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
+    settings.chat_title_credential_owner = "nielsr"
+    settings.chat_title_credential_environment = "production"
+
+    validate_chat_capacity_and_spend_policy(settings)
 
 
 def test_enabled_chat_rejects_missing_hf_authentication_path(tmp_path: Path):
@@ -739,10 +773,12 @@ def test_disabled_production_accepts_armed_configuration_for_atomic_rollback(
     settings.chat_sandbox_cpu_limit = 1
     settings.chat_sandbox_memory_limit_mib = 2048
     settings.chat_sandbox_modal_environment = "pwc-chat-production"
-    settings.chat_sandbox_modal_workspace = "nielsrogge"
+    settings.chat_sandbox_provider_mode = "team_environments"
+    settings.chat_sandbox_environment_cap_microusd = 125_000_000
+    settings.chat_sandbox_modal_workspace = "paperswithcode"
     settings.chat_sandbox_modal_owner_username = "nielsrogge"
     settings.chat_sandbox_budget_attestation = (
-        "modal-workspace-nielsrogge-250-production-starter-v1"
+        "modal-workspace-paperswithcode-250-production-125-v1"
     )
     settings.chat_sandbox_slack_webhook_url = (
         "https://hooks.slack.test/services/production"
@@ -1313,10 +1349,12 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     settings.chat_persistent_worker_enabled = True
     settings.chat_sandbox_spend_enforcement_enabled = True
     settings.chat_sandbox_modal_environment = "pwc-chat-production"
-    settings.chat_sandbox_modal_workspace = "nielsrogge"
+    settings.chat_sandbox_provider_mode = "team_environments"
+    settings.chat_sandbox_environment_cap_microusd = 125_000_000
+    settings.chat_sandbox_modal_workspace = "paperswithcode"
     settings.chat_sandbox_modal_owner_username = "nielsrogge"
     settings.chat_sandbox_budget_attestation = (
-        "modal-workspace-nielsrogge-250-production-starter-v1"
+        "modal-workspace-paperswithcode-250-production-125-v1"
     )
     settings.chat_sandbox_slack_webhook_url = (
         "https://hooks.slack.test/services/production"
@@ -2673,11 +2711,11 @@ def _production_chat_preparation_source() -> dict[str, str]:
     values = {
         "MODAL_TOKEN_ID": "modal-id",
         "MODAL_TOKEN_SECRET": "modal-secret",
-        "PWC_CHAT_SANDBOX_MODAL_WORKSPACE": "nielsrogge",
+        "PWC_CHAT_SANDBOX_MODAL_WORKSPACE": "paperswithcode",
         "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME": "nielsrogge",
         "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES": "root,nielsr",
         "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": (
-            "modal-workspace-nielsrogge-250-production-starter-v1"
+            "modal-workspace-paperswithcode-250-production-125-v1"
         ),
         "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
             "https://alerts-primary.test/production"
@@ -2753,6 +2791,8 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_PROVIDER_ALERT_FAILURE_PERCENT"] == "50"
     assert values["PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT"] == "pwc-chat-production"
     assert values["PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD"] == "100000000"
+    assert values["PWC_CHAT_SANDBOX_PROVIDER_MODE"] == "team_environments"
+    assert values["PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD"] == "125000000"
     assert values["PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD"] == "25000000"
     assert values["PWC_CHAT_TITLE_HF_TOKEN"] == ""
