@@ -413,9 +413,8 @@ def list_models(
 
 
 @router.get("/availability", response_model=ChatAvailabilityResponse)
-def chat_availability(user: dict = Depends(require_user)):
+def chat_availability():
     """Content-free public state; internal warning and accounting stay private."""
-    del user
     settings = get_settings()
     search_available = web_search_available(settings)
     if (

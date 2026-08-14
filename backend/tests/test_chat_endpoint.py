@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -265,6 +266,26 @@ def test_admin_harness_session_is_staging_only_and_returns_neutral_summary(
     assert exc_info.value.status_code == 404
 
 
+def test_chat_availability_is_public(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        chat_default_backend="local_mcp",
+        chat_paper_mentions_enabled=True,
+    )
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(chat_router, "web_search_available", lambda _settings: True)
+    app = FastAPI()
+    app.include_router(chat_router.router, prefix="/api/v1")
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/chat/availability")
+
+    assert response.status_code == 200
+    assert response.json()["web_search_available"] is True
+
+
 def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
     monkeypatch,
 ):
@@ -284,7 +305,7 @@ def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
 
     monkeypatch.setattr(chat_router, "assert_chat_sandbox_spend_available", reject)
 
-    assert chat_router.chat_availability(user={}) == {
+    assert chat_router.chat_availability() == {
         "status": "paused",
         "reason": "chat_temporarily_disabled",
         "expected_recovery_at": None,

@@ -12,7 +12,6 @@ import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import { apiClient } from "@/lib/api";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
-import { useAuth } from "@/lib/authContext";
 import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
@@ -126,7 +125,6 @@ const parseTime = (value: string | null): TimeWindow => {
 // Submitting hands the question off to the dedicated chat page.
 export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
   const models = isStagingEnvironment()
     ? STAGING_FALLBACK_CHAT_MODELS
     : PRODUCTION_FALLBACK_CHAT_MODELS;
@@ -144,7 +142,7 @@ export const AskAssistant: React.FC = () => {
     queryKey: ["chatAvailability"],
     queryFn: () => apiClient.getChatAvailability(),
     retry: false,
-    enabled: isChatEnabled() && Boolean(user),
+    enabled: isChatEnabled(),
   });
   const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
   const paperMentionsEnabled = isChatEnabled()
