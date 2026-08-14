@@ -1,0 +1,533 @@
+"""Synchronize Artificial Analysis Intelligence Index results into PwC."""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import os
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from typing import Any
+
+import httpx
+from sqlalchemy.orm import Session
+
+from backend.models.database import (
+    Dataset,
+    Evaluation,
+    Metric,
+    Paper,
+    PaperTask,
+    Task,
+    TaskDatasetMetric,
+)
+from backend.services.evaluation_service import EvaluationService
+from backend.services.external_resource_service import (
+    ExternalResourceInput,
+    ExternalResourceService,
+)
+from backend.services.paper_ingestion_service import PaperIngestionService
+
+API_ENDPOINT = "https://artificialanalysis.ai/api/v2/language/models/free"
+SOURCE_URL_PREFIX = "https://artificialanalysis.ai/models/"
+DATASET_SLUG = "artificial-analysis-intelligence-index"
+TASK_SLUG = "agents"
+METRIC_NAME = "Score"
+MANAGED_METHODOLOGY_PREFIX = (
+    "Managed by the Papers with Code Artificial Analysis live sync."
+)
+MIN_EXPECTED_MODELS = 100
+MAX_EXPECTED_MODELS = 1_000
+
+
+@dataclass(frozen=True)
+class PaperIdentity:
+    arxiv_id: str | None = None
+    source_url: str | None = None
+    title: str | None = None
+    date_published: date | None = None
+    is_open: bool = False
+
+    def __post_init__(self) -> None:
+        if (self.arxiv_id is None) == (self.source_url is None):
+            raise ValueError("PaperIdentity requires exactly one stable identity")
+        if self.source_url and (not self.title or not self.date_published):
+            raise ValueError(
+                "External paper identities require title and publication date"
+            )
+
+
+def external(source_url: str, title: str, published: str, *, is_open: bool = False):
+    return PaperIdentity(
+        source_url=source_url,
+        title=title,
+        date_published=date.fromisoformat(published),
+        is_open=is_open,
+    )
+
+
+# Exact, reviewed links for the model variants plotted on the Artificial
+# Analysis homepage chart. Upstream additions remain unmatched until their
+# canonical technical report or official release page has been reviewed.
+MODEL_PAPER_IDENTITIES: dict[str, PaperIdentity] = {
+    "a-x-k2": external(
+        "https://github.com/SKT-AI/A.X-K2/blob/main/A_X_K2_Tech_Report.pdf",
+        "A.X K2 Technical Report",
+        "2026-07-29",
+        is_open=True,
+    ),
+    "claude-4-5-haiku-reasoning": external(
+        "https://www.anthropic.com/claude/haiku",
+        "Claude Haiku 4.5",
+        "2025-10-15",
+    ),
+    "claude-fable-5": external(
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+        "Claude Fable 5 and Claude Mythos 5",
+        "2026-06-09",
+    ),
+    "claude-opus-5": external(
+        "https://www.anthropic.com/news/claude-opus-5",
+        "Introducing Claude Opus 5",
+        "2026-07-24",
+    ),
+    "command-a-plus": external(
+        "https://cohere.com/blog/command-a-plus",
+        "Command A+",
+        "2026-05-20",
+        is_open=True,
+    ),
+    "deepseek-v4-pro": PaperIdentity(arxiv_id="2606.19348", is_open=True),
+    "gemini-3-5-flash-lite": external(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-6-flash-3-5-flash-lite-3-5-flash-cyber/",
+        "Introducing Gemini 3.6 Flash, 3.5 Flash-Lite, and 3.5 Flash Cyber",
+        "2026-07-21",
+    ),
+    "gemini-3-7-flash": external(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-3-7-flash/",
+        "Introducing Gemini 3.7 Flash",
+        "2026-08-13",
+    ),
+    "glm-5-2": external(
+        "https://z.ai/blog/glm-5.2",
+        "GLM-5.2: Built for Long-Horizon Tasks",
+        "2026-06-16",
+        is_open=True,
+    ),
+    "gpt-5-6-luna": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "gpt-5-6-sol": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "gpt-5-6-terra": external(
+        "https://openai.com/index/gpt-5-6/",
+        "GPT-5.6: Frontier intelligence that scales with your ambition",
+        "2026-07-09",
+    ),
+    "gpt-oss-120b": PaperIdentity(arxiv_id="2508.10925", is_open=True),
+    "grok-4-6": external(
+        "https://x.ai/news/grok-4-6", "Introducing Grok 4.6", "2026-08-12"
+    ),
+    "inkling": external(
+        "https://thinkingmachines.ai/news/introducing-inkling/",
+        "Inkling: Our open-weights model",
+        "2026-07-15",
+        is_open=True,
+    ),
+    "k-exaone-2-0-0803": PaperIdentity(arxiv_id="2608.04505", is_open=True),
+    "kimi-k3": PaperIdentity(arxiv_id="2607.24653", is_open=True),
+    "minimax-m3": external(
+        "https://www.minimax.io/blog/minimax-m3",
+        "MiniMax M3: Frontier Coding, 1M Context, Native Multimodality — All in One Model",
+        "2026-06-01",
+        is_open=True,
+    ),
+    "mistral-medium-3-5": external(
+        "https://docs.mistral.ai/models/mistral-medium-3-5-26-04",
+        "Mistral Medium 3.5",
+        "2026-04-28",
+        is_open=True,
+    ),
+    "motif-3": PaperIdentity(arxiv_id="2608.09119", is_open=True),
+    "muse-glimmer": external(
+        "https://huggingface.co/meta-models/Muse-Glimmer-30B",
+        "Muse Glimmer-30B",
+        "2026-08-09",
+        is_open=True,
+    ),
+    "muse-spark-1-2": external(
+        "https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/",
+        "Introducing Muse Spark 1.1",
+        "2026-07-09",
+    ),
+    "nemotron-3-5-lightning": external(
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Base-BF16",
+        "NVIDIA Nemotron 3.5 Lightning",
+        "2026-08-11",
+        is_open=True,
+    ),
+    "nvidia-nemotron-3-super-120b-a12b": PaperIdentity(
+        arxiv_id="2512.20856", is_open=True
+    ),
+    "nvidia-nemotron-3-ultra-550b-a55b": PaperIdentity(
+        arxiv_id="2606.15007", is_open=True
+    ),
+    "qwen3-8-max": external(
+        "https://qwen.ai/blog?id=qwen3.8",
+        "Qwen3.8-Max: A New Bar for Coding and Cowork",
+        "2026-08-03",
+    ),
+    "solar-open2-250b": PaperIdentity(arxiv_id="2607.20062", is_open=True),
+}
+
+
+@dataclass(frozen=True)
+class ArtificialAnalysisEntry:
+    slug: str
+    name: str
+    score: float
+    release_date: date
+
+
+@dataclass(frozen=True)
+class ArtificialAnalysisLeaderboard:
+    index_version: str
+    entries: list[ArtificialAnalysisEntry]
+
+
+@dataclass
+class ArtificialAnalysisDiscovery:
+    papers: dict[str, int] = field(default_factory=dict)
+    indexed_papers: list[str] = field(default_factory=list)
+    would_index: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resolved": len(self.papers),
+            "indexed_papers": self.indexed_papers,
+            "would_index": self.would_index,
+        }
+
+
+@dataclass
+class ArtificialAnalysisSyncStats:
+    fetched: int = 0
+    selected: int = 0
+    matched: int = 0
+    created: int = 0
+    updated: int = 0
+    indexed_papers: int = 0
+    missing_papers: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+def _parse_page(payload: Any) -> tuple[str, list[ArtificialAnalysisEntry], dict]:
+    if not isinstance(payload, dict):
+        raise TypeError("Artificial Analysis response must be a JSON object")
+    version = payload.get("intelligence_index_version")
+    pagination = payload.get("pagination")
+    rows = payload.get("data")
+    if isinstance(version, bool) or not isinstance(version, (str, int, float)):
+        raise TypeError("Artificial Analysis response has invalid index version")
+    version = str(version).strip()
+    if not version:
+        raise ValueError("Artificial Analysis response has no index version")
+    if not isinstance(pagination, dict) or not isinstance(rows, list):
+        raise TypeError("Artificial Analysis response has invalid pagination or data")
+
+    entries: list[ArtificialAnalysisEntry] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("Artificial Analysis model rows must be objects")
+        slug = row.get("slug")
+        name = row.get("name")
+        evaluations = row.get("evaluations")
+        raw_score = (
+            evaluations.get("artificial_analysis_intelligence_index")
+            if isinstance(evaluations, dict)
+            else None
+        )
+        if raw_score is None:
+            continue
+        if not isinstance(slug, str) or not slug or len(slug) > 255:
+            raise ValueError("Artificial Analysis row has an invalid slug")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ValueError(f"Artificial Analysis row {slug} has an invalid name")
+        if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
+            raise TypeError(f"Artificial Analysis score is invalid for {slug}")
+        score = float(raw_score)
+        if not math.isfinite(score) or not -100 <= score <= 100:
+            raise ValueError(f"Artificial Analysis score is out of bounds for {slug}")
+        try:
+            released = date.fromisoformat(row["release_date"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Artificial Analysis release date is invalid for {slug}"
+            ) from exc
+        entries.append(ArtificialAnalysisEntry(slug, name, score, released))
+    return version, entries, pagination
+
+
+def fetch_artificial_analysis_leaderboard(
+    *, api_key: str | None = None, client: httpx.Client | None = None
+) -> ArtificialAnalysisLeaderboard:
+    key = api_key or os.environ.get("ARTIFICIAL_ANALYSIS_API_KEY")
+    if not key:
+        raise RuntimeError("ARTIFICIAL_ANALYSIS_API_KEY is required")
+    owned_client = client is None
+    active_client = client or httpx.Client(
+        timeout=httpx.Timeout(30, connect=5),
+        follow_redirects=False,
+        headers={"User-Agent": "paperswithcode-artificial-analysis-sync/1.0"},
+    )
+    try:
+        all_entries: list[ArtificialAnalysisEntry] = []
+        version: str | None = None
+        page = 1
+        while True:
+            response = active_client.get(
+                API_ENDPOINT,
+                headers={"x-api-key": key},
+                params={"page": page, "page_size": 200},
+            )
+            response.raise_for_status()
+            page_version, entries, pagination = _parse_page(response.json())
+            if version is not None and page_version != version:
+                raise ValueError(
+                    "Artificial Analysis index version changed during fetch"
+                )
+            version = page_version
+            all_entries.extend(entries)
+            has_more = pagination.get("has_more")
+            total_pages = pagination.get("total_pages")
+            if not isinstance(has_more, bool) or not isinstance(total_pages, int):
+                raise TypeError("Artificial Analysis pagination fields are invalid")
+            if not has_more:
+                if page != total_pages:
+                    raise ValueError(
+                        "Artificial Analysis pagination ended unexpectedly"
+                    )
+                break
+            if page >= total_pages or total_pages > 20:
+                raise ValueError("Artificial Analysis pagination is inconsistent")
+            page += 1
+    finally:
+        if owned_client:
+            active_client.close()
+
+    if not MIN_EXPECTED_MODELS <= len(all_entries) <= MAX_EXPECTED_MODELS:
+        raise ValueError(
+            f"Artificial Analysis returned {len(all_entries)} scored models; expected "
+            f"{MIN_EXPECTED_MODELS}-{MAX_EXPECTED_MODELS}"
+        )
+    slugs = [entry.slug for entry in all_entries]
+    if len(slugs) != len(set(slugs)):
+        raise ValueError("Artificial Analysis response contains duplicate model slugs")
+    missing = sorted(set(MODEL_PAPER_IDENTITIES) - set(slugs))
+    if missing:
+        raise ValueError(
+            f"Artificial Analysis is missing reviewed models: {','.join(missing)}"
+        )
+    return ArtificialAnalysisLeaderboard(version or "unknown", all_entries)
+
+
+class ArtificialAnalysisPaperDiscoveryService:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        ingestion_service: PaperIngestionService | None = None,
+        external_service: ExternalResourceService | None = None,
+    ):
+        self.db = db
+        self.ingestion_service = ingestion_service or PaperIngestionService(db)
+        self.external_service = external_service or ExternalResourceService(db)
+
+    async def discover(self, *, persist: bool = True) -> ArtificialAnalysisDiscovery:
+        result = ArtificialAnalysisDiscovery()
+        for slug, identity in MODEL_PAPER_IDENTITIES.items():
+            query = self.db.query(Paper).filter(Paper.is_latest_version)
+            paper = (
+                (
+                    query.filter(Paper.arxiv_id == identity.arxiv_id)
+                    if identity.arxiv_id
+                    else query.filter(
+                        Paper.source == "external",
+                        Paper.source_url == identity.source_url,
+                    )
+                )
+                .order_by(Paper.id.desc())
+                .first()
+            )
+            if paper is None and not persist:
+                result.would_index.append(
+                    identity.arxiv_id or identity.source_url or slug
+                )
+                continue
+            if paper is None and identity.arxiv_id:
+                paper, created = await self.ingestion_service.get_or_import_arxiv_paper(
+                    identity.arxiv_id
+                )
+                if created:
+                    result.indexed_papers.append(identity.arxiv_id)
+            elif paper is None:
+                ingestion = self.external_service.add_external_resource(
+                    ExternalResourceInput(
+                        source_url=identity.source_url or "",
+                        title=identity.title or slug,
+                        date_published=identity.date_published,
+                    )
+                )
+                paper = (
+                    self.db.query(Paper)
+                    .filter(Paper.id == int(ingestion.paper.id))
+                    .one()
+                )
+                result.indexed_papers.append(identity.source_url or slug)
+            result.papers[slug] = paper.id
+        return result
+
+
+class ArtificialAnalysisSyncService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _leaderboard_identity(self) -> tuple[Task, Dataset]:
+        task = self.db.query(Task).filter(Task.slug == TASK_SLUG).one_or_none()
+        dataset = (
+            self.db.query(Dataset).filter(Dataset.slug == DATASET_SLUG).one_or_none()
+        )
+        metric = self.db.query(Metric).filter(Metric.name == METRIC_NAME).one_or_none()
+        if task is None or dataset is None or metric is None:
+            raise RuntimeError("Artificial Analysis leaderboard is not configured")
+        configured = (
+            self.db.query(TaskDatasetMetric)
+            .filter(
+                TaskDatasetMetric.task_id == task.id,
+                TaskDatasetMetric.dataset_id == dataset.id,
+                TaskDatasetMetric.metric_id == metric.id,
+            )
+            .one_or_none()
+        )
+        if configured is None:
+            raise RuntimeError("Artificial Analysis metric is not linked to the task")
+        return task, dataset
+
+    def sync(
+        self,
+        leaderboard: ArtificialAnalysisLeaderboard,
+        *,
+        discovery: ArtificialAnalysisDiscovery,
+        fetched_at: datetime | None = None,
+        commit: bool = True,
+    ) -> ArtificialAnalysisSyncStats:
+        now = fetched_at or datetime.now(UTC)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        selected = [
+            entry
+            for entry in leaderboard.entries
+            if entry.slug in MODEL_PAPER_IDENTITIES
+        ]
+        if len(selected) != len(MODEL_PAPER_IDENTITIES):
+            raise ValueError("Refusing to synchronize an incomplete reviewed model set")
+        stats = ArtificialAnalysisSyncStats(
+            fetched=len(leaderboard.entries),
+            selected=len(selected),
+            indexed_papers=len(discovery.indexed_papers),
+        )
+        try:
+            task, dataset = self._leaderboard_identity()
+            candidate_rows = (
+                self.db.query(Evaluation)
+                .filter(
+                    Evaluation.task_id == task.id,
+                    Evaluation.dataset_id == dataset.id,
+                )
+                .all()
+            )
+            rows_by_slug = {
+                row.external_source_url.removeprefix(SOURCE_URL_PREFIX): row
+                for row in candidate_rows
+                if (row.external_source_url or "").startswith(SOURCE_URL_PREFIX)
+            }
+            for entry in selected:
+                paper_id = discovery.papers.get(entry.slug)
+                if paper_id is None:
+                    if commit:
+                        raise RuntimeError(
+                            f"No reviewed paper resolved for {entry.slug}"
+                        )
+                    stats.missing_papers.append(entry.slug)
+                    continue
+                row = rows_by_slug.get(entry.slug)
+                if row is None:
+                    row = Evaluation(
+                        paper_id=paper_id,
+                        task_id=task.id,
+                        dataset_id=dataset.id,
+                        model_name=entry.name,
+                    )
+                    self.db.add(row)
+                    stats.created += 1
+                else:
+                    stats.updated += 1
+                identity = MODEL_PAPER_IDENTITIES[entry.slug]
+                source_url = f"{SOURCE_URL_PREFIX}{entry.slug}"
+                row.paper_id = paper_id
+                row.model_name = entry.name
+                row.methodology = (
+                    f"{MANAGED_METHODOLOGY_PREFIX} Artificial Analysis Data API v2 "
+                    f"Intelligence Index {leaderboard.index_version}; fetched "
+                    f"{now.isoformat()}. Score is stored exactly as returned by the API."
+                )
+                row.metrics = {METRIC_NAME: entry.score}
+                row.uses_additional_data = False
+                row.is_open = identity.is_open
+                row.best_metric = METRIC_NAME
+                row.evaluated_on = now.date()
+                row.external_source_url = source_url
+                row.source_url = source_url
+                row.external = True
+                row.updated_at = now
+                if (
+                    self.db.query(PaperTask)
+                    .filter(
+                        PaperTask.paper_id == paper_id, PaperTask.task_id == task.id
+                    )
+                    .first()
+                    is None
+                ):
+                    self.db.add(
+                        PaperTask(paper_id=paper_id, task_id=task.id, source="auto")
+                    )
+                stats.matched += 1
+            self.db.flush()
+            EvaluationService(self.db).recalculate_ranks(
+                task.id, dataset.id, metric_name=METRIC_NAME, commit=False
+            )
+            if commit:
+                self.db.commit()
+            else:
+                self.db.rollback()
+            return stats
+        except Exception:
+            self.db.rollback()
+            raise
+
+
+async def discover_artificial_analysis_papers(
+    db: Session, *, persist: bool = True
+) -> ArtificialAnalysisDiscovery:
+    return await ArtificialAnalysisPaperDiscoveryService(db).discover(persist=persist)
+
+
+def run_discovery(db: Session, *, persist: bool = True):
+    return asyncio.run(discover_artificial_analysis_papers(db, persist=persist))

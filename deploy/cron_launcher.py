@@ -129,6 +129,15 @@ COMMANDS: dict[str, Job] = {
         timeout="30m",
         idempotency="replace managed DeepSWE evaluation rows from validated live data",
     ),
+    "sync_artificial_analysis": job(
+        "-m",
+        "scripts.hourly.sync_artificial_analysis",
+        timeout="30m",
+        idempotency=(
+            "index reviewed model releases and upsert Artificial Analysis scores "
+            "from validated API data"
+        ),
+    ),
     "import_hf_daily_papers": job(
         "-m",
         "scripts.daily.import_hf_daily_papers",

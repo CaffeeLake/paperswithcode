@@ -125,8 +125,9 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert "sync_3d_arena" in job_ids
     assert "sync_open_asr" in job_ids
     assert "sync_deepswe" in job_ids
+    assert "sync_artificial_analysis" in job_ids
     assert "calculate_organization_trending_scores" in job_ids
-    assert len(job_ids) == 21
+    assert len(job_ids) == 22
 
     keyword_job = _job("backfill_method_keywords")
     assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query
