@@ -397,8 +397,6 @@ def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
     class Report:
         async def aio(self, **kwargs):
             captured.append(kwargs)
-            if len(captured) > 1:
-                return []
             return [
                 SimpleNamespace(
                     description=MODAL_APP_NAME,
@@ -438,14 +436,7 @@ def test_modal_reporter_owns_exact_query_filter_and_rounding(monkeypatch):
     )
 
     assert result == 3_000_001
-    assert captured == [
-        {
-            "start": start + timedelta(days=offset),
-            "end": min(start + timedelta(days=offset + 1), end),
-            "resolution": "h",
-        }
-        for offset in range(10)
-    ]
+    assert captured == [{"start": start, "end": end, "resolution": "h"}]
 
 
 def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
@@ -455,8 +446,6 @@ def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
     class Report:
         async def aio(self, **kwargs):
             captured.append(kwargs)
-            if len(captured) > 1:
-                return []
             return [
                 SimpleNamespace(
                     description=MODAL_APP_NAME,
@@ -490,14 +479,7 @@ def test_modal_reporter_uses_environment_billing_for_team_identity(monkeypatch):
     )
 
     assert result == 1_250_000
-    assert captured == [
-        {
-            "start": start + timedelta(days=offset),
-            "end": min(start + timedelta(days=offset + 1), end),
-            "resolution": "h",
-        }
-        for offset in range(10)
-    ]
+    assert captured == [{"start": start, "end": end, "resolution": "h"}]
 
 
 def test_reconciler_skips_inside_hour_without_calling_provider():

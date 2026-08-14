@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol
 
 import modal
@@ -40,18 +40,7 @@ class ModalProviderSpendReporter:
             ).billing.report
         else:
             report = modal.Workspace.from_context().billing.report
-        items = []
-        chunk_start = start
-        while chunk_start < end:
-            chunk_end = min(chunk_start + timedelta(days=1), end)
-            items.extend(
-                await report.aio(
-                    start=chunk_start,
-                    end=chunk_end,
-                    resolution="h",
-                )
-            )
-            chunk_start = chunk_end
+        items = await report.aio(start=start, end=end, resolution="h")
         dollars = sum(
             item.cost
             for item in items
