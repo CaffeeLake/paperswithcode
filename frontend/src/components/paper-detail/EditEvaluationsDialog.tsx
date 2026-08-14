@@ -14,32 +14,17 @@ import {
 import { catalogApi } from "@/lib/api/catalog";
 import { evaluationsApi } from "@/lib/api/evaluations";
 import { submissionsApi } from "@/lib/api/submissions";
+import {
+  normalizeEvaluationOperations,
+  toDirectEvaluationOperations,
+  toPendingEvaluationOperations,
+  type EditableEvaluationRow,
+} from "@/lib/evaluationOperations";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 const SEARCH_PAGE_SIZE = 100;
-
-interface EditableEvaluation {
-  id?: string;
-  task_id: string;
-  dataset_id: string;
-  model_name: string;
-  harness: string;
-  metric_name: string;
-  metric_value: string;
-  best_rank?: string;
-  /** Raw model parameter count as a string for input control compatibility.
-   *  Empty string means "no value" (sent as `null` on PUT to clear, or omitted
-   *  on POST). Stored as integers server-side. */
-  num_parameters: string;
-  /** Optional Hugging Face model page URL. Empty string means "no value"
-   *  (sent as `null` on PUT to clear, or omitted on POST). */
-  hf_model_url: string;
-  /** Whether the evaluated model is open-source. Defaults to true. */
-  is_open: boolean;
-  operation?: 'create' | 'update' | 'delete' | 'unchanged';
-}
 
 interface EditEvaluationsDialogProps {
   open: boolean;
@@ -69,15 +54,7 @@ function paperHasCodingAgentsTask(
   );
 }
 
-function isCompleteCreateEvaluation(evalItem: EditableEvaluation): boolean {
-  const taskId = parseInt(evalItem.task_id, 10);
-  const datasetId = parseInt(evalItem.dataset_id, 10);
-  if (!Number.isFinite(taskId) || !Number.isFinite(datasetId)) return false;
-  if (!evalItem.metric_name.trim() || !evalItem.metric_value.trim()) return false;
-  return true;
-}
-
-function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEvaluation[] {
+function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEvaluationRow[] {
   return evaluations.map(e => {
     const metricName = e.best_metric || Object.keys(e.metrics)[0];
     const metricValue = e.metrics[metricName];
@@ -131,26 +108,6 @@ function leaderboardKey(taskId: string, datasetId: string): string {
   return `${taskId}:${datasetId}`;
 }
 
-/** Parse the user-entered parameter count. Empty/whitespace -> `null` so the
- *  field can be explicitly cleared. Anything that doesn't parse as a
- *  non-negative integer falls back to `null` rather than rejecting the save —
- *  the backend has its own CHECK constraint as a final guard. */
-function parseNumParametersInput(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed === '') return null;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.trunc(parsed);
-}
-
-/** Normalize the user-entered HF model URL. Empty/whitespace -> `null` so the
- *  field can be explicitly cleared. The backend has a CHECK constraint that
- *  requires non-null values to start with https://huggingface.co/. */
-function parseHfModelUrlInput(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed === '' ? null : trimmed;
-}
-
 export function EditEvaluationsDialog({
   open,
   onOpenChange,
@@ -164,7 +121,7 @@ export function EditEvaluationsDialog({
   isAuthor = false,
 }: EditEvaluationsDialogProps) {
   const showHarnessColumn = paperHasCodingAgentsTask(paperTasks);
-  const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluation[]>([]);
+  const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluationRow[]>([]);
   const [suggestionKind, setSuggestionKind] = useState<"benchmark" | "metric" | null>(null);
   const [knownTasks, setKnownTasks] = useState<Map<string, APITask>>(new Map());
   const [knownDatasets, setKnownDatasets] = useState<Map<string, Dataset>>(new Map());
@@ -333,136 +290,37 @@ export function EditEvaluationsDialog({
   };
 
   const saveEvaluationsMutation = useMutation({
-    mutationFn: async ({ paperId, evaluations }: { paperId: string; evaluations: EditableEvaluation[] }): Promise<{ submitted: boolean }> => {
-      if (submitMode === "pending") {
-        const operations: Array<
-          | { op: "create"; data: Record<string, unknown> }
-          | { op: "update"; evaluation_id: number; data: Record<string, unknown> }
-          | { op: "delete"; evaluation_id: number }
-        > = [];
-
-        for (const evalItem of evaluations) {
-          if (evalItem.operation === "delete" && evalItem.id) {
-            operations.push({ op: "delete", evaluation_id: parseInt(evalItem.id) });
-            continue;
-          }
-          const supportsHarness = selectedDatasetSupportsHarness(
-            evalItem.task_id,
-            evalItem.dataset_id,
-          );
-          if (evalItem.operation === "create") {
-            if (!isCompleteCreateEvaluation(evalItem)) continue;
-            const numParameters = parseNumParametersInput(evalItem.num_parameters);
-            const data: Record<string, unknown> = {
-              task_id: parseInt(evalItem.task_id),
-              dataset_id: parseInt(evalItem.dataset_id),
-              metrics: { [evalItem.metric_name]: evalItem.metric_value },
-              best_metric: evalItem.metric_name,
-            };
-            const hfModelUrl = parseHfModelUrlInput(evalItem.hf_model_url);
-            if (evalItem.model_name) data.model_name = evalItem.model_name;
-            if (supportsHarness && evalItem.harness) data.harness = evalItem.harness;
-            if (evalItem.best_rank) data.best_rank = parseInt(evalItem.best_rank);
-            if (numParameters != null) data.num_parameters = numParameters;
-            if (hfModelUrl != null) data.hf_model_url = hfModelUrl;
-            data.is_open = evalItem.is_open;
-            operations.push({ op: "create", data });
-          } else if (evalItem.operation === "update" && evalItem.id) {
-            const data: Record<string, unknown> = {
-              task_id: parseInt(evalItem.task_id),
-              dataset_id: parseInt(evalItem.dataset_id),
-              model_name: evalItem.model_name || undefined,
-              harness: supportsHarness ? evalItem.harness || null : null,
-              metrics: { [evalItem.metric_name]: evalItem.metric_value },
-              best_metric: evalItem.metric_name,
-              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
-              num_parameters: parseNumParametersInput(evalItem.num_parameters),
-              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
-              is_open: evalItem.is_open,
-            };
-            operations.push({
-              op: "update",
-              evaluation_id: parseInt(evalItem.id),
-              data,
-            });
-          }
-        }
-
-        if (operations.length === 0) {
-          return { submitted: false };
-        }
-
-        await submissionsApi.submit({
-          paper_id: parseInt(paperId),
-          edit_type: "evaluations",
-          proposed_payload: { operations },
-        });
-        return { submitted: true };
-      }
-
-      const directOperations: Array<{
-        operation: "create" | "update" | "delete";
-        evaluation_id?: number;
-        payload?: Record<string, unknown>;
-      }> = [];
-      for (const evalItem of evaluations) {
-        if (evalItem.operation === 'delete' && evalItem.id) {
-          directOperations.push({
-            operation: "delete",
-            evaluation_id: parseInt(evalItem.id),
-          });
-        } else if (evalItem.operation === 'create') {
-          if (!isCompleteCreateEvaluation(evalItem)) continue;
-          const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
-          const numParameters = parseNumParametersInput(evalItem.num_parameters);
-          directOperations.push({
-            operation: "create",
-            payload: {
-              paper_id: parseInt(paperId),
-              task_id: parseInt(evalItem.task_id),
-              dataset_id: parseInt(evalItem.dataset_id),
-              model_name: evalItem.model_name || undefined,
-              harness: supportsHarness ? evalItem.harness || undefined : undefined,
-              metrics: { [evalItem.metric_name]: evalItem.metric_value },
-              best_metric: evalItem.metric_name,
-              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
-              num_parameters: numParameters ?? undefined,
-              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url) ?? undefined,
-              is_open: evalItem.is_open,
-            },
-          });
-        } else if (evalItem.operation === 'update' && evalItem.id) {
-          const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
-          directOperations.push({
-            operation: "update",
-            evaluation_id: parseInt(evalItem.id),
-            payload: {
-              task_id: parseInt(evalItem.task_id),
-              dataset_id: parseInt(evalItem.dataset_id),
-              model_name: evalItem.model_name || undefined,
-              harness: supportsHarness ? evalItem.harness || null : null,
-              metrics: { [evalItem.metric_name]: evalItem.metric_value },
-              best_metric: evalItem.metric_name,
-              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
-              num_parameters: parseNumParametersInput(evalItem.num_parameters),
-              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
-              is_open: evalItem.is_open,
-              harness_set: true,
-              num_parameters_set: true,
-              hf_model_url_set: true,
-            },
-          });
-        }
-      }
-      if (!isAdmin && directOperations.length > 50) {
+    mutationFn: async ({ paperId, evaluations }: {
+      paperId: string;
+      evaluations: EditableEvaluationRow[];
+    }): Promise<{ submitted: boolean }> => {
+      const canonical = normalizeEvaluationOperations(
+        evaluations,
+        selectedDatasetSupportsHarness,
+      );
+      if (!isAdmin && submitMode === "direct" && canonical.length > 50) {
         throw new Error(
           "Contributor evaluation batches are limited to 50 operations; contact an admin.",
         );
       }
-      if (directOperations.length > 0) {
-        await evaluationsApi.batch(parseInt(paperId), directOperations);
+      if (canonical.length === 0) return { submitted: false };
+
+      const numericPaperId = Number.parseInt(paperId, 10);
+      if (submitMode === "pending") {
+        await submissionsApi.submit({
+          paper_id: numericPaperId,
+          edit_type: "evaluations",
+          proposed_payload: {
+            operations: toPendingEvaluationOperations(canonical),
+          },
+        });
+      } else {
+        await evaluationsApi.batch(
+          numericPaperId,
+          toDirectEvaluationOperations(numericPaperId, canonical),
+        );
       }
-      return { submitted: directOperations.length > 0 };
+      return { submitted: true };
     },
     onSuccess: (result) => {
       if (submitMode === "pending") {
@@ -560,7 +418,7 @@ export function EditEvaluationsDialog({
 
   const handleUpdateEvaluationField = (
     index: number,
-    field: keyof EditableEvaluation,
+    field: keyof EditableEvaluationRow,
     value: string
   ) => {
     hasUserEditedRef.current = true;
