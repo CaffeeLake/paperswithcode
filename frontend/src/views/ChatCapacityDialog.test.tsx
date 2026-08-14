@@ -1,7 +1,10 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ChatCapacityDialog } from "@/views/ChatView";
+import {
+  ChatCapacityDialog,
+  ChatDisabledDialog,
+} from "@/components/chat/ChatDialogs";
 
 describe("ChatCapacityDialog", () => {
   beforeEach(() => {
@@ -48,5 +51,19 @@ describe("ChatCapacityDialog", () => {
     expect(retry).toHaveBeenCalledTimes(1);
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("ChatDisabledDialog", () => {
+  it("owns focus and closes from Escape or its explicit action", () => {
+    const close = vi.fn();
+    render(<ChatDisabledDialog onClose={close} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Chat is temporarily disabled" });
+    expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+
+    expect(close).toHaveBeenCalledTimes(2);
   });
 });

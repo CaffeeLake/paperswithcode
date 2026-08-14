@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { OPENROUTER_USAGE_QUERY_KEY } from "@/lib/openrouter";
-import { OpenRouterUsageNotice } from "@/views/ChatView";
+import { OpenRouterUsageNotice } from "@/components/chat/ChatNotices";
 
 describe("OpenRouterUsageNotice", () => {
   it("moves non-admin staging users to production without advertising shared credit", () => {
