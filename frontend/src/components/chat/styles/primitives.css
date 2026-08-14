@@ -1,0 +1,28 @@
+/* Chat primitives styles */
+.chat-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  background: var(--accent);
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: chat-blink 1s steps(1) infinite;
+}
+@keyframes chat-blink { 50% { opacity: 0; } }
+.chat-chev { transition: transform 0.18s; color: var(--ink-faint); }
+.chat-chev-open { transform: rotate(180deg); }
+.chat-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in oklch, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: chat-spin 0.7s linear infinite;
+  flex: none;
+}
+.chat-spinner-light {
+  border-color: rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+}
+@keyframes chat-spin { to { transform: rotate(360deg); } }
