@@ -1,10 +1,57 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, requestJson } from "./apiTransport";
+import { setStoredAdminToken } from "./adminAuth";
+import { ApiError, ApiTransport, requestJson } from "./apiTransport";
 
 describe("API transport", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    setStoredAdminToken("");
+  });
+
+  it("constructs the URL and parses a successful JSON response", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ results: ["paper"] }), { status: 200 }),
+    );
+    const transport = new ApiTransport("https://example.test/api/v1");
+
+    await expect(transport.request<{ results: string[] }>("/papers"))
+      .resolves.toEqual({ results: ["paper"] });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://example.test/api/v1/papers");
+    expect(options).toEqual(expect.objectContaining({
+      cache: "default",
+      credentials: "include",
+    }));
+    expect(new Headers(options?.headers).get("Content-Type")).toBe("application/json");
+  });
+
+  it("returns undefined for an empty 204 response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+
+    await expect(
+      new ApiTransport("https://example.test").request<void>("/empty", {
+        method: "DELETE",
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("includes browser credentials and the stored admin credential", async () => {
+    setStoredAdminToken("secret-admin-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+
+    await new ApiTransport("https://example.test").request("/admin");
+
+    const options = fetchMock.mock.calls[0][1];
+    expect(options?.credentials).toBe("include");
+    expect(new Headers(options?.headers).get("X-Admin-Token")).toBe(
+      "secret-admin-token",
+    );
   });
 
   it("returns a typed error without applying browser policy", async () => {

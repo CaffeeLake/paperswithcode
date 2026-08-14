@@ -2,14 +2,13 @@
  * API client for PapersWithCode backend
  */
 
-import { apiUrl, getApiOrigin } from "./apiUrl";
-import { withStaleAuthNotification } from "./apiAuth";
-import { requestJson } from "./apiTransport";
+import { accountApi } from "./api/account";
+import { papersApi } from "./api/papers";
+import { apiRequest } from "./api/request";
+import { apiUrl } from "./apiUrl";
 import { PaperCurationCoordinator } from "./paperCuration";
 
 export { ApiError } from "./apiTransport";
-
-const API_BASE_URL = `${getApiOrigin()}/api/v1`;
 
 export interface CatalogMutationEvent {
   id: string;
@@ -200,8 +199,7 @@ export async function copyPaperToBucket(
   paperId: string,
   payload: PaperBucketCopyRequest,
 ): Promise<PaperBucketCopyResponse> {
-  return requestJson<PaperBucketCopyResponse>(
-    API_BASE_URL,
+  return apiRequest<PaperBucketCopyResponse>(
     `/papers/${encodeURIComponent(paperId)}/copy-to-bucket`,
     { method: 'POST', body: JSON.stringify(payload) },
   );
@@ -998,20 +996,16 @@ export interface ChatWebSearchBudgetStatus {
 }
 
 class ApiClient {
-  private baseUrl: string;
   private curation: PaperCurationCoordinator;
 
-  constructor(baseUrl: string = API_BASE_URL) {
-    this.baseUrl = baseUrl;
+  constructor() {
     this.curation = new PaperCurationCoordinator(
       <T>(endpoint: string, options?: RequestInit) => this.request<T>(endpoint, options),
     );
   }
 
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    return withStaleAuthNotification(() =>
-      requestJson<T>(this.baseUrl, endpoint, options),
-    );
+    return apiRequest<T>(endpoint, options);
   }
 
   // Papers API
@@ -1065,22 +1059,15 @@ class ApiClient {
     mode?: PaperSearchMode,
     signal?: AbortSignal,
   ): Promise<SearchPage<Paper>> {
-    const searchParams = new URLSearchParams();
-    searchParams.append('q', query);
-    searchParams.append('page', page.toString());
-    searchParams.append('page_size', pageSize.toString());
-    if (mode) searchParams.append('mode', mode);
-    return this.request<SearchPage<Paper>>(`/papers/search?${searchParams.toString()}`, { signal });
+    return papersApi.search(query, page, pageSize, mode, signal);
   }
 
   async getPaper(id: string, includeResources: boolean = true): Promise<Paper> {
-    const endpoint = `/papers/${id}${includeResources ? '?include_resources=true' : ''}`;
-    return this.request<Paper>(endpoint);
+    return papersApi.get(id, includeResources);
   }
 
   async getPaperByArxivId(arxivId: string, includeResources: boolean = true): Promise<Paper> {
-    const endpoint = `/papers/arxiv/${arxivId}${includeResources ? '?include_resources=true' : ''}`;
-    return this.request<Paper>(endpoint);
+    return papersApi.getByArxivId(arxivId, includeResources);
   }
 
   async getRelatedPapers(id: string, limit: number = 4): Promise<RelatedPaperRecommendation[]> {
@@ -2055,14 +2042,11 @@ class ApiClient {
 
   // ── Account preferences (signed-in HF user) ──
   async getMyPreferences(): Promise<UserPreferences> {
-    return this.request<UserPreferences>('/me/preferences');
+    return accountApi.getPreferences();
   }
 
   async updateMyPreferences(prefs: UserPreferences): Promise<UserPreferences> {
-    return this.request<UserPreferences>('/me/preferences', {
-      method: 'PUT',
-      body: JSON.stringify(prefs),
-    });
+    return accountApi.updatePreferences(prefs);
   }
 
   async getOpenRouterUsage(): Promise<OpenRouterUsageStatus> {
@@ -2074,7 +2058,7 @@ class ApiClient {
   }
 
   async prewarmChatPaperContext(routeId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/chat/paper-context/prewarm`, {
+    const response = await fetch(apiUrl('/api/v1/chat/paper-context/prewarm'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ route_id: routeId }),
