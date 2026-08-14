@@ -1,23 +1,17 @@
 import React from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
-import {
-  type Dataset,
-  type Method,
-  type PendingEditType,
-  type Task,
-} from "@/lib/api";
+import { type Method, type Task } from "@/lib/api";
 import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
+import type { PendingPaperEdit } from "@/lib/pendingEdits";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 
 type JsonRecord = Record<string, unknown>;
 
 interface PendingEditDiffProps {
-  editType: PendingEditType;
-  currentPayload?: JsonRecord | null;
-  proposedPayload: JsonRecord;
+  edit: PendingPaperEdit;
 }
 
 interface NamedItem {
@@ -29,6 +23,23 @@ interface NamedItem {
 interface UrlItem {
   url: string;
   is_official: boolean;
+}
+
+interface TaxonomyPayload extends JsonRecord {
+  name: string;
+  description?: string;
+  image?: {
+    data_url?: string;
+    url?: string;
+    file_name?: string;
+  };
+  image_credit?: string;
+  source_url?: string;
+  year?: number;
+  start_date?: string;
+  end_date?: string;
+  venue?: string;
+  url?: string;
 }
 
 interface EvaluationLike {
@@ -49,63 +60,10 @@ interface EvaluationLike {
   hf_model_url?: string | null;
 }
 
-interface EvaluationOperation {
-  op?: string;
-  evaluation_id?: number;
-  data?: EvaluationLike;
-}
-
-const asRecord = (value: unknown): JsonRecord =>
-  value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
-
-const asNamedItems = (value: unknown): NamedItem[] => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map<NamedItem | null>((item) => {
-      const record = asRecord(item);
-      const id = Number(record.id);
-      if (!Number.isFinite(id)) return null;
-      return {
-        id,
-        name: typeof record.name === "string" ? record.name : `#${id}`,
-        slug: typeof record.slug === "string" ? record.slug : undefined,
-      };
-    })
-    .filter((item): item is NamedItem => item !== null);
-};
-
-const asNumberArray = (value: unknown): number[] => {
-  if (!Array.isArray(value)) return [];
-  return value.map(Number).filter((id) => Number.isFinite(id));
-};
-
-const asUrlItems = (value: unknown): UrlItem[] => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      const record = asRecord(item);
-      if (typeof record.url !== "string") return null;
-      return {
-        url: record.url,
-        is_official: Boolean(record.is_official),
-      };
-    })
-    .filter((item): item is UrlItem => Boolean(item));
-};
-
-const asEvaluations = (value: unknown): EvaluationLike[] => {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => asRecord(item) as EvaluationLike);
-};
-
-const asOperations = (value: unknown): EvaluationOperation[] => {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => asRecord(item) as EvaluationOperation);
-};
-
-const formatEditType = (type: PendingEditType): string => type.replace(/_/g, " ");
-
-function RawJsonToggle({ currentPayload, proposedPayload }: Omit<PendingEditDiffProps, "editType">) {
+function RawJsonToggle({ currentPayload, proposedPayload }: {
+  currentPayload?: object | null;
+  proposedPayload: object;
+}) {
   const [showRaw, setShowRaw] = React.useState(false);
   return (
     <div className="submission-raw-toggle">
@@ -142,11 +100,13 @@ function EntitySetDiff({
   proposedIds,
   queryPrefix,
   fetchEntity,
+  knownNames,
 }: {
   currentItems: NamedItem[];
   proposedIds: number[];
-  queryPrefix: "task" | "method";
-  fetchEntity: (id: string) => Promise<Task | Method>;
+  queryPrefix: string;
+  fetchEntity?: (id: string) => Promise<Task | Method>;
+  knownNames?: Map<number, string>;
 }) {
   const ids = React.useMemo(
     () => Array.from(new Set([...currentItems.map((item) => item.id), ...proposedIds])).sort((a, b) => a - b),
@@ -154,16 +114,17 @@ function EntitySetDiff({
   );
 
   const entityQueries = useQueries({
-    queries: ids.map((id) => ({
+    queries: fetchEntity ? ids.map((id) => ({
       queryKey: [queryPrefix, String(id)],
       queryFn: () => fetchEntity(String(id)),
       staleTime: 5 * 60 * 1000,
-    })),
+    })) : [],
   });
 
   const namesById = React.useMemo(() => {
     const map = new Map<number, string>();
     currentItems.forEach((item) => map.set(item.id, item.name));
+    knownNames?.forEach((name, id) => map.set(id, name));
     entityQueries.forEach((query) => {
       const entity = query.data;
       if (!entity) return;
@@ -173,7 +134,7 @@ function EntitySetDiff({
       }
     });
     return map;
-  }, [currentItems, entityQueries]);
+  }, [currentItems, entityQueries, knownNames]);
 
   const currentIds = new Set(currentItems.map((item) => item.id));
   const proposedIdSet = new Set(proposedIds);
@@ -214,6 +175,38 @@ function EntitySetDiff({
         )}
       </DiffColumn>
     </div>
+  );
+}
+
+function OrganizationSetDiff({
+  currentItems,
+  proposedIds,
+}: {
+  currentItems: NamedItem[];
+  proposedIds: number[];
+}) {
+  const organizations = useQuery({
+    queryKey: ["organizations", "submission-diff"],
+    queryFn: () => catalogApi.organizations(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const names = new Map(currentItems.map((item) => [item.id, item.name]));
+  organizations.data?.results.forEach((organization) => {
+    const id = Number(organization.id);
+    if (Number.isFinite(id)) names.set(id, organization.name);
+  });
+  const resolvedCurrent = currentItems.map((item) => ({
+    ...item,
+    name: names.get(item.id) ?? item.name,
+  }));
+
+  return (
+    <EntitySetDiff
+      currentItems={resolvedCurrent}
+      proposedIds={proposedIds}
+      queryPrefix="organization"
+      knownNames={names}
+    />
   );
 }
 
@@ -279,11 +272,20 @@ function EvaluationsDiff({
   currentPayload,
   proposedPayload,
 }: {
-  currentPayload?: JsonRecord | null;
-  proposedPayload: JsonRecord;
+  currentPayload?: { evaluations: EvaluationLike[] } | null;
+  proposedPayload: {
+    operations: Array<{
+      op: "create" | "update" | "delete";
+      evaluation_id?: number;
+      data?: EvaluationLike;
+    }>;
+  };
 }) {
-  const currentEvaluations = asEvaluations(asRecord(currentPayload).evaluations);
-  const operations = asOperations(proposedPayload.operations);
+  const currentEvaluations = React.useMemo(
+    () => currentPayload?.evaluations ?? [],
+    [currentPayload],
+  );
+  const operations = proposedPayload.operations;
 
   const taskIds = React.useMemo(() => {
     const ids = new Set<number>();
@@ -339,7 +341,7 @@ function EvaluationsDiff({
   const datasetNames = React.useMemo(() => {
     const map = new Map<number, string>();
     datasetQueries.forEach((query) => {
-      const dataset = query.data as Dataset | undefined;
+      const dataset = query.data;
       if (!dataset) return;
       const id = Number(dataset.id);
       if (Number.isFinite(id)) map.set(id, dataset.name);
@@ -456,10 +458,10 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function SourceUrlDiff({ currentPayload, proposedPayload }: {
-  currentPayload?: JsonRecord | null;
-  proposedPayload: JsonRecord;
+  currentPayload?: { source_url?: string | null } | null;
+  proposedPayload: { source_url: string };
 }) {
-  const currentUrl = asRecord(currentPayload).source_url;
+  const currentUrl = currentPayload?.source_url;
   const proposedUrl = proposedPayload.source_url;
 
   return (
@@ -486,16 +488,16 @@ function SourceUrlDiff({ currentPayload, proposedPayload }: {
   );
 }
 
-function ExternalPaperSuggestionDiff({ proposedPayload }: { proposedPayload: JsonRecord }) {
-  const title = typeof proposedPayload.title === "string" ? proposedPayload.title : "";
-  const sourceUrl =
-    typeof proposedPayload.source_url === "string" ? proposedPayload.source_url : "";
-  const abstract = typeof proposedPayload.abstract === "string" ? proposedPayload.abstract : "";
-  const published =
-    typeof proposedPayload.date_published === "string" ? proposedPayload.date_published : "";
-  const authors = Array.isArray(proposedPayload.authors)
-    ? proposedPayload.authors.filter((author): author is string => typeof author === "string")
-    : [];
+function ExternalPaperSuggestionDiff({ proposedPayload }: {
+  proposedPayload: {
+    title?: string;
+    source_url: string;
+    abstract?: string;
+    date_published?: string;
+    authors: string[];
+  };
+}) {
+  const { title, source_url: sourceUrl, abstract = "", date_published: published, authors } = proposedPayload;
 
   return (
     <div className="submission-diff-columns">
@@ -550,7 +552,7 @@ function TaxonomySuggestionDiff({
   proposedPayload,
 }: {
   kind: "task" | "method" | "benchmark" | "metric" | "conference";
-  proposedPayload: JsonRecord;
+  proposedPayload: TaxonomyPayload;
 }) {
   const name = typeof proposedPayload.name === "string" ? proposedPayload.name : "";
   const description =
@@ -560,7 +562,7 @@ function TaxonomySuggestionDiff({
   const endDate = typeof proposedPayload.end_date === "string" ? proposedPayload.end_date : "";
   const venue = typeof proposedPayload.venue === "string" ? proposedPayload.venue : "";
   const url = typeof proposedPayload.url === "string" ? proposedPayload.url : "";
-  const image = asRecord(proposedPayload.image);
+  const image = proposedPayload.image ?? {};
   const imageDataUrl =
     typeof image.data_url === "string" && image.data_url.startsWith("data:image/")
       ? image.data_url
@@ -700,10 +702,10 @@ function HfArtifactsDiff({
   currentPayload,
   proposedPayload,
 }: {
-  currentPayload?: JsonRecord | null;
-  proposedPayload: JsonRecord;
+  currentPayload?: { hf_models: string[]; hf_datasets: string[]; hf_spaces: string[] } | null;
+  proposedPayload: { hf_models: string[]; hf_datasets: string[]; hf_spaces: string[] };
 }) {
-  const current = asRecord(currentPayload);
+  const current = currentPayload;
   const sections = [
     { key: "hf_models", label: "Models" },
     { key: "hf_datasets", label: "Datasets" },
@@ -713,12 +715,8 @@ function HfArtifactsDiff({
   return (
     <div className="submission-hf-artifacts-diff">
       {sections.map(({ key, label }) => {
-        const currentUrls = Array.isArray(current[key])
-          ? (current[key] as unknown[]).filter((item): item is string => typeof item === "string")
-          : [];
-        const proposedUrls = Array.isArray(proposedPayload[key])
-          ? (proposedPayload[key] as unknown[]).filter((item): item is string => typeof item === "string")
-          : [];
+        const currentUrls = current?.[key] ?? [];
+        const proposedUrls = proposedPayload[key];
 
         return (
           <div key={key} className="submission-hf-artifacts-section">
@@ -735,74 +733,96 @@ function HfArtifactsDiff({
   );
 }
 
-export function PendingEditDiff({ editType, currentPayload, proposedPayload }: PendingEditDiffProps) {
-  const current = asRecord(currentPayload);
+function assertNever(value: never): never {
+  throw new Error(`Unhandled pending edit: ${JSON.stringify(value)}`);
+}
 
+export function PendingEditDiff({ edit }: PendingEditDiffProps) {
   let content: React.ReactNode;
-  if (editType === "tasks") {
-    content = (
-      <EntitySetDiff
-        currentItems={asNamedItems(current.tasks)}
-        proposedIds={asNumberArray(proposedPayload.task_ids)}
+  switch (edit.edit_type) {
+    case "tasks":
+      content = <EntitySetDiff
+        currentItems={edit.current_payload?.tasks ?? []}
+        proposedIds={edit.proposed_payload.task_ids}
         queryPrefix="task"
         fetchEntity={catalogApi.getTask.bind(catalogApi)}
-      />
-    );
-  } else if (editType === "methods") {
-    content = (
-      <EntitySetDiff
-        currentItems={asNamedItems(current.methods)}
-        proposedIds={asNumberArray(proposedPayload.method_ids)}
+      />;
+      break;
+    case "methods":
+      content = <EntitySetDiff
+        currentItems={edit.current_payload?.methods ?? []}
+        proposedIds={edit.proposed_payload.method_ids}
         queryPrefix="method"
         fetchEntity={catalogApi.getMethod.bind(catalogApi)}
-      />
-    );
-  } else if (editType === "repositories") {
-    content = (
-      <ResourceDiff
+      />;
+      break;
+    case "organizations":
+      content = <OrganizationSetDiff
+        currentItems={edit.current_payload?.organizations ?? []}
+        proposedIds={edit.proposed_payload.organization_ids}
+      />;
+      break;
+    case "repositories":
+      content = <ResourceDiff
         label="repositories"
-        currentItems={asUrlItems(current.repositories)}
-        proposedItems={asUrlItems(proposedPayload.repositories)}
-      />
-    );
-  } else if (editType === "project_pages") {
-    content = (
-      <ResourceDiff
+        currentItems={edit.current_payload?.repositories ?? []}
+        proposedItems={edit.proposed_payload.repositories}
+      />;
+      break;
+    case "project_pages":
+      content = <ResourceDiff
         label="project pages"
-        currentItems={asUrlItems(current.project_pages)}
-        proposedItems={asUrlItems(proposedPayload.project_pages)}
-      />
-    );
-  } else if (editType === "evaluations") {
-    content = <EvaluationsDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
-  } else if (editType === "source_url") {
-    content = <SourceUrlDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
-  } else if (editType === "hf_artifacts") {
-    content = <HfArtifactsDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
-  } else if (editType === "new_task") {
-    content = <TaxonomySuggestionDiff kind="task" proposedPayload={proposedPayload} />;
-  } else if (editType === "new_method") {
-    content = <TaxonomySuggestionDiff kind="method" proposedPayload={proposedPayload} />;
-  } else if (editType === "new_benchmark") {
-    content = <TaxonomySuggestionDiff kind="benchmark" proposedPayload={proposedPayload} />;
-  } else if (editType === "new_metric") {
-    content = <TaxonomySuggestionDiff kind="metric" proposedPayload={proposedPayload} />;
-  } else if (editType === "new_conference") {
-    content = <TaxonomySuggestionDiff kind="conference" proposedPayload={proposedPayload} />;
-  } else if (editType === "new_external_paper") {
-    content = <ExternalPaperSuggestionDiff proposedPayload={proposedPayload} />;
-  } else {
-    content = (
-      <div className="submission-empty submission-empty-warn">
-        No custom renderer exists yet for {formatEditType(editType)}.
-      </div>
-    );
+        currentItems={edit.current_payload?.project_pages ?? []}
+        proposedItems={edit.proposed_payload.project_pages}
+      />;
+      break;
+    case "evaluations":
+      content = <EvaluationsDiff
+        currentPayload={edit.current_payload}
+        proposedPayload={edit.proposed_payload}
+      />;
+      break;
+    case "source_url":
+      content = <SourceUrlDiff
+        currentPayload={edit.current_payload}
+        proposedPayload={edit.proposed_payload}
+      />;
+      break;
+    case "hf_artifacts":
+      content = <HfArtifactsDiff
+        currentPayload={edit.current_payload}
+        proposedPayload={edit.proposed_payload}
+      />;
+      break;
+    case "new_task":
+      content = <TaxonomySuggestionDiff kind="task" proposedPayload={edit.proposed_payload} />;
+      break;
+    case "new_method":
+      content = <TaxonomySuggestionDiff kind="method" proposedPayload={edit.proposed_payload} />;
+      break;
+    case "new_benchmark":
+      content = <TaxonomySuggestionDiff kind="benchmark" proposedPayload={edit.proposed_payload} />;
+      break;
+    case "new_metric":
+      content = <TaxonomySuggestionDiff kind="metric" proposedPayload={edit.proposed_payload} />;
+      break;
+    case "new_conference":
+      content = <TaxonomySuggestionDiff kind="conference" proposedPayload={edit.proposed_payload} />;
+      break;
+    case "new_external_paper":
+      content = <ExternalPaperSuggestionDiff proposedPayload={edit.proposed_payload} />;
+      break;
+    default:
+      assertNever(edit);
   }
 
   return (
     <div className="submission-diff-body">
       {content}
-      <RawJsonToggle currentPayload={currentPayload} proposedPayload={proposedPayload} />
+      <RawJsonToggle
+        currentPayload={edit.current_payload}
+        proposedPayload={edit.proposed_payload}
+      />
     </div>
   );
 }

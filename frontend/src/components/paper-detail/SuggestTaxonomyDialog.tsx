@@ -13,8 +13,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMutation } from "@tanstack/react-query";
-import type { PendingEditType } from "@/lib/api";
 import { submissionsApi } from "@/lib/api/submissions";
+import { pendingEditSubmission } from "@/lib/pendingEdits";
 import { useToast } from "@/hooks/use-toast";
 
 type TaxonomyKind = "task" | "method" | "benchmark" | "metric" | "conference";
@@ -40,14 +40,6 @@ interface SuggestionImage {
   mime_type: string;
   data_url: string;
 }
-
-const KIND_EDIT_TYPE: Record<TaxonomyKind, PendingEditType> = {
-  task: "new_task",
-  method: "new_method",
-  benchmark: "new_benchmark",
-  metric: "new_metric",
-  conference: "new_conference",
-};
 
 const KIND_NAME_PLACEHOLDER: Record<TaxonomyKind, string> = {
   task: "e.g. Long-context Retrieval",
@@ -156,54 +148,55 @@ export function SuggestTaxonomyDialog({
 
   const suggestMutation = useMutation({
     mutationFn: async () => {
-      const proposedPayload: Record<string, unknown> = {
-        name: name.trim(),
-      };
-      if (kind === "conference") {
-        Object.entries({
-          description: description.trim(),
-          year: year ? Number(year) : undefined,
-          start_date: startDate,
-          end_date: endDate,
-          venue: venue.trim(),
-          url: url.trim(),
-        }).forEach(([key, value]) => {
-          if (value) proposedPayload[key] = value;
-        });
-      } else {
-        const normalizedDescription = description.trim();
-        if (normalizedDescription) {
-          proposedPayload.description = normalizedDescription;
-        }
-        if (supportsImage) {
-          if (image) proposedPayload.image = image;
-          if (imageSource.trim()) proposedPayload.image_credit = imageSource.trim();
-        }
-        if (kind === "method" && source.trim()) {
-          proposedPayload.source_url = source.trim();
-        }
-        if (kind === "task") {
-          if (keywords.trim()) proposedPayload.keywords = keywords.trim();
-          if (parentId) proposedPayload.parent_id = Number(parentId);
-          if (areaId) proposedPayload.area_id = Number(areaId);
-        }
-        if (kind === "benchmark") {
-          proposedPayload.task_ids = taskIds
-            .split(",")
-            .map((value) => Number(value.trim()))
-            .filter((value) => Number.isInteger(value) && value > 0);
-        }
-        if (kind === "metric") {
-          proposedPayload.direction = metricDirection;
-          proposedPayload.task_id = Number(metricTaskId);
-          proposedPayload.dataset_id = Number(metricDatasetId);
-        }
+      const submissionPaperId = paperId ? parseInt(paperId) : null;
+      const normalizedDescription = description.trim() || undefined;
+      switch (kind) {
+        case "task":
+          return submissionsApi.submit(pendingEditSubmission(submissionPaperId, "new_task", {
+            name: name.trim(),
+            description: normalizedDescription,
+            image: image ?? undefined,
+            image_credit: imageSource.trim() || undefined,
+            keywords: keywords.trim() || undefined,
+            parent_id: parentId ? Number(parentId) : undefined,
+            area_id: areaId ? Number(areaId) : undefined,
+          }));
+        case "method":
+          return submissionsApi.submit(pendingEditSubmission(submissionPaperId, "new_method", {
+            name: name.trim(),
+            description: normalizedDescription,
+            image: image ?? undefined,
+            image_credit: imageSource.trim() || undefined,
+            source_url: source.trim() || undefined,
+          }));
+        case "benchmark":
+          return submissionsApi.submit(pendingEditSubmission(submissionPaperId, "new_benchmark", {
+            name: name.trim(),
+            description: description.trim(),
+            task_ids: taskIds
+              .split(",")
+              .map((value) => Number(value.trim()))
+              .filter((value) => Number.isInteger(value) && value > 0),
+          }));
+        case "metric":
+          return submissionsApi.submit(pendingEditSubmission(submissionPaperId, "new_metric", {
+            name: name.trim(),
+            description: description.trim(),
+            direction: metricDirection === "lower_is_better" ? "lower_is_better" : "higher_is_better",
+            task_id: Number(metricTaskId),
+            dataset_id: Number(metricDatasetId),
+          }));
+        case "conference":
+          return submissionsApi.submit(pendingEditSubmission(submissionPaperId, "new_conference", {
+            name: name.trim(),
+            description: normalizedDescription,
+            year: Number(year),
+            start_date: startDate || undefined,
+            end_date: endDate || undefined,
+            venue: venue.trim() || undefined,
+            url: url.trim(),
+          }));
       }
-      return submissionsApi.submit({
-        paper_id: paperId ? parseInt(paperId) : null,
-        edit_type: KIND_EDIT_TYPE[kind],
-        proposed_payload: proposedPayload,
-      });
     },
     onSuccess: () => {
       toast({

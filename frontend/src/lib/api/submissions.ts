@@ -4,15 +4,22 @@ import type {
   PendingPaperEdit,
   PendingPaperEditSubmitPayload,
   PendingPaperEditsResponse,
-} from "../api";
+} from "../pendingEdits";
 import type { ApiRequest } from "../apiTransport";
+import {
+  parsePendingPaperEdit,
+  parsePendingPaperEditsResponse,
+} from "../pendingEdits";
 import { apiRequest } from "./request";
 
 export class SubmissionsApi {
   constructor(private readonly request: ApiRequest) {}
 
-  submit(payload: PendingPaperEditSubmitPayload): Promise<PendingPaperEdit> {
-    return this.request("/me/paper-edits", { method: "POST", body: JSON.stringify(payload) });
+  async submit(payload: PendingPaperEditSubmitPayload): Promise<PendingPaperEdit> {
+    return parsePendingPaperEdit(await this.request<unknown>("/me/paper-edits", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }));
   }
 
   list(params?: {
@@ -27,31 +34,32 @@ export class SubmissionsApi {
       if (value !== undefined) searchParams.set(key, String(value));
     }
     const query = searchParams.toString();
-    return this.request(`/admin/paper-edits${query ? `?${query}` : ""}`);
+    return this.request<unknown>(`/admin/paper-edits${query ? `?${query}` : ""}`)
+      .then(parsePendingPaperEditsResponse);
   }
 
-  get(id: number): Promise<PendingPaperEdit> {
-    return this.request(`/admin/paper-edits/${id}`);
+  async get(id: number): Promise<PendingPaperEdit> {
+    return parsePendingPaperEdit(await this.request<unknown>(`/admin/paper-edits/${id}`));
   }
 
-  approve(
+  async approve(
     id: number,
     body: { admin_note?: string; user_review_reason?: string; resolved_payload?: Record<string, unknown> } = {},
   ): Promise<PendingPaperEdit> {
-    return this.request(`/admin/paper-edits/${id}/approve`, {
+    return parsePendingPaperEdit(await this.request<unknown>(`/admin/paper-edits/${id}/approve`, {
       method: "POST",
       body: JSON.stringify(body),
-    });
+    }));
   }
 
-  reject(
+  async reject(
     id: number,
     body: { admin_note?: string; user_review_reason?: string } = {},
   ): Promise<PendingPaperEdit> {
-    return this.request(`/admin/paper-edits/${id}/reject`, {
+    return parsePendingPaperEdit(await this.request<unknown>(`/admin/paper-edits/${id}/reject`, {
       method: "POST",
       body: JSON.stringify(body),
-    });
+    }));
   }
 }
 

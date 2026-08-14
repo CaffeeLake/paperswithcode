@@ -67,7 +67,18 @@ describe("domain API clients", () => {
   });
 
   it("encapsulates pending-review actions", async () => {
-    const request = vi.fn().mockResolvedValue({ id: 17 }) as ApiRequest;
+    const request = vi.fn().mockResolvedValue({
+      id: 17,
+      paper_id: 9,
+      hf_username: "reviewer",
+      is_author: false,
+      edit_type: "tasks",
+      proposed_payload: { task_ids: [2] },
+      current_payload: { tasks: [] },
+      status: "approved",
+      created_at: "2026-08-14T00:00:00Z",
+      updated_at: "2026-08-14T00:01:00Z",
+    }) as ApiRequest;
     const submissions = new SubmissionsApi(request);
 
     await submissions.approve(17, { admin_note: "verified" });
@@ -76,5 +87,27 @@ describe("domain API clients", () => {
       method: "POST",
       body: JSON.stringify({ admin_note: "verified" }),
     });
+  });
+
+  it("rejects malformed pending-edit responses at the API boundary", async () => {
+    const request = vi.fn().mockResolvedValue({
+      count: 1,
+      results: [{
+        id: 17,
+        paper_id: 9,
+        hf_username: "reviewer",
+        is_author: false,
+        edit_type: "tasks",
+        proposed_payload: { task_ids: ["bad"] },
+        status: "pending",
+        created_at: "2026-08-14T00:00:00Z",
+        updated_at: "2026-08-14T00:00:00Z",
+      }],
+    }) as ApiRequest;
+    const submissions = new SubmissionsApi(request);
+
+    await expect(submissions.list()).rejects.toThrow(
+      "Malformed pending-edit payload: results.0.proposed_payload.task_ids.0",
+    );
   });
 });

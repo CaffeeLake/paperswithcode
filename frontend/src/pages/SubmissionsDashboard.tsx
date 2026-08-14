@@ -306,9 +306,7 @@ function SubmissionCard({
 
       <div className="submission-diff">
         <PendingEditDiff
-          editType={submission.edit_type}
-          currentPayload={submission.current_payload}
-          proposedPayload={submission.proposed_payload}
+          edit={submission}
         />
       </div>
 
@@ -551,6 +549,12 @@ export default function SubmissionsDashboard() {
           <div className="submission-loading">
             <Loader2 className="spin" size={18} />
             <span>Loading submissions...</span>
+          </div>
+        ) : listQuery.isError ? (
+          <div className="submission-empty submission-empty-warn" role="alert">
+            <Inbox size={28} />
+            <h2>Could not display submissions.</h2>
+            <p>{errorDescription(listQuery.error, "The submissions response was invalid.")}</p>
           </div>
         ) : submissions.length === 0 ? (
           <div className="submission-empty">

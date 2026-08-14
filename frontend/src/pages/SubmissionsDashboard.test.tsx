@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PendingPaperEdit } from "@/lib/api";
+import { parsePendingPaperEdit } from "@/lib/pendingEdits";
 import SubmissionsDashboard from "@/pages/SubmissionsDashboard";
 
 const { listPendingPaperEdits } = vi.hoisted(() => ({
@@ -46,12 +47,25 @@ function taxonomySubmission(
   id: number,
   editType: "new_task" | "new_method" | "new_benchmark" | "new_metric" | "new_conference",
 ): PendingPaperEdit {
-  return {
+  const payloads = {
+    new_task: { name: `Suggestion ${id}` },
+    new_method: { name: `Suggestion ${id}`, source_url: "https://example.com/method" },
+    new_benchmark: { name: `Suggestion ${id}`, description: "Description", task_ids: [1] },
+    new_metric: {
+      name: `Suggestion ${id}`,
+      description: "Description",
+      direction: "higher_is_better",
+      task_id: 1,
+      dataset_id: 2,
+    },
+    new_conference: { name: `Suggestion ${id}`, year: 2026, url: "https://example.com/conf" },
+  } as const;
+  return parsePendingPaperEdit({
     ...externalPaperSubmission,
     id,
     edit_type: editType,
-    proposed_payload: { name: `Suggestion ${id}` },
-  };
+    proposed_payload: payloads[editType],
+  });
 }
 
 function renderDashboard() {
@@ -74,6 +88,18 @@ beforeEach(() => {
 });
 
 describe("SubmissionsDashboard", () => {
+  it("shows a controlled error when pending-edit data is malformed", async () => {
+    listPendingPaperEdits.mockRejectedValue(
+      new Error("Malformed pending-edit payload: proposed_payload.task_ids: Required"),
+    );
+
+    renderDashboard();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not display submissions.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Malformed pending-edit payload");
+    expect(screen.queryByText("No pending submissions.")).not.toBeInTheDocument();
+  });
+
   it("labels and filters external paper submissions separately from taxonomy suggestions", async () => {
     const user = userEvent.setup();
     renderDashboard();

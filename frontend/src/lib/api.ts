@@ -5,10 +5,25 @@
 import { accountApi } from "./api/account";
 import { papersApi } from "./api/papers";
 import { apiRequest } from "./api/request";
+import { submissionsApi } from "./api/submissions";
 import { apiUrl } from "./apiUrl";
 import { PaperCurationCoordinator } from "./paperCuration";
+import type {
+  PendingEditStatus,
+  PendingEditType,
+  PendingPaperEdit,
+  PendingPaperEditSubmitPayload,
+  PendingPaperEditsResponse,
+} from "./pendingEdits";
 
 export { ApiError } from "./apiTransport";
+export type {
+  PendingEditStatus,
+  PendingEditType,
+  PendingPaperEdit,
+  PendingPaperEditSubmitPayload,
+  PendingPaperEditsResponse,
+} from "./pendingEdits";
 
 export interface CatalogMutationEvent {
   id: string;
@@ -885,59 +900,6 @@ export interface PaperSubmitResponse {
   latest_version?: string | null;
   submission_id?: number | null;
   pending_review?: boolean;
-}
-
-/** Which paper-page surface or taxonomy directory a pending edit targets. */
-export type PendingEditType =
-  | 'tasks'
-  | 'methods'
-  | 'evaluations'
-  | 'repositories'
-  | 'project_pages'
-  | 'source_url'
-  | 'hf_artifacts'
-  | 'organizations'
-  | 'new_task'
-  | 'new_method'
-  | 'new_benchmark'
-  | 'new_metric'
-  | 'new_conference'
-  | 'new_external_paper';
-
-export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
-
-export interface PendingPaperEdit {
-  id: number;
-  paper_id: number | null;
-  hf_username: string;
-  is_author: boolean;
-  edit_type: PendingEditType;
-  proposed_payload: Record<string, unknown>;
-  current_payload?: Record<string, unknown> | null;
-  applied_payload?: Record<string, unknown> | null;
-  conflict_payload?: Record<string, unknown> | null;
-  result_entity_type?: string | null;
-  result_entity_id?: string | null;
-  status: PendingEditStatus;
-  admin_note?: string | null;
-  user_review_reason?: string | null;
-  reviewed_by?: string | null;
-  reviewed_by_kind?: 'human' | 'codex' | null;
-  review_evidence?: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
-  reviewed_at?: string | null;
-}
-
-export interface PendingPaperEditSubmitPayload {
-  paper_id: number | null;
-  edit_type: PendingEditType;
-  proposed_payload: object;
-}
-
-export interface PendingPaperEditsResponse {
-  count: number;
-  results: PendingPaperEdit[];
 }
 
 export interface TrendPoint {
@@ -2000,10 +1962,7 @@ class ApiClient {
   async submitPendingPaperEdit(
     payload: PendingPaperEditSubmitPayload,
   ): Promise<PendingPaperEdit> {
-    return this.request<PendingPaperEdit>('/me/paper-edits', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    return submissionsApi.submit(payload);
   }
 
   // ── Pending paper edits (admin review) ──
@@ -2014,39 +1973,25 @@ class ApiClient {
     limit?: number;
     offset?: number;
   }): Promise<PendingPaperEditsResponse> {
-    const searchParams = new URLSearchParams();
-    if (params?.status) searchParams.append('status', params.status);
-    if (params?.edit_type) searchParams.append('edit_type', params.edit_type);
-    if (params?.paper_id) searchParams.append('paper_id', params.paper_id.toString());
-    if (params?.limit) searchParams.append('limit', params.limit.toString());
-    if (params?.offset) searchParams.append('offset', params.offset.toString());
-
-    const endpoint = `/admin/paper-edits${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-    return this.request<PendingPaperEditsResponse>(endpoint);
+    return submissionsApi.list(params);
   }
 
   async getPendingPaperEdit(id: number): Promise<PendingPaperEdit> {
-    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}`);
+    return submissionsApi.get(id);
   }
 
   async approvePendingPaperEdit(
     id: number,
     body?: { admin_note?: string; user_review_reason?: string; resolved_payload?: Record<string, unknown> },
   ): Promise<PendingPaperEdit> {
-    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(body ?? {}),
-    });
+    return submissionsApi.approve(id, body);
   }
 
   async rejectPendingPaperEdit(
     id: number,
     body?: { admin_note?: string; user_review_reason?: string },
   ): Promise<PendingPaperEdit> {
-    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/reject`, {
-      method: 'POST',
-      body: JSON.stringify(body ?? {}),
-    });
+    return submissionsApi.reject(id, body);
   }
 
   // ── Bookmarks (signed-in HF user) ──
