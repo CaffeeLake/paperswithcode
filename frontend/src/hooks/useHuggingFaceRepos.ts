@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 
-interface HuggingFaceRepoCounts {
+export interface HuggingFaceRepoCounts {
   models: number;
   datasets: number;
   spaces: number;
