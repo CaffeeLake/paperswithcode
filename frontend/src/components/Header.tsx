@@ -138,7 +138,8 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           </button>
         </div>
         <div className="site-announcement" role="status">
-          <span>Hint: type @ to bring papers into context</span>
+          <span>New: Papers with Code CLI and Skill now available as well as </span>
+          <NavLink to="/chat">chat</NavLink>
         </div>
       </header>
       {mobileOpen && (
