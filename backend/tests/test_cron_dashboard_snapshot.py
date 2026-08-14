@@ -255,3 +255,52 @@ def test_workflow_collection_batches_recent_runs(monkeypatch):
     assert all(status["scheduled_run"] for status in statuses.values())
     assert sum(args[:1] == ["api"] for args, _timeout in calls) == 1
     assert len(calls) == 2  # one batch plus the one multi-job workflow detail
+
+
+def test_workflow_collection_refreshes_failed_run_outside_recent_batch(monkeypatch):
+    job = next(job for job in list_cron_jobs() if job.id == "backfill_method_keywords")
+    previous_run = {
+        "databaseId": 17,
+        "status": "completed",
+        "conclusion": "failure",
+        "createdAt": "2026-08-13T01:10:00Z",
+        "updatedAt": "2026-08-13T01:11:00Z",
+        "event": "schedule",
+        "headBranch": "main",
+    }
+    previous_dashboard = {
+        "jobs": [
+            {
+                "workflow_status": {
+                    "available": True,
+                    "workflow_file": job.workflow_file,
+                    "scheduled_run": previous_run,
+                }
+            }
+        ]
+    }
+    refreshed_run = {
+        "id": 17,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-08-13T01:10:00Z",
+        "updated_at": "2026-08-14T12:34:00Z",
+        "event": "schedule",
+        "head_branch": "main",
+    }
+    calls = []
+
+    def gh_json(args, timeout=10):
+        calls.append((args, timeout))
+        if "actions/runs?" in args[-1]:
+            return {"workflow_runs": []}, None
+        return {"workflow_runs": [refreshed_run]}, None
+
+    monkeypatch.setattr(cron_health, "_gh_json", gh_json)
+
+    statuses = cron_health.fetch_workflow_statuses(
+        [job], previous_dashboard=previous_dashboard
+    )
+
+    assert statuses[job.id]["scheduled_run"]["conclusion"] == "success"
+    assert len(calls) == 2

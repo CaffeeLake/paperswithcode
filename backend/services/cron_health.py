@@ -1260,16 +1260,36 @@ def fetch_workflow_statuses(
     for job in workflow_jobs:
         workflow_file = job.workflow_file or ""
         runs = runs_by_file.get(workflow_file, [])
+        previous_status = previous.get(workflow_file, {})
+        previous_scheduled = previous_status.get("scheduled_run") or {}
+        previous_schedule_needs_refresh = previous_scheduled.get(
+            "status"
+        ) != "completed" or previous_scheduled.get("conclusion") not in {
+            None,
+            "",
+            "success",
+            "skipped",
+        }
         if not runs:
-            if workflow_file in previous:
+            if workflow_file in previous and previous_schedule_needs_refresh:
+                # A rerun updates the original GitHub run in place. If that old
+                # failed run has fallen outside the repository-wide recent-run
+                # page, refresh its workflow instead of retaining the failure.
+                bootstrap.append(job)
+            elif workflow_file in previous:
                 statuses[job.id] = dict(previous[workflow_file])
             else:
                 bootstrap.append(job)
             continue
 
-        previous_status = previous.get(workflow_file, {})
         if not any(run.get("event") == "schedule" for run in runs) and not (
             previous_status.get("scheduled_run")
+        ):
+            bootstrap.append(job)
+            continue
+        if (
+            not any(run.get("event") == "schedule" for run in runs)
+            and previous_schedule_needs_refresh
         ):
             bootstrap.append(job)
             continue
