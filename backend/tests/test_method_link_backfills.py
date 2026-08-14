@@ -194,6 +194,28 @@ def test_keyword_catalog_version_tracks_matcher_inputs_not_display_names():
     assert changed_keywords != original
 
 
+def test_changed_keyword_catalog_supersedes_incomplete_run():
+    db = _session()
+    method = Method(id=10, name="CLIP", slug="clip", keywords="CLIP")
+    db.add_all([method, _paper(1, "A CLIP paper", date(2026, 1, 1))])
+    db.commit()
+
+    run_keyword_backfill(db, limit=1, dry_run=False)
+    previous = db.query(MethodKeywordBackfillRun).one()
+    previous.status = "running"
+    previous.completed_at = None
+    db.commit()
+
+    method.keywords = "contrastive language image pretraining"
+    db.commit()
+    run_keyword_backfill(db, limit=1, dry_run=False, resume=True)
+
+    db.refresh(previous)
+    assert previous.status == "failed"
+    assert "superseded" in previous.last_error
+    assert db.query(MethodKeywordBackfillRun).count() == 2
+
+
 class _ReferenceClient:
     def __init__(self):
         self.api_calls = 0

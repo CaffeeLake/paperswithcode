@@ -155,9 +155,25 @@ def run_keyword_backfill(
         ).scalar()
     ):
         raise RuntimeError("another method keyword backfill is running")
+    run = None
     try:
         run = None if dry_run else db.get(MethodKeywordBackfillRun, digest)
         if run is None and not dry_run:
+            superseded = (
+                db.query(MethodKeywordBackfillRun)
+                .filter(
+                    MethodKeywordBackfillRun.status == "running",
+                    MethodKeywordBackfillRun.keyword_catalog_sha256 != digest,
+                )
+                .all()
+            )
+            for previous in superseded:
+                previous.status = "failed"
+                previous.completed_at = datetime.now(UTC)
+                previous.updated_at = datetime.now(UTC)
+                previous.last_error = "superseded by a changed method keyword catalog"
+            if superseded:
+                db.commit()
             run = MethodKeywordBackfillRun(
                 keyword_catalog_sha256=digest,
                 status="running",
@@ -227,6 +243,17 @@ def run_keyword_backfill(
             run.updated_at = datetime.now(UTC)
             db.commit()
         return stats
+    except Exception as exc:
+        db.rollback()
+        if run is not None and not dry_run:
+            run = db.get(MethodKeywordBackfillRun, digest)
+            if run is not None:
+                run.status = "failed"
+                run.completed_at = datetime.now(UTC)
+                run.updated_at = datetime.now(UTC)
+                run.last_error = str(exc)
+                db.commit()
+        raise
     finally:
         if db.bind.dialect.name == "postgresql":
             db.execute(
