@@ -6,9 +6,9 @@ import { Icon, MethodChip, PaperPreview, SotaBadges, TagChip } from "@/component
 import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
-import { apiClient, indexPaperFromArxiv } from "@/lib/api";
-import type { Paper } from "@/lib/api";
-import { apiUrl, assetUrl } from "@/lib/apiUrl";
+import { evaluationsApi } from "@/lib/api/evaluations";
+import { papersApi } from "@/lib/api/papers";
+import { assetUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { paperEditSubmitMode } from "@/lib/contributorCapabilities";
 import { summarizeRepos } from "@/lib/transform";
@@ -203,11 +203,11 @@ const PaperDetailView: React.FC = () => {
       void refetch();
       void refetchEvaluations();
       if (editSubmitMode === "direct" && paper?.id) {
-        void apiClient
-          .primePaperCurationState(paper.id, true)
+        void papersApi
+          .primeCurationState(paper.id, true)
           .catch(() => undefined);
-        void apiClient
-          .primeEvaluationCurationState(paper.id, true)
+        void evaluationsApi
+          .primeCurationState(paper.id, true)
           .catch(() => undefined);
       }
       toast({
@@ -317,9 +317,7 @@ const PaperDetailView: React.FC = () => {
     queryFn: async () => {
       // Strip any vN suffix to get the canonical id.
       const raw = paper!.arxiv_id!.replace(/v\d+$/, "");
-      const resp = await fetch(apiUrl(`/api/v1/papers/arxiv/${raw}/versions`));
-      if (!resp.ok) return [] as Paper[];
-      return (await resp.json()) as Paper[];
+      return papersApi.versions(raw);
     },
     enabled: secondaryQueriesEnabled && !!paper?.arxiv_id,
     staleTime: 10 * 60 * 1000,
@@ -328,7 +326,7 @@ const PaperDetailView: React.FC = () => {
   // Related papers: generation-aware embedding endpoint with server-side task fallback.
   const relatedQ = useQuery({
     queryKey: ["related-papers", paper?.id],
-    queryFn: () => apiClient.getRelatedPapers(paper!.arxiv_id || paper!.id, 4),
+    queryFn: () => papersApi.related(paper!.arxiv_id || paper!.id, 4),
     enabled: secondaryQueriesEnabled && !!paper?.id,
     staleTime: 10 * 60 * 1000,
   });
@@ -412,13 +410,13 @@ const PaperDetailView: React.FC = () => {
   useEffect(() => {
     if (editSubmitMode !== "direct" || !paper?.id) return;
     if (activeEditor && activeEditor !== "results") {
-      void apiClient
-        .primePaperCurationState(paper.id)
+      void papersApi
+        .primeCurationState(paper.id)
         .catch(() => undefined);
     }
     if (activeEditor === "results") {
-      void apiClient
-        .primeEvaluationCurationState(paper.id)
+      void evaluationsApi
+        .primeCurationState(paper.id)
         .catch(() => undefined);
     }
   }, [activeEditor, editSubmitMode, paper?.id]);
@@ -432,7 +430,7 @@ const PaperDetailView: React.FC = () => {
     if (!section) return;
     freshAuthRecoveryHandled.current = true;
     const editor = parseFreshAuthEditSection(section);
-    const draft = apiClient.freshAuthMutationDraft();
+    const draft = papersApi.freshAuthMutationDraft();
     if (!draft) {
       sessionStorage.removeItem("pwc:fresh-auth-edit");
       if (editor) openEditor(editor);
@@ -450,7 +448,7 @@ const PaperDetailView: React.FC = () => {
       });
       return;
     }
-    void apiClient
+    void papersApi
       .resumeFreshAuthMutation()
       .then(() => {
         toast({ title: "Edit applied", description: "The restored catalog edit was applied." });
@@ -497,7 +495,7 @@ const PaperDetailView: React.FC = () => {
     setIndexError(null);
     setIndexErrorHint(null);
     try {
-      await indexPaperFromArxiv(arxivId);
+      await papersApi.indexFromArxiv(arxivId);
       toast({ title: "Indexed", description: "Paper added to database." });
       setTimeout(() => refetch(), 1200);
       setIndexState("idle");

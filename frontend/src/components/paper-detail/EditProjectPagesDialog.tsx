@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { submitPendingPaperEdit, updatePaperProjectPages } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -62,14 +63,14 @@ export function EditProjectPagesDialog({
   const updateProjectPagesMutation = useMutation({
     mutationFn: async ({ paperId, projectPages }: { paperId: string; projectPages: ProjectPage[] }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "project_pages",
           proposed_payload: { project_pages: projectPages },
         });
         return null;
       }
-      return updatePaperProjectPages(paperId, projectPages);
+      return papersApi.updateProjectPages(paperId, projectPages);
     },
     onSuccess: (updatedPaper) => {
       if (submitMode === "pending") {

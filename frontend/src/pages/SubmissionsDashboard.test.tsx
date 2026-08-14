@@ -17,13 +17,13 @@ vi.mock("@/lib/authContext", () => ({
   }),
 }));
 
-vi.mock("@/lib/api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/api")>();
-  return {
-    ...actual,
-    listPendingPaperEdits,
-  };
-});
+vi.mock("@/lib/api/submissions", () => ({
+  submissionsApi: {
+    list: listPendingPaperEdits,
+    approve: vi.fn(),
+    reject: vi.fn(),
+  },
+}));
 
 const externalPaperSubmission: PendingPaperEdit = {
   id: 1103,

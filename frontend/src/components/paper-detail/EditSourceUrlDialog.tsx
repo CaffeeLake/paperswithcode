@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { submitPendingPaperEdit, updatePaperSourceUrl } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -54,14 +55,14 @@ export function EditSourceUrlDialog({
   const updateSourceUrlMutation = useMutation({
     mutationFn: async ({ paperId, sourceUrl }: { paperId: string; sourceUrl: string }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "source_url",
           proposed_payload: { source_url: sourceUrl },
         });
         return null;
       }
-      return updatePaperSourceUrl(paperId, sourceUrl);
+      return papersApi.updateSourceUrl(paperId, sourceUrl);
     },
     onSuccess: (updatedPaper) => {
       if (submitMode === "pending") {

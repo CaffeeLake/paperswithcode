@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient, type Organizations } from "@/lib/api";
+import type { Organizations } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import OrganizationsIndexView from "@/views/OrganizationsIndexView";
 
 const payload: Organizations = {
@@ -88,7 +89,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("OrganizationsIndexView", () => {
   it("renders the shared page header and compact cards with canonical full-tile links", async () => {
-    vi.spyOn(apiClient, "getOrganizations").mockResolvedValue(payload);
+    vi.spyOn(catalogApi, "organizations").mockResolvedValue(payload);
     renderView();
     expect(
       await screen.findByRole("heading", { name: /AI Organizations/i }),
@@ -105,7 +106,7 @@ describe("OrganizationsIndexView", () => {
   });
 
   it("searches HF handles and persists search and sort in the URL", async () => {
-    vi.spyOn(apiClient, "getOrganizations").mockResolvedValue(payload);
+    vi.spyOn(catalogApi, "organizations").mockResolvedValue(payload);
     const user = userEvent.setup();
     renderView();
     await screen.findByText("Qwen paper");
@@ -126,7 +127,7 @@ describe("OrganizationsIndexView", () => {
   });
 
   it("uses a styled fallback when an image fails", async () => {
-    vi.spyOn(apiClient, "getOrganizations").mockResolvedValue(payload);
+    vi.spyOn(catalogApi, "organizations").mockResolvedValue(payload);
     const view = renderView();
     await screen.findByRole("link", { name: "Browse 12 Qwen papers" });
     const image = view.container.querySelector(
@@ -138,7 +139,7 @@ describe("OrganizationsIndexView", () => {
   });
 
   it("shows a retryable error", async () => {
-    vi.spyOn(apiClient, "getOrganizations").mockRejectedValue(new Error("boom"));
+    vi.spyOn(catalogApi, "organizations").mockRejectedValue(new Error("boom"));
     renderView();
     expect(await screen.findByText(/Failed to load organizations/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();

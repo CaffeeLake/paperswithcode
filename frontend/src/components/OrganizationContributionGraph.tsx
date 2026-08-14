@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiClient, type OrganizationContributions } from "@/lib/api";
+import type { OrganizationContributions } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CELL_SIZE = 12;
@@ -211,7 +212,7 @@ export const OrganizationContributionGraph: React.FC<{
 }> = ({ organizationSlug, organizationName }) => {
   const contributionsQ = useQuery({
     queryKey: ["organization-contributions", organizationSlug],
-    queryFn: () => apiClient.getOrganizationContributions(organizationSlug),
+    queryFn: () => catalogApi.organizationContributions(organizationSlug),
     staleTime: 10 * 60 * 1000,
   });
 

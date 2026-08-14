@@ -3,7 +3,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { getTask, getTasks, getTaskChildren, getTaskParents } from '@/lib/api';
+import { catalogApi } from '@/lib/api/catalog';
 import { preloadImage } from '@/lib/imagePreloader';
 
 /**
@@ -16,7 +16,7 @@ export const useTask = (taskId: string | undefined, enabled: boolean = true) => 
       if (!taskId) throw new Error('Task ID is required');
 
       // Fetch the task data
-      const task = await getTask(taskId);
+      const task = await catalogApi.getTask(taskId);
 
       // If the task has an image, preload it before returning
       if (task.image_url) {
@@ -46,7 +46,7 @@ export const useTasks = (params?: {
 }) => {
   return useQuery({
     queryKey: ['tasks', params],
-    queryFn: () => getTasks(params),
+    queryFn: () => catalogApi.listTasks(params),
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 };
@@ -65,7 +65,7 @@ export const useTaskChildren = (
     queryKey: ['task-children', taskId, params],
     queryFn: () => {
       if (!taskId) throw new Error('Task ID is required');
-      return getTaskChildren(taskId, params);
+      return catalogApi.taskChildren(taskId, params);
     },
     enabled: !!taskId,
     staleTime: 5 * 60 * 1000, // 5 minutes
@@ -80,7 +80,7 @@ export const useTaskParents = (taskId: string | undefined) => {
     queryKey: ['task-parents', taskId],
     queryFn: () => {
       if (!taskId) throw new Error('Task ID is required');
-      return getTaskParents(taskId);
+      return catalogApi.taskParents(taskId);
     },
     enabled: !!taskId,
     staleTime: 5 * 60 * 1000, // 5 minutes

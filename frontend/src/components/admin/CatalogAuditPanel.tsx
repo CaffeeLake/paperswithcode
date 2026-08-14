@@ -6,23 +6,23 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 
 export const CatalogAuditPanel = () => {
   const queryClient = useQueryClient();
   const query = useInfiniteQuery({
     queryKey: ["catalog-audit"],
-    queryFn: ({ pageParam }) => apiClient.getCatalogAudit(pageParam),
+    queryFn: ({ pageParam }) => catalogApi.audit(pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
   const events = query.data?.pages.flatMap((page) => page.events) ?? [];
   const acknowledge = useMutation({
-    mutationFn: () => apiClient.acknowledgeCatalogAudit(),
+    mutationFn: () => catalogApi.acknowledgeAudit(),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["catalog-audit"] }),
   });
   const rollback = useMutation({
-    mutationFn: (eventId: string) => apiClient.rollbackCatalogEvent(eventId),
+    mutationFn: (eventId: string) => catalogApi.rollbackEvent(eventId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["catalog-audit"] }),
   });
 

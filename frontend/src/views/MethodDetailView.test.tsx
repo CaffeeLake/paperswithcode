@@ -3,14 +3,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
 import MethodDetailView from "@/views/MethodDetailView";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("MethodDetailView", () => {
   it("links a native source paper route", async () => {
-    vi.spyOn(apiClient, "getMethod").mockResolvedValue({
+    vi.spyOn(catalogApi, "getMethod").mockResolvedValue({
       id: "1023",
       slug: "world-action-models",
       name: "World Action Models",
@@ -20,8 +21,8 @@ describe("MethodDetailView", () => {
       introduced_year: 2026,
       paper_count: 0,
     });
-    vi.spyOn(apiClient, "getMethodTrend").mockRejectedValue(new Error("not needed"));
-    vi.spyOn(apiClient, "getMethodPapers").mockResolvedValue({
+    vi.spyOn(catalogApi, "methodTrend").mockRejectedValue(new Error("not needed"));
+    vi.spyOn(papersApi, "forMethod").mockResolvedValue({
       count: 0,
       next_page: null,
       previous_page: null,

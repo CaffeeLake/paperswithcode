@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient, type Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import AuthorDetailView from "@/views/AuthorDetailView";
 
 const paper: Paper = {
@@ -26,13 +27,13 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("AuthorDetailView", () => {
   it("loads the stable author ID route and renders canonical paper links", async () => {
-    vi.spyOn(apiClient, "getAuthor").mockResolvedValue({
+    vi.spyOn(papersApi, "getAuthor").mockResolvedValue({
       id: "7",
       full_name: "Researcher",
       hf_username: "researcher",
       paper_count: 1,
     });
-    vi.spyOn(apiClient, "getAuthorPapers").mockResolvedValue({
+    vi.spyOn(papersApi, "authorPapers").mockResolvedValue({
       count: 1,
       next_page: null,
       previous_page: null,
@@ -57,6 +58,6 @@ describe("AuthorDetailView", () => {
       "href",
       "/paper/2607.24653",
     );
-    expect(apiClient.getAuthor).toHaveBeenCalledWith("7");
+    expect(papersApi.getAuthor).toHaveBeenCalledWith("7");
   });
 });

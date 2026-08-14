@@ -3,7 +3,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { getEvaluationsByPaper, getEvaluationsByDataset, getEvaluations } from '@/lib/api';
+import { evaluationsApi } from '@/lib/api/evaluations';
 
 /**
  * Fetch all evaluations for a specific paper
@@ -13,7 +13,7 @@ export function useEvaluationsByPaper(paperId: string | undefined, enabled: bool
     queryKey: ['evaluations', 'paper', paperId],
     queryFn: () => {
       if (!paperId) throw new Error('Paper ID is required');
-      return getEvaluationsByPaper(paperId);
+      return evaluationsApi.byPaper(paperId);
     },
     enabled: enabled && !!paperId,
     staleTime: 0,
@@ -33,7 +33,7 @@ export function useEvaluationsByDataset(
     queryKey: ['evaluations', 'dataset', datasetId, bestMetric],
     queryFn: () => {
       if (!datasetId) throw new Error('Dataset ID is required');
-      return getEvaluationsByDataset(datasetId, bestMetric);
+      return evaluationsApi.byDataset(datasetId, bestMetric);
     },
     enabled: enabled && !!datasetId,
     staleTime: 5 * 60 * 1000, // 5 minutes
@@ -53,7 +53,7 @@ export function useEvaluations(params?: {
 }) {
   return useQuery({
     queryKey: ['evaluations', params],
-    queryFn: () => getEvaluations(params),
+    queryFn: () => evaluationsApi.list(params),
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 }
@@ -74,7 +74,7 @@ export function useTaskDatasetEvaluations(
       };
       if (taskId) params.task_id = typeof taskId === 'string' ? parseInt(taskId) : taskId;
       if (datasetId) params.dataset_id = typeof datasetId === 'string' ? parseInt(datasetId) : datasetId;
-      return getEvaluations(params);
+      return evaluationsApi.list(params);
     },
     enabled: enabled && !!taskId && !!datasetId,
     staleTime: 5 * 60 * 1000, // 5 minutes

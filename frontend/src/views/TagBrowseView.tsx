@@ -7,8 +7,8 @@ import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
-import { apiClient } from "@/lib/api";
 import type { Dataset, RecommendedFramework, Task, TrendingBenchmark } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
 import { usePreferences } from "@/lib/preferencesContext";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
@@ -122,7 +122,7 @@ const TagBrowseView: React.FC = () => {
   // independent task/dataset queries on initial load (see Speed plan §1).
   const pageQ = useQuery({
     queryKey: ["task-page", taskSlug, bestModelIsOpen],
-    queryFn: () => apiClient.getTaskPage(taskSlug!, { is_open: bestModelIsOpen }),
+    queryFn: () => catalogApi.taskPage(taskSlug!, { is_open: bestModelIsOpen }),
     enabled: !!taskSlug,
     staleTime: 10 * 60 * 1000,
   });
@@ -130,7 +130,7 @@ const TagBrowseView: React.FC = () => {
   const benchmarkTrendsQ = useQuery({
     queryKey: ["task-benchmark-trends", taskSlug, bestModelIsOpen],
     queryFn: () =>
-      apiClient.getTrendingBenchmarks(taskSlug!, {
+      catalogApi.trendingBenchmarks(taskSlug!, {
         limit: 100,
         min_recent_papers: 0,
         is_open: bestModelIsOpen,

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { Icon, PaperCard, TagChip } from "@/components";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -116,7 +116,7 @@ const PapersListView: React.FC = () => {
 
   const topTasks = useQuery({
     queryKey: ["top-tasks-sidebar"],
-    queryFn: () => apiClient.getTopTasks({ limit: 8 }),
+    queryFn: () => catalogApi.topTasks(8),
     enabled: !isRepositoryFeed,
     staleTime: 10 * 60 * 1000,
   });

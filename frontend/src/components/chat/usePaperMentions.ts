@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import React from "react";
 
 import { apiClient, type Paper } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import type { ChatDraft, PaperMentionDraft } from "@/lib/chat";
 
 export const MAX_PAPER_MENTIONS = 10;
@@ -69,7 +70,7 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
 
   const search = useQuery({
     queryKey: ["chat-paper-mention-search", debouncedQuery.toLowerCase()],
-    queryFn: ({ signal }) => apiClient.searchPapers(debouncedQuery, 1, 10, "hybrid", signal),
+    queryFn: ({ signal }) => papersApi.search(debouncedQuery, 1, 10, "hybrid", signal),
     enabled: enabled && Boolean(active) && debouncedQuery.length >= 1,
     staleTime: 30_000,
     refetchOnWindowFocus: false,

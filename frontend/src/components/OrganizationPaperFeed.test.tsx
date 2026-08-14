@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OrganizationPaperFeed } from "@/components/OrganizationPaperFeed";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 
 const useInfiniteOrganizationPapers = vi.fn();
 
@@ -102,7 +102,7 @@ const renderFeed = () => {
 };
 
 beforeEach(() => {
-  vi.spyOn(apiClient, "getOrganizationContributions").mockResolvedValue({
+  vi.spyOn(catalogApi, "organizationContributions").mockResolvedValue({
     start_date: "2025-07-31",
     end_date: "2026-07-30",
     total_count: 3,
@@ -120,10 +120,10 @@ afterEach(() => {
 
 describe("OrganizationPaperFeed task filtering", () => {
   it("selects a task, scopes the route, and preserves the paper sort", async () => {
-    vi.spyOn(apiClient, "getOrganization").mockResolvedValue(
+    vi.spyOn(catalogApi, "getOrganization").mockResolvedValue(
       taxonomy.organization,
     );
-    vi.spyOn(apiClient, "getOrganizationAreasWithTasks").mockResolvedValue(
+    vi.spyOn(catalogApi, "organizationAreasWithTasks").mockResolvedValue(
       taxonomy,
     );
     useInfiniteOrganizationPapers.mockReturnValue({
@@ -172,10 +172,10 @@ describe("OrganizationPaperFeed task filtering", () => {
   });
 
   it("renders organization metadata without waiting for taxonomy", async () => {
-    vi.spyOn(apiClient, "getOrganization").mockResolvedValue(
+    vi.spyOn(catalogApi, "getOrganization").mockResolvedValue(
       taxonomy.organization,
     );
-    vi.spyOn(apiClient, "getOrganizationAreasWithTasks").mockReturnValue(
+    vi.spyOn(catalogApi, "organizationAreasWithTasks").mockReturnValue(
       new Promise(() => {}),
     );
     useInfiniteOrganizationPapers.mockReturnValue({

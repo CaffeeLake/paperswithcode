@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
 import type { LeaderboardMetric, MetricDirections, Task } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { evaluationsApi } from "@/lib/api/evaluations";
 import { usePreferences } from "@/lib/preferencesContext";
 import { formatMetricValue } from "@/lib/utils";
 import { selectLeaderboardEvaluations } from "@/lib/leaderboardEvaluations";
@@ -85,7 +86,7 @@ const BenchmarkDetailView: React.FC = () => {
       taskSlugFromQuery,
       preferences.hide_closed_source_evals ? "open" : "all",
     ],
-    queryFn: () => apiClient.getDatasetBySlug(datasetSlug!, {
+    queryFn: () => catalogApi.getDatasetBySlug(datasetSlug!, {
       include_paper: true,
       task: taskSlugFromQuery,
       is_open: preferences.hide_closed_source_evals ? true : undefined,
@@ -102,21 +103,21 @@ const BenchmarkDetailView: React.FC = () => {
   // also carries Recall/Precision values).
   const evalsQ = useQuery({
     queryKey: ["dataset-evals", datasetQ.data?.id],
-    queryFn: () => apiClient.getEvaluationsByDataset(datasetQ.data!.id),
+    queryFn: () => evaluationsApi.byDataset(datasetQ.data!.id),
     enabled: !!datasetQ.data?.id,
     staleTime: 5 * 60 * 1000,
   });
 
   const datasetTasksQ = useQuery<Task[]>({
     queryKey: ["dataset-tasks", datasetQ.data?.id],
-    queryFn: () => apiClient.getDatasetTasks(datasetQ.data!.id),
+    queryFn: () => catalogApi.datasetTasks(datasetQ.data!.id),
     enabled: !!datasetQ.data?.id,
     staleTime: 10 * 60 * 1000,
   });
 
   const directionsQ = useQuery<MetricDirections>({
     queryKey: ["metric-directions"],
-    queryFn: () => apiClient.getMetricDirections(),
+    queryFn: () => catalogApi.metricDirections(),
     staleTime: 60 * 60 * 1000,
   });
 
@@ -171,7 +172,7 @@ const BenchmarkDetailView: React.FC = () => {
       preferences.hide_closed_source_evals ? true : undefined,
     ],
     queryFn: () =>
-      apiClient.getTrendingBenchmarks(currentTaskId!, {
+      catalogApi.trendingBenchmarks(currentTaskId!, {
         limit: 100,
         min_recent_papers: 0,
         is_open: preferences.hide_closed_source_evals ? true : undefined,
@@ -193,7 +194,7 @@ const BenchmarkDetailView: React.FC = () => {
   // dataset) pairs, in which case we fall back to a data-union below.
   const leaderboardMetricsQ = useQuery<LeaderboardMetric[]>({
     queryKey: ["leaderboard-metrics", datasetQ.data?.id, currentTaskId],
-    queryFn: () => apiClient.getLeaderboardMetrics(datasetQ.data!.id, currentTaskId!),
+    queryFn: () => catalogApi.leaderboardMetrics(datasetQ.data!.id, currentTaskId!),
     enabled: !!datasetQ.data?.id && !!currentTaskId,
     staleTime: 10 * 60 * 1000,
   });

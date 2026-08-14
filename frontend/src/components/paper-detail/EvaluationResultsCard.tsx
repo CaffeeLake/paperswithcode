@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getDatasets, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import { type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { formatMetricValue } from "@/lib/utils";
 
 interface TaskEvaluationsGroup {
@@ -62,7 +63,7 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
   // `dataset_name`/`dataset_slug` fields on the evaluation payload.
   const { data: allDatasetsData } = useQuery({
     queryKey: ['datasets-for-evals'],
-    queryFn: () => getDatasets({ page_size: 100 }),
+    queryFn: () => catalogApi.listDatasets({ page_size: 100 }),
     enabled: !!evaluations && evaluations.length > 0,
   });
 

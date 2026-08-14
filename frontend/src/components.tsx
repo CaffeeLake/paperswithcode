@@ -16,8 +16,8 @@ import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import HfSignInButton from "@/components/HfSignInButton";
 import UserMenu from "@/components/UserMenu";
 import { chipColors, hueFromSlug } from "@/lib/colors";
-import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import { isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import type { PaperCardProps } from "@/lib/transform";
@@ -851,7 +851,7 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({
   const prefetchPaper = React.useCallback(() => {
     queryClient.prefetchQuery({
       queryKey: ["paper-arxiv", paper.id],
-      queryFn: () => apiClient.getPaperByArxivId(paper.id, true),
+      queryFn: () => papersApi.getByArxivId(paper.id, true),
       staleTime: 10 * 60 * 1000,
     });
   }, [paper.id, queryClient]);

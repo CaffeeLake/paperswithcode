@@ -10,7 +10,8 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import LatexTitle from "@/components/LatexTitle";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
 import { isChatEnabled } from "@/lib/apiUrl";
 import { useDebounce } from "@/hooks/useDebounce";
 import { chipColors, hueFromSlug } from "@/lib/colors";
@@ -43,21 +44,21 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
 
   const papersQ = useQuery({
     queryKey: ["search-papers", debouncedQuery, paperPage],
-    queryFn: () => apiClient.searchPapers(debouncedQuery, paperPage, PAPER_PAGE_SIZE),
+    queryFn: () => papersApi.search(debouncedQuery, paperPage, PAPER_PAGE_SIZE),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
 
   const tasksQ = useQuery({
     queryKey: ["search-tasks", debouncedQuery],
-    queryFn: () => apiClient.getTasks({ q: debouncedQuery, page_size: 6 }),
+    queryFn: () => catalogApi.listTasks({ q: debouncedQuery, page_size: 6 }),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
 
   const methodsQ = useQuery({
     queryKey: ["search-methods", debouncedQuery],
-    queryFn: () => apiClient.getMethods({ q: debouncedQuery, page_size: 6 }),
+    queryFn: () => catalogApi.listMethods({ q: debouncedQuery, page_size: 6 }),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
@@ -65,7 +66,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   const benchmarksQ = useQuery({
     queryKey: ["search-benchmarks", debouncedQuery],
     queryFn: () =>
-      apiClient.getDatasets({
+      catalogApi.listDatasets({
         q: debouncedQuery,
         page_size: 6,
       }),

@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
 import type { Conference } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -206,7 +206,7 @@ const AiDeadlinesView: React.FC = () => {
 
   const deadlinesQ = useQuery({
     queryKey: ["conference-deadlines"],
-    queryFn: () => apiClient.getConferenceDeadlines(),
+    queryFn: () => catalogApi.conferenceDeadlines(),
     staleTime: 10 * 60 * 1000,
   });
 

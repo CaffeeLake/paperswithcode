@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient, Paper, PaginatedResponse, PaperOrderBy, PaperTimeWindow, TrendingPaper } from '@/lib/api';
+import { type Paper, type PaginatedResponse, type PaperOrderBy, type PaperTimeWindow, type TrendingPaper } from '@/lib/api';
+import { papersApi } from '@/lib/api/papers';
 
 interface UsePapersParams {
   page?: number;
@@ -42,7 +43,7 @@ export function usePapers(params: UsePapersParams = {}) {
 
   return useQuery<PaginatedResponse<Paper>, Error>({
     queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }],
-    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }),
+    queryFn: () => papersApi.list({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }),
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
     placeholderData: keepPreviousData,
@@ -53,7 +54,7 @@ export function usePapers(params: UsePapersParams = {}) {
 export function usePaper(id: string, enabled: boolean = true) {
   return useQuery<Paper, Error>({
     queryKey: ['paper', id],
-    queryFn: () => apiClient.getPaper(id),
+    queryFn: () => papersApi.get(id),
     enabled: enabled && !!id,
     staleTime: 10 * 60 * 1000, // 10 minutes
     refetchOnWindowFocus: false,
@@ -65,7 +66,7 @@ export function usePaperByArxivId(arxivId: string, enabled: boolean = true) {
 
   return useQuery<Paper, Error>({
     queryKey: ['paper-arxiv', arxivId],
-    queryFn: () => apiClient.getPaperByArxivId(arxivId, true), // Explicitly include resources
+    queryFn: () => papersApi.getByArxivId(arxivId, true), // Explicitly include resources
     enabled: enabled && !!arxivId,
     staleTime: 10 * 60 * 1000, // 10 minutes
     placeholderData: () => {
@@ -116,7 +117,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
     queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }],
     queryFn: ({ pageParam = 1 }) =>
-      apiClient.getPapers({
+      papersApi.list({
         page: pageParam as number,
         page_size,
         search,
@@ -170,7 +171,7 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
     queryKey: ['task-papers-infinite', taskId, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
-      apiClient.getTaskPapers(taskId, {
+      papersApi.forTask(taskId, {
         page: pageParam as number,
         page_size,
         order_by,
@@ -221,7 +222,7 @@ export function useInfiniteConferencePapers(params: UseInfiniteConferencePapersP
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
     queryKey: ['conference-papers-infinite', conferenceSlug, taskSlug, presentation, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
-      apiClient.getConferencePapers(conferenceSlug, {
+      papersApi.forConference(conferenceSlug, {
         task: taskSlug,
         presentation,
         page: pageParam as number,
@@ -272,7 +273,7 @@ export function useInfiniteOrganizationPapers(params: UseInfiniteOrganizationPap
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
     queryKey: ['organization-papers-infinite', organizationSlug, taskSlug, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
-      apiClient.getOrganizationPapers(organizationSlug, {
+      papersApi.forOrganization(organizationSlug, {
         task: taskSlug,
         page: pageParam as number,
         page_size,
@@ -345,7 +346,7 @@ export function useTrendingPapers(params: UseTrendingPapersParams = {}) {
 
   return useQuery<TrendingPaper[], Error>({
     queryKey: ['trending-papers', { limit, max_age_days, min_velocity }],
-    queryFn: () => apiClient.getTrendingPapers({ limit, max_age_days, min_velocity }),
+    queryFn: () => papersApi.trending({ limit, max_age_days, min_velocity }),
     enabled,
     staleTime: 30 * 1000, // 30 seconds — thumbnails and velocity change frequently
     refetchInterval: 60 * 1000, // refresh while the feed stays open (thumbnails/velocity)

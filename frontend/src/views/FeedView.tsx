@@ -11,6 +11,7 @@ import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
@@ -324,7 +325,7 @@ const FeedView: React.FC = () => {
   // Sidebar: top tasks by paper count.
   const topTasks = useQuery({
     queryKey: ["top-tasks-sidebar"],
-    queryFn: () => apiClient.getTopTasks({ limit: 8 }),
+    queryFn: () => catalogApi.topTasks(8),
     staleTime: 10 * 60 * 1000,
   });
 
@@ -333,7 +334,7 @@ const FeedView: React.FC = () => {
   // so neither list misrepresents its own signal.
   const trendingTasks = useQuery({
     queryKey: ["trending-tasks-sidebar"],
-    queryFn: () => apiClient.getTrendingTasks({ limit: 8, level: 0 }),
+    queryFn: () => catalogApi.trendingTasks({ limit: 8, level: 0 }),
     staleTime: 10 * 60 * 1000,
   });
 

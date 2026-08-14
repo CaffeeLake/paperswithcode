@@ -11,7 +11,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { submitPendingPaperEdit, updatePaperHfArtifacts } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -110,14 +111,14 @@ export function EditHfArtifactsDialog({
   const updateArtifactsMutation = useMutation({
     mutationFn: async ({ paperId, artifacts }: { paperId: string; artifacts: HfArtifactsPayload }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "hf_artifacts",
           proposed_payload: artifacts,
         });
         return null;
       }
-      return updatePaperHfArtifacts(paperId, artifacts);
+      return papersApi.updateHfArtifacts(paperId, artifacts);
     },
     onSuccess: (updatedPaper) => {
       if (submitMode === "pending") {

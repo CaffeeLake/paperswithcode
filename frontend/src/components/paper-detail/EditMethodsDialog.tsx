@@ -5,12 +5,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  getMethods,
-  submitPendingPaperEdit,
-  updatePaperMethods,
-  type Method as APIMethod,
-} from "@/lib/api";
+import type { Method as APIMethod } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -93,7 +91,7 @@ export function EditMethodsDialog({
   const { data: searchData, isFetching: searchLoading } = useQuery({
     queryKey: ["methods-search", debouncedQuery],
     queryFn: () =>
-      getMethods({
+      catalogApi.listMethods({
         page_size: SEARCH_PAGE_SIZE,
         ...(debouncedQuery ? { q: debouncedQuery } : {}),
       }),
@@ -136,14 +134,14 @@ export function EditMethodsDialog({
   const updateMethodsMutation = useMutation({
     mutationFn: async ({ paperId, methodIds }: { paperId: string; methodIds: number[] }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "methods",
           proposed_payload: { method_ids: methodIds },
         });
         return null;
       }
-      return updatePaperMethods(paperId, methodIds);
+      return papersApi.updateMethods(paperId, methodIds);
     },
     onSuccess: (updatedPaper) => {
       if (submitMode === "pending") {

@@ -10,10 +10,12 @@ const { getOrganizations, updatePaperOrganizations } = vi.hoisted(() => ({
   updatePaperOrganizations: vi.fn(),
 }));
 
-vi.mock("@/lib/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/api")>()),
-  getOrganizations,
-  updatePaperOrganizations,
+vi.mock("@/lib/api/catalog", () => ({
+  catalogApi: { organizations: getOrganizations },
+}));
+
+vi.mock("@/lib/api/papers", () => ({
+  papersApi: { updateOrganizations: updatePaperOrganizations },
 }));
 
 const organizations = {

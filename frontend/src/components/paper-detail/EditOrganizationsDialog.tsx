@@ -12,11 +12,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  getOrganizations,
-  submitPendingPaperEdit,
-  updatePaperOrganizations,
-} from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { PendingEditNotice } from "./PendingEditNotice";
 
 interface Props {
@@ -47,7 +45,7 @@ export const EditOrganizationsDialog = ({
   }, [initialOrganizationIds, open]);
   const organizations = useQuery({
     queryKey: ["organizations", "curation"],
-    queryFn: () => getOrganizations(false),
+    queryFn: () => catalogApi.organizations(false),
     enabled: open,
   });
   const displayedOrganizations = useMemo(() => {
@@ -69,13 +67,13 @@ export const EditOrganizationsDialog = ({
         return;
       }
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: Number(paperId),
           edit_type: "organizations",
           proposed_payload: { organization_ids: selected },
         });
       } else {
-        await updatePaperOrganizations(paperId, selected);
+        await papersApi.updateOrganizations(paperId, selected);
       }
     },
     onSuccess: () => {

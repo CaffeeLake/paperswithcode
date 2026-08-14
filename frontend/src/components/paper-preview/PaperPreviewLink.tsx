@@ -14,7 +14,7 @@ import {
   paperToPreviewData,
   type PaperPreviewData,
 } from "@/components/paper-preview/paperPreviewData";
-import { getPaper } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import { normalizePaperRouteId } from "@/lib/utils";
 
 interface PaperPreviewLinkProps {
@@ -45,7 +45,7 @@ export const PaperPreviewLink: React.FC<PaperPreviewLinkProps> = ({
   const hasInitialData = Boolean(initialData?.title.trim());
   const query = useQuery({
     queryKey: ["paper-preview", normalizedRouteId],
-    queryFn: () => getPaper(normalizedRouteId, false),
+    queryFn: () => papersApi.get(normalizedRouteId, false),
     enabled: open && !hasInitialData,
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,

@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { submitPendingPaperEdit, updatePaperRepositories } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { githubUrlsMatch, normalizeGithubUrl } from "@/lib/github";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
@@ -63,14 +64,14 @@ export function EditRepositoriesDialog({
   const updateRepositoriesMutation = useMutation({
     mutationFn: async ({ paperId, repositories }: { paperId: string; repositories: Repository[] }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "repositories",
           proposed_payload: { repositories },
         });
         return null;
       }
-      return updatePaperRepositories(paperId, repositories);
+      return papersApi.updateRepositories(paperId, repositories);
     },
     onSuccess: (updatedPaper) => {
       if (submitMode === "pending") {

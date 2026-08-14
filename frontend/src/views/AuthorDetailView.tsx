@@ -2,7 +2,7 @@ import React from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import { Skeleton } from "@/components/ui/skeleton";
 import NotFound from "@/pages/NotFound";
 
@@ -10,12 +10,12 @@ const AuthorDetailView: React.FC = () => {
   const { authorId } = useParams<{ authorId: string }>();
   const author = useQuery({
     queryKey: ["author", authorId],
-    queryFn: () => apiClient.getAuthor(authorId!),
+    queryFn: () => papersApi.getAuthor(authorId!),
     enabled: !!authorId,
   });
   const papers = useQuery({
     queryKey: ["author-papers", authorId],
-    queryFn: () => apiClient.getAuthorPapers(authorId!, { page: 1, page_size: 20 }),
+    queryFn: () => papersApi.authorPapers(authorId!, { page: 1, page_size: 20 }),
     enabled: !!authorId,
   });
 

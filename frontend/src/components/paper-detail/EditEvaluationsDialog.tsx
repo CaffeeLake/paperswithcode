@@ -6,16 +6,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { SearchableSelect, type SearchableSelectOption } from "@/components/ui/searchable-select";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  getTasks,
-  getDatasets,
-  getLeaderboardMetrics,
-  batchEvaluations,
-  submitPendingPaperEdit,
   type Task as APITask,
   type Dataset,
   type Evaluation as APIEvaluation,
   type LeaderboardMetric,
 } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { evaluationsApi } from "@/lib/api/evaluations";
+import { submissionsApi } from "@/lib/api/submissions";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
@@ -213,7 +211,7 @@ export function EditEvaluationsDialog({
       await Promise.all(
         uniqueTaskIds.map(async (taskId) => {
           try {
-            const response = await getDatasets({ task_id: parseInt(taskId), page_size: SEARCH_PAGE_SIZE });
+            const response = await catalogApi.listDatasets({ task_id: parseInt(taskId), page_size: SEARCH_PAGE_SIZE });
             datasetsMap[taskId] = response.results;
           } catch (error) {
             console.error(`Error fetching datasets for task ${taskId}:`, error);
@@ -249,7 +247,7 @@ export function EditEvaluationsDialog({
         uniqueLeaderboards.map(async (key) => {
           const [taskId, datasetId] = key.split(':');
           try {
-            metricsMap[key] = await getLeaderboardMetrics(datasetId, taskId);
+            metricsMap[key] = await catalogApi.leaderboardMetrics(datasetId, taskId);
           } catch (error) {
             console.error(`Error fetching metrics for leaderboard ${key}:`, error);
             metricsMap[key] = [];
@@ -263,7 +261,7 @@ export function EditEvaluationsDialog({
   });
 
   const searchTasks = async (query: string): Promise<SearchableSelectOption[]> => {
-    const response = await getTasks({
+    const response = await catalogApi.listTasks({
       page_size: SEARCH_PAGE_SIZE,
       ...(query ? { q: query } : {}),
     });
@@ -280,7 +278,7 @@ export function EditEvaluationsDialog({
   };
 
   const searchDatasetsForTask = (taskId: string) => async (query: string): Promise<SearchableSelectOption[]> => {
-    const response = await getDatasets({
+    const response = await catalogApi.listDatasets({
       task_id: parseInt(taskId),
       page_size: SEARCH_PAGE_SIZE,
       ...(query ? { q: query } : {}),
@@ -394,7 +392,7 @@ export function EditEvaluationsDialog({
           return { submitted: false };
         }
 
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "evaluations",
           proposed_payload: { operations },
@@ -462,7 +460,7 @@ export function EditEvaluationsDialog({
         );
       }
       if (directOperations.length > 0) {
-        await batchEvaluations(parseInt(paperId), directOperations);
+        await evaluationsApi.batch(parseInt(paperId), directOperations);
       }
       return { submitted: directOperations.length > 0 };
     },

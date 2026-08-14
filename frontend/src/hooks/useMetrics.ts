@@ -3,7 +3,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { getMetricDirections } from '@/lib/api';
+import { catalogApi } from '@/lib/api/catalog';
 
 /**
  * Fetch metric directions mapping (optimized for quick lookup).
@@ -17,7 +17,7 @@ import { getMetricDirections } from '@/lib/api';
 export function useMetricDirections() {
   return useQuery({
     queryKey: ['metrics', 'directions'],
-    queryFn: () => getMetricDirections(),
+    queryFn: () => catalogApi.metricDirections(),
     staleTime: Infinity, // Metric directions rarely change, cache forever
     gcTime: Infinity, // Keep in cache forever (formerly cacheTime)
   });

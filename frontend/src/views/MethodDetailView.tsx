@@ -7,7 +7,8 @@ import { MethodFigure } from "@/components/MethodFigure";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MethodUsageChart from "@/components/MethodUsageChart";
 import MarkdownText from "@/components/MarkdownText";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
 import { slugify } from "@/lib/slug";
 import { transformPaperForCard } from "@/lib/transform";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -56,21 +57,21 @@ const MethodDetailView: React.FC = () => {
 
   const methodQ = useQuery({
     queryKey: ["method", methodSlug],
-    queryFn: () => apiClient.getMethod(methodSlug!),
+    queryFn: () => catalogApi.getMethod(methodSlug!),
     enabled: !!methodSlug,
     staleTime: 10 * 60 * 1000,
   });
 
   const areasQ = useQuery({
     queryKey: ["areas-all"],
-    queryFn: () => apiClient.getAreas({ page_size: 50, ordering: "name" }),
+    queryFn: () => catalogApi.listAreas({ page_size: 50, ordering: "name" }),
     enabled: !!methodQ.data?.area_id,
     staleTime: 10 * 60 * 1000,
   });
 
   const trendQ = useQuery({
     queryKey: ["method-trend", methodSlug],
-    queryFn: () => apiClient.getMethodTrend(methodSlug!),
+    queryFn: () => catalogApi.methodTrend(methodSlug!),
     enabled: !!methodSlug && !!methodQ.data,
     staleTime: 10 * 60 * 1000,
   });
@@ -80,7 +81,7 @@ const MethodDetailView: React.FC = () => {
   const papersQ = useInfiniteQuery({
     queryKey: ["method-papers-infinite", methodSlug, orderBy, hasCode, hasHfArtifacts],
     queryFn: ({ pageParam = 1 }) =>
-      apiClient.getMethodPapers(methodSlug!, {
+      papersApi.forMethod(methodSlug!, {
         page: pageParam as number,
         page_size: 20,
         order_by: orderBy,
@@ -107,12 +108,12 @@ const MethodDetailView: React.FC = () => {
         ? RELATED_METHODS_BY_SLUG[method.slug]
         : undefined;
       if (curatedSlugs) {
-        return Promise.all(curatedSlugs.map((slug) => apiClient.getMethod(slug)));
+        return Promise.all(curatedSlugs.map((slug) => catalogApi.getMethod(slug)));
       }
 
       if (!method.area_id) return [];
 
-      const res = await apiClient.getMethods({
+      const res = await catalogApi.listMethods({
         area_id: method.area_id,
         exclude_id: method.id,
         ordering: "-paper_count",

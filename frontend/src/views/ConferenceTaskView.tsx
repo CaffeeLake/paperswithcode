@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteConferencePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -75,14 +75,14 @@ const ConferenceTaskView: React.FC = () => {
 
   const conferenceQ = useQuery({
     queryKey: ["conference", confSlug],
-    queryFn: () => apiClient.getConference(confSlug!),
+    queryFn: () => catalogApi.getConference(confSlug!),
     enabled: !!confSlug,
     staleTime: 10 * 60 * 1000,
   });
 
   const taskQ = useQuery({
     queryKey: ["task", taskSlug],
-    queryFn: () => apiClient.getTask(taskSlug!),
+    queryFn: () => catalogApi.getTask(taskSlug!),
     enabled: !!taskSlug && !isBrowseListing,
     staleTime: 10 * 60 * 1000,
   });

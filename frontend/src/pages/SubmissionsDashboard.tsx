@@ -14,15 +14,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/authContext";
 import {
-  approvePendingPaperEdit,
-  getPaper,
-  listPendingPaperEdits,
-  rejectPendingPaperEdit,
   type Paper,
   type PendingEditStatus,
   type PendingEditType,
   type PendingPaperEdit,
 } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -124,7 +122,7 @@ async function fetchSubmissions(
 ): Promise<ListData> {
   const edit_type = editType === "all" ? undefined : editType;
   if (status !== "all") {
-    return listPendingPaperEdits({
+    return submissionsApi.list({
       status,
       edit_type,
       limit: visibleLimit,
@@ -134,7 +132,7 @@ async function fetchSubmissions(
 
   const pages = await Promise.all(
     COUNT_STATUSES.map((itemStatus) =>
-      listPendingPaperEdits({
+      submissionsApi.list({
         status: itemStatus,
         edit_type,
         limit: visibleLimit,
@@ -215,7 +213,7 @@ function SubmissionCard({
   );
 
   const approveMutation = useMutation<PendingPaperEdit, unknown, void>({
-    mutationFn: () => approvePendingPaperEdit(submission.id),
+    mutationFn: () => submissionsApi.approve(submission.id),
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
       toast({
@@ -233,7 +231,7 @@ function SubmissionCard({
   });
 
   const rejectMutation = useMutation<PendingPaperEdit, unknown, void>({
-    mutationFn: () => rejectPendingPaperEdit(submission.id),
+    mutationFn: () => submissionsApi.reject(submission.id),
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
       toast({
@@ -401,7 +399,7 @@ export default function SubmissionsDashboard() {
       const edit_type = editType === "all" ? undefined : editType;
       const pages = await Promise.all(
         COUNT_STATUSES.map((itemStatus) =>
-          listPendingPaperEdits({
+          submissionsApi.list({
             status: itemStatus,
             edit_type,
             limit: 1,
@@ -439,7 +437,7 @@ export default function SubmissionsDashboard() {
   const paperQueries = useQueries({
     queries: paperIds.map((paperId) => ({
       queryKey: ["paper-summary", String(paperId)],
-      queryFn: () => getPaper(String(paperId), false),
+      queryFn: () => papersApi.get(String(paperId), false),
       enabled: isAdmin,
       staleTime: 5 * 60 * 1000,
     })),

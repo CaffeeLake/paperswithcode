@@ -3,14 +3,12 @@ import { useQueries } from "@tanstack/react-query";
 
 import { cn } from "@/lib/utils";
 import {
-  getDataset,
-  getMethod,
-  getTask,
   type Dataset,
   type Method,
   type PendingEditType,
   type Task,
 } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 
@@ -314,7 +312,7 @@ function EvaluationsDiff({
   const taskQueries = useQueries({
     queries: taskIds.map((id) => ({
       queryKey: ["task", String(id)],
-      queryFn: () => getTask(String(id)),
+      queryFn: () => catalogApi.getTask(String(id)),
       staleTime: 5 * 60 * 1000,
     })),
   });
@@ -322,7 +320,7 @@ function EvaluationsDiff({
   const datasetQueries = useQueries({
     queries: datasetIds.map((id) => ({
       queryKey: ["dataset", String(id)],
-      queryFn: () => getDataset(String(id)),
+      queryFn: () => catalogApi.getDataset(String(id)),
       staleTime: 5 * 60 * 1000,
     })),
   });
@@ -747,7 +745,7 @@ export function PendingEditDiff({ editType, currentPayload, proposedPayload }: P
         currentItems={asNamedItems(current.tasks)}
         proposedIds={asNumberArray(proposedPayload.task_ids)}
         queryPrefix="task"
-        fetchEntity={getTask}
+        fetchEntity={catalogApi.getTask.bind(catalogApi)}
       />
     );
   } else if (editType === "methods") {
@@ -756,7 +754,7 @@ export function PendingEditDiff({ editType, currentPayload, proposedPayload }: P
         currentItems={asNamedItems(current.methods)}
         proposedIds={asNumberArray(proposedPayload.method_ids)}
         queryPrefix="method"
-        fetchEntity={getMethod}
+        fetchEntity={catalogApi.getMethod.bind(catalogApi)}
       />
     );
   } else if (editType === "repositories") {

@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiClient, type Organization } from "@/lib/api";
+import type { Organization } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import "./Organizations.css";
 
 type SortMode = "trending" | "papers" | "name";
@@ -40,7 +41,7 @@ const OrganizationsIndexView: React.FC = () => {
   const query = params.get("q") ?? "";
   const organizationsQ = useQuery({
     queryKey: ["organizations", "featured"],
-    queryFn: () => apiClient.getOrganizations(true),
+    queryFn: () => catalogApi.organizations(true),
     staleTime: 10 * 60 * 1000,
   });
 

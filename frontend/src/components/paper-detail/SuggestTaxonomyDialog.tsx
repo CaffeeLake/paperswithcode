@@ -13,7 +13,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMutation } from "@tanstack/react-query";
-import { submitPendingPaperEdit, type PendingEditType } from "@/lib/api";
+import type { PendingEditType } from "@/lib/api";
+import { submissionsApi } from "@/lib/api/submissions";
 import { useToast } from "@/hooks/use-toast";
 
 type TaxonomyKind = "task" | "method" | "benchmark" | "metric" | "conference";
@@ -198,7 +199,7 @@ export function SuggestTaxonomyDialog({
           proposedPayload.dataset_id = Number(metricDatasetId);
         }
       }
-      return submitPendingPaperEdit({
+      return submissionsApi.submit({
         paper_id: paperId ? parseInt(paperId) : null,
         edit_type: KIND_EDIT_TYPE[kind],
         proposed_payload: proposedPayload,

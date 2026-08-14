@@ -17,8 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { submitPaper } from "@/lib/api";
 import type { PaperSubmitPayload, PaperSubmitResponse } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import { authUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 
@@ -123,7 +123,7 @@ const SubmitView: React.FC = () => {
   const isExternal = kind === "external";
 
   const mutation = useMutation<PaperSubmitResponse, Error, PaperSubmitPayload>({
-    mutationFn: (payload) => submitPaper(payload),
+    mutationFn: (payload) => papersApi.submit(payload),
     onSuccess: (data) => {
       if (data.pending_review) {
         toast({

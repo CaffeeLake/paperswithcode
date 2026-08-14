@@ -2,8 +2,8 @@ import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
 import type { Conference } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TaxonomySuggestionTile } from "@/components/TaxonomySuggestionTile";
@@ -54,7 +54,7 @@ const sectionHeaderStyle = {
 const ConferencesIndexView: React.FC = () => {
   const conferencesQ = useQuery({
     queryKey: ["conferences"],
-    queryFn: () => apiClient.getConferences(),
+    queryFn: () => catalogApi.conferences(),
     staleTime: 10 * 60 * 1000,
   });
 

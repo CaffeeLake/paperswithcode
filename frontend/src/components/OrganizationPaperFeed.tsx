@@ -14,7 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useInfiniteOrganizationPapers } from "@/hooks/usePapers";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import NotFound from "@/pages/NotFound";
 
@@ -40,12 +40,12 @@ export const OrganizationPaperFeed: React.FC<{
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const organizationQ = useQuery({
     queryKey: ["organization", organizationSlug],
-    queryFn: () => apiClient.getOrganization(organizationSlug),
+    queryFn: () => catalogApi.getOrganization(organizationSlug),
     staleTime: 10 * 60 * 1000,
   });
   const taxonomyQ = useQuery({
     queryKey: ["organization-areas-with-tasks", organizationSlug],
-    queryFn: () => apiClient.getOrganizationAreasWithTasks(organizationSlug),
+    queryFn: () => catalogApi.organizationAreasWithTasks(organizationSlug),
     staleTime: 10 * 60 * 1000,
   });
   const papersQ = useInfiniteOrganizationPapers({

@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { displayTaskName } from "@/lib/transform";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,7 +23,7 @@ const taskKey = (value?: string) => value?.trim().toLowerCase().replace(/[\s_]+/
 const TagsIndexView: React.FC = () => {
   const taxonomyQ = useQuery({
     queryKey: ["areas-with-tasks"],
-    queryFn: () => apiClient.getAreasWithTasks(),
+    queryFn: () => catalogApi.areasWithTasks(),
     staleTime: 10 * 60 * 1000,
   });
 

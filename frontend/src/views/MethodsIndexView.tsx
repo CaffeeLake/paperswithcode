@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Flame } from "lucide-react";
 
-import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { slugify } from "@/lib/slug";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -18,7 +18,7 @@ import { TaxonomySuggestionTile } from "@/components/TaxonomySuggestionTile";
 const MethodsIndexView: React.FC = () => {
   const areasQ = useQuery({
     queryKey: ["areas-all"],
-    queryFn: () => apiClient.getAreas({ page_size: 50, ordering: "name" }),
+    queryFn: () => catalogApi.listAreas({ page_size: 50, ordering: "name" }),
     staleTime: 10 * 60 * 1000,
   });
 
@@ -29,7 +29,7 @@ const MethodsIndexView: React.FC = () => {
   const methodsQ = useQuery({
     queryKey: ["methods-all"],
     queryFn: async () => {
-      const res = await apiClient.getMethods({
+      const res = await catalogApi.listMethods({
         page: 1,
         page_size: 500,
         ordering: "-trend_score",

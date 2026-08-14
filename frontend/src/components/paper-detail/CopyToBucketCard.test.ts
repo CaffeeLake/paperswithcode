@@ -9,9 +9,8 @@ const { copyPaperToBucketMock } = vi.hoisted(() => ({
   copyPaperToBucketMock: vi.fn(),
 }));
 
-vi.mock("@/lib/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/api")>()),
-  copyPaperToBucket: copyPaperToBucketMock,
+vi.mock("@/lib/api/papers", () => ({
+  papersApi: { copyToBucket: copyPaperToBucketMock },
 }));
 
 import {

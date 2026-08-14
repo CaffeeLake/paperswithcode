@@ -16,7 +16,8 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
-import { ApiError, copyPaperToBucket } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { papersApi } from "@/lib/api/papers";
 import { authUrl } from "@/lib/apiUrl";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 
@@ -406,7 +407,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
 
       for (const [batchIndex, artifactBatch] of artifactBatches.entries()) {
         setCopyProgress({ current: batchIndex + 1, total: artifactBatches.length });
-        const result = await copyPaperToBucket(props.paperId, {
+        const result = await papersApi.copyToBucket(props.paperId, {
           bucket_id: bucketId.trim(),
           create: batchIndex === 0 && destinationMode === "new",
           private: visibility === "private",

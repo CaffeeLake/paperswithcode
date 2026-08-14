@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import MarkdownText from "@/components/MarkdownText";
-import { apiClient } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { displayTaskName } from "@/lib/transform";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,7 +34,7 @@ const ConferenceDetailView: React.FC = () => {
 
   const taxonomyQ = useQuery({
     queryKey: ["conference-areas-with-tasks", confSlug],
-    queryFn: () => apiClient.getConferenceAreasWithTasks(confSlug!),
+    queryFn: () => catalogApi.conferenceAreasWithTasks(confSlug!),
     enabled: !!confSlug,
     staleTime: 10 * 60 * 1000,
   });

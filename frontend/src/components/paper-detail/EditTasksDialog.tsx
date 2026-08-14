@@ -5,13 +5,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  getTasks,
-  submitPendingPaperEdit,
-  updatePaperTasks,
-  type Paper,
-  type Task as APITask,
-} from "@/lib/api";
+import { type Paper, type Task as APITask } from "@/lib/api";
+import { catalogApi } from "@/lib/api/catalog";
+import { papersApi } from "@/lib/api/papers";
+import { submissionsApi } from "@/lib/api/submissions";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -99,7 +96,7 @@ export function EditTasksDialog({
   const { data: searchData, isFetching: searchLoading } = useQuery({
     queryKey: ["tasks-search", debouncedQuery],
     queryFn: () =>
-      getTasks({
+      catalogApi.listTasks({
         page_size: SEARCH_PAGE_SIZE,
         ...(debouncedQuery ? { q: debouncedQuery } : {}),
       }),
@@ -143,14 +140,14 @@ export function EditTasksDialog({
   const updateTasksMutation = useMutation({
     mutationFn: async ({ paperId, taskIds }: { paperId: string; taskIds: number[] }) => {
       if (submitMode === "pending") {
-        await submitPendingPaperEdit({
+        await submissionsApi.submit({
           paper_id: parseInt(paperId),
           edit_type: "tasks",
           proposed_payload: { task_ids: taskIds },
         });
         return null;
       }
-      return updatePaperTasks(paperId, taskIds);
+      return papersApi.updateTasks(paperId, taskIds);
     },
     // Apply the new task list to the paper detail cache *before* the network
     // round-trip so the chip the user just unchecked disappears immediately.
