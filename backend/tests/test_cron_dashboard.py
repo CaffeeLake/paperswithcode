@@ -511,7 +511,7 @@ def test_extract_urls_actions_failure_degrades_fresh_writer():
     assert "gh run view 123 --log-failed" in evaluated["diagnostics"]
 
 
-def test_extract_urls_actions_unavailable_does_not_override_fresh_db():
+def test_extract_urls_actions_unavailable_degrades_fresh_db():
     job = _job("extract_urls")
     fresh_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     with patch("backend.services.cron_health.is_process_running", return_value=False):
@@ -535,11 +535,34 @@ def test_extract_urls_actions_unavailable_does_not_override_fresh_db():
                 "error": "gh is not authenticated",
             },
         )
-    assert evaluated["status"] == "healthy"
+    assert evaluated["status"] == "degraded"
+    assert "could not be verified" in evaluated["status_reason"]
     assert evaluated["workflow_status"]["available"] is False
 
 
-def test_import_hf_daily_papers_recent_no_work_log_is_healthy_with_stale_created_at():
+def test_stale_successful_workflow_cannot_mask_fresh_database_writes():
+    job = _job("update_citations")
+    fresh_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stale_workflow = datetime.now(timezone.utc) - timedelta(hours=3)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": fresh_time, "is_running": False},
+            db_metrics={"last_write": fresh_time, "recent_writes": 10},
+            lock_state={"exists": False, "stale": False},
+            workflow_status={
+                "available": True,
+                "status": "completed",
+                "conclusion": "success",
+                "updated_at": stale_workflow.isoformat(),
+            },
+        )
+
+    assert evaluated["status"] == "broken"
+    assert "latest successful workflow" in evaluated["status_reason"]
+
+
+def test_import_hf_daily_papers_recent_log_is_healthy_without_false_db_provenance():
     job = _job("import_hf_daily_papers")
     stale_time = datetime.now(timezone.utc) - timedelta(hours=9)
     recent_log_time = datetime.now(timezone.utc) - timedelta(minutes=15)
@@ -561,7 +584,7 @@ def test_import_hf_daily_papers_recent_no_work_log_is_healthy_with_stale_created
         )
 
     assert evaluated["status"] == "healthy"
-    assert "no new papers imported" in evaluated["status_reason"]
+    assert job.db_freshness_query is None
 
 
 def test_recent_weekly_task_keyword_log_is_healthy_without_db_timestamp():

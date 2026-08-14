@@ -80,6 +80,7 @@ def test_explicit_backfill_syncs_without_hub_discovery(monkeypatch):
     result = UPDATE_HF_ARTIFACTS.run_explicit_backfill_phase(session, 50)
 
     assert result == {
+        "papers_selected": 1,
         "papers_processed": 1,
         "papers_failed": 0,
         "links_created": 1,

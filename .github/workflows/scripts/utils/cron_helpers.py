@@ -361,9 +361,9 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 found_completion = True
                 break
             elif "Job timed out" in line:
-                # Timeout is considered successful completion for long-running jobs
-                status["status"] = "success"
-                found_completion = True
+                status["status"] = "failed"
+                status["error"] = line.strip()
+                found_failure = True
                 break
             elif "failed" in line.lower() and (
                 "job failed" in line.lower()

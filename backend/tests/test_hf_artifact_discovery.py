@@ -5,6 +5,7 @@ import requests
 
 from backend.utils.hf_utils import (
     HfArtifactDiscoveryError,
+    fetch_hf_artifact_metrics,
     fetch_hf_artifacts_for_arxiv,
 )
 
@@ -94,3 +95,19 @@ def test_fetch_hf_artifacts_rejects_incomplete_success_payload(monkeypatch):
 
     with pytest.raises(HfArtifactDiscoveryError):
         fetch_hf_artifacts_for_arxiv("2606.23050", max_retries=1)
+
+
+def test_metric_refresh_only_treats_404_as_conclusive_missing(monkeypatch):
+    monkeypatch.setattr(requests, "get", Mock(return_value=_response(404, {})))
+
+    assert fetch_hf_artifact_metrics("model", "org/missing") is None
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 429, 500])
+def test_metric_refresh_raises_on_auth_throttle_and_server_errors(
+    monkeypatch, status_code
+):
+    monkeypatch.setattr(requests, "get", Mock(return_value=_response(status_code, {})))
+
+    with pytest.raises(HfArtifactDiscoveryError, match=str(status_code)):
+        fetch_hf_artifact_metrics("model", "org/model")

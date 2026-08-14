@@ -22,10 +22,11 @@ Performance:
 - Bounded hourly runs keep GitHub Actions and VPS load predictable under throttling
 """
 
+import asyncio
+import json
+import signal
 import sys
 import time
-import asyncio
-import signal
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 import httpx
@@ -93,6 +94,8 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             "rate_limit_hits": 0,
             "processing_errors": 0,
             "api_calls": 0,
+            "api_successes": 0,
+            "credential_failures": 0,
         }
 
         # HTTP client will be created in async context
@@ -137,12 +140,23 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 f"Job timed out after {self.max_runtime_seconds}s - "
                 f"this prevents zombie processes"
             )
-            # Don't raise - let it complete gracefully
+            self.log_summary()
+            raise RuntimeError("citation update exceeded its runtime limit")
         except KeyboardInterrupt:
             self.logger.warning("Job interrupted by user")
+            raise
 
         # Log summary
         self.log_summary()
+
+        if self.stats["credential_failures"]:
+            raise RuntimeError("Semantic Scholar credential was rejected")
+        if (
+            self.stats["api_calls"]
+            and self.stats["api_successes"] == 0
+            and (self.stats["api_errors"] or self.stats["rate_limit_hits"])
+        ):
+            raise RuntimeError("Semantic Scholar produced no successful responses")
 
         # Update database statistics (less frequent for hourly jobs)
         if datetime.now().hour % 6 == 0:  # Only every 6 hours
@@ -150,28 +164,17 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
     def get_papers_count(self) -> int:
         """Get count of papers that need citation updates."""
-        try:
-            count = self.paper_service.get_papers_needing_citation_update_count(
-                self.update_threshold_days
-            )
-            self.stats["papers_found"] = count
-            return count
-        except Exception as e:
-            self.logger.error(f"Error counting papers to update: {e}")
-            return 0
+        count = self.paper_service.get_papers_needing_citation_update_count(
+            self.update_threshold_days
+        )
+        self.stats["papers_found"] = count
+        return count
 
     def get_papers_chunk(self, offset: int, limit: int) -> List[Dict]:
         """Get a chunk of papers that need citation updates."""
-        try:
-            results = self.paper_service.get_papers_needing_citation_update_chunk(
-                offset, limit, self.update_threshold_days
-            )
-            return results
-        except Exception as e:
-            self.logger.error(
-                f"Error fetching papers chunk (offset={offset}, limit={limit}): {e}"
-            )
-            return []
+        return self.paper_service.get_papers_needing_citation_update_chunk(
+            offset, limit, self.update_threshold_days
+        )
 
     async def process_papers_in_streaming_chunks(self, total_papers_to_process: int):
         """Process papers in streaming chunks to reduce memory usage."""
@@ -271,6 +274,8 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                             f"Error processing paper {paper.get('id')}: {e}"
                         )
                         self.stats["processing_errors"] += 1
+                        if self.stats["credential_failures"]:
+                            raise
 
                 # Update database with batch results
                 if batch_results:
@@ -340,6 +345,7 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             response = await self.client.get(url, params=params)
 
             if response.status_code == 200:
+                self.stats["api_successes"] += 1
                 data = response.json()
 
                 # Verify title match for accuracy
@@ -353,6 +359,7 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                     return None
 
             elif response.status_code == 404:
+                self.stats["api_successes"] += 1
                 self.logger.debug(f"Paper not found in Semantic Scholar: {arxiv_id}")
                 self.stats["papers_not_found"] += 1
                 return None
@@ -362,23 +369,32 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 self.logger.warning(f"Rate limited for {arxiv_id}")
                 self.stats["rate_limit_hits"] += 1
                 await asyncio.sleep(self.request_delay * 2)  # Wait double time
-                return None
+                raise RuntimeError("Semantic Scholar rate limit")
+
+            elif response.status_code in {401, 403}:
+                self.stats["api_errors"] += 1
+                self.stats["credential_failures"] += 1
+                raise RuntimeError(
+                    f"Semantic Scholar credential rejected ({response.status_code})"
+                )
 
             else:
                 self.logger.warning(
                     f"Semantic Scholar API error for {arxiv_id}: {response.status_code}"
                 )
                 self.stats["api_errors"] += 1
-                return None
+                raise RuntimeError(
+                    f"Semantic Scholar API returned {response.status_code}"
+                )
 
         except asyncio.TimeoutError:
             self.logger.warning(f"Timeout fetching citation data for {arxiv_id}")
             self.stats["api_errors"] += 1
-            return None
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching citation data for {arxiv_id}: {e}")
             self.stats["api_errors"] += 1
-            return None
+            raise
 
     def titles_match(self, title1: str, title2: str, threshold: float = 0.8) -> bool:
         """Check if two titles are similar enough using word-based similarity."""
@@ -406,33 +422,21 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         if not results:
             return
 
-        try:
-            # Convert CitationResult objects to dictionaries for the paper service
-            citation_updates = []
-            for result in results:
-                citation_updates.append(
-                    {
-                        "paper_id": result.paper_id,
-                        "citation_count": result.citation_count,
-                        "semantic_scholar_id": result.semantic_scholar_id,
-                        "success": result.success,
-                    }
-                )
-
-            # Use paper service to update citations in batch
-            update_stats = self.paper_service.update_citation_counts_batch(
-                citation_updates
-            )
-
-            self.stats["citations_updated"] += update_stats["updated"]
-            self.logger.debug(
-                f"Updated {update_stats['updated']} papers with citations, "
-                f"marked {update_stats['failed']} as processed"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Error updating citations batch: {e}")
-            self.stats["processing_errors"] += 1
+        citation_updates = [
+            {
+                "paper_id": result.paper_id,
+                "citation_count": result.citation_count,
+                "semantic_scholar_id": result.semantic_scholar_id,
+                "success": result.success,
+            }
+            for result in results
+        ]
+        update_stats = self.paper_service.update_citation_counts_batch(citation_updates)
+        self.stats["citations_updated"] += update_stats["updated"]
+        self.logger.debug(
+            f"Updated {update_stats['updated']} papers with citations, "
+            f"marked {update_stats['failed']} as processed"
+        )
 
     def log_summary(self):
         """Log execution summary with performance metrics."""
@@ -445,6 +449,7 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         self.logger.info(f"  - API errors: {self.stats['api_errors']}")
         self.logger.info(f"  - Rate limit hits: {self.stats['rate_limit_hits']}")
         self.logger.info(f"  - Processing errors: {self.stats['processing_errors']}")
+        self.logger.info(f"CITATION_UPDATE_SUMMARY {json.dumps(self.stats)}")
 
         if self.stats["papers_processed"] > 0:
             success_rate = (

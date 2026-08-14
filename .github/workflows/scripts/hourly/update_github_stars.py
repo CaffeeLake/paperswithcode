@@ -387,6 +387,20 @@ def update_repository_group_stars(
     return updated, snapshots
 
 
+def mark_repository_group_checked(session, repository_ids: list) -> int:
+    """Record a terminally unavailable repository without overwriting its stars."""
+    result = session.execute(
+        text("""
+            UPDATE repositories
+            SET num_stars_updated_at = NOW()
+            WHERE id = ANY(CAST(:repository_ids AS bigint[]))
+        """),
+        {"repository_ids": repository_ids},
+    )
+    session.commit()
+    return result.rowcount
+
+
 def check_memory_usage() -> int:
     try:
         with open("/proc/meminfo", "r") as handle:
@@ -422,6 +436,7 @@ def run_queue(
         "successes": 0,
         "failures": 0,
         "credential_failures": 0,
+        "terminal_unavailable": 0,
         "retries": 0,
         "rate_limit_stops": 0,
         "rate_limit_limit": None,
@@ -477,7 +492,19 @@ def run_queue(
                 stats["rate_limit_remaining"] = result.rate_limit.remaining
                 stats["rate_limit_reset"] = result.rate_limit.reset
 
-                if result.stars is None:
+                if result.status_code == 451:
+                    write_session, _ = get_repository_service()
+                    try:
+                        updated = mark_repository_group_checked(
+                            write_session, group["repository_ids"]
+                        )
+                    finally:
+                        write_session.close()
+                    stats["successes"] += 1
+                    stats["terminal_unavailable"] += 1
+                    stats["updated_repositories"] += updated
+                    stats["touched_repository_ids"].extend(group["repository_ids"])
+                elif result.stars is None:
                     stats["failures"] += 1
                     if result.failure in {"http_401", "http_403"}:
                         stats["credential_failures"] += 1
@@ -520,6 +547,7 @@ def summarize_queues(results: list[Dict]) -> Dict:
         "successes",
         "failures",
         "credential_failures",
+        "terminal_unavailable",
         "updated_repositories",
         "snapshots_stored",
         "api_calls",
@@ -530,7 +558,7 @@ def summarize_queues(results: list[Dict]) -> Dict:
         queue = result["queue"]
         summary[f"{queue}_credential"] = QUEUE_CREDENTIALS[queue]
         for field in fields:
-            summary[f"{queue}_{field}"] = result[field]
+            summary[f"{queue}_{field}"] = result.get(field, 0)
     return summary
 
 

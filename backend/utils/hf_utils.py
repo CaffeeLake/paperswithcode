@@ -191,7 +191,9 @@ def fetch_hf_artifact_metrics(
 
     Uses ``expand[]=trendingScore`` (plus likes/downloads) on the model/dataset/
     space detail endpoint. Returns ``{"trending_score", "likes", "downloads"}``
-    or None when the artifact cannot be fetched (404, transient error, etc.).
+    or None only when the artifact is conclusively missing (404). Transient,
+    authentication, throttling, and malformed-response failures raise so callers
+    cannot checkpoint a failed fetch as healthy.
     """
     import requests
 
@@ -206,15 +208,22 @@ def fetch_hf_artifact_metrics(
     headers = build_hf_headers(token=token, user_agent={"is_ci": "true"})
     try:
         response = requests.get(url, params=params, headers=headers, timeout=timeout)
-    except Exception:
-        return None
+    except requests.RequestException as exc:
+        raise HfArtifactDiscoveryError(f"Hub metrics request failed: {exc}") from exc
 
+    if response.status_code == 404:
+        return None
     if response.status_code != 200:
-        return None
+        raise HfArtifactDiscoveryError(
+            f"Hub metrics request returned HTTP {response.status_code}"
+        )
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HfArtifactDiscoveryError("Hub metrics response was not JSON") from exc
     if not isinstance(data, dict):
-        return None
+        raise HfArtifactDiscoveryError("Hub metrics response was not an object")
     return {
         "trending_score": data.get("trendingScore"),
         "likes": data.get("likes"),

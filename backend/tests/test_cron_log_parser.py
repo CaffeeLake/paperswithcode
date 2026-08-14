@@ -152,3 +152,31 @@ def test_get_cron_job_status_parses_queue_specific_github_metrics():
     assert status["status"] == "failed"
     assert status["work_metrics"]["fresh_credential"] == "PWC_GITHUB_TOKEN"
     assert status["work_metrics"]["fresh_credential_failures"] == 2
+
+
+def test_timeout_log_is_a_failure_not_a_success():
+    cron_helpers = _load_cron_helpers()
+    logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    test_date = "20990104"
+    log_file = logs_dir / f"update_citations_hourly_{test_date}.log"
+    log_file.write_text(
+        "2099-01-04 08:00:00 - Starting cron job: update_citations_hourly\n"
+        "2099-01-04 08:45:00 - Job timed out after 2700s\n",
+        encoding="utf-8",
+    )
+    try:
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            status = cron_helpers.get_cron_job_status(
+                "update_citations_hourly", test_date
+            )
+    finally:
+        log_file.unlink(missing_ok=True)
+
+    assert status["status"] == "failed"
+    assert "Job timed out" in status["error"]

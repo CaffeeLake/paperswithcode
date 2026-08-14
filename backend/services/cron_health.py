@@ -30,6 +30,12 @@ def _utcnow() -> datetime:
 def _parse_log_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             parsed = datetime.strptime(value.replace("+00:00", "Z"), fmt)
@@ -397,19 +403,10 @@ def evaluate_job_health(
         db_stale = False
         db_reason = None
 
-    # Lock files persist after `flock` releases; only treat as blocking when DB
-    # freshness also looks bad (otherwise it is a harmless leftover file).
-    lock_blocks_job = (
-        lock_state.get("exists")
-        and lock_state.get("stale")
-        and not running
-        and (
-            not job.db_freshness_query
-            or db_stale
-            or db_metrics.get("freshness_error")
-            or not db_metrics.get("last_write")
-        )
-    )
+    # `flock` releases the advisory lock but intentionally leaves the inode in
+    # place, so file age cannot distinguish a held lock from a harmless leftover.
+    # Process, workflow, log, and database signals determine health instead.
+    lock_blocks_job = False
 
     if lock_blocks_job:
         reasons.append(
@@ -594,6 +591,22 @@ def evaluate_job_health(
         and workflow_status.get("status") == "completed"
         and workflow_status.get("conclusion") in {"success", "skipped"}
     )
+    workflow_age = _minutes_since(
+        workflow_status.get("updated_at") or workflow_status.get("created_at")
+    )
+    workflow_unverifiable = bool(job.workflow_file and workflow_status) and (
+        not workflow_status.get("available")
+        or (
+            workflow_status.get("status") == "unknown"
+            and workflow_status.get("error") == "no workflow runs found"
+        )
+    )
+    workflow_stale = (
+        job.workflow_freshness_required
+        and workflow_succeeded
+        and workflow_age is not None
+        and workflow_age > job.stale_after_minutes
+    )
 
     if workflow_running and status == "healthy":
         status = "running"
@@ -617,7 +630,7 @@ def evaluate_job_health(
             reasons.append("GitHub Actions workflow failed")
 
         if status == "healthy":
-            status = "degraded"
+            status = "broken" if job.critical else "degraded"
         elif status == "unknown" and db_metrics.get("last_write") and not db_stale:
             status = "degraded"
 
@@ -630,6 +643,27 @@ def evaluate_job_health(
             diagnostics.append(
                 f"Inspect GitHub Actions workflow `{workflow_status.get('workflow_file')}`"
             )
+
+    if workflow_unverifiable:
+        if status in {"healthy", "unknown"}:
+            status = "degraded"
+        reasons.append(
+            "latest GitHub Actions run could not be verified"
+            if not workflow_status.get("available")
+            else "no GitHub Actions workflow runs found"
+        )
+        diagnostics.append(
+            f"Verify GitHub Actions access and workflow `{job.workflow_file}`"
+        )
+
+    if workflow_stale:
+        if status == "healthy":
+            status = "broken" if job.critical else "degraded"
+        reasons.append(
+            f"latest successful workflow is {workflow_age:.0f}m old "
+            f"(stale after {job.stale_after_minutes}m)"
+        )
+        diagnostics.append(f"Inspect GitHub Actions workflow `{job.workflow_file}`")
 
     if job.critical and status in {"broken", "stuck"} and not diagnostics:
         diagnostics.append("Critical writer — investigate immediately")

@@ -166,6 +166,7 @@ def run_explicit_backfill_phase(session, batch_size: int) -> dict:
         f"{links_created} missing links created"
     )
     return {
+        "papers_selected": len(papers),
         "papers_processed": papers_processed,
         "papers_failed": 0,
         "links_created": links_created,
@@ -318,6 +319,7 @@ def run_discovery_phase(
         f"{links_created} links synced, {papers_failed} failed"
     )
     return {
+        "papers_selected": len(papers),
         "papers_processed": papers_processed,
         "papers_failed": papers_failed,
         "links_created": links_created,
@@ -371,9 +373,16 @@ def run_refresh_phase(session, hf_token, recent_cutoff, start_time) -> dict:
             log("Low memory during refresh - stopping")
             break
 
-        metrics = fetch_hf_artifact_metrics(
-            artifact.kind, artifact.repo_id, token=hf_token
-        )
+        try:
+            metrics = fetch_hf_artifact_metrics(
+                artifact.kind, artifact.repo_id, token=hf_token
+            )
+        except HfArtifactDiscoveryError as exc:
+            session.rollback()
+            failed += 1
+            log(f"Metric refresh failed for {artifact.kind}/{artifact.repo_id}: {exc}")
+            time.sleep(API_DELAY_SECONDS)
+            continue
         if metrics is None:
             # Stamp fetched_at so a permanently-missing artifact does not loop.
             session.execute(
@@ -413,7 +422,7 @@ def run_refresh_phase(session, hf_token, recent_cutoff, start_time) -> dict:
             gc.collect()
 
     log(f"Phase B complete: {refreshed} refreshed, {failed} failed")
-    return {"refreshed": refreshed, "failed": failed}
+    return {"selected": len(artifacts), "refreshed": refreshed, "failed": failed}
 
 
 def parse_args():
@@ -518,10 +527,19 @@ def main():
             )
         )
         refresh = (
-            {"refreshed": 0, "failed": 0}
+            {"selected": 0, "refreshed": 0, "failed": 0}
             if args.backfill
             else run_refresh_phase(session, hf_token, recent_cutoff, start_time)
         )
+
+        if (
+            discovery.get("papers_selected", 0)
+            and discovery["papers_processed"] == 0
+            and discovery["papers_failed"]
+        ):
+            raise RuntimeError("every selected Hugging Face discovery request failed")
+        if refresh["selected"] and refresh["refreshed"] == 0 and refresh["failed"]:
+            raise RuntimeError("every selected Hugging Face metric request failed")
 
         elapsed = (time.time() - start_time) / 60
         log("=" * 80)

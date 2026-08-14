@@ -17,6 +17,7 @@ from scripts.hourly.update_github_stars import (  # noqa: E402
     RateLimit,
     fetch_github_stars,
     get_next_repository_group,
+    mark_repository_group_checked,
     rate_limit_reserve_reached,
     require_successful_queues,
     run_queue,
@@ -224,6 +225,18 @@ def test_snapshot_write_is_idempotent_for_same_timestamp():
     statement = str(session.execute.call_args.args[0])
     assert "ON CONFLICT (repository_id, snapshot_at)" in statement
     assert "DO UPDATE SET num_stars = EXCLUDED.num_stars" in statement
+
+
+def test_terminally_blocked_repository_is_marked_checked_without_overwriting_stars():
+    session = Mock()
+    session.execute.return_value.rowcount = 2
+
+    assert mark_repository_group_checked(session, [1, 2]) == 2
+
+    statement = str(session.execute.call_args.args[0])
+    assert "SET num_stars_updated_at = NOW()" in statement
+    assert "num_stars =" not in statement
+    session.commit.assert_called_once()
 
 
 def test_run_queue_does_not_hold_database_session_during_github_fetch(monkeypatch):

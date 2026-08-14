@@ -23,6 +23,7 @@ class CronJobDefinition:
     db_freshness_query: Optional[str] = None
     workflow_file: Optional[str] = None
     workflow_jobs: Tuple[str, ...] = ()
+    workflow_freshness_required: bool = True
 
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
@@ -174,6 +175,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS recent_writes
             FROM papers
         """,
+        workflow_file="cron-update-citations.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="extract_urls",
@@ -198,6 +201,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-extract-urls.yml",
         workflow_jobs=("select", "discover", "persist"),
+        workflow_freshness_required=False,
     ),
     CronJobDefinition(
         id="calculate_trending_scores",
@@ -223,6 +227,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS fresh_positive_scores
             FROM repositories
         """,
+        workflow_file="cron-calculate-trending-scores.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="calculate_paper_trending_scores",
@@ -286,6 +292,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                      WHERE created_at > now() - interval '24 hours'
                    ) AS links_created
         """,
+        workflow_file="cron-update-hf-artifacts.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="sync_3d_arena",
@@ -424,13 +432,9 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         stale_after_minutes=180,
         critical=True,
         healthy_no_work_allowed=True,
-        db_freshness_query="""
-            SELECT max(created_at) AS last_write,
-                   count(*) FILTER (
-                     WHERE created_at > now() - interval '36 hours'
-                   ) AS recent_writes
-            FROM papers
-        """,
+        db_freshness_query=None,
+        workflow_file="cron-import-hf-daily-papers.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="sync_hf_organizations",
@@ -451,12 +455,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
             SELECT max(last_hf_synced_at) AS last_write,
                    count(*) FILTER (
                      WHERE last_hf_synced_at > now() - interval '30 hours'
-                   ) AS recent_writes,
-                   count(*) AS featured_organizations,
-                   count(*) FILTER (
-                     WHERE last_hf_synced_at IS NULL
-                        OR last_hf_synced_at <= now() - interval '30 hours'
-                   ) AS stale_featured_organizations
+                   ) AS recent_writes
             FROM organizations
             WHERE is_featured = TRUE
         """,
@@ -567,6 +566,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         critical=False,
         healthy_no_work_allowed=True,
         db_freshness_query=None,
+        workflow_file="cron-mirror-thumbnails-to-disk.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="link_methods_by_references",
@@ -588,6 +589,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS recent_writes
             FROM papers
         """,
+        workflow_file="cron-link-methods-by-references.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="backfill_method_keywords",
@@ -651,6 +654,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         critical=False,
         healthy_no_work_allowed=True,
         db_freshness_query=None,
+        workflow_file="cron-link-papers-by-task-keywords.yml",
+        workflow_jobs=("run",),
     ),
 )
 
