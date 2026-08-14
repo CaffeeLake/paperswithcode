@@ -447,6 +447,53 @@ def test_openalex_missing_work_is_counted_as_unresolvable_coverage():
     assert progress.status == "complete"
 
 
+def test_openalex_skips_one_unresolved_method_source_when_others_resolve():
+    db = _session()
+    db.add_all(
+        [
+            _paper(1, "Resolved source", date(2026, 1, 1)),
+            _paper(2, "Unresolved source", date(2026, 1, 1)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+            Method(id=11, name="B", slug="b", source_paper_id=2),
+        ]
+    )
+    db.commit()
+
+    class OpenAlexClient:
+        provider_name = "openalex"
+        api_calls = 0
+        api_errors = 0
+        rate_limit_hits = 0
+        failed_requests = 0
+        retry_attempts = 0
+
+        def fetch_works(self, arxiv_ids):
+            self.api_calls += 1
+            ids = set(arxiv_ids)
+            return OpenAlexWorkBatch(
+                work_ids_by_arxiv=(
+                    {"2601.00001": {"https://openalex.org/source"}}
+                    if ids == {"2601.00001", "2601.00002"}
+                    else {}
+                )
+            )
+
+    messages = []
+    stats = run_reference_backfill(
+        db,
+        OpenAlexClient(),
+        method_ids=[10, 11],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=True,
+        log=messages.append,
+    )
+
+    assert stats.papers_failed == 0
+    assert any("arXiv:2601.00002" in message for message in messages)
+
+
 def test_reference_backfill_counts_excluded_match_as_processed_not_matched():
     db = _session()
     source = _paper(1, "Source", date(2026, 1, 1))

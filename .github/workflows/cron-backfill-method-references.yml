@@ -2,7 +2,8 @@ name: Cron - Backfill Method References
 
 on:
   schedule:
-    # The secondary Semantic Scholar key is reserved for bounded historical scans.
+    # Use OpenAlex batches; the Semantic Scholar references endpoint rejects the
+    # otherwise-valid secondary key with sustained HTTP 429 responses.
     - cron: "15 */6 * * *"
   workflow_dispatch: {}
 
@@ -47,4 +48,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              'sudo /usr/local/sbin/pwc-cron backfill_method_references --provider semantic-scholar --resume --retry-failures --limit 10000 --max-runtime-seconds 19800'
+              'sudo /usr/local/sbin/pwc-cron backfill_method_references --provider openalex --resume --retry-failures --limit 10000 --max-runtime-seconds 19800'

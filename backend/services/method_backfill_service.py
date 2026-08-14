@@ -357,11 +357,12 @@ def run_reference_backfill(
         for arxiv_id, method_ids_for_source in by_arxiv.items():
             work_ids = source_batch.work_ids_by_arxiv.get(arxiv_id, set())
             if not work_ids:
-                raise ValueError(
-                    f"OpenAlex could not resolve method source arXiv:{arxiv_id}"
-                )
+                log(f"OpenAlex could not resolve method source arXiv:{arxiv_id}")
+                continue
             for work_id in work_ids:
                 by_openalex.setdefault(work_id, set()).update(method_ids_for_source)
+        if not by_openalex:
+            raise ValueError("OpenAlex could not resolve any selected method source")
     stats = BackfillStats()
     started = time.monotonic()
     for month in months:
