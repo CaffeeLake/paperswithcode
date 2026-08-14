@@ -103,6 +103,8 @@ def _start_agent(agent_harness: str, proxy_token: str) -> subprocess.Popen:
         pass_fds = ()
         command = [
             "node",
+            "--import",
+            "/opt/pwc/backend/chat_sandbox_worker/pi_worker/node_modules/tsx/dist/loader.mjs",
             "/opt/pwc/backend/chat_sandbox_worker/pi_worker/dist/src/main.js",
         ]
     agent = subprocess.Popen(

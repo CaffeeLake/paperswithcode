@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "73"
+WORKER_CONTRACT_VERSION = "74"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 28
@@ -11,6 +11,7 @@ GATEWAY_COMPATIBLE_FROM = 27
 DATABASE_CONTRACT_VERSION = 2
 SDK_VERSION = "0.2.115"
 PI_VERSION = "0.84.1"
+PI_MCP_ADAPTER_VERSION = "2.25.0"
 PI_SOURCE_COMMIT = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
 PI_NPM_INTEGRITY = (
     "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/"
@@ -37,10 +38,10 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-JafjTyHBWZHILbbw8Q0OXF"
-# Production chat remains disabled and pinned to its previously qualified
-# contract; the distinct ID avoids cross-Environment image lookup.
-PRODUCTION_MODAL_IMAGE_ID = "im-yB9eXM4njCeoRSR8aExjWx"
+MODAL_IMAGE_ID = "im-TIxE0FUL9X2wPBxF7idnFD"
+# Production uses a distinct immutable image because Modal image IDs are scoped
+# to their environment.
+PRODUCTION_MODAL_IMAGE_ID = "im-Yv4qpLIGjLGEeIMm5DEGlU"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
 

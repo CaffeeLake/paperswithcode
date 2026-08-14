@@ -1,6 +1,5 @@
 import path from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 
 const ANSWER_NOW =
   "Execution limit reached. Do not call more tools. Answer now from the evidence already gathered.";
@@ -151,31 +150,6 @@ export class PolicyController {
 export function pwcExtension(policy: PolicyController): ExtensionFactory {
   return (pi) => {
     pi.on("before_agent_start", () => ({ systemPrompt: policy.systemPrompt }));
-    pi.registerTool({
-      name: "search_web",
-      label: "Search web",
-      description: "Search public web evidence through the trusted PwC gateway.",
-      parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }),
-      async execute(_id, input, signal) {
-        const response = await fetch("http://127.0.0.1:8765/web-search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: input.query }),
-          ...(signal ? { signal } : {}),
-        });
-        if (!response.ok) {
-          return {
-            content: [{ type: "text" as const, text: "Web search is temporarily unavailable." }],
-            details: { failed: true },
-          };
-        }
-        const payload = (await response.json()) as { result?: unknown };
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(payload.result ?? {}) }],
-          details: { failed: false },
-        };
-      },
-    });
     pi.on("tool_call", (event) => {
       const reason = policy.authorize(event.toolCallId, event.toolName, event.input as Record<string, unknown>);
       return reason ? { block: true, reason } : undefined;
