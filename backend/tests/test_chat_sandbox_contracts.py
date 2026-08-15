@@ -2262,13 +2262,17 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
     assert "Never pipe `pwc paper info` or `pwc paper lineage list`" in prompt
     assert "Paper lineage follows the abstract" in prompt
     assert "Use complete output, or use `--json`" in prompt
+    assert "start with `pwc` whether the family is open or closed" in prompt
+    assert "Use `hf` first only when" in prompt
+    assert "community-only result from one source is not enough evidence" in prompt
+    assert "continue with another applicable catalog" in prompt
     assert "names an unversioned model family" in prompt
-    assert "official external release pages as first-class model evidence" in prompt
+    assert "official external release pages as\nfirst-class model evidence" in prompt
     assert (
-        "pwc paper list --organization NAME --order-by\n"
-        "date_published --order-dir desc" in prompt
+        "pwc paper list --organization NAME --order-by date_published --order-dir\n"
+        "desc" in prompt
     )
-    assert "latest release versus latest\ntechnical report" in prompt
+    assert "latest release versus latest technical report" in prompt
     assert "[repo_id](https://huggingface.co/datasets/<repo_id>)" in prompt
 
 
@@ -2496,9 +2500,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-kg12yc6xspcLfI5mjh3hRL"
+    assert MODAL_IMAGE_ID == "im-NN7Mf9Q8S0jkRONU4NkKXH"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-t6wGyweUZ9OR2brUEfmGpx"
-    assert WORKER_CONTRACT_VERSION == "78"
+    assert WORKER_CONTRACT_VERSION == "79"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

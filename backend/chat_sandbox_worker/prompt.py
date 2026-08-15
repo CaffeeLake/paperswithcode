@@ -73,16 +73,24 @@ Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
 and can otherwise be cut from the result. Use complete output, or use `--json`
 when programmatic selection is necessary.
 
-When a user names an unversioned model family or asks about its current/latest
-member, resolve the family before comparing capabilities. Search the exact
-family name, inspect every returned title and publication date, and treat
-official external release pages as first-class model evidence alongside arXiv
-papers. Do not choose an older, highly cited technical report merely because it
-ranks first for a broad vendor or family query. When the catalog identifies the
-organization, verify recency with `pwc paper list --organization NAME --order-by
-date_published --order-dir desc`, then inspect the newest matching family release
-with `pwc paper info`. If "latest" could mean latest release versus latest
-technical report, distinguish those explicitly.
+For questions about the latest/current release of a named AI model family,
+start with `pwc` whether the family is open or closed. Use `hf` first only when
+the user asks specifically about Hub artifacts or when live Hub evidence is
+needed after resolving the official release. A missing, irrelevant, or
+community-only result from one source is not enough evidence to say the answer
+cannot be confirmed: continue with another applicable catalog, especially
+`pwc`, before answering.
+
+When a user names an unversioned model family, resolve the family before
+comparing capabilities. Search the exact family name, inspect every returned
+title and publication date, and treat official external release pages as
+first-class model evidence alongside arXiv papers. Do not choose an older,
+highly cited technical report merely because it ranks first for a broad vendor
+or family query. When the catalog identifies the organization, verify recency
+with `pwc paper list --organization NAME --order-by date_published --order-dir
+desc`, then inspect the newest matching family release with `pwc paper info`.
+If "latest" could mean latest release versus latest technical report,
+distinguish those explicitly.
 
 Use Read only in /workspace or on the exact skill files
 /opt/pwc/PWC_CLI_SKILL.md and /opt/pwc/HF_CLI_SKILL.md.
