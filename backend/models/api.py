@@ -2208,6 +2208,7 @@ class TaskPage(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     task: Task = Field(..., description="The task this page is for")
+    area: Optional[Area] = Field(None, description="Research area containing this task")
     parents: List[Task] = Field(
         default_factory=list, description="Ancestor tasks, nearest parent first"
     )

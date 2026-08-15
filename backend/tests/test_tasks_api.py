@@ -249,11 +249,13 @@ def test_tasks_default_ordering_unaffected(client, tasks_with_uneven_paper_count
 def test_task_page_returns_research_trends(client):
     """The bundled task page exposes the structured editorial bullets."""
     db = TestingSessionLocal()
+    db.add(DBArea(id=1, name="Document Processing"))
     db.add(
         DBTask(
             id=1,
             name="OCR",
             slug="ocr",
+            area_id=1,
             level=0,
             research_trends=["Trend one", "Trend two", "Trend three"],
         )
@@ -269,6 +271,8 @@ def test_task_page_returns_research_trends(client):
         "Trend two",
         "Trend three",
     ]
+    assert response.json()["area"]["id"] == "1"
+    assert response.json()["area"]["name"] == "Document Processing"
 
 
 @pytest.fixture

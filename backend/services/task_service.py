@@ -25,6 +25,7 @@ from backend.models.database import (
     TaskSisterTask as DBTaskSisterTask,
 )
 from backend.models.api import (
+    Area,
     Task,
     Tasks,
     TaskCreateRequest,
@@ -736,6 +737,14 @@ class TaskService:
         else:
             task = self.get_task_by_slug(task_id)
 
+        area = None
+        if task.area_id:
+            db_area = (
+                self.db.query(DBArea).filter(DBArea.id == int(task.area_id)).first()
+            )
+            if db_area:
+                area = Area.model_validate(db_area)
+
         parents = self.get_task_parents(task.id)
 
         sisters = self.get_task_sisters(task.id)
@@ -769,6 +778,7 @@ class TaskService:
 
         return TaskPage(
             task=task,
+            area=area,
             parents=parents,
             sisters=sisters,
             recommended_frameworks=recommended_frameworks,

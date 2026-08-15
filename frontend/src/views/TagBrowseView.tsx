@@ -7,10 +7,17 @@ import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
-import type { Dataset, RecommendedFramework, Task, TrendingBenchmark } from "@/lib/api/catalog.types";
+import type {
+  Area,
+  Dataset,
+  RecommendedFramework,
+  Task,
+  TrendingBenchmark,
+} from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { assetUrl } from "@/lib/apiUrl";
 import { usePreferences } from "@/lib/preferencesContext";
+import { slugify } from "@/lib/slug";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -68,6 +75,34 @@ export const RecommendedFrameworkLinks: React.FC<{
     </div>
   );
 };
+
+export const TaskBreadcrumb: React.FC<{
+  task: Task;
+  area?: Area;
+  parents: Task[];
+}> = ({ task, area, parents }) => (
+  <nav className="breadcrumb" aria-label="Breadcrumb">
+    <Link to="/tasks">Tasks</Link>
+    {area && (
+      <>
+        <span className="sep">/</span>
+        <Link to={`/tasks#area-${slugify(area.name)}`}>{area.name}</Link>
+      </>
+    )}
+    {[...parents].reverse().map((parent) => (
+      <React.Fragment key={parent.id}>
+        <span className="sep">/</span>
+        <Link to={`/tasks/${parent.slug || parent.id}`}>
+          {displayTaskName(parent.name, parent.slug)}
+        </Link>
+      </React.Fragment>
+    ))}
+    <span className="sep">/</span>
+    <span style={{ color: "var(--accent-text)" }}>
+      {displayTaskName(task.name, task.slug)}
+    </span>
+  </nav>
+);
 
 const sortSubtasksForDisplay = (subtasks: Task[]) =>
   [...subtasks].sort((a, b) => {
@@ -288,21 +323,7 @@ const TagBrowseView: React.FC = () => {
 
   return (
     <div className="page">
-      <div className="breadcrumb">
-        <Link to="/">Papers</Link>
-        <span className="sep">/</span>
-        <Link to="/tasks">Tasks</Link>
-        {[...parents].reverse().map((parent) => (
-          <React.Fragment key={parent.id}>
-            <span className="sep">/</span>
-            <Link to={`/tasks/${parent.slug || parent.id}`}>
-              {displayTaskName(parent.name, parent.slug)}
-            </Link>
-          </React.Fragment>
-        ))}
-        <span className="sep">/</span>
-        <span style={{ color: "var(--accent-text)" }}>{task.name.toUpperCase()}</span>
-      </div>
+      <TaskBreadcrumb task={task} area={pageQ.data.area} parents={parents} />
 
       <div className={task.image_url ? "task-hero-grid" : undefined}>
         <div>

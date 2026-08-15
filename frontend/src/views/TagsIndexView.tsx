@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { catalogApi } from "@/lib/api/catalog";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { displayTaskName } from "@/lib/transform";
+import { slugify } from "@/lib/slug";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TaxonomySuggestionTile } from "@/components/TaxonomySuggestionTile";
@@ -96,7 +97,11 @@ const TagsIndexView: React.FC = () => {
           if (tasks.length === 0) return null;
           const totalPapers = tasks.reduce((s, t) => s + (t.paper_count || 0), 0);
           return (
-            <section key={area.id} style={{ marginBottom: 48 }}>
+            <section
+              key={area.id}
+              id={`area-${slugify(area.name)}`}
+              style={{ marginBottom: 48 }}
+            >
               <div
                 style={{
                   display: "flex",

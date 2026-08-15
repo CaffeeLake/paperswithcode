@@ -213,6 +213,7 @@ export interface RecommendedFramework {
  *  frameworks, children, direct benchmarks, and previews) into one request. */
 export interface TaskPage {
   task: Task;
+  area?: Area;
   parents: Task[];
   sisters: Task[];
   recommended_frameworks: RecommendedFramework[];
