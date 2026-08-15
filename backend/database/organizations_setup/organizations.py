@@ -17,7 +17,7 @@ class FeaturedOrganization:
 
 FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
     FeaturedOrganization("microsoft", "microsoft", 1),
-    FeaturedOrganization("google", "google", 2),
+    FeaturedOrganization("google", "google", 2, hf_aliases=("GoogleDeepMind",)),
     FeaturedOrganization("nvidia", "nvidia", 3),
     FeaturedOrganization("Anthropic", "anthropic", 4),
     FeaturedOrganization("deepseek-ai", "deepseek-ai", 5),

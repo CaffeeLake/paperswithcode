@@ -177,6 +177,12 @@ def test_legacy_aliases_redirect_permanently(client):
     assert markdown_alias.status_code == 301
 
 
+def test_merged_organization_slug_redirects_to_canonical_page(client):
+    response = client.get("/orgs/googledeepmind?q=vision", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/orgs/google?q=vision"
+
+
 @pytest.mark.parametrize(
     ("path", "method_name"),
     [

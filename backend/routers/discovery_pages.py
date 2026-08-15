@@ -76,6 +76,7 @@ KNOWN_CLIENT_TOP_LEVEL_PREFIXES = frozenset(
         "ai-deadlines",
     }
 )
+ORGANIZATION_SLUG_ALIASES = {"googledeepmind": "google"}
 
 
 def _not_found() -> HTMLResponse:
@@ -228,6 +229,12 @@ def organization_task_alias(
 def canonical_organization_page(
     slug: str, request: Request, db: Session = Depends(get_database_session)
 ) -> Response:
+    canonical_slug = ORGANIZATION_SLUG_ALIASES.get(slug)
+    if canonical_slug is not None:
+        target = f"/orgs/{canonical_slug}"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(target, status_code=301)
     return _render(DiscoveryPageService(db).organization(slug), request)
 
 
