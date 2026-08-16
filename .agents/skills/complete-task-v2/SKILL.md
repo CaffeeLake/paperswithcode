@@ -1,6 +1,20 @@
 ---
 name: complete-task-v2
-description: Holistic field-completion workflow for a Papers With Code task page: first build a broad map of the AI field/task from the live task page, local DB, legacy PwC dump, Semantic Scholar citation/recent searches, PapersWithCode trending papers, Hugging Face artifact signals, GitHub topic/repo popularity, and comparison tables in major papers; then add missing major benchmarks with add-benchmark, import paper-native evals with one add-evals worker per paper, and verify apples-to-apples comparability with one verify-evals worker per benchmark. Use when asked to complete, populate, audit, round out, or bring a task's benchmark/evaluation coverage up to date, especially when the goal is broad task coverage rather than a narrow single-benchmark import.
+description: >-
+  Holistic field-completion workflow for a Papers With Code task page: first build
+  a broad map of the AI field/task from the live task page, local DB, legacy PwC
+  dump, Semantic Scholar citation/recent searches, PapersWithCode trending papers,
+  Hugging Face artifact signals, GitHub topic/repo popularity, and comparison
+  tables in major papers; then add missing major benchmarks with add-benchmark,
+  import paper-native evals with one add-evals worker per paper, and verify
+  apples-to-apples comparability with one verify-evals worker per benchmark. Use
+  when asked to complete, populate, audit, round out, or bring a task's
+  benchmark/evaluation coverage up to date, especially when the goal is broad task
+  coverage rather than a narrow single-benchmark import, including requests
+  phrased as "I want you to get a thorough, holistic overview of this task: major
+  benchmarks, major papers and papers they compare to, evals for those papers.
+  Importantly, we want to cover the top 100 papers on this task and their
+  benchmarks/evals."
 ---
 
 # Complete Task V2
