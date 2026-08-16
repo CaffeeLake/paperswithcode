@@ -478,7 +478,7 @@ class Settings(BaseSettings):
     chat_workspace_snapshot_inactivity_days: int = Field(default=30, ge=1, le=90)
     chat_gateway_url: str = Field(default="", max_length=1000)
     chat_require_auth: bool = Field(default=True)
-    chat_show_reasoning: bool = Field(default=False)
+    chat_show_reasoning: bool = Field(default=True)
     chat_langfuse_enabled: bool = Field(default=False)
     catalog_mutations_enabled: bool = Field(default=True)
     thumbnail_mutations_enabled: bool = Field(default=True)
