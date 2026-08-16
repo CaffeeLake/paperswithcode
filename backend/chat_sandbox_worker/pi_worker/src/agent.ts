@@ -6,7 +6,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { PiEventAdapter, type PwCEvent } from "./events.js";
+import { PiEventAdapter, reasoningIsVisible, type PwCEvent } from "./events.js";
 import { createWebMcpExtension } from "./mcp.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
@@ -216,9 +216,12 @@ export class PiWorker {
       if (!this.session || !this.manager || !this.mirror || !this.boundAgentSession) {
         throw new Error("Pi worker failed to initialize");
       }
-      const adapter = new PiEventAdapter(false, (kind) => {
-        if (kind === "answer") this.policy.observeAnswer();
-      });
+      const adapter = new PiEventAdapter(
+        reasoningIsVisible(process.env.PWC_CHAT_SHOW_REASONING),
+        (kind) => {
+          if (kind === "answer") this.policy.observeAnswer();
+        },
+      );
       const unsubscribe = this.session.subscribe((event) => {
         for (const adapted of adapter.feed(event)) this.emit(run.request_id, adapted);
       });

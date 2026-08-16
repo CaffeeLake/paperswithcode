@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PiEventAdapter } from "../src/events.js";
+import { PiEventAdapter, reasoningIsVisible } from "../src/events.js";
 import { PolicyController } from "../src/policy.js";
 
 function policy(): PolicyController {
@@ -14,6 +14,12 @@ function policy(): PolicyController {
     bashTimeoutSeconds: 5,
   });
 }
+
+test("enables visible reasoning only for the explicit worker setting", () => {
+  assert.equal(reasoningIsVisible("true"), true);
+  assert.equal(reasoningIsVisible("false"), false);
+  assert.equal(reasoningIsVisible(undefined), false);
+});
 
 test("maps hidden thinking, text, tools, usage, and correlations", () => {
   const semantic: string[] = [];

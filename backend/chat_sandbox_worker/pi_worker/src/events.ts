@@ -26,6 +26,10 @@ function publicToolName(value: unknown): string {
   return name;
 }
 
+export function reasoningIsVisible(value: string | undefined): boolean {
+  return value === "true";
+}
+
 export class PiEventAdapter {
   private reasoningOpen = false;
   private answerStarted = false;
