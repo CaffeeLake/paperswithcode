@@ -1,0 +1,30 @@
+{
+  "skill_name": "create-thumbnail",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Dry run only: paper 109263 has a generic external-resource thumbnail. Determine the best authoritative image source, prepare a 400px portrait preview in the requested outputs directory, and write a short result.md explaining how it would be published and verified. Do not change the database or upload anything.",
+      "expected_output": "A legible portrait preview based on official ChimeraBoost README artwork plus a cache-safe publication and live-verification plan.",
+      "files": [],
+      "expectations": [
+        "preview.jpg is a readable RGB JPEG with dimensions 400x550",
+        "result.md identifies the official ChimeraBoost GitHub README hero artwork as the source",
+        "result.md proposes a genuinely new or content-addressed filename rather than relying only on a query-string cache marker",
+        "result.md includes API, exact public-image HTTP/content-type, and downloaded-image visual verification"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Dry run only: use the attached TabArena v0.1 thumbnail snapshot to write audit.json plus result.md in the requested outputs directory. Treat generic 'Untitled resource' captures as missing even when they return HTTP 200, distinguish them from truly absent URLs and broken images, preserve healthy thumbnails, and propose authoritative source artwork or the correct PDF first page for each affected paper. Do not change the database or upload anything.",
+      "expected_output": "A complete benchmark audit that catches semantic placeholders as well as missing URLs and gives source-grounded, cache-safe remediation steps.",
+      "files": ["evals/files/tabarena_thumbnail_snapshot.json"],
+      "expectations": [
+        "audit.json contains exactly the four fixture papers and classifies 109263 as a semantic placeholder, 82216 as missing_url, 109261 as healthy, and 109267 as broken",
+        "The remediation for ChimeraBoost uses official GitHub README artwork and the remediation for Synthefy Nori uses its official banner or README artwork",
+        "The CatBoost remediation uses the matching v5 first page instead of the differently titled v1 first page",
+        "The healthy EXAONE thumbnail is preserved without a replacement recommendation",
+        "result.md explains content-addressed or immutable publication and verification of the exact public response"
+      ]
+    }
+  ]
+}

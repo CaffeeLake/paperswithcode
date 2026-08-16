@@ -1,0 +1,44 @@
+{
+  "benchmark": "tabarena-v0-1",
+  "papers": [
+    {
+      "paper_id": 109263,
+      "title": "ChimeraBoost",
+      "source": "external",
+      "source_url": "https://github.com/bbstats/chimeraboost",
+      "thumbnail_url": "/api/thumbnails/custom/external_109263.jpg?fit=fit9",
+      "http_status": 200,
+      "content_type": "image/jpeg",
+      "visual_observation": "Generic browser card reading 'Untitled resource'"
+    },
+    {
+      "paper_id": 82216,
+      "title": "CatBoost: unbiased boosting with categorical features",
+      "source": "arxiv",
+      "arxiv_id": "1706.09516",
+      "version": "v1",
+      "thumbnail_url": null,
+      "visual_observation": "No image. The v1 PDF is titled 'Fighting biases with dynamic boosting'; the displayed title first appears on v5."
+    },
+    {
+      "paper_id": 109261,
+      "title": "EXAONE Tabular",
+      "source": "external",
+      "source_url": "https://github.com/LGAI-Research/EXAONE-Tabular",
+      "thumbnail_url": "/api/thumbnails/custom/paper_109261_source_art_abc123.jpg?fit=fit9",
+      "http_status": 200,
+      "content_type": "image/jpeg",
+      "visual_observation": "Official EXAONE logo, legible and correctly titled"
+    },
+    {
+      "paper_id": 109267,
+      "title": "Synthefy Nori: Tabular Foundation Model for Regression",
+      "source": "external",
+      "source_url": "https://github.com/Synthefy/synthefy-nori",
+      "thumbnail_url": "/api/thumbnails/custom/external_109267.jpg?fit=fit9",
+      "http_status": 404,
+      "content_type": "text/html",
+      "visual_observation": "Broken image"
+    }
+  ]
+}
