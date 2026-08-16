@@ -117,6 +117,12 @@ COMMANDS: dict[str, Job] = {
         timeout="30m",
         idempotency="replace managed 3D Arena evaluation rows from validated live data",
     ),
+    "sync_tabarena": job(
+        "-m",
+        "scripts.hourly.sync_tabarena",
+        timeout="30m",
+        idempotency="replace managed TabArena evaluation rows from validated live data",
+    ),
     "sync_open_asr": job(
         "-m",
         "scripts.hourly.sync_open_asr",

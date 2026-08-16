@@ -3292,6 +3292,7 @@ def test_cron_status_reports_exact_production_release(
     assert status["jobs"]["refresh_paper_embeddings"]["timeout"] == "6h"
     assert status["jobs"]["update_hot_github_trending"]["timeout"] == "30m"
     assert status["jobs"]["sync_3d_arena"]["timeout"] == "30m"
+    assert status["jobs"]["sync_tabarena"]["timeout"] == "30m"
     assert status["jobs"]["sync_open_asr"]["timeout"] == "30m"
     assert status["jobs"]["sync_artificial_analysis"]["timeout"] == "30m"
     assert status["jobs"]["sync_frontiercode"]["timeout"] == "30m"

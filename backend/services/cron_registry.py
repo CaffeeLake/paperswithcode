@@ -391,6 +391,36 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
+        id="sync_tabarena",
+        display_name="Sync TabArena",
+        category="hourly",
+        schedule="55 * * * * (hourly)",
+        script_path="hourly/sync_tabarena.py",
+        log_name="sync_tabarena",
+        process_patterns=("scripts.hourly.sync_tabarena",),
+        lock_file="/var/lib/paperswithcode/production/cron-locks/sync_tabarena.lock",
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug = 'tabarena-v0-1'
+              AND e.best_metric = 'Elo'
+              AND e.external_source_url =
+                  'https://huggingface.co/spaces/TabArena/leaderboard'
+        """,
+        workflow_file="cron-sync-tabarena.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
         id="sync_open_asr",
         display_name="Sync Open ASR Leaderboard",
         category="hourly",
@@ -899,6 +929,7 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     ),
     "update_hf_artifacts": ((SchedulePolicy.fixed(60, offset_minutes=30),), 20),
     "sync_3d_arena": ((SchedulePolicy.fixed(60, offset_minutes=5),), 20),
+    "sync_tabarena": ((SchedulePolicy.fixed(60, offset_minutes=55),), 20),
     "sync_open_asr": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
     "sync_deepswe": ((SchedulePolicy.fixed(60, offset_minutes=25),), 20),
     "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
