@@ -552,6 +552,37 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
+        id="sync_coarena",
+        display_name="Sync CoArena Leaderboard",
+        category="hourly",
+        schedule="50 * * * * (hourly)",
+        script_path="hourly/sync_coarena.py",
+        log_name="sync_coarena",
+        process_patterns=("scripts.hourly.sync_coarena",),
+        lock_file="/var/lib/paperswithcode/production/cron-locks/sync_coarena.lock",
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug = 'coarena'
+              AND e.best_metric = 'Elo (live, external)'
+              AND e.external_source_url = 'https://coarena.ai/leaderboard'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code CoArena live sync.%'
+        """,
+        workflow_file="cron-sync-coarena.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
         id="import_hf_daily_papers",
         display_name="Import HF Daily Papers",
         category="daily",
@@ -934,6 +965,7 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "sync_deepswe": ((SchedulePolicy.fixed(60, offset_minutes=25),), 20),
     "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
     "sync_frontiercode": ((SchedulePolicy.fixed(60, offset_minutes=45),), 20),
+    "sync_coarena": ((SchedulePolicy.fixed(60, offset_minutes=50),), 20),
     "import_hf_daily_papers": ((SchedulePolicy.fixed(60),), 20),
     "sync_hf_organizations": ((SchedulePolicy.daily(2, 20),), 60),
     "calculate_organization_trending_scores": ((SchedulePolicy.daily(3, 40),), 60),

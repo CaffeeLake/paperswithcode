@@ -150,6 +150,12 @@ COMMANDS: dict[str, Job] = {
             "from validated API data"
         ),
     ),
+    "sync_coarena": job(
+        "-m",
+        "scripts.hourly.sync_coarena",
+        timeout="30m",
+        idempotency="replace managed CoArena evaluation rows from validated live data",
+    ),
     "import_hf_daily_papers": job(
         "-m",
         "scripts.daily.import_hf_daily_papers",
