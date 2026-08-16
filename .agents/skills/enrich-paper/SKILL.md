@@ -1,17 +1,13 @@
 ---
 name: enrich-paper
 description: >-
-  Enrich an existing paperswithcode paper with (1) its official GitHub repository and project page URL,
-  explicit Hugging Face artifacts, and (2) appropriate task and method tags drawn from the existing taxonomy in the SQL database.
-  Use this whenever the user asks to enrich a paper, find/attach the GitHub repo or project page for
-  a paper, tag a paper with tasks/methods, fill in missing code links, or run URL extraction for a
-  paper without the Gemini cron — e.g. enrich 2509.14033, find the github + tasks for this paper,
-  this paper page is missing its repo and tags, or gives an arXiv id / paperswithcode.co/paper URL /
-  external paper and wants its code, project page, tasks and methods populated. Agent-driven replacement
-  for the Gemini URL extraction workflow — finds authentic GitHub/project-page URLs cheaply
-  (HF API, regex, first 2 PDF pages, project-page HTML), tags from the live taxonomy, and hands off to
-  `pwc thumbnail` when the paper thumbnail is missing, squat, letterboxed, or otherwise wrong-sized,
-  while being strict about false positives.
+  Enrich an existing paperswithcode paper with its official GitHub repository, project page,
+  Hugging Face artifacts, existing-taxonomy task/method tags, and a recognizable thumbnail through
+  `create-thumbnail`. Use whenever the user asks to enrich a paper, attach its code or project page,
+  improve its tags, fill missing links, replace Gemini URL extraction, or complete an arXiv/external
+  paper page. Finds authentic URLs from cheap authoritative evidence, preserves existing tags and HF
+  normalization, rejects false-positive repos, and fixes thumbnails that are missing, generic,
+  “Untitled resource,” stale, broken, wrongly versioned, squat, letterboxed, or otherwise unsuitable.
 ---
 
 # Enrich a Paper
@@ -21,6 +17,7 @@ This skill fills in the two things a freshly imported paper most often lacks:
 1. **Code links** — the paper's *own* official GitHub repository and project page URL.
 2. **Hugging Face artifacts** — official model, dataset, and Space URLs, synchronized into normalized artifact links.
 3. **Taxonomy tags** — `tasks` and `methods` that already exist in the database, matched to what the paper is actually about.
+4. **Thumbnail** — an authoritative, recognizable paper-card image, not merely a reachable URL or generic browser capture.
 
 It is the agent-driven replacement for the Gemini URL-extraction cron (`backend/genai_steps/extract_github_and_project_page_url.py` + `backend/database/repos_and_pages_setup/batch_extract.py`). Instead of calling the Gemini API, **you** (the coding agent) fetch a small amount of evidence and reason over it yourself. The whole point is to find *authentic* URLs at low token cost, so prefer cheap structured sources first and only escalate to heavier ones (PDF text, project-page HTML) when something is still missing.
 
@@ -32,7 +29,7 @@ Writes go to the **live database** via existing services / the admin API, exactl
 - **Cheapest evidence first.** Each step below is more expensive than the last. Stop as soon as you confidently have both URLs. Never dump a whole PDF into your context — the first 2 pages (or the HF markdown) carry the code links.
 - **Only existing taxonomy.** Tag with `tasks`/`methods` rows that already exist. Do not invent new ones (that's `add-task` / `add-method`). If the right concept is missing, pick the closest existing tag and report the gap.
 - **Complement the crons, don't fight them.** Method tags are *also* added by the Semantic Scholar citation cron (papers that cite a method's source paper) and by the HF import keyword matcher. Your job is content-based tagging for *this* paper; a few high-confidence tags beat keyword stuffing.
-- **Leave the paper card looking right.** Enrichment often ends on the live paper page, so quickly spot-check the thumbnail. If it is missing, squat, letterboxed with large white bands, stale, or otherwise not appropriately sized for the paper card, run `uv run --env-file backend/keys.env pwc thumbnail <paper>` before reporting done.
+- **Leave the paper card looking right.** Thumbnail completion is part of enrichment. A reachable image can still be incomplete when it is blank, generic, says “Untitled resource,” shows stale content, or uses the wrong arXiv-version title. Use the sibling `create-thumbnail` skill for the audit, source selection, composition, cache-safe publication, and live visual verification.
 
 ## Pre-flight
 
@@ -416,9 +413,20 @@ curl -s "http://localhost:8000/api/v1/papers/<paper_id>?include_resources=true" 
 
 Confirm the repo/project page show as official, and that the tags are the merged union (existing ones survived). No redeploy is needed for pure DB enrichment, but verify against the live API.
 
-### Thumbnail spot-check
+## Part C — Complete the thumbnail
 
-Open or inspect the paper page/API thumbnail while verifying. If the thumbnail does not look appropriately sized for the card (for example it is missing, old/squat, has large white letterboxing, or clearly fails the expected portrait card aspect), run `uv run --env-file backend/keys.env pwc thumbnail <paper>` and regenerate it before finishing. The command verifies that the JPEG is **400×550**, `is_thumbnail_valid(path)` is true, and the rendered content does not retain a suspicious bottom margin.
+Before taking thumbnail action, read `../create-thumbnail/SKILL.md` completely and follow it for this paper. Do not duplicate or abbreviate that workflow here; it owns the thumbnail quality and publication contract.
+
+Use its read-only audit first. Then visually inspect the exact public image, because HTTP 200 and a non-null `thumbnail_url` do not prove that the card is useful. Treat these as incomplete:
+
+- a missing or broken URL;
+- a generic browser capture or “Untitled resource” card;
+- stale source content or the wrong arXiv-version title;
+- severe letterboxing, squatting, cropping, or unreadable artwork.
+
+Reuse evidence already collected during enrichment. In particular, inspect hero/overview images from the validated official repository, project page, source page, and HF model card before falling back to a PDF first page. Use `pwc paper thumbnail` only when the correct paper first page is the best source; otherwise use the `create-thumbnail` compositor and content-addressed publisher.
+
+Finish with the `create-thumbnail` live checks: confirm the API's final URL, fetch that exact public response, validate its image type and portrait geometry, and visually inspect the downloaded public image. If the existing thumbnail is already authoritative and legible, preserve it and report that no replacement was needed.
 
 ## Reporting back
 
@@ -432,11 +440,11 @@ End with a concise report:
 - **Tasks** added and **methods** added (slugs), distinguishing newly added from pre-existing merged tags, and listing any pre-existing tags you **removed** as false positives with the reason.
 - Any taxonomy gaps (a task/method the paper needs that doesn't exist yet → suggest `add-task` / `add-method`) and any `needs review` URL candidates you intentionally did not save.
 - Whether `urls_extracted` was set to TRUE.
-- Thumbnail status: "looked OK" or "fixed with `pwc thumbnail`" with the old/new dimensions if it was regenerated.
+- **Thumbnail**: whether it was preserved or replaced, the authoritative artwork/PDF source used, old/new URL or dimensions when changed, and confirmation that the exact public response was visually verified.
 
 ## When NOT to use this skill
 
 - The paper row doesn't exist yet and has no arXiv ID → use `add-external-paper` first (it also enriches tasks/methods/links during creation).
 - The user wants to create a brand-new task or method in the taxonomy → `add-task` / `add-method`.
 - The user wants benchmark scores / leaderboard rows → `add-evals`.
-- The user only wants to fix a paper's thumbnail, with no links/tags enrichment → run `pwc thumbnail <paper>` directly.
+- The user only wants to audit or fix paper thumbnails, with no links/tags enrichment → use `create-thumbnail` directly.

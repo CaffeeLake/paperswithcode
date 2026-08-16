@@ -1,0 +1,28 @@
+{
+  "papers": [
+    {
+      "paper_id": 109263,
+      "title": "ChimeraBoost",
+      "source": "external",
+      "source_url": "https://github.com/bbstats/chimeraboost",
+      "official_repositories": ["https://github.com/bbstats/chimeraboost"],
+      "tasks": ["tabular-classification", "tabular-regression"],
+      "methods": [],
+      "thumbnail_url": "/api/thumbnails/custom/external_109263.jpg?fit=fit9",
+      "thumbnail_http_status": 200,
+      "thumbnail_content_type": "image/jpeg",
+      "thumbnail_visual_observation": "Generic browser card reading 'Untitled resource'"
+    },
+    {
+      "paper_id": 82216,
+      "title": "CatBoost: unbiased boosting with categorical features",
+      "source": "arxiv",
+      "arxiv_id": "1706.09516",
+      "version": "v1",
+      "tasks": ["tabular-classification", "tabular-regression"],
+      "methods": ["gradient-boosting"],
+      "thumbnail_url": null,
+      "thumbnail_visual_observation": "No image. The v1 PDF is titled 'Fighting biases with dynamic boosting'; the displayed title first appears on v5."
+    }
+  ]
+}

@@ -60,6 +60,35 @@
         {"text": "The report distinguishes normalized Hub metrics from paper display arrays"},
         {"text": "No emergency paper-score pin is presented as the HF-link fix"}
       ]
+    },
+    {
+      "id": 4,
+      "name": "external-paper-semantic-thumbnail-placeholder",
+      "paper_id": 109263,
+      "prompt": "Dry run only: use the attached snapshot to describe how you would finish enriching ChimeraBoost (paper 109263), including its thumbnail. Do not change the database or upload anything. Save result.md in the requested outputs directory.",
+      "expected_output": "Preserves existing official links and tags, treats the HTTP-200 Untitled resource card as incomplete, selects the official ChimeraBoost README hero, and describes content-addressed publication plus exact-public-response verification.",
+      "files": ["evals/files/thumbnail_integration_snapshot.json"],
+      "assertions": [
+        {"text": "The existing official ChimeraBoost repository and task tags are preserved"},
+        {"text": "The HTTP-200 'Untitled resource' thumbnail is treated as incomplete rather than healthy"},
+        {"text": "The replacement uses the official ChimeraBoost GitHub README hero artwork"},
+        {"text": "The plan uses a content-addressed or genuinely immutable filename and verifies the exact downloaded public response visually"}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "arxiv-version-title-thumbnail-mismatch",
+      "paper_id": 82216,
+      "arxiv_id": "1706.09516",
+      "prompt": "Dry run only: use the attached snapshot to describe how you would finish enriching CatBoost paper 82216, including its missing thumbnail. Do not change the database or upload anything. Save result.md in the requested outputs directory.",
+      "expected_output": "Preserves existing tags, detects that v1 has the wrong visible title, uses the matching v5 first page, and describes live API, image-response, geometry, and visual verification.",
+      "files": ["evals/files/thumbnail_integration_snapshot.json"],
+      "assertions": [
+        {"text": "Existing CatBoost task and method tags are preserved"},
+        {"text": "The plan rejects arXiv v1 because its visible title does not match the paper row"},
+        {"text": "The replacement thumbnail uses the first page of arXiv 1706.09516v5"},
+        {"text": "The plan verifies the final API URL, exact public image response, portrait geometry, and downloaded image visually"}
+      ]
     }
   ]
 }
