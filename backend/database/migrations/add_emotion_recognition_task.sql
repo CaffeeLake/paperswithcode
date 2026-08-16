@@ -7,7 +7,7 @@ VALUES (
     'emotion-recognition',
     'Emotion Recognition identifies affective states from signals such as facial expressions, speech and audio, text and conversational context, body language, and physiological measurements including EEG. Systems may predict discrete emotion categories or continuous dimensions such as valence and arousal, and may combine multiple modalities for more robust human-computer interaction.',
     'emotion recognition, emotion classification, emotion detection, affect recognition, affect classification, affective state recognition, facial emotion recognition, facial expression recognition, speech emotion recognition, audio emotion recognition, multimodal emotion recognition, EEG emotion recognition, emotion recognition in conversation, FER, SER',
-    (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
+    (SELECT id FROM areas WHERE name = 'General' LIMIT 1),
     0,
     NULL,
     true,
