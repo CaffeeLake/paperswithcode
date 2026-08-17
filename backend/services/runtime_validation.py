@@ -122,12 +122,20 @@ _STARTER_SANDBOX_SPEND_POLICY = SandboxSpendPolicy(
     environment_cap_microusd=0,
     workspace_cap_microusd=250_000_000,
 )
-_TEAM_SANDBOX_SPEND_POLICY = SandboxSpendPolicy(
-    warning_microusd=75_000_000,
-    application_cap_microusd=100_000_000,
-    environment_cap_microusd=125_000_000,
-    workspace_cap_microusd=250_000_000,
-)
+_TEAM_SANDBOX_SPEND_POLICIES = {
+    "v1": SandboxSpendPolicy(
+        warning_microusd=75_000_000,
+        application_cap_microusd=100_000_000,
+        environment_cap_microusd=125_000_000,
+        workspace_cap_microusd=250_000_000,
+    ),
+    "v2": SandboxSpendPolicy(
+        warning_microusd=75_000_000,
+        application_cap_microusd=100_000_000,
+        environment_cap_microusd=250_000_000,
+        workspace_cap_microusd=250_000_000,
+    ),
+}
 _SANDBOX_CAPACITY_POLICY = SandboxCapacityPolicy(
     max_concurrency=2,
     user_max_concurrency=2,
@@ -448,17 +456,25 @@ def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
         environment_cap_microusd=settings.chat_sandbox_environment_cap_microusd,
         workspace_cap_microusd=settings.chat_sandbox_workspace_cap_microusd,
     )
-    expected_spend = (
-        _TEAM_SANDBOX_SPEND_POLICY
-        if settings.chat_sandbox_provider_mode == "team_environments"
-        else _STARTER_SANDBOX_SPEND_POLICY
-    )
+    if settings.chat_sandbox_provider_mode == "team_environments":
+        team_policy_version = next(
+            (
+                version
+                for version, policy in _TEAM_SANDBOX_SPEND_POLICIES.items()
+                if configured_spend == policy
+            ),
+            None,
+        )
+        expected_spend = _TEAM_SANDBOX_SPEND_POLICIES.get(team_policy_version)
+    else:
+        team_policy_version = None
+        expected_spend = _STARTER_SANDBOX_SPEND_POLICY
     if configured_spend != expected_spend:
         if settings.chat_sandbox_provider_mode == "starter_workspace":
             raise RuntimeError(
                 "starter workspace sandbox spend policy requires no environment cap"
             )
-        raise RuntimeError("team sandbox spend policy must be $75/$100/$125/$250")
+        raise RuntimeError("team sandbox spend policy is not reviewed")
     configured_capacity = SandboxCapacityPolicy(
         max_concurrency=settings.chat_max_concurrency,
         user_max_concurrency=settings.chat_user_max_concurrency,
@@ -478,9 +494,11 @@ def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     if not settings.chat_sandbox_modal_owner_username:
         raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME is required")
     if settings.chat_sandbox_provider_mode == "team_environments":
+        environment_cap = 250 if team_policy_version == "v2" else 125
+        version = "v2" if team_policy_version == "v2" else "v1"
         expected_attestation = (
             f"modal-workspace-{settings.chat_sandbox_modal_workspace}-250-"
-            f"{settings.environment}-125-v1"
+            f"{settings.environment}-{environment_cap}-{version}"
         )
     else:
         expected_attestation = (

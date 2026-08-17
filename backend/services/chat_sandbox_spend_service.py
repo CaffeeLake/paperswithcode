@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
 from backend.config import Settings
@@ -20,7 +20,9 @@ from backend.models.database import (
     ChatSandboxPool,
 )
 from backend.services.chat_sandbox_capacity_repository import (
-    CAPACITY_LOCK_NAME as CAPACITY_LOCK_NAME,
+    CAPACITY_LOCK_NAME as CAPACITY_LOCK_NAME,  # noqa: PLC0414
+)
+from backend.services.chat_sandbox_capacity_repository import (
     lock_capacity,
 )
 
@@ -197,16 +199,111 @@ class ChatSandboxSpendService:
 
     @staticmethod
     def _interval_rate(interval: ChatSandboxComputeInterval) -> int:
+        # Modal bills the greater of the resource request and actual usage, not
+        # the configured burst limit. Provider reconciliation raises this local
+        # request-based estimate when actual usage is higher.
         return int(
             (
-                Decimal(interval.cpu_limit_millicores)
+                Decimal(interval.cpu_request_millicores)
                 / Decimal(1000)
                 * CPU_MICROUSD_PER_CORE_SECOND
-                + Decimal(interval.memory_limit_mib)
+                + Decimal(interval.memory_request_mib)
                 / Decimal(1024)
                 * MEMORY_MICROUSD_PER_GIB_SECOND
             ).to_integral_value(rounding=ROUND_CEILING)
         )
+
+    def reconcile_terminal_leases(self, now: datetime) -> int:
+        """Settle intervals left open after their durable lease became terminal."""
+
+        successor = aliased(ChatSandboxComputeInterval)
+        superseded = dict(
+            self.db.execute(
+                select(
+                    ChatSandboxComputeInterval.id,
+                    func.min(successor.reserved_at),
+                )
+                .join(
+                    successor,
+                    (successor.environment == ChatSandboxComputeInterval.environment)
+                    & (
+                        successor.chat_session_id
+                        == ChatSandboxComputeInterval.chat_session_id
+                    )
+                    & (successor.reserved_at > ChatSandboxComputeInterval.reserved_at),
+                )
+                .where(
+                    ChatSandboxComputeInterval.environment == self.settings.environment,
+                    ChatSandboxComputeInterval.terminal_at.is_(None),
+                    ChatSandboxComputeInterval.claimed_at.is_not(None),
+                )
+                .group_by(ChatSandboxComputeInterval.id)
+            ).all()
+        )
+        superseded_rows = list(
+            self.db.scalars(
+                select(ChatSandboxComputeInterval)
+                .where(ChatSandboxComputeInterval.id.in_(superseded))
+                .with_for_update()
+            )
+        )
+        for interval in superseded_rows:
+            self._settle_reconciled_interval(
+                interval,
+                terminal_at=self._aware(superseded[interval.id]),
+                reason="lease_superseded_reconciled",
+                now=now,
+            )
+
+        rows = list(
+            self.db.execute(
+                select(ChatSandboxComputeInterval, ChatSandboxLease)
+                .join(
+                    ChatSandboxLease,
+                    ChatSandboxLease.chat_session_id
+                    == ChatSandboxComputeInterval.chat_session_id,
+                )
+                .where(
+                    ChatSandboxComputeInterval.environment == self.settings.environment,
+                    ChatSandboxComputeInterval.terminal_at.is_(None),
+                    ChatSandboxComputeInterval.claimed_at.is_not(None),
+                    ChatSandboxLease.state.in_(["terminated", "failed"]),
+                    ChatSandboxLease.modal_sandbox_id.is_(None),
+                    ChatSandboxLease.worker_generation
+                    == ChatSandboxComputeInterval.worker_generation,
+                )
+                .with_for_update()
+            ).all()
+        )
+        for interval, lease in rows:
+            terminal_at = max(
+                self._aware(interval.provider_created_at or interval.reserved_at),
+                self._aware(lease.updated_at),
+            )
+            self._settle_reconciled_interval(
+                interval,
+                terminal_at=terminal_at,
+                reason="lease_terminal_reconciled",
+                now=now,
+            )
+        return len(superseded_rows) + len(rows)
+
+    @staticmethod
+    def _settle_reconciled_interval(
+        interval: ChatSandboxComputeInterval,
+        *,
+        terminal_at: datetime,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        interval.termination_requested_at = (
+            interval.termination_requested_at or terminal_at
+        )
+        interval.terminal_at = terminal_at
+        interval.terminal_reason = reason
+        interval.reserved_microusd = 0
+        interval.reconciliation_state = "confirmed"
+        interval.updated_at = now
 
     @staticmethod
     def _aware(value: datetime) -> datetime:
@@ -291,8 +388,10 @@ class ChatSandboxSpendService:
                 )
                 terminal_at = self._aware(interval.terminal_at)
                 if (
-                    interval.cpu_limit_millicores <= 0
-                    or interval.memory_limit_mib <= 0
+                    interval.cpu_request_millicores <= 0
+                    or interval.memory_request_mib <= 0
+                    or interval.cpu_limit_millicores < interval.cpu_request_millicores
+                    or interval.memory_limit_mib < interval.memory_request_mib
                     or interval_start > now + timedelta(seconds=5)
                     or (
                         provider_created_at is not None
@@ -333,8 +432,8 @@ class ChatSandboxSpendService:
                                 )
                             )::bigint
                             * CEIL(
-                                cpu_limit_millicores / 1000.0 * 39.42
-                                + memory_limit_mib / 1024.0 * 6.72
+                                cpu_request_millicores / 1000.0 * 39.42
+                                + memory_request_mib / 1024.0 * 6.72
                             )::bigint
                         ) FILTER (
                             WHERE NOT (
@@ -347,8 +446,10 @@ class ChatSandboxSpendService:
                         0
                     )::bigint AS accrued_microusd,
                     COUNT(*) FILTER (
-                        WHERE cpu_limit_millicores <= 0
-                           OR memory_limit_mib <= 0
+                        WHERE cpu_request_millicores <= 0
+                           OR memory_request_mib <= 0
+                           OR cpu_limit_millicores < cpu_request_millicores
+                           OR memory_limit_mib < memory_request_mib
                            OR reserved_at > :future_limit
                            OR provider_created_at < reserved_at
                            OR terminal_at < reserved_at
@@ -398,6 +499,7 @@ class ChatSandboxSpendService:
             seconds=5
         ):
             integrity_reason = "metering_degraded"
+        self.reconcile_terminal_leases(now)
         cycle_start = datetime(
             state.billing_cycle.year, state.billing_cycle.month, 1, tzinfo=UTC
         )
@@ -448,7 +550,8 @@ class ChatSandboxSpendService:
             end = self._metered_end(interval, now)
             start = interval_start
             seconds = max(0, int((end - start).total_seconds()))
-            # Each interval preserves its resource limits so policy changes cannot rewrite history.
+            # Each interval preserves its resource shape so policy changes
+            # cannot rewrite history.
             rate = self._interval_rate(interval)
             interval.accrued_microusd = max(interval.accrued_microusd, seconds * rate)
             interval.updated_at = now

@@ -17,7 +17,10 @@ from backend.models.database import (
     ChatSandboxPool,
     ChatSession,
 )
-from backend.scripts.manage_chat_sandbox_circuit import operator_identity
+from backend.scripts.manage_chat_sandbox_circuit import (
+    operator_identity,
+    parser as circuit_parser,
+)
 from backend.services import chat_sandbox_service
 from backend.services.chat_sandbox_capacity_repository import (
     ChatSandboxCapacityRepository,
@@ -87,6 +90,132 @@ def test_lifecycle_meter_includes_reservation_to_confirmed_termination():
         state = service.refresh(start + timedelta(seconds=90))
         assert state.estimated_accrued_microusd == 70 * service.cost_per_second()
         assert state.outstanding_reservation_microusd == 0
+
+
+def test_lifecycle_meter_uses_requests_not_burst_limits():
+    sessions = factory()
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    configured = settings(
+        chat_sandbox_cpu=0.5,
+        chat_sandbox_cpu_limit=1,
+        chat_sandbox_memory_mib=512,
+        chat_sandbox_memory_limit_mib=2048,
+    )
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        interval_id = service.reserve_interval(
+            origin="direct", worker_generation="requested", now=start
+        )
+        service.provider_created(interval_id, "sb-requested", start)
+        service.terminate(
+            "sb-requested",
+            "complete",
+            confirmed=True,
+            now=start + timedelta(seconds=10),
+        )
+        state = service.refresh(start + timedelta(seconds=20))
+        interval = db.get(ChatSandboxComputeInterval, interval_id)
+        assert service._interval_rate(interval) == 24
+        assert state.estimated_accrued_microusd == 240
+
+
+def test_refresh_reconciles_open_interval_for_terminal_lease():
+    sessions = factory()
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    terminal_at = start + timedelta(seconds=90)
+    session_id = uuid.uuid4()
+    configured = settings()
+    with sessions() as db, db.begin():
+        db.add(
+            ChatSession(
+                id=session_id,
+                hf_user_id="terminal-owner",
+                hf_username="terminal-owner",
+                selected_model="google/gemma-4-31B-it",
+                execution_backend="modal_cli",
+            )
+        )
+        service = ChatSandboxSpendService(db, configured)
+        interval_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="terminal", now=start
+        )
+        service.provider_created(interval_id, "sb-terminal", start)
+        service.claim("sb-terminal", session_id, start + timedelta(seconds=10))
+        db.add(
+            ChatSandboxLease(
+                chat_session_id=session_id,
+                modal_sandbox_id=None,
+                app_release_id=configured.release_id,
+                image_version=configured.chat_modal_image_version,
+                worker_contract_version=configured.chat_worker_contract_version,
+                worker_generation="terminal",
+                state="failed",
+                last_activity_at=terminal_at,
+                updated_at=terminal_at,
+            )
+        )
+
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        state = service.refresh(start + timedelta(days=2))
+        interval = db.get(ChatSandboxComputeInterval, interval_id)
+        assert service._aware(interval.terminal_at) == terminal_at
+        assert interval.terminal_reason == "lease_terminal_reconciled"
+        assert interval.reconciliation_state == "confirmed"
+        assert interval.reserved_microusd == 0
+        assert state.estimated_accrued_microusd == 90 * service.cost_per_second()
+
+
+def test_refresh_reconciles_interval_superseded_by_later_session_worker():
+    sessions = factory()
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    successor_at = start + timedelta(minutes=5)
+    session_id = uuid.uuid4()
+    configured = settings()
+    with sessions() as db, db.begin():
+        db.add(
+            ChatSession(
+                id=session_id,
+                hf_user_id="superseded-owner",
+                hf_username="superseded-owner",
+                selected_model="google/gemma-4-31B-it",
+                execution_backend="modal_cli",
+            )
+        )
+        service = ChatSandboxSpendService(db, configured)
+        old_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="old", now=start
+        )
+        service.provider_created(old_id, "sb-old", start)
+        service.claim("sb-old", session_id, start + timedelta(seconds=10))
+        new_id = service.reserve_interval(
+            origin="direct", worker_generation="new", now=successor_at
+        )
+        service.provider_created(new_id, "sb-new", successor_at)
+        service.claim("sb-new", session_id, successor_at)
+        db.add(
+            ChatSandboxLease(
+                chat_session_id=session_id,
+                modal_sandbox_id="sb-new",
+                app_release_id=configured.release_id,
+                image_version=configured.chat_modal_image_version,
+                worker_contract_version=configured.chat_worker_contract_version,
+                worker_generation="new",
+                state="idle",
+                last_activity_at=successor_at,
+                updated_at=successor_at,
+            )
+        )
+
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        service.refresh(successor_at + timedelta(minutes=1))
+        old = db.get(ChatSandboxComputeInterval, old_id)
+        new = db.get(ChatSandboxComputeInterval, new_id)
+        assert service._aware(old.terminal_at) == successor_at
+        assert old.terminal_reason == "lease_superseded_reconciled"
+        assert old.reserved_microusd == 0
+        assert new.terminal_at is None
 
 
 def test_cancelled_start_releases_pre_provider_reservation():
@@ -536,6 +665,27 @@ def test_circuit_operator_must_be_root_and_allowlisted(monkeypatch):
     )
     with pytest.raises(SystemExit, match="must run as root"):
         operator_identity(configured)
+
+
+def test_circuit_rearm_accepts_reviewed_provider_cap_basis():
+    args = circuit_parser().parse_args(
+        [
+            "rearm",
+            "--environment",
+            "production",
+            "--cycle",
+            "2026-08-01",
+            "--reason",
+            "provider cap raised",
+            "--evidence",
+            "Modal environment budget verified",
+            "--basis",
+            "reviewed-provider-cap",
+            "--orphan-sweep-event-id",
+            str(uuid.uuid4()),
+        ]
+    )
+    assert args.basis == "reviewed-provider-cap"
 
 
 def test_policy_change_without_new_attestation_trips_accounting_integrity():

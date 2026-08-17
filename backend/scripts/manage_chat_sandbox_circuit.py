@@ -42,6 +42,7 @@ def parser() -> argparse.ArgumentParser:
         choices=(
             "accounting-correction",
             "reviewed-higher-caps",
+            "reviewed-provider-cap",
             "reviewed-policy-transition",
         ),
     )
@@ -174,6 +175,7 @@ def main() -> None:
                 reconciled_at = reconciled_at.replace(tzinfo=UTC)
             sweep = db.get(ChatSandboxCircuitEvent, sweep_event_id)
             changes_caps = args.basis == "reviewed-higher-caps"
+            changes_provider_cap = args.basis == "reviewed-provider-cap"
             changes_policy = args.basis == "reviewed-policy-transition"
             active_cap = (
                 settings.chat_sandbox_application_cap_microusd
@@ -211,6 +213,20 @@ def main() -> None:
                 failure = (
                     "higher caps require a higher application cap and new attestation"
                 )
+            elif changes_provider_cap and (
+                settings.chat_sandbox_warning_microusd != state.warning_microusd
+                or settings.chat_sandbox_application_cap_microusd
+                != state.application_cap_microusd
+                or settings.chat_sandbox_workspace_cap_microusd
+                != state.workspace_cap_microusd
+                or settings.chat_sandbox_environment_cap_microusd
+                <= state.environment_cap_microusd
+                or settings.chat_sandbox_budget_attestation == state.policy_attestation
+            ):
+                failure = (
+                    "provider-cap review requires only a higher environment cap "
+                    "and new attestation"
+                )
             elif changes_policy and not reviewed_policy_transition_allowed(
                 state, settings
             ):
@@ -227,6 +243,11 @@ def main() -> None:
                     )
                     state.workspace_cap_microusd = (
                         settings.chat_sandbox_workspace_cap_microusd
+                    )
+                    state.policy_attestation = settings.chat_sandbox_budget_attestation
+                elif changes_provider_cap:
+                    state.environment_cap_microusd = (
+                        settings.chat_sandbox_environment_cap_microusd
                     )
                     state.policy_attestation = settings.chat_sandbox_budget_attestation
                 elif changes_policy:

@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import deploy.cli as deploy_cli
 import deploy.configure_host_env as configure_host_env
+import deploy.configure_production_chat_budget as configure_production_chat_budget
 import deploy.configure_role_allowlists as configure_role_allowlists
 import deploy.cron_launcher as cron_launcher
 import deploy.run_backend as run_backend
@@ -702,6 +703,35 @@ def test_dormant_production_accepts_sealed_openrouter_with_dispatch_disabled(
     settings.chat_openrouter_server_funded_enabled = False
 
     assert validate_runtime(settings) == profile_features("production")
+
+
+def test_production_runtime_accepts_reviewed_250_environment_policy(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_max_concurrency = 2
+    settings.chat_persistent_worker_enabled = True
+    settings.chat_sandbox_spend_enforcement_enabled = True
+    settings.chat_sandbox_provider_mode = "team_environments"
+    settings.chat_sandbox_environment_cap_microusd = 250_000_000
+    settings.chat_sandbox_modal_environment = "pwc-chat-production"
+    settings.chat_sandbox_modal_workspace = "paperswithcode"
+    settings.chat_sandbox_modal_owner_username = "nielsrogge"
+    settings.chat_sandbox_budget_attestation = (
+        "modal-workspace-paperswithcode-250-production-250-v2"
+    )
+    settings.chat_sandbox_slack_webhook_url = "https://hooks.slack.test/production"
+    settings.chat_sandbox_alert_fallback_webhook_url = (
+        "https://alerts.test/production-fallback"
+    )
+    settings.chat_sandbox_runbook_url = "https://example.test/production-runbook"
+    settings.chat_sandbox_operator_usernames = "nielsr"
+    settings.chat_operational_alerts_enabled = True
+    settings.chat_title_generation_enabled = True
+    settings.chat_title_provider = "openrouter"
+    settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
+    settings.chat_title_credential_owner = "nielsr"
+    settings.chat_title_credential_environment = "production"
+    validate_chat_capacity_and_spend_policy(settings)
 
 
 def test_staging_runtime_rejects_shared_session_signer(tmp_path: Path):
@@ -2895,7 +2925,7 @@ def _production_chat_preparation_source() -> dict[str, str]:
         "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME": "nielsrogge",
         "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES": "root,nielsr",
         "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": (
-            "modal-workspace-paperswithcode-250-production-125-v1"
+            "modal-workspace-paperswithcode-250-production-250-v2"
         ),
         "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
             "https://alerts-primary.test/production"
@@ -2972,7 +3002,7 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT"] == "pwc-chat-production"
     assert values["PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD"] == "100000000"
     assert values["PWC_CHAT_SANDBOX_PROVIDER_MODE"] == "team_environments"
-    assert values["PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD"] == "125000000"
+    assert values["PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD"] == "25000000"
     assert values["PWC_CHAT_TITLE_HF_TOKEN"] == ""
@@ -2982,6 +3012,46 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "200.00"
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
     assert values["PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP"] == "3"
+
+
+def test_production_chat_budget_alignment_is_narrow():
+    current = {
+        "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
+        "PWC_CHAT_SANDBOX_WARNING_MICROUSD": (
+            "PWC_CHAT_SANDBOX_WARNING_MICROUSD=75000000"
+        ),
+        "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD": (
+            "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD=100000000"
+        ),
+        "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD": (
+            "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD=125000000"
+        ),
+        "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD": (
+            "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD=250000000"
+        ),
+        "PWC_CHAT_SANDBOX_PROVIDER_MODE": (
+            "PWC_CHAT_SANDBOX_PROVIDER_MODE=team_environments"
+        ),
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": (
+            "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION="
+            "modal-workspace-paperswithcode-250-production-125-v1"
+        ),
+        "PWC_UNRELATED": "PWC_UNRELATED=preserved",
+    }
+
+    updated = configure_production_chat_budget.aligned_values(current)
+
+    assert (
+        configure_host_env.decoded_value(
+            updated["PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD"]
+        )
+        == "250000000"
+    )
+    assert (
+        configure_host_env.decoded_value(updated["PWC_CHAT_SANDBOX_BUDGET_ATTESTATION"])
+        == "modal-workspace-paperswithcode-250-production-250-v2"
+    )
+    assert updated["PWC_UNRELATED"] == current["PWC_UNRELATED"]
 
 
 def test_production_modal_profile_is_imported_without_persisting_a_copy(
