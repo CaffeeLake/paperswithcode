@@ -587,6 +587,20 @@ def staging_chat_pool_values(*, enabled: bool) -> dict[str, str]:
     return values
 
 
+def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
+    """Toggle only the qualified staging Pi prewarm profile."""
+
+    values = {"PWC_CHAT_PI_PREWARM_ENABLED": "true" if enabled else "false"}
+    if enabled:
+        values.update(
+            {
+                "PWC_CHAT_PI_PREWARM_MODEL": ("deepseek-ai/DeepSeek-V4-Flash-0731"),
+                "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+            }
+        )
+    return values
+
+
 def staging_chat_spend_values() -> dict[str, str]:
     return {
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
@@ -846,6 +860,8 @@ def main() -> int:
     parser.add_argument("--staging-chat-alerts-only", action="store_true")
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
+    parser.add_argument("--staging-chat-pi-prewarm-enable-only", action="store_true")
+    parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
@@ -866,6 +882,46 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if (
+        args.staging_chat_pi_prewarm_enable_only
+        or args.staging_chat_pi_prewarm_disable_only
+    ):
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.production_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.production_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+            args.production_chat_admission_enable_only,
+        )
+        if (
+            args.staging_chat_pi_prewarm_enable_only
+            and args.staging_chat_pi_prewarm_disable_only
+        ) or any(other_modes):
+            parser.error(
+                "staging Pi prewarm enable/disable cannot be combined with other modes"
+            )
+        enabled = args.staging_chat_pi_prewarm_enable_only
+        staging = assign(
+            read_lines(CONFIG_ROOT / "staging.env"),
+            staging_chat_pi_prewarm_values(enabled=enabled),
+        )
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print(f"{'enabled' if enabled else 'disabled'} staging Pi prewarm")
+        return 0
     if args.production_langfuse_only:
         conflicting_modes = (
             args.production_codex_only,

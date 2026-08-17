@@ -262,6 +262,21 @@ Before any non-zero rollout, deploy two distinct zero-percent bridge commits so
 both `current` and `previous` understand `modal_cli`. Then run the operator-only
 infrastructure qualification from the selected immutable release:
 
+Pi prewarming and blank-pool admission are independent protected staging
+controls. Toggle Pi prewarming without changing admission, then refresh the
+exact active release through the immutable deployment path:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-chat-pi-prewarm-enable-only
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+```
+
+Use `--staging-chat-pi-prewarm-disable-only` for the independent rollback. The
+existing `--staging-chat-pool-enable-only` and
+`--staging-chat-pool-disable-only` modes control admission separately.
+
 ```bash
 sudo systemd-run --quiet --wait --pipe --collect \
   --uid=pwc-staging --gid=pwc-staging \

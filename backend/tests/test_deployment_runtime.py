@@ -24,6 +24,7 @@ import deploy.smoke_test as smoke_test
 from backend.chat_sandbox_worker.contract import (
     MODAL_IMAGE_ID,
     PRODUCTION_MODAL_IMAGE_ID,
+    WORKER_CONTRACT_VERSION,
 )
 from backend.config import Settings
 from backend.services import openrouter_budget_service as deploy_openrouter
@@ -1270,7 +1271,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "79"
+    assert descriptor["worker_contract_version"] == WORKER_CONTRACT_VERSION
     dormant = _chat_descriptor_from_source(source, "production")
     assert dormant is not None
     assert dormant["enabled"] is False
@@ -2609,6 +2610,58 @@ def test_staging_chat_pool_toggle_is_narrow_and_bounded():
     assert configure_host_env.staging_chat_pool_values(enabled=False) == {
         "PWC_CHAT_BLANK_POOL_ENABLED": "false"
     }
+
+
+def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():
+    assert configure_host_env.staging_chat_pi_prewarm_values(enabled=True) == {
+        "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+    }
+    assert configure_host_env.staging_chat_pi_prewarm_values(enabled=False) == {
+        "PWC_CHAT_PI_PREWARM_ENABLED": "false"
+    }
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_staging_chat_pi_prewarm_mode_preserves_other_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "staging.env").write_text("UNRELATED=preserved\n", encoding="utf-8")
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    mode = (
+        "--staging-chat-pi-prewarm-enable-only"
+        if enabled
+        else "--staging-chat-pi-prewarm-disable-only"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["configure_host_env.py", "--legacy-env", str(source), mode],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == config_root / "staging.env"
+    assert written["group"] == "pwc-staging"
+    assert configure_host_env.decoded_value(written["lines"]["UNRELATED"]) == (
+        "preserved"
+    )
+    assert configure_host_env.decoded_value(
+        written["lines"]["PWC_CHAT_PI_PREWARM_ENABLED"]
+    ) == ("true" if enabled else "false")
 
 
 def test_staging_chat_alert_values_are_distinct_https_destinations():
