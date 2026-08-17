@@ -257,6 +257,43 @@ def test_workflow_collection_batches_recent_runs(monkeypatch):
     assert len(calls) == 2  # one batch plus the one multi-job workflow detail
 
 
+def test_workflow_collection_pages_until_all_workflows_are_represented(monkeypatch):
+    jobs = [
+        job for job in list_cron_jobs() if job.id in {"sync_3d_arena", "sync_tabarena"}
+    ]
+
+    def run(job, index):
+        return {
+            "id": index,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-08-14T12:00:00Z",
+            "updated_at": "2026-08-14T12:01:00Z",
+            "event": "schedule",
+            "head_branch": "main",
+            "path": f".github/workflows/{job.workflow_file}",
+        }
+
+    calls = []
+
+    def gh_json(args, timeout=10):
+        calls.append((args, timeout))
+        if "&page=1&" in args[-1]:
+            return {
+                "workflow_runs": [run(jobs[0], index) for index in range(100)]
+            }, None
+        return {"workflow_runs": [run(jobs[1], 101)]}, None
+
+    monkeypatch.setattr(cron_health, "_gh_json", gh_json)
+
+    statuses = cron_health.fetch_workflow_statuses(jobs)
+
+    assert set(statuses) == {job.id for job in jobs}
+    assert len(calls) == 2
+    assert "page=1" in calls[0][0][-1]
+    assert "page=2" in calls[1][0][-1]
+
+
 def test_workflow_collection_refreshes_failed_run_outside_recent_batch(monkeypatch):
     job = next(job for job in list_cron_jobs() if job.id == "backfill_method_keywords")
     previous_run = {
@@ -303,4 +340,58 @@ def test_workflow_collection_refreshes_failed_run_outside_recent_batch(monkeypat
     )
 
     assert statuses[job.id]["scheduled_run"]["conclusion"] == "success"
+    assert len(calls) == 2
+
+
+def test_workflow_collection_refreshes_overdue_cached_run(monkeypatch):
+    job = next(job for job in list_cron_jobs() if job.id == "sync_3d_arena")
+    previous_run = {
+        "databaseId": 17,
+        "status": "completed",
+        "conclusion": "success",
+        "createdAt": "2026-08-14T12:05:00Z",
+        "updatedAt": "2026-08-14T12:06:00Z",
+        "event": "schedule",
+        "headBranch": "main",
+    }
+    previous_dashboard = {
+        "jobs": [
+            {
+                "workflow_status": {
+                    "available": True,
+                    "workflow_file": job.workflow_file,
+                    "scheduled_run": previous_run,
+                }
+            }
+        ]
+    }
+    refreshed_run = {
+        "id": 18,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-08-17T14:13:00Z",
+        "updated_at": "2026-08-17T14:14:00Z",
+        "event": "schedule",
+        "head_branch": "main",
+    }
+    calls = []
+
+    def gh_json(args, timeout=10):
+        calls.append((args, timeout))
+        if "actions/runs?" in args[-1]:
+            return {"workflow_runs": []}, None
+        return {"workflow_runs": [refreshed_run]}, None
+
+    monkeypatch.setattr(cron_health, "_gh_json", gh_json)
+    monkeypatch.setattr(
+        cron_health,
+        "_utcnow",
+        lambda: datetime(2026, 8, 17, 14, 30, tzinfo=UTC),
+    )
+
+    statuses = cron_health.fetch_workflow_statuses(
+        [job], previous_dashboard=previous_dashboard
+    )
+
+    assert statuses[job.id]["scheduled_run"]["databaseId"] == 18
     assert len(calls) == 2
