@@ -114,6 +114,7 @@ export function ChatConversation({
               archivePending={archivePending}
               hfBilling={null}
               openRouterFallbackEnabled={openRouterFallbackEnabled}
+              feedbackEnabled
             />)}
       </div>
     </div>

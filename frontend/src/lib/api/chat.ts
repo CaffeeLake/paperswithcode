@@ -150,6 +150,13 @@ export class ChatApi {
     });
   }
 
+  reportFeedback(messageId: string, value: boolean): Promise<void> {
+    return this.request(`/chat/messages/${encodeURIComponent(messageId)}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ value }),
+    });
+  }
+
   stream(body: unknown, signal?: AbortSignal): Promise<Response> {
     return apiFetch("/chat/stream", {
       method: "POST",

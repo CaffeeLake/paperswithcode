@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
+import { chatApi } from "@/lib/api/chat";
 import type { ChatMessage as ChatMessageType } from "@/lib/chat";
 
 afterEach(() => {
@@ -246,6 +247,59 @@ describe("AssistantMessage", () => {
     expect(screen.getByText("Researching object detection").tagName).toBe("STRONG");
     expect(screen.getByRole("list")).toBeVisible();
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("submits thumbs feedback for a completed answer", async () => {
+    const user = userEvent.setup();
+    const reportFeedback = vi.spyOn(chatApi, "reportFeedback").mockResolvedValue();
+    render(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          blocks: [{ kind: "answer", text: "A useful answer", done: true }],
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+        feedbackEnabled
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Helpful response" }));
+
+    expect(reportFeedback).toHaveBeenCalledWith("assistant-1", true);
+    expect(screen.getByText("Thanks for your feedback")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Helpful response" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("hides feedback while streaming and in public views", () => {
+    const { rerender } = render(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          streaming: true,
+          blocks: [{ kind: "answer", text: "Partial", done: false }],
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+        feedbackEnabled
+      />,
+    );
+    expect(screen.queryByLabelText("Rate this response")).not.toBeInTheDocument();
+
+    rerender(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          blocks: [{ kind: "answer", text: "Complete", done: true }],
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+      />,
+    );
+    expect(screen.queryByLabelText("Rate this response")).not.toBeInTheDocument();
   });
 
   it("offers PRO only for an exhausted personal Free account", () => {

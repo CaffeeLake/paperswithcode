@@ -55,6 +55,12 @@ def _configured_client(settings: Settings) -> Langfuse | None:
     )
 
 
+def configured_chat_client(settings: Settings) -> Langfuse | None:
+    """Return the server-owned Langfuse client used by chat integrations."""
+
+    return _configured_client(settings)
+
+
 def _usage_details(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}

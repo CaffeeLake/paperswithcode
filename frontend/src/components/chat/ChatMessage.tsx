@@ -5,7 +5,7 @@
  */
 
 import React from "react";
-import { Check, Copy, FileText, Pencil } from "lucide-react";
+import { Check, Copy, FileText, Pencil, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
@@ -14,6 +14,7 @@ import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import { authorsLine, excerpt, venueLine } from "@/components/chat/paperDisplay";
+import { chatApi } from "@/lib/api/chat";
 import type {
   AnswerBlock,
   ChatMessage as ChatMessageType,
@@ -460,7 +461,31 @@ export const AssistantMessage: React.FC<{
   archivePending?: "old" | "oldest" | null;
   hfBilling?: HfBillingGuidance | null;
   openRouterFallbackEnabled?: boolean;
-}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null, hfBilling = null, openRouterFallbackEnabled = false }) => (
+  feedbackEnabled?: boolean;
+}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null, hfBilling = null, openRouterFallbackEnabled = false, feedbackEnabled = false }) => {
+  const [feedback, setFeedback] = React.useState<boolean | null>(null);
+  const [feedbackPending, setFeedbackPending] = React.useState(false);
+  const [feedbackError, setFeedbackError] = React.useState(false);
+  const canRate = feedbackEnabled
+    && !msg.streaming
+    && !msg.error
+    && Boolean(msg.blocks?.some((block) => block.kind === "answer" && block.text.trim()));
+
+  const submitFeedback = async (value: boolean) => {
+    if (feedbackPending) return;
+    setFeedbackPending(true);
+    setFeedbackError(false);
+    try {
+      await chatApi.reportFeedback(msg.id, value);
+      setFeedback(value);
+    } catch {
+      setFeedbackError(true);
+    } finally {
+      setFeedbackPending(false);
+    }
+  };
+
+  return (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
       {msg.blocks?.map((b, i) => {
@@ -578,6 +603,35 @@ export const AssistantMessage: React.FC<{
             : `The assistant stopped early (${msg.finishReason.replace(/_/g, " ")}).`}
         </div>
       )}
+      {canRate && (
+        <div className="chat-feedback" aria-label="Rate this response">
+          <span className="chat-feedback-label">
+            {feedback === null ? "Was this helpful?" : "Thanks for your feedback"}
+          </span>
+          <button
+            type="button"
+            className={`chat-feedback-action${feedback === true ? " chat-feedback-action-selected" : ""}`}
+            aria-label="Helpful response"
+            aria-pressed={feedback === true}
+            disabled={feedbackPending}
+            onClick={() => void submitFeedback(true)}
+          >
+            <ThumbsUp aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={`chat-feedback-action${feedback === false ? " chat-feedback-action-selected" : ""}`}
+            aria-label="Unhelpful response"
+            aria-pressed={feedback === false}
+            disabled={feedbackPending}
+            onClick={() => void submitFeedback(false)}
+          >
+            <ThumbsDown aria-hidden="true" />
+          </button>
+          {feedbackError && <span className="chat-feedback-error" role="status">Couldn’t send feedback.</span>}
+        </div>
+      )}
     </div>
   </div>
-);
+  );
+};

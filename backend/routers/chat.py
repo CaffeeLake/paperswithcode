@@ -35,6 +35,7 @@ from backend.models.api import (
 from backend.models.chat import (
     ArchiveOldChatsResponse,
     ChatBrowserLatencyRequest,
+    ChatFeedbackRequest,
     ChatMessageResponse,
     ChatRequest,
     ChatSessionDetail,
@@ -48,6 +49,10 @@ from backend.models.chat import (
 )
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
+from backend.services.chat_feedback_service import (
+    ChatFeedbackService,
+    ChatFeedbackUnavailable,
+)
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_live_stream_service import live_chat_stream_registry
 from backend.services.chat_paper_context_service import (
@@ -1313,4 +1318,29 @@ def report_browser_latency(
         db.rollback()
         raise HTTPException(status_code=404, detail="Chat request not found")
     db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/messages/{message_id}/feedback", status_code=204)
+def submit_chat_feedback(
+    message_id: uuid.UUID,
+    body: ChatFeedbackRequest,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    owner = owner_from_user(user)
+    try:
+        found = ChatFeedbackService(db, settings).submit(
+            owner_id=owner.hf_user_id,
+            assistant_message_id=message_id,
+            value=body.value,
+        )
+    except ChatFeedbackUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Chat feedback is temporarily unavailable",
+        ) from None
+    if not found:
+        raise HTTPException(status_code=404, detail="Assistant response not found")
     return Response(status_code=204)

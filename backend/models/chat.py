@@ -139,6 +139,14 @@ class ChatBrowserLatencyRequest(BaseModel):
         return self
 
 
+class ChatFeedbackRequest(BaseModel):
+    """One explicit end-user rating for a completed assistant response."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    value: bool
+
+
 class ChatPaperMetadata(BaseModel):
     arxiv_id: str | None
     source: Literal["arxiv", "external"]
