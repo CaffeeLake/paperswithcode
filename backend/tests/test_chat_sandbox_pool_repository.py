@@ -1078,17 +1078,14 @@ def test_repository_never_commits_or_touches_a_provider():
         assert db.get(ChatSandboxPool, reservation.pool_id) is None
 
 
-def test_maintenance_plan_preserves_previous_release_and_bounds_drains():
+def test_maintenance_plan_drains_previous_release_and_bounds_drains():
     settings = _settings()
     sessions = _database()
     now = datetime.now(UTC)
     previous_release = _pool(settings, sandbox_id="sb-previous")
     previous_release.app_release_id = "release-previous"
     previous_release.expires_at = now + timedelta(hours=2)
-    draining = [
-        _pool(settings, sandbox_id=f"sb-draining-{index}", state="draining")
-        for index in range(3)
-    ]
+    draining = [_pool(settings, sandbox_id="sb-draining-0", state="draining")]
     for index, row in enumerate(draining):
         row.updated_at = now - timedelta(minutes=10 - index)
     with sessions() as db, db.begin():
@@ -1110,24 +1107,16 @@ def test_maintenance_plan_preserves_previous_release_and_bounds_drains():
 
     assert [claim.sandbox_id for claim in plan.termination_claims] == [
         "sb-draining-0",
-        "sb-draining-1",
+        "sb-previous",
     ]
-    assert plan.health_candidates == (
-        PoolHealthCandidate(
-            pool_id=previous_release.id,
-            sandbox_id="sb-previous",
-            worker_generation=previous_release.worker_generation,
-            claim_generation=0,
-            token_hash=None,
-        ),
-    )
+    assert plan.health_candidates == ()
     with sessions() as db:
         states = {
             row.modal_sandbox_id: row.state
             for row in db.scalars(select(ChatSandboxPool))
         }
-    assert states["sb-previous"] == "blank_ready"
-    assert states["sb-draining-2"] == "draining"
+    assert states["sb-previous"] == "draining"
+    assert states["sb-draining-0"] == "draining"
 
 
 def test_maintenance_plan_claims_blank_without_provider_as_lost():

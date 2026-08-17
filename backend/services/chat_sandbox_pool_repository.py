@@ -687,7 +687,8 @@ class ChatSandboxPoolRepository:
         health_candidates: list[PoolHealthCandidate] = []
         for row in rows:
             incompatible = (
-                row.image_version != compatibility.image_version
+                row.app_release_id != self.settings.release_id
+                or row.image_version != compatibility.image_version
                 or row.worker_contract_version != compatibility.worker_contract_version
                 or row.agent_harness != compatibility.agent_harness
                 or row.agent_harness_version != compatibility.agent_harness_version

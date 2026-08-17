@@ -1920,7 +1920,7 @@ def test_spawn_replenishment_discards_cancelled_tasks_without_warning(caplog):
     assert "chat blank pool replenishment failed" not in caplog.text
 
 
-def test_maintenance_preserves_compatible_blank_from_previous_release():
+def test_maintenance_replaces_compatible_blank_from_previous_release():
     harness = _Harness(
         settings=_settings(chat_blank_pool_rotate_before_seconds=60),
         owner=True,
@@ -1932,14 +1932,17 @@ def test_maintenance_preserves_compatible_blank_from_previous_release():
 
     result = asyncio.run(harness.coordinator.maintain_pool())
 
-    assert result == PoolMaintenanceResult()
+    assert result == PoolMaintenanceResult(drained=1, replenished=1)
+    assert harness.provider.termination_calls == [row.modal_sandbox_id]
     with harness.sessions() as db:
         persisted = db.get(ChatSandboxPool, row.id)
-    assert persisted.state == "blank_ready"
+        replacement = db.execute(
+            select(ChatSandboxPool).where(ChatSandboxPool.id != row.id)
+        ).scalar_one()
+    assert persisted.state == "terminated"
     assert persisted.app_release_id == "release-previous"
-    assert persisted.last_health_checked_at == harness.clock.utcnow().replace(
-        tzinfo=None
-    )
+    assert replacement.state == "blank_ready"
+    assert replacement.app_release_id == harness.settings.release_id
 
 
 def test_disabled_maintenance_drains_pool_without_touching_assigned_lease():
