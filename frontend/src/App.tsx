@@ -238,14 +238,24 @@ const Shell: React.FC = () => {
 
   if (location.pathname.startsWith("/pdf/")) {
     return (
-      <React.Suspense fallback={<RouteFallback />}>
-        <Routes>
-          <Route
-            path="/pdf/:arxivId"
-            element={isNativePdfReaderEnabled() ? <PaperReaderView /> : <NotFound />}
-          />
-        </Routes>
-      </React.Suspense>
+      <div className="reader-route-shell">
+        <Header onOpenSearch={() => setSearchOpen(true)} />
+        <div className="reader-route-content">
+          <React.Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route
+                path="/pdf/:arxivId"
+                element={isNativePdfReaderEnabled() ? <PaperReaderView /> : <NotFound />}
+              />
+            </Routes>
+          </React.Suspense>
+        </div>
+        {searchOpen && (
+          <React.Suspense fallback={null}>
+            <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+          </React.Suspense>
+        )}
+      </div>
     );
   }
 

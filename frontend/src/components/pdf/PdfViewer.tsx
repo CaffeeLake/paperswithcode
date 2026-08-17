@@ -11,6 +11,7 @@ interface PdfViewerProps {
   url: string;
   paperKey: string;
   initialPage?: number;
+  resizeActive?: boolean;
   onPageChange?: (page: number) => void;
 }
 
@@ -47,7 +48,13 @@ function LazyPdfPage({ page, width }: { page: number; width: number }) {
   </div>;
 }
 
-export function PdfViewer({ url, paperKey, initialPage = 1, onPageChange }: PdfViewerProps) {
+export function PdfViewer({
+  url,
+  paperKey,
+  initialPage = 1,
+  resizeActive = false,
+  onPageChange,
+}: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
@@ -81,12 +88,14 @@ export function PdfViewer({ url, paperKey, initialPage = 1, onPageChange }: PdfV
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const update = () => setFitWidth(Math.max(240, element.clientWidth - 10));
+    const update = () => {
+      if (!resizeActive) setFitWidth(Math.max(240, element.clientWidth - 10));
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [resizeActive]);
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));

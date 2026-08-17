@@ -3,12 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PdfViewer } from "@/components/pdf/PdfViewer";
-import UserMenu from "@/components/UserMenu";
-import HfSignInButton from "@/components/HfSignInButton";
 import { usePaper } from "@/hooks/usePapers";
 import { isPaperReaderChatEnabled } from "@/lib/apiUrl";
 import { chatApi } from "@/lib/api/chat";
-import { useAuth } from "@/lib/authContext";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 import { normalizePaperRouteId } from "@/lib/utils";
 import { ChatExperience } from "@/views/ChatView";
@@ -47,7 +44,6 @@ export default function PaperReaderView() {
   const { arxivId: rawRouteId } = useParams<{ arxivId: string }>();
   const routeId = normalizePaperRouteId(rawRouteId ?? "").replace(/v\d+$/i, "");
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
   const query = usePaper(routeId, Boolean(routeId));
   const availabilityQuery = useQuery({
     queryKey: ["chatAvailability"],
@@ -69,6 +65,7 @@ export default function PaperReaderView() {
   const [mobileTab, setMobileTab] = useState<"paper" | "assistant">("paper");
   const [initialPage, setInitialPage] = useState(() => storedPage(routeId));
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [resizeActive, setResizeActive] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const currentPageRef = useRef(storedPage(routeId));
@@ -147,8 +144,13 @@ export default function PaperReaderView() {
   };
   const pointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     dragging.current = true;
+    setResizeActive(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeFromPointer(event.clientX);
+  };
+  const finishResize = () => {
+    dragging.current = false;
+    setResizeActive(false);
   };
   const setAssistantCollapsed = (next: boolean) => {
     setCollapsed(next);
@@ -181,12 +183,6 @@ export default function PaperReaderView() {
   if (paper.source !== "arxiv" || !pdfUrl) return <div className="reader-status" role="alert"><p>Native reading is unavailable for this resource.</p><Link to={`/paper/${canonicalRoute}`}>Back to paper</Link></div>;
 
   return <div className="paper-reader-shell">
-    <header className="reader-header">
-      <Link to={`/paper/${canonicalRoute}`} className="reader-back" aria-label="Back to paper page">← Back</Link>
-      <Link to="/" className="reader-brand">Papers <em>With Code</em></Link>
-      <div className="reader-header-spacer" />
-      {user ? <UserMenu user={user} onLogout={logout} /> : <HfSignInButton compact returnTo={`/pdf/${canonicalRoute}`} />}
-    </header>
     {!desktopSplit && <div className="reader-tabs" role="tablist" aria-label="Reader panels">
       <button type="button" role="tab" aria-selected={mobileTab === "paper"} onClick={() => setMobileTab("paper")}>Paper</button>
       <button type="button" role="tab" aria-selected={mobileTab === "assistant"} onClick={() => setMobileTab("assistant")}>Assistant</button>
@@ -207,6 +203,7 @@ export default function PaperReaderView() {
           url={pdfUrl}
           paperKey={canonicalRoute}
           initialPage={initialPage}
+          resizeActive={resizeActive}
           onPageChange={(page) => {
             currentPageRef.current = page;
             sessionStorage.setItem(pageKey(routeId), String(page));
@@ -224,8 +221,9 @@ export default function PaperReaderView() {
         tabIndex={0}
         onPointerDown={pointerDown}
         onPointerMove={(event) => { if (dragging.current) resizeFromPointer(event.clientX); }}
-        onPointerUp={() => { dragging.current = false; }}
-        onPointerCancel={() => { dragging.current = false; }}
+        onPointerUp={finishResize}
+        onPointerCancel={finishResize}
+        onLostPointerCapture={finishResize}
         onDoubleClick={() => setSavedRatio(DEFAULT_RATIO)}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
