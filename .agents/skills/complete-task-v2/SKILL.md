@@ -1,20 +1,16 @@
 ---
 name: complete-task-v2
 description: >-
-  Holistic field-completion workflow for a Papers With Code task page: first build
-  a broad map of the AI field/task from the live task page, local DB, legacy PwC
-  dump, Semantic Scholar citation/recent searches, PapersWithCode trending papers,
-  Hugging Face artifact signals, GitHub topic/repo popularity, and comparison
-  tables in major papers; then add missing major benchmarks with add-benchmark,
-  import paper-native evals with one add-evals worker per paper, and verify
-  apples-to-apples comparability with one verify-evals worker per benchmark. Use
-  when asked to complete, populate, audit, round out, or bring a task's
-  benchmark/evaluation coverage up to date, especially when the goal is broad task
-  coverage rather than a narrow single-benchmark import, including requests
-  phrased as "I want you to get a thorough, holistic overview of this task: major
-  benchmarks, major papers and papers they compare to, evals for those papers.
-  Importantly, we want to cover the top 100 papers on this task and their
-  benchmarks/evals."
+  Holistically complete a Papers With Code task page. Map the field from the live
+  task page, local DB, legacy PwC dump, Semantic Scholar, trending papers, Hugging
+  Face artifacts, popular GitHub repos, and major-paper comparison tables;
+  reconcile the top 100 live papers; add missing major benchmarks and paper-native
+  evals; verify each changed leaderboard for apples-to-apples comparability; and
+  enrich evaluated and benchmark-source papers with official links, task/method
+  tags, and healthy thumbnails. Use whenever asked to complete, populate, audit,
+  round out, or thoroughly review a whole task's papers, benchmarks, evaluations,
+  metadata, or visual coverage rather than perform a narrow single-paper or
+  single-benchmark import.
 ---
 
 # Complete Task V2
@@ -28,7 +24,7 @@ It is an orchestrator. Use the existing repo skills for the write and audit work
 | `add-benchmark` | One worker per missing or under-wired major benchmark; create/link datasets, source papers, and metrics before eval import. |
 | `add-evals` | One worker per source paper; import only the model(s) introduced by that paper. |
 | `verify-evals` | One worker per benchmark; audit all rows for apples-to-apples comparability. |
-| `enrich-paper` | Optional follow-up when a source paper lacks repo/project/task/method metadata. |
+| `enrich-paper` | Required paper-completeness pass for evaluated and benchmark-source papers; add or audit official links, task/method tags, and a healthy thumbnail (using `create-thumbnail`). |
 
 Do not treat this as a blind bulk import or as a narrow "add the easiest current leaderboard" workflow. The main agent owns the field map, benchmark selection, paper worklist, subagent queue, verifier cleanup, and final report.
 
@@ -57,6 +53,14 @@ Use this default scope unless the user narrows it:
 - Add only **paper-native** evaluation results: the score must appear in the paper/official README/model card for the model that paper introduces.
 - Do not add comparator/external eval rows from another paper's comparison table unless the user explicitly asks for external evals.
 - Keep leaderboards apples-to-apples: same split, metric, degradation/protocol, input setup, and model mode.
+- Treat paper-page enrichment as part of task completion, not a cosmetic follow-up.
+  Audit every paper evaluated on the task and every paper used as the source of an
+  in-scope benchmark. Each must have the task tag, a healthy recognizable thumbnail,
+  official repository/project/Hugging Face links when they exist, and at least one
+  high-confidence existing-taxonomy method tag or a documented taxonomy-gap decision.
+- Do not declare the task complete merely because benchmark and evaluation coverage is
+  strong. Completion also requires the live-paper, benchmark-verification, and
+  paper-enrichment reconciliation gates in this workflow to pass.
 
 If the user asks for only a benchmark/paper plan, stop after the research plan. If the user asks to complete/populate/import, continue through add-evals and verify-evals.
 
@@ -71,6 +75,7 @@ names:
 - `paper-worklist.csv` or `paper-worklist.md` when a separate source-paper queue is useful;
 - `import-ledger.csv` for surviving evaluation IDs and worker outcomes;
 - `verification-ledger.md` for benchmark audit decisions;
+- `enrichment-ledger.csv` for paper-level thumbnail, task/method tag, and official-link audit decisions;
 - `completion-report.md` for the final compact report.
 
 Use `/tmp/<task-slug>/` for disposable API responses, downloaded cards, extracted
@@ -432,7 +437,7 @@ db.close()
 PY
 ```
 
-If a major benchmark is missing or lacks metric wiring, launch `add-benchmark` before any paper worker that depends on it. If a source paper is missing or lacks links/tags, use `enrich-paper` or `add-external-paper` as appropriate.
+If a major benchmark is missing or lacks metric wiring, launch `add-benchmark` before any paper worker that depends on it. If a source paper is missing, use `add-external-paper` as appropriate. Record missing links, task/method tags, and thumbnails for the mandatory enrichment pass; do not leave them as an optional follow-up.
 
 ## Phase 3.5: Launch Add-Benchmark Workers
 
@@ -554,6 +559,52 @@ uv run --env-file backend/keys.env python backend/database/validate_evaluation_m
 
 If it reports unrelated pre-existing mismatches, say so. Do not hide them, and do not imply they came from this pass.
 
+## Phase 6.5: Enrich and Audit In-Scope Papers
+
+After evaluation cleanup, build the enrichment scope as the union of:
+
+- every paper with an evaluation row on the task;
+- every paper used as the source of an in-scope benchmark;
+- every top-N ledger paper whose decision is `imported` or `already-covered`.
+
+Deduplicate this list by canonical paper ID. Use one `enrich-paper` worker per paper
+that has a missing or questionable field, and follow that skill through
+`create-thumbnail` when the visual is missing, broken, generic, or unrecognizable.
+Preserve an existing healthy thumbnail rather than replacing it without a reason.
+
+For each in-scope paper, audit and record:
+
+- canonical task tag for the completed task;
+- official GitHub repository, project page, and Hugging Face artifacts when found;
+- at least one high-confidence method tag from the existing taxonomy when the paper
+  introduces or clearly uses such a method;
+- a healthy, recognizable thumbnail with valid attribution/source handling;
+- the final decision and evidence for every field that remains absent.
+
+Do not invent a method merely to make the count nonzero. A genuinely methodless paper
+may pass only with a concrete `taxonomy-gap` or `no-applicable-method` decision in
+`enrichment-ledger.csv`. Likewise, an absent official artifact link may pass only with
+`no-official-artifact-found` after checking the paper, project page, GitHub, and Hugging
+Face. Missing or unhealthy thumbnails do not pass as deferred enrichment: create or
+repair them using `create-thumbnail`.
+
+Before reporting completion, run and record a reconciliation whose equivalent counts
+all satisfy:
+
+```text
+topN_missing_decision = 0
+changed_benchmarks_unverified = 0
+paper_enrichment_missing_decision = 0
+evaluated_papers_missing_task_tag = 0
+evaluated_papers_missing_thumbnail = 0
+evaluated_papers_unreviewed_methodless = 0
+```
+
+If the live task page contains fewer than 100 papers, reconcile all of them and report
+the exact exhausted count. If any required count is nonzero, report the task as
+incomplete or blocked with the exact papers/benchmarks and reason; do not describe the
+task as complete.
+
 ## Phase 7: Final Report
 
 Report:
@@ -566,6 +617,11 @@ Report:
 - rows updated or deleted by verifier cleanup;
 - source-availability corrections made by verifier cleanup, especially rows changed from closed to open because official GitHub code/weights/reproduction scripts or unindexed HF repos were found;
 - benchmarks that passed verification;
+- paper enrichment scope and results: total audited, thumbnails created/repaired,
+  task tags added, method tags added, official links added, and documented taxonomy or
+  artifact exceptions;
+- the six final reconciliation counts, including the exact live-paper count when fewer
+  than 100 papers exist;
 - remaining follow-ups, especially missing benchmark/metric wiring or deliberately split protocols;
 - validation status and any unrelated existing validator failures.
 
@@ -579,4 +635,6 @@ Use exact eval IDs when possible. Be clear about intermediate rows that were add
 - Recent papers often introduce new protocols. Do not force them onto older leaderboards when a new benchmark should exist.
 - If a metric has incompatible scales across papers, remove or split the leaderboard rather than ranking it.
 - If a model has reference-guided and no-reference variants, keep them on separate leaderboards or keep only the variant matching the page contract.
+- A task is not complete while its evaluated or benchmark-source papers still present
+  as visually blank, lack the task tag, or have an unreviewed method-taxonomy gap.
 - Use subagents for bounded paper/benchmark work, but the main agent must reconcile results, enforce consistency, and prevent a narrow/easy subset from being reported as complete.
