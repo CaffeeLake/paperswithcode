@@ -2646,6 +2646,28 @@ def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():
     }
 
 
+def test_staging_chat_routing_toggle_is_independent_and_latency_profiled():
+    assert configure_host_env.staging_chat_routing_values(enabled=True) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_ROUTING_POLICY": "latency",
+    }
+    assert configure_host_env.staging_chat_routing_values(enabled=False) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "false"
+    }
+
+
+def test_staging_chat_payload_toggle_selects_one_exact_candidate():
+    assert configure_host_env.staging_chat_payload_values(
+        enabled=True, candidate="system_duplicates"
+    ) == {
+        "PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_ENABLED": "true",
+        "PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_CANDIDATE": "system_duplicates",
+    }
+    assert configure_host_env.staging_chat_payload_values(
+        enabled=False, candidate="tool_duplicates"
+    ) == {"PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_ENABLED": "false"}
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_staging_chat_pi_prewarm_mode_preserves_other_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool

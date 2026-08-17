@@ -601,6 +601,24 @@ def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
     return values
 
 
+def staging_chat_routing_values(*, enabled: bool) -> dict[str, str]:
+    """Toggle only the independently reversible staging routing experiment."""
+
+    values = {"PWC_CHAT_OPENROUTER_ROUTING_ENABLED": str(enabled).lower()}
+    if enabled:
+        values["PWC_CHAT_OPENROUTER_ROUTING_POLICY"] = "latency"
+    return values
+
+
+def staging_chat_payload_values(*, enabled: bool, candidate: str) -> dict[str, str]:
+    """Toggle one exact duplicate-removal candidate on staging."""
+
+    values = {"PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_ENABLED": str(enabled).lower()}
+    if enabled:
+        values["PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_CANDIDATE"] = candidate
+    return values
+
+
 def staging_chat_spend_values() -> dict[str, str]:
     return {
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
@@ -862,6 +880,15 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-chat-pi-prewarm-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
+    parser.add_argument("--staging-chat-routing-enable-only", action="store_true")
+    parser.add_argument("--staging-chat-routing-disable-only", action="store_true")
+    parser.add_argument("--staging-chat-payload-enable-only", action="store_true")
+    parser.add_argument("--staging-chat-payload-disable-only", action="store_true")
+    parser.add_argument(
+        "--staging-chat-payload-candidate",
+        choices=("system_duplicates", "tool_duplicates"),
+        default="system_duplicates",
+    )
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
@@ -882,6 +909,56 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    experiment_modes = (
+        args.staging_chat_routing_enable_only,
+        args.staging_chat_routing_disable_only,
+        args.staging_chat_payload_enable_only,
+        args.staging_chat_payload_disable_only,
+    )
+    if any(experiment_modes):
+        all_other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.production_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_chat_pi_prewarm_enable_only,
+            args.staging_chat_pi_prewarm_disable_only,
+            args.staging_web_search_only,
+            args.production_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+            args.production_chat_admission_enable_only,
+        )
+        if sum(experiment_modes) != 1 or any(all_other_modes):
+            parser.error("staging chat experiment toggles must run alone")
+        if (
+            args.staging_chat_routing_enable_only
+            or args.staging_chat_routing_disable_only
+        ):
+            values = staging_chat_routing_values(
+                enabled=args.staging_chat_routing_enable_only
+            )
+            label = "routing"
+        else:
+            values = staging_chat_payload_values(
+                enabled=args.staging_chat_payload_enable_only,
+                candidate=args.staging_chat_payload_candidate,
+            )
+            label = "payload optimization"
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print(f"configured staging chat {label} experiment")
+        return 0
     if (
         args.staging_chat_pi_prewarm_enable_only
         or args.staging_chat_pi_prewarm_disable_only
