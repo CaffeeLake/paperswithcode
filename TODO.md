@@ -3,6 +3,7 @@
 - Add support for multiple GitHub tokens so the star-refresh job can check star gain frequency for more repositories per hour.
 - Use the larger API budget to widen coverage beyond recent official repos, so `velocity_24h` and trending rankings can surface fast-growing repositories across the full official repo set.
 - Download all Arxiv PDFs in a private HF bucket, so that they can easily be reused later for extracting evaluation results/thumbnail generation/chatting purposes.
+- Add a native PDF reader with the existing paper-grounded chat on the right.
 - Add a CRON job to check whose methods are cited by papers, so that these methods can serve as tags on those papers
 - Add the ability to copy paste/screenshot a leaderboard, similar to AA.
 - Reasoning: task or subtask of language modeling?
@@ -28,7 +29,6 @@
 - Do something around KV cache education based on https://research.nvidia.com/labs/eai/blogs/kv-cache-compression-and-its-infra-problems/
 - Add Artificial Analysis evals using an API key
 - Build agents which post trending stuff on Reddit, X, LinkedIn etc.
-- Upgrade Modal to Team later: use separate environment-scoped service users and $125/$225 staging/production Environment caps beneath the $250 Workspace cap.
 - Add papers for Gemini 3 Deep Think, Qwen3.7 Max, Gemini 3.5 Flash, Muse Spark, Grok 4.3 and add the missing external CritPt evals from Artificial Analysis
 - Add video restoration benchmarks and evals, starting from https://paperswithcode.co/paper/2606.09516
 - Add all evals of https://kaldir.vc.in.tum.de/scannet_benchmark/, see Github thread: https://github.com/YilmazKadir/Volt/issues/6

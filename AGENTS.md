@@ -9,12 +9,13 @@ Guidance for agents working in this repository.
   source, never as a runtime directory.
 - During routine development, do not restart or stop services, kill processes,
   rebuild/repoint the production frontend, or reload nginx. Deploy only when the
-  user explicitly requests a production release.
+  publishing workflow below calls for a release.
 - Treat approval to implement a repository source change as approval to validate
   it, commit the intended changes directly to `main`, push `origin main`, and
-  deploy that exact commit to staging. Do not wait for separate commit, push, or
-  staging deployment requests unless the user explicitly asks for local-only
-  work or no deployment.
+  deploy that exact commit to production. Do not wait for separate commit, push,
+  or production deployment requests unless the user explicitly asks for
+  local-only work or no deployment. The chat-interface exception below always
+  takes precedence.
 - Preserve public API, route, CLI, and persisted-data contracts. Compatibility is
   optional only for clearly unshipped internal work.
 - Keep logic simple and readable; avoid broad defensive `try`/`except` blocks.
@@ -46,7 +47,16 @@ Guidance for agents working in this repository.
 
 - After completing and validating a repository source change, commit the
   intended changes directly to `main`, push `origin main`, and deploy the exact
-  pushed commit to staging with `pwc-deploy`.
+  pushed commit to production with `pwc-deploy`.
+- Changes related to the chat interface at `staging.paperswithcode.co/chat`,
+  including chat-specific frontend, backend, configuration, and infrastructure,
+  must be deployed only to staging unless the user explicitly authorizes that
+  chat work for production. Do not include chat-related changes in a production
+  release merely because the same task also contains non-chat changes.
+- Keep chat-related and non-chat source changes in separate commits when needed
+  for deployment. Deploy the non-chat commit to production and the chat commit
+  to staging; if they cannot be safely separated, stop before deployment and ask
+  the user how to proceed.
 - Planning documents (`PLAN*.md`), scratch notes, temporary artifacts,
   diagnostic output, and generated reports are local working files by default.
   Do not stage, commit, push, or deploy them unless the user explicitly asks to
@@ -62,13 +72,14 @@ Guidance for agents working in this repository.
 - Fetch `origin main` before publishing and never force-push. If local and
   remote `main` have diverged, stop and resolve the divergence safely before
   pushing.
-- Staging deployment approval never implies production approval. Do not deploy
-  to production unless the user explicitly requests a production release.
+- Production deployment is the default for publishable non-chat source changes.
+  Staging deployment or implementation approval for chat-related work never
+  implies authorization to deploy that chat work to production.
 
 ## Production releases
 
 Production topology can change, so inspect the active processes and nginx config
-before an explicitly authorized release. Currently:
+before a release. Currently:
 
 - production is `paperswithcode-backend@production` on `:8000`;
 - staging is `paperswithcode-backend@staging` on `:8001`;
