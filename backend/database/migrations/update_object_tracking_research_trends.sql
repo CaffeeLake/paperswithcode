@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Association is becoming memory- and scene-aware.** Real-time tracking-by-detection remains the practical backbone, but the frontier is recovering identity through occlusion, irregular motion, and crowded scenes rather than discarding uncertain observations. [ByteTrack](/paper/2110.06864) recovers low-confidence boxes; [MeMOTR](/paper/2307.15700) adds long-term memory; and [BoostTrack++](/paper/2408.13003) feeds tracklet evidence back into detection, with [MOT17](/benchmark/mot17?task=object-tracking) and [DanceTrack](/benchmark/dancetrack?task=object-tracking) exposing complementary association failures.',
+    '**Foundation models are turning trackers into promptable, multimodal systems.** Instead of separate models for boxes, masks, and sensor combinations, recent work shares representations across tasks and accepts richer guidance. [Segment and Track Anything](/paper/2305.06558) combines clicks, strokes, and text with segmentation; [SAMURAI](/paper/2411.11922) adds motion-aware memory to SAM 2; and [SUTrack](/paper/2412.19138) unifies RGB, depth, thermal, event, and language tracking.',
+    '**Tracking is moving from object boxes to dense world-centric motion.** Recent systems reconstruct trajectories for nearly every pixel, separate camera motion from scene dynamics, and lift monocular video into 3D. [TrackingWorld](/paper/2512.08358) uses dense upsampling and optimization, while [Track4World](/paper/2603.02573) and [TrackCraft3R](/paper/2605.12587) shift toward feed-forward global scene representations and pretrained video-diffusion priors for faster, scalable 4D understanding.'
+),
+updated_at = NOW()
+WHERE slug = 'object-tracking';
