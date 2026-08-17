@@ -260,6 +260,8 @@ def make_bundle(root: Path, *, chat: bool) -> Path:
     (release / "backend" / "main.py").write_text("")
     sha = "a" * 40
     environment = "staging" if chat else "production"
+    if environment == "staging":
+        (assets / "pdf.worker.min-abc123.js").write_text("export {}")
     (dist / "features.json").write_text(json.dumps(profile_features(environment)))
     descriptor = None
     if environment == "staging":
@@ -1772,6 +1774,16 @@ def test_smoke_bundle_parser_catches_missing_asset(tmp_path: Path):
     assert any(
         "missing asset" in item
         for item in validate_local_bundle(release, profile_features("production"))
+    )
+
+
+def test_staging_smoke_rejects_pdf_worker_with_unsupported_mjs_mime(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    worker = release / "frontend-dist" / "assets" / "pdf.worker.min-abc123.js"
+    worker.rename(worker.with_suffix(".mjs"))
+    assert any(
+        "PDF worker must use a .js extension" in item
+        for item in validate_local_bundle(release, profile_features("staging"))
     )
 
 

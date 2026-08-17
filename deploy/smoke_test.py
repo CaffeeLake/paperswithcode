@@ -342,6 +342,16 @@ def validate_local_bundle(
         guessed = mimetypes.guess_type(path.name)[0]
         if guessed not in {expected_mime, "application/javascript"}:
             failures.append(f"unexpected local MIME for {path.name}: {guessed}")
+    if expected_features.get("native_pdf_reader"):
+        pdf_workers = list((dist / "assets").glob("pdf.worker.min-*"))
+        if len(pdf_workers) != 1:
+            failures.append(
+                f"expected one bundled PDF worker, found {len(pdf_workers)}"
+            )
+        elif pdf_workers[0].suffix != ".js":
+            failures.append(
+                "bundled PDF worker must use a .js extension for static-server MIME compatibility"
+            )
     return failures
 
 

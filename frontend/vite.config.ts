@@ -62,6 +62,15 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    build: {
+      rollupOptions: {
+        output: {
+          assetFileNames: (assetInfo) => assetInfo.name === "pdf.worker.min.mjs"
+            ? "assets/pdf.worker.min-[hash].js"
+            : "assets/[name]-[hash][extname]",
+        },
+      },
+    },
     server: {
       host: "::",
       port: isStaging ? 8081 : 8080,
