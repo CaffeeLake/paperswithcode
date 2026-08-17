@@ -27,6 +27,7 @@ import {
 } from "@/lib/benchmarkLeaderboard";
 import "@/styles/benchmark-detail.css";
 import { safeExternalHref } from "@/lib/safeExternalHref";
+import { slugify } from "@/lib/slug";
 
 /** Cap how many metric columns we render in the leaderboard at once. The
  *  View dropdown still lists every configured metric — picking one outside
@@ -326,6 +327,13 @@ const BenchmarkDetailView: React.FC = () => {
     return tasks.find((t) => t.id === currentTaskId) || tasks[0] || null;
   }, [datasetTasksQ.data, currentTaskId]);
 
+  const areaQ = useQuery({
+    queryKey: ["area", primaryTask?.area_id],
+    queryFn: () => catalogApi.getArea(primaryTask!.area_id!),
+    enabled: !!primaryTask?.area_id,
+    staleTime: 10 * 60 * 1000,
+  });
+
   if (datasetQ.isLoading) {
     return (
       <div className="page">
@@ -387,6 +395,14 @@ const BenchmarkDetailView: React.FC = () => {
       <div className="bm-page">
         <div className="breadcrumb">
           <Link to="/tasks">Tasks</Link>
+          {areaQ.data && (
+            <>
+              <span className="sep">/</span>
+              <Link to={`/tasks#area-${slugify(areaQ.data.name)}`}>
+                {areaQ.data.name}
+              </Link>
+            </>
+          )}
           {primaryTask && (
             <>
               <span className="sep">/</span>
