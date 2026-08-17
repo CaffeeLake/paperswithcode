@@ -14,7 +14,7 @@ def test_title_generation_defaults_to_deepseek_v4_flash_on_openrouter():
     assert settings.chat_title_provider == "openrouter"
 
 
-def test_stream_title_uses_nitro_routing_and_low_reasoning(monkeypatch):
+def test_stream_title_uses_throughput_routing_without_reasoning(monkeypatch):
     client_args = {}
     completion_args = {}
 
@@ -76,9 +76,10 @@ def test_stream_title_uses_nitro_routing_and_low_reasoning(monkeypatch):
     }
     assert completion_args["model"] == "deepseek/deepseek-v4-flash-0731"
     assert completion_args["stream"] is True
+    assert completion_args["stream_options"] == {"include_usage": True}
     assert completion_args["max_tokens"] == 64
     assert completion_args["extra_body"] == {
-        "reasoning": {"effort": "low"},
+        "reasoning": {"effort": "none"},
         "provider": {"sort": "throughput"},
     }
     assert completion_args["messages"] == [
@@ -147,4 +148,5 @@ def test_stream_title_uses_hugging_face_router_for_production(monkeypatch):
     assert client_args["base_url"] == "https://router.huggingface.co/v1"
     assert client_args["api_key"] == "production-title-token"
     assert completion_args["model"] == "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+    assert completion_args["stream_options"] == {"include_usage": True}
     assert completion_args["extra_body"] == {"reasoning": {"effort": "low"}}
