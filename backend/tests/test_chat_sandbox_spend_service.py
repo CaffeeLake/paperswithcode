@@ -521,14 +521,18 @@ def test_spend_trip_rearms_once_after_provider_confirms_new_utc_cycle():
         assert len(events) == 1
 
 
-def test_kill_sweep_events_are_not_deduplicated_within_a_cycle():
+def test_kill_sweep_events_are_deduplicated_per_trip_not_per_cycle():
     sessions = factory()
     first = datetime(2026, 8, 1, tzinfo=UTC)
     second = first + timedelta(hours=1)
     with sessions() as db, db.begin():
         service = ChatSandboxSpendService(db, settings())
         service.record_kill_sweep(complete=True, now=first)
+        state = service.refresh(second)
+        state.circuit_state = "tripped"
+        state.tripped_at = second
         service.record_kill_sweep(complete=True, now=second)
+        service.record_kill_sweep(complete=True, now=second + timedelta(minutes=1))
     with sessions() as db:
         events = db.execute(
             select(ChatSandboxCircuitEvent)

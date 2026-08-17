@@ -607,14 +607,15 @@ class ChatSandboxSpendService:
     ) -> None:
         duplicate = None
         if deduplicate:
-            duplicate = self.db.execute(
-                select(ChatSandboxCircuitEvent.id)
-                .where(
-                    ChatSandboxCircuitEvent.budget_state_id == state.id,
-                    ChatSandboxCircuitEvent.event_type == event_type,
+            event_query = select(ChatSandboxCircuitEvent.id).where(
+                ChatSandboxCircuitEvent.budget_state_id == state.id,
+                ChatSandboxCircuitEvent.event_type == event_type,
+            )
+            if event_type.startswith("kill_sweep_") and state.tripped_at is not None:
+                event_query = event_query.where(
+                    ChatSandboxCircuitEvent.created_at >= state.tripped_at
                 )
-                .limit(1)
-            ).scalar_one_or_none()
+            duplicate = self.db.execute(event_query.limit(1)).scalar_one_or_none()
         if duplicate is None:
             live_count = (
                 self.db.scalar(
@@ -1149,7 +1150,6 @@ class ChatSandboxSpendService:
             "recovery" if complete else "critical",
             None if complete else "termination_uncertain",
             now,
-            deduplicate=False,
         )
         return state
 
