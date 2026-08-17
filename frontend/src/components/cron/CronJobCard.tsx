@@ -23,6 +23,7 @@ import type {
   CronJobStatus,
   CronWorkflowStatus,
   PaperMarkdownJobsResponse,
+  PaperMarkdownBudget,
   PaperMarkdownRemoteJob,
 } from "@/lib/api/operations";
 import { formatCronDate } from "@/lib/cronStatus";
@@ -42,6 +43,49 @@ function formatWorkflowStatus(workflow: CronWorkflowStatus): string {
 
 function metricLabel(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+const formatUsd = (value: number) => `$${value.toFixed(2)}`;
+
+function PaperMarkdownBudgetCard({
+  title,
+  budget,
+}: {
+  title: string;
+  budget: PaperMarkdownBudget;
+}) {
+  const percent = Math.min(100, budget.current_exposure_usd / budget.ceiling_usd * 100);
+  return (
+    <div className={`cron-metric-card space-y-3 ${budget.can_launch_planned ? "" : "cron-status--broken"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-semibold">{title}</div>
+          <div className="text-xs cron-muted">
+            {budget.window === "rolling_30_days" ? "Rolling 30-day window" : "All history · no automatic reset"}
+          </div>
+        </div>
+        <Badge variant="outline" className={budget.can_launch_planned ? "cron-status--healthy" : "cron-status--broken"}>
+          {budget.can_launch_planned ? "Next launch allowed" : "Next launch blocked"}
+        </Badge>
+      </div>
+      <div role="progressbar" aria-label={`${title} current budget exposure`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} className="h-2 rounded bg-muted">
+        <div className="h-2 rounded bg-primary" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+        <div><span className="cron-label">Completed-job estimate</span><div>{formatUsd(budget.spent_usd)}</div></div>
+        <div><span className="cron-label">Active reservations</span><div>{formatUsd(budget.active_reserved_usd)}</div></div>
+        <div><span className="cron-label">Current exposure</span><div>{formatUsd(budget.current_exposure_usd)}</div></div>
+        <div><span className="cron-label">Cap / headroom</span><div>{formatUsd(budget.ceiling_usd)} / {formatUsd(budget.headroom_usd)}</div></div>
+        <div><span className="cron-label">Next launch reserves</span><div>{formatUsd(budget.planned_reserved_usd)}</div></div>
+        <div><span className="cron-label">After next launch</span><div>{formatUsd(budget.projected_usd)}</div></div>
+        <div><span className="cron-label">Rate assumption</span><div>{formatUsd(budget.hourly_rate_usd)}/hour · {budget.reservation_hours_per_job}h</div></div>
+        <div><span className="cron-label">Window release</span><div>{budget.next_release_at ? `${formatUsd(budget.next_release_usd)} at ${formatCronDate(budget.next_release_at)}` : "None scheduled"}</div></div>
+      </div>
+      <p className="text-xs cron-muted">
+        Projected exposure is an admission-control estimate, not a provider invoice. Each launch reserves the full timeout until actual runtime is known.
+      </p>
+    </div>
+  );
 }
 
 const statusIcon = {
@@ -269,6 +313,12 @@ function PaperMarkdownJobs({
       )}
       {monitor?.available && (
         <>
+          {monitor.budgets.live && monitor.budgets.backfill && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-3">
+              <PaperMarkdownBudgetCard title="Live paper Markdown GPU budget" budget={monitor.budgets.live} />
+              <PaperMarkdownBudgetCard title="Full backfill GPU budget" budget={monitor.budgets.backfill} />
+            </div>
+          )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
             {Object.entries(monitor.summary).map(([key, value]) => (
               <div key={key} className="cron-metric-card">
@@ -310,6 +360,7 @@ export function CronJobCard({
   const hasWorkMetrics = Boolean(job.work_metrics && Object.keys(job.work_metrics).length);
   const hasDbMetrics = Boolean(job.db_metrics && Object.keys(job.db_metrics).length);
   const hasRemoteJobs = job.job_name === "paper_markdown_backfill";
+  const livePaperMarkdownBudget = hasRemoteJobs ? paperMarkdownJobs?.budgets.live : undefined;
   const hasDetails = true;
 
   return (
@@ -340,6 +391,11 @@ export function CronJobCard({
               {job.work_summary && <div className="cron-message">{job.work_summary}</div>}
               {job.error && <div className="cron-message cron-message--error"><strong>Error: </strong>{job.error}</div>}
               {job.diagnostics && <div className="cron-message cron-message--warning">{job.diagnostics}</div>}
+              {livePaperMarkdownBudget && (
+                <div className={`cron-message ${livePaperMarkdownBudget.can_launch_planned ? "" : "cron-message--error"}`}>
+                  <strong>Live GPU budget:</strong> {formatUsd(livePaperMarkdownBudget.current_exposure_usd)} current / {formatUsd(livePaperMarkdownBudget.ceiling_usd)} cap · next launch projects {formatUsd(livePaperMarkdownBudget.projected_usd)} · rolling 30 days
+                </div>
+              )}
             </div>
           </div>
           <Badge variant="outline" className={`cron-status--${job.status}`}>{job.status}</Badge>

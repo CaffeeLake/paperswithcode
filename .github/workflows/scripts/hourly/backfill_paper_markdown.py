@@ -16,6 +16,9 @@ from sqlalchemy import select
 from backend.config import get_settings
 from backend.database.connection import db_manager
 from backend.models.database import Paper
+from backend.services.paper_markdown_budget_service import (
+    paper_markdown_budget_snapshot,
+)
 from scripts.utils.cron_helpers import CronJobBase
 
 ARXIV_ID = re.compile(r"^(?P<base>\d{4}\.\d{4,5})(?:v\d+)?$")
@@ -155,9 +158,6 @@ class PaperMarkdownBackfillJob(CronJobBase):
     def _budget_available(self, planned_jobs: int) -> bool:
         if not planned_jobs:
             return True
-        hourly_rate = 1.80
-        timeout_hours = 12.0
-        now = datetime.now(UTC)
         all_jobs = list(
             self.api.list_jobs(
                 labels={"app": "pwc-paper-markdown"},
@@ -165,47 +165,18 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 token=self.settings.hf_token or None,
             )
         )
-        mode = "backfill" if self.full else "live"
-        relevant = []
-        for job in all_jobs:
-            labels = getattr(job, "labels", {}) or {}
-            if isinstance(labels, list):
-                labels = {
-                    str(item).split("=", 1)[0]: str(item).split("=", 1)[1]
-                    for item in labels
-                    if "=" in str(item)
-                }
-            if labels.get("mode") != mode:
-                continue
-            created_at = getattr(job, "created_at", None)
-            if not self.full and created_at is not None:
-                if created_at.tzinfo is None:
-                    created_at = created_at.replace(tzinfo=UTC)
-                if created_at < now - timedelta(days=30):
-                    continue
-            relevant.append(job)
-        spent = 0.0
-        reserved = planned_jobs * timeout_hours * hourly_rate
-        for job in relevant:
-            started_at = getattr(job, "started_at", None)
-            finished_at = getattr(job, "finished_at", None)
-            if started_at is not None and finished_at is not None:
-                spent += (
-                    max(0.0, (finished_at - started_at).total_seconds())
-                    / 3600
-                    * hourly_rate
-                )
-            elif job_stage(job) in ACTIVE_STAGES:
-                reserved += timeout_hours * hourly_rate
-            else:
-                # Missing terminal timing must fail conservatively.
-                spent += timeout_hours * hourly_rate
-        projected = spent + reserved
         ceiling = (
             self.settings.paper_markdown_backfill_budget_usd
             if self.full
             else self.settings.paper_markdown_incremental_monthly_budget_usd
         )
+        budget = paper_markdown_budget_snapshot(
+            all_jobs,
+            mode="backfill" if self.full else "live",
+            ceiling_usd=ceiling,
+            planned_jobs=planned_jobs,
+        )
+        projected = budget["projected_usd"]
         self.budget_projected_usd = projected
         self.budget_ceiling_usd = ceiling
         if projected > ceiling:
