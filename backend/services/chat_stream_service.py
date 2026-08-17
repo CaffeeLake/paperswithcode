@@ -1369,7 +1369,8 @@ class ChatStreamOrchestrator:
     ) -> None:
         try:
             with db_manager.session_local() as db:
-                ChatLatencyService(db).record_phase(
+                latency = ChatLatencyService(db)
+                latency.record_phase(
                     self.request_id,
                     phase,
                     elapsed_ms,
@@ -1378,6 +1379,11 @@ class ChatStreamOrchestrator:
                     pool_miss_reason=pool_miss_reason,
                     session_reuse_cohort=session_reuse_cohort,
                 )
+                if (
+                    acquisition_outcome == "pool_miss"
+                    and pool_miss_reason == "unhealthy_blank"
+                ):
+                    latency.record_pool_assignment_fallback(self.request_id)
                 db.commit()
         except Exception as exc:
             logger.warning(

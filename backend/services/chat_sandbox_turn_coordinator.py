@@ -446,7 +446,13 @@ class ChatSandboxTurnCoordinator:
         return await self.acquisition.acquire(
             request.chat_session_id,
             pool_miss=forced_pool_miss or prewarm_incompatible,
-            pool_miss_reason=("incompatible_profile" if prewarm_incompatible else None),
+            pool_miss_reason=(
+                "incompatible_profile"
+                if prewarm_incompatible
+                else "unhealthy_blank"
+                if forced_pool_miss and request.resume is None
+                else None
+            ),
             budget_prechecked=True,
             allow_pool=bool(
                 allow_pool

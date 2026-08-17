@@ -238,6 +238,24 @@ class ChatLatencyService:
         )
         return bool(result.rowcount)
 
+    def record_pool_assignment_fallback(self, request_id: str) -> bool:
+        """Move a failed claimed blank out of the successful pool-hit cohort."""
+
+        result = self.db.execute(
+            update(ChatTurnLatency)
+            .where(
+                ChatTurnLatency.request_id == uuid.UUID(request_id),
+                ChatTurnLatency.acquisition_outcome == "pool_hit",
+                ChatTurnLatency.terminal_status == "running",
+            )
+            .values(
+                acquisition_outcome="pool_miss",
+                pool_miss_reason="unhealthy_blank",
+                updated_at=datetime.now(UTC),
+            )
+        )
+        return bool(result.rowcount)
+
     def record_gateway_received(
         self,
         turn_id: uuid.UUID,

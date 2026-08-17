@@ -177,6 +177,26 @@ def test_record_phase_and_finalize_are_first_write_only(db):
     assert not service.record_phase(str(request_id), "first_worker_delta", 200)
 
 
+def test_failed_pool_assignment_moves_out_of_hit_cohort(db):
+    session_id = _session(db)
+    request_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, request_id=request_id)
+    service = ChatLatencyService(db)
+    assert service.record_phase(
+        str(request_id),
+        "pool_lookup_completed",
+        17,
+        acquisition_outcome="pool_hit",
+    )
+
+    assert service.record_pool_assignment_fallback(str(request_id))
+    assert not service.record_pool_assignment_fallback(str(request_id))
+    db.refresh(row)
+
+    assert row.acquisition_outcome == "pool_miss"
+    assert row.pool_miss_reason == "unhealthy_blank"
+
+
 def test_ttft_semantics_and_pool_cohorts_are_content_free(db):
     session_id = _session(db)
     request_id = uuid.uuid4()

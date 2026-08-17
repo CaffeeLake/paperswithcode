@@ -756,7 +756,10 @@ def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
         ),
     ]
 
-    async def acquire(*_args, **_kwargs):
+    acquisition_calls: list[dict] = []
+
+    async def acquire(*_args, **kwargs):
+        acquisition_calls.append(kwargs)
         return acquisitions.pop(0)
 
     claim_calls = 0
@@ -808,6 +811,9 @@ def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
     assert sum(event["type"] == "workspace_ready" for event in events) == 1
     assert claim_calls == 2
     assert terminations[0][1]["failure_code"] == "pool_assignment_failed"
+    assert acquisition_calls[1]["pool_miss"] is True
+    assert acquisition_calls[1]["pool_miss_reason"] == "unhealthy_blank"
+    assert acquisition_calls[1]["allow_pool"] is False
 
 
 def test_reused_control_loss_before_sdk_dispatch_is_retryable():

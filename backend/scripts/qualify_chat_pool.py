@@ -299,7 +299,7 @@ class PoolQualification:
 
     def _latency(
         self, request_id: str, error_code: str | None
-    ) -> tuple[PoolSample, uuid.UUID, uuid.UUID | None]:
+    ) -> tuple[PoolSample, uuid.UUID, tuple[uuid.UUID, ...]]:
         with db_manager.session_local() as db:
             row = db.execute(
                 select(ChatTurnLatency).where(
@@ -356,7 +356,7 @@ class PoolQualification:
                     error_code=error_code,
                 ),
                 row.chat_session_id,
-                interval.id if interval is not None else None,
+                tuple(candidate.id for candidate in intervals),
             )
 
     def _session_id(self, subject: str) -> uuid.UUID | None:
@@ -366,19 +366,24 @@ class PoolQualification:
             )
 
     def _cleanup_confirmed(
-        self, session_id: uuid.UUID, interval_id: uuid.UUID | None
+        self, session_id: uuid.UUID, interval_ids: tuple[uuid.UUID, ...]
     ) -> bool:
-        if interval_id is None:
+        if not interval_ids:
             return False
         with db_manager.session_local() as db:
             lease = db.get(ChatSandboxLease, session_id)
-            interval = db.get(ChatSandboxComputeInterval, interval_id)
+            intervals = [
+                db.get(ChatSandboxComputeInterval, interval_id)
+                for interval_id in interval_ids
+            ]
             return bool(
                 lease is not None
                 and lease.state == "terminated"
                 and lease.modal_sandbox_id is None
-                and interval is not None
-                and interval.terminal_at is not None
+                and all(
+                    interval is not None and interval.terminal_at is not None
+                    for interval in intervals
+                )
             )
 
     async def _turn(self, index: int) -> PoolSample:
@@ -443,11 +448,11 @@ class PoolQualification:
             error_code=error_code,
         )
         session_id: uuid.UUID | None = None
-        interval_id: uuid.UUID | None = None
+        interval_ids: tuple[uuid.UUID, ...] = ()
         if request_id is not None:
             for _ in range(40):
                 try:
-                    sample, session_id, interval_id = self._latency(
+                    sample, session_id, interval_ids = self._latency(
                         request_id, error_code
                     )
                     break
@@ -458,7 +463,7 @@ class PoolQualification:
             await SandboxSessionManager(self.settings).terminate(session_id)
             sample = replace(
                 sample,
-                cleanup_confirmed=self._cleanup_confirmed(session_id, interval_id),
+                cleanup_confirmed=self._cleanup_confirmed(session_id, interval_ids),
             )
         return sample
 
