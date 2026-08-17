@@ -14,7 +14,7 @@ vi.mock("@/hooks/usePapers", () => ({
       arxiv_id: "1706.03762",
       title: "Attention Is All You Need",
       source: "arxiv",
-      url_pdf: "https://arxiv.org/pdf/1706.03762",
+      url_pdf: "https://arxiv.org/pdf/1706.03762v7.pdf",
     },
     isLoading: false,
     error: null,
@@ -29,7 +29,7 @@ vi.mock("@/lib/api/chat", () => ({
 vi.mock("@/components/UserMenu", () => ({ default: () => <div>User menu</div> }));
 vi.mock("@/components/HfSignInButton", () => ({ default: () => <button>Sign in</button> }));
 vi.mock("@/components/pdf/PdfViewer", () => ({
-  PdfViewer: () => <div role="region" aria-label="Paper PDF">PDF viewer</div>,
+  PdfViewer: ({ url }: { url: string }) => <div role="region" aria-label="Paper PDF" data-url={url}>PDF viewer</div>,
 }));
 vi.mock("@/views/ChatView", () => ({
   ChatExperience: () => <div>Paper assistant</div>,
@@ -73,6 +73,8 @@ describe("PaperReaderView", () => {
     expect(screen.getByRole("link", { name: /Attention Is All You Need/ }))
       .toHaveAttribute("href", "/paper/1706.03762");
     expect(screen.getByRole("region", { name: "Paper PDF" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Paper PDF" }))
+      .toHaveAttribute("data-url", "https://arxiv.org/pdf/1706.03762v7");
     fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
     expect(screen.getByText("Paper assistant")).toBeVisible();
     expect(screen.queryByText("Notes")).not.toBeInTheDocument();

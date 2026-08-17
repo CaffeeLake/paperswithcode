@@ -29,6 +29,20 @@ function storedRatio(): number {
   return Number.isFinite(value) && value >= 45 && value <= 75 ? value : DEFAULT_RATIO;
 }
 
+export function directArxivPdfHref(value: unknown): string | null {
+  const href = safeExternalHref(value);
+  if (!href) return null;
+  const parsed = new URL(href);
+  if (
+    (parsed.hostname === "arxiv.org" || parsed.hostname === "www.arxiv.org")
+    && parsed.pathname.startsWith("/pdf/")
+    && parsed.pathname.endsWith(".pdf")
+  ) {
+    parsed.pathname = parsed.pathname.slice(0, -4);
+  }
+  return parsed.href;
+}
+
 export default function PaperReaderView() {
   const { arxivId: rawRouteId } = useParams<{ arxivId: string }>();
   const routeId = normalizePaperRouteId(rawRouteId ?? "").replace(/v\d+$/i, "");
@@ -42,7 +56,7 @@ export default function PaperReaderView() {
     retry: false,
   });
   const paper = query.data;
-  const pdfUrl = safeExternalHref(paper?.url_pdf);
+  const pdfUrl = directArxivPdfHref(paper?.url_pdf);
   const canonicalRoute = paper?.arxiv_id?.replace(/v\d+$/i, "") || routeId;
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(() => {
     const stored = sessionStorage.getItem(sessionKey(routeId));
@@ -82,7 +96,7 @@ export default function PaperReaderView() {
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [paper]);
 
   useEffect(() => {
     if (!paper) return;
