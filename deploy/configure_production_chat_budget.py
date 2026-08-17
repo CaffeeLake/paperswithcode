@@ -7,7 +7,11 @@ import argparse
 import os
 from pathlib import Path
 
-from deploy.configure_host_env import assign, decoded_value, read_lines, write_env
+try:
+    from deploy.configure_host_env import assign, decoded_value, read_lines, write_env
+# Support `python deploy/configure_production_chat_budget.py`.
+except ModuleNotFoundError:
+    from configure_host_env import assign, decoded_value, read_lines, write_env
 
 CONFIG_PATH = Path("/etc/paperswithcode/production.env")
 CONFIRMATION = "ALIGN_PRODUCTION_CHAT_ENVIRONMENT_BUDGET_250"
