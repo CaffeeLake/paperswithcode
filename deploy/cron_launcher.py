@@ -156,6 +156,15 @@ COMMANDS: dict[str, Job] = {
         timeout="30m",
         idempotency="replace managed CoArena evaluation rows from validated live data",
     ),
+    "sync_arc_prize": job(
+        "-m",
+        "scripts.hourly.sync_arc_prize",
+        timeout="30m",
+        idempotency=(
+            "upsert strongest paper-linked ARC-AGI-1, ARC-AGI-2, and ARC-AGI-3 "
+            "results from validated live data"
+        ),
+    ),
     "import_hf_daily_papers": job(
         "-m",
         "scripts.daily.import_hf_daily_papers",

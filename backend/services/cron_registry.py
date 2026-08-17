@@ -583,6 +583,35 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
+        id="sync_arc_prize",
+        display_name="Sync ARC Prize Leaderboards",
+        category="hourly",
+        schedule="10 * * * * (hourly)",
+        script_path="hourly/sync_arc_prize.py",
+        log_name="sync_arc_prize",
+        process_patterns=("scripts.hourly.sync_arc_prize",),
+        lock_file="/var/lib/paperswithcode/production/cron-locks/sync_arc_prize.lock",
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug IN ('arc-agi', 'arc-agi-2', 'arc-agi-3')
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code ARC Prize live sync.%'
+        """,
+        workflow_file="cron-sync-arc-prize.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
         id="import_hf_daily_papers",
         display_name="Import HF Daily Papers",
         category="daily",
@@ -966,6 +995,7 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
     "sync_frontiercode": ((SchedulePolicy.fixed(60, offset_minutes=45),), 20),
     "sync_coarena": ((SchedulePolicy.fixed(60, offset_minutes=50),), 20),
+    "sync_arc_prize": ((SchedulePolicy.fixed(60, offset_minutes=10),), 20),
     "import_hf_daily_papers": ((SchedulePolicy.fixed(60),), 20),
     "sync_hf_organizations": ((SchedulePolicy.daily(2, 20),), 60),
     "calculate_organization_trending_scores": ((SchedulePolicy.daily(3, 40),), 60),
