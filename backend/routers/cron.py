@@ -69,6 +69,7 @@ class PaperMarkdownJobsResponse(BaseModel):
     updated_at: Optional[str] = None
     jobs: List[Dict[str, Any]] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
+    budgets: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     error: Optional[str] = None
 
 

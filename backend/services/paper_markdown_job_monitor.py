@@ -7,13 +7,15 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from itertools import islice
 from typing import Any
 
 from huggingface_hub import HfApi, HfFileSystem
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
 
 from backend.config import Settings, get_settings
+from backend.services.paper_markdown_budget_service import (
+    paper_markdown_budget_snapshot,
+)
 
 _RUN_ID = re.compile(r"^(?:backfill|live)-\d{8}T\d{6}-[0-9a-f]{8}$")
 _SHARD_ID = re.compile(r"^\d{5}$")
@@ -123,15 +125,12 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     api = HfApi(token=settings.hf_token)
     filesystem = HfFileSystem(token=settings.hf_token)
     remote_jobs = list(
-        islice(
-            api.list_jobs(
-                status=_JOB_STAGES,
-                labels={"app": "pwc-paper-markdown"},
-                timeout=10,
-                namespace=settings.paper_markdown_hf_namespace,
-                token=settings.hf_token,
-            ),
-            50,
+        api.list_jobs(
+            status=_JOB_STAGES,
+            labels={"app": "pwc-paper-markdown"},
+            timeout=10,
+            namespace=settings.paper_markdown_hf_namespace,
+            token=settings.hf_token,
         )
     )
     remote_jobs.sort(
@@ -219,6 +218,22 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         "updated_at": _iso(datetime.now(timezone.utc)),
         "jobs": jobs,
         "summary": summary,
+        "budgets": {
+            "live": paper_markdown_budget_snapshot(
+                remote_jobs,
+                mode="live",
+                ceiling_usd=settings.paper_markdown_incremental_monthly_budget_usd,
+                planned_jobs=1,
+                now=snapshot_now,
+            ),
+            "backfill": paper_markdown_budget_snapshot(
+                remote_jobs,
+                mode="backfill",
+                ceiling_usd=settings.paper_markdown_backfill_budget_usd,
+                planned_jobs=1,
+                now=snapshot_now,
+            ),
+        },
         "error": None,
     }
 

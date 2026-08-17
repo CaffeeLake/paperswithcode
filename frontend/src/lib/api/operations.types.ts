@@ -116,5 +116,28 @@ export interface PaperMarkdownJobsResponse {
   updated_at?: string | null;
   jobs: PaperMarkdownRemoteJob[];
   summary: Record<string, number>;
+  budgets: Record<string, PaperMarkdownBudget>;
   error?: string | null;
+}
+
+export interface PaperMarkdownBudget {
+  mode: "live" | "backfill";
+  window: "rolling_30_days" | "all_history";
+  window_days: number | null;
+  window_started_at: string | null;
+  next_release_at: string | null;
+  next_release_usd: number;
+  spent_usd: number;
+  active_reserved_usd: number;
+  planned_jobs: number;
+  planned_reserved_usd: number;
+  current_exposure_usd: number;
+  projected_usd: number;
+  ceiling_usd: number;
+  headroom_usd: number;
+  can_launch_planned: boolean;
+  hourly_rate_usd: number;
+  reservation_hours_per_job: number;
+  reservation_per_job_usd: number;
+  relevant_jobs: number;
 }

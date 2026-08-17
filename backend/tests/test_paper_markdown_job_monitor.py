@@ -31,6 +31,8 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
         hf_token="private-token",
         paper_markdown_hf_namespace="huggingface",
         paper_markdown_hf_bucket_id="huggingface/pwc-papers-content",
+        paper_markdown_incremental_monthly_budget_usd=100.0,
+        paper_markdown_backfill_budget_usd=750.0,
     )
     progress = {
         "status": "running",
@@ -92,6 +94,9 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     assert result["summary"]["active_jobs"] == 1
     assert result["summary"]["processed_papers"] == 123
     assert result["summary"]["extracted_images"] == 87
+    assert result["budgets"]["live"]["ceiling_usd"] == 100.0
+    assert result["budgets"]["backfill"]["ceiling_usd"] == 750.0
+    assert result["budgets"]["backfill"]["active_reserved_usd"] == 21.6
     assert result["jobs"][0]["stage"] == "RUNNING"
     assert result["jobs"][0]["progress"]["failed_papers"] == 3
     monitor.clear_paper_markdown_job_monitor_cache()

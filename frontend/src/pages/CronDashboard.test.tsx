@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CronJobCard } from "@/components/cron/CronJobCard";
 import type { ChatSandboxSpendStatus } from "@/lib/api/chat";
-import { operationsApi, type CronJobsResponse, type CronJobStatus } from "@/lib/api/operations";
+import { operationsApi, type CronJobsResponse, type CronJobStatus, type PaperMarkdownJobsResponse } from "@/lib/api/operations";
 import {
   ChatComputePanel,
   CronSnapshotNotice,
@@ -109,6 +109,65 @@ describe("CronJobCard health axes", () => {
     expect(screen.getByText("github_actions")).toBeInTheDocument();
     rerender(<CronJobCard job={{ ...job, recent_write_count: 11 }} expanded={true} onToggle={() => undefined} />);
     expect(screen.getByText("Scheduler evidence")).toBeInTheDocument();
+  });
+
+  it("explains paper Markdown spend, reservations, and rolling window", () => {
+    const budget = {
+      mode: "live" as const,
+      window: "rolling_30_days" as const,
+      window_days: 30,
+      window_started_at: "2026-07-18T12:00:00Z",
+      next_release_at: "2026-08-20T12:00:00Z",
+      next_release_usd: 4.5,
+      spent_usd: 86.73,
+      active_reserved_usd: 0,
+      planned_jobs: 1,
+      planned_reserved_usd: 21.6,
+      current_exposure_usd: 86.73,
+      projected_usd: 108.33,
+      ceiling_usd: 100,
+      headroom_usd: 13.27,
+      can_launch_planned: false,
+      hourly_rate_usd: 1.8,
+      reservation_hours_per_job: 12,
+      reservation_per_job_usd: 21.6,
+      relevant_jobs: 5,
+    };
+    const monitor: PaperMarkdownJobsResponse = {
+      available: true,
+      namespace: "huggingface",
+      jobs: [],
+      summary: {},
+      budgets: {
+        live: budget,
+        backfill: {
+          ...budget,
+          mode: "backfill",
+          window: "all_history",
+          window_days: null,
+          next_release_at: null,
+          next_release_usd: 0,
+          ceiling_usd: 750,
+          can_launch_planned: true,
+        },
+      },
+    };
+
+    render(
+      <CronJobCard
+        job={{ ...job, job_name: "paper_markdown_backfill" }}
+        expanded
+        onToggle={() => undefined}
+        paperMarkdownJobs={monitor}
+      />,
+    );
+
+    expect(screen.getByText("Rolling 30-day window")).toBeInTheDocument();
+    expect(screen.getByText("Next launch blocked")).toBeInTheDocument();
+    expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · next launch projects $108.33");
+    expect(screen.getAllByText("$108.33")).toHaveLength(2);
+    expect(screen.getByText("All history · no automatic reset")).toBeInTheDocument();
+    expect(screen.getAllByText(/not a provider invoice/i)).toHaveLength(2);
   });
 });
 
