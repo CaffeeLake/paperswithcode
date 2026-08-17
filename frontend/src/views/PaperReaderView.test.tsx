@@ -20,16 +20,18 @@ vi.mock("@/hooks/usePapers", () => ({
     error: null,
   }),
 }));
-vi.mock("@/lib/authContext", () => ({
-  useAuth: () => ({ user: { username: "reviewer" }, logout: vi.fn() }),
-}));
 vi.mock("@/lib/api/chat", () => ({
   chatApi: { getAvailability: mocks.getAvailability },
 }));
-vi.mock("@/components/UserMenu", () => ({ default: () => <div>User menu</div> }));
-vi.mock("@/components/HfSignInButton", () => ({ default: () => <button>Sign in</button> }));
 vi.mock("@/components/pdf/PdfViewer", () => ({
-  PdfViewer: ({ url }: { url: string }) => <div role="region" aria-label="Paper PDF" data-url={url}>PDF viewer</div>,
+  PdfViewer: ({ url, paperTitle, paperHref }: {
+    url: string;
+    paperTitle: string;
+    paperHref: string;
+  }) => <div>
+    <a href={paperHref} aria-label={`${paperTitle} — open paper page`}>{paperTitle}</a>
+    <div role="region" aria-label="Paper PDF" data-url={url}>PDF viewer</div>
+  </div>,
 }));
 vi.mock("@/views/ChatView", () => ({
   ChatExperience: () => <div>Paper assistant</div>,

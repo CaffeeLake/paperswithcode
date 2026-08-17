@@ -195,13 +195,11 @@ export default function PaperReaderView() {
         aria-label="Paper"
         aria-hidden={!desktopSplit && mobileTab !== "paper"}
       >
-        <div className="reader-paper-titlebar">
-          <Link to={`/paper/${canonicalRoute}`} title={paper.title} aria-label={`${paper.title} — open paper page`}>{paper.title}</Link>
-          <span>arXiv:{canonicalRoute}</span>
-        </div>
         <PdfViewer
           url={pdfUrl}
           paperKey={canonicalRoute}
+          paperTitle={paper.title}
+          paperHref={`/paper/${canonicalRoute}`}
           initialPage={initialPage}
           resizeActive={resizeActive}
           onPageChange={(page) => {

@@ -11,6 +11,8 @@ import { PdfToolbar } from "./PdfToolbar";
 interface PdfViewerProps {
   url: string;
   paperKey: string;
+  paperTitle: string;
+  paperHref: string;
   initialPage?: number;
   resizeActive?: boolean;
   onPageChange?: (page: number) => void;
@@ -52,6 +54,8 @@ function LazyPdfPage({ page, width }: { page: number; width: number }) {
 export function PdfViewer({
   url,
   paperKey,
+  paperTitle,
+  paperHref,
   initialPage = 1,
   resizeActive = false,
   onPageChange,
@@ -204,6 +208,9 @@ export function PdfViewer({
 
   return <div ref={rootRef} className="pdf-viewer">
     <PdfToolbar
+      paperTitle={paperTitle}
+      paperHref={paperHref}
+      paperIdentifier={paperKey}
       page={page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}
