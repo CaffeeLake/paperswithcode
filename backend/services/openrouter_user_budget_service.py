@@ -14,7 +14,7 @@ from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,13 @@ class OpenRouterMonthlyBudgetExhausted(OpenRouterUserBudgetError):
             "The remaining monthly OpenRouter allowance cannot fund this call"
         )
         self.resets_at = resets_at
+
+
+class OpenRouterAbuseLimitExceeded(OpenRouterUserBudgetError):
+    def __init__(self, scope: str, retry_at: datetime):
+        super().__init__("The shared OpenRouter abuse circuit rejected this call")
+        self.scope = scope
+        self.retry_at = retry_at
 
 
 class OpenRouterPricingUnavailable(OpenRouterUserBudgetError):
@@ -222,6 +229,106 @@ class OpenRouterUserBudgetService:
             )
         return usage
 
+    def _qualification_bypasses_abuse_circuit(self, owner_id: str) -> bool:
+        return self.settings.environment == "staging" and owner_id.startswith(
+            "operator:pi-qualification:"
+        )
+
+    def _enforce_abuse_circuit(
+        self,
+        owner_id: str,
+        reserved_microusd: int,
+        now: datetime,
+    ) -> None:
+        if self._qualification_bypasses_abuse_circuit(owner_id):
+            return
+
+        # Serialize the global check with insertion across users and workers.
+        # The monthly usage row separately serializes each user's reservations.
+        self.db.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended("chat-openrouter-abuse-circuit", 0)
+                )
+            )
+        )
+        cutoff = now - timedelta(
+            seconds=self.settings.chat_openrouter_rate_limit_window_seconds
+        )
+        active_call = ChatOpenRouterProviderCall.state != "released"
+        external_call = active_call
+        if self.settings.environment == "staging":
+            external_call = (
+                active_call
+                & ~ChatOpenRouterProviderCall.hf_user_id.startswith(
+                    "operator:pi-qualification:"
+                )
+            )
+
+        user_calls = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(ChatOpenRouterProviderCall)
+                .where(
+                    ChatOpenRouterProviderCall.hf_user_id == owner_id,
+                    ChatOpenRouterProviderCall.reserved_at >= cutoff,
+                    active_call,
+                )
+            )
+            or 0
+        )
+        retry_at = now + timedelta(
+            seconds=self.settings.chat_openrouter_rate_limit_window_seconds
+        )
+        if user_calls >= self.settings.chat_openrouter_user_rate_limit_calls:
+            raise OpenRouterAbuseLimitExceeded("user_rate", retry_at)
+
+        global_calls = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(ChatOpenRouterProviderCall)
+                .where(
+                    ChatOpenRouterProviderCall.reserved_at >= cutoff,
+                    external_call,
+                )
+            )
+            or 0
+        )
+        if global_calls >= self.settings.chat_openrouter_global_rate_limit_calls:
+            raise OpenRouterAbuseLimitExceeded("global_rate", retry_at)
+
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        guarded_cost = case(
+            (
+                ChatOpenRouterProviderCall.state.in_(
+                    {"reserved", "dispatched", "cost_unknown"}
+                ),
+                ChatOpenRouterProviderCall.reserved_microusd,
+            ),
+            (
+                ChatOpenRouterProviderCall.state == "settled",
+                func.coalesce(
+                    ChatOpenRouterProviderCall.actual_microusd,
+                    ChatOpenRouterProviderCall.reserved_microusd,
+                ),
+            ),
+            else_=0,
+        )
+        guarded_daily_spend = int(
+            self.db.scalar(
+                select(func.coalesce(func.sum(guarded_cost), 0)).where(
+                    ChatOpenRouterProviderCall.reserved_at >= day_start,
+                    external_call,
+                )
+            )
+            or 0
+        )
+        daily_limit = usd_to_microusd(self.settings.chat_openrouter_daily_budget_usd)
+        if guarded_daily_spend + reserved_microusd > daily_limit:
+            raise OpenRouterAbuseLimitExceeded(
+                "global_daily_budget", day_start + timedelta(days=1)
+            )
+
     def status_percentage(
         self, owner_id: str, now: datetime | None = None
     ) -> OpenRouterUsageStatus:
@@ -332,6 +439,7 @@ class OpenRouterUserBudgetService:
                 month_start=existing.month_start,
                 idempotent_replay=True,
             )
+        self._enforce_abuse_circuit(owner_id, reserved, current)
         usage = self._ensure_usage(owner_id, month_start)
         if usage.limit_microusd != self.limit_microusd:
             # A month's limit is an immutable snapshot. Config changes apply

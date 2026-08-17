@@ -334,9 +334,16 @@ explicit `provider.sort=throughput` request policy is equivalent to the
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` environment workspace limit.
 Durable PostgreSQL reservations enforce the separate `$5` per-user ceiling
-before each funded gateway dispatch. Production exposes the same allowance and
-BYOK product behavior only after its production schema and protected secrets
-pass closed qualification; it never reuses staging credentials or state.
+before each funded gateway dispatch. The same reservation transaction enforces
+30 funded provider calls per user and 80 globally per rolling 10 minutes, plus a
+guarded `$10` UTC-day application circuit. Settled calls count at actual cost;
+in-flight and unknown-cost calls count at their conservative reservation. Only
+the staging-only `operator:pi-qualification:` identity may bypass these short
+window and daily circuits so explicitly authorized load tests do not weaken or
+misrepresent the public protections. Monthly per-user and provider workspace
+limits still apply. Production exposes the same allowance and BYOK product
+behavior only after its production schema and protected secrets pass closed
+qualification; it never reuses staging credentials or state.
 
 Automatic title generation uses the server-funded OpenRouter credential and
 routes `deepseek/deepseek-v4-flash-0731` through Nitro throughput sorting. It

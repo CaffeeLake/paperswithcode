@@ -281,6 +281,14 @@ class Settings(BaseSettings):
     chat_openrouter_workspace_monthly_budget_usd: Decimal = Field(
         default=Decimal("200.00"), gt=0, le=10000
     )
+    chat_openrouter_daily_budget_usd: Decimal = Field(
+        default=Decimal("10.00"), gt=0, le=1000
+    )
+    chat_openrouter_rate_limit_window_seconds: int = Field(
+        default=10 * 60, ge=60, le=24 * 60 * 60
+    )
+    chat_openrouter_user_rate_limit_calls: int = Field(default=30, ge=1, le=1000)
+    chat_openrouter_global_rate_limit_calls: int = Field(default=80, ge=1, le=10000)
     # Kept as read-only aliases during the staging rollback window. New code
     # enforces the per-user and workspace values above.
     chat_openrouter_monthly_budget_usd: Decimal = Field(

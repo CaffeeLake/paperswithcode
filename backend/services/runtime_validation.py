@@ -672,6 +672,13 @@ def _validate_chat_openrouter_policy(settings: Settings) -> None:
         raise RuntimeError("OpenRouter workspace budget must equal $200")
     if settings.chat_openrouter_monthly_user_budget_usd != 5:
         raise RuntimeError("OpenRouter per-user budget must equal $5")
+    if (
+        settings.chat_openrouter_daily_budget_usd != 10
+        or settings.chat_openrouter_rate_limit_window_seconds != 600
+        or settings.chat_openrouter_user_rate_limit_calls != 30
+        or settings.chat_openrouter_global_rate_limit_calls != 80
+    ):
+        raise RuntimeError("OpenRouter abuse circuit policy is invalid")
     if not settings.chat_openrouter_user_tracking_secret:
         raise RuntimeError("OpenRouter user tracking HMAC is required")
     from backend.services.openrouter_byok_service import credential_keyring

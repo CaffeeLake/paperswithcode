@@ -614,6 +614,29 @@ def test_staging_rejects_openrouter_request_bound_above_user_budget(tmp_path: Pa
         validate_runtime(settings)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("chat_openrouter_daily_budget_usd", 11),
+        ("chat_openrouter_rate_limit_window_seconds", 300),
+        ("chat_openrouter_user_rate_limit_calls", 31),
+        ("chat_openrouter_global_rate_limit_calls", 81),
+    ],
+)
+def test_staging_rejects_weakened_openrouter_abuse_circuit(
+    tmp_path: Path,
+    field: str,
+    value: int,
+):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_openrouter_server_funded_enabled = True
+    setattr(settings, field, value)
+
+    with pytest.raises(RuntimeError, match="abuse circuit policy is invalid"):
+        validate_runtime(settings)
+
+
 def test_staging_openrouter_values_preserve_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

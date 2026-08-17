@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 import uuid
 from datetime import UTC, datetime
@@ -69,6 +70,7 @@ from backend.services.openrouter_byok_service import (
 from backend.services.openrouter_usage_extractor import OpenRouterUsageExtractor
 from backend.services.openrouter_user_budget_service import (
     PUBLIC_SUPPORT_URL,
+    OpenRouterAbuseLimitExceeded,
     OpenRouterMonthlyBudgetExhausted,
     OpenRouterPricingUnavailable,
     OpenRouterUserBudgetService,
@@ -807,6 +809,26 @@ async def messages(
                     "remaining_percent": usage.remaining_percent,
                     "resets_at": error.resets_at.isoformat().replace("+00:00", "Z"),
                 },
+            ) from None
+        except OpenRouterAbuseLimitExceeded as error:
+            db.rollback()
+            code = f"openrouter_{error.scope}_limited"
+            _record_provider_error(capability_id, code)
+            retry_seconds = max(
+                1,
+                math.ceil((error.retry_at - datetime.now(UTC)).total_seconds()),
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": code,
+                    "message": (
+                        "Shared OpenRouter usage is temporarily limited. "
+                        "You can retry later or use your own key in Settings."
+                    ),
+                    "byok_settings_available": True,
+                },
+                headers={"Retry-After": str(retry_seconds)},
             ) from None
         except OpenRouterPricingUnavailable:
             db.rollback()

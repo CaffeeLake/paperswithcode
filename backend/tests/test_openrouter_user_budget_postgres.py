@@ -29,6 +29,7 @@ from backend.services.openrouter_byok_service import (
     OpenRouterCredentialUnavailable,
 )
 from backend.services.openrouter_user_budget_service import (
+    OpenRouterAbuseLimitExceeded,
     OpenRouterMonthlyBudgetExhausted,
     OpenRouterUserBudgetService,
     RequestBounds,
@@ -176,6 +177,91 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
         assert usage.reserved_microusd == 0
         assert usage.spent_microusd == 220_000
         assert usage.unknown_cost_calls == 0
+
+
+def test_funded_call_abuse_circuits_and_qualification_bypass(session_factory):
+    bounds = RequestBounds(
+        request_bytes=100,
+        maximum_output_tokens=100,
+        payload={"messages": [{"role": "user", "content": "bounded"}]},
+    )
+
+    def reserve(db, settings, owner: str, now: datetime) -> None:
+        OpenRouterUserBudgetService(db, settings).reserve_call(
+            owner,
+            uuid.uuid4(),
+            uuid.uuid4(),
+            1,
+            settings.chat_deepseek_v4_flash_openrouter_route,
+            bounds,
+            now,
+        )
+
+    user_settings = _settings().model_copy(
+        update={
+            "chat_openrouter_user_rate_limit_calls": 2,
+            "chat_openrouter_global_rate_limit_calls": 100,
+            "chat_openrouter_daily_budget_usd": 100,
+        }
+    )
+    user_now = NOW + timedelta(days=1)
+    with session_factory.begin() as db:
+        reserve(db, user_settings, "rate-user", user_now)
+        reserve(db, user_settings, "rate-user", user_now)
+        with pytest.raises(OpenRouterAbuseLimitExceeded) as limited:
+            reserve(db, user_settings, "rate-user", user_now)
+        assert limited.value.scope == "user_rate"
+
+    global_settings = _settings().model_copy(
+        update={
+            "chat_openrouter_user_rate_limit_calls": 100,
+            "chat_openrouter_global_rate_limit_calls": 2,
+            "chat_openrouter_daily_budget_usd": 100,
+        }
+    )
+    global_now = NOW + timedelta(days=2)
+    with session_factory.begin() as db:
+        reserve(db, global_settings, "global-user-1", global_now)
+        reserve(db, global_settings, "global-user-2", global_now)
+        with pytest.raises(OpenRouterAbuseLimitExceeded) as limited:
+            reserve(db, global_settings, "global-user-3", global_now)
+        assert limited.value.scope == "global_rate"
+
+    daily_settings = _settings().model_copy(
+        update={
+            "chat_openrouter_user_rate_limit_calls": 100,
+            "chat_openrouter_global_rate_limit_calls": 100,
+            "chat_openrouter_daily_budget_usd": "0.02",
+        }
+    )
+    daily_now = NOW + timedelta(days=3)
+    with session_factory.begin() as db:
+        reserve(db, daily_settings, "daily-user-1", daily_now)
+        with pytest.raises(OpenRouterAbuseLimitExceeded) as limited:
+            reserve(db, daily_settings, "daily-user-2", daily_now)
+        assert limited.value.scope == "global_daily_budget"
+
+    bypass_settings = _settings().model_copy(
+        update={
+            "chat_openrouter_user_rate_limit_calls": 1,
+            "chat_openrouter_global_rate_limit_calls": 1,
+            "chat_openrouter_daily_budget_usd": "0.001",
+        }
+    )
+    bypass_now = NOW + timedelta(days=4)
+    with session_factory.begin() as db:
+        reserve(
+            db,
+            bypass_settings,
+            "operator:pi-qualification:safeguard:0",
+            bypass_now,
+        )
+        reserve(
+            db,
+            bypass_settings,
+            "operator:pi-qualification:safeguard:0",
+            bypass_now,
+        )
 
 
 def test_retention_deletes_resolved_rows_but_keeps_unknown_cost(session_factory):

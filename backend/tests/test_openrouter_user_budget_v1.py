@@ -30,6 +30,7 @@ from backend.services.openrouter_byok_service import (
 )
 from backend.services.openrouter_usage_extractor import OpenRouterUsageExtractor
 from backend.services.openrouter_user_budget_service import (
+    OpenRouterAbuseLimitExceeded,
     OpenRouterPricingUnavailable,
     RequestBounds,
     safe_maximum_microusd,
@@ -289,6 +290,89 @@ def test_gateway_releases_capability_lock_before_openrouter_budget_check(monkeyp
 
     assert error.value.status_code == 503
     assert db.commits == 1
+
+
+def test_gateway_reports_funded_abuse_limit_without_dispatch(monkeypatch):
+    class FakeDB:
+        commits = 0
+        rollbacks = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    class FakeCapabilityService:
+        def __init__(self, _db):
+            pass
+
+        def meter_provider(self, row, **_kwargs):
+            row.provider_requests += 1
+
+    class LimitedBudgetService:
+        def __init__(self, *_args):
+            pass
+
+        def reserve_call(self, *_args, **_kwargs):
+            raise OpenRouterAbuseLimitExceeded("global_rate", datetime.now(UTC))
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {}
+
+        async def body(self):
+            return (
+                b'{"model":"deepseek/deepseek-v4-flash-0731",'
+                b'"max_tokens":100,"messages":[]}'
+            )
+
+    settings = _settings()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        model=settings.chat_deepseek_v4_flash_openrouter_route,
+        provider_mode="openrouter_funded",
+        provider_requests=0,
+        reasoning_effort="high",
+    )
+    db = FakeDB()
+
+    async def allow_budget(_settings):
+        return None
+
+    recorded = []
+    monkeypatch.setattr(gateway, "_scope", lambda *_args, **_kwargs: row)
+    monkeypatch.setattr(gateway, "_capability_owner", lambda *_args: "hf-user")
+    monkeypatch.setattr(
+        gateway,
+        "_provider_target",
+        lambda *_args: ("https://openrouter.ai/api/v1/messages", "token", None),
+    )
+    monkeypatch.setattr(gateway, "ChatCapabilityService", FakeCapabilityService)
+    monkeypatch.setattr(gateway, "OpenRouterUserBudgetService", LimitedBudgetService)
+    monkeypatch.setattr(gateway, "require_openrouter_budget", allow_budget)
+    monkeypatch.setattr(
+        gateway, "_record_provider_error", lambda *args: recorded.append(args)
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            gateway.messages(
+                FakeRequest(),
+                "Bearer capability",
+                str(uuid.uuid4()),
+                str(uuid.uuid4()),
+                db,
+                settings,
+            )
+        )
+
+    assert error.value.status_code == 429
+    assert error.value.detail["code"] == "openrouter_global_rate_limited"
+    assert error.value.detail["byok_settings_available"] is True
+    assert error.value.headers == {"Retry-After": "1"}
+    assert recorded[0][1] == "openrouter_global_rate_limited"
+    assert db.rollbacks == 1
 
 
 def test_usage_extraction_missing_malformed_or_conflicting_cost_is_unknown():
