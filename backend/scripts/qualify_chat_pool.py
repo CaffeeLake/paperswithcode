@@ -336,7 +336,7 @@ class PoolQualification:
                 json=payload,
             ) as response,
         ):
-            if response.status_code == 429:
+            if response.status_code == 429 or response.status_code >= 500:
                 return PoolSample(
                     request_id=None,
                     acquisition_outcome=None,
@@ -348,7 +348,7 @@ class PoolQualification:
                     continuous_pool_interval=False,
                     cleanup_confirmed=False,
                     terminal_status="error",
-                    error_code="http_429",
+                    error_code=f"http_{response.status_code}",
                 )
             response.raise_for_status()
             async for line in response.aiter_lines():

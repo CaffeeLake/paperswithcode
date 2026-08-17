@@ -1197,26 +1197,6 @@ async def stream_chat(
                         "Your Hugging Face Inference Providers authorization is "
                         "missing or expired. Re-sign in with Hugging Face to continue.",
                     )
-                if provider == "openrouter" and not admission.replay_assistant:
-                    try:
-                        openrouter = await _authorize_openrouter(
-                            settings,
-                            db,
-                            owner.hf_user_id,
-                            shared_funding_allowed=_shared_openrouter_funding_allowed(
-                                settings, user
-                            ),
-                        )
-                    except ChatServiceError as exc:
-                        service.fail_turn(owner, admission, exc.code)
-                        exc.commit_changes = True
-                        raise
-                    owner = replace(
-                        owner,
-                        openrouter_mode=openrouter.mode,
-                        openrouter_token=openrouter.token,
-                        openrouter_credential_revision=openrouter.credential_revision,
-                    )
                 title_token = (
                     service.begin_title(
                         owner,
@@ -1245,6 +1225,30 @@ async def stream_chat(
                 else:
                     db.rollback()
                 raise
+        if provider == "openrouter" and not admission.replay_assistant:
+            try:
+                with db_manager.session_local() as db:
+                    openrouter = await _authorize_openrouter(
+                        settings,
+                        db,
+                        owner.hf_user_id,
+                        shared_funding_allowed=_shared_openrouter_funding_allowed(
+                            settings, user
+                        ),
+                    )
+            except ChatServiceError as exc:
+                with db_manager.session_local() as db:
+                    ChatSessionService(db, settings).fail_turn(
+                        owner, admission, exc.code
+                    )
+                    db.commit()
+                raise
+            owner = replace(
+                owner,
+                openrouter_mode=openrouter.mode,
+                openrouter_token=openrouter.token,
+                openrouter_credential_revision=openrouter.credential_revision,
+            )
     except ChatServiceError as exc:
         if exc.code == "chat_capacity":
             logger.warning(

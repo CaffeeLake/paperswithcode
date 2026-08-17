@@ -1942,7 +1942,10 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         prompt_revision=1,
         title_should_generate=True,
         execution_backend="local_mcp",
+        agent_harness="pi",
     )
+
+    commits = []
 
     class FakeDB:
         def __enter__(self):
@@ -1952,7 +1955,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
             return None
 
         def commit(self):
-            pass
+            commits.append(True)
 
     class FakeService:
         def __init__(self, *_args):
@@ -1983,16 +1986,23 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         "inference_credential_for_request",
         lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
     )
-    monkeypatch.setattr(
-        chat_router,
-        "_authorize_openrouter",
-        lambda *_args: asyncio.sleep(
-            0,
-            result=chat_router.OpenRouterAdmission(
-                "openrouter_funded", "title-test-token", None
-            ),
-        ),
-    )
+
+    async def authorize_openrouter(*_args, **_kwargs):
+        assert commits, "durable admission must release its locks before provider I/O"
+        return chat_router.OpenRouterAdmission(
+            "openrouter_funded", "title-test-token", None
+        )
+
+    monkeypatch.setattr(chat_router, "_authorize_openrouter", authorize_openrouter)
+
+    class FakeLatencyService:
+        def __init__(self, *_args):
+            pass
+
+        def admit(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(chat_router, "ChatLatencyService", FakeLatencyService)
 
     class FakeRunner:
         sdk_directory = settings.chat_agent_cwd
