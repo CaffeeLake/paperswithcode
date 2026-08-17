@@ -35,7 +35,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_conference_suggestion_edit_type.sql` | conference suggestions submitted from the conference directory |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
 | `add_chat_sessions.sql` | Authenticated chat sessions, UI messages, and opaque Agent SDK transcript storage |
-| `add_chat_primary_paper.sql` | Staging reader-chat session binding plus durable primary-paper and viewer-orientation turn snapshots; apply with `search_path=staging,public` before activating the reader |
+| `add_chat_primary_paper.sql` | Common chat-session primary-paper binding plus durable reader-context snapshots; apply to each enabled environment before activating code that uses the shared chat ORM |
 | `add_chat_session_archiving.sql` | Non-destructive bulk archiving for old chats and the active-chat quota |
 | `add_chat_edit_preparation_state.sql` | Typed durable fork identity used to recover interrupted chat edits |
 | `add_chat_sandbox_runtime.sql` | Staging-only additive immutable chat backend selection, runtime provenance, sandbox leases, and hash-only turn capabilities; run as PostgreSQL superuser with `search_path=staging,public` before activating the bridge |

@@ -1067,6 +1067,7 @@ class _ChatSchemaDB:
         include_pool_columns: bool = True,
         include_latency_columns: bool = True,
         include_qualification_columns: bool = True,
+        include_reader_context_columns: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
@@ -1075,6 +1076,7 @@ class _ChatSchemaDB:
         self.include_pool_columns = include_pool_columns
         self.include_latency_columns = include_latency_columns
         self.include_qualification_columns = include_qualification_columns
+        self.include_reader_context_columns = include_reader_context_columns
 
     def execute(self, statement):
         sql = str(statement)
@@ -1139,6 +1141,14 @@ class _ChatSchemaDB:
                 ("chat_openrouter_provider_calls", "provider_ttft_ms"),
                 ("chat_openrouter_provider_calls", "system_token_bucket"),
             ]
+            if self.include_reader_context_columns:
+                rows.extend(
+                    [
+                        ("chat_sessions", "primary_paper_id"),
+                        ("chat_messages", "primary_paper_context"),
+                        ("chat_messages", "viewer_context"),
+                    ]
+                )
             if self.include_edit_columns:
                 rows.extend(
                     [
@@ -1245,6 +1255,14 @@ def test_chat_schema_requires_qualification_metadata_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
         validate_chat_schema(
             _ChatSchemaDB("off", include_qualification_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
+
+
+def test_chat_schema_requires_reader_context_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_reader_context_columns=False),
             Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
         )
 
@@ -2415,6 +2433,7 @@ def test_common_chat_migrations_support_isolated_production_schema():
         "add_chat_shares.sql",
         "add_chat_edit_preparation_state.sql",
         "add_chat_paper_mentions.sql",
+        "add_chat_primary_paper.sql",
         "add_chat_title_budget.sql",
     )
 

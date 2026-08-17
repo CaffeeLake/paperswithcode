@@ -1,5 +1,16 @@
 -- Add immutable primary-paper binding and per-turn reader context.
--- Apply to staging with search_path=staging,public before activating the reader.
+-- Apply with search_path=staging,public or public before activating code that
+-- uses the shared chat ORM.
+
+BEGIN;
+
+DO $$
+BEGIN
+    IF current_schema() NOT IN ('staging', 'public') THEN
+        RAISE EXCEPTION
+            'add_chat_primary_paper.sql must run with search_path staging,public or public';
+    END IF;
+END $$;
 
 ALTER TABLE chat_sessions
     ADD COLUMN IF NOT EXISTS primary_paper_id BIGINT;
@@ -29,3 +40,5 @@ ALTER TABLE chat_messages
 
 ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS viewer_context JSONB;
+
+COMMIT;
