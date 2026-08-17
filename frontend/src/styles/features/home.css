@@ -68,8 +68,8 @@
   .layout-with-sidebar > .feed-main {
     display: contents;
   }
-  .sidebar-section-top-domains { order: 1; }
-  .feed-chat { order: 2; }
+  .feed-chat { order: 1; }
+  .sidebar-section-top-domains { order: 2; }
   .sidebar-section-trending-domains { order: 3; }
   .feed-content { order: 4; }
 }
