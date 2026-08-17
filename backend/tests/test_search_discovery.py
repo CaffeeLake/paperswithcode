@@ -152,6 +152,7 @@ def test_missing_entity_and_unknown_top_level_are_real_404s(client, monkeypatch)
         "/conferences",
         "/organizations",
         "/chat/abc",
+        "/pdf/2606.23050",
         "/privacy",
     ],
 )
