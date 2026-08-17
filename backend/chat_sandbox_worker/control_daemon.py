@@ -179,6 +179,15 @@ def _validate_assignment(
     agent_harness = str(launch["agent_harness"])
     if agent_harness not in {"claude", "pi"}:
         raise RuntimeError("Persistent worker harness is invalid")
+    if os.environ.get("PWC_CHAT_PI_PREWARM_ENABLED") == "true":
+        if agent_harness != "pi":
+            raise RuntimeError("Prewarmed Pi worker rejected incompatible harness")
+        if run.get("model") != os.environ.get("PWC_CHAT_PI_PREWARM_MODEL"):
+            raise RuntimeError("Prewarmed Pi worker rejected incompatible model")
+        if run.get("reasoning_effort") != os.environ.get(
+            "PWC_CHAT_PI_PREWARM_REASONING_EFFORT"
+        ):
+            raise RuntimeError("Prewarmed Pi worker rejected incompatible reasoning")
     if assigned_session_id and assigned_session_id != session_id:
         raise RuntimeError("Persistent worker session ownership mismatch")
     if assigned_agent_harness and assigned_agent_harness != agent_harness:
@@ -349,6 +358,8 @@ def _serve_connections(
     assigned_session_id: str | None = None
     assigned_agent_harness: str | None = None
     agent: subprocess.Popen | None = None
+    if os.environ.get("PWC_CHAT_PI_PREWARM_ENABLED") == "true":
+        agent = _start_agent("pi", proxy_token)
     connection: socket.socket | None = None
     try:
         while broker.poll() is None and (agent is None or agent.poll() is None):

@@ -177,6 +177,47 @@ def test_record_phase_and_finalize_are_first_write_only(db):
     assert not service.record_phase(str(request_id), "first_worker_delta", 200)
 
 
+def test_ttft_semantics_and_pool_cohorts_are_content_free(db):
+    session_id = _session(db)
+    request_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, request_id=request_id)
+    service = ChatLatencyService(db)
+
+    assert service.record_phase(
+        str(request_id),
+        "first_semantic_event",
+        123,
+        first_semantic_event_class="reasoning",
+    )
+    assert service.record_phase(
+        str(request_id),
+        "sandbox_acquisition_ms",
+        20,
+        acquisition_outcome="pool_miss",
+        pool_miss_reason="incompatible_profile",
+    )
+    assert service.update_browser(
+        "owner-1",
+        str(request_id),
+        SimpleNamespace(
+            submission_to_stream_start_ms=None,
+            submission_to_first_visible_delta_ms=150,
+            submission_to_first_reasoning_delta_ms=175,
+            submission_to_first_tool_call_ms=300,
+            submission_to_first_answer_delta_ms=450,
+            terminal_classification=None,
+        ),
+    )
+    db.refresh(row)
+
+    assert row.first_semantic_event_ms == 123
+    assert row.first_semantic_event_class == "reasoning"
+    assert row.pool_miss_reason == "incompatible_profile"
+    assert row.browser_first_reasoning_delta_ms == 175
+    assert row.browser_first_tool_call_ms == 300
+    assert row.browser_first_answer_delta_ms == 450
+
+
 def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
     session_id = _session(db)
     request_id = uuid.uuid4()

@@ -77,7 +77,9 @@ async def resolve_modal_image(image_reference: str) -> object:
     return modal.Image.from_name(image_reference)
 
 
-def sandbox_environment(settings: Settings) -> dict[str, str]:
+def sandbox_environment(
+    settings: Settings, *, pi_prewarm: bool = False
+) -> dict[str, str]:
     return {
         "PWC_CHAT_GATEWAY_URL": settings.chat_gateway_url,
         "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_deepseek_v4_flash_route,
@@ -94,6 +96,16 @@ def sandbox_environment(settings: Settings) -> dict[str, str]:
         "PWC_CHAT_AGENT_TIMEOUT_SECONDS": str(settings.chat_agent_timeout_seconds),
         "PWC_CHAT_SANDBOX_PIDS_MAX": str(settings.chat_sandbox_pids_max),
         "PWC_CHAT_MAX_OUTPUT_TOKENS": str(PROVIDER_OUTPUT_TOKEN_LIMIT),
+        "PWC_CHAT_PI_PREWARM_ENABLED": str(
+            settings.chat_pi_prewarm_enabled and pi_prewarm
+        ).lower(),
+        "PWC_CHAT_PI_PREWARM_MODEL": settings.chat_pi_prewarm_model,
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": (
+            settings.chat_pi_prewarm_reasoning_effort
+        ),
+        "PWC_CHAT_PI_PROVIDER_ADAPTER_CONTRACT": (
+            settings.chat_pi_provider_adapter_contract
+        ),
     }
 
 
@@ -156,7 +168,10 @@ class ModalSandboxProviderAdapter:
             app=app,
             image=image,
             env={
-                **sandbox_environment(self.settings),
+                **sandbox_environment(
+                    self.settings,
+                    pi_prewarm=tags.get("pool") == "blank",
+                ),
                 "PWC_CHAT_WORKER_GENERATION": worker_generation,
             },
             name=name,

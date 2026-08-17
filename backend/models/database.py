@@ -2276,6 +2276,24 @@ class ChatSandboxPool(Base):
     )
     image_version: Mapped[str] = mapped_column(String(255), nullable=False)
     worker_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_harness: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="generic"
+    )
+    agent_harness_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="generic"
+    )
+    model_profile: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default="generic"
+    )
+    reasoning_profile: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="generic"
+    )
+    prompt_digest: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="generic"
+    )
+    provider_adapter_contract: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="generic"
+    )
     worker_generation: Mapped[str] = mapped_column(String(64), nullable=False)
     app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
     claim_generation: Mapped[int] = mapped_column(
@@ -2689,14 +2707,26 @@ class ChatTurnLatency(Base):
     broker_capability_installed_ms: Mapped[Optional[int]] = mapped_column(Integer)
     sdk_query_dispatched_ms: Mapped[Optional[int]] = mapped_column(Integer)
     provider_gateway_received_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    control_connection_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_spawn_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_startup_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    session_bind_restore_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    resource_loading_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_session_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
     upstream_response_headers_ms: Mapped[Optional[int]] = mapped_column(Integer)
     upstream_first_body_byte_ms: Mapped[Optional[int]] = mapped_column(Integer)
     first_worker_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
     first_application_sse_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    first_semantic_event_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    pool_miss_reason: Mapped[Optional[str]] = mapped_column(String(32))
+    session_reuse_cohort: Mapped[Optional[str]] = mapped_column(String(32))
     total_ms: Mapped[Optional[int]] = mapped_column(Integer)
 
     browser_stream_start_ms: Mapped[Optional[int]] = mapped_column(Integer)
     browser_first_visible_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    browser_first_reasoning_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    browser_first_tool_call_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    browser_first_answer_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
     browser_terminal_classification: Mapped[Optional[str]] = mapped_column(
         String(24), nullable=True
     )
@@ -3014,6 +3044,22 @@ class ChatOpenRouterProviderCall(Base):
     reasoning_effort: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="high"
     )
+    upstream_provider: Mapped[Optional[str]] = mapped_column(String(128))
+    routing_policy: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="throughput"
+    )
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    cache_creation_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    provider_ttft_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    fallback_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    request_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    system_token_bucket: Mapped[Optional[int]] = mapped_column(Integer)
+    tool_token_bucket: Mapped[Optional[int]] = mapped_column(Integer)
+    conversation_token_bucket: Mapped[Optional[int]] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
     actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

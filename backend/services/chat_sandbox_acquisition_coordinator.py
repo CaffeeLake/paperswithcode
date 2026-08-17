@@ -88,6 +88,7 @@ class LeaseReused:
     sandbox: object
     elapsed_ms: int
     pool_lookup_ms: int | None
+    reuse_cohort: str = "rediscovered"
 
     @property
     def public_label(self) -> Literal["reused_session"]:
@@ -104,6 +105,7 @@ class SandboxCreated:
     elapsed_ms: int
     after_pool_miss: bool
     pool_lookup_ms: int | None
+    pool_miss_reason: str | None = None
 
     @property
     def public_label(self) -> Literal["pool_miss", "created"]:
@@ -268,6 +270,7 @@ class ChatSandboxAcquisitionCoordinator:
         pool_miss: bool = False,
         pool_lookup_ms: int | None = None,
         budget_prechecked: bool = False,
+        pool_miss_reason: str | None = None,
     ) -> SandboxAcquisitionOutcome:
         started = self.perf_counter()
         if not budget_prechecked and self.spend_enforced:
@@ -292,6 +295,7 @@ class ChatSandboxAcquisitionCoordinator:
                     pool_lookup_ms=pool_lookup_ms,
                 )
             pool_miss = True
+            pool_miss_reason = "empty_pool"
 
         deadline = self.monotonic() + self.ready_timeout_seconds
         selected = await self._claim_start_or_reuse(
@@ -308,6 +312,7 @@ class ChatSandboxAcquisitionCoordinator:
             started=started,
             after_pool_miss=pool_miss,
             pool_lookup_ms=pool_lookup_ms,
+            pool_miss_reason=pool_miss_reason,
         )
 
     async def _claim_start_or_reuse(
@@ -496,6 +501,7 @@ class ChatSandboxAcquisitionCoordinator:
         started: float,
         after_pool_miss: bool,
         pool_lookup_ms: int | None,
+        pool_miss_reason: str | None,
     ) -> SandboxCreated:
         claim = acquired.claim
         interval_id = acquired.interval_id
@@ -628,6 +634,7 @@ class ChatSandboxAcquisitionCoordinator:
             elapsed_ms=self._elapsed_ms(started),
             after_pool_miss=after_pool_miss,
             pool_lookup_ms=pool_lookup_ms,
+            pool_miss_reason=pool_miss_reason,
         )
 
     async def _cleanup_failed_start(

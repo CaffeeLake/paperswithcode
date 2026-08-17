@@ -51,6 +51,12 @@ class PoolCompatibility:
     cpu_limit: float
     memory_request_mib: int
     memory_limit_mib: int
+    agent_harness: str = "generic"
+    agent_harness_version: str = "generic"
+    model_profile: str = "generic"
+    reasoning_profile: str = "generic"
+    prompt_digest: str = "generic"
+    provider_adapter_contract: str = "generic"
 
 
 @dataclass(frozen=True)
@@ -179,6 +185,7 @@ class ChatSandboxPoolRepository:
         self.pool_id_factory = pool_id_factory or uuid.uuid4
 
     def compatibility(self) -> PoolCompatibility:
+        pi_prewarm = self.settings.chat_pi_prewarm_enabled
         return PoolCompatibility(
             image_version=self.settings.chat_modal_image_version,
             worker_contract_version=self.settings.chat_worker_contract_version,
@@ -190,6 +197,26 @@ class ChatSandboxPoolRepository:
             memory_limit_mib=(
                 self.settings.chat_sandbox_memory_limit_mib
                 or self.settings.chat_sandbox_memory_mib
+            ),
+            agent_harness="pi" if pi_prewarm else "generic",
+            agent_harness_version=(
+                self.settings.chat_pi_version if pi_prewarm else "generic"
+            ),
+            model_profile=(
+                self.settings.chat_pi_prewarm_model if pi_prewarm else "generic"
+            ),
+            reasoning_profile=(
+                self.settings.chat_pi_prewarm_reasoning_effort
+                if pi_prewarm
+                else "generic"
+            ),
+            prompt_digest=(
+                self.settings.chat_system_prompt_sha256 if pi_prewarm else "generic"
+            ),
+            provider_adapter_contract=(
+                self.settings.chat_pi_provider_adapter_contract
+                if pi_prewarm
+                else "generic"
             ),
         )
 
@@ -380,6 +407,12 @@ class ChatSandboxPoolRepository:
                 state="starting",
                 image_version=compatibility.image_version,
                 worker_contract_version=compatibility.worker_contract_version,
+                agent_harness=compatibility.agent_harness,
+                agent_harness_version=compatibility.agent_harness_version,
+                model_profile=compatibility.model_profile,
+                reasoning_profile=compatibility.reasoning_profile,
+                prompt_digest=compatibility.prompt_digest,
+                provider_adapter_contract=compatibility.provider_adapter_contract,
                 worker_generation=reservation.worker_generation,
                 app_release_id=reservation.app_release_id,
                 claim_generation=reservation.claim_generation,
@@ -424,6 +457,12 @@ class ChatSandboxPoolRepository:
             or row.worker_generation != reservation.worker_generation
             or row.image_version != compatibility.image_version
             or row.worker_contract_version != compatibility.worker_contract_version
+            or row.agent_harness != compatibility.agent_harness
+            or row.agent_harness_version != compatibility.agent_harness_version
+            or row.model_profile != compatibility.model_profile
+            or row.reasoning_profile != compatibility.reasoning_profile
+            or row.prompt_digest != compatibility.prompt_digest
+            or row.provider_adapter_contract != compatibility.provider_adapter_contract
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -455,6 +494,12 @@ class ChatSandboxPoolRepository:
             or row.worker_generation != reservation.worker_generation
             or row.image_version != compatibility.image_version
             or row.worker_contract_version != compatibility.worker_contract_version
+            or row.agent_harness != compatibility.agent_harness
+            or row.agent_harness_version != compatibility.agent_harness_version
+            or row.model_profile != compatibility.model_profile
+            or row.reasoning_profile != compatibility.reasoning_profile
+            or row.prompt_digest != compatibility.prompt_digest
+            or row.provider_adapter_contract != compatibility.provider_adapter_contract
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -494,6 +539,12 @@ class ChatSandboxPoolRepository:
             or row.worker_generation != reservation.worker_generation
             or row.image_version != compatibility.image_version
             or row.worker_contract_version != compatibility.worker_contract_version
+            or row.agent_harness != compatibility.agent_harness
+            or row.agent_harness_version != compatibility.agent_harness_version
+            or row.model_profile != compatibility.model_profile
+            or row.reasoning_profile != compatibility.reasoning_profile
+            or row.prompt_digest != compatibility.prompt_digest
+            or row.provider_adapter_contract != compatibility.provider_adapter_contract
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -626,6 +677,13 @@ class ChatSandboxPoolRepository:
             incompatible = (
                 row.image_version != compatibility.image_version
                 or row.worker_contract_version != compatibility.worker_contract_version
+                or row.agent_harness != compatibility.agent_harness
+                or row.agent_harness_version != compatibility.agent_harness_version
+                or row.model_profile != compatibility.model_profile
+                or row.reasoning_profile != compatibility.reasoning_profile
+                or row.prompt_digest != compatibility.prompt_digest
+                or row.provider_adapter_contract
+                != compatibility.provider_adapter_contract
                 or row.cpu_request != compatibility.cpu_request
                 or row.cpu_limit != compatibility.cpu_limit
                 or row.memory_request_mib != compatibility.memory_request_mib
@@ -962,6 +1020,14 @@ class ChatSandboxPoolRepository:
             ChatSandboxPool.image_version == compatibility.image_version,
             ChatSandboxPool.worker_contract_version
             == compatibility.worker_contract_version,
+            ChatSandboxPool.agent_harness == compatibility.agent_harness,
+            ChatSandboxPool.agent_harness_version
+            == compatibility.agent_harness_version,
+            ChatSandboxPool.model_profile == compatibility.model_profile,
+            ChatSandboxPool.reasoning_profile == compatibility.reasoning_profile,
+            ChatSandboxPool.prompt_digest == compatibility.prompt_digest,
+            ChatSandboxPool.provider_adapter_contract
+            == compatibility.provider_adapter_contract,
             ChatSandboxPool.cpu_request == compatibility.cpu_request,
             ChatSandboxPool.cpu_limit == compatibility.cpu_limit,
             ChatSandboxPool.memory_request_mib == compatibility.memory_request_mib,

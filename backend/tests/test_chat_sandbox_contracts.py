@@ -332,6 +332,64 @@ def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
         )
 
 
+def test_prewarmed_pi_assignment_rejects_harness_model_and_reasoning_mismatch(
+    monkeypatch,
+):
+    monkeypatch.setenv("PWC_CHAT_GATEWAY_URL", "https://gateway.example.test")
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    monkeypatch.setenv("PWC_CHAT_PI_PREWARM_ENABLED", "true")
+    monkeypatch.setenv("PWC_CHAT_PI_PREWARM_MODEL", "deepseek/profile")
+    monkeypatch.setenv("PWC_CHAT_PI_PREWARM_REASONING_EFFORT", "low")
+    session_id = str(uuid.uuid4())
+    turn_id = str(uuid.uuid4())
+    launch = {
+        "capability": "capability",
+        "gateway_url": os.environ["PWC_CHAT_GATEWAY_URL"],
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "assignment-a",
+        "worker_generation": "generation-a",
+        "agent_harness": "pi",
+    }
+    run = {
+        "v": 1,
+        "type": "run_turn",
+        "request_id": str(uuid.uuid4()),
+        "chat_session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "assignment-a",
+        "worker_generation": "generation-a",
+        "agent_harness": "pi",
+        "model": "deepseek/profile",
+        "reasoning_effort": "low",
+    }
+
+    assert control_daemon._validate_assignment(
+        launch, run, assigned_session_id=None, assigned_agent_harness=None
+    ) == (session_id, "pi")
+    with pytest.raises(RuntimeError, match="incompatible harness"):
+        control_daemon._validate_assignment(
+            {**launch, "agent_harness": "claude"},
+            {**run, "agent_harness": "claude"},
+            assigned_session_id=None,
+            assigned_agent_harness=None,
+        )
+    with pytest.raises(RuntimeError, match="incompatible model"):
+        control_daemon._validate_assignment(
+            launch,
+            {**run, "model": "other"},
+            assigned_session_id=None,
+            assigned_agent_harness=None,
+        )
+    with pytest.raises(RuntimeError, match="incompatible reasoning"):
+        control_daemon._validate_assignment(
+            launch,
+            {**run, "reasoning_effort": "high"},
+            assigned_session_id=None,
+            assigned_agent_harness=None,
+        )
+
+
 def test_persistent_health_probe_requires_idle_children_and_empty_broker(
     monkeypatch,
 ):

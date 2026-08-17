@@ -1,6 +1,11 @@
 import type { ChatBlock, ChatEvent, ChatMessage } from "./chat";
 
 export const WORKSPACE_STATUS = "Preparing research workspace…";
+export const LIFECYCLE_STATUS = {
+  preparing_workspace: "Preparing secure workspace…",
+  starting_agent: "Starting research agent…",
+  connecting_model: "Connecting to model…",
+} as const;
 
 export type ChatLifecyclePhase =
   | "idle"
@@ -44,7 +49,12 @@ function findLastMatchingIndex<T>(
 }
 
 function withoutWorkspaceStatus(message: ChatMessage): ChatMessage {
-  if (message.status !== WORKSPACE_STATUS) return message;
+  if (
+    message.status !== WORKSPACE_STATUS
+    && !Object.values(LIFECYCLE_STATUS).includes(
+      message.status as (typeof LIFECYCLE_STATUS)[keyof typeof LIFECYCLE_STATUS],
+    )
+  ) return message;
   const { status: _status, ...rest } = message;
   return rest;
 }
@@ -87,6 +97,17 @@ function reduceEvent(
     case "sandbox_ready":
     case "workspace_ready":
       return state;
+    case "lifecycle":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => (
+          message.role === "assistant"
+          && message.streaming
+          && (message.blocks?.length ?? 0) === 0
+            ? { ...message, status: LIFECYCLE_STATUS[event.phase] }
+            : message
+        )),
+      };
     case "session_title_start":
       return { ...state, title: "" };
     case "session_title_delta":

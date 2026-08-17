@@ -24,7 +24,12 @@ from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
-from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnCapability
+from backend.models.database import (
+    ChatMessageRecord,
+    ChatOpenRouterProviderCall,
+    ChatSession,
+    ChatTurnCapability,
+)
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -243,8 +248,48 @@ def _provider_target(
     raise HTTPException(status_code=422, detail="Unsupported model provider")
 
 
-def _prefer_fastest_openrouter_provider(payload: dict[str, Any]) -> None:
-    payload["provider"] = {"sort": "throughput"}
+def _prefer_fastest_openrouter_provider(
+    payload: dict[str, Any], configured: Settings | None = None
+) -> None:
+    configured = configured or get_settings()
+    policy = (
+        configured.chat_openrouter_routing_policy
+        if configured.chat_openrouter_routing_enabled
+        else "throughput"
+    )
+    payload["provider"] = {"sort": policy}
+
+
+def _optimize_initial_deepseek_payload(payload: dict[str, Any]) -> dict[str, int]:
+    """Remove only byte-identical duplicate immutable payload entries."""
+
+    removed_system = 0
+    system = payload.get("system")
+    if isinstance(system, list):
+        seen: set[str] = set()
+        unique = []
+        for block in system:
+            identity = json.dumps(block, sort_keys=True, separators=(",", ":"))
+            if identity in seen:
+                removed_system += 1
+                continue
+            seen.add(identity)
+            unique.append(block)
+        payload["system"] = unique
+    removed_tools = 0
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        seen_tools: set[str] = set()
+        unique_tools = []
+        for tool in tools:
+            identity = json.dumps(tool, sort_keys=True, separators=(",", ":"))
+            if identity in seen_tools:
+                removed_tools += 1
+                continue
+            seen_tools.add(identity)
+            unique_tools.append(tool)
+        payload["tools"] = unique_tools
+    return {"system_blocks": removed_system, "tools": removed_tools}
 
 
 def _apply_openrouter_reasoning_policy(
@@ -302,7 +347,24 @@ def _settle_openrouter_call(
             service.mark_cost_unknown(call_id, result.generation_id)
         else:
             service.settle_call(call_id, result.cost_microusd, result.generation_id)
+        call = accounting_db.get(ChatOpenRouterProviderCall, call_id)
+        if call is not None:
+            call.upstream_provider = result.provider
+            call.prompt_tokens = result.prompt_tokens
+            call.completion_tokens = result.completion_tokens
+            call.cache_read_tokens = result.cache_read_tokens
+            call.cache_creation_tokens = result.cache_creation_tokens
         accounting_db.commit()
+
+
+def _record_provider_ttft(call_id: uuid.UUID | None, elapsed_ms: int) -> None:
+    if call_id is None:
+        return
+    with db_manager.session_local() as timing_db:
+        call = timing_db.get(ChatOpenRouterProviderCall, call_id)
+        if call is not None and call.provider_ttft_ms is None:
+            call.provider_ttft_ms = elapsed_ms
+        timing_db.commit()
 
 
 def _scope(
@@ -628,7 +690,20 @@ async def messages(
         # Supplemental reconciliation metadata is opaque and cannot identify
         # the HF subject at OpenRouter.
         payload["user"] = opaque_owner(owner_id, settings)
-        _prefer_fastest_openrouter_provider(payload)
+        _prefer_fastest_openrouter_provider(payload, settings)
+        if (
+            settings.chat_initial_payload_optimization_enabled
+            and model == settings.chat_pi_prewarm_model
+            and row.provider_requests == 0
+        ):
+            removed = _optimize_initial_deepseek_payload(payload)
+            logger.info(
+                "chat initial payload optimization turn=%s removed_system=%s "
+                "removed_tools=%s",
+                _opaque_turn(turn_id),
+                removed["system_blocks"],
+                removed["tools"],
+            )
         effort = getattr(row, "reasoning_effort", None) or "high"
         try:
             _apply_openrouter_reasoning_policy(
@@ -758,6 +833,11 @@ async def messages(
         model=model,
         provider_mode=provider_mode,
         reasoning_effort=getattr(row, "reasoning_effort", None) or "high",
+        routing_policy=(
+            settings.chat_openrouter_routing_policy
+            if settings.chat_openrouter_routing_enabled
+            else "throughput"
+        ),
     )
     upstream_headers = _provider_headers(
         provider_token,
@@ -828,6 +908,7 @@ async def messages(
                     first_byte = False
                     elapsed_ms = round((time.perf_counter() - gateway_started) * 1000)
                     provider_trace.first_byte(elapsed_ms)
+                    _record_provider_ttft(funded_call_id, elapsed_ms)
                     _record_gateway_timing(
                         settings,
                         turn_id,
@@ -876,6 +957,7 @@ async def messages(
     extractor.inspect_complete_response(body)
     elapsed_ms = round((time.perf_counter() - gateway_started) * 1000)
     provider_trace.first_byte(elapsed_ms)
+    _record_provider_ttft(funded_call_id, elapsed_ms)
     _record_gateway_timing(
         settings,
         turn_id,

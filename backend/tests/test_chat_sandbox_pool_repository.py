@@ -118,6 +118,16 @@ def _pool(
         state=state,
         image_version=settings.chat_modal_image_version,
         worker_contract_version=settings.chat_worker_contract_version,
+        agent_harness=repository_compatibility(settings).agent_harness,
+        agent_harness_version=(
+            repository_compatibility(settings).agent_harness_version
+        ),
+        model_profile=repository_compatibility(settings).model_profile,
+        reasoning_profile=repository_compatibility(settings).reasoning_profile,
+        prompt_digest=repository_compatibility(settings).prompt_digest,
+        provider_adapter_contract=(
+            repository_compatibility(settings).provider_adapter_contract
+        ),
         worker_generation=generation,
         app_release_id=settings.release_id,
         created_at=now - timedelta(minutes=2),
@@ -134,6 +144,34 @@ def _pool(
         ),
         billing_month=now.date().replace(day=1),
     )
+
+
+def repository_compatibility(settings: Settings) -> PoolCompatibility:
+    return ChatSandboxPoolRepository(
+        settings, capacity_locker=lambda *_args, **_kwargs: True
+    ).compatibility()
+
+
+def test_pi_prewarm_compatibility_is_exact_and_generic_pool_remains_rollback_safe():
+    generic = repository_compatibility(_settings())
+    prewarmed = repository_compatibility(
+        _settings(
+            chat_pi_prewarm_enabled=True,
+            chat_pi_version="pi-v2",
+            chat_pi_prewarm_model="deepseek/profile",
+            chat_pi_prewarm_reasoning_effort="low",
+            chat_system_prompt_sha256="a" * 64,
+            chat_pi_provider_adapter_contract="adapter-v2",
+        )
+    )
+
+    assert generic.agent_harness == "generic"
+    assert prewarmed.agent_harness == "pi"
+    assert prewarmed.agent_harness_version == "pi-v2"
+    assert prewarmed.model_profile == "deepseek/profile"
+    assert prewarmed.reasoning_profile == "low"
+    assert prewarmed.prompt_digest == "a" * 64
+    assert prewarmed.provider_adapter_contract == "adapter-v2"
 
 
 def _interval(

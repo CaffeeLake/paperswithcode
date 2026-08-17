@@ -974,6 +974,9 @@ class ChatStreamOrchestrator:
                     str(event["phase"]),
                     int(event["elapsed_ms"]),
                     acquisition_outcome=event.get("acquisition_outcome"),
+                    first_semantic_event_class=event.get("first_semantic_event_class"),
+                    pool_miss_reason=event.get("pool_miss_reason"),
+                    session_reuse_cohort=event.get("session_reuse_cohort"),
                 )
                 continue
             if kind == "_execution_telemetry":
@@ -1034,7 +1037,7 @@ class ChatStreamOrchestrator:
             }:
                 self.first_application_delta_recorded = True
                 self._record_latency_phase(
-                    "first_worker_delta",
+                    "first_semantic_event",
                     elapsed_ms,
                     first_semantic_event_class={
                         "reasoning_delta": "reasoning",
@@ -1361,6 +1364,8 @@ class ChatStreamOrchestrator:
         *,
         acquisition_outcome: str | None = None,
         first_semantic_event_class: str | None = None,
+        pool_miss_reason: str | None = None,
+        session_reuse_cohort: str | None = None,
     ) -> None:
         try:
             with db_manager.session_local() as db:
@@ -1370,6 +1375,8 @@ class ChatStreamOrchestrator:
                     elapsed_ms,
                     acquisition_outcome=acquisition_outcome,
                     first_semantic_event_class=first_semantic_event_class,
+                    pool_miss_reason=pool_miss_reason,
+                    session_reuse_cohort=session_reuse_cohort,
                 )
                 db.commit()
         except Exception as exc:

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -358,6 +359,21 @@ class OpenRouterUserBudgetService:
             month_start=month_start,
             model_route=model_route,
             reasoning_effort=reasoning_effort,
+            routing_policy=(
+                self.settings.chat_openrouter_routing_policy
+                if self.settings.chat_openrouter_routing_enabled
+                else "throughput"
+            ),
+            request_bytes=request_bounds.request_bytes,
+            system_token_bucket=self._payload_token_bucket(
+                request_bounds.payload.get("system")
+            ),
+            tool_token_bucket=self._payload_token_bucket(
+                request_bounds.payload.get("tools")
+            ),
+            conversation_token_bucket=self._payload_token_bucket(
+                request_bounds.payload.get("messages")
+            ),
             state="reserved",
             reserved_microusd=reserved,
             reserved_at=current,
@@ -375,6 +391,15 @@ class OpenRouterUserBudgetService:
             reserved,
         )
         return ReservedCall(call_id, reserved, month_start)
+
+    @staticmethod
+    def _payload_token_bucket(value: object) -> int:
+        if value is None:
+            return 0
+        encoded = json.dumps(value, separators=(",", ":")).encode()
+        estimate = max(1, len(encoded) // 4)
+        # Coarse buckets avoid pretending byte heuristics are tokenizer-exact.
+        return min(512_000, int(math.ceil(estimate / 128) * 128))
 
     def _locked_call(self, call_id: uuid.UUID):
         row = self.db.execute(

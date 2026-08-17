@@ -741,6 +741,17 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             >= settings.chat_persistent_sandbox_lifetime_seconds
         ):
             raise RuntimeError("blank pool rotation window is invalid")
+    if settings.chat_pi_prewarm_enabled:
+        if not settings.chat_blank_pool_enabled:
+            raise RuntimeError("Pi prewarm requires the blank pool")
+        if not settings.chat_persistent_worker_enabled:
+            raise RuntimeError("Pi prewarm requires persistent workers")
+        if settings.chat_default_agent_harness != "pi":
+            raise RuntimeError("Pi prewarm requires Pi as the default harness")
+        if settings.chat_pi_prewarm_model not in settings.chat_route_providers:
+            raise RuntimeError("Pi prewarm model is not in the route registry")
+        if not settings.chat_system_prompt_sha256:
+            raise RuntimeError("Pi prewarm requires an immutable prompt digest")
 
 
 def _validate_chat_execution_identity(settings: Settings) -> None:
@@ -936,6 +947,12 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_sandbox_pool", "worker_generation"),
         ("chat_sandbox_pool", "billing_month"),
         ("chat_sandbox_pool", "estimated_blank_cost_usd"),
+        ("chat_sandbox_pool", "agent_harness"),
+        ("chat_sandbox_pool", "agent_harness_version"),
+        ("chat_sandbox_pool", "model_profile"),
+        ("chat_sandbox_pool", "reasoning_profile"),
+        ("chat_sandbox_pool", "prompt_digest"),
+        ("chat_sandbox_pool", "provider_adapter_contract"),
         ("chat_sandbox_compute_intervals", "accrued_microusd"),
         ("chat_sandbox_budget_states", "circuit_state"),
         ("chat_sandbox_budget_states", "provider_floor_microusd"),
@@ -950,6 +967,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_latency", "request_id"),
         ("chat_turn_latency", "terminal_status"),
         ("chat_turn_latency", "browser_first_visible_delta_ms"),
+        ("chat_turn_latency", "browser_first_reasoning_delta_ms"),
+        ("chat_turn_latency", "first_semantic_event_ms"),
+        ("chat_turn_latency", "pool_miss_reason"),
+        ("chat_turn_latency", "session_reuse_cohort"),
         ("chat_turn_latency", "estimated_active_cost_usd"),
         ("chat_turn_latency", "qualification_run_id"),
         ("chat_turn_latency", "qualification_scenario"),
@@ -972,6 +993,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_openrouter_monthly_usage", "reserved_microusd"),
         ("chat_openrouter_provider_calls", "actual_microusd"),
         ("chat_openrouter_provider_calls", "reasoning_effort"),
+        ("chat_openrouter_provider_calls", "routing_policy"),
+        ("chat_openrouter_provider_calls", "provider_ttft_ms"),
+        ("chat_openrouter_provider_calls", "system_token_bucket"),
     }
     web_search_columns = {
         ("chat_sessions", "web_search_enabled"),
@@ -1019,6 +1043,12 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_sandbox_pool', 'worker_generation'),
                 ('chat_sandbox_pool', 'billing_month'),
                 ('chat_sandbox_pool', 'estimated_blank_cost_usd'),
+                ('chat_sandbox_pool', 'agent_harness'),
+                ('chat_sandbox_pool', 'agent_harness_version'),
+                ('chat_sandbox_pool', 'model_profile'),
+                ('chat_sandbox_pool', 'reasoning_profile'),
+                ('chat_sandbox_pool', 'prompt_digest'),
+                ('chat_sandbox_pool', 'provider_adapter_contract'),
                 ('chat_sandbox_compute_intervals', 'accrued_microusd'),
                 ('chat_sandbox_budget_states', 'circuit_state'),
                 ('chat_sandbox_budget_states', 'provider_floor_microusd'),
@@ -1033,6 +1063,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_turn_latency', 'request_id'),
                 ('chat_turn_latency', 'terminal_status'),
                 ('chat_turn_latency', 'browser_first_visible_delta_ms'),
+                ('chat_turn_latency', 'browser_first_reasoning_delta_ms'),
+                ('chat_turn_latency', 'first_semantic_event_ms'),
+                ('chat_turn_latency', 'pool_miss_reason'),
+                ('chat_turn_latency', 'session_reuse_cohort'),
                 ('chat_turn_latency', 'estimated_active_cost_usd'),
                 ('chat_turn_latency', 'qualification_run_id'),
                 ('chat_turn_latency', 'qualification_scenario'),
@@ -1048,6 +1082,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_openrouter_monthly_usage', 'reserved_microusd'),
                 ('chat_openrouter_provider_calls', 'actual_microusd')
                 ,('chat_openrouter_provider_calls', 'reasoning_effort')
+                ,('chat_openrouter_provider_calls', 'routing_policy')
+                ,('chat_openrouter_provider_calls', 'provider_ttft_ms')
+                ,('chat_openrouter_provider_calls', 'system_token_bucket')
                 ,('chat_sessions', 'web_search_enabled')
                 ,('chat_messages', 'web_search_enabled')
                 ,('chat_turn_capabilities', 'web_search_calls')

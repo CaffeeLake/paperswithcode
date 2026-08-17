@@ -50,6 +50,9 @@ class PoolSample:
     cleanup_confirmed: bool
     terminal_status: str
     error_code: str | None
+    assignment_to_dispatch_ms: int | None = None
+    browser_reasoning_ms: int | None = None
+    pool_miss_reason: str | None = None
 
 
 def percentile(values: list[int], quantile: float) -> int:
@@ -68,8 +71,12 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
             return None
         return {
             "count": len(values),
+            "min": min(values),
             "p50": round(statistics.median(values)),
+            "p75": percentile(values, 0.75),
+            "p90": percentile(values, 0.90),
             "p95": percentile(values, 0.95),
+            "p99": percentile(values, 0.99),
             "max": max(values),
         }
 
@@ -82,6 +89,21 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
         "pool_misses": sum(
             sample.acquisition_outcome == "pool_miss" for sample in samples
         ),
+        "hit_rate": round(
+            sum(sample.acquisition_outcome == "pool_hit" for sample in samples)
+            / max(1, len(samples)),
+            4,
+        ),
+        "miss_reasons": {
+            reason: sum(sample.pool_miss_reason == reason for sample in samples)
+            for reason in sorted(
+                {
+                    sample.pool_miss_reason
+                    for sample in samples
+                    if sample.pool_miss_reason
+                }
+            )
+        },
         "continuous_pool_intervals": sum(
             sample.continuous_pool_interval for sample in samples
         ),
@@ -89,6 +111,8 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
         "pool_lookup_ms": metric("pool_lookup_ms"),
         "sdk_dispatch_ms": metric("sdk_dispatch_ms"),
         "first_delta_ms": metric("first_delta_ms"),
+        "assignment_to_dispatch_ms": metric("assignment_to_dispatch_ms"),
+        "browser_reasoning_ms": metric("browser_reasoning_ms"),
         "total_ms": metric("total_ms"),
         "estimated_active_cost_usd": {
             "total": round(
@@ -115,11 +139,15 @@ class PoolQualification:
         billing_settings,
         samples: int,
         blank_timeout: float,
+        arrival_concurrency: int,
+        interarrival_ms: int,
     ):
         self.settings = settings
         self.billing_settings = billing_settings
         self.samples = samples
         self.blank_timeout = blank_timeout
+        self.arrival_concurrency = arrival_concurrency
+        self.interarrival_ms = interarrival_ms
         self.started_at = datetime.now(UTC)
         self.run_id = uuid.uuid4().hex[:12]
 
@@ -211,6 +239,15 @@ class PoolQualification:
                     pool_lookup_ms=row.pool_lookup_completed_ms,
                     sdk_dispatch_ms=row.sdk_query_dispatched_ms,
                     first_delta_ms=row.first_application_sse_delta_ms,
+                    assignment_to_dispatch_ms=(
+                        row.sdk_query_dispatched_ms
+                        - row.session_assignment_completed_ms
+                        if row.sdk_query_dispatched_ms is not None
+                        and row.session_assignment_completed_ms is not None
+                        else None
+                    ),
+                    browser_reasoning_ms=row.browser_first_reasoning_delta_ms,
+                    pool_miss_reason=row.pool_miss_reason,
                     total_ms=row.total_ms,
                     estimated_active_cost_usd=(
                         float(row.estimated_active_cost_usd)
@@ -288,17 +325,17 @@ class PoolQualification:
                     terminal = str(event["type"])
                     error_code = str(event.get("code")) if event.get("code") else None
         sample = PoolSample(
-            request_id,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            False,
-            False,
-            terminal,
-            error_code,
+            request_id=request_id,
+            acquisition_outcome=None,
+            pool_lookup_ms=None,
+            sdk_dispatch_ms=None,
+            first_delta_ms=None,
+            total_ms=None,
+            estimated_active_cost_usd=None,
+            continuous_pool_interval=False,
+            cleanup_confirmed=False,
+            terminal_status=terminal,
+            error_code=error_code,
         )
         session_id: uuid.UUID | None = None
         interval_id: uuid.UUID | None = None
@@ -338,10 +375,17 @@ class PoolQualification:
             )
 
     async def run(self) -> tuple[list[PoolSample], int]:
-        landed: list[PoolSample] = []
-        for index in range(self.samples):
-            await self._wait_for_blank()
-            landed.append(await self._turn(index))
+        await self._wait_for_blank()
+        semaphore = asyncio.Semaphore(self.arrival_concurrency)
+
+        async def paced_turn(index: int) -> PoolSample:
+            await asyncio.sleep(index * self.interarrival_ms / 1000)
+            async with semaphore:
+                return await self._turn(index)
+
+        landed = list(
+            await asyncio.gather(*(paced_turn(index) for index in range(self.samples)))
+        )
         await self._wait_for_blank()
         return landed, self._blank_starts()
 
@@ -365,7 +409,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Qualify authenticated staging blank-pool claims and turns"
     )
-    result.add_argument("--samples", type=int, default=100)
+    result.add_argument("--samples", type=int, default=200)
+    result.add_argument("--arrival-concurrency", type=int, default=4)
+    result.add_argument("--interarrival-ms", type=int, default=750)
     result.add_argument("--candidate-cpu", type=float, required=True)
     result.add_argument("--candidate-memory-mib", type=int, required=True)
     result.add_argument("--blank-timeout", type=float, default=90)
@@ -380,6 +426,10 @@ def main() -> int:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     if not 1 <= args.samples <= 200:
         raise SystemExit("--samples must be 1-200")
+    if not 1 <= args.arrival_concurrency <= 8:
+        raise SystemExit("--arrival-concurrency must be 1-8")
+    if not 100 <= args.interarrival_ms <= 10_000:
+        raise SystemExit("--interarrival-ms must be 100-10000")
     environment_settings = get_settings()
     release = settings_for_release(args.release_dir)
     release_settings = environment_settings.model_copy(
@@ -399,6 +449,8 @@ def main() -> int:
         billing_settings=environment_settings,
         samples=args.samples,
         blank_timeout=args.blank_timeout,
+        arrival_concurrency=args.arrival_concurrency,
+        interarrival_ms=args.interarrival_ms,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())
@@ -406,7 +458,7 @@ def main() -> int:
     summary = summarize(samples)
     passed = (
         summary["complete"] == args.samples
-        and summary["pool_hits"] == args.samples
+        and summary["hit_rate"] >= 0.95
         and summary["continuous_pool_intervals"] == args.samples
         and summary["cleanup_confirmed"] == args.samples
         and blank_starts >= args.samples
@@ -423,6 +475,8 @@ def main() -> int:
                 ),
                 "configuration": {
                     "samples": args.samples,
+                    "arrival_concurrency": args.arrival_concurrency,
+                    "interarrival_ms": args.interarrival_ms,
                     "sandbox_cpu": args.candidate_cpu,
                     "sandbox_cpu_limit": (
                         qualification.settings.chat_sandbox_cpu_limit

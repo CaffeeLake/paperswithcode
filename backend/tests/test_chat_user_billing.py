@@ -10,6 +10,7 @@ from backend.chat_gateway_app import (
     _apply_openrouter_reasoning_policy,
     _byok_provider_error_code,
     _huggingface_provider_error_code,
+    _optimize_initial_deepseek_payload,
     _prefer_fastest_openrouter_provider,
     _provider_headers,
     _provider_target,
@@ -121,6 +122,33 @@ def test_gateway_uses_openrouter_nitro_routing():
     _prefer_fastest_openrouter_provider(payload)
 
     assert payload["provider"] == {"sort": "throughput"}
+
+
+def test_gateway_latency_routing_is_independently_gated():
+    payload = {}
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_routing_enabled=True,
+        chat_openrouter_routing_policy="latency",
+    )
+
+    _prefer_fastest_openrouter_provider(payload, settings)
+
+    assert payload["provider"] == {"sort": "latency"}
+
+
+def test_initial_payload_optimization_removes_only_exact_duplicates():
+    tool = {"name": "search", "description": "Search", "input_schema": {}}
+    payload = {
+        "system": [{"type": "text", "text": "stable"}] * 2,
+        "tools": [tool, dict(tool), {**tool, "description": "Different"}],
+    }
+
+    removed = _optimize_initial_deepseek_payload(payload)
+
+    assert removed == {"system_blocks": 1, "tools": 1}
+    assert len(payload["system"]) == 1
+    assert len(payload["tools"]) == 2
 
 
 def test_gateway_enforces_reasoning_effort_and_hides_reasoning():

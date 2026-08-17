@@ -18,6 +18,7 @@ export class ChatLatencyTracker {
   private streamStartReported = false;
   private firstVisibleReported = false;
   private terminalReported = false;
+  private readonly semanticReported = new Set<"reasoning" | "tool" | "answer">();
 
   constructor(
     private readonly submittedAt: number,
@@ -39,6 +40,17 @@ export class ChatLatencyTracker {
     if (this.firstVisibleAt !== undefined) return;
     this.firstVisibleAt = now;
     this.reportFirstVisible();
+  }
+
+  recordSemantic(kind: "reasoning" | "tool" | "answer", now: number): void {
+    if (this.semanticReported.has(kind)) return;
+    this.semanticReported.add(kind);
+    const elapsed = Math.max(0, now - this.submittedAt);
+    this.send(kind === "reasoning"
+      ? { submission_to_first_reasoning_delta_ms: elapsed }
+      : kind === "tool"
+        ? { submission_to_first_tool_call_ms: elapsed }
+        : { submission_to_first_answer_delta_ms: elapsed });
   }
 
   recordTerminal(classification: ChatTerminalClassification): void {

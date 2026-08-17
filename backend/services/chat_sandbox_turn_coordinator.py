@@ -206,6 +206,7 @@ class ChatSandboxTurnCoordinator:
             "type": "sandbox_start",
             "session_id": str(request.chat_session_id),
         }
+        yield {"type": "lifecycle", "phase": "preparing_workspace"}
         acquisition = await self._acquire_for_turn(
             request,
             allow_pool=allow_pool,
@@ -226,6 +227,8 @@ class ChatSandboxTurnCoordinator:
             "phase": "sandbox_acquisition_ms",
             "elapsed_ms": self._elapsed_ms(turn_started),
             "acquisition_outcome": acquisition_label,
+            "pool_miss_reason": getattr(acquisition, "pool_miss_reason", None),
+            "session_reuse_cohort": getattr(acquisition, "reuse_cohort", None),
         }
         if isinstance(acquisition, PoolAcquired):
             yield {
@@ -244,10 +247,12 @@ class ChatSandboxTurnCoordinator:
             "session_id": str(request.chat_session_id),
             "cold_start_ms": cold_start_ms,
         }
+        yield {"type": "lifecycle", "phase": "starting_agent"}
 
         claim: WorkerClaim | None = None
         execution: WorkerTurnExecution | None = None
         try:
+            first_semantic_recorded = False
             claim = self._claim_worker(request.chat_session_id, sandbox.object_id)
             execution = self.transport.create_execution(
                 sandbox,
@@ -309,6 +314,30 @@ class ChatSandboxTurnCoordinator:
                 elif output is WorkerTurnMilestone.CANCELLED:
                     yield {"type": "_cancelled"}
                 else:
+                    if output.get("type") == "_latency":
+                        yield {
+                            **output,
+                            "elapsed_ms": self._elapsed_ms(turn_started),
+                        }
+                        continue
+                    if not first_semantic_recorded and output.get("type") in {
+                        "reasoning_delta",
+                        "tool_call",
+                        "answer_delta",
+                    }:
+                        first_semantic_recorded = True
+                        yield {
+                            "type": "_latency",
+                            "phase": "first_semantic_event",
+                            "elapsed_ms": self._elapsed_ms(turn_started),
+                            "first_semantic_event_class": {
+                                "reasoning_delta": "reasoning",
+                                "tool_call": "tool",
+                                "answer_delta": "answer",
+                            }[output["type"]],
+                        }
+                    if output.get("type") == "workspace_ready":
+                        yield {"type": "lifecycle", "phase": "connecting_model"}
                     yield output
         except (TimeoutError, ProtocolError, SandboxError) as error:
             if self._retryable_assignment_failure(acquisition, execution):
@@ -383,16 +412,29 @@ class ChatSandboxTurnCoordinator:
                     sandbox=reusable,
                     elapsed_ms=0,
                     pool_lookup_ms=None,
+                    reuse_cohort="fully_in_memory",
                 )
+        prewarm_incompatible = bool(
+            self.settings.chat_pi_prewarm_enabled
+            and request.resume is None
+            and (
+                request.agent_harness != "pi"
+                or request.model != self.settings.chat_pi_prewarm_model
+                or request.reasoning_effort
+                != self.settings.chat_pi_prewarm_reasoning_effort
+            )
+        )
         return await self.acquisition.acquire(
             request.chat_session_id,
-            pool_miss=forced_pool_miss,
+            pool_miss=forced_pool_miss or prewarm_incompatible,
+            pool_miss_reason=("incompatible_profile" if prewarm_incompatible else None),
             budget_prechecked=True,
             allow_pool=bool(
                 allow_pool
                 and self.persistent_enabled
                 and self.acquisition.blank_pool_enabled
                 and request.resume is None
+                and not prewarm_incompatible
             ),
         )
 

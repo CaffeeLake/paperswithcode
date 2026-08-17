@@ -9,12 +9,17 @@ export async function renderPrompt(options: {
   hfUsername: string;
   webSearchEnabled: boolean;
   assetPath?: string;
+  source?: string;
 }): Promise<string> {
-  const source = await readFile(options.assetPath ?? "/opt/pwc/pi-system-prompt.txt", "utf8");
+  const source = options.source ?? await loadPromptAsset(options.assetPath);
   const date = new Date().toISOString().slice(0, 10);
   return source
     .replace(DATE_SENTINEL, date)
     .replace(MODEL_SENTINEL, options.model)
     .replace(USER_SENTINEL, options.hfUsername)
     .replace('"web_search_enabled":false', `"web_search_enabled":${String(options.webSearchEnabled)}`);
+}
+
+export async function loadPromptAsset(assetPath?: string): Promise<string> {
+  return readFile(assetPath ?? "/opt/pwc/pi-system-prompt.txt", "utf8");
 }

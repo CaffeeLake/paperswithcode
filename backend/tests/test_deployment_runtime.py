@@ -1043,6 +1043,9 @@ class _ChatSchemaDB:
                 ("chat_openrouter_monthly_usage", "reserved_microusd"),
                 ("chat_openrouter_provider_calls", "actual_microusd"),
                 ("chat_openrouter_provider_calls", "reasoning_effort"),
+                ("chat_openrouter_provider_calls", "routing_policy"),
+                ("chat_openrouter_provider_calls", "provider_ttft_ms"),
+                ("chat_openrouter_provider_calls", "system_token_bucket"),
             ]
             if self.include_edit_columns:
                 rows.extend(
@@ -1066,6 +1069,12 @@ class _ChatSchemaDB:
                         ("chat_sandbox_pool", "worker_generation"),
                         ("chat_sandbox_pool", "billing_month"),
                         ("chat_sandbox_pool", "estimated_blank_cost_usd"),
+                        ("chat_sandbox_pool", "agent_harness"),
+                        ("chat_sandbox_pool", "agent_harness_version"),
+                        ("chat_sandbox_pool", "model_profile"),
+                        ("chat_sandbox_pool", "reasoning_profile"),
+                        ("chat_sandbox_pool", "prompt_digest"),
+                        ("chat_sandbox_pool", "provider_adapter_contract"),
                     ]
                 )
             if self.include_latency_columns:
@@ -1074,6 +1083,10 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "request_id"),
                         ("chat_turn_latency", "terminal_status"),
                         ("chat_turn_latency", "browser_first_visible_delta_ms"),
+                        ("chat_turn_latency", "browser_first_reasoning_delta_ms"),
+                        ("chat_turn_latency", "first_semantic_event_ms"),
+                        ("chat_turn_latency", "pool_miss_reason"),
+                        ("chat_turn_latency", "session_reuse_cohort"),
                         ("chat_turn_latency", "estimated_active_cost_usd"),
                     ]
                 )

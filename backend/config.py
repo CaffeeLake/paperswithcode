@@ -437,6 +437,20 @@ class Settings(BaseSettings):
     chat_blank_pool_min_remaining_seconds: int = Field(default=240, ge=60, le=3600)
     chat_blank_pool_rotate_before_seconds: int = Field(default=3600, ge=60, le=43200)
     chat_blank_pool_refill_concurrency: int = Field(default=1, ge=1, le=4)
+    chat_pi_prewarm_enabled: bool = Field(default=False)
+    chat_pi_prewarm_model: str = Field(
+        default="deepseek/deepseek-v4-flash-0731",
+        max_length=255,
+    )
+    chat_pi_prewarm_reasoning_effort: Literal["low", "high", "max"] = Field(
+        default="low"
+    )
+    chat_pi_provider_adapter_contract: str = Field(default="1", max_length=64)
+    chat_openrouter_routing_enabled: bool = Field(default=False)
+    chat_openrouter_routing_policy: Literal["throughput", "latency"] = Field(
+        default="throughput"
+    )
+    chat_initial_payload_optimization_enabled: bool = Field(default=False)
     # Read-only compatibility for old environment files during rolling deploys.
     # Enforcement intentionally ignores these blank-only floating-point values.
     chat_blank_pool_monthly_budget_usd: float = Field(default=35, gt=0, le=1000)

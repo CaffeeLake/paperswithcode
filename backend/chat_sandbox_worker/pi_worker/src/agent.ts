@@ -10,7 +10,7 @@ import { PiEventAdapter, reasoningIsVisible, type PwCEvent } from "./events.js";
 import { createWebMcpExtension } from "./mcp.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
-import { renderPrompt } from "./prompt.js";
+import { loadPromptAsset, renderPrompt } from "./prompt.js";
 import { recoverIncompleteResponse, type RecoverySummary } from "./recovery.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
 import { shouldResetSession } from "./session.js";
@@ -35,6 +35,11 @@ export class PiWorker {
   private boundAgentSession: string | undefined;
   private activeRequest: string | undefined;
   private cancelled = false;
+  private initialization: Promise<void> | undefined;
+  private promptAsset: string | undefined;
+  private prewarmedProvider: Awaited<ReturnType<typeof createProvider>> | undefined;
+  private prewarmedModel: string | undefined;
+  private activeProfile: string | undefined;
   private readonly policy = new PolicyController({
     maximumCalls: Number(process.env.PWC_CHAT_MAX_TOOL_CALLS ?? 12),
     maximumRounds: Number(process.env.PWC_CHAT_MAX_TURNS ?? 8) - 2,
@@ -47,6 +52,20 @@ export class PiWorker {
 
   constructor(private readonly emit: (requestId: string, event: PwCEvent) => void) {}
 
+  initialize(): Promise<void> {
+    this.initialization ??= this.initializeImmutableProfile();
+    return this.initialization;
+  }
+
+  private async initializeImmutableProfile(): Promise<void> {
+    this.promptAsset = await loadPromptAsset();
+    if (process.env.PWC_CHAT_PI_PREWARM_ENABLED !== "true") return;
+    const model = process.env.PWC_CHAT_PI_PREWARM_MODEL;
+    if (!model) throw new Error("Pi prewarm model is missing");
+    this.prewarmedProvider = await createProvider(model);
+    this.prewarmedModel = model;
+  }
+
   async cancel(requestId: string): Promise<void> {
     if (requestId !== this.activeRequest || !this.session) return;
     this.cancelled = true;
@@ -58,6 +77,7 @@ export class PiWorker {
     await this.session.extensionRunner.emit({ type: "session_shutdown", reason });
     this.session.dispose();
     this.session = undefined;
+    this.activeProfile = undefined;
   }
 
   private async sessionManager(run: RunTurn): Promise<{ manager: SessionManager; initialCount: number; created: boolean }> {
@@ -131,13 +151,23 @@ export class PiWorker {
   }
 
   private async open(run: RunTurn): Promise<void> {
+    await this.initialize();
+    const phaseStarted = performance.now();
     const state = await this.sessionManager(run);
+    this.emit(run.request_id, { type: "_latency", phase: "session_bind_restore", elapsed_ms: Math.round(performance.now() - phaseStarted) });
     const prompt = await renderPrompt({
       model: run.model,
       hfUsername: run.hf_username,
       webSearchEnabled: run.web_search_enabled,
+      source: this.promptAsset!,
     });
     this.policy.reset(run.web_search_enabled, prompt);
+    const profile = JSON.stringify({
+      model: run.model,
+      reasoningEffort: run.reasoning_effort,
+      webSearchEnabled: run.web_search_enabled,
+      hfUsername: run.hf_username,
+    });
     if (!this.mirror) {
       // The remote count includes the session header; getEntries() contains
       // only tree entries.
@@ -154,8 +184,14 @@ export class PiWorker {
         await this.mirror.flush();
       }
     }
+    if (this.session && this.activeProfile === profile) {
+      this.emit(run.request_id, { type: "_latency", phase: "agent_session_ready", elapsed_ms: Math.round(performance.now() - phaseStarted) });
+      return;
+    }
     await this.disposeSession();
-    const provider = await createProvider(run.model);
+    const provider = this.prewarmedModel === run.model && this.prewarmedProvider
+      ? this.prewarmedProvider
+      : await createProvider(run.model);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: false },
@@ -176,6 +212,7 @@ export class PiWorker {
       ],
     });
     await loader.reload();
+    this.emit(run.request_id, { type: "_latency", phase: "resource_loading", elapsed_ms: Math.round(performance.now() - phaseStarted) });
     const created = await createAgentSession({
       cwd: "/workspace",
       agentDir: "/home/pwc-chat/.pi-disabled",
@@ -191,6 +228,8 @@ export class PiWorker {
     await created.session.bindExtensions({ mode: "print" });
     created.extensionsResult.runtime.refreshTools();
     this.session = created.session;
+    this.activeProfile = profile;
+    this.emit(run.request_id, { type: "_latency", phase: "agent_session_ready", elapsed_ms: Math.round(performance.now() - phaseStarted) });
   }
 
   private mirrorNativeEntries(): void {
@@ -211,6 +250,7 @@ export class PiWorker {
     this.cancelled = false;
     this.boundChatSession ??= run.chat_session_id;
     try {
+      await this.initialize();
       this.emit(run.request_id, { type: "worker_ready" });
       await this.open(run);
       if (!this.session || !this.manager || !this.mirror || !this.boundAgentSession) {

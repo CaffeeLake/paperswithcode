@@ -11,6 +11,27 @@ const streaming = (): ChatMessage[] => [{
 }];
 
 describe("chatLifecycleReducer", () => {
+  it("renders truthful lifecycle phases without adding semantic blocks", () => {
+    let state = chatLifecycleReducer(initialChatLifecycle(), {
+      type: "start",
+      messages: streaming(),
+      sessionId: null,
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: { type: "lifecycle", phase: "preparing_workspace" },
+    });
+    expect(state.messages[0]).toMatchObject({
+      status: "Preparing secure workspace…",
+      blocks: [],
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: { type: "reasoning_start" },
+    });
+    expect(state.messages[0].status).toBeUndefined();
+  });
+
   it("projects stream events and terminal completion without mutation", () => {
     const started = chatLifecycleReducer(initialChatLifecycle(), {
       type: "start",

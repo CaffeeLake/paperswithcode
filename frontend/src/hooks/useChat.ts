@@ -305,7 +305,17 @@ export function useChat(options: UseChatOptions) {
       || (block.kind === "answer" && Boolean(block.text.trim()))
     ));
     if (!visible) return;
-    latency.tracker.recordFirstVisible(performance.now());
+    const renderedAt = performance.now();
+    latency.tracker.recordFirstVisible(renderedAt);
+    for (const block of assistant.blocks ?? []) {
+      if (block.kind === "reasoning" && block.text.trim()) {
+        latency.tracker.recordSemantic("reasoning", renderedAt);
+      } else if (block.kind === "tool") {
+        latency.tracker.recordSemantic("tool", renderedAt);
+      } else if (block.kind === "answer" && block.text.trim()) {
+        latency.tracker.recordSemantic("answer", renderedAt);
+      }
+    }
   }, [messages]);
 
   const applyEvent = (event: ChatEvent, projectToVisible = true) => {
@@ -399,10 +409,11 @@ export function useChat(options: UseChatOptions) {
           if (event.type === "sandbox_start") {
             armWorkspaceStatus(controller, messagesGeneration);
           }
+          if (event.type === "lifecycle") {
+            clearWorkspaceStatus(controller);
+          }
           if (
-            event.type === "sandbox_ready"
-            || event.type === "workspace_ready"
-            || event.type === "reasoning_start"
+            event.type === "reasoning_start"
             || event.type === "reasoning_delta"
             || event.type === "tool_call"
             || event.type === "answer_delta"

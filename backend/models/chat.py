@@ -124,6 +124,15 @@ class ChatBrowserLatencyRequest(BaseModel):
     submission_to_first_visible_delta_ms: float | None = Field(
         default=None, ge=0, le=3_600_000, allow_inf_nan=False
     )
+    submission_to_first_reasoning_delta_ms: float | None = Field(
+        default=None, ge=0, le=3_600_000, allow_inf_nan=False
+    )
+    submission_to_first_tool_call_ms: float | None = Field(
+        default=None, ge=0, le=3_600_000, allow_inf_nan=False
+    )
+    submission_to_first_answer_delta_ms: float | None = Field(
+        default=None, ge=0, le=3_600_000, allow_inf_nan=False
+    )
     terminal_classification: (
         Literal["complete", "stopped", "error", "network_error", "aborted"] | None
     ) = None
@@ -133,6 +142,9 @@ class ChatBrowserLatencyRequest(BaseModel):
         if (
             self.submission_to_stream_start_ms is None
             and self.submission_to_first_visible_delta_ms is None
+            and self.submission_to_first_reasoning_delta_ms is None
+            and self.submission_to_first_tool_call_ms is None
+            and self.submission_to_first_answer_delta_ms is None
             and self.terminal_classification is None
         ):
             raise ValueError("At least one browser timing field is required")

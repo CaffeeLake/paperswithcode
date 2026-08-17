@@ -86,6 +86,10 @@ export type ChatEvent =
       provider_execution?: boolean;
     }
   | { type: "workspace_ready" }
+  | {
+      type: "lifecycle";
+      phase: "preparing_workspace" | "starting_agent" | "connecting_model";
+    }
   | { type: "reasoning_start" }
   | { type: "reasoning_delta"; text: string }
   | { type: "reasoning_end" }
@@ -227,6 +231,9 @@ export class ChatStreamError extends Error {
 export interface ChatBrowserLatencyUpdate {
   submission_to_stream_start_ms?: number;
   submission_to_first_visible_delta_ms?: number;
+  submission_to_first_reasoning_delta_ms?: number;
+  submission_to_first_tool_call_ms?: number;
+  submission_to_first_answer_delta_ms?: number;
   terminal_classification?:
     | "complete"
     | "stopped"

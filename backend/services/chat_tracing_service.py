@@ -494,6 +494,7 @@ def start_provider_request_trace(
     model: str,
     provider_mode: str,
     reasoning_effort: str,
+    routing_policy: str = "throughput",
 ) -> ProviderRequestTrace | NullProviderRequestTrace:
     if not trace_id:
         return NullProviderRequestTrace()
@@ -508,7 +509,7 @@ def start_provider_request_trace(
             "model_round": call_sequence,
             "provider_mode": provider_mode,
             "reasoning_effort": reasoning_effort,
-            "routing_policy": "throughput",
+            "routing_policy": routing_policy,
         }
         observation = client.start_observation(
             trace_context={"trace_id": trace_id},

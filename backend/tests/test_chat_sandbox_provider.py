@@ -17,6 +17,7 @@ from backend.services import chat_sandbox_provider, chat_sandbox_service
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
     SandboxError,
+    sandbox_environment,
 )
 from backend.services.chat_sandbox_service import SandboxSessionManager
 
@@ -103,6 +104,29 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     assert options["include_oidc_identity_token"] is False
     assert options["env"]["PWC_CHAT_WORKER_GENERATION"] == "generation-a"
     assert options["env"]["PWC_CHAT_SHOW_REASONING"] == "true"
+
+
+def test_pi_prewarm_environment_is_pool_only_and_contains_no_credential():
+    settings = _settings(
+        chat_pi_prewarm_enabled=True,
+        chat_pi_prewarm_model="deepseek/profile",
+        chat_pi_prewarm_reasoning_effort="low",
+    )
+
+    direct = sandbox_environment(settings)
+    blank = sandbox_environment(settings, pi_prewarm=True)
+
+    assert direct["PWC_CHAT_PI_PREWARM_ENABLED"] == "false"
+    assert blank["PWC_CHAT_PI_PREWARM_ENABLED"] == "true"
+    assert blank["PWC_CHAT_PI_PREWARM_MODEL"] == "deepseek/profile"
+    assert (
+        not {
+            "OPENROUTER_API_KEY",
+            "HF_TOKEN",
+            "PWC_CHAT_CAPABILITY",
+        }
+        & blank.keys()
+    )
 
 
 def test_create_persistent_sandbox_waits_for_successful_worker_health(monkeypatch):

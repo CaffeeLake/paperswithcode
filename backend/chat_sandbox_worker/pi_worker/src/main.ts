@@ -36,9 +36,9 @@ function runFrame(value: unknown): RunTurn {
 
 const worker = new PiWorker(emit);
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-let chain = Promise.resolve();
+let chain = worker.initialize();
 
-if (persistent) emit("startup", { type: "worker_ready" });
+if (persistent) chain = chain.then(() => emit("startup", { type: "worker_ready" }));
 
 input.on("line", (line) => {
   if (!line.startsWith(PREFIX) || Buffer.byteLength(line) > MAX_FRAME_BYTES + PREFIX.length) return;

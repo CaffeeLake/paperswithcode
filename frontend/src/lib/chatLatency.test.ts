@@ -9,12 +9,19 @@ describe("ChatLatencyTracker", () => {
 
     tracker.recordStreamStart("request-1", 140);
     tracker.recordFirstVisible(175);
+    tracker.recordSemantic("reasoning", 180);
+    tracker.recordSemantic("tool", 200);
+    tracker.recordSemantic("answer", 220);
+    tracker.recordSemantic("reasoning", 999);
     tracker.recordTerminal("complete");
     tracker.recordTerminal("error");
 
     expect(report.mock.calls).toEqual([
       ["request-1", { submission_to_stream_start_ms: 40 }],
       ["request-1", { submission_to_first_visible_delta_ms: 75 }],
+      ["request-1", { submission_to_first_reasoning_delta_ms: 80 }],
+      ["request-1", { submission_to_first_tool_call_ms: 100 }],
+      ["request-1", { submission_to_first_answer_delta_ms: 120 }],
       ["request-1", { terminal_classification: "complete" }],
     ]);
   });

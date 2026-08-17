@@ -44,10 +44,17 @@ PHASE_COLUMNS = {
     "sdk_query_dispatched": "sdk_query_dispatched_ms",
     "sdk_dispatch_ms": "sdk_query_dispatched_ms",
     "provider_gateway_received": "provider_gateway_received_ms",
+    "control_connection": "control_connection_ms",
+    "agent_spawn": "agent_spawn_ms",
+    "agent_startup_ready": "agent_startup_ready_ms",
+    "session_bind_restore": "session_bind_restore_ms",
+    "resource_loading": "resource_loading_ms",
+    "agent_session_ready": "agent_session_ready_ms",
     "upstream_response_headers": "upstream_response_headers_ms",
     "upstream_first_body_byte": "upstream_first_body_byte_ms",
     "first_worker_delta": "first_worker_delta_ms",
     "first_application_sse_delta": "first_application_sse_delta_ms",
+    "first_semantic_event": "first_semantic_event_ms",
 }
 ACQUISITION_OUTCOMES = {
     "pending",
@@ -161,6 +168,8 @@ class ChatLatencyService:
         *,
         acquisition_outcome: str | None = None,
         first_semantic_event_class: str | None = None,
+        pool_miss_reason: str | None = None,
+        session_reuse_cohort: str | None = None,
     ) -> bool:
         column_name = PHASE_COLUMNS.get(phase)
         if column_name is None:
@@ -178,6 +187,25 @@ class ChatLatencyService:
             if first_semantic_event_class not in {"reasoning", "tool", "answer"}:
                 raise ValueError("Unsupported first semantic event class")
             values["first_semantic_event_class"] = first_semantic_event_class
+        if pool_miss_reason is not None:
+            if pool_miss_reason not in {
+                "empty_pool",
+                "incompatible_profile",
+                "stale_blank",
+                "claim_race",
+                "unhealthy_blank",
+            }:
+                raise ValueError("Unsupported pool miss reason")
+            values["pool_miss_reason"] = pool_miss_reason
+        if session_reuse_cohort is not None:
+            if session_reuse_cohort not in {
+                "fully_in_memory",
+                "control_reconnected",
+                "rediscovered",
+                "restarted",
+            }:
+                raise ValueError("Unsupported session reuse cohort")
+            values["session_reuse_cohort"] = session_reuse_cohort
         result = self.db.execute(
             update(ChatTurnLatency)
             .where(
@@ -422,6 +450,15 @@ class ChatLatencyService:
             ),
             "browser_first_visible_delta_ms": _payload_value(
                 payload, "submission_to_first_visible_delta_ms"
+            ),
+            "browser_first_reasoning_delta_ms": _payload_value(
+                payload, "submission_to_first_reasoning_delta_ms"
+            ),
+            "browser_first_tool_call_ms": _payload_value(
+                payload, "submission_to_first_tool_call_ms"
+            ),
+            "browser_first_answer_delta_ms": _payload_value(
+                payload, "submission_to_first_answer_delta_ms"
             ),
             "browser_terminal_classification": _payload_value(
                 payload, "terminal_classification"
