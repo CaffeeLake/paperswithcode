@@ -542,7 +542,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
             FROM evaluations e
             JOIN datasets d ON d.id = e.dataset_id
             WHERE d.slug = 'programbench'
-              AND e.best_metric = 'Accuracy'
+              AND e.best_metric = 'Resolved'
               AND e.external_source_url LIKE 'https://programbench.com/run/%'
               AND e.methodology LIKE
                   'Managed by the Papers with Code ProgramBench live sync.%'

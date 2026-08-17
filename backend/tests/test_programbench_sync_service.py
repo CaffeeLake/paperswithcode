@@ -23,9 +23,11 @@ from backend.models.database import (
 )
 from backend.services import programbench_sync_service as pb
 from backend.services.programbench_sync_service import (
+    ALMOST_RESOLVED_METRIC_NAME,
+    AVERAGE_PASS_RATE_METRIC_NAME,
     HARNESS_NAME,
     MANAGED_METHODOLOGY_PREFIX,
-    METRIC_NAME,
+    PRIMARY_METRIC_NAME,
     PROGRAMBENCH_URL,
     ProgramBenchEntry,
     ProgramBenchSyncService,
@@ -101,11 +103,25 @@ def _session() -> Session:
     session = Session(engine)
     task = Task(id=15, name="Coding Agents", slug="coding-agents")
     dataset = Dataset(id=743, name="ProgramBench", slug="programbench")
-    metric = Metric(id=18, name=METRIC_NAME, direction="higher_is_better")
-    session.add_all([task, dataset, metric])
+    metrics = [
+        Metric(id=18 + index, name=name, direction="higher_is_better")
+        for index, name in enumerate(
+            (
+                PRIMARY_METRIC_NAME,
+                ALMOST_RESOLVED_METRIC_NAME,
+                AVERAGE_PASS_RATE_METRIC_NAME,
+            )
+        )
+    ]
+    session.add_all([task, dataset, *metrics])
     session.add(TaskDataset(task_id=task.id, dataset_id=dataset.id))
-    session.add(
-        TaskDatasetMetric(task_id=task.id, dataset_id=dataset.id, metric_id=metric.id)
+    session.add_all(
+        [
+            TaskDatasetMetric(
+                task_id=task.id, dataset_id=dataset.id, metric_id=metric.id
+            )
+            for metric in metrics
+        ]
     )
     session.add_all(
         [
@@ -131,13 +147,15 @@ def _session() -> Session:
     return session
 
 
-def _entry(upstream_id: str, model: str, accuracy: float) -> ProgramBenchEntry:
+def _entry(
+    upstream_id: str, model: str, average_test_pass_rate: float
+) -> ProgramBenchEntry:
     return ProgramBenchEntry(
         upstream_id=upstream_id,
         model=model,
         provider="Example AI",
         harness=HARNESS_NAME,
-        accuracy=accuracy,
+        average_test_pass_rate=average_test_pass_rate,
         resolved=1,
         almost_resolved=10,
         evaluated_on=date(2026, 8, 2),
@@ -157,7 +175,7 @@ def test_parse_and_fetch_server_rendered_leaderboard(monkeypatch):
         entries = fetch_programbench_leaderboard(client)
 
     assert len(entries) == 15
-    assert entries[0].accuracy == 50
+    assert entries[0].average_test_pass_rate == 50
     assert entries[-1].resolved == 1.4
     assert entries[0].evaluated_on == date(2026, 8, 2)
 
@@ -193,8 +211,8 @@ def test_sync_upserts_managed_rows_and_preserves_manual_rows(monkeypatch):
                 dataset_id=743,
                 model_name="Old label",
                 methodology=(f"{MANAGED_METHODOLOGY_PREFIX} upstream_id=model-a; old"),
-                metrics={METRIC_NAME: 10},
-                best_metric=METRIC_NAME,
+                metrics={"Accuracy": 10},
+                best_metric="Accuracy",
                 external_source_url=f"{PROGRAMBENCH_URL}run/model-a/",
             ),
             Evaluation(
@@ -203,8 +221,8 @@ def test_sync_upserts_managed_rows_and_preserves_manual_rows(monkeypatch):
                 dataset_id=743,
                 model_name="Gone model",
                 methodology=(f"{MANAGED_METHODOLOGY_PREFIX} upstream_id=gone; old"),
-                metrics={METRIC_NAME: 5},
-                best_metric=METRIC_NAME,
+                metrics={"Accuracy": 5},
+                best_metric="Accuracy",
                 external_source_url=f"{PROGRAMBENCH_URL}run/gone/",
             ),
             Evaluation(
@@ -213,8 +231,8 @@ def test_sync_upserts_managed_rows_and_preserves_manual_rows(monkeypatch):
                 dataset_id=743,
                 model_name="Manual model",
                 methodology="Human curated",
-                metrics={METRIC_NAME: 90},
-                best_metric=METRIC_NAME,
+                metrics={AVERAGE_PASS_RATE_METRIC_NAME: 90},
+                best_metric=AVERAGE_PASS_RATE_METRIC_NAME,
             ),
         ]
     )
@@ -232,10 +250,15 @@ def test_sync_upserts_managed_rows_and_preserves_manual_rows(monkeypatch):
     }
     rows = {row.model_name: row for row in session.query(Evaluation).all()}
     assert set(rows) == {"Model A", "Model B", "Manual model"}
-    assert rows["Model A"].metrics == {METRIC_NAME: 70}
+    assert rows["Model A"].metrics == {
+        PRIMARY_METRIC_NAME: 1,
+        ALMOST_RESOLVED_METRIC_NAME: 10,
+        AVERAGE_PASS_RATE_METRIC_NAME: 70,
+    }
+    assert rows["Model A"].best_metric == PRIMARY_METRIC_NAME
     assert rows["Model B"].is_open is True
-    assert rows["Manual model"].best_rank == 1
-    assert rows["Model A"].best_rank == 2
+    assert rows["Model A"].best_rank == 1
+    assert rows["Model B"].best_rank == 1
     assert session.query(PaperTask).count() == 2
 
     second = ProgramBenchSyncService(session).sync(entries)

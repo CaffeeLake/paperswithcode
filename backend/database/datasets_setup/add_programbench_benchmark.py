@@ -18,13 +18,24 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.database.connection import db_manager
+from backend.database.papers_setup.add_missing_dataset_papers import fetch_and_add_paper
 from backend.models.database import (
     Dataset as DBDataset,
+)
+from backend.models.database import (
+    Evaluation as DBEvaluation,
+)
+from backend.models.database import (
+    Metric as DBMetric,
+)
+from backend.models.database import (
     Paper as DBPaper,
+)
+from backend.models.database import (
     Task as DBTask,
 )
-from backend.database.papers_setup.add_missing_dataset_papers import fetch_and_add_paper
 from backend.services.arxiv_service import ArxivService
+from backend.services.evaluation_service import EvaluationService
 from backend.services.paper_service import PaperService
 
 logging.basicConfig(
@@ -54,7 +65,44 @@ DATASET_SHORT_DESCRIPTION = (
     "200-task benchmark for rebuilding programs from binaries and docs only."
 )
 
-METRIC_NAME = "Accuracy"
+PRIMARY_METRIC_NAME = "Resolved"
+ALMOST_RESOLVED_METRIC_NAME = "Almost Resolved"
+AVERAGE_PASS_RATE_METRIC_NAME = "Average Test Pass Rate"
+METRICS = {
+    PRIMARY_METRIC_NAME: {
+        "full_name": "Fully Resolved Programs",
+        "description": (
+            "Percentage of ProgramBench tasks whose reconstructed program passes "
+            "every hidden behavioral test. This is ProgramBench's primary metric."
+        ),
+    },
+    ALMOST_RESOLVED_METRIC_NAME: {
+        "full_name": "Almost Resolved Programs",
+        "description": (
+            "Percentage of ProgramBench tasks whose reconstructed program passes "
+            "at least 95% of hidden behavioral tests."
+        ),
+    },
+    AVERAGE_PASS_RATE_METRIC_NAME: {
+        "full_name": "Average Hidden-Test Pass Rate",
+        "description": (
+            "Average percentage of hidden behavioral tests passed across the "
+            "evaluated ProgramBench tasks. This diagnostic is not the primary "
+            "fully-resolved metric."
+        ),
+    },
+}
+
+ANTHROPIC_VARIANT_NAME = "ProgramBench Golden 166 (5 Episodes)"
+ANTHROPIC_VARIANT_SLUG = "programbench-golden-166-five-episodes"
+ANTHROPIC_VARIANT_SOURCE_URL = "https://www.anthropic.com/claude-opus-5-system-card"
+ANTHROPIC_VARIANT_DESCRIPTION = (
+    "Anthropic's ProgramBench protocol excludes 34 tasks whose reference binary "
+    "scores below 0.9 on the hidden test suite, leaving 166 golden tasks. Each "
+    "model continues the same codebase across five episodes with a fresh context "
+    "budget of up to 1M tokens per episode. Results are average hidden-test pass "
+    "rates and are not comparable to ProgramBench's fully-resolved percentage."
+)
 
 
 async def _ensure_paper(session: Session) -> DBPaper:
@@ -126,13 +174,97 @@ def _ensure_dataset(session: Session, paper: DBPaper) -> DBDataset:
     return dataset
 
 
-def _ensure_metric_id(session: Session) -> int:
-    row = session.execute(
-        text("SELECT id FROM metrics WHERE name = :n"), {"n": METRIC_NAME}
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"Metric {METRIC_NAME!r} not found")
-    return int(row[0])
+def _ensure_metrics(session: Session) -> dict[str, int]:
+    metric_ids: dict[str, int] = {}
+    for name, metadata in METRICS.items():
+        metric = session.query(DBMetric).filter(DBMetric.name == name).one_or_none()
+        if metric is None:
+            metric = DBMetric(
+                name=name,
+                direction="higher_is_better",
+                scale="0-100",
+            )
+            session.add(metric)
+        metric.full_name = metadata["full_name"]
+        metric.direction = "higher_is_better"
+        metric.scale = "0-100"
+        metric.description = metadata["description"]
+        session.flush()
+        metric_ids[name] = metric.id
+    return metric_ids
+
+
+def _ensure_anthropic_variant(
+    session: Session, parent: DBDataset, source_paper: DBPaper
+) -> DBDataset:
+    dataset = (
+        session.query(DBDataset)
+        .filter(DBDataset.slug == ANTHROPIC_VARIANT_SLUG)
+        .one_or_none()
+    )
+    if dataset is None:
+        dataset = DBDataset(name=ANTHROPIC_VARIANT_NAME, slug=ANTHROPIC_VARIANT_SLUG)
+        session.add(dataset)
+    dataset.name = ANTHROPIC_VARIANT_NAME
+    dataset.full_name = ANTHROPIC_VARIANT_NAME
+    dataset.description = ANTHROPIC_VARIANT_DESCRIPTION
+    dataset.short_description = (
+        "Anthropic's 166-task ProgramBench protocol with five sequential episodes."
+    )
+    dataset.url = ANTHROPIC_VARIANT_SOURCE_URL
+    dataset.homepage = ANTHROPIC_VARIANT_SOURCE_URL
+    dataset.parent_dataset_id = parent.id
+    dataset.variant_type = "variant"
+    dataset.split_name = "Golden 166 / 5 episodes"
+    dataset.introducing_paper_id = source_paper.id
+    dataset.introducing_paper_title = source_paper.title
+    dataset.paper_url = f"https://paperswithcode.co/paper/{source_paper.id}"
+    dataset.introduced_year = 2026
+    session.flush()
+    return dataset
+
+
+def _migrate_evaluations(
+    session: Session, main_dataset_id: int, variant_dataset_id: int
+) -> None:
+    episode_five = (
+        session.query(DBEvaluation)
+        .filter(
+            DBEvaluation.dataset_id == main_dataset_id,
+            DBEvaluation.model_name == "Claude Opus 5 (episode 5)",
+            DBEvaluation.external_source_url == ANTHROPIC_VARIANT_SOURCE_URL,
+        )
+        .one_or_none()
+    )
+    if episode_five is not None:
+        value = (episode_five.metrics or {}).get(
+            AVERAGE_PASS_RATE_METRIC_NAME,
+            (episode_five.metrics or {}).get("Accuracy"),
+        )
+        if value is None:
+            raise RuntimeError("Anthropic ProgramBench row has no pass-rate value")
+        episode_five.dataset_id = variant_dataset_id
+        episode_five.metrics = {AVERAGE_PASS_RATE_METRIC_NAME: value}
+        episode_five.best_metric = AVERAGE_PASS_RATE_METRIC_NAME
+        session.flush()
+
+    manual_rows = (
+        session.query(DBEvaluation)
+        .filter(
+            DBEvaluation.dataset_id == main_dataset_id,
+            DBEvaluation.best_metric == "Accuracy",
+            ~DBEvaluation.methodology.like(
+                "Managed by the Papers with Code ProgramBench live sync.%"
+            ),
+        )
+        .all()
+    )
+    for row in manual_rows:
+        value = (row.metrics or {}).get("Accuracy")
+        if value is None:
+            raise RuntimeError(f"ProgramBench evaluation {row.id} has no Accuracy")
+        row.metrics = {AVERAGE_PASS_RATE_METRIC_NAME: value}
+        row.best_metric = AVERAGE_PASS_RATE_METRIC_NAME
 
 
 def _link_task_dataset(session: Session, task_id: int, dataset_id: int) -> None:
@@ -182,14 +314,67 @@ def main() -> None:
         paper = asyncio.run(_ensure_paper(session))
         task = _get_task(session)
         dataset = _ensure_dataset(session, paper)
-        metric_id = _ensure_metric_id(session)
+        metric_ids = _ensure_metrics(session)
+        opus_paper = (
+            session.query(DBPaper)
+            .filter(
+                DBPaper.source == "external",
+                DBPaper.source_url == "https://www.anthropic.com/news/claude-opus-5",
+                DBPaper.is_latest_version,
+            )
+            .one()
+        )
+        variant = _ensure_anthropic_variant(session, dataset, opus_paper)
         _link_task_dataset(session, task.id, dataset.id)
-        _link_metric(session, task.id, dataset.id, metric_id)
+        _link_task_dataset(session, task.id, variant.id)
+        for metric_id in metric_ids.values():
+            _link_metric(session, task.id, dataset.id, metric_id)
+        _link_metric(
+            session,
+            task.id,
+            variant.id,
+            metric_ids[AVERAGE_PASS_RATE_METRIC_NAME],
+        )
+        _migrate_evaluations(session, dataset.id, variant.id)
+        session.flush()
+        rank_service = EvaluationService(session)
+        rank_service.recalculate_ranks(
+            task.id,
+            dataset.id,
+            metric_name=AVERAGE_PASS_RATE_METRIC_NAME,
+            commit=False,
+        )
+        rank_service.recalculate_ranks(
+            task.id,
+            variant.id,
+            metric_name=AVERAGE_PASS_RATE_METRIC_NAME,
+            commit=False,
+        )
+        accuracy_id = session.execute(
+            text("SELECT id FROM metrics WHERE name = 'Accuracy'")
+        ).scalar_one()
+        session.execute(
+            text(
+                """
+                DELETE FROM task_dataset_metrics
+                WHERE task_id = :task_id
+                  AND dataset_id = :dataset_id
+                  AND metric_id = :metric_id
+                """
+            ),
+            {
+                "task_id": task.id,
+                "dataset_id": dataset.id,
+                "metric_id": accuracy_id,
+            },
+        )
         _tag_source_paper(session, paper.id, task.id)
+        _tag_source_paper(session, opus_paper.id, task.id)
         session.commit()
         logger.info(
-            "ProgramBench ready: dataset_id=%s task_id=%s paper_url=%s",
+            "ProgramBench ready: dataset_id=%s variant_id=%s task_id=%s paper_url=%s",
             dataset.id,
+            variant.id,
             task.id,
             PAPER_URL,
         )

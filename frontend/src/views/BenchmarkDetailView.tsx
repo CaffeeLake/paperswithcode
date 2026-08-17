@@ -249,10 +249,10 @@ const BenchmarkDetailView: React.FC = () => {
     if (mergedTaskEvals.length === 0) return allowedMetrics[0] || "";
     const counts = new Map<string, number>();
     for (const e of mergedTaskEvals) {
-      for (const metric of Object.keys(e.metrics || {})) {
-        if (configuredMetrics.length && !allowedMetrics.includes(metric)) continue;
-        counts.set(metric, (counts.get(metric) || 0) + 1);
-      }
+      const metric = e.best_metric;
+      if (!metric || parseMetricValue(e.metrics?.[metric]) === null) continue;
+      if (configuredMetrics.length && !allowedMetrics.includes(metric)) continue;
+      counts.set(metric, (counts.get(metric) || 0) + 1);
     }
     let top: string | null = null;
     let topN = 0;

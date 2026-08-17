@@ -28,7 +28,14 @@ from backend.services.evaluation_service import EvaluationService
 PROGRAMBENCH_URL = "https://programbench.com/"
 TASK_SLUG = "coding-agents"
 DATASET_SLUG = "programbench"
-METRIC_NAME = "Accuracy"
+PRIMARY_METRIC_NAME = "Resolved"
+ALMOST_RESOLVED_METRIC_NAME = "Almost Resolved"
+AVERAGE_PASS_RATE_METRIC_NAME = "Average Test Pass Rate"
+METRIC_NAMES = (
+    PRIMARY_METRIC_NAME,
+    ALMOST_RESOLVED_METRIC_NAME,
+    AVERAGE_PASS_RATE_METRIC_NAME,
+)
 HARNESS_NAME = "mini-SWE-agent"
 MANAGED_METHODOLOGY_PREFIX = "Managed by the Papers with Code ProgramBench live sync."
 MIN_EXPECTED_ENTRIES = 15
@@ -100,7 +107,7 @@ class ProgramBenchEntry:
     model: str
     provider: str
     harness: str
-    accuracy: float
+    average_test_pass_rate: float
     resolved: float
     almost_resolved: float
     evaluated_on: date
@@ -208,8 +215,11 @@ def parse_programbench_leaderboard(html: str) -> list[ProgramBenchEntry]:
         timestamp = raw.get("date")
         if isinstance(score, bool) or not isinstance(score, (int, float)):
             raise TypeError(f"ProgramBench score is invalid for {upstream_id}")
-        accuracy = float(score) * 100
-        if not isfinite(accuracy) or not 0 <= accuracy <= 100:
+        average_test_pass_rate = float(score) * 100
+        if (
+            not isfinite(average_test_pass_rate)
+            or not 0 <= average_test_pass_rate <= 100
+        ):
             raise ValueError(f"ProgramBench score is outside 0-1 for {upstream_id}")
         if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
             raise TypeError(f"ProgramBench date is invalid for {upstream_id}")
@@ -221,7 +231,7 @@ def parse_programbench_leaderboard(html: str) -> list[ProgramBenchEntry]:
                 model=model,
                 provider=provider,
                 harness=harness,
-                accuracy=round(accuracy, 4),
+                average_test_pass_rate=round(average_test_pass_rate, 4),
                 resolved=_percentage(
                     resolved_node.get_text(" ", strip=True),
                     field_name="resolved rate",
@@ -294,22 +304,28 @@ class ProgramBenchSyncService:
         dataset = (
             self.db.query(Dataset).filter(Dataset.slug == DATASET_SLUG).one_or_none()
         )
-        metric = self.db.query(Metric).filter(Metric.name == METRIC_NAME).one_or_none()
-        if task is None or dataset is None or metric is None:
+        metrics = {
+            metric.name: metric.id
+            for metric in self.db.query(Metric)
+            .filter(Metric.name.in_(METRIC_NAMES))
+            .all()
+        }
+        if task is None or dataset is None or set(metrics) != set(METRIC_NAMES):
             raise RuntimeError(
-                "ProgramBench task, benchmark, or metric is not configured"
+                "ProgramBench task, benchmark, or metrics are not configured"
             )
-        configured = (
-            self.db.query(TaskDatasetMetric)
-            .filter(
-                TaskDatasetMetric.task_id == task.id,
-                TaskDatasetMetric.dataset_id == dataset.id,
-                TaskDatasetMetric.metric_id == metric.id,
+        for metric_id in metrics.values():
+            configured = (
+                self.db.query(TaskDatasetMetric)
+                .filter(
+                    TaskDatasetMetric.task_id == task.id,
+                    TaskDatasetMetric.dataset_id == dataset.id,
+                    TaskDatasetMetric.metric_id == metric_id,
+                )
+                .one_or_none()
             )
-            .one_or_none()
-        )
-        if configured is None:
-            raise RuntimeError("ProgramBench metric is not linked to the task")
+            if configured is None:
+                raise RuntimeError("ProgramBench metrics are not linked to the task")
         return task, dataset
 
     def sync(
@@ -343,7 +359,6 @@ class ProgramBenchSyncService:
                 .filter(
                     Evaluation.task_id == task.id,
                     Evaluation.dataset_id == dataset.id,
-                    Evaluation.best_metric == METRIC_NAME,
                     Evaluation.methodology.like(f"{MANAGED_METHODOLOGY_PREFIX}%"),
                 )
                 .all()
@@ -386,10 +401,14 @@ class ProgramBenchSyncService:
                     f"resolved={entry.resolved:g}%; "
                     f"almost_resolved={entry.almost_resolved:g}%."
                 )
-                row.metrics = {METRIC_NAME: entry.accuracy}
+                row.metrics = {
+                    PRIMARY_METRIC_NAME: entry.resolved,
+                    ALMOST_RESOLVED_METRIC_NAME: entry.almost_resolved,
+                    AVERAGE_PASS_RATE_METRIC_NAME: entry.average_test_pass_rate,
+                }
                 row.uses_additional_data = False
                 row.is_open = identity.is_open
-                row.best_metric = METRIC_NAME
+                row.best_metric = PRIMARY_METRIC_NAME
                 row.evaluated_on = entry.evaluated_on
                 row.external_source_url = entry.source_url
                 row.source_url = entry.source_url
@@ -412,7 +431,10 @@ class ProgramBenchSyncService:
                     stats.deleted += 1
             self.db.flush()
             EvaluationService(self.db).recalculate_ranks(
-                task.id, dataset.id, metric_name=METRIC_NAME, commit=False
+                task.id,
+                dataset.id,
+                metric_name=PRIMARY_METRIC_NAME,
+                commit=False,
             )
             if commit:
                 self.db.commit()
