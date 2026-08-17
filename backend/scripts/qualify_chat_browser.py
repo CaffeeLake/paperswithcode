@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import socket
 import subprocess
@@ -31,6 +32,7 @@ from backend.scripts.qualify_chat_sandbox import (
 from backend.scripts.report_chat_ttft import report
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
+from backend.services.chat_sandbox_service import SandboxSessionManager
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_BROWSER"
 ORIGIN = "https://staging.paperswithcode.co"
@@ -287,6 +289,7 @@ def qualification_passes(
                 "reused_browser",
                 "reliability",
                 "accounting",
+                "isolation",
             )
         )
         and marked == session_count * 2
@@ -375,6 +378,14 @@ def main() -> int:
                 and len(session_ids) >= 50
             ):
                 break
+
+    manager = SandboxSessionManager(settings)
+
+    async def cleanup() -> None:
+        for session_id in session_ids:
+            await manager.terminate(session_id)
+
+    asyncio.run(cleanup())
 
     marked, gate_report = _mark_and_report(
         settings=settings,

@@ -7,7 +7,7 @@ import argparse
 import json
 import math
 import statistics
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,7 +16,10 @@ from sqlalchemy import select
 from backend.database.connection import db_manager
 from backend.models.database import (
     ChatOpenRouterProviderCall,
+    ChatSandboxComputeInterval,
+    ChatSandboxLease,
     ChatSandboxPool,
+    ChatTurnCapability,
     ChatTurnLatency,
 )
 from backend.services.chat_latency_service import (
@@ -103,6 +106,40 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             if turn_ids
             else []
         )
+        session_ids = {row.chat_session_id for row in rows}
+        intervals = (
+            list(
+                db.scalars(
+                    select(ChatSandboxComputeInterval).where(
+                        ChatSandboxComputeInterval.chat_session_id.in_(session_ids)
+                    )
+                )
+            )
+            if session_ids
+            else []
+        )
+        leases = (
+            list(
+                db.scalars(
+                    select(ChatSandboxLease).where(
+                        ChatSandboxLease.chat_session_id.in_(session_ids)
+                    )
+                )
+            )
+            if session_ids
+            else []
+        )
+        capabilities = (
+            list(
+                db.scalars(
+                    select(ChatTurnCapability).where(
+                        ChatTurnCapability.turn_id.in_(turn_ids)
+                    )
+                )
+            )
+            if turn_ids
+            else []
+        )
 
     pool_hits = [
         row
@@ -152,6 +189,38 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         if rows
         else 0
     )
+    intervals_by_session: dict[Any, list[ChatSandboxComputeInterval]] = defaultdict(
+        list
+    )
+    for interval in intervals:
+        intervals_by_session[interval.chat_session_id].append(interval)
+    leases_by_session = {lease.chat_session_id: lease for lease in leases}
+    continuous_hits = sum(
+        len(candidates := intervals_by_session[row.chat_session_id]) == 1
+        and candidates[0].origin == "blank_pool"
+        and candidates[0].provider_created_at is not None
+        and candidates[0].claimed_at is not None
+        and candidates[0].provider_created_at <= candidates[0].claimed_at
+        for row in pool_hits
+    )
+    cleaned_sessions = sum(
+        (lease := leases_by_session.get(session_id)) is not None
+        and lease.state == "terminated"
+        and lease.modal_sandbox_id is None
+        and bool(candidates := intervals_by_session[session_id])
+        and all(interval.terminal_at is not None for interval in candidates)
+        for session_id in session_ids
+    )
+    revoked_capabilities = sum(
+        capability.revoked_at is not None for capability in capabilities
+    )
+    isolation_passed = bool(
+        rows
+        and continuous_hits == len(pool_hits)
+        and cleaned_sessions == len(session_ids)
+        and capabilities
+        and revoked_capabilities == len(capabilities)
+    )
     gates = {
         "component": passes(component, count=50, p50=1500, p90=3000),
         "model_to_application": passes(
@@ -162,6 +231,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         "hit_rate": len(eligible) >= 200 and hit_rate >= 0.95,
         "reliability": bool(rows) and reliability >= args.minimum_reliability,
         "accounting": bool(provider_calls) and unknown_calls == 0,
+        "isolation": isolation_passed,
     }
     return {
         "status": "passed" if all(gates.values()) else "failed",
@@ -340,7 +410,13 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         },
         "gates": gates,
         "isolation": {
-            "status": "requires qualification artifact",
+            "status": "passed" if isolation_passed else "failed",
+            "pool_hits_with_continuous_single_interval": continuous_hits,
+            "pool_hits": len(pool_hits),
+            "cleaned_sessions": cleaned_sessions,
+            "sessions": len(session_ids),
+            "revoked_capabilities": revoked_capabilities,
+            "capabilities": len(capabilities),
             "note": "Latency rows contain no prompts, credentials, transcripts, or tool output.",
         },
     }

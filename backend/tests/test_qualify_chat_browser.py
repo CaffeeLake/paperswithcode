@@ -10,6 +10,7 @@ def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
         "reused_browser": True,
         "reliability": True,
         "accounting": True,
+        "isolation": True,
         "hit_rate": False,
     }
 
