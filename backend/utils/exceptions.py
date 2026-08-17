@@ -25,3 +25,9 @@ class ThumbnailGenerationError(PapersWithCodeAPIError):
     """Raised when thumbnail generation fails."""
 
     pass
+
+
+class ThumbnailUnavailableError(ThumbnailGenerationError):
+    """Raised when the source confirms that no thumbnail can be generated."""
+
+    pass

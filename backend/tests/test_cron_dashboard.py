@@ -741,29 +741,30 @@ def test_log_success_with_stale_db_is_broken_for_critical_writer():
                 "status": "success_no_work",
                 "last_run": "2026-06-25 10:00:00",
                 "is_running": False,
-                "work_metrics": {"repos_updated": 0},
+                "work_metrics": {"repos_updated": 0, "eligible_population": 45299},
             },
             db_metrics={
                 "last_write": stale_time,
                 "last_write_iso": stale_time.isoformat(),
                 "recent_writes": 0,
+                "eligible_population": 45299,
                 "fresh_positive_scores": 0,
             },
             lock_state={"exists": False, "stale": False},
         )
         assert evaluated["status"] in {"broken", "degraded"}
         assert evaluated["status"] == "broken"
-        assert "database" in evaluated["status_reason"].lower()
+        assert "eligible population" in evaluated["status_reason"].lower()
 
 
-def test_success_no_work_allowed_only_for_explicit_jobs():
+def test_success_no_work_allowed_for_fresh_incremental_jobs():
     citations_job = _job("update_citations")
     with patch("backend.services.cron_health.is_process_running", return_value=False):
         allowed = evaluate_job_health(
             citations_job,
             {"status": "success_no_work", "is_running": False, "work_metrics": {}},
             db_metrics={
-                "last_write": datetime.now(timezone.utc) - timedelta(minutes=30),
+                "last_write": datetime.now(timezone.utc) - timedelta(minutes=5),
                 "recent_writes": 0,
             },
             lock_state={"exists": False, "stale": False},
@@ -773,17 +774,22 @@ def test_success_no_work_allowed_only_for_explicit_jobs():
 
     trending_job = _job("calculate_trending_scores")
     with patch("backend.services.cron_health.is_process_running", return_value=False):
-        not_allowed = evaluate_job_health(
+        allowed_trending = evaluate_job_health(
             trending_job,
-            {"status": "success_no_work", "is_running": False, "work_metrics": {}},
+            {
+                "status": "success_no_work",
+                "is_running": False,
+                "work_metrics": {"eligible_population": 45299},
+            },
             db_metrics={
                 "last_write": datetime.now(timezone.utc) - timedelta(minutes=30),
-                "recent_writes": 0,
-                "fresh_positive_scores": 0,
+                "recent_writes": 100,
+                "eligible_population": 45299,
+                "fresh_positive_scores": 25,
             },
             lock_state={"exists": False, "stale": False},
         )
-    assert not_allowed["status"] in {"degraded", "broken"}
+    assert allowed_trending["output_health"]["status"] == "healthy"
 
 
 def test_stale_lock_with_fresh_db_is_healthy():

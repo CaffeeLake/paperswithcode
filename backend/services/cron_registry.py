@@ -275,7 +275,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         expected_runtime_minutes=50,
         stale_after_minutes=120,
         critical=True,
-        healthy_no_work_allowed=False,
+        healthy_no_work_allowed=True,
         db_freshness_query="""
             SELECT max(trending_score_updated_at) AS last_write,
                    count(*) AS eligible_population,

@@ -53,6 +53,7 @@ def _make_job(
     job.generated = 0
     job.would_generate = 0
     job.failures = 0
+    job.unavailable = 0
 
     if cache_dir is not None:
         job._local_cache_dir = lambda: cache_dir  # type: ignore[method-assign]
@@ -280,3 +281,28 @@ def test_process_paper_treats_valid_local_thumbnail_as_cached(tmp_path: Path):
 
     assert status == "cached"
     thumbnail_service.generate_thumbnail.assert_not_called()
+
+
+def test_run_async_tracks_confirmed_unavailable_separately(monkeypatch):
+    import asyncio
+
+    from backend.utils.exceptions import ThumbnailUnavailableError
+    from scripts.daily.preload_thumbnails import Candidate, ThumbnailPreloadJob
+
+    job = _make_job()
+    job.dry_run = False
+    job._collect_candidates = lambda session: [Candidate(7, "2402.17012", "v4")]
+
+    async def unavailable(_service, _candidate):
+        raise ThumbnailUnavailableError("ArXiv has no PDF")
+
+    job._process_paper = unavailable
+    monkeypatch.setattr(
+        "scripts.daily.preload_thumbnails.db_manager",
+        MagicMock(session_local=lambda: MagicMock()),
+    )
+
+    asyncio.run(ThumbnailPreloadJob._run_async(job))
+
+    assert job.unavailable == 1
+    assert job.failures == 0

@@ -4,7 +4,7 @@ from email.utils import format_datetime
 
 import httpx
 
-from backend.services.arxiv_service import ArxivService
+from backend.services.arxiv_service import ArxivPdfUnavailableError, ArxivService
 from backend.routers.papers import _arxiv_metadata_error
 
 
@@ -149,3 +149,31 @@ def test_router_maps_arxiv_rate_limit_to_429():
 
     assert exc.status_code == 429
     assert "rate-limiting" in exc.detail
+
+
+def test_download_pdf_raises_confirmed_unavailable_on_404(monkeypatch):
+    class MissingPdfClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None):
+            return httpx.Response(404, request=httpx.Request("GET", url))
+
+    async def run_test():
+        monkeypatch.setattr(httpx, "AsyncClient", MissingPdfClient)
+        service = ArxivService()
+        service._rate_limit = lambda: asyncio.sleep(0)
+
+        try:
+            await service.download_pdf("2402.17012", "v4")
+        except ArxivPdfUnavailableError:
+            return
+        raise AssertionError("expected ArxivPdfUnavailableError")
+
+    asyncio.run(run_test())

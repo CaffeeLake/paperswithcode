@@ -67,7 +67,7 @@ from backend.services.thumbnail_service import (
     build_thumbnail_filename,
     is_thumbnail_valid,
 )
-from backend.utils.exceptions import ThumbnailGenerationError
+from backend.utils.exceptions import ThumbnailGenerationError, ThumbnailUnavailableError
 from scripts.utils.cron_helpers import CronJobBase
 
 DEFAULT_BATCH_SIZE = 50
@@ -178,6 +178,7 @@ class ThumbnailPreloadJob(CronJobBase):
         self.generated = 0
         self.would_generate = 0
         self.failures = 0
+        self.unavailable = 0
 
     def _validate_settings(self) -> None:
         backend = (self.settings.thumbnail_storage_backend or "").lower()
@@ -665,6 +666,15 @@ class ThumbnailPreloadJob(CronJobBase):
 
             try:
                 status = await self._process_paper(thumbnail_service, candidate)
+            except ThumbnailUnavailableError as exc:
+                self.unavailable += 1
+                self.logger.info(
+                    "Thumbnail unavailable for paper %s (%s %s): %s",
+                    candidate.paper_id,
+                    candidate.arxiv_id or "external",
+                    candidate.version,
+                    exc,
+                )
             except ThumbnailGenerationError as exc:
                 self.failures += 1
                 self.logger.warning(
@@ -755,6 +765,7 @@ class ThumbnailPreloadJob(CronJobBase):
         self.logger.info("  - Already cached:  %d", self.already_cached)
         self.logger.info("  - Generated:       %d", self.generated)
         self.logger.info("  - Would generate:  %d", self.would_generate)
+        self.logger.info("  - Unavailable:     %d", self.unavailable)
         self.logger.info("  - Failures:        %d", self.failures)
         self.logger.info(
             "THUMBNAIL_PRELOAD_SUMMARY %s",
@@ -764,6 +775,7 @@ class ThumbnailPreloadJob(CronJobBase):
                     "already_cached": self.already_cached,
                     "generated": self.generated,
                     "would_generate": self.would_generate,
+                    "unavailable_documents": self.unavailable,
                     "failed_downloads": self.failures,
                 }
             ),

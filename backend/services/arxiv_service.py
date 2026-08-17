@@ -82,6 +82,10 @@ class ArxivResponseError(Exception):
     """Raised when arXiv returns malformed or otherwise unusable metadata."""
 
 
+class ArxivPdfUnavailableError(Exception):
+    """Raised when arXiv confirms that a requested PDF does not exist."""
+
+
 class ArxivService:
     """
     Service for interacting with the ArXiv API.
@@ -724,6 +728,11 @@ class ArxivService:
 
                     response = await client.get(pdf_url, headers=self.headers)
 
+                    if response.status_code == 404:
+                        raise ArxivPdfUnavailableError(
+                            f"ArXiv PDF is unavailable for {arxiv_id} {version or 'latest'}"
+                        )
+
                     if response.status_code == 429:
                         if attempt == MAX_RETRIES - 1:
                             logger.error(
@@ -767,6 +776,8 @@ class ArxivService:
                     )
                     return content
 
+        except ArxivPdfUnavailableError:
+            raise
         except Exception as e:
             logger.error(f"Error downloading PDF for {arxiv_id}: {e}")
             return None

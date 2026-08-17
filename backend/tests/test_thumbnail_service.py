@@ -1,5 +1,7 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from PIL import Image, ImageDraw
@@ -18,6 +20,8 @@ from backend.services.thumbnail_service import (
     _trim_trailing_blank_rows,
     is_thumbnail_valid,
 )
+from backend.services.arxiv_service import ArxivPdfUnavailableError
+from backend.utils.exceptions import ThumbnailGenerationError, ThumbnailUnavailableError
 
 
 def test_trim_blank_page_margins_keeps_visible_content_with_padding():
@@ -262,3 +266,32 @@ def test_external_metadata_thumbnail_matches_card_dimensions():
         EXPECTED_THUMBNAIL_WIDTH,
         EXPECTED_THUMBNAIL_HEIGHT,
     )
+
+
+def _thumbnail_service_with_missing_pdf(tmp_path: Path, latest_version: str):
+    service = ThumbnailService.__new__(ThumbnailService)
+    service.arxiv_service = MagicMock()
+    service.arxiv_service.download_pdf = AsyncMock(
+        side_effect=ArxivPdfUnavailableError("missing")
+    )
+    service.arxiv_service.get_paper_metadata = AsyncMock(
+        return_value=SimpleNamespace(success=True, version=latest_version)
+    )
+    service.get_filename = lambda arxiv_id, version: f"{arxiv_id}_{version}.jpg"
+    service.get_existing_thumbnail_path = MagicMock(return_value=None)
+    service._get_cache_path = MagicMock(return_value=tmp_path / "paper.jpg")
+    return service
+
+
+def test_generate_thumbnail_classifies_latest_arxiv_pdf_as_unavailable(tmp_path: Path):
+    service = _thumbnail_service_with_missing_pdf(tmp_path, "v4")
+
+    with pytest.raises(ThumbnailUnavailableError):
+        asyncio.run(service.generate_thumbnail("2402.17012", "v4"))
+
+
+def test_generate_thumbnail_keeps_stale_arxiv_version_as_failure(tmp_path: Path):
+    service = _thumbnail_service_with_missing_pdf(tmp_path, "v2")
+
+    with pytest.raises(ThumbnailGenerationError, match="version mismatch"):
+        asyncio.run(service.generate_thumbnail("2509.18216", "v1"))

@@ -21,7 +21,7 @@ from pdf2image import convert_from_bytes
 from PIL import Image, ImageDraw, ImageFont
 
 from backend.config import get_settings
-from backend.services.arxiv_service import ArxivService
+from backend.services.arxiv_service import ArxivPdfUnavailableError, ArxivService
 from backend.services.safe_outbound_http_service import (
     SafeOutboundHttpError,
     fetch_public_resource,
@@ -32,7 +32,7 @@ from backend.utils.biorxiv import (
     fetch_biorxiv_metadata,
     parse_biorxiv_doi,
 )
-from backend.utils.exceptions import ThumbnailGenerationError
+from backend.utils.exceptions import ThumbnailGenerationError, ThumbnailUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -781,7 +781,19 @@ class ThumbnailService:
 
         try:
             # Download PDF using ArXiv service (handles rate limiting)
-            pdf_content = await self.arxiv_service.download_pdf(arxiv_id, version)
+            try:
+                pdf_content = await self.arxiv_service.download_pdf(arxiv_id, version)
+            except ArxivPdfUnavailableError as exc:
+                metadata = await self.arxiv_service.get_paper_metadata(arxiv_id)
+                if metadata.success and metadata.version == version:
+                    raise ThumbnailUnavailableError(
+                        f"ArXiv has no PDF for {arxiv_id} {version}"
+                    ) from exc
+                latest = metadata.version if metadata.success else "unknown"
+                raise ThumbnailGenerationError(
+                    f"ArXiv PDF version mismatch for {arxiv_id}: "
+                    f"requested {version}, latest is {latest}"
+                ) from exc
 
             if pdf_content is None:
                 raise ThumbnailGenerationError(
