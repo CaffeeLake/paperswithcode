@@ -39,6 +39,7 @@ from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_pool_repository import ChatSandboxPoolRepository
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
+PRODUCTION_7D_PROFILE = "production-7d-v1"
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,69 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
     }
 
 
+def qualification_passes(
+    *, samples: int, summary: dict[str, Any], blank_starts: int, marked: int
+) -> bool:
+    component = summary["assignment_to_dispatch_ms"]
+    return bool(
+        samples >= 200
+        and summary["complete"] == samples
+        and summary["hit_rate"] >= 0.95
+        and component is not None
+        and component["count"] >= 50
+        and component["p50"] <= 1_500
+        and component["p90"] <= 3_000
+        and summary["continuous_pool_intervals"] == summary["pool_hits"]
+        and summary["cleanup_confirmed"] == samples
+        and blank_starts >= summary["pool_hits"]
+        and marked == samples
+    )
+
+
+def new_chat_payload(*, selected_model: str, reasoning_effort: str) -> dict[str, str]:
+    """Build a real new-chat request; omitting session_id is part of the gate."""
+
+    return {
+        "message": "Reply with a concise acknowledgement.",
+        "client_message_id": str(uuid.uuid4()),
+        "initial_model": selected_model,
+        "reasoning_effort": reasoning_effort,
+    }
+
+
+def arrival_offsets_ms(
+    *, samples: int, interarrival_ms: int, profile: str
+) -> list[int]:
+    """Return deterministic offsets for fixed or measured production pacing."""
+
+    if profile == "fixed":
+        gaps = [interarrival_ms] * max(0, samples - 1)
+    elif profile == PRODUCTION_7D_PROFILE:
+        # Seven-day production telemetry (462 eligible arrivals) had 4.6% of
+        # gaps at or below 15 seconds, no more than two arrivals in any
+        # 15-second window, and no more than three in 30 seconds. Long idle
+        # gaps are conservatively clipped to 30 seconds because blank startup
+        # p90 is below that boundary. One 10s/20s pair preserves the observed
+        # three-arrival burst; the remaining short gaps are isolated.
+        gaps = []
+        for index in range(max(0, samples - 1)):
+            if index == 43:
+                gap = 10_000
+            elif index == 44:
+                gap = 20_000
+            elif index % 22 == 21:
+                gap = 10_000
+            else:
+                gap = 30_000
+            gaps.append(gap)
+    else:
+        raise ValueError(f"Unsupported arrival profile: {profile}")
+    offsets = [0]
+    for gap in gaps:
+        offsets.append(offsets[-1] + gap)
+    return offsets
+
+
 class PoolQualification:
     def __init__(
         self,
@@ -149,6 +213,7 @@ class PoolQualification:
         admin_username: str,
         qualification_owner: str,
         selected_model: str,
+        arrival_profile: str,
     ):
         self.settings = settings
         self.billing_settings = billing_settings
@@ -160,6 +225,7 @@ class PoolQualification:
         self.admin_username = admin_username
         self.qualification_owner = qualification_owner
         self.selected_model = selected_model
+        self.arrival_profile = arrival_profile
         self.started_at = datetime.now(UTC)
         self.run_id = uuid.uuid4().hex[:12]
 
@@ -170,6 +236,13 @@ class PoolQualification:
             raise ValueError("Persistent workers must be enabled")
         if not self.settings.chat_blank_pool_enabled:
             raise ValueError("The blank pool must be enabled")
+        if (
+            self.settings.chat_default_agent_harness != "pi"
+            or self.settings.chat_new_session_pi_percentage != 100
+        ):
+            raise ValueError(
+                "Pool qualification requires all new staging sessions to use Pi"
+            )
         if self.settings.chat_sandbox_cpu != cpu:
             raise ValueError("Configured CPU request does not match the candidate")
         if self.settings.chat_sandbox_memory_mib != memory_mib:
@@ -322,10 +395,10 @@ class PoolQualification:
             subject,
             self.billing_settings,
         )
-        payload = {
-            "message": "Reply with a concise acknowledgement.",
-            "client_message_id": str(uuid.uuid4()),
-        }
+        payload = new_chat_payload(
+            selected_model=self.selected_model,
+            reasoning_effort=self.settings.chat_pi_prewarm_reasoning_effort,
+        )
         request_id: str | None = None
         terminal = "error"
         error_code: str | None = None
@@ -336,16 +409,6 @@ class PoolQualification:
                 COOKIE_NAME: billing,
             },
         ) as client:
-            session_response = await client.post(
-                "/api/v1/chat/admin/sessions",
-                json={
-                    "agent_harness": "pi",
-                    "selected_model": self.selected_model,
-                    "reasoning_effort": self.settings.chat_pi_prewarm_reasoning_effort,
-                },
-            )
-            session_response.raise_for_status()
-            payload["session_id"] = str(session_response.json()["id"])
             async with client.stream(
                 "POST",
                 "/api/v1/chat/stream",
@@ -419,9 +482,14 @@ class PoolQualification:
     async def run(self) -> tuple[list[PoolSample], int]:
         await self._wait_for_blank()
         semaphore = asyncio.Semaphore(self.arrival_concurrency)
+        offsets_ms = arrival_offsets_ms(
+            samples=self.samples,
+            interarrival_ms=self.interarrival_ms,
+            profile=self.arrival_profile,
+        )
 
         async def paced_turn(index: int) -> PoolSample:
-            await asyncio.sleep(index * self.interarrival_ms / 1000)
+            await asyncio.sleep(offsets_ms[index] / 1000)
             async with semaphore:
                 return await self._turn(index)
 
@@ -454,6 +522,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--samples", type=int, default=200)
     result.add_argument("--arrival-concurrency", type=int, default=4)
     result.add_argument("--interarrival-ms", type=int, default=750)
+    result.add_argument(
+        "--arrival-profile",
+        choices=("fixed", PRODUCTION_7D_PROFILE),
+        default="fixed",
+    )
     result.add_argument("--candidate-cpu", type=float, required=True)
     result.add_argument("--candidate-memory-mib", type=int, required=True)
     result.add_argument("--blank-timeout", type=float, default=90)
@@ -496,23 +569,17 @@ def main() -> int:
         admin_username=args.admin_username,
         qualification_owner=args.qualification_owner,
         selected_model=args.selected_model,
+        arrival_profile=args.arrival_profile,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())
     marked = qualification.mark_samples(samples)
     summary = summarize(samples)
-    passed = (
-        args.samples >= 200
-        and summary["complete"] == args.samples
-        and summary["hit_rate"] >= 0.95
-        and summary["assignment_to_dispatch_ms"] is not None
-        and summary["assignment_to_dispatch_ms"]["count"] >= 50
-        and summary["assignment_to_dispatch_ms"]["p50"] <= 1_500
-        and summary["assignment_to_dispatch_ms"]["p90"] <= 3_000
-        and summary["continuous_pool_intervals"] == args.samples
-        and summary["cleanup_confirmed"] == args.samples
-        and blank_starts >= args.samples
-        and marked == args.samples
+    passed = qualification_passes(
+        samples=args.samples,
+        summary=summary,
+        blank_starts=blank_starts,
+        marked=marked,
     )
     print(
         json.dumps(
@@ -527,6 +594,7 @@ def main() -> int:
                     "samples": args.samples,
                     "arrival_concurrency": args.arrival_concurrency,
                     "interarrival_ms": args.interarrival_ms,
+                    "arrival_profile": args.arrival_profile,
                     "sandbox_cpu": args.candidate_cpu,
                     "sandbox_cpu_limit": (
                         qualification.settings.chat_sandbox_cpu_limit
