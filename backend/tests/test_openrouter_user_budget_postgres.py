@@ -263,6 +263,27 @@ def test_funded_call_abuse_circuits_and_qualification_bypass(session_factory):
             bypass_now,
         )
 
+    race_settings = _settings().model_copy(
+        update={
+            "chat_openrouter_user_rate_limit_calls": 100,
+            "chat_openrouter_global_rate_limit_calls": 1,
+            "chat_openrouter_daily_budget_usd": 100,
+        }
+    )
+    race_now = NOW + timedelta(days=5)
+
+    def race(owner: str) -> str | None:
+        try:
+            with session_factory.begin() as db:
+                reserve(db, race_settings, owner, race_now)
+            return owner
+        except OpenRouterAbuseLimitExceeded:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        accepted = list(pool.map(race, ["global-race-1", "global-race-2"]))
+    assert sum(owner is not None for owner in accepted) == 1
+
 
 def test_retention_deletes_resolved_rows_but_keeps_unknown_cost(session_factory):
     old_month = date(2025, 1, 1)
