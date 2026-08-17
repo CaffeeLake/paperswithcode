@@ -119,6 +119,7 @@ class ModalChatTurnRunner:
             capability=self.capability,
             agent_harness=self.admission.agent_harness,
             web_search_enabled=self.admission.web_search_enabled,
+            reasoning_effort=self.admission.reasoning_effort,
             fetchable_urls=list(self.admission.fetchable_urls),
             hf_username=self.hf_username,
         )
