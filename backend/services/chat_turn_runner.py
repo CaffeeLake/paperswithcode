@@ -70,6 +70,7 @@ class LocalChatTurnRunner:
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,
             web_search_enabled=self.admission.web_search_enabled,
+            reader_mode=self.admission.reader_mode,
             reasoning_effort=self.admission.reasoning_effort,
             owner_hash=opaque_owner(self.owner.hf_user_id),
         ):
@@ -119,6 +120,7 @@ class ModalChatTurnRunner:
             capability=self.capability,
             agent_harness=self.admission.agent_harness,
             web_search_enabled=self.admission.web_search_enabled,
+            reader_mode=self.admission.reader_mode,
             reasoning_effort=self.admission.reasoning_effort,
             fetchable_urls=list(self.admission.fetchable_urls),
             hf_username=self.hf_username,

@@ -124,6 +124,8 @@ export interface ChatStreamRequest {
   paper_mentions?: PaperMentionWire[];
   web_search_enabled: boolean;
   reasoning_effort?: ReasoningEffort;
+  primary_paper_route_id?: string;
+  viewer_context?: { page: number };
 }
 
 export interface PaperMentionDraft {

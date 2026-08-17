@@ -100,6 +100,7 @@ class TurnAdmission:
     system_prompt_sha256: str = ""
     web_search_enabled: bool = False
     reasoning_effort: str = "high"
+    reader_mode: bool = False
     fetchable_urls: tuple[str, ...] = ()
 
 
@@ -164,6 +165,8 @@ class _TurnCreationPlan:
     model_route: str
     effective_prompt: str
     paper_mentions: list[dict]
+    primary_paper_context: dict | None
+    viewer_context: dict | None
     is_first_turn: bool
     title_should_generate: bool
 
@@ -219,7 +222,19 @@ def _message_projection_bytes(message: ChatMessageRecord) -> int:
         return (
             len(message.content.encode())
             + len(message.effective_prompt.encode())
-            + _payload_bytes(message.paper_mentions or [])
+            + _payload_bytes(
+                message.paper_mentions or [],
+                *(
+                    [message.primary_paper_context]
+                    if getattr(message, "primary_paper_context", None)
+                    else []
+                ),
+                *(
+                    [message.viewer_context]
+                    if getattr(message, "viewer_context", None)
+                    else []
+                ),
+            )
         )
     return len(message.content.encode())
 
@@ -453,6 +468,7 @@ class ChatSessionService:
         selected_model: str | None = None,
         reasoning_effort: str = "low",
         *,
+        primary_paper_id: int | None = None,
         agent_harness_override: Literal["claude", "pi"] | None = None,
         operator_subject: str | None = None,
     ) -> ChatSession:
@@ -515,6 +531,7 @@ class ChatSessionService:
             title_status="pending",
             selected_model=model,
             reasoning_effort=effort,
+            primary_paper_id=primary_paper_id,
             execution_backend=execution_backend,
             agent_harness=agent_harness,
             updated_at=_now(),
@@ -777,6 +794,7 @@ class ChatSessionService:
                     execution_backend=session.execution_backend,
                     web_search_enabled=existing_web_search_enabled,
                     reasoning_effort=existing_reasoning_effort,
+                    reader_mode=getattr(session, "primary_paper_id", None) is not None,
                 ),
             )
         if (
@@ -1107,6 +1125,8 @@ class ChatSessionService:
         model_route: str,
         effective_prompt: str,
         paper_mentions: list[dict],
+        primary_paper_context: dict | None = None,
+        viewer_context: dict | None = None,
     ) -> _TurnCreationPlan:
         is_first_turn = (
             replacement.is_first_prompt
@@ -1123,6 +1143,8 @@ class ChatSessionService:
             model_route=model_route,
             effective_prompt=effective_prompt,
             paper_mentions=paper_mentions,
+            primary_paper_context=primary_paper_context,
+            viewer_context=viewer_context,
             is_first_turn=is_first_turn,
             title_should_generate=(is_first_turn and session.title_source != "user"),
         )
@@ -1162,6 +1184,8 @@ class ChatSessionService:
             role="user",
             content=text,
             paper_mentions=plan.paper_mentions,
+            primary_paper_context=plan.primary_paper_context,
+            viewer_context=plan.viewer_context,
             effective_prompt=plan.effective_prompt,
             client_message_id=client_message_id,
             web_search_enabled=web_search_enabled,
@@ -1226,6 +1250,7 @@ class ChatSessionService:
             system_prompt_sha256=plan.runtime.system_prompt_sha256,
             web_search_enabled=web_search_enabled,
             reasoning_effort=reasoning_effort,
+            reader_mode=getattr(session, "primary_paper_id", None) is not None,
             fetchable_urls=fetchable_urls,
         )
 
@@ -1238,6 +1263,9 @@ class ChatSessionService:
         text: str,
         effective_prompt: str | None = None,
         paper_mentions: list[dict] | None = None,
+        primary_paper_id: int | None = None,
+        primary_paper_context: dict | None = None,
+        viewer_context: dict | None = None,
         initial_model: str | None = None,
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
@@ -1284,6 +1312,16 @@ class ChatSessionService:
                 409,
                 "This chat is awaiting transcript recovery and cannot be resumed",
             )
+        session_primary_paper_id = (
+            getattr(session, "primary_paper_id", None) if session is not None else None
+        )
+        if session is not None and primary_paper_id != session_primary_paper_id:
+            if primary_paper_id is not None or session_primary_paper_id is not None:
+                raise ChatServiceError(
+                    "primary_paper_mismatch",
+                    409,
+                    "This conversation belongs to a different paper.",
+                )
 
         self._lock_admission_keys(owner)
         capacity = self._load_capacity_snapshot(owner, session)
@@ -1293,7 +1331,14 @@ class ChatSessionService:
         # cannot leave behind a session or any message state.
         if session is None:
             session = self.create_session(
-                owner, initial_model, effective_reasoning_effort
+                owner,
+                initial_model,
+                effective_reasoning_effort,
+                **(
+                    {"primary_paper_id": primary_paper_id}
+                    if primary_paper_id is not None
+                    else {}
+                ),
             )
 
         stale = self._load_expired_active_message(session, now)
@@ -1311,6 +1356,8 @@ class ChatSessionService:
             len(text.encode())
             + len(effective_prompt.encode())
             + _payload_bytes(paper_mentions)
+            + (_payload_bytes(primary_paper_context) if primary_paper_context else 0)
+            + (_payload_bytes(viewer_context) if viewer_context else 0)
         )
         owner_total_bytes = self._load_owner_storage_bytes(owner)
         model, model_route = self._validate_model(session.selected_model)
@@ -1353,6 +1400,8 @@ class ChatSessionService:
             model_route=model_route,
             effective_prompt=effective_prompt,
             paper_mentions=paper_mentions,
+            primary_paper_context=primary_paper_context,
+            viewer_context=viewer_context,
         )
         message = self._apply_turn_creation(
             session,

@@ -12,6 +12,12 @@ export interface ChatSession {
   is_busy: boolean;
   web_search_enabled: boolean;
   reasoning_effort?: ReasoningEffort;
+  primary_paper?: {
+    id: string;
+    route_id: string;
+    title: string;
+    arxiv_id: string;
+  } | null;
 }
 
 export interface ChatSessionDetail extends ChatSession {
@@ -23,6 +29,7 @@ export interface ChatSessionDetail extends ChatSession {
     role: "user" | "assistant";
     content: string;
     paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
+    viewer_context?: { page: number } | null;
     revision: number;
     status: string;
     display_blocks: ChatBlock[];

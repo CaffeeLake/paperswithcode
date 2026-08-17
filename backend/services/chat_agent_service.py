@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 )
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.prompt import READER_SYSTEM_PROMPT
 from backend.chat_execution_policy import (
     ANSWER_NOW_REASON,
     FINALIZER_MAX_TURNS,
@@ -539,6 +540,7 @@ def build_agent_options(
     session_store: object | None = None,
     resume: str | None = None,
     web_search_enabled: bool = False,
+    reader_mode: bool = False,
     owner_hash: str = "",
     finalizing: bool = False,
 ) -> tuple[ClaudeAgentOptions, SearchCallLimiter]:
@@ -573,6 +575,8 @@ def build_agent_options(
         "focused follow-up; reserve the remaining turns for correction and final "
         "synthesis. The hard limit is a safety ceiling, not a target.\n"
     )
+    if reader_mode and not finalizing:
+        system_prompt += "\n" + READER_SYSTEM_PROMPT
     hooks = (
         [] if finalizing else [HookMatcher(matcher=SEARCH_TOOL_NAME, hooks=[limiter])]
     )
@@ -666,6 +670,7 @@ async def stream_agent_events(
     session_store: object,
     resume: str | None,
     web_search_enabled: bool = False,
+    reader_mode: bool = False,
     owner_hash: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     """Run one durable SDK turn and yield normalized application events."""
@@ -685,6 +690,7 @@ async def stream_agent_events(
             session_store=session_store,
             resume=resume,
             web_search_enabled=web_search_enabled,
+            reader_mode=reader_mode,
             owner_hash=owner_hash,
         )
         adapter = SDKEventAdapter(
@@ -763,6 +769,7 @@ async def stream_agent_events(
                 session_store=session_store,
                 resume=sdk_session_id,
                 web_search_enabled=False,
+                reader_mode=reader_mode,
                 owner_hash=owner_hash,
                 finalizing=True,
             )

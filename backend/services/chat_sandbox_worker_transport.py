@@ -78,6 +78,7 @@ class WorkerTurnRequest:
     gateway_url: str
     agent_harness: str = "claude"
     web_search_enabled: bool = False
+    reader_mode: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -697,6 +698,7 @@ class WorkerTurnExecution:
             "model": self.request.model,
             "resume": self.request.resume,
             "web_search_enabled": self.request.web_search_enabled,
+            "reader_mode": self.request.reader_mode,
             "reasoning_effort": self.request.reasoning_effort,
             "fetchable_urls": list(self.request.fetchable_urls),
             "hf_username": self.request.hf_username,

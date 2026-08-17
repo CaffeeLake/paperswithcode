@@ -6,7 +6,7 @@ import { Icon, PaperPreview, SotaBadges } from "@/components";
 import LatexTitle from "@/components/LatexTitle";
 import { evaluationsApi } from "@/lib/api/evaluations";
 import { papersApi } from "@/lib/api/papers";
-import { assetUrl } from "@/lib/apiUrl";
+import { assetUrl, isNativePdfReaderEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { paperEditSubmitMode } from "@/lib/contributorCapabilities";
 import { leaderboardBadgeMarkdown } from "@/lib/leaderboardBadges";
@@ -443,11 +443,25 @@ const PaperDetailView: React.FC = () => {
           </div>
 
           <div className="action-row">
-            {safePdfUrl && (
+            {safePdfUrl && paper.source === "arxiv" && isNativePdfReaderEnabled()
+              && (!isStagingEnvironment() || user?.is_admin) ? (
+              <Link
+                className="action-btn"
+                to={`/pdf/${(paper.arxiv_id || arxivId).replace(/v\d+$/i, "")}`}
+                onClick={() => {
+                  const readerRoute = (paper.arxiv_id || arxivId).replace(/v\d+$/i, "");
+                  sessionStorage.removeItem(`pwc:reader:session:${readerRoute}`);
+                  sessionStorage.removeItem(`pwc:reader:assistant-collapsed:${readerRoute}`);
+                  sessionStorage.removeItem(`pwc:reader:page:${readerRoute}`);
+                }}
+              >
+                <Icon name="pdf" size={12} /> Read paper
+              </Link>
+            ) : safePdfUrl ? (
               <a className="action-btn" href={safePdfUrl} target="_blank" rel="noopener noreferrer">
                 <Icon name="pdf" size={12} /> View PDF
               </a>
-            )}
+            ) : null}
             {safeAbstractUrl && (
               <EditableActionButton
                 showEdit={paper.source === "external" && canEditPaper}

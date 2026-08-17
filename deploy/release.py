@@ -37,7 +37,7 @@ except ModuleNotFoundError:
     from production_chat_contract import DISABLED_DATABASE_CONTRACT_VERSION
 
 ENVIRONMENTS = ("production", "staging")
-FEATURE_CONTRACT_VERSION = 4
+FEATURE_CONTRACT_VERSION = 5
 
 
 def legacy_production_chat_runtime() -> dict[str, object]:
@@ -81,6 +81,9 @@ def profile_features(
         raise ValueError(f"unsupported environment: {environment}")
     return {
         "chat": environment == "staging" or production_chat_enabled,
+        "native_pdf_reader": environment == "staging",
+        "paper_reader_chat": environment == "staging",
+        "paper_reader_selection": False,
         # Staging inherits production capabilities and layers preview features
         # such as chat on top.
         "codex_add_evals": True,
@@ -108,11 +111,25 @@ def _profile_features_v3(environment: str) -> dict[str, bool]:
     }
 
 
+def _profile_features_v4(
+    environment: str, *, production_chat_enabled: bool = False
+) -> dict[str, bool]:
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"unsupported environment: {environment}")
+    return {
+        "chat": environment == "staging" or production_chat_enabled,
+        "codex_add_evals": True,
+        "codex_enrich_paper": True,
+    }
+
+
 def _profile_features_for_version(environment: str, version: int) -> dict[str, bool]:
     if version == 2:
         return _profile_features_v2(environment)
     if version == 3:
         return _profile_features_v3(environment)
+    if version == 4:
+        return _profile_features_v4(environment)
     if version == FEATURE_CONTRACT_VERSION:
         return profile_features(environment)
     raise ValueError("unsupported release feature contract version")
@@ -233,7 +250,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         )
     elif set(manifest) == bridge_required:
         version = manifest["feature_contract_version"]
-        if version == FEATURE_CONTRACT_VERSION and profile == "production":
+        if version in {4, FEATURE_CONTRACT_VERSION} and profile == "production":
             backend_features = manifest.get("backend_features")
             declared_chat = (
                 backend_features.get("chat")
@@ -242,7 +259,13 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             )
             if not isinstance(declared_chat, bool):
                 raise ValueError("production chat feature flag must be boolean")
-            expected = profile_features(profile, production_chat_enabled=declared_chat)
+            expected = (
+                profile_features(profile, production_chat_enabled=declared_chat)
+                if version == FEATURE_CONTRACT_VERSION
+                else _profile_features_v4(
+                    profile, production_chat_enabled=declared_chat
+                )
+            )
         else:
             expected = _profile_features_for_version(profile, version)
     else:

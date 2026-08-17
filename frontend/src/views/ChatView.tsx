@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatComposerSurface } from "@/components/chat/ChatComposerSurface";
@@ -48,6 +48,11 @@ import {
 } from "@/lib/chatSessions";
 
 const emptyDraft = (text = ""): ChatDraft => ({ text, paperMentions: [] });
+const READER_PROMPTS = [
+  "Summarize the main contributions",
+  "Explain in simple terms",
+  "Identify the main limitations",
+];
 const readStoredDraft = (): ChatDraft | null => {
   const raw = sessionStorage.getItem(CHAT_DRAFT_KEY);
   if (!raw) return null;
@@ -67,8 +72,27 @@ type RouteSessionState = {
   error?: string;
 };
 
-const ChatView: React.FC = () => {
-  const { sessionId: routeSessionId } = useParams<{ sessionId: string }>();
+export interface ChatExperienceProps {
+  mode?: "general" | "paper";
+  routeSessionId?: string;
+  primaryPaper?: { id: string; routeId: string; title: string };
+  currentPage?: () => number;
+  onSessionId?: (sessionId: string) => void;
+  onReaderSubmit?: () => void;
+  onReaderNewChat?: () => void;
+}
+
+export const ChatExperience: React.FC<ChatExperienceProps> = ({
+  mode = "general",
+  routeSessionId: suppliedSessionId,
+  primaryPaper,
+  currentPage,
+  onSessionId: onReaderSessionId,
+  onReaderSubmit,
+  onReaderNewChat,
+}) => {
+  const { sessionId: paramSessionId } = useParams<{ sessionId: string }>();
+  const routeSessionId = suppliedSessionId ?? (mode === "general" ? paramSessionId : undefined);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, isLoading: authLoading } = useAuth();
@@ -81,7 +105,8 @@ const ChatView: React.FC = () => {
     retry: false,
     enabled: isChatLive() && Boolean(user),
   });
-  const chatPaused = availabilityQuery.data?.status === "paused";
+  const chatPaused = availabilityQuery.data?.status === "paused"
+    || (mode === "paper" && availabilityQuery.data?.paper_reader_chat_enabled === false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionError, setSessionError] = useState("");
@@ -105,6 +130,7 @@ const ChatView: React.FC = () => {
   const selectedProviderRef = useRef(selectedProvider);
   selectedProviderRef.current = selectedProvider;
   const [liveTitle, setLiveTitle] = useState("");
+  const [routeViewerPage, setRouteViewerPage] = useState<number | null>(null);
   const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
   const [webSearchEnabled, setWebSearchEnabled] = useState(
     () => queuedLaunchRef.current?.webSearchEnabled ?? false,
@@ -158,6 +184,10 @@ const ChatView: React.FC = () => {
     initialModel: selectedModel,
     webSearchEnabled: webSearchAvailable && webSearchEnabled,
     reasoningEffort,
+    primaryPaperRouteId: mode === "paper" ? primaryPaper?.routeId : undefined,
+    viewerContext: mode === "paper" && currentPage
+      ? () => ({ page: Math.max(1, Math.min(10_000, currentPage())) })
+      : undefined,
     onSessionId: (id) => {
       activeStreamSessionIdRef.current = id;
       const isNewSession = id !== routeSessionIdRef.current;
@@ -186,7 +216,10 @@ const ChatView: React.FC = () => {
         // the newly persisted session announced by the SSE stream.
         loadedRouteSessionIdRef.current = id;
         setRouteSessionState({ id, status: "loaded" });
-        if (isNewSession) navigate(`/chat/${id}`, { replace: true });
+        if (isNewSession) {
+          if (mode === "paper") onReaderSessionId?.(id);
+          else navigate(`/chat/${id}`, { replace: true });
+        }
       }
     },
     onTitle: (title) => {
@@ -228,11 +261,13 @@ const ChatView: React.FC = () => {
     sessionStorage.setItem(CHAT_REASONING_EFFORT_KEY, reasoningEffort);
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
-    const returnTo = routeSessionIdRef.current
-      ? `/chat/${routeSessionIdRef.current}`
-      : "/chat";
+    const returnTo = mode === "paper" && primaryPaper
+      ? `/pdf/${primaryPaper.routeId}`
+      : routeSessionIdRef.current
+        ? `/chat/${routeSessionIdRef.current}`
+        : "/chat";
     window.location.href = hfLoginUrl(returnTo, selectedProvider === "huggingface");
-  }, [reasoningEffort, selectedModel, selectedProvider]);
+  }, [mode, primaryPaper, reasoningEffort, selectedModel, selectedProvider]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -294,7 +329,8 @@ const ChatView: React.FC = () => {
     sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
     clearQueuedChatLaunch();
     setDraft(emptyDraft());
-  }, [authorizeInference, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
+    if (mode === "paper") onReaderSubmit?.();
+  }, [authorizeInference, mode, onReaderSubmit, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -333,9 +369,11 @@ const ChatView: React.FC = () => {
         setReasoningEffort("low");
       }
       setRouteSessionState(null);
+      setRouteViewerPage(null);
       return;
     }
     if (loadedRouteSessionIdRef.current === routeSessionId) return;
+    setRouteViewerPage(null);
     setRouteSessionState((previous) => previous?.id === routeSessionId && previous.status === "loading"
       ? previous
       : { id: routeSessionId, status: "loading" });
@@ -358,6 +396,10 @@ const ChatView: React.FC = () => {
           : detail.reasoning_effort ?? "high",
       );
       setLiveTitle(detail.title);
+      const latestViewerPage = [...detail.messages]
+        .reverse()
+        .find((message) => message.role === "user" && message.viewer_context)?.viewer_context?.page;
+      setRouteViewerPage(latestViewerPage ?? null);
       loadedRouteSessionIdRef.current = routeSessionId;
       setRouteSessionState({ id: routeSessionId, status: "loaded" });
     }).catch((error) => {
@@ -432,7 +474,8 @@ const ChatView: React.FC = () => {
     setWebSearchEnabled(false);
     setReasoningEffort("low");
     setLiveTitle("");
-    navigate("/chat");
+    if (mode === "paper") onReaderNewChat?.();
+    else navigate("/chat");
   };
   const saveRename = async (id: string, title: string) => {
     try {
@@ -550,8 +593,8 @@ const ChatView: React.FC = () => {
   };
 
   return (
-    <div className="chat-page" style={{ height: `calc(100dvh - ${headerHeight}px)` }}>
-      <ChatSessionNavigation
+    <div className={`chat-page${mode === "paper" ? " chat-page--reader" : ""}`} style={{ height: mode === "paper" ? "100%" : `calc(100dvh - ${headerHeight}px)` }}>
+      {mode === "general" && <ChatSessionNavigation
         sessions={sessions}
         activeSessionId={routeSessionId}
         loading={sessionsLoading}
@@ -562,15 +605,30 @@ const ChatView: React.FC = () => {
         onNavigate={(sessionId) => navigate(`/chat/${sessionId}`)}
         onRename={saveRename}
         onDelete={(sessionId) => void remove(sessionId)}
-      />
+      />}
 
       <section className="chat-main">
         <div className="chat-topbar">
-          {!sidebarOpen && <button type="button" className="icon-btn" onClick={() => setSidebarOpen(true)} title="Open sidebar"><PanelIcon /></button>}
+          {mode === "general" && !sidebarOpen && <button type="button" className="icon-btn" onClick={() => setSidebarOpen(true)} title="Open sidebar"><PanelIcon /></button>}
+          {mode === "paper" && <button type="button" className="chat-reader-action" onClick={newChat}>New chat</button>}
           <span className="chat-topbar-title">{isRouteSessionLoading
             ? current?.title || ""
             : liveTitle || current?.title || (isEmpty ? "" : "New chat")}</span>
           {staging && <span className="chat-staging-badge">Staging</span>}
+          {mode === "paper" && <Link className="chat-reader-action" to="/chat">All chats</Link>}
+          {mode === "general" && current?.primary_paper && (
+            <Link
+              className="chat-reader-action"
+              to={`/pdf/${current.primary_paper.route_id}`}
+              onClick={() => {
+                const readerRoute = current.primary_paper!.route_id;
+                sessionStorage.setItem(`pwc:reader:session:${readerRoute}`, current.id);
+                if (routeViewerPage) {
+                  sessionStorage.setItem(`pwc:reader:page:${readerRoute}`, String(routeViewerPage));
+                }
+              }}
+            >Open reader</Link>
+          )}
           {routeSessionId && routeStateMatches && routeSessionState?.status === "loaded" && !isEmpty && (
             <ChatSharing
               sessionId={routeSessionId}
@@ -591,9 +649,9 @@ const ChatView: React.FC = () => {
             setRouteLoadAttempt((attempt) => attempt + 1);
           }}>Try again</button>
         </div> : isEmpty && !pendingAutoDraft.text ? <div className="chat-empty"><div className="chat-empty-inner">
-          <div className="chat-empty-eyebrow">AI research assistant</div>
-          <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
-          <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
+          <div className="chat-empty-eyebrow">{mode === "paper" ? "Paper assistant" : "AI research assistant"}</div>
+          <h1 className="chat-empty-title">{mode === "paper" ? "Ask about this paper" : <>Ask <em>Papers With Code</em></>}</h1>
+          <p className="chat-empty-sub">{mode === "paper" ? "Questions are grounded in the open paper. Add up to three other papers with @." : "Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow."}</p>
           {staging && <p className="chat-staging-access-note">
             This is a limited staging preview. Only approved Hugging Face users can start chats.
           </p>}
@@ -604,7 +662,7 @@ const ChatView: React.FC = () => {
             openRouterFallbackEnabled={openRouterFallbackEnabled}
             byokExpected={byokExpected}
             paused={chatPaused}
-            suggestions={SUGGESTED_CHAT_PROMPTS}
+            suggestions={mode === "paper" ? READER_PROMPTS : SUGGESTED_CHAT_PROMPTS}
           />
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
@@ -648,5 +706,7 @@ const ChatView: React.FC = () => {
     </div>
   );
 };
+
+const ChatView: React.FC = () => <ChatExperience />;
 
 export default ChatView;

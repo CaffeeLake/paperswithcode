@@ -37,6 +37,15 @@ def configure_release(manifest: dict, release: Path) -> None:
     values = {
         "PWC_FRONTEND_DIST_DIR": str(release / "frontend-dist"),
         "PWC_CHAT_ENABLED": "true" if features.get("chat") else "false",
+        "PWC_NATIVE_PDF_READER_ENABLED": (
+            "true" if features.get("native_pdf_reader") else "false"
+        ),
+        "PWC_PAPER_READER_CHAT_ENABLED": (
+            "true" if features.get("paper_reader_chat") else "false"
+        ),
+        "PWC_PAPER_READER_SELECTION_ENABLED": (
+            "true" if features.get("paper_reader_selection") else "false"
+        ),
         "PWC_CHAT_PAPER_MENTIONS_ENABLED": (
             "true" if features.get("chat") else "false"
         ),

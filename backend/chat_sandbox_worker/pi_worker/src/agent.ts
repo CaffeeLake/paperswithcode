@@ -22,6 +22,7 @@ export interface RunTurn {
   model: string;
   resume: string | null;
   web_search_enabled: boolean;
+  reader_mode: boolean;
   reasoning_effort: "low" | "high" | "max";
   hf_username: string;
 }
@@ -163,6 +164,7 @@ export class PiWorker {
       model: run.model,
       hfUsername: run.hf_username,
       webSearchEnabled: run.web_search_enabled,
+      readerMode: run.reader_mode,
       source: this.promptAsset!,
     });
     this.policy.reset(run.web_search_enabled, prompt);
@@ -170,6 +172,7 @@ export class PiWorker {
       model: run.model,
       reasoningEffort: run.reasoning_effort,
       webSearchEnabled: run.web_search_enabled,
+      readerMode: run.reader_mode,
       hfUsername: run.hf_username,
     });
     if (!this.mirror) {

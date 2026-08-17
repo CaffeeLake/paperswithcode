@@ -332,6 +332,9 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         hf_oauth_client_secret="test-oauth-secret",
         hf_oauth_credential_secret="test-oauth-credential-secret",
         chat_enabled=environment == "staging",
+        native_pdf_reader_enabled=environment == "staging",
+        paper_reader_chat_enabled=environment == "staging",
+        paper_reader_selection_enabled=False,
         chat_public_admission_enabled=environment == "staging",
         chat_sandbox_admission_enabled=environment == "staging",
         chat_default_backend=runtime["default_backend"],
@@ -1609,6 +1612,9 @@ def test_disabled_production_runtime_rejects_active_chat(
 def test_staging_profile_inherits_admin_catalog_actions():
     assert profile_features("staging") == {
         "chat": True,
+        "native_pdf_reader": True,
+        "paper_reader_chat": True,
+        "paper_reader_selection": False,
         "codex_add_evals": True,
         "codex_enrich_paper": True,
     }
@@ -1639,6 +1645,9 @@ def test_version_three_staging_release_remains_valid_after_profile_expansion(
 def test_production_profile_enables_admin_catalog_actions():
     assert profile_features("production") == {
         "chat": False,
+        "native_pdf_reader": False,
+        "paper_reader_chat": False,
+        "paper_reader_selection": False,
         "codex_add_evals": True,
         "codex_enrich_paper": True,
     }
@@ -1653,6 +1662,9 @@ def test_production_profile_enables_admin_catalog_actions():
                 "VITE_AUTH_URL": "",
                 "VITE_CHAT_ENABLED": "0",
                 "VITE_CHAT_LIVE": "0",
+                "VITE_NATIVE_PDF_READER_ENABLED": "0",
+                "VITE_PAPER_READER_CHAT_ENABLED": "0",
+                "VITE_PAPER_READER_SELECTION_ENABLED": "0",
                 "VITE_CODEX_ADD_EVALS_ENABLED": "1",
                 "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
             },
@@ -1663,6 +1675,9 @@ def test_production_profile_enables_admin_catalog_actions():
                 "VITE_AUTH_URL": "https://paperswithcode.co",
                 "VITE_CHAT_ENABLED": "1",
                 "VITE_CHAT_LIVE": "1",
+                "VITE_NATIVE_PDF_READER_ENABLED": "1",
+                "VITE_PAPER_READER_CHAT_ENABLED": "1",
+                "VITE_PAPER_READER_SELECTION_ENABLED": "0",
                 "VITE_CODEX_ADD_EVALS_ENABLED": "1",
                 "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
             },
@@ -1680,6 +1695,9 @@ def test_production_activation_frontend_flags_are_enabled_together():
         "VITE_AUTH_URL": "",
         "VITE_CHAT_ENABLED": "1",
         "VITE_CHAT_LIVE": "1",
+        "VITE_NATIVE_PDF_READER_ENABLED": "0",
+        "VITE_PAPER_READER_CHAT_ENABLED": "0",
+        "VITE_PAPER_READER_SELECTION_ENABLED": "0",
         "VITE_CODEX_ADD_EVALS_ENABLED": "1",
         "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
     }

@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 const SiteFooter = () => {
   const { pathname } = useLocation();
 
-  if (pathname === "/chat" || pathname.startsWith("/chat/")) return null;
+  if (pathname === "/chat" || pathname.startsWith("/chat/") || pathname.startsWith("/pdf/")) return null;
 
   return (
     <footer className="site-footer">

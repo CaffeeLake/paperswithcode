@@ -154,6 +154,26 @@ def test_reused_request_id_with_different_search_permission_conflicts_before_wri
     assert db.flush_calls == 0
 
 
+def test_primary_paper_binding_is_immutable_before_capacity_or_writes():
+    settings = get_settings()
+    session = _session(settings, primary_paper_id=42)
+    db = _ScriptedDB(execute_results=(_Result(one=None),))
+    service = _owned_service(db, settings, session)
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=session.id,
+            client_message_id="paper-mismatch",
+            text="Explain this paper",
+            primary_paper_id=43,
+        )
+
+    assert exc_info.value.code == "primary_paper_mismatch"
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
 def test_expired_ordinary_generating_replay_is_interrupted_and_requires_new_id():
     settings = get_settings()
     turn_id = uuid.uuid4()

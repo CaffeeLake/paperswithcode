@@ -25,6 +25,15 @@ def configure_release_environment(release: Path) -> dict:
     os.environ.setdefault("HF_XET_CACHE", str(hf_cache_dir / "xet"))
     os.environ["PWC_RELEASE_ID"] = manifest["release_id"]
     os.environ["PWC_CHAT_ENABLED"] = "true" if features["chat"] else "false"
+    os.environ["PWC_NATIVE_PDF_READER_ENABLED"] = (
+        "true" if features.get("native_pdf_reader", False) else "false"
+    )
+    os.environ["PWC_PAPER_READER_CHAT_ENABLED"] = (
+        "true" if features.get("paper_reader_chat", False) else "false"
+    )
+    os.environ["PWC_PAPER_READER_SELECTION_ENABLED"] = (
+        "true" if features.get("paper_reader_selection", False) else "false"
+    )
     os.environ["PWC_CHAT_PAPER_MENTIONS_ENABLED"] = (
         "true" if features["chat"] else "false"
     )

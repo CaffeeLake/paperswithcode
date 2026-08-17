@@ -56,6 +56,8 @@ interface UseChatOptions {
   onSettled: (sessionId: string | null) => void;
   onProviderTerminal?: () => void;
   onInterrupted: (draft: ChatDraft) => void;
+  primaryPaperRouteId?: string;
+  viewerContext?: () => { page: number } | undefined;
 }
 
 interface EditRequest {
@@ -636,6 +638,7 @@ export function useChat(options: UseChatOptions) {
     const optimistic = replaceIndex < 0
       ? [...current, nextUser, nextAssistant]
       : [...current.slice(0, replaceIndex), nextUser, nextAssistant];
+    const viewerContext = optionsRef.current.viewerContext?.();
     return run(draft, {
       message: question,
       paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
@@ -643,6 +646,10 @@ export function useChat(options: UseChatOptions) {
       client_message_id: crypto.randomUUID(),
       web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
       reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
+      ...(optionsRef.current.primaryPaperRouteId
+        ? { primary_paper_route_id: optionsRef.current.primaryPaperRouteId }
+        : {}),
+      ...(viewerContext ? { viewer_context: viewerContext } : {}),
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
     }, optimistic, current);
@@ -674,6 +681,7 @@ export function useChat(options: UseChatOptions) {
       blocks: [],
     };
     const optimistic = [...snapshot.slice(0, targetIndex), nextUser, nextAssistant];
+    const viewerContext = optionsRef.current.viewerContext?.();
     return run(draft, {
       message: question,
       paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
@@ -681,6 +689,10 @@ export function useChat(options: UseChatOptions) {
       client_message_id: crypto.randomUUID(),
       web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
       reasoning_effort: optionsRef.current.reasoningEffort ?? "low",
+      ...(optionsRef.current.primaryPaperRouteId
+        ? { primary_paper_route_id: optionsRef.current.primaryPaperRouteId }
+        : {}),
+      ...(viewerContext ? { viewer_context: viewerContext } : {}),
       replace_message_id: target.id,
       prior_revision: target.revision,
     }, optimistic, snapshot, {

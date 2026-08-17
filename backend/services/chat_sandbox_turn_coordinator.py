@@ -68,6 +68,7 @@ class ChatSandboxTurnRequest:
     capability_token: str = field(repr=False)
     agent_harness: str = "claude"
     web_search_enabled: bool = False
+    reader_mode: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -268,6 +269,7 @@ class ChatSandboxTurnCoordinator:
                     agent_harness=request.agent_harness,
                     gateway_url=self.settings.chat_gateway_url,
                     web_search_enabled=request.web_search_enabled,
+                    reader_mode=request.reader_mode,
                     reasoning_effort=request.reasoning_effort,
                     fetchable_urls=request.fetchable_urls,
                     hf_username=request.hf_username,

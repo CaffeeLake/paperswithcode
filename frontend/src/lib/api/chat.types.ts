@@ -21,6 +21,9 @@ export interface ChatAvailability {
   expected_recovery_at: string | null;
   paper_mentions_enabled: boolean;
   web_search_available: boolean;
+  native_pdf_reader_enabled?: boolean;
+  paper_reader_chat_enabled?: boolean;
+  paper_reader_selection_enabled?: boolean;
 }
 
 export interface ChatSandboxSpendStatus {

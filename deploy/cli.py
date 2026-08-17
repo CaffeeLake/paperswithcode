@@ -317,6 +317,15 @@ def frontend_feature_environment(
         ),
         "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
         "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
+        "VITE_NATIVE_PDF_READER_ENABLED": (
+            "1" if features["native_pdf_reader"] else "0"
+        ),
+        "VITE_PAPER_READER_CHAT_ENABLED": (
+            "1" if features["paper_reader_chat"] else "0"
+        ),
+        "VITE_PAPER_READER_SELECTION_ENABLED": (
+            "1" if features["paper_reader_selection"] else "0"
+        ),
         "VITE_CODEX_ADD_EVALS_ENABLED": ("1" if features["codex_add_evals"] else "0"),
         "VITE_CODEX_ENRICH_PAPER_ENABLED": (
             "1" if features["codex_enrich_paper"] else "0"

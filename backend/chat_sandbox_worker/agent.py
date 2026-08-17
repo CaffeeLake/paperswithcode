@@ -343,7 +343,7 @@ class WorkerToolHooks:
 
 def _validate_run_frame(
     frame: dict[str, Any],
-) -> tuple[str, str, str, bool, str, list[str], str]:
+) -> tuple[str, str, str, bool, bool, str, list[str], str]:
     prompt = frame.get("prompt")
     if frame.get("agent_harness", "claude") != "claude":
         raise ValueError("Invalid agent harness")
@@ -360,6 +360,9 @@ def _validate_run_frame(
     web_search_enabled = frame.get("web_search_enabled", False)
     if not isinstance(web_search_enabled, bool):
         raise ValueError("Invalid web search authorization")
+    reader_mode = frame.get("reader_mode", False)
+    if not isinstance(reader_mode, bool):
+        raise ValueError("Invalid reader mode")
     reasoning_effort = str(frame.get("reasoning_effort") or "high")
     if reasoning_effort not in {"low", "high", "max"}:
         raise ValueError("Invalid reasoning effort")
@@ -378,6 +381,7 @@ def _validate_run_frame(
         request_id,
         model,
         web_search_enabled,
+        reader_mode,
         reasoning_effort,
         fetchable_urls,
         hf_username,
@@ -395,6 +399,7 @@ def _options(
     model: str,
     resume: str | None,
     web_search_enabled: bool = False,
+    reader_mode: bool = False,
     hf_username: str = "unknown",
     current_date: date | None = None,
     finalizing: bool = False,
@@ -406,6 +411,7 @@ def _options(
         guide_path=GUIDE,
         max_web_searches=settings.chat_max_web_search_calls,
         web_search_enabled=web_search_enabled,
+        reader_mode=reader_mode,
         selected_model=model,
         hf_username=hf_username,
         current_date=current_date,
@@ -598,6 +604,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         request_id,
         model,
         web_search_enabled,
+        reader_mode,
         _reasoning_effort,
         fetchable_urls,
         hf_username,
@@ -614,6 +621,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         model=model,
         resume=frame.get("resume"),
         web_search_enabled=web_search_enabled,
+        reader_mode=reader_mode,
         hf_username=hf_username,
     )
     yield {
@@ -822,6 +830,7 @@ class PersistentAgent:
         self.resume: str | None = None
         self.sdk_session_id: str | None = None
         self.web_search_enabled = False
+        self.reader_mode = False
         self.hf_username = "unknown"
         self.current_date: date | None = None
         self.finalizing = False
@@ -832,6 +841,7 @@ class PersistentAgent:
         model: str,
         resume: str | None,
         web_search_enabled: bool = False,
+        reader_mode: bool = False,
         hf_username: str = "unknown",
         current_date: date | None = None,
         finalizing: bool = False,
@@ -849,6 +859,7 @@ class PersistentAgent:
         if self.client is not None and (
             model != self.model
             or web_search_enabled != self.web_search_enabled
+            or reader_mode != self.reader_mode
             or hf_username != self.hf_username
             or rendered_date != self.current_date
             or finalizing != self.finalizing
@@ -880,6 +891,7 @@ class PersistentAgent:
         self.model = model
         self.resume = resume
         self.web_search_enabled = web_search_enabled
+        self.reader_mode = reader_mode
         self.hf_username = hf_username
         self.current_date = rendered_date
         self.finalizing = finalizing
@@ -890,6 +902,7 @@ class PersistentAgent:
                 model=model,
                 resume=resume,
                 web_search_enabled=web_search_enabled,
+                reader_mode=reader_mode,
                 hf_username=hf_username,
                 current_date=rendered_date,
                 finalizing=finalizing,
@@ -908,6 +921,7 @@ class PersistentAgent:
             request_id,
             model,
             web_search_enabled,
+            reader_mode,
             _reasoning_effort,
             fetchable_urls,
             hf_username,
@@ -917,6 +931,7 @@ class PersistentAgent:
             model=model,
             resume=frame.get("resume"),
             web_search_enabled=web_search_enabled,
+            reader_mode=reader_mode,
             hf_username=hf_username,
         )
         assert self.client is not None
