@@ -234,6 +234,8 @@ export function humanizeSlug(slug: string): string {
 
 const TASK_ACRONYMS = new Set(["OCR"]);
 const TASK_DISPLAY_NAMES = new Map([
+  ["3d-tracking", "3D Tracking"],
+  ["point-tracking", "2D Point Tracking"],
   ["3d-generation", "3D generation"],
   ["3d-understanding", "3D understanding"],
   ["3d-semantic-segmentation", "3D semantic segmentation"],

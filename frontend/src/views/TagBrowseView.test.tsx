@@ -70,4 +70,42 @@ describe("TaskBreadcrumb", () => {
     );
     expect(screen.queryByRole("link", { name: "Papers" })).toBeNull();
   });
+
+  it("preserves 2D and 3D capitalization in task names", () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <TaskBreadcrumb
+          parents={[]}
+          task={{
+            id: "450",
+            name: "3D Tracking",
+            slug: "3D-tracking",
+            level: 0,
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("navigation", { name: "Breadcrumb" }),
+    ).toHaveTextContent("Tasks/3D Tracking");
+
+    rerender(
+      <MemoryRouter>
+        <TaskBreadcrumb
+          parents={[]}
+          task={{
+            id: "451",
+            name: "2D Point Tracking",
+            slug: "point-tracking",
+            level: 0,
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("navigation", { name: "Breadcrumb" }),
+    ).toHaveTextContent("Tasks/2D Point Tracking");
+  });
 });
