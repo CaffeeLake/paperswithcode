@@ -10,7 +10,7 @@ import math
 import statistics
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -189,6 +189,12 @@ def _latency_report(session_ids: set[uuid.UUID], started_at: datetime) -> dict:
         ]
         totals = [row.total_ms for row in values if row.total_ms is not None]
         costs = [float(row.estimated_active_cost_usd or 0) for row in values]
+        followups = [row for row in values if row.traffic_class == "followup"]
+        followup_browser_reasoning = [
+            row.browser_first_reasoning_delta_ms
+            for row in followups
+            if row.browser_first_reasoning_delta_ms is not None
+        ]
         result[harness] = {
             "turns": len(values),
             "successful": sum(row.terminal_status == "complete" for row in values),
@@ -203,6 +209,18 @@ def _latency_report(session_ids: set[uuid.UUID], started_at: datetime) -> dict:
             "total_p50_ms": round(statistics.median(totals)) if totals else None,
             "total_p95_ms": _percentile(totals, 0.95),
             "estimated_active_cost_usd": round(sum(costs), 6),
+            "followup_browser_reasoning_count": len(followup_browser_reasoning),
+            "followup_browser_reasoning_p50_ms": (
+                round(statistics.median(followup_browser_reasoning))
+                if followup_browser_reasoning
+                else None
+            ),
+            "followup_browser_reasoning_p90_ms": _percentile(
+                followup_browser_reasoning, 0.90
+            ),
+            "reuse_cohorts": dict(
+                Counter(row.session_reuse_cohort or "unclassified" for row in followups)
+            ),
             "transcript_failures": sum(
                 row.terminal_status == "error"
                 and getattr(row, "terminal_error_code", None)
@@ -340,6 +358,14 @@ async def _run(
         )
         db.commit()
     latency = _latency_report(session_ids, started_at)
+    pi_latency = latency.get("pi", {})
+    reuse_gate = bool(
+        pi_latency.get("followup_browser_reasoning_count", 0) >= 50
+        and pi_latency.get("followup_browser_reasoning_p50_ms") is not None
+        and pi_latency["followup_browser_reasoning_p50_ms"] <= 3_000
+        and pi_latency.get("followup_browser_reasoning_p90_ms") is not None
+        and pi_latency["followup_browser_reasoning_p90_ms"] <= 6_000
+    )
     new_successes = sum(turn["terminal"] == "done" for turn in new_results)
     followup_successes = sum(turn["terminal"] == "done" for turn in followup_results)
     quality_by_harness = {
@@ -391,6 +417,10 @@ async def _run(
             "results": quality,
         },
         "latency_cost_reliability": latency,
+        "decision_gates": {
+            "reused_browser_reasoning": reuse_gate,
+            "note": "HTTP qualification does not synthesize browser-render timings.",
+        },
     }, passed
 
 
@@ -400,15 +430,15 @@ def main() -> int:
     parser.add_argument("--admin-subject", required=True)
     parser.add_argument("--qualification-owner", required=True)
     parser.add_argument("--admin-username", required=True)
-    parser.add_argument("--new-turns", type=int, default=25)
-    parser.add_argument("--followups", type=int, default=25)
+    parser.add_argument("--new-turns", type=int, default=50)
+    parser.add_argument("--followups", type=int, default=50)
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args()
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
-    if args.new_turns < 25 or args.followups < 25:
+    if args.new_turns < 50 or args.followups < 50:
         raise SystemExit(
-            "Pi qualification requires at least 25 new turns and follow-ups"
+            "Pi qualification requires at least 50 new turns and follow-ups"
         )
     environment = get_settings()
     settings = settings_for_release(args.release_dir).model_copy(

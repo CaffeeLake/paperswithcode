@@ -137,18 +137,27 @@ def test_gateway_latency_routing_is_independently_gated():
     assert payload["provider"] == {"sort": "latency"}
 
 
-def test_initial_payload_optimization_removes_only_exact_duplicates():
+@pytest.mark.parametrize(
+    ("candidate", "expected", "system_count", "tool_count"),
+    [
+        ("system_duplicates", {"system_blocks": 1, "tools": 0}, 1, 3),
+        ("tool_duplicates", {"system_blocks": 0, "tools": 1}, 2, 2),
+    ],
+)
+def test_initial_payload_optimization_removes_one_exact_candidate_at_a_time(
+    candidate, expected, system_count, tool_count
+):
     tool = {"name": "search", "description": "Search", "input_schema": {}}
     payload = {
         "system": [{"type": "text", "text": "stable"}] * 2,
         "tools": [tool, dict(tool), {**tool, "description": "Different"}],
     }
 
-    removed = _optimize_initial_deepseek_payload(payload)
+    removed = _optimize_initial_deepseek_payload(payload, candidate)
 
-    assert removed == {"system_blocks": 1, "tools": 1}
-    assert len(payload["system"]) == 1
-    assert len(payload["tools"]) == 2
+    assert removed == expected
+    assert len(payload["system"]) == system_count
+    assert len(payload["tools"]) == tool_count
 
 
 def test_gateway_enforces_reasoning_effort_and_hides_reasoning():

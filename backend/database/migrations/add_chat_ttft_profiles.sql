@@ -15,6 +15,13 @@ ALTER TABLE chat_sandbox_pool
     ADD COLUMN IF NOT EXISTS reasoning_profile VARCHAR(16) NOT NULL DEFAULT 'generic',
     ADD COLUMN IF NOT EXISTS prompt_digest VARCHAR(64) NOT NULL DEFAULT 'generic',
     ADD COLUMN IF NOT EXISTS provider_adapter_contract VARCHAR(64) NOT NULL DEFAULT 'generic';
+ALTER TABLE chat_sandbox_pool
+    ADD COLUMN IF NOT EXISTS provider_create_ms INTEGER,
+    ADD COLUMN IF NOT EXISTS backend_control_connect_ms INTEGER,
+    ADD COLUMN IF NOT EXISTS broker_ready_ms INTEGER,
+    ADD COLUMN IF NOT EXISTS control_ready_ms INTEGER,
+    ADD COLUMN IF NOT EXISTS agent_spawn_ms INTEGER,
+    ADD COLUMN IF NOT EXISTS agent_startup_ready_ms INTEGER;
 
 ALTER TABLE chat_turn_latency
     ADD COLUMN IF NOT EXISTS control_connection_ms INTEGER,

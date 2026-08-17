@@ -439,6 +439,12 @@ class ChatSandboxPoolRepository:
         sandbox_id: str,
         *,
         now: datetime,
+        provider_create_ms: int | None = None,
+        backend_control_connect_ms: int | None = None,
+        broker_ready_ms: int | None = None,
+        control_ready_ms: int | None = None,
+        agent_spawn_ms: int | None = None,
+        agent_startup_ready_ms: int | None = None,
     ) -> PoolLandingOutcome:
         if not self.capacity_locker(db):
             return PoolLandingOutcome.OWNERSHIP_CHANGED
@@ -475,6 +481,12 @@ class ChatSandboxPoolRepository:
         row.ready_at = now
         row.last_health_checked_at = now
         row.updated_at = now
+        row.provider_create_ms = provider_create_ms
+        row.backend_control_connect_ms = backend_control_connect_ms
+        row.broker_ready_ms = broker_ready_ms
+        row.control_ready_ms = control_ready_ms
+        row.agent_spawn_ms = agent_spawn_ms
+        row.agent_startup_ready_ms = agent_startup_ready_ms
         self.finalize_cost(row, now)
         return PoolLandingOutcome.LANDED
 

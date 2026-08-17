@@ -42,6 +42,7 @@ from backend.services.chat_sandbox_pool_repository import (
 from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.chat_sandbox_worker_transport import (
+    BlankStartupMetrics,
     ChatSandboxWorkerTransport,
     SessionControl,
 )
@@ -233,6 +234,7 @@ class _Transport(ChatSandboxWorkerTransport):
         self.open_calls: list[tuple[str, str]] = []
         self.open_error: BaseException | None = None
         self.open_hook = None
+        self.ping_startup_metrics: BlankStartupMetrics | None = None
 
     async def open_persistent_control(
         self,
@@ -255,6 +257,8 @@ class _Transport(ChatSandboxWorkerTransport):
         if self.ping_error is not None:
             raise self.ping_error
         await asyncio.sleep(0)
+        if self.ping_result and self.ping_startup_metrics is not None:
+            self.blank_startup[control.sandbox_id] = self.ping_startup_metrics
         return self.ping_result
 
 
@@ -954,6 +958,13 @@ def test_replenish_creates_control_pings_and_lands_the_exact_spend_interval():
         owner=True,
         settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
     )
+    harness.transport.ping_startup_metrics = BlankStartupMetrics(
+        broker_ready_ms=11,
+        control_ready_ms=18,
+        agent_spawn_ms=19,
+        agent_startup_ready_ms=74,
+        agent_prestarted=True,
+    )
 
     assert asyncio.run(harness.coordinator.replenish_pool()) == 1
 
@@ -963,6 +974,12 @@ def test_replenish_creates_control_pings_and_lands_the_exact_spend_interval():
     assert pool.state == "blank_ready"
     assert pool.modal_sandbox_id == "sb-created-1"
     assert pool.ready_at == harness.clock.utcnow().replace(tzinfo=None)
+    assert pool.provider_create_ms == 0
+    assert pool.backend_control_connect_ms == 0
+    assert pool.broker_ready_ms == 11
+    assert pool.control_ready_ms == 18
+    assert pool.agent_spawn_ms == 19
+    assert pool.agent_startup_ready_ms == 74
     assert interval.worker_generation == pool.worker_generation
     assert interval.modal_sandbox_id == pool.modal_sandbox_id
     assert interval.provider_created_at == harness.clock.utcnow().replace(tzinfo=None)
@@ -1035,6 +1052,20 @@ def test_creation_component_reports_typed_start_failure():
 
     assert outcome is PoolReplenishmentOutcome.START_FAILED
     assert outcome.created_count == 0
+
+
+def test_prewarm_refill_rejects_legacy_health_without_prestarted_agent_proof():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_pi_prewarm_enabled=True),
+    )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.failure_code == "sandbox_start_failed"
 
 
 def test_concurrent_replenish_is_bounded_and_stops_at_the_database_target():
@@ -1298,7 +1329,7 @@ def test_landing_ownership_change_fences_the_successor_and_settles_the_start():
     )
     successor_token = "successor-token"
 
-    def move_ownership(db, reservation, _sandbox_id, *, now):
+    def move_ownership(db, reservation, _sandbox_id, *, now, **_metrics):
         row = db.get(ChatSandboxPool, reservation.pool_id)
         row.claim_token_hash = successor_token
         row.updated_at = now
@@ -1329,8 +1360,8 @@ def test_landing_exception_not_durable_cleans_up_then_propagates():
     )
     original_land = harness.repository.land_provider_creation
 
-    def fail_after_flush(db, reservation, sandbox_id, *, now):
-        outcome = original_land(db, reservation, sandbox_id, now=now)
+    def fail_after_flush(db, reservation, sandbox_id, *, now, **metrics):
+        outcome = original_land(db, reservation, sandbox_id, now=now, **metrics)
         db.flush()
         raise RuntimeError(f"landing failed after {outcome}")
 
@@ -1625,8 +1656,8 @@ def test_cancellation_after_committed_landing_keeps_the_durable_provider():
     )
     original_land = harness.repository.land_provider_creation
 
-    def land_then_cancel(db, reservation, sandbox_id, *, now):
-        outcome = original_land(db, reservation, sandbox_id, now=now)
+    def land_then_cancel(db, reservation, sandbox_id, *, now, **metrics):
+        outcome = original_land(db, reservation, sandbox_id, now=now, **metrics)
         task = asyncio.current_task()
         assert task is not None
         asyncio.get_running_loop().call_soon(task.cancel, "after landing commit")

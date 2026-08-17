@@ -106,6 +106,7 @@ class SandboxCreated:
     after_pool_miss: bool
     pool_lookup_ms: int | None
     pool_miss_reason: str | None = None
+    reuse_cohort: str | None = None
 
     @property
     def public_label(self) -> Literal["pool_miss", "created"]:
@@ -117,6 +118,12 @@ class SandboxCreated:
 
 
 type SandboxAcquisitionOutcome = PoolAcquired | LeaseReused | SandboxCreated
+
+
+@dataclass(frozen=True)
+class StartSelected:
+    acquired: StartAcquired
+    reuse_cohort: str | None = None
 
 
 def legacy_ensure_ready_result(
@@ -308,11 +315,12 @@ class ChatSandboxAcquisitionCoordinator:
             return selected
         return await self._create_and_land(
             chat_session_id,
-            selected,
+            selected.acquired,
             started=started,
             after_pool_miss=pool_miss,
             pool_lookup_ms=pool_lookup_ms,
             pool_miss_reason=pool_miss_reason,
+            reuse_cohort=selected.reuse_cohort,
         )
 
     async def _claim_start_or_reuse(
@@ -322,7 +330,8 @@ class ChatSandboxAcquisitionCoordinator:
         deadline: float,
         started: float,
         pool_lookup_ms: int | None,
-    ) -> StartAcquired | LeaseReused:
+    ) -> StartSelected | LeaseReused:
+        restarted = False
         while True:
             try:
                 acquisition = self._acquire_once(chat_session_id)
@@ -330,20 +339,25 @@ class ChatSandboxAcquisitionCoordinator:
                 continue
 
             if isinstance(acquisition, ReuseLease):
-                sandbox = await self._reuse_or_recover(
+                sandbox, cohort = await self._reuse_or_recover(
                     chat_session_id,
                     acquisition,
                     deadline=deadline,
                 )
                 if sandbox is None:
+                    restarted = restarted or cohort == "restarted"
                     continue
                 return LeaseReused(
                     sandbox=sandbox,
                     elapsed_ms=self._elapsed_ms(started),
                     pool_lookup_ms=pool_lookup_ms,
+                    reuse_cohort=cohort or "rediscovered",
                 )
             if isinstance(acquisition, StartAcquired):
-                return acquisition
+                return StartSelected(
+                    acquisition,
+                    reuse_cohort="restarted" if restarted else None,
+                )
             if isinstance(acquisition, EvictionRequired):
                 eviction = await self.pool.lease_eviction.evict_idle(
                     acquisition.chat_session_id
@@ -422,7 +436,7 @@ class ChatSandboxAcquisitionCoordinator:
         acquisition: ReuseLease,
         *,
         deadline: float,
-    ) -> object | None:
+    ) -> tuple[object | None, str | None]:
         await self.lease_maintenance.enforce_warm_cap()
         persistent = bool(
             getattr(self.settings, "chat_persistent_worker_enabled", False)
@@ -433,7 +447,7 @@ class ChatSandboxAcquisitionCoordinator:
             and control is not None
             and control.sandbox_id == acquisition.sandbox_id
         ):
-            return control.sandbox
+            return control.sandbox, "fully_in_memory"
 
         sandbox = None
         try:
@@ -443,7 +457,9 @@ class ChatSandboxAcquisitionCoordinator:
                 persistent=persistent,
                 worker_generation=acquisition.worker_generation,
             ):
-                return sandbox
+                return sandbox, (
+                    "control_reconnected" if persistent else "rediscovered"
+                )
         except Exception:  # noqa: BLE001,S110 - exact recovery follows below
             pass
 
@@ -457,9 +473,9 @@ class ChatSandboxAcquisitionCoordinator:
                     ready_timeout_seconds=self.ready_timeout_seconds,
                 )
         except LeaseDecisionChanged:
-            return None
+            return None, None
         if await self._recover_claim(chat_session_id, recovery, sandbox=sandbox):
-            return None
+            return None, "restarted"
         await self._wait_until(deadline)
         self._raise_capacity()
 
@@ -502,6 +518,7 @@ class ChatSandboxAcquisitionCoordinator:
         after_pool_miss: bool,
         pool_lookup_ms: int | None,
         pool_miss_reason: str | None,
+        reuse_cohort: str | None,
     ) -> SandboxCreated:
         claim = acquired.claim
         interval_id = acquired.interval_id
@@ -635,6 +652,7 @@ class ChatSandboxAcquisitionCoordinator:
             after_pool_miss=after_pool_miss,
             pool_lookup_ms=pool_lookup_ms,
             pool_miss_reason=pool_miss_reason,
+            reuse_cohort=reuse_cohort,
         )
 
     async def _cleanup_failed_start(

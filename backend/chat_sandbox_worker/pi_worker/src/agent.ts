@@ -39,6 +39,8 @@ export class PiWorker {
   private promptAsset: string | undefined;
   private prewarmedProvider: Awaited<ReturnType<typeof createProvider>> | undefined;
   private prewarmedModel: string | undefined;
+  private policyExtension: ReturnType<typeof pwcExtension> | undefined;
+  private webMcpExtension: ReturnType<typeof createWebMcpExtension> | undefined;
   private activeProfile: string | undefined;
   private readonly policy = new PolicyController({
     maximumCalls: Number(process.env.PWC_CHAT_MAX_TOOL_CALLS ?? 12),
@@ -59,6 +61,8 @@ export class PiWorker {
 
   private async initializeImmutableProfile(): Promise<void> {
     this.promptAsset = await loadPromptAsset();
+    this.policyExtension = pwcExtension(this.policy);
+    this.webMcpExtension = createWebMcpExtension();
     if (process.env.PWC_CHAT_PI_PREWARM_ENABLED !== "true") return;
     const model = process.env.PWC_CHAT_PI_PREWARM_MODEL;
     if (!model) throw new Error("Pi prewarm model is missing");
@@ -207,8 +211,8 @@ export class PiWorker {
       noContextFiles: true,
       systemPrompt: prompt,
       extensionFactories: [
-        { name: "pwc-policy", factory: pwcExtension(this.policy), hidden: true },
-        { name: "pwc-exa-mcp", factory: createWebMcpExtension(), hidden: true },
+        { name: "pwc-policy", factory: this.policyExtension!, hidden: true },
+        { name: "pwc-exa-mcp", factory: this.webMcpExtension!, hidden: true },
       ],
     });
     await loader.reload();

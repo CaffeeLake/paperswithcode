@@ -418,6 +418,12 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
         + b"\n"
     )
     child = SimpleNamespace(poll=lambda: None)
+    startup_metrics = {
+        "broker_ready_ms": 10,
+        "control_ready_ms": 20,
+        "agent_spawn_ms": 21,
+        "agent_startup_ready_ms": 30,
+    }
     try:
         assert control_daemon._serve_turn(
             daemon_side,
@@ -426,12 +432,15 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
             proxy_token="unused",
             assigned_session_id=None,
             assigned_agent_harness=None,
+            startup_metrics=startup_metrics,
         ) == ("", "", child)
         assert decode_frame(relay_side.recv(4096)) == {
             "v": 1,
             "type": "worker_health",
             "request_id": request_id,
             "assigned": False,
+            "agent_prestarted": True,
+            "startup_metrics": startup_metrics,
         }
     finally:
         daemon_side.close()
@@ -455,11 +464,21 @@ def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path
     server.bind(str(tmp_path / "control.sock"))
     server.listen(2)
     errors: list[BaseException] = []
+    startup_metrics = {
+        "broker_ready_ms": 10,
+        "control_ready_ms": 20,
+        "agent_spawn_ms": None,
+        "agent_startup_ready_ms": None,
+    }
 
     def serve():
         try:
             control_daemon._serve_connections(
-                server, broker=child, proxy_token="unused"
+                server,
+                broker=child,
+                proxy_token="unused",
+                startup_metrics=startup_metrics,
+                daemon_started=control_daemon.time.monotonic(),
             )
         except BaseException as error:
             errors.append(error)
@@ -490,6 +509,8 @@ def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path
             "type": "worker_health",
             "request_id": request_id,
             "assigned": False,
+            "agent_prestarted": False,
+            "startup_metrics": startup_metrics,
         }
         first.settimeout(2)
         assert first.recv(1) == b""
@@ -572,6 +593,12 @@ def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
                 proxy_token="unused",
                 assigned_session_id=None,
                 assigned_agent_harness=None,
+                startup_metrics={
+                    "broker_ready_ms": 10,
+                    "control_ready_ms": 20,
+                    "agent_spawn_ms": None,
+                    "agent_startup_ready_ms": None,
+                },
             )
         failure = decode_frame(relay_side.recv(4096))
         assert failure == {
@@ -2965,6 +2992,30 @@ def test_resource_probe_treats_ephemeral_disk_as_provider_managed(monkeypatch):
         "memory": "enforced",
     }
     assert probes == ["pids", "memory"]
+
+
+def test_pi_prewarm_qualification_creates_the_actual_blank_profile(monkeypatch):
+    settings = SimpleNamespace(release_id="release-a")
+    runner = QualificationRunner(
+        settings,
+        starts=1,
+        parallel=1,
+        snapshot_samples=0,
+        pi_prewarm=True,
+    )
+    captured = {}
+
+    async def create(configured, **options):
+        captured.update(settings=configured, **options)
+        return object()
+
+    monkeypatch.setattr(qualify_chat_sandbox, "create_isolated_sandbox", create)
+
+    asyncio.run(runner._create("one"))
+
+    assert captured["settings"] is settings
+    assert captured["tags"]["pool"] == "blank"
+    assert captured["tags"]["release"] == "release-a"
 
 
 @pytest.mark.parametrize(

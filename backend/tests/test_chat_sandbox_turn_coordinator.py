@@ -249,6 +249,7 @@ def test_turn_spend_success_commits_once_before_budget_prechecked_acquisition():
             request.chat_session_id,
             {
                 "pool_miss": False,
+                "pool_miss_reason": None,
                 "budget_prechecked": True,
                 "allow_pool": False,
             },

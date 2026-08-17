@@ -161,23 +161,28 @@ class QualificationRunner:
         starts: int,
         parallel: int,
         snapshot_samples: int,
+        pi_prewarm: bool = False,
     ):
         self.settings = settings
         self.starts = starts
         self.parallel = parallel
         self.snapshot_samples = snapshot_samples
+        self.pi_prewarm = pi_prewarm
         self.run_id = uuid.uuid4().hex[:12]
         self._semaphore = asyncio.Semaphore(parallel)
 
     async def _create(self, suffix: str):
+        tags = {
+            "purpose": "qualification",
+            "run": self.run_id,
+            "release": self.settings.release_id,
+        }
+        if self.pi_prewarm:
+            tags["pool"] = "blank"
         return await create_isolated_sandbox(
             self.settings,
             name=f"qualify-{self.run_id}-{suffix}",
-            tags={
-                "purpose": "qualification",
-                "run": self.run_id,
-                "release": self.settings.release_id,
-            },
+            tags=tags,
         )
 
     async def _security_probes(self, sandbox) -> int:
@@ -204,6 +209,36 @@ class QualificationRunner:
         } & FORBIDDEN_ENVIRONMENT_KEYS
         if exposed:
             raise RuntimeError("Agent environment exposes a forbidden key")
+
+        if self.pi_prewarm:
+            prewarm_probe = """
+import json
+from pathlib import Path
+from backend.chat_sandbox_worker.control_daemon import _broker_control
+
+status = _broker_control({"operation": "status"})
+if status.get("ok") is not True or status.get("active"):
+    raise SystemExit(10)
+sessions = Path("/home/pwc-chat/.pi-sessions")
+if sessions.exists() and any(path.is_file() for path in sessions.rglob("*")):
+    raise SystemExit(11)
+"""
+            await _require_success(
+                sandbox,
+                "python",
+                "-c",
+                prewarm_probe,
+            )
+            process_probe = """
+import pathlib
+processes = [
+    path.joinpath("cmdline").read_bytes().replace(b"\\0", b" ").decode(errors="replace")
+    for path in pathlib.Path("/proc").iterdir()
+    if path.name.isdigit() and path.joinpath("cmdline").is_file()
+]
+raise SystemExit(0 if any("pi_worker/dist/src/main.js" in value for value in processes) else 12)
+"""
+            await _require_success(sandbox, "python", "-c", process_probe)
 
         gateway_probe = """
 import json, sys, urllib.error, urllib.request
@@ -483,6 +518,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--sandbox-memory-limit-mib", type=int, default=2048)
     result.add_argument("--persistent-worker", action="store_true")
+    result.add_argument("--pi-prewarm", action="store_true")
     result.add_argument("--allow-active-rollout", action="store_true")
     result.add_argument("--resource-probes", action="store_true")
     result.add_argument("--release-dir", type=Path, required=True)
@@ -506,6 +542,8 @@ def main() -> int:
         raise SystemExit(
             "--sandbox-memory-limit-mib must be at least --sandbox-memory-mib"
         )
+    if args.pi_prewarm and not args.persistent_worker:
+        raise SystemExit("--pi-prewarm requires --persistent-worker")
     settings = settings_for_release(args.release_dir).model_copy(
         update={
             "chat_sandbox_cpu": args.sandbox_cpu,
@@ -513,6 +551,7 @@ def main() -> int:
             "chat_sandbox_memory_mib": args.sandbox_memory_mib,
             "chat_sandbox_memory_limit_mib": args.sandbox_memory_limit_mib,
             "chat_persistent_worker_enabled": args.persistent_worker,
+            "chat_pi_prewarm_enabled": args.pi_prewarm,
         }
     )
     validate_settings(settings, allow_active_rollout=args.allow_active_rollout)
@@ -522,6 +561,7 @@ def main() -> int:
             starts=args.starts,
             parallel=args.parallel,
             snapshot_samples=args.snapshot_samples,
+            pi_prewarm=args.pi_prewarm,
         ).run(resource_probes=args.resource_probes)
     )
     summary = summarize(samples)
@@ -537,6 +577,7 @@ def main() -> int:
                     "parallel": args.parallel,
                     "snapshot_samples": args.snapshot_samples,
                     "persistent_worker": args.persistent_worker,
+                    "pi_prewarm": args.pi_prewarm,
                     "sandbox_cpu": args.sandbox_cpu,
                     "sandbox_cpu_limit": args.sandbox_cpu_limit,
                     "sandbox_memory_mib": settings.chat_sandbox_memory_mib,

@@ -451,6 +451,9 @@ class Settings(BaseSettings):
         default="throughput"
     )
     chat_initial_payload_optimization_enabled: bool = Field(default=False)
+    chat_initial_payload_optimization_candidate: Literal[
+        "system_duplicates", "tool_duplicates"
+    ] = Field(default="system_duplicates")
     # Read-only compatibility for old environment files during rolling deploys.
     # Enforcement intentionally ignores these blank-only floating-point values.
     chat_blank_pool_monthly_budget_usd: float = Field(default=35, gt=0, le=1000)

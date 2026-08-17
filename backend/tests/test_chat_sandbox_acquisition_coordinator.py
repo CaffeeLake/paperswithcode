@@ -7,6 +7,7 @@ import pytest
 
 from backend.services.chat_sandbox_acquisition_coordinator import (
     ChatSandboxAcquisitionCoordinator,
+    LeaseReused,
     SandboxCreated,
 )
 from backend.services.chat_sandbox_capacity_repository import (
@@ -27,6 +28,7 @@ from backend.services.chat_sandbox_state_repository import ChatSandboxStateRepos
 from backend.services.chat_sandbox_worker_transport import ChatSandboxWorkerTransport
 from backend.tests.test_chat_sandbox_capacity_acquisition import (
     _database,
+    _lease,
     _Provider,
     _session,
     _settings,
@@ -139,6 +141,34 @@ def test_direct_coordinator_creation_returns_a_typed_outcome_without_db_io_overl
     assert outcome.public_label == "created"
     assert outcome.created is True
     assert provider.calls[0][0] == "create"
+
+
+@pytest.mark.parametrize(
+    ("persistent", "expected_cohort"),
+    [(False, "rediscovered"), (True, "control_reconnected")],
+)
+def test_reused_lease_records_control_reconnection_state(persistent, expected_cohort):
+    settings = _settings(chat_persistent_worker_enabled=persistent)
+    sessions = _database()
+    session_id = uuid.uuid4()
+    with sessions() as db, db.begin():
+        db.add(_session(session_id))
+        db.add(
+            _lease(
+                settings,
+                session_id,
+                state="idle",
+                sandbox_id="sb-reused",
+                worker_generation="generation-reused",
+            )
+        )
+    provider = _Provider(transactions=[])
+    coordinator = _coordinator(settings, sessions, provider)
+
+    outcome = asyncio.run(coordinator.acquire(session_id))
+
+    assert isinstance(outcome, LeaseReused)
+    assert outcome.reuse_cohort == expected_cohort
 
 
 @pytest.mark.parametrize(

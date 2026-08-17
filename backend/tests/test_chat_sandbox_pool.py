@@ -905,6 +905,7 @@ def test_reused_control_loss_before_sdk_dispatch_is_retryable():
             session_id,
             {
                 "pool_miss": True,
+                "pool_miss_reason": None,
                 "budget_prechecked": True,
                 "allow_pool": False,
             },

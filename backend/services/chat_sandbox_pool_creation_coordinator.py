@@ -32,6 +32,7 @@ from backend.services.chat_sandbox_spend_service import (
     ChatSandboxSpendService,
 )
 from backend.services.chat_sandbox_worker_transport import (
+    BlankStartupMetrics,
     ChatSandboxWorkerTransport,
     SessionControl,
 )
@@ -84,6 +85,9 @@ class StartedBlank:
     sandbox: object
     sandbox_id: str
     control: SessionControl
+    provider_create_ms: int
+    backend_control_connect_ms: int
+    startup_metrics: BlankStartupMetrics | None
 
 
 @dataclass(frozen=True)
@@ -237,20 +241,34 @@ class ChatSandboxPoolCreationCoordinator:
         sandbox: object | None = None
         control: SessionControl | None = None
         try:
+            provider_started = self.monotonic()
             sandbox = await self.provider.create(
                 name=f"chat-blank-{reservation.pool_id}",
                 tags=self._provider_tags(reservation),
                 worker_generation=reservation.worker_generation,
             )
+            provider_create_ms = round((self.monotonic() - provider_started) * 1000)
             sandbox_id: str = sandbox.object_id
+            control_started = self.monotonic()
             control = await self.transport.open_persistent_control(
                 sandbox,
                 reservation.worker_generation,
+            )
+            backend_control_connect_ms = round(
+                (self.monotonic() - control_started) * 1000
             )
             if not await self.transport.ping(control, reservation.worker_generation):
                 raise SandboxError(
                     "sandbox_worker_not_ready",
                     "Persistent blank worker health check failed",
+                )
+            startup_metrics = self.transport.blank_startup_metrics(sandbox_id)
+            if self.settings.chat_pi_prewarm_enabled and (
+                startup_metrics is None or not startup_metrics.agent_prestarted
+            ):
+                raise SandboxError(
+                    "sandbox_worker_not_ready",
+                    "Persistent blank Pi worker was not prestarted",
                 )
             self.transport.register_blank_control(
                 sandbox_id,
@@ -262,6 +280,9 @@ class ChatSandboxPoolCreationCoordinator:
                 sandbox=sandbox,
                 sandbox_id=sandbox_id,
                 control=control,
+                provider_create_ms=provider_create_ms,
+                backend_control_connect_ms=backend_control_connect_ms,
+                startup_metrics=startup_metrics,
             )
         except asyncio.CancelledError:
             try:
@@ -325,6 +346,28 @@ class ChatSandboxPoolCreationCoordinator:
                 started.reservation,
                 started.sandbox_id,
                 now=self.utcnow(),
+                provider_create_ms=started.provider_create_ms,
+                backend_control_connect_ms=started.backend_control_connect_ms,
+                broker_ready_ms=(
+                    started.startup_metrics.broker_ready_ms
+                    if started.startup_metrics is not None
+                    else None
+                ),
+                control_ready_ms=(
+                    started.startup_metrics.control_ready_ms
+                    if started.startup_metrics is not None
+                    else None
+                ),
+                agent_spawn_ms=(
+                    started.startup_metrics.agent_spawn_ms
+                    if started.startup_metrics is not None
+                    else None
+                ),
+                agent_startup_ready_ms=(
+                    started.startup_metrics.agent_startup_ready_ms
+                    if started.startup_metrics is not None
+                    else None
+                ),
             )
             if (
                 landing is PoolLandingOutcome.LANDED

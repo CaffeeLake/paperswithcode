@@ -10,6 +10,7 @@ import select
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from backend.chat_sandbox_worker.control_websocket import start_server
@@ -216,6 +217,7 @@ def _serve_turn(
     proxy_token: str,
     assigned_session_id: str | None,
     assigned_agent_harness: str | None,
+    startup_metrics: dict[str, int | None],
 ) -> tuple[str, str, subprocess.Popen | None]:
     launch_line = _readline(connection, MAX_PRIVATE_FRAME_BYTES)
     if not launch_line.startswith(SUPERVISOR_PREFIX):
@@ -248,6 +250,8 @@ def _serve_turn(
                         "type": "worker_health",
                         "request_id": str(request_id),
                         "assigned": assigned_session_id is not None,
+                        "agent_prestarted": agent is not None,
+                        "startup_metrics": startup_metrics,
                     }
                 )
             )
@@ -352,6 +356,8 @@ def _serve_connections(
     *,
     broker: subprocess.Popen,
     proxy_token: str,
+    startup_metrics: dict[str, int | None],
+    daemon_started: float,
 ) -> None:
     """Serve one active relay and let a new backend replace it only while idle."""
 
@@ -359,7 +365,13 @@ def _serve_connections(
     assigned_agent_harness: str | None = None
     agent: subprocess.Popen | None = None
     if os.environ.get("PWC_CHAT_PI_PREWARM_ENABLED") == "true":
+        startup_metrics["agent_spawn_ms"] = round(
+            (time.monotonic() - daemon_started) * 1000
+        )
         agent = _start_agent("pi", proxy_token)
+        startup_metrics["agent_startup_ready_ms"] = round(
+            (time.monotonic() - daemon_started) * 1000
+        )
     connection: socket.socket | None = None
     try:
         while broker.poll() is None and (agent is None or agent.poll() is None):
@@ -378,6 +390,7 @@ def _serve_connections(
                     proxy_token=proxy_token,
                     assigned_session_id=assigned_session_id,
                     assigned_agent_harness=assigned_agent_harness,
+                    startup_metrics=startup_metrics,
                 )
                 if assigned:
                     assigned_session_id = assigned
@@ -396,18 +409,34 @@ def _serve_connections(
 
 
 def main() -> int:
+    daemon_started = time.monotonic()
     _not_dumpable()
     _harden_proc()
     broker, proxy_token = _start_broker()
+    startup_metrics: dict[str, int | None] = {
+        "broker_ready_ms": round((time.monotonic() - daemon_started) * 1000),
+        "control_ready_ms": None,
+        "agent_spawn_ms": None,
+        "agent_startup_ready_ms": None,
+    }
     CONTROL_SOCKET.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     CONTROL_SOCKET.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(CONTROL_SOCKET))
     CONTROL_SOCKET.chmod(0o600)
     server.listen(2)
+    startup_metrics["control_ready_ms"] = round(
+        (time.monotonic() - daemon_started) * 1000
+    )
     websocket_server, websocket_thread = start_server()
     try:
-        _serve_connections(server, broker=broker, proxy_token=proxy_token)
+        _serve_connections(
+            server,
+            broker=broker,
+            proxy_token=proxy_token,
+            startup_metrics=startup_metrics,
+            daemon_started=daemon_started,
+        )
     finally:
         websocket_server.shutdown()
         websocket_thread.join(timeout=2)

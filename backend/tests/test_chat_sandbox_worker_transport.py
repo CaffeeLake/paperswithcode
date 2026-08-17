@@ -498,6 +498,69 @@ def test_persistent_control_ping_preserves_framing_and_correlation():
     asyncio.run(exercise())
 
 
+def test_persistent_control_ping_records_bounded_content_free_startup_metrics():
+    async def exercise():
+        connection = _AsyncConnection()
+
+        async def open_connection(_sandbox, _worker_generation):
+            return connection
+
+        transport = ChatSandboxWorkerTransport(
+            SimpleNamespace(
+                open_persistent_connection=open_connection,
+                open_turn_process=None,
+            )
+        )
+        sandbox = SimpleNamespace(object_id="sb-prewarmed")
+        control = await transport.open_persistent_control(sandbox, "generation-a")
+        ping = asyncio.create_task(transport.ping(control, "generation-a"))
+        await _wait_until(lambda: bool(connection.sent))
+        request = json.loads(connection.sent[0][len(SUPERVISOR_PREFIX) :].rstrip(b"\n"))
+        await connection.incoming.put(
+            encode_frame(
+                {
+                    "v": 1,
+                    "type": "worker_health",
+                    "request_id": request["request_id"],
+                    "assigned": False,
+                    "agent_prestarted": True,
+                    "startup_metrics": {
+                        "broker_ready_ms": 12,
+                        "control_ready_ms": 19,
+                        "agent_spawn_ms": 20,
+                        "agent_startup_ready_ms": 87,
+                    },
+                }
+            )
+        )
+
+        assert await ping is True
+        metrics = transport.blank_startup_metrics("sb-prewarmed")
+        assert metrics is not None
+        assert metrics.agent_prestarted is True
+        assert metrics.agent_startup_ready_ms == 87
+
+        transport.schedule_close(control)
+        await _wait_until(lambda: connection.close_calls == 1)
+
+    asyncio.run(exercise())
+
+
+def test_persistent_control_ping_rejects_malformed_startup_metrics():
+    assert (
+        ChatSandboxWorkerTransport._startup_metrics(
+            {
+                "broker_ready_ms": 20,
+                "control_ready_ms": 10,
+                "agent_spawn_ms": None,
+                "agent_startup_ready_ms": None,
+            },
+            agent_prestarted=False,
+        )
+        is None
+    )
+
+
 def test_cancelled_ping_removes_its_request_queue():
     async def exercise():
         connection = _AsyncConnection()
@@ -717,6 +780,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
                 assert running.done is not None and running.done.is_set()
 
         assert observed == [
+            WorkerTurnMilestone.AGENT_READY,
             {"type": "_sdk_session", "session_id": "sdk-session-a"},
             WorkerTurnMilestone.SDK_DISPATCHED,
             {"type": "workspace_ready"},
@@ -807,6 +871,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
         }
 
         assert [event async for event in execution.events(timeout_seconds=1)] == [
+            WorkerTurnMilestone.AGENT_READY,
             {"type": "done"},
         ]
         assert process.wait_calls == 1

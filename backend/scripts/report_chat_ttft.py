@@ -14,7 +14,11 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.database.connection import db_manager
-from backend.models.database import ChatOpenRouterProviderCall, ChatTurnLatency
+from backend.models.database import (
+    ChatOpenRouterProviderCall,
+    ChatSandboxPool,
+    ChatTurnLatency,
+)
 from backend.services.chat_latency_service import (
     MODAL_CPU_USD_PER_CORE_SECOND,
     MODAL_MEMORY_USD_PER_GIB_SECOND,
@@ -76,6 +80,17 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         if args.run_id:
             query = query.where(ChatTurnLatency.qualification_run_id == args.run_id)
         rows = list(db.scalars(query.order_by(ChatTurnLatency.admitted_at)))
+        pool_rows = list(
+            db.scalars(
+                select(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.app_release_id == args.release_id,
+                    ChatSandboxPool.image_version == args.image_id,
+                    ChatSandboxPool.created_at >= args.after,
+                )
+                .order_by(ChatSandboxPool.created_at)
+            )
+        )
         turn_ids = [row.turn_id for row in rows]
         provider_calls = (
             list(
@@ -109,6 +124,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         if row.traffic_class == "followup"
         and row.acquisition_outcome == "reused_session"
     ]
+    followups = [row for row in rows if row.traffic_class == "followup"]
     component = component_metric(pool_hits)
     pool_browser = metric(pool_hits, "browser_first_reasoning_delta_ms")
     reused_browser = metric(reused, "browser_first_reasoning_delta_ms")
@@ -163,6 +179,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             "pool_hits": len(pool_hits),
             "reused": len(reused),
             "provider_calls": len(provider_calls),
+            "pool_starts": len(pool_rows),
         },
         "latency_ms": {
             "assignment_to_dispatch": component,
@@ -192,6 +209,23 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
                     "upstream_response_headers_ms",
                     "upstream_first_body_byte_ms",
                     "first_application_sse_delta_ms",
+                )
+            },
+            "pool_startup": {
+                name: distribution(
+                    [
+                        int(value)
+                        for row in pool_rows
+                        if (value := getattr(row, name)) is not None
+                    ]
+                )
+                for name in (
+                    "provider_create_ms",
+                    "backend_control_connect_ms",
+                    "broker_ready_ms",
+                    "control_ready_ms",
+                    "agent_spawn_ms",
+                    "agent_startup_ready_ms",
                 )
             },
             "provider_ttft": distribution(
@@ -224,7 +258,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             ),
         },
         "reuse_cohorts": dict(
-            Counter(row.session_reuse_cohort or "unclassified" for row in reused)
+            Counter(row.session_reuse_cohort or "unclassified" for row in followups)
         ),
         "reliability": {
             "completion_rate": round(reliability, 4),

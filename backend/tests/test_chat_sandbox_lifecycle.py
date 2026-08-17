@@ -203,6 +203,7 @@ def test_persistent_turns_reuse_one_control_attachment():
                 "pool_miss": False,
                 "budget_prechecked": True,
                 "allow_pool": False,
+                "pool_miss_reason": None,
             }
             acquisition_calls += 1
             return LeaseReused(sandbox, elapsed_ms=1, pool_lookup_ms=None)
@@ -253,16 +254,25 @@ def test_persistent_turns_reuse_one_control_attachment():
                     running = transport.running_worker(turn_id)
                     assert running is not None
                     assert running.done is not None and running.done.is_set()
-            assert [(event["type"], event.get("phase")) for event in events] == [
+            expected = [
                 ("sandbox_start", None),
+                ("lifecycle", "preparing_workspace"),
                 ("_latency", "sandbox_acquisition_ms"),
                 ("sandbox_ready", None),
-                ("_latency", "capability_install_ms"),
-                ("_latency", "worker_ready_ms"),
-                ("_latency", "sdk_dispatch_ms"),
-                ("workspace_ready", None),
-                ("done", None),
+                ("lifecycle", "starting_agent"),
             ]
+            if index == 1:
+                expected.append(("_latency", "control_connection"))
+            expected.extend(
+                [
+                    ("_latency", "capability_install_ms"),
+                    ("_latency", "sdk_dispatch_ms"),
+                    ("lifecycle", "connecting_model"),
+                    ("workspace_ready", None),
+                    ("done", None),
+                ]
+            )
+            assert [(event["type"], event.get("phase")) for event in events] == expected
             assert released == index
         assert transport.session_controls[session_id].resume_id is None
         transport.drop_session_control(session_id)

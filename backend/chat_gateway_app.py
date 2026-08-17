@@ -260,12 +260,14 @@ def _prefer_fastest_openrouter_provider(
     payload["provider"] = {"sort": policy}
 
 
-def _optimize_initial_deepseek_payload(payload: dict[str, Any]) -> dict[str, int]:
+def _optimize_initial_deepseek_payload(
+    payload: dict[str, Any], candidate: str
+) -> dict[str, int]:
     """Remove only byte-identical duplicate immutable payload entries."""
 
     removed_system = 0
     system = payload.get("system")
-    if isinstance(system, list):
+    if candidate == "system_duplicates" and isinstance(system, list):
         seen: set[str] = set()
         unique = []
         for block in system:
@@ -278,7 +280,7 @@ def _optimize_initial_deepseek_payload(payload: dict[str, Any]) -> dict[str, int
         payload["system"] = unique
     removed_tools = 0
     tools = payload.get("tools")
-    if isinstance(tools, list):
+    if candidate == "tool_duplicates" and isinstance(tools, list):
         seen_tools: set[str] = set()
         unique_tools = []
         for tool in tools:
@@ -289,6 +291,8 @@ def _optimize_initial_deepseek_payload(payload: dict[str, Any]) -> dict[str, int
             seen_tools.add(identity)
             unique_tools.append(tool)
         payload["tools"] = unique_tools
+    if candidate not in {"system_duplicates", "tool_duplicates"}:
+        raise ValueError("Unsupported initial payload optimization candidate")
     return {"system_blocks": removed_system, "tools": removed_tools}
 
 
@@ -696,7 +700,10 @@ async def messages(
             and model == settings.chat_pi_prewarm_model
             and row.provider_requests == 0
         ):
-            removed = _optimize_initial_deepseek_payload(payload)
+            removed = _optimize_initial_deepseek_payload(
+                payload,
+                settings.chat_initial_payload_optimization_candidate,
+            )
             logger.info(
                 "chat initial payload optimization turn=%s removed_system=%s "
                 "removed_tools=%s",

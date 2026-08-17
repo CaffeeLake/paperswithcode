@@ -33,6 +33,7 @@ from backend.scripts.staging_qualification_http import client as staging_client
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
 from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.chat_sandbox_pool_repository import ChatSandboxPoolRepository
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
 
@@ -164,13 +165,10 @@ class PoolQualification:
             raise ValueError("Configured memory request does not match the candidate")
 
     def _compatible_blank_count(self) -> int:
-        cpu_limit = (
-            self.settings.chat_sandbox_cpu_limit or self.settings.chat_sandbox_cpu
-        )
-        memory_limit = (
-            self.settings.chat_sandbox_memory_limit_mib
-            or self.settings.chat_sandbox_memory_mib
-        )
+        compatibility = ChatSandboxPoolRepository(
+            self.settings,
+            capacity_locker=lambda *_args, **_kwargs: True,
+        ).compatibility()
         with db_manager.session_local() as db:
             return (
                 db.scalar(
@@ -178,16 +176,25 @@ class PoolQualification:
                     .select_from(ChatSandboxPool)
                     .where(
                         ChatSandboxPool.state == "blank_ready",
-                        ChatSandboxPool.image_version
-                        == self.settings.chat_modal_image_version,
+                        ChatSandboxPool.image_version == compatibility.image_version,
                         ChatSandboxPool.worker_contract_version
-                        == self.settings.chat_worker_contract_version,
+                        == compatibility.worker_contract_version,
                         ChatSandboxPool.app_release_id == self.settings.release_id,
-                        ChatSandboxPool.cpu_request == self.settings.chat_sandbox_cpu,
-                        ChatSandboxPool.cpu_limit == cpu_limit,
+                        ChatSandboxPool.agent_harness == compatibility.agent_harness,
+                        ChatSandboxPool.agent_harness_version
+                        == compatibility.agent_harness_version,
+                        ChatSandboxPool.model_profile == compatibility.model_profile,
+                        ChatSandboxPool.reasoning_profile
+                        == compatibility.reasoning_profile,
+                        ChatSandboxPool.prompt_digest == compatibility.prompt_digest,
+                        ChatSandboxPool.provider_adapter_contract
+                        == compatibility.provider_adapter_contract,
+                        ChatSandboxPool.cpu_request == compatibility.cpu_request,
+                        ChatSandboxPool.cpu_limit == compatibility.cpu_limit,
                         ChatSandboxPool.memory_request_mib
-                        == self.settings.chat_sandbox_memory_mib,
-                        ChatSandboxPool.memory_limit_mib == memory_limit,
+                        == compatibility.memory_request_mib,
+                        ChatSandboxPool.memory_limit_mib
+                        == compatibility.memory_limit_mib,
                     )
                 )
                 or 0
@@ -457,8 +464,13 @@ def main() -> int:
     marked = qualification.mark_samples(samples)
     summary = summarize(samples)
     passed = (
-        summary["complete"] == args.samples
+        args.samples >= 200
+        and summary["complete"] == args.samples
         and summary["hit_rate"] >= 0.95
+        and summary["assignment_to_dispatch_ms"] is not None
+        and summary["assignment_to_dispatch_ms"]["count"] >= 50
+        and summary["assignment_to_dispatch_ms"]["p50"] <= 1_500
+        and summary["assignment_to_dispatch_ms"]["p90"] <= 3_000
         and summary["continuous_pool_intervals"] == args.samples
         and summary["cleanup_confirmed"] == args.samples
         and blank_starts >= args.samples

@@ -1075,6 +1075,12 @@ class _ChatSchemaDB:
                         ("chat_sandbox_pool", "reasoning_profile"),
                         ("chat_sandbox_pool", "prompt_digest"),
                         ("chat_sandbox_pool", "provider_adapter_contract"),
+                        ("chat_sandbox_pool", "provider_create_ms"),
+                        ("chat_sandbox_pool", "backend_control_connect_ms"),
+                        ("chat_sandbox_pool", "broker_ready_ms"),
+                        ("chat_sandbox_pool", "control_ready_ms"),
+                        ("chat_sandbox_pool", "agent_spawn_ms"),
+                        ("chat_sandbox_pool", "agent_startup_ready_ms"),
                     ]
                 )
             if self.include_latency_columns:

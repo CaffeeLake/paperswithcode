@@ -48,6 +48,7 @@ class WorkerTurnMode(StrEnum):
 
 
 class WorkerTurnMilestone(Enum):
+    AGENT_READY = "agent_ready"
     SDK_DISPATCHED = "sdk_dispatched"
     FIRST_DELTA = "first_delta"
     CANCELLED = "cancelled"
@@ -98,6 +99,15 @@ class WorkerCancelOutcome:
     request_id: str | None
     claim: WorkerClaim | None = field(repr=False)
     _running: RunningWorker | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class BlankStartupMetrics:
+    broker_ready_ms: int
+    control_ready_ms: int
+    agent_spawn_ms: int | None
+    agent_startup_ready_ms: int | None
+    agent_prestarted: bool
 
 
 @dataclass
@@ -175,6 +185,7 @@ class ChatSandboxWorkerTransport:
         self.session_controls: dict[uuid.UUID, SessionControl] = {}
         self.blank_controls: dict[str, SessionControl] = {}
         self.blank_health_at: dict[str, float] = {}
+        self.blank_startup: dict[str, BlankStartupMetrics] = {}
         self.close_tasks: set[asyncio.Task] = set()
 
     async def open_persistent_control(
@@ -223,16 +234,83 @@ class ChatSandboxWorkerTransport:
             await control.process.stdin.drain.aio()
             async with asyncio.timeout(5):
                 response = await queue.get()
-            return bool(
+            healthy = bool(
                 isinstance(response, dict)
                 and response.get("type") == "worker_health"
                 and response.get("request_id") == request_id
                 and response.get("assigned") is False
             )
+            if not healthy:
+                return False
+            startup = response.get("startup_metrics")
+            if startup is None:
+                return True
+            metrics = self._startup_metrics(
+                startup,
+                agent_prestarted=response.get("agent_prestarted"),
+            )
+            if metrics is None:
+                return False
+            self.blank_startup[control.sandbox_id] = metrics
+            return True
         except Exception:
             return False
         finally:
             control.queues.pop(request_id, None)
+
+    @staticmethod
+    def _startup_metrics(
+        value: object, *, agent_prestarted: object
+    ) -> BlankStartupMetrics | None:
+        if not isinstance(value, dict) or set(value) != {
+            "broker_ready_ms",
+            "control_ready_ms",
+            "agent_spawn_ms",
+            "agent_startup_ready_ms",
+        }:
+            return None
+        if not isinstance(agent_prestarted, bool):
+            return None
+        required = (value["broker_ready_ms"], value["control_ready_ms"])
+        optional = (value["agent_spawn_ms"], value["agent_startup_ready_ms"])
+        if any(
+            isinstance(item, bool)
+            or not isinstance(item, int)
+            or not 0 <= item <= 3_600_000
+            for item in required
+        ):
+            return None
+        if any(
+            item is not None
+            and (
+                isinstance(item, bool)
+                or not isinstance(item, int)
+                or not 0 <= item <= 3_600_000
+            )
+            for item in optional
+        ):
+            return None
+        broker_ready_ms, control_ready_ms = required
+        agent_spawn_ms, agent_startup_ready_ms = optional
+        if broker_ready_ms > control_ready_ms:
+            return None
+        if agent_prestarted:
+            if agent_spawn_ms is None or agent_startup_ready_ms is None:
+                return None
+            if not control_ready_ms <= agent_spawn_ms <= agent_startup_ready_ms:
+                return None
+        elif agent_spawn_ms is not None or agent_startup_ready_ms is not None:
+            return None
+        return BlankStartupMetrics(
+            broker_ready_ms=broker_ready_ms,
+            control_ready_ms=control_ready_ms,
+            agent_spawn_ms=agent_spawn_ms,
+            agent_startup_ready_ms=agent_startup_ready_ms,
+            agent_prestarted=agent_prestarted,
+        )
+
+    def blank_startup_metrics(self, sandbox_id: str) -> BlankStartupMetrics | None:
+        return self.blank_startup.get(sandbox_id)
 
     async def read_control(self, control: SessionControl) -> None:
         failure: BaseException | None = None
@@ -425,6 +503,7 @@ class ChatSandboxWorkerTransport:
             return None
         self.blank_controls.pop(sandbox_id)
         self.blank_health_at.pop(sandbox_id, None)
+        self.blank_startup.pop(sandbox_id, None)
         if control is not None:
             self.session_controls[chat_session_id] = control
         return control
@@ -463,6 +542,7 @@ class ChatSandboxWorkerTransport:
             return None
         self.blank_controls.pop(sandbox_id)
         self.blank_health_at.pop(sandbox_id, None)
+        self.blank_startup.pop(sandbox_id, None)
         self._close_control(control)
         return control
 
@@ -515,6 +595,8 @@ class WorkerTurnExecution:
         self.stderr_task: asyncio.Task | None = None
         self.terminal = False
         self.sdk_dispatched = False
+        self.control_connection_opened = False
+        self.agent_spawned = False
         self._dispatch_started = False
         self._dispatched = False
         self._closed = False
@@ -557,6 +639,7 @@ class WorkerTurnExecution:
                     self.sandbox,
                     self.claim.worker_generation,
                 )
+                self.control_connection_opened = True
                 self.transport.register_session_control(
                     self.request.chat_session_id,
                     self.control,
@@ -568,6 +651,7 @@ class WorkerTurnExecution:
                 self.sandbox,
                 timeout_seconds=self.process_timeout_seconds,
             )
+            self.agent_spawned = True
             self.stderr_task = asyncio.create_task(
                 self._drain_stderr(self.process.stderr)
             )
@@ -692,6 +776,7 @@ class WorkerTurnExecution:
                         # dispatch can prove that the harness accepted the
                         # correlated request. It is transport-only and must
                         # never reach the browser event schema.
+                        yield WorkerTurnMilestone.AGENT_READY
                         continue
                     if event["type"] == "workspace_ready":
                         self.sdk_dispatched = True

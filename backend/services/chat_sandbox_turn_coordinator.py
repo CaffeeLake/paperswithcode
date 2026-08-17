@@ -285,6 +285,18 @@ class ChatSandboxTurnCoordinator:
             if dispatch is WorkerTurnDispatchOutcome.CANCELLED:
                 yield {"type": "_cancelled"}
                 return
+            if getattr(execution, "control_connection_opened", False):
+                yield {
+                    "type": "_latency",
+                    "phase": "control_connection",
+                    "elapsed_ms": self._elapsed_ms(turn_started),
+                }
+            if getattr(execution, "agent_spawned", False):
+                yield {
+                    "type": "_latency",
+                    "phase": "agent_spawn",
+                    "elapsed_ms": self._elapsed_ms(turn_started),
+                }
             yield {
                 "type": "_latency",
                 "phase": "capability_install_ms",
@@ -293,13 +305,20 @@ class ChatSandboxTurnCoordinator:
             async for output in execution.events(
                 timeout_seconds=self.settings.chat_agent_timeout_seconds
             ):
-                if output is WorkerTurnMilestone.SDK_DISPATCHED:
+                if output is WorkerTurnMilestone.AGENT_READY:
                     elapsed_ms = self._elapsed_ms(turn_started)
                     yield {
                         "type": "_latency",
                         "phase": "worker_ready_ms",
                         "elapsed_ms": elapsed_ms,
                     }
+                    yield {
+                        "type": "_latency",
+                        "phase": "agent_startup_ready",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                elif output is WorkerTurnMilestone.SDK_DISPATCHED:
+                    elapsed_ms = self._elapsed_ms(turn_started)
                     yield {
                         "type": "_latency",
                         "phase": "sdk_dispatch_ms",

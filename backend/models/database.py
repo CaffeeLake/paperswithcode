@@ -2333,6 +2333,12 @@ class ChatSandboxPool(Base):
     last_health_checked_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    provider_create_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    backend_control_connect_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    broker_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    control_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_spawn_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_startup_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
 
     __table_args__ = (
         CheckConstraint(
