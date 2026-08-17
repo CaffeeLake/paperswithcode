@@ -28,7 +28,10 @@ from backend.models.database import (
     ChatSession,
     ChatTurnCapability,
 )
-from backend.scripts.qualify_chat_sandbox import settings_for_release
+from backend.scripts.qualify_chat_sandbox import (
+    merge_release_settings,
+    settings_for_release,
+)
 from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
@@ -56,20 +59,7 @@ class TripQualification:
     def __init__(self, release_dir: Path, max_total_microusd: int):
         environment = get_settings()
         release = settings_for_release(release_dir)
-        self.settings = environment.model_copy(
-            update={
-                "release_id": release.release_id,
-                "chat_enabled": release.chat_enabled,
-                "chat_default_backend": release.chat_default_backend,
-                "chat_new_chat_modal_percentage": (
-                    release.chat_new_chat_modal_percentage
-                ),
-                "chat_modal_image_version": release.chat_modal_image_version,
-                "chat_pwc_cli_version": release.chat_pwc_cli_version,
-                "chat_worker_contract_version": (release.chat_worker_contract_version),
-                "chat_system_prompt_sha256": release.chat_system_prompt_sha256,
-            }
-        )
+        self.settings = merge_release_settings(environment, release)
         self.run_id = uuid.uuid4().hex[:10]
         self.max_total_microusd = max_total_microusd
 

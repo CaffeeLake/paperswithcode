@@ -46,6 +46,26 @@ FORBIDDEN_ENVIRONMENT_KEYS = {
     "PWC_JWT_SECRET",
 }
 MAX_CAPTURE_BYTES = 64 * 1024
+RELEASE_RUNTIME_SETTING_NAMES = (
+    "release_id",
+    "frontend_dist_dir",
+    "chat_enabled",
+    "chat_default_backend",
+    "chat_new_chat_modal_percentage",
+    "chat_modal_image_version",
+    "chat_pwc_cli_version",
+    "chat_worker_contract_version",
+    "chat_system_prompt_sha256",
+    "chat_default_agent_harness",
+    "chat_new_session_pi_percentage",
+    "chat_claude_sdk_version",
+    "chat_pi_version",
+    "chat_pi_runtime_enabled",
+    "chat_pi_source_commit",
+    "chat_pi_node_version",
+    "chat_pi_node_sha256",
+    "chat_restricted_hf_cli_version",
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +140,23 @@ def settings_for_release(release_dir: Path) -> Settings:
         chat_pwc_cli_version=runtime["pwc_cli_version"],
         chat_worker_contract_version=runtime["worker_contract_version"],
         chat_system_prompt_sha256=runtime["system_prompt_sha256"],
+        chat_default_agent_harness=runtime.get("default_agent_harness", "claude"),
+        chat_new_session_pi_percentage=runtime.get("new_session_pi_percentage", 0),
+        chat_claude_sdk_version=runtime.get("claude_sdk_version", ""),
+        chat_pi_version=runtime.get("pi_version", ""),
+        chat_pi_runtime_enabled="pi" in runtime.get("supported_agent_harnesses", []),
+        chat_pi_source_commit=runtime.get("pi_source_commit", ""),
+        chat_pi_node_version=runtime.get("pi_node_version", ""),
+        chat_pi_node_sha256=runtime.get("pi_node_sha256", ""),
+        chat_restricted_hf_cli_version=runtime.get("restricted_hf_cli_version", ""),
+    )
+
+
+def merge_release_settings(environment: Settings, release: Settings) -> Settings:
+    """Overlay every immutable release identity onto protected live settings."""
+
+    return environment.model_copy(
+        update={name: getattr(release, name) for name in RELEASE_RUNTIME_SETTING_NAMES}
     )
 
 

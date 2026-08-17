@@ -28,7 +28,10 @@ from backend.models.database import (
     ChatTurnLatency,
 )
 from backend.routers.auth import _encode_legacy_session
-from backend.scripts.qualify_chat_sandbox import settings_for_release
+from backend.scripts.qualify_chat_sandbox import (
+    merge_release_settings,
+    settings_for_release,
+)
 from backend.scripts.staging_qualification_http import client as staging_client
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
@@ -439,18 +442,7 @@ def main() -> int:
         raise SystemExit("--interarrival-ms must be 100-10000")
     environment_settings = get_settings()
     release = settings_for_release(args.release_dir)
-    release_settings = environment_settings.model_copy(
-        update={
-            "release_id": release.release_id,
-            "chat_enabled": release.chat_enabled,
-            "chat_default_backend": release.chat_default_backend,
-            "chat_new_chat_modal_percentage": (release.chat_new_chat_modal_percentage),
-            "chat_modal_image_version": release.chat_modal_image_version,
-            "chat_pwc_cli_version": release.chat_pwc_cli_version,
-            "chat_worker_contract_version": release.chat_worker_contract_version,
-            "chat_system_prompt_sha256": release.chat_system_prompt_sha256,
-        }
-    )
+    release_settings = merge_release_settings(environment_settings, release)
     qualification = PoolQualification(
         settings=release_settings,
         billing_settings=environment_settings,

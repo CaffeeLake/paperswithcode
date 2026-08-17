@@ -78,7 +78,12 @@ from backend.config import Settings
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, sse_event
 from backend.models.database import ChatTurnCapability
 from backend.scripts import qualify_chat_sandbox, qualify_chat_soak
-from backend.scripts.qualify_chat_sandbox import QualificationRunner, Sample, summarize
+from backend.scripts.qualify_chat_sandbox import (
+    QualificationRunner,
+    Sample,
+    merge_release_settings,
+    summarize,
+)
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -3052,6 +3057,38 @@ def test_qualification_retains_samples_when_resource_probe_fails(monkeypatch):
 
     assert samples == [Sample(1, 2, 3, None, None)]
     assert resources == {"status": "failed", "error_code": "RuntimeError"}
+
+
+def test_qualification_merges_complete_release_runtime_identity():
+    environment = Settings(
+        _env_file=None,
+        release_id="protected-stale",
+        chat_modal_image_version="im-stale",
+        chat_worker_contract_version="3",
+        chat_pi_version="",
+        chat_pi_node_version="",
+    )
+    release = environment.model_copy(
+        update={
+            "release_id": "exact-release",
+            "chat_modal_image_version": "im-exact",
+            "chat_worker_contract_version": "80",
+            "chat_default_agent_harness": "pi",
+            "chat_pi_version": "0.84.1",
+            "chat_pi_node_version": "22.19.0",
+            "chat_pi_runtime_enabled": True,
+        }
+    )
+
+    merged = merge_release_settings(environment, release)
+
+    assert merged.release_id == "exact-release"
+    assert merged.chat_modal_image_version == "im-exact"
+    assert merged.chat_worker_contract_version == "80"
+    assert merged.chat_default_agent_harness == "pi"
+    assert merged.chat_pi_version == "0.84.1"
+    assert merged.chat_pi_node_version == "22.19.0"
+    assert merged.chat_pi_runtime_enabled is True
 
 
 def test_pi_prewarm_qualification_creates_the_actual_blank_profile(monkeypatch):
