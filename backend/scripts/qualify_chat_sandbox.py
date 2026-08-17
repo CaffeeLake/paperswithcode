@@ -498,7 +498,15 @@ raise SystemExit(0 if limit_observed else 2)
             for index in range(self.starts):
                 group.create_task(land(index))
         landed = [sample for sample in samples if sample is not None]
-        resources = await self.run_resource_probes() if resource_probes else None
+        resources = None
+        if resource_probes:
+            try:
+                resources = await self.run_resource_probes()
+            except Exception as error:
+                resources = {
+                    "status": "failed",
+                    "error_code": type(error).__name__,
+                }
         return landed, resources
 
 
@@ -565,7 +573,10 @@ def main() -> int:
         ).run(resource_probes=args.resource_probes)
     )
     summary = summarize(samples)
-    passed = summary["failed"] == 0
+    resource_probes_passed = resource_results is None or (
+        resource_results.get("status") != "failed"
+    )
+    passed = summary["failed"] == 0 and resource_probes_passed
     print(
         json.dumps(
             {

@@ -447,6 +447,46 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
         relay_side.close()
 
 
+def test_abandoned_persistent_health_probe_does_not_kill_daemon(monkeypatch):
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    monkeypatch.setattr(
+        control_daemon,
+        "_broker_control",
+        lambda payload: {"ok": True, "active": False},
+    )
+    daemon_side, relay_side = socket.socketpair()
+    relay_side.sendall(
+        supervisor.SUPERVISOR_PREFIX
+        + json.dumps(
+            {
+                "operation": "ping",
+                "worker_generation": "generation-a",
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    relay_side.close()
+    child = SimpleNamespace(poll=lambda: None)
+    try:
+        assert control_daemon._serve_turn(
+            daemon_side,
+            broker=child,
+            agent=child,
+            proxy_token="unused",
+            assigned_session_id=None,
+            assigned_agent_harness=None,
+            startup_metrics={
+                "broker_ready_ms": 10,
+                "control_ready_ms": 20,
+                "agent_spawn_ms": 21,
+                "agent_startup_ready_ms": 30,
+            },
+        ) == ("", "", child)
+    finally:
+        daemon_side.close()
+
+
 def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path):
     monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
     monkeypatch.setattr(
@@ -2992,6 +3032,26 @@ def test_resource_probe_treats_ephemeral_disk_as_provider_managed(monkeypatch):
         "memory": "enforced",
     }
     assert probes == ["pids", "memory"]
+
+
+def test_qualification_retains_samples_when_resource_probe_fails(monkeypatch):
+    runner = QualificationRunner(
+        SimpleNamespace(), starts=1, parallel=1, snapshot_samples=0
+    )
+
+    async def sample(_index):
+        return Sample(1, 2, 3, None, None)
+
+    async def fail_resources():
+        raise RuntimeError("content must not be emitted")
+
+    monkeypatch.setattr(runner, "_sample", sample)
+    monkeypatch.setattr(runner, "run_resource_probes", fail_resources)
+
+    samples, resources = asyncio.run(runner.run(resource_probes=True))
+
+    assert samples == [Sample(1, 2, 3, None, None)]
+    assert resources == {"status": "failed", "error_code": "RuntimeError"}
 
 
 def test_pi_prewarm_qualification_creates_the_actual_blank_profile(monkeypatch):

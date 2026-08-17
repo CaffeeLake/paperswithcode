@@ -594,7 +594,7 @@ def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
     if enabled:
         values.update(
             {
-                "PWC_CHAT_PI_PREWARM_MODEL": ("deepseek-ai/DeepSeek-V4-Flash-0731"),
+                "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
                 "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
             }
         )

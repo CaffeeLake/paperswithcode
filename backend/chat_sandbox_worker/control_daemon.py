@@ -240,21 +240,27 @@ def _serve_turn(
         if broker_status.get("active"):
             raise RuntimeError("Persistent worker capability is still active")
         request_id = launch.get("request_id")
-        if request_id is None:
-            connection.sendall(b"ready\n")
-        else:
-            connection.sendall(
-                encode_frame(
-                    {
-                        "v": 1,
-                        "type": "worker_health",
-                        "request_id": str(request_id),
-                        "assigned": assigned_session_id is not None,
-                        "agent_prestarted": agent is not None,
-                        "startup_metrics": startup_metrics,
-                    }
+        try:
+            if request_id is None:
+                connection.sendall(b"ready\n")
+            else:
+                connection.sendall(
+                    encode_frame(
+                        {
+                            "v": 1,
+                            "type": "worker_health",
+                            "request_id": str(request_id),
+                            "assigned": assigned_session_id is not None,
+                            "agent_prestarted": agent is not None,
+                            "startup_metrics": startup_metrics,
+                        }
+                    )
                 )
-            )
+        except (BrokenPipeError, ConnectionResetError):
+            # Modal may abandon a readiness probe while the prestarted agent is
+            # still initializing. A stale health connection carries no turn or
+            # capability and must not terminate the otherwise healthy daemon.
+            pass
         return assigned_session_id or "", assigned_agent_harness or "", agent
     run_line = _readline(connection, MAX_WIRE_FRAME_BYTES)
     run = decode_frame(run_line)

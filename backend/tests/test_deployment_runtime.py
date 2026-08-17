@@ -2615,7 +2615,7 @@ def test_staging_chat_pool_toggle_is_narrow_and_bounded():
 def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():
     assert configure_host_env.staging_chat_pi_prewarm_values(enabled=True) == {
         "PWC_CHAT_PI_PREWARM_ENABLED": "true",
-        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
     assert configure_host_env.staging_chat_pi_prewarm_values(enabled=False) == {
