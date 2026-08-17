@@ -62,3 +62,14 @@
   border-radius: 5px;
   padding: 1px 6px;
 }
+
+@media (max-width: 880px) {
+  .layout-with-sidebar > .sidebar,
+  .layout-with-sidebar > .feed-main {
+    display: contents;
+  }
+  .sidebar-section-top-domains { order: 1; }
+  .feed-chat { order: 2; }
+  .sidebar-section-trending-domains { order: 3; }
+  .feed-content { order: 4; }
+}

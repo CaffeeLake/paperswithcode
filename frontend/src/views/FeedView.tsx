@@ -396,7 +396,7 @@ const FeedView: React.FC = () => {
 
       <div className="layout-with-sidebar">
         <aside className="sidebar">
-          <div className="sidebar-section">
+          <div className="sidebar-section sidebar-section-top-domains">
             <div className="sidebar-label">Top Domains</div>
             {topTasks.isLoading && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -416,7 +416,7 @@ const FeedView: React.FC = () => {
             </Link>
           </div>
 
-          <div className="sidebar-section">
+          <div className="sidebar-section sidebar-section-trending-domains">
             <div className="sidebar-label">Trending Domains</div>
             {trendingTasks.isLoading && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -439,80 +439,86 @@ const FeedView: React.FC = () => {
           </div>
         </aside>
 
-        <div>
-          {isChatEnabled() && <AskAssistant />}
+        <div className="feed-main">
+          {isChatEnabled() && (
+            <div className="feed-chat">
+              <AskAssistant />
+            </div>
+          )}
 
-          <div className="sort-bar home-feed-sort-bar">
-            <div className="paper-feed-toolbar-controls">
-              <div className="sort-options">
-                {SORT_OPTIONS.map(([k, l]) => (
+          <div className="feed-content">
+            <div className="sort-bar home-feed-sort-bar">
+              <div className="paper-feed-toolbar-controls">
+                <div className="sort-options">
+                  {SORT_OPTIONS.map(([k, l]) => (
+                    <button
+                      key={k}
+                      className={`sort-btn ${orderBy === k ? "active" : ""}`}
+                      onClick={() => setOrderBy(k)}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+                <PaperFeedFilters
+                  hasCode={hasCode}
+                  hasHfArtifacts={hasHfArtifacts}
+                  onHasCodeChange={setHasCode}
+                  onHasHfArtifactsChange={setHasHfArtifacts}
+                />
+              </div>
+              <div className="sort-options sort-options-time">
+                {PERIODS.map((p) => (
                   <button
-                    key={k}
-                    className={`sort-btn ${orderBy === k ? "active" : ""}`}
-                    onClick={() => setOrderBy(k)}
+                    key={p}
+                    className={`sort-btn sort-btn-time ${period === p ? "active" : ""}`}
+                    onClick={() => setTimeWindow(p)}
                   >
-                    {l}
+                    {p}
                   </button>
                 ))}
               </div>
-              <PaperFeedFilters
-                hasCode={hasCode}
-                hasHfArtifacts={hasHfArtifacts}
-                onHasCodeChange={setHasCode}
-                onHasHfArtifactsChange={setHasHfArtifacts}
-              />
             </div>
-            <div className="sort-options sort-options-time">
-              {PERIODS.map((p) => (
-                <button
-                  key={p}
-                  className={`sort-btn sort-btn-time ${period === p ? "active" : ""}`}
-                  onClick={() => setTimeWindow(p)}
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-          </div>
 
-          {error && (
-            <Alert variant="destructive" className="mb-4">
-              <AlertDescription>Failed to load papers. Please try again.</AlertDescription>
-            </Alert>
-          )}
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertDescription>Failed to load papers. Please try again.</AlertDescription>
+              </Alert>
+            )}
 
-          {isLoading ? (
-            <div className="paper-list">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="paper-card">
-                  <div className="paper-thumb-wrap">
-                    <Skeleton className="paper-thumb-skeleton" />
-                  </div>
-                  <div className="paper-body" style={{ flex: 1, gap: 12 }}>
-                    <Skeleton className="h-6 w-3/4" />
-                    <Skeleton className="h-4 w-1/2" />
-                    <Skeleton className="h-12 w-full" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : cards.length === 0 ? (
-            <div className="no-results">No papers in this window.</div>
-          ) : (
-            <>
+            {isLoading ? (
               <div className="paper-list">
-                {cards.map((p, i) => (
-                  <PaperCard key={p.id} paper={p} rank={i + 1} />
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="paper-card">
+                    <div className="paper-thumb-wrap">
+                      <Skeleton className="paper-thumb-skeleton" />
+                    </div>
+                    <div className="paper-body" style={{ flex: 1, gap: 12 }}>
+                      <Skeleton className="h-6 w-3/4" />
+                      <Skeleton className="h-4 w-1/2" />
+                      <Skeleton className="h-12 w-full" />
+                    </div>
+                  </div>
                 ))}
               </div>
-              <div ref={sentinelRef} style={{ height: 1 }} />
-              {infinite.isFetchingNextPage && (
-                <div style={{ padding: "20px 0", textAlign: "center", color: "var(--ink-faint)" }}>
-                  Loading more…
+            ) : cards.length === 0 ? (
+              <div className="no-results">No papers in this window.</div>
+            ) : (
+              <>
+                <div className="paper-list">
+                  {cards.map((p, i) => (
+                    <PaperCard key={p.id} paper={p} rank={i + 1} />
+                  ))}
                 </div>
-              )}
-            </>
-          )}
+                <div ref={sentinelRef} style={{ height: 1 }} />
+                {infinite.isFetchingNextPage && (
+                  <div style={{ padding: "20px 0", textAlign: "center", color: "var(--ink-faint)" }}>
+                    Loading more…
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
