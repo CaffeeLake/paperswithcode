@@ -28,6 +28,7 @@ from backend.models.database import (
 )
 from backend.services.sitemap_service import eligible_paper_filter
 from backend.utils.urls import get_paper_route_identifier
+from backend.utils.task_slugs import canonical_task_slug, task_slug_candidates
 
 PRODUCTION_ORIGIN = "https://paperswithcode.co"
 DISCOVERY_PAPER_LIMIT = 20
@@ -147,7 +148,12 @@ class DiscoveryPageService:
         )
 
     def task(self, slug: str) -> Optional[DiscoveryPage]:
-        entity = self.db.query(Task).filter(Task.slug == slug).one_or_none()
+        canonical_slug = canonical_task_slug(slug)
+        entity = None
+        for candidate in task_slug_candidates(slug):
+            entity = self.db.query(Task).filter(Task.slug == candidate).one_or_none()
+            if entity is not None:
+                break
         if entity is None:
             return None
         related = (
@@ -181,7 +187,7 @@ class DiscoveryPageService:
                 str(item) for item in entity.research_trends[:3]
             )
         return self._entity_page(
-            "Task", f"/tasks/{slug}", entity.name, description, links, papers
+            "Task", f"/tasks/{canonical_slug}", entity.name, description, links, papers
         )
 
     def method(self, slug: str) -> Optional[DiscoveryPage]:

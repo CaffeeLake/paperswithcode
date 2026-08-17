@@ -38,6 +38,7 @@ from backend.models.api import (
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
+from backend.utils.task_slugs import task_slug_candidates
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -57,6 +58,13 @@ class TaskService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def _get_db_task_by_slug(self, slug: str) -> Optional[DBTask]:
+        for candidate in task_slug_candidates(slug):
+            task = self.db.query(DBTask).filter(DBTask.slug == candidate).first()
+            if task is not None:
+                return task
+        return None
 
     @staticmethod
     def _deduplicate_task_trending_repositories(query, task_id: int):
@@ -532,7 +540,7 @@ class TaskService:
             DatabaseError: If database query fails
         """
         try:
-            db_task = self.db.query(DBTask).filter(DBTask.slug == slug).first()
+            db_task = self._get_db_task_by_slug(slug)
 
             if not db_task:
                 raise PaperNotFoundError(f"Task with slug '{slug}' not found")
@@ -1091,7 +1099,7 @@ class TaskService:
             if task_id.isdigit():
                 task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
             else:
-                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+                task = self._get_db_task_by_slug(task_id)
 
             if not task:
                 raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
@@ -1194,7 +1202,7 @@ class TaskService:
             if task_id.isdigit():
                 task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
             else:
-                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+                task = self._get_db_task_by_slug(task_id)
 
             if not task:
                 raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
@@ -1245,7 +1253,7 @@ class TaskService:
             if task_id.isdigit():
                 task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
             else:
-                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+                task = self._get_db_task_by_slug(task_id)
 
             if not task:
                 raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
@@ -1296,7 +1304,7 @@ class TaskService:
             if task_id.isdigit():
                 task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
             else:
-                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+                task = self._get_db_task_by_slug(task_id)
 
             if not task:
                 raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")

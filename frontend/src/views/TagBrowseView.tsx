@@ -162,6 +162,14 @@ const TagBrowseView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
+  useEffect(() => {
+    const canonicalSlug = pageQ.data?.task.slug;
+    if (!taskSlug || !canonicalSlug || canonicalSlug === taskSlug) return;
+
+    const query = searchParams.toString();
+    navigate(`/tasks/${canonicalSlug}${query ? `?${query}` : ""}`, { replace: true });
+  }, [navigate, pageQ.data?.task.slug, searchParams, taskSlug]);
+
   const benchmarkTrendsQ = useQuery({
     queryKey: ["task-benchmark-trends", taskSlug, bestModelIsOpen],
     queryFn: () =>

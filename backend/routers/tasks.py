@@ -30,6 +30,7 @@ from backend.utils.entity_images import (
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
+from backend.utils.task_slugs import task_slug_candidates
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -293,7 +294,15 @@ def get_task_image(
     Returns the raw image bytes stored in `tasks.image_data`. 404s when the
     task does not exist or has no stored image.
     """
-    result = load_entity_image(db, DBTask, task_id)
+    identifiers = (task_id,) if task_id.isdigit() else task_slug_candidates(task_id)
+    result = next(
+        (
+            image
+            for identifier in identifiers
+            if (image := load_entity_image(db, DBTask, identifier)) is not None
+        ),
+        None,
+    )
     if result is None:
         raise HTTPException(
             status_code=404,

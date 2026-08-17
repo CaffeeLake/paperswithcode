@@ -10,7 +10,7 @@ INSERT INTO tasks (
 )
 VALUES (
     '3D Tracking',
-    '3d-tracking',
+    '3D-tracking',
     '3D tracking estimates the trajectories and visibility of points or objects through time in three-dimensional scene or world coordinates. Unlike [Object Tracking](/tasks/object-tracking), which generally follows targets in the 2D image plane, 3D tracking reasons about depth, camera motion, occlusion, and motion in physical space, with both sparse point and dense per-pixel settings.',
     '3D tracking, 3D point tracking, dense 3D tracking, sparse 3D tracking, world-coordinate tracking, world coordinate tracking, world-frame tracking, world frame tracking, tracking any point in 3D, TAP-3D, 3D trajectories, 3D trajectory estimation, 4D tracking',
     (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
@@ -161,7 +161,7 @@ JOIN datasets d ON d.slug IN (
     'worldtrack-pointodyssey',
     'kubric3d'
 )
-WHERE t.slug = '3d-tracking'
+WHERE t.slug = '3D-tracking'
 ON CONFLICT (task_id, dataset_id) DO NOTHING;
 
 INSERT INTO task_dataset_metrics (task_id, dataset_id, metric_id)
@@ -175,14 +175,14 @@ JOIN datasets d ON d.slug IN (
     'kubric3d'
 )
 JOIN metrics m ON m.name IN ('AJ', 'APD3D', 'OA')
-WHERE t.slug = '3d-tracking'
+WHERE t.slug = '3D-tracking'
 ON CONFLICT (task_id, dataset_id, metric_id) DO NOTHING;
 
 -- The requested paper and canonical benchmark papers receive durable tags.
 INSERT INTO paper_tasks (paper_id, task_id, source)
 SELECT p.id, t.id, 'manual'
 FROM papers p
-JOIN tasks t ON t.slug = '3d-tracking'
+JOIN tasks t ON t.slug = '3D-tracking'
 WHERE p.arxiv_id IN (
     '2407.05921',
     '2410.24211',
@@ -197,13 +197,13 @@ INSERT INTO task_sister_tasks (task_id, sister_task_id, display_order)
 SELECT t.id, s.id, 0
 FROM tasks t
 JOIN tasks s ON s.slug = 'object-tracking'
-WHERE t.slug = '3d-tracking'
+WHERE t.slug = '3D-tracking'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO task_sister_tasks (task_id, sister_task_id, display_order)
 SELECT t.id, s.id, 0
 FROM tasks t
-JOIN tasks s ON s.slug = '3d-tracking'
+JOIN tasks s ON s.slug = '3D-tracking'
 WHERE t.slug = 'object-tracking'
 ON CONFLICT DO NOTHING;
 

@@ -95,6 +95,31 @@ def client():
     Base.metadata.drop_all(bind=engine)
 
 
+def test_legacy_lowercase_3d_tracking_slug_resolves_canonical_task(client):
+    db = TestingSessionLocal()
+    db.add(
+        DBTask(
+            id=450,
+            name="3D Tracking",
+            slug="3D-tracking",
+            level=0,
+            image_data=b"gif89a",
+            image_mime_type="image/gif",
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/v1/tasks/3d-tracking")
+    assert response.status_code == 200
+    assert response.json()["slug"] == "3D-tracking"
+
+    image_response = client.get("/api/v1/tasks/3d-tracking/image")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"] == "image/gif"
+    assert image_response.content == b"gif89a"
+
+
 @pytest.fixture
 def tasks_with_uneven_paper_counts():
     """Create tasks linked to differing numbers of papers.
