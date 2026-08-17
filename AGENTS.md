@@ -27,6 +27,8 @@ Guidance for agents working in this repository.
   `~DBPaper.urls_extracted` to `== False`.
 - The VPS is resource constrained (about 8 GB RAM / 80 GB disk, with little disk
   headroom). Stream large inputs, use bounded batches, and check capacity first.
+  For large JSON arrays such as the legacy PwC dumps, prefer incremental parsing
+  with `ijson`; never load the entire file with `json.load()`.
 
 ## Development
 
