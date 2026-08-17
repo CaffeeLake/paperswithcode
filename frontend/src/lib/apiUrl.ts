@@ -130,6 +130,18 @@ export function isChatEnabled(): boolean {
   return lowered === "1" || lowered === "true" || lowered === "yes";
 }
 
+function enabledBuildFlag(value: unknown): boolean {
+  return ["1", "true", "yes"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+export function isNativePdfReaderEnabled(): boolean {
+  return enabledBuildFlag(import.meta.env.VITE_NATIVE_PDF_READER_ENABLED);
+}
+
+export function isPaperReaderChatEnabled(): boolean {
+  return isChatEnabled() && enabledBuildFlag(import.meta.env.VITE_PAPER_READER_CHAT_ENABLED);
+}
+
 /** `true` for the staging bundle and its canonical deployed hostname. */
 export function isStagingEnvironment(): boolean {
   if (import.meta.env.MODE === "staging") return true;

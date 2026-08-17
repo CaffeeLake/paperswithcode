@@ -77,6 +77,9 @@ def validate_frontend_dist(settings: Settings) -> dict[str, bool]:
     features = json.loads(features_path.read_text(encoding="utf-8"))
     expected_features = {
         "chat": settings.chat_enabled,
+        "native_pdf_reader": settings.native_pdf_reader_enabled,
+        "paper_reader_chat": settings.paper_reader_chat_enabled,
+        "paper_reader_selection": settings.paper_reader_selection_enabled,
         "codex_add_evals": (
             settings.codex_jobs_enabled and settings.codex_add_evals_enabled
         ),

@@ -19,6 +19,7 @@ from backend.services.chat_session_service import (
     _TranscriptResumeBoundary,
     _build_replacement_plan,
     _calculate_turn_quota,
+    _message_projection_bytes,
 )
 from backend.tests.test_chat_turn_admission_characterization import (
     _Result,
@@ -121,6 +122,28 @@ def test_calculate_turn_quota_is_a_pure_append_or_replacement_projection(
     assert calculation.resulting_session_bytes == 760
     assert calculation.resulting_owner_bytes == 2_260
     assert calculation.resulting_message_count == expected_message_count
+
+
+def test_reader_context_is_reclaimed_with_replaced_user_projection():
+    message = SimpleNamespace(
+        role="user",
+        content="question",
+        effective_prompt="grounded prompt",
+        paper_mentions=[],
+        primary_paper_context={"route_id": "1706.03762"},
+        viewer_context={"page": 7},
+    )
+
+    assert _message_projection_bytes(message) == sum(
+        len(value.encode())
+        for value in (
+            "question",
+            "grounded prompt",
+            "[]",
+            '{"route_id":"1706.03762"}',
+            '{"page":7}',
+        )
+    )
 
 
 def _replacement_message(**overrides):

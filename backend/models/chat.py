@@ -59,6 +59,25 @@ class PaperMentionSnapshot(BaseModel):
     context_reference: dict[str, str] | None = None
 
 
+class ViewerContextRequest(BaseModel):
+    """Low-trust orientation captured when a reader turn is submitted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page: int = Field(ge=1, le=10_000)
+
+
+class PrimaryPaperProjection(BaseModel):
+    """Authoritative safe session projection for a reader-bound paper."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    route_id: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=500)
+    arxiv_id: str = Field(min_length=1, max_length=50)
+
+
 def _utf16_slice(value: str, start: int, end: int) -> str:
     raw = value.encode("utf-16-le")
     if end * 2 > len(raw):
@@ -85,6 +104,13 @@ class ChatRequest(BaseModel):
     paper_mentions: list[PaperMentionRequest] = Field(
         default_factory=list, max_length=10
     )
+    primary_paper_route_id: (
+        Annotated[
+            str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)
+        ]
+        | None
+    ) = None
+    viewer_context: ViewerContextRequest | None = None
 
     @model_validator(mode="after")
     def validate_message(self) -> "ChatRequest":
@@ -110,6 +136,10 @@ class ChatRequest(BaseModel):
             distinct.add(mention.route_id)
         if len(distinct) > 3:
             raise ValueError("A message may mention at most three distinct papers")
+        if self.viewer_context is not None and (
+            self.session_id is None and self.primary_paper_route_id is None
+        ):
+            raise ValueError("Viewer context requires a paper-bound chat")
         return self
 
 
@@ -289,6 +319,7 @@ class ChatMessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
+    viewer_context: ViewerContextRequest | None = None
     revision: int
     status: str
     citations: list[CitationSnapshot] = Field(default_factory=list)
@@ -347,6 +378,7 @@ class ChatSessionSummary(BaseModel):
     is_busy: bool = False
     web_search_enabled: bool = False
     reasoning_effort: ReasoningEffort = "high"
+    primary_paper: PrimaryPaperProjection | None = None
 
 
 class ChatSessionDetail(ChatSessionSummary):

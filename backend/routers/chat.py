@@ -137,6 +137,8 @@ def _prepare_paper_turn(
             mentions=body.paper_mentions,
             session_id=body.session_id,
             replace_message_id=body.replace_message_id,
+            primary_route_id=body.primary_paper_route_id,
+            viewer_context=body.viewer_context,
         )
 
 
@@ -387,6 +389,15 @@ def _busy(session: ChatSession) -> bool:
 
 
 def _summary(session: ChatSession) -> ChatSessionSummary:
+    primary = getattr(session, "primary_paper", None)
+    primary_projection = None
+    if primary is not None and primary.source == "arxiv" and primary.arxiv_id:
+        primary_projection = {
+            "id": str(primary.id),
+            "route_id": primary.arxiv_id,
+            "title": primary.title,
+            "arxiv_id": primary.arxiv_id,
+        }
     return ChatSessionSummary(
         id=session.id,
         title=session.title,
@@ -397,6 +408,7 @@ def _summary(session: ChatSession) -> ChatSessionSummary:
         is_busy=_busy(session),
         web_search_enabled=session.web_search_enabled,
         reasoning_effort=getattr(session, "reasoning_effort", None) or "high",
+        primary_paper=primary_projection,
     )
 
 
@@ -408,6 +420,7 @@ def _message(row: ChatMessageRecord) -> ChatMessageResponse:
         role=row.role,
         content=row.content,
         paper_mentions=row.paper_mentions or [],
+        viewer_context=getattr(row, "viewer_context", None),
         revision=row.revision,
         status=row.status,
         citations=row.citations or [],
@@ -455,6 +468,9 @@ def chat_availability():
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
             "web_search_available": False,
+            "native_pdf_reader_enabled": settings.native_pdf_reader_enabled,
+            "paper_reader_chat_enabled": settings.paper_reader_chat_enabled,
+            "paper_reader_selection_enabled": settings.paper_reader_selection_enabled,
         }
     if (
         settings.chat_default_backend != "modal_cli"
@@ -466,6 +482,9 @@ def chat_availability():
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
             "web_search_available": search_available,
+            "native_pdf_reader_enabled": settings.native_pdf_reader_enabled,
+            "paper_reader_chat_enabled": settings.paper_reader_chat_enabled,
+            "paper_reader_selection_enabled": settings.paper_reader_selection_enabled,
         }
     try:
         assert_chat_sandbox_spend_available(
@@ -478,6 +497,9 @@ def chat_availability():
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
             "web_search_available": search_available,
+            "native_pdf_reader_enabled": settings.native_pdf_reader_enabled,
+            "paper_reader_chat_enabled": settings.paper_reader_chat_enabled,
+            "paper_reader_selection_enabled": settings.paper_reader_selection_enabled,
         }
     except ChatComputeDisabled:
         return {
@@ -486,6 +508,9 @@ def chat_availability():
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
             "web_search_available": False,
+            "native_pdf_reader_enabled": settings.native_pdf_reader_enabled,
+            "paper_reader_chat_enabled": settings.paper_reader_chat_enabled,
+            "paper_reader_selection_enabled": settings.paper_reader_selection_enabled,
         }
 
 
@@ -1075,6 +1100,23 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    if body.primary_paper_route_id is not None:
+        if not settings.paper_reader_chat_enabled:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "paper_reader_chat_disabled",
+                    "message": "Paper reader chat is not enabled.",
+                },
+            )
+        if settings.environment == "staging" and user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "staging_access_required",
+                    "message": "Paper reader chat on staging is limited to the reviewer account.",
+                },
+            )
     if (
         not settings.chat_public_admission_enabled
         or not settings.chat_sandbox_admission_enabled
@@ -1133,7 +1175,7 @@ async def stream_chat(
             ).existing_effective_prompt(owner, body.session_id, body.client_message_id)
     if existing_prompt is not None:
         prepared = PreparedPaperTurn(body.message, existing_prompt, [], 0, 0, 0)
-    elif body.paper_mentions:
+    else:
         started = time.perf_counter()
         try:
             prepared = await asyncio.wait_for(
@@ -1182,6 +1224,9 @@ async def stream_chat(
                     text=prepared.display_message,
                     effective_prompt=prepared.effective_prompt,
                     paper_mentions=prepared.mentions,
+                    primary_paper_id=prepared.primary_paper_id,
+                    primary_paper_context=prepared.primary_paper_context,
+                    viewer_context=prepared.viewer_context,
                     initial_model=body.initial_model,
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,
@@ -1267,7 +1312,7 @@ async def stream_chat(
         owner=owner,
         admission=admission,
         prompt=prepared.effective_prompt,
-        display_message=prepared.display_message,
+        display_message=prepared.title_prompt or prepared.display_message,
         request_id=request_id,
         title_token=title_token,
         is_disconnected=_never_disconnected,

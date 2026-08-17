@@ -2742,6 +2742,9 @@ class ChatAvailabilityResponse(BaseModel):
     expected_recovery_at: datetime | None = None
     paper_mentions_enabled: bool = False
     web_search_available: bool = False
+    native_pdf_reader_enabled: bool = False
+    paper_reader_chat_enabled: bool = False
+    paper_reader_selection_enabled: bool = False
 
 
 class ChatWebSearchEventResponse(BaseModel):

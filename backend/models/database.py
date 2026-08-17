@@ -1981,6 +1981,11 @@ class ChatSession(Base):
     reasoning_effort: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="high"
     )
+    primary_paper_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("papers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2018,6 +2023,9 @@ class ChatSession(Base):
 
     messages: Mapped[list["ChatMessageRecord"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
+    primary_paper: Mapped[Optional["Paper"]] = relationship(
+        "Paper", foreign_keys=[primary_paper_id], lazy="selectin"
     )
     share: Mapped[Optional["ChatShare"]] = relationship(
         back_populates="session",
@@ -2078,6 +2086,8 @@ class ChatMessageRecord(Base):
     paper_mentions: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )
+    primary_paper_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    viewer_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     effective_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     langfuse_trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)

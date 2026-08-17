@@ -30,6 +30,7 @@ import {
   adminDashboardUrl,
   isAuthDisabled,
   isChatEnabled,
+  isNativePdfReaderEnabled,
   shouldUseHashRouter,
 } from "@/lib/apiUrl";
 import { AuthProvider, useAuth } from "@/lib/authContext";
@@ -56,6 +57,7 @@ const ChatView = React.lazy(() => import("@/views/ChatView"));
 const SharedChatView = React.lazy(() => import("@/views/SharedChatView"));
 const PapersListView = React.lazy(() => import("@/views/PapersListView"));
 const PaperDetailView = React.lazy(() => import("@/views/PaperDetailView"));
+const PaperReaderView = React.lazy(() => import("@/views/PaperReaderView"));
 const TagsIndexView = React.lazy(() => import("@/views/TagsIndexView"));
 const TagBrowseView = React.lazy(() => import("@/views/TagBrowseView"));
 const MethodsIndexView = React.lazy(() => import("@/views/MethodsIndexView"));
@@ -230,6 +232,19 @@ const Shell: React.FC = () => {
     return (
       <React.Suspense fallback={<RouteFallback />}>
         <StagingAccessRequestView />
+      </React.Suspense>
+    );
+  }
+
+  if (location.pathname.startsWith("/pdf/")) {
+    return (
+      <React.Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route
+            path="/pdf/:arxivId"
+            element={isNativePdfReaderEnabled() ? <PaperReaderView /> : <NotFound />}
+          />
+        </Routes>
       </React.Suspense>
     );
   }

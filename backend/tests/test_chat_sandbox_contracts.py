@@ -2403,6 +2403,16 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
         "desc" in prompt
     )
     assert "latest release versus latest technical report" in prompt
+    assert '"reader_mode":false' in prompt
+
+
+def test_reader_system_prompt_profile_is_selected_by_trusted_metadata():
+    prompt = render(reader_mode=True)
+
+    assert "## Paper reader mode (reader-v1)" in prompt
+    assert "authoritative primary paper" in prompt
+    assert "never present its page number as a verified page citation" in prompt
+    assert '"reader_mode":true' in prompt
     assert "[repo_id](https://huggingface.co/datasets/<repo_id>)" in prompt
 
 
@@ -2491,6 +2501,7 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         prompt,
         "request-1",
         "model-a",
+        False,
         False,
         "high",
         [],
@@ -2630,9 +2641,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-NH4UxQQE9NCeMSfUViVHVc"
+    assert MODAL_IMAGE_ID == "im-LwUMhNX4o3o4pITCWj8bT7"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-Sbjgm1jjAJAqBo10ZtLY3w"
-    assert WORKER_CONTRACT_VERSION == "80"
+    assert WORKER_CONTRACT_VERSION == "81"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

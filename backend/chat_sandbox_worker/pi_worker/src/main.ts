@@ -18,7 +18,7 @@ function runFrame(value: unknown): RunTurn {
     "v", "type", "request_id", "chat_session_id", "prompt", "model", "resume",
     "web_search_enabled", "reasoning_effort", "fetchable_urls", "hf_username", "agent_harness",
   ]);
-  const optional = new Set(["turn_id", "assignment_token", "worker_generation"]);
+  const optional = new Set(["turn_id", "assignment_token", "worker_generation", "reader_mode"]);
   if (Object.keys(frame).some((key) => !required.has(key) && !optional.has(key))) throw new Error("Invalid Pi run frame keys");
   if ([...required].some((key) => !(key in frame))) throw new Error("Missing Pi run frame key");
   if (
@@ -28,10 +28,11 @@ function runFrame(value: unknown): RunTurn {
     typeof frame.model !== "string" ||
     (frame.resume !== null && typeof frame.resume !== "string") ||
     typeof frame.web_search_enabled !== "boolean" ||
+    (frame.reader_mode !== undefined && typeof frame.reader_mode !== "boolean") ||
     !new Set(["low", "high", "max"]).has(String(frame.reasoning_effort)) ||
     typeof frame.hf_username !== "string" || !Array.isArray(frame.fetchable_urls)
   ) throw new Error("Invalid Pi run frame value");
-  return frame as unknown as RunTurn;
+  return { ...frame, reader_mode: frame.reader_mode === true } as unknown as RunTurn;
 }
 
 const worker = new PiWorker(emit);

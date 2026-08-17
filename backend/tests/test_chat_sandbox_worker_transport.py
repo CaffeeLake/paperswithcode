@@ -196,6 +196,7 @@ def _turn_request(**overrides) -> WorkerTurnRequest:
         "capability_token": "capability-token",
         "gateway_url": "https://gateway.example.test",
         "web_search_enabled": True,
+        "reader_mode": False,
         "fetchable_urls": ("https://papers.example/one",),
         "hf_username": "test-user",
     }
@@ -727,6 +728,7 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "model": request.model,
             "resume": request.resume,
             "web_search_enabled": True,
+            "reader_mode": False,
             "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
@@ -864,6 +866,7 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "model": request.model,
             "resume": None,
             "web_search_enabled": False,
+            "reader_mode": False,
             "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",

@@ -273,6 +273,8 @@ def test_chat_availability_is_public(monkeypatch):
         chat_sandbox_admission_enabled=True,
         chat_default_backend="local_mcp",
         chat_paper_mentions_enabled=True,
+        native_pdf_reader_enabled=True,
+        paper_reader_chat_enabled=True,
     )
     monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
     monkeypatch.setattr(chat_router, "web_search_available", lambda _settings: True)
@@ -284,6 +286,9 @@ def test_chat_availability_is_public(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["web_search_available"] is True
+    assert response.json()["native_pdf_reader_enabled"] is True
+    assert response.json()["paper_reader_chat_enabled"] is True
+    assert response.json()["paper_reader_selection_enabled"] is False
 
 
 def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
@@ -311,6 +316,9 @@ def test_chat_availability_maps_spend_rejection_to_content_free_paused_state(
         "expected_recovery_at": None,
         "paper_mentions_enabled": True,
         "web_search_available": False,
+        "native_pdf_reader_enabled": False,
+        "paper_reader_chat_enabled": False,
+        "paper_reader_selection_enabled": False,
     }
 
 
@@ -955,6 +963,12 @@ def test_title_and_display_projection_bounds():
         == "Vision Transformer Trends"
     )
     assert len(fallback_title("word " * 100)) <= 80
+    reader_title = fallback_title(
+        "<primary_paper_title>Attention Is All You Need</primary_paper_title>\n"
+        "<user_message>What is the key contribution?</user_message>"
+    )
+    assert reader_title == ("Attention Is All You Need — What is the key contribution")
+    assert "<" not in reader_title
     with pytest.raises(ValueError):
         DISPLAY_BLOCKS_ADAPTER.validate_python(
             [

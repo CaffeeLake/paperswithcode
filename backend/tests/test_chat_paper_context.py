@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from backend.config import Settings
-from backend.models.chat import ChatRequest, PaperMentionRequest
+from backend.models.chat import ChatRequest, PaperMentionRequest, ViewerContextRequest
 from backend.routers import chat as chat_router
 from backend.services.chat_paper_context_service import (
     INFO_LIMIT_BYTES,
@@ -248,6 +248,66 @@ def test_mentions_are_rejected_when_runtime_capability_is_disabled():
             mentions=[PaperMentionRequest(route_id="1", title="Paper", start=0, end=6)],
             session_id=None,
             replace_message_id=None,
+        )
+
+
+def test_primary_paper_precedes_viewer_and_deduplicates_matching_mention(monkeypatch):
+    service = ChatPaperContextService(
+        SimpleNamespace(), Settings(chat_paper_mentions_enabled=True)
+    )
+    paper = _paper()
+    monkeypatch.setattr(service, "prepare_one", lambda _route: paper)
+    message = "Compare @Paper"
+    result = service.prepare_turn(
+        owner_id="owner",
+        display_message=message,
+        mentions=[
+            PaperMentionRequest(route_id=paper.route_id, title="Paper", start=8, end=14)
+        ],
+        session_id=None,
+        replace_message_id=None,
+        primary_route_id=paper.route_id,
+        viewer_context=ViewerContextRequest(page=4),
+    )
+
+    assert result.primary_paper_id == 42
+    assert result.primary_paper_context is not None
+    assert result.primary_paper_context["kind"] == "primary"
+    assert result.viewer_context == {"page": 4}
+    assert result.effective_prompt.count("<paper_info>") == 1
+    assert 'same_context_as="primary-paper"' in result.effective_prompt
+    assert result.effective_prompt.index(
+        'kind="primary"'
+    ) < result.effective_prompt.index("<viewer_context")
+    assert result.effective_prompt.endswith(f"{message}\n</user_request>")
+    assert 'Paper "title"' in (result.title_prompt or "")
+
+
+def test_primary_paper_requires_stored_markdown_and_viewer_requires_binding(
+    monkeypatch,
+):
+    service = ChatPaperContextService(
+        SimpleNamespace(), Settings(chat_paper_mentions_enabled=True)
+    )
+    monkeypatch.setattr(
+        service,
+        "prepare_one",
+        lambda _route: replace(_paper(), content_available=False),
+    )
+    with pytest.raises(Exception, match="still being prepared"):
+        service.prepare_turn(
+            owner_id="owner",
+            display_message="Explain it",
+            mentions=[],
+            session_id=None,
+            replace_message_id=None,
+            primary_route_id="2501.00001",
+        )
+    with pytest.raises(ValidationError, match="Viewer context requires"):
+        ChatRequest(
+            message="Explain it",
+            client_message_id="client-viewer",
+            viewer_context={"page": 2},
         )
 
 

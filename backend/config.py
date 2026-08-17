@@ -253,6 +253,9 @@ class Settings(BaseSettings):
 
     # Research chat (disabled until the isolated live qualification passes).
     chat_enabled: bool = Field(default=False)
+    native_pdf_reader_enabled: bool = Field(default=False)
+    paper_reader_chat_enabled: bool = Field(default=False)
+    paper_reader_selection_enabled: bool = Field(default=False)
     chat_paper_mentions_enabled: bool = Field(default=False)
     chat_paper_context_timeout_seconds: float = Field(default=20, gt=0, le=60)
     # Read-only compatibility inputs for sessions created before the DeepSeek-only
