@@ -466,18 +466,29 @@ export const AssistantMessage: React.FC<{
   const [feedback, setFeedback] = React.useState<boolean | null>(null);
   const [feedbackPending, setFeedbackPending] = React.useState(false);
   const [feedbackError, setFeedbackError] = React.useState(false);
+  const [feedbackComposerOpen, setFeedbackComposerOpen] = React.useState(false);
+  const [feedbackComment, setFeedbackComment] = React.useState("");
+  const feedbackTextareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const feedbackPanelId = `chat-feedback-panel-${msg.id}`;
   const canRate = feedbackEnabled
     && !msg.streaming
     && !msg.error
     && Boolean(msg.blocks?.some((block) => block.kind === "answer" && block.text.trim()));
 
-  const submitFeedback = async (value: boolean) => {
+  React.useEffect(() => {
+    if (feedbackComposerOpen) feedbackTextareaRef.current?.focus();
+  }, [feedbackComposerOpen]);
+
+  const submitFeedback = async (value: boolean, comment?: string) => {
     if (feedbackPending) return;
     setFeedbackPending(true);
     setFeedbackError(false);
     try {
-      await chatApi.reportFeedback(msg.id, value);
+      if (comment === undefined) await chatApi.reportFeedback(msg.id, value);
+      else await chatApi.reportFeedback(msg.id, value, comment);
       setFeedback(value);
+      setFeedbackComposerOpen(false);
+      setFeedbackComment("");
     } catch {
       setFeedbackError(true);
     } finally {
@@ -614,7 +625,10 @@ export const AssistantMessage: React.FC<{
             aria-label="Helpful response"
             aria-pressed={feedback === true}
             disabled={feedbackPending}
-            onClick={() => void submitFeedback(true)}
+            onClick={() => {
+              setFeedbackComposerOpen(false);
+              void submitFeedback(true);
+            }}
           >
             <ThumbsUp aria-hidden="true" />
           </button>
@@ -623,12 +637,59 @@ export const AssistantMessage: React.FC<{
             className={`chat-feedback-action${feedback === false ? " chat-feedback-action-selected" : ""}`}
             aria-label="Unhelpful response"
             aria-pressed={feedback === false}
+            aria-expanded={feedbackComposerOpen}
+            aria-controls={feedbackPanelId}
             disabled={feedbackPending}
-            onClick={() => void submitFeedback(false)}
+            onClick={() => {
+              setFeedbackError(false);
+              setFeedbackComposerOpen(true);
+            }}
           >
             <ThumbsDown aria-hidden="true" />
           </button>
           {feedbackError && <span className="chat-feedback-error" role="status">Couldn’t send feedback.</span>}
+        </div>
+      )}
+      {canRate && feedbackComposerOpen && (
+        <div className="chat-feedback-panel" id={feedbackPanelId} role="group" aria-labelledby={`${feedbackPanelId}-title`}>
+          <div className="chat-feedback-panel-title" id={`${feedbackPanelId}-title`}>Additional feedback</div>
+          <label className="chat-feedback-panel-label" htmlFor={`${feedbackPanelId}-comment`}>
+            Tell us what went wrong (optional)
+          </label>
+          <textarea
+            ref={feedbackTextareaRef}
+            id={`${feedbackPanelId}-comment`}
+            className="chat-feedback-comment"
+            value={feedbackComment}
+            maxLength={500}
+            rows={4}
+            disabled={feedbackPending}
+            onChange={(event) => setFeedbackComment(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setFeedbackComposerOpen(false);
+              }
+            }}
+          />
+          <div className="chat-feedback-panel-actions">
+            <button
+              type="button"
+              className="chat-feedback-skip"
+              disabled={feedbackPending}
+              onClick={() => void submitFeedback(false)}
+            >
+              Skip
+            </button>
+            <button
+              type="button"
+              className="chat-feedback-submit"
+              disabled={feedbackPending}
+              onClick={() => void submitFeedback(false, feedbackComment.trim() || undefined)}
+            >
+              {feedbackPending ? "Submitting…" : "Submit"}
+            </button>
+          </div>
         </div>
       )}
     </div>

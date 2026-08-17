@@ -30,6 +30,7 @@ class ChatFeedbackService:
         owner_id: str,
         assistant_message_id: uuid.UUID,
         value: bool,
+        comment: str | None = None,
     ) -> bool:
         message = self.db.execute(
             select(ChatMessageRecord.turn_id, ChatMessageRecord.session_id)
@@ -64,12 +65,16 @@ class ChatFeedbackService:
         score_id = hashlib.sha256(
             f"{self.settings.environment}:{self.SCORE_NAME}:{assistant_message_id}".encode()
         ).hexdigest()[:32]
+        normalized_comment = None
+        if comment is not None:
+            normalized_comment = comment.strip() or None
         client.create_score(
             trace_id=trace_id,
             score_id=score_id,
             name=self.SCORE_NAME,
             value=1.0 if value else 0.0,
             data_type="BOOLEAN",
+            comment=normalized_comment,
             metadata={"assistant_message_id": str(assistant_message_id)},
         )
         return True

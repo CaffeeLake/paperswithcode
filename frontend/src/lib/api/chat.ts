@@ -150,10 +150,10 @@ export class ChatApi {
     });
   }
 
-  reportFeedback(messageId: string, value: boolean): Promise<void> {
+  reportFeedback(messageId: string, value: boolean, comment?: string): Promise<void> {
     return this.request(`/chat/messages/${encodeURIComponent(messageId)}/feedback`, {
       method: "POST",
-      body: JSON.stringify({ value }),
+      body: JSON.stringify({ value, ...(comment ? { comment } : {}) }),
     });
   }
 

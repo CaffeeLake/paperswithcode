@@ -1335,6 +1335,7 @@ def submit_chat_feedback(
             owner_id=owner.hf_user_id,
             assistant_message_id=message_id,
             value=body.value,
+            comment=body.comment,
         )
     except ChatFeedbackUnavailable:
         raise HTTPException(

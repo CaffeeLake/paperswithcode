@@ -4,11 +4,13 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
+from backend.models.chat import ChatFeedbackRequest
 from backend.models.database import Base, ChatMessageRecord, ChatSession
 from backend.services import chat_feedback_service as feedback
 
@@ -90,6 +92,7 @@ def test_feedback_scores_owned_completed_assistant_trace(monkeypatch, db):
         owner_id="owner-1",
         assistant_message_id=assistant.id,
         value=False,
+        comment="  The answer is too long.  ",
     )
 
     assert found is True
@@ -100,10 +103,19 @@ def test_feedback_scores_owned_completed_assistant_trace(monkeypatch, db):
             "name": "user-thumbs",
             "value": 0.0,
             "data_type": "BOOLEAN",
+            "comment": "The answer is too long.",
             "metadata": {"assistant_message_id": str(assistant.id)},
         }
     ]
     assert len(client.scores[0]["score_id"]) == 32
+
+
+def test_feedback_request_limits_optional_comment():
+    assert ChatFeedbackRequest(value=False, comment="x" * 500).comment == "x" * 500
+    with pytest.raises(ValidationError):
+        ChatFeedbackRequest(value=False, comment="x" * 501)
+    with pytest.raises(ValidationError):
+        ChatFeedbackRequest(value=0)
 
 
 def test_feedback_does_not_expose_another_users_message(monkeypatch, db):

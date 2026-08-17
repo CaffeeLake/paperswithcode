@@ -272,6 +272,61 @@ describe("AssistantMessage", () => {
     expect(screen.getByRole("button", { name: "Helpful response" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("collects an optional comment before submitting thumbs down", async () => {
+    const user = userEvent.setup();
+    const reportFeedback = vi.spyOn(chatApi, "reportFeedback").mockResolvedValue();
+    render(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          blocks: [{ kind: "answer", text: "A very long answer", done: true }],
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+        feedbackEnabled
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Unhelpful response" }));
+
+    expect(reportFeedback).not.toHaveBeenCalled();
+    const comment = screen.getByLabelText("Tell us what went wrong (optional)");
+    expect(comment).toHaveFocus();
+    await user.type(comment, "The answer is too long.");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    expect(reportFeedback).toHaveBeenCalledWith(
+      "assistant-1",
+      false,
+      "The answer is too long.",
+    );
+    expect(screen.getByText("Thanks for your feedback")).toBeVisible();
+    expect(screen.queryByText("Additional feedback")).not.toBeInTheDocument();
+  });
+
+  it("submits thumbs down without a comment when skipped", async () => {
+    const user = userEvent.setup();
+    const reportFeedback = vi.spyOn(chatApi, "reportFeedback").mockResolvedValue();
+    render(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          blocks: [{ kind: "answer", text: "An answer", done: true }],
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+        feedbackEnabled
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Unhelpful response" }));
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+
+    expect(reportFeedback).toHaveBeenCalledWith("assistant-1", false);
+  });
+
   it("hides feedback while streaming and in public views", () => {
     const { rerender } = render(
       <AssistantMessage

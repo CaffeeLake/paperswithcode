@@ -145,6 +145,7 @@ class ChatFeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     value: bool
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class ChatPaperMetadata(BaseModel):

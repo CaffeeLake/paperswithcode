@@ -501,6 +501,67 @@
 .chat-feedback-action:disabled { cursor: wait; }
 .chat-feedback-action svg { width: 14px; height: 14px; }
 .chat-feedback-error { color: var(--negative-text); margin-left: 4px; }
+.chat-feedback-panel {
+  width: min(460px, 100%);
+  margin-top: 8px;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+}
+.chat-feedback-panel-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+.chat-feedback-panel-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.chat-feedback-comment {
+  display: block;
+  width: 100%;
+  min-height: 92px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--bg);
+  font: 14px/1.45 var(--sans);
+}
+.chat-feedback-comment:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in oklch, var(--accent) 25%, transparent);
+  outline-offset: 1px;
+}
+.chat-feedback-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.chat-feedback-panel-actions button {
+  min-width: 72px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: 600 13px var(--sans);
+}
+.chat-feedback-skip {
+  border: 1px solid transparent;
+  color: var(--ink-soft);
+  background: transparent;
+}
+.chat-feedback-submit {
+  border: 1px solid var(--ink);
+  color: var(--bg);
+  background: var(--ink);
+}
+.chat-feedback-panel-actions button:disabled { cursor: wait; opacity: 0.65; }
 .chat-error a,
 .chat-error button {
   flex: none;
