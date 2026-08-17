@@ -272,6 +272,39 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
                 Counter(call.upstream_provider or "missing" for call in provider_calls)
             ),
             "fallbacks": sum(call.fallback_count for call in provider_calls),
+            "tokens": {
+                name: distribution(
+                    [
+                        int(value)
+                        for call in provider_calls
+                        if (value := getattr(call, name)) is not None
+                    ]
+                )
+                for name in (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "cache_read_tokens",
+                    "cache_creation_tokens",
+                )
+            },
+            "request_bytes": distribution(
+                [
+                    call.request_bytes
+                    for call in provider_calls
+                    if call.request_bytes is not None
+                ]
+            ),
+            "provider_cost_usd": {
+                "actual": round(
+                    sum((call.actual_microusd or 0) for call in provider_calls)
+                    / 1_000_000,
+                    6,
+                ),
+                "reserved": round(
+                    sum(call.reserved_microusd for call in provider_calls) / 1_000_000,
+                    6,
+                ),
+            },
             "payload_token_buckets": {
                 "system": distribution(
                     [
