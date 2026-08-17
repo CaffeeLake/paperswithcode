@@ -17,7 +17,7 @@ VALUES (
     NULL,
     TRUE,
     NULL,
-    '[TAP-Vid: A Benchmark for Tracking Any Point in a Video](/paper/2211.03726)',
+    '[CoTracker: It is Better to Track Together](/paper/2307.07635)',
     'https://tapvid.github.io/,https://robotap.github.io/,https://pointodyssey.com/'
 )
 ON CONFLICT (slug) DO UPDATE SET
