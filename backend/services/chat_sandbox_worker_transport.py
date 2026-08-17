@@ -698,12 +698,16 @@ class WorkerTurnExecution:
             "model": self.request.model,
             "resume": self.request.resume,
             "web_search_enabled": self.request.web_search_enabled,
-            "reader_mode": self.request.reader_mode,
             "reasoning_effort": self.request.reasoning_effort,
             "fetchable_urls": list(self.request.fetchable_urls),
             "hf_username": self.request.hf_username,
             "agent_harness": self.request.agent_harness,
         }
+        if self.request.reader_mode:
+            # Contract-80 workers reject unknown frame keys. Reader mode was
+            # added in contract 81, so omit its false/default value to keep
+            # non-reader production turns compatible during image rotation.
+            run["reader_mode"] = True
         if self.mode is WorkerTurnMode.PERSISTENT:
             identity = {
                 "assignment_token": self.claim.assignment_token,

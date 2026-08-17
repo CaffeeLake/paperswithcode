@@ -220,6 +220,30 @@ def _decode_dispatch(payload: bytes) -> tuple[dict, dict]:
     return launch, decode_frame(run_wire)
 
 
+def test_reader_mode_frame_field_is_sent_only_when_enabled():
+    transport = _transport()
+    claim = _turn_claim()
+    sandbox = SimpleNamespace(object_id=claim.sandbox_id)
+
+    disabled = transport.create_execution(
+        sandbox=sandbox,
+        claim=claim,
+        request=_turn_request(reader_mode=False),
+        mode=WorkerTurnMode.PERSISTENT,
+        process_timeout_seconds=47,
+    )
+    enabled = transport.create_execution(
+        sandbox=sandbox,
+        claim=claim,
+        request=_turn_request(reader_mode=True),
+        mode=WorkerTurnMode.PERSISTENT,
+        process_timeout_seconds=47,
+    )
+
+    assert "reader_mode" not in _decode_dispatch(disabled._request_frame())[1]
+    assert _decode_dispatch(enabled._request_frame())[1]["reader_mode"] is True
+
+
 async def _wait_until(predicate) -> None:
     for _ in range(20):
         if predicate():
@@ -728,7 +752,6 @@ def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_orde
             "model": request.model,
             "resume": request.resume,
             "web_search_enabled": True,
-            "reader_mode": False,
             "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
@@ -866,7 +889,6 @@ def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
             "model": request.model,
             "resume": None,
             "web_search_enabled": False,
-            "reader_mode": False,
             "reasoning_effort": "high",
             "fetchable_urls": list(request.fetchable_urls),
             "hf_username": "test-user",
