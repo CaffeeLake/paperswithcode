@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy, TextItem } from "pdfjs-dist/types/src/display/api";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -63,6 +64,7 @@ export function PdfViewer({
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
   const [fitWidth, setFitWidth] = useState(700);
+  const [displayWidth, setDisplayWidth] = useState(700);
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -89,13 +91,17 @@ export function PdfViewer({
     const element = scrollRef.current;
     if (!element) return;
     const update = () => {
-      if (!resizeActive) setFitWidth(Math.max(240, element.clientWidth - 10));
+      const nextWidth = Math.max(240, element.clientWidth - 10);
+      setDisplayWidth(nextWidth);
+      if (!resizeActive) setFitWidth(nextWidth);
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
   }, [resizeActive]);
+
+  const liveResizeScale = resizeActive ? displayWidth / fitWidth : 1;
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));
@@ -239,7 +245,10 @@ export function PdfViewer({
         onLoadError={(loadError) => setError(pdfErrorMessage(loadError))}
         externalLinkTarget="_blank"
       >
-        <div className="pdf-pages">
+        <div
+          className="pdf-pages"
+          style={{ "--pdf-live-scale": liveResizeScale } as CSSProperties}
+        >
           {pageNumbers.map((pageNumber) => <LazyPdfPage key={pageNumber} page={pageNumber} width={pageWidth} />)}
         </div>
       </Document>}

@@ -57,7 +57,7 @@ describe("PdfViewer resize rendering", () => {
     });
   });
 
-  it("keeps the rendered canvas width stable until divider dragging ends", async () => {
+  it("scales the existing pages live and rerenders them only after divider dragging ends", async () => {
     const view = render(<PdfViewer url="https://arxiv.org/pdf/1706.03762" paperKey="1706.03762" />);
     fireEvent.click(screen.getByRole("button", { name: "Load PDF" }));
     await waitFor(() => expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "790"));
@@ -66,8 +66,14 @@ describe("PdfViewer resize rendering", () => {
     observedWidth = 620;
     act(() => resizeCallback?.([], {} as ResizeObserver));
     expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "790");
+    expect(screen.getByTestId("pdf-page").closest(".pdf-pages")).toHaveStyle({
+      "--pdf-live-scale": String(610 / 790),
+    });
 
     view.rerender(<PdfViewer url="https://arxiv.org/pdf/1706.03762" paperKey="1706.03762" />);
     await waitFor(() => expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "610"));
+    expect(screen.getByTestId("pdf-page").closest(".pdf-pages")).toHaveStyle({
+      "--pdf-live-scale": "1",
+    });
   });
 });
