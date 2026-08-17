@@ -20,6 +20,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-sync-open-asr.yml` | `15 * * * *` | `pwc-cron sync_open_asr` | `.github/workflows/scripts/hourly/sync_open_asr.py` |
 | `cron-sync-deepswe.yml` | `25 * * * *` | `pwc-cron sync_deepswe` | `.github/workflows/scripts/hourly/sync_deepswe.py` |
 | `cron-sync-artificial-analysis.yml` | `35 * * * *` | `pwc-cron sync_artificial_analysis` | `.github/workflows/scripts/hourly/sync_artificial_analysis.py` |
+| `cron-sync-programbench.yml` | `40 * * * *` | `pwc-cron sync_programbench` | `.github/workflows/scripts/hourly/sync_programbench.py` |
 | `cron-sync-frontiercode.yml` | `45 * * * *` | `pwc-cron sync_frontiercode` | `.github/workflows/scripts/hourly/sync_frontiercode.py` |
 | `cron-sync-coarena.yml` | `50 * * * *` | `pwc-cron sync_coarena` | `.github/workflows/scripts/hourly/sync_coarena.py` |
 | `cron-sync-arc-prize.yml` | `10 * * * *` | `pwc-cron sync_arc_prize` | `.github/workflows/scripts/hourly/sync_arc_prize.py` |

@@ -519,6 +519,39 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
+        id="sync_programbench",
+        display_name="Sync ProgramBench Leaderboard",
+        category="hourly",
+        schedule="40 * * * * (hourly)",
+        script_path="hourly/sync_programbench.py",
+        log_name="sync_programbench",
+        process_patterns=("scripts.hourly.sync_programbench",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_programbench.lock"
+        ),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug = 'programbench'
+              AND e.best_metric = 'Accuracy'
+              AND e.external_source_url LIKE 'https://programbench.com/run/%'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code ProgramBench live sync.%'
+        """,
+        workflow_file="cron-sync-programbench.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
         id="sync_frontiercode",
         display_name="Sync FrontierCode Leaderboard",
         category="hourly",
@@ -993,6 +1026,7 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "sync_open_asr": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
     "sync_deepswe": ((SchedulePolicy.fixed(60, offset_minutes=25),), 20),
     "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
+    "sync_programbench": ((SchedulePolicy.fixed(60, offset_minutes=40),), 20),
     "sync_frontiercode": ((SchedulePolicy.fixed(60, offset_minutes=45),), 20),
     "sync_coarena": ((SchedulePolicy.fixed(60, offset_minutes=50),), 20),
     "sync_arc_prize": ((SchedulePolicy.fixed(60, offset_minutes=10),), 20),

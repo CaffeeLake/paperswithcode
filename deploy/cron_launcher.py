@@ -150,6 +150,14 @@ COMMANDS: dict[str, Job] = {
             "from validated API data"
         ),
     ),
+    "sync_programbench": job(
+        "-m",
+        "scripts.hourly.sync_programbench",
+        timeout="30m",
+        idempotency=(
+            "replace managed ProgramBench evaluation rows from validated live data"
+        ),
+    ),
     "sync_coarena": job(
         "-m",
         "scripts.hourly.sync_coarena",
