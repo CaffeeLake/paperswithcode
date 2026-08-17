@@ -1149,6 +1149,7 @@ class ChatSandboxSpendService:
             "recovery" if complete else "critical",
             None if complete else "termination_uncertain",
             now,
+            deduplicate=False,
         )
         return state
 

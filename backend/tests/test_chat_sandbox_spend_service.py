@@ -19,6 +19,8 @@ from backend.models.database import (
 )
 from backend.scripts.manage_chat_sandbox_circuit import (
     operator_identity,
+)
+from backend.scripts.manage_chat_sandbox_circuit import (
     parser as circuit_parser,
 )
 from backend.services import chat_sandbox_service
@@ -517,6 +519,26 @@ def test_spend_trip_rearms_once_after_provider_confirms_new_utc_cycle():
             ).scalars()
         )
         assert len(events) == 1
+
+
+def test_kill_sweep_events_are_not_deduplicated_within_a_cycle():
+    sessions = factory()
+    first = datetime(2026, 8, 1, tzinfo=UTC)
+    second = first + timedelta(hours=1)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        service.record_kill_sweep(complete=True, now=first)
+        service.record_kill_sweep(complete=True, now=second)
+    with sessions() as db:
+        events = db.execute(
+            select(ChatSandboxCircuitEvent)
+            .where(ChatSandboxCircuitEvent.event_type == "kill_sweep_complete")
+            .order_by(ChatSandboxCircuitEvent.created_at)
+        ).scalars()
+        assert [event.created_at for event in events] == [
+            first.replace(tzinfo=None),
+            second.replace(tzinfo=None),
+        ]
 
 
 def test_tagged_provider_orphan_is_conservatively_added_to_ledger():
