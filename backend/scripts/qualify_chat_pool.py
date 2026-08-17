@@ -148,6 +148,7 @@ class PoolQualification:
         admin_subject: str,
         admin_username: str,
         qualification_owner: str,
+        selected_model: str,
     ):
         self.settings = settings
         self.billing_settings = billing_settings
@@ -158,6 +159,7 @@ class PoolQualification:
         self.admin_subject = admin_subject
         self.admin_username = admin_username
         self.qualification_owner = qualification_owner
+        self.selected_model = selected_model
         self.started_at = datetime.now(UTC)
         self.run_id = uuid.uuid4().hex[:12]
 
@@ -172,6 +174,11 @@ class PoolQualification:
             raise ValueError("Configured CPU request does not match the candidate")
         if self.settings.chat_sandbox_memory_mib != memory_mib:
             raise ValueError("Configured memory request does not match the candidate")
+        if (
+            self.settings.chat_model_routes.get(self.selected_model)
+            != self.settings.chat_pi_prewarm_model
+        ):
+            raise ValueError("Selected model does not map to the Pi prewarm route")
 
     def _compatible_blank_count(self) -> int:
         compatibility = ChatSandboxPoolRepository(
@@ -322,44 +329,43 @@ class PoolQualification:
         request_id: str | None = None
         terminal = "error"
         error_code: str | None = None
-        async with (
-            staging_client(
-                timeout=240,
-                cookies={
-                    self.settings.session_cookie_name: token,
-                    COOKIE_NAME: billing,
+        async with staging_client(
+            timeout=240,
+            cookies={
+                self.settings.session_cookie_name: token,
+                COOKIE_NAME: billing,
+            },
+        ) as client:
+            session_response = await client.post(
+                "/api/v1/chat/admin/sessions",
+                json={
+                    "agent_harness": "pi",
+                    "selected_model": self.selected_model,
+                    "reasoning_effort": self.settings.chat_pi_prewarm_reasoning_effort,
                 },
-            ) as client,
-            client.stream(
+            )
+            session_response.raise_for_status()
+            payload["session_id"] = str(session_response.json()["id"])
+            async with client.stream(
                 "POST",
                 "/api/v1/chat/stream",
                 json=payload,
-            ) as response,
-        ):
-            if response.status_code == 429 or response.status_code >= 500:
-                return PoolSample(
-                    request_id=None,
-                    acquisition_outcome=None,
-                    pool_lookup_ms=None,
-                    sdk_dispatch_ms=None,
-                    first_delta_ms=None,
-                    total_ms=None,
-                    estimated_active_cost_usd=None,
-                    continuous_pool_interval=False,
-                    cleanup_confirmed=False,
-                    terminal_status="error",
-                    error_code=f"http_{response.status_code}",
-                )
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
-                if event.get("type") == "stream_start":
-                    request_id = str(event["request_id"])
-                if event.get("type") in {"done", "cancelled", "error"}:
-                    terminal = str(event["type"])
-                    error_code = str(event.get("code")) if event.get("code") else None
+            ) as response:
+                if response.status_code == 429 or response.status_code >= 500:
+                    error_code = f"http_{response.status_code}"
+                else:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[6:])
+                        if event.get("type") == "stream_start":
+                            request_id = str(event["request_id"])
+                        if event.get("type") in {"done", "cancelled", "error"}:
+                            terminal = str(event["type"])
+                            error_code = (
+                                str(event.get("code")) if event.get("code") else None
+                            )
         sample = PoolSample(
             request_id=request_id,
             acquisition_outcome=None,
@@ -454,6 +460,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--admin-subject", required=True)
     result.add_argument("--admin-username", required=True)
     result.add_argument("--qualification-owner", required=True)
+    result.add_argument("--selected-model", required=True)
     result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
     return result
@@ -488,6 +495,7 @@ def main() -> int:
         admin_subject=args.admin_subject,
         admin_username=args.admin_username,
         qualification_owner=args.qualification_owner,
+        selected_model=args.selected_model,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())

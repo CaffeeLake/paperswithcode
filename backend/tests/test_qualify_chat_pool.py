@@ -59,6 +59,8 @@ def test_pool_qualification_requires_an_immutable_release_directory():
             "admin",
             "--qualification-owner",
             "operator:pi-qualification:pool-test",
+            "--selected-model",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
             "--release-dir",
             "/srv/paperswithcode/environments/staging/current",
             "--confirm",
