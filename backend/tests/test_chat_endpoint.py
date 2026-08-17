@@ -682,6 +682,15 @@ def test_sse_serialization_preserves_unicode_and_newlines():
     assert json.loads(frame[6:-2])["text"] == "héllo\nworld"
 
 
+def test_sse_event_accepts_truthful_lifecycle_phase():
+    frame = sse_event("lifecycle", phase="preparing_workspace")
+
+    assert json.loads(frame[6:-2]) == {
+        "type": "lifecycle",
+        "phase": "preparing_workspace",
+    }
+
+
 def test_sse_event_allows_stopped_done_terminal():
     frame = sse_event("done", followups=[], finish_reason="stopped")
     assert json.loads(frame[6:-2])["finish_reason"] == "stopped"

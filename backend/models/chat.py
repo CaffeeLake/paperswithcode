@@ -459,6 +459,13 @@ class WorkspaceReadyEvent(_StrictEvent):
     type: Literal["workspace_ready"]
 
 
+class LifecycleEvent(_StrictEvent):
+    """Truthful, non-semantic progress before model-originated output."""
+
+    type: Literal["lifecycle"]
+    phase: Literal["preparing_workspace", "starting_agent", "connecting_model"]
+
+
 class AnswerDeltaEvent(_StrictEvent):
     type: Literal["answer_delta"]
     text: str
@@ -502,6 +509,7 @@ ChatEvent = Annotated[
         SandboxStartEvent,
         SandboxReadyEvent,
         WorkspaceReadyEvent,
+        LifecycleEvent,
         AnswerDeltaEvent,
         DoneEvent,
         ErrorEvent,

@@ -336,6 +336,20 @@ class PoolQualification:
                 json=payload,
             ) as response,
         ):
+            if response.status_code == 429:
+                return PoolSample(
+                    request_id=None,
+                    acquisition_outcome=None,
+                    pool_lookup_ms=None,
+                    sdk_dispatch_ms=None,
+                    first_delta_ms=None,
+                    total_ms=None,
+                    estimated_active_cost_usd=None,
+                    continuous_pool_interval=False,
+                    cleanup_confirmed=False,
+                    terminal_status="error",
+                    error_code="http_429",
+                )
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
