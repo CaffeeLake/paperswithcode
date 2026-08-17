@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
@@ -155,12 +155,32 @@ export const AskAssistant: React.FC = () => {
     textareaRef: ref,
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current;
-    if (el) {
+    if (!el) return;
+
+    const resize = () => {
       el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-    }
+      if (question) {
+        el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+        return;
+      }
+
+      // Reserve room for the tallest rotating prompt. A one-row textarea is
+      // otherwise measured from the first typed character, so wrapped prompt
+      // text gets clipped on narrow screens as the animation continues.
+      const visiblePlaceholder = el.placeholder;
+      const promptHeight = SUGGESTED_CHAT_PROMPTS.reduce((height, prompt) => {
+        el.placeholder = prompt;
+        return Math.max(height, el.scrollHeight);
+      }, 0);
+      el.placeholder = visiblePlaceholder;
+      el.style.height = `${Math.min(promptHeight, 160)}px`;
+    };
+
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, [question]);
 
   const submit = async (nextDraft = draft) => {

@@ -103,6 +103,35 @@ describe("AskAssistant", () => {
     expect(textarea).toHaveAttribute("placeholder", SUGGESTED_CHAT_PROMPTS[1].slice(0, 1));
   });
 
+  it("reserves enough height for wrapped suggested prompts", () => {
+    const scrollHeight = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+    );
+    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLTextAreaElement) {
+        return this.placeholder.length;
+      },
+    });
+
+    try {
+      renderAskAssistant();
+
+      const textarea = screen.getByRole("textbox", { name: "Ask the assistant" });
+      expect(textarea).toHaveStyle({
+        height: `${Math.max(...SUGGESTED_CHAT_PROMPTS.map((prompt) => prompt.length))}px`,
+      });
+      expect(textarea).toHaveAttribute("placeholder", SUGGESTED_CHAT_PROMPTS[0].slice(0, 1));
+    } finally {
+      if (scrollHeight) {
+        Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", scrollHeight);
+      } else {
+        delete (HTMLTextAreaElement.prototype as { scrollHeight?: number }).scrollHeight;
+      }
+    }
+  });
+
   it("launches chat with the typed question", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
       id: "11111111-1111-4111-8111-111111111111",
