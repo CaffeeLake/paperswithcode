@@ -955,6 +955,9 @@ def _trending_contract(
     elif "eligible_population" in db and eligible == 0:
         status = "healthy"
         reasons.append("eligible population is empty; successful no-work is valid")
+    elif status == "unknown" and positive and int(db.get("recent_writes", 0) or 0) > 0:
+        status = "healthy"
+        reasons.append("database confirms fresh positive trending output")
     return status, reasons
 
 

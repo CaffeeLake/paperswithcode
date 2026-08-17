@@ -792,6 +792,27 @@ def test_success_no_work_allowed_for_fresh_incremental_jobs():
     assert allowed_trending["output_health"]["status"] == "healthy"
 
 
+def test_trending_database_output_is_healthy_without_log_counters():
+    job = _job("calculate_paper_trending_scores")
+    fresh_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "unknown", "is_running": False, "work_metrics": {}},
+            db_metrics={
+                "last_write": fresh_time,
+                "recent_writes": 2135,
+                "eligible_population": 31572,
+                "fresh_github_component_scores": 1550,
+            },
+            lock_state={"exists": False, "stale": False},
+        )
+
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert "database confirms" in evaluated["output_health"]["reason"]
+
+
 def test_stale_lock_with_fresh_db_is_healthy():
     job = _job("update_github_stars")
     with patch("backend.services.cron_health.is_process_running", return_value=False):
