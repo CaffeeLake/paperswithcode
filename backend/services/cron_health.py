@@ -25,6 +25,7 @@ WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
 GITHUB_REPOSITORY = "huggingface/paperswithcode"
 WORKFLOW_STATUS_CACHE_SECONDS = 60
+WORKFLOW_RUN_BATCH_PAGES = 3
 _WORKFLOW_STATUS_CACHE: Dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
 logger = logging.getLogger(__name__)
 
@@ -1236,27 +1237,36 @@ def fetch_workflow_statuses(
         and isinstance((status := row.get("workflow_status")), dict)
         and status.get("workflow_file")
     }
-    payload, batch_error = _gh_json(
-        [
-            "api",
-            (
-                f"repos/{GITHUB_REPOSITORY}/actions/runs"
-                "?per_page=100&exclude_pull_requests=true"
-            ),
-        ],
-        timeout=10,
-    )
     runs_by_file: dict[str, list[dict[str, Any]]] = {}
-    api_runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
-    for api_run in api_runs:
-        workflow_file = basename(api_run.get("path") or "")
-        if workflow_file:
-            runs_by_file.setdefault(workflow_file, []).append(
-                _normalize_api_run(api_run)
-            )
+    batch_error = None
+    expected_files = {job.workflow_file for job in workflow_jobs}
+    for page in range(1, WORKFLOW_RUN_BATCH_PAGES + 1):
+        payload, error = _gh_json(
+            [
+                "api",
+                (
+                    f"repos/{GITHUB_REPOSITORY}/actions/runs"
+                    f"?per_page=100&page={page}&exclude_pull_requests=true"
+                ),
+            ],
+            timeout=10,
+        )
+        if error:
+            batch_error = error
+            break
+        api_runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+        for api_run in api_runs:
+            workflow_file = basename(api_run.get("path") or "")
+            if workflow_file:
+                runs_by_file.setdefault(workflow_file, []).append(
+                    _normalize_api_run(api_run)
+                )
+        if expected_files <= runs_by_file.keys() or len(api_runs) < 100:
+            break
 
     statuses: dict[str, Dict[str, Any]] = {}
     bootstrap: list[CronJobDefinition] = []
+    now = _utcnow()
     for job in workflow_jobs:
         workflow_file = job.workflow_file or ""
         runs = runs_by_file.get(workflow_file, [])
@@ -1270,6 +1280,14 @@ def fetch_workflow_statuses(
             "success",
             "skipped",
         }
+        previous_expected, _ = _schedule_slots(job, now)
+        previous_started = _parse_log_timestamp(previous_scheduled.get("createdAt"))
+        if (
+            previous_expected
+            and now > previous_expected + timedelta(minutes=job.schedule_grace_minutes)
+            and (previous_started is None or previous_started < previous_expected)
+        ):
+            previous_schedule_needs_refresh = True
         if not runs:
             if workflow_file in previous and previous_schedule_needs_refresh:
                 # A rerun updates the original GitHub run in place. If that old
