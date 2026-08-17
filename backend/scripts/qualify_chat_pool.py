@@ -145,6 +145,9 @@ class PoolQualification:
         blank_timeout: float,
         arrival_concurrency: int,
         interarrival_ms: int,
+        admin_subject: str,
+        admin_username: str,
+        qualification_owner: str,
     ):
         self.settings = settings
         self.billing_settings = billing_settings
@@ -152,6 +155,9 @@ class PoolQualification:
         self.blank_timeout = blank_timeout
         self.arrival_concurrency = arrival_concurrency
         self.interarrival_ms = interarrival_ms
+        self.admin_subject = admin_subject
+        self.admin_username = admin_username
+        self.qualification_owner = qualification_owner
         self.started_at = datetime.now(UTC)
         self.run_id = uuid.uuid4().hex[:12]
 
@@ -296,8 +302,14 @@ class PoolQualification:
             )
 
     async def _turn(self, index: int) -> PoolSample:
-        subject = f"pool-qualification-{self.run_id}-{index}"
-        token = _encode_legacy_session({"sub": subject, "username": subject})
+        subject = f"{self.qualification_owner}:{index}"
+        token = _encode_legacy_session(
+            {
+                "sub": self.admin_subject,
+                "username": self.admin_username,
+                "chat_qualification_owner": subject,
+            }
+        )
         billing = encrypt_token(
             self.billing_settings.hf_token,
             subject,
@@ -425,6 +437,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--candidate-cpu", type=float, required=True)
     result.add_argument("--candidate-memory-mib", type=int, required=True)
     result.add_argument("--blank-timeout", type=float, default=90)
+    result.add_argument("--admin-subject", required=True)
+    result.add_argument("--admin-username", required=True)
+    result.add_argument("--qualification-owner", required=True)
     result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
     return result
@@ -440,6 +455,12 @@ def main() -> int:
         raise SystemExit("--arrival-concurrency must be 1-8")
     if not 100 <= args.interarrival_ms <= 10_000:
         raise SystemExit("--interarrival-ms must be 100-10000")
+    if not args.qualification_owner.startswith("operator:pi-qualification:"):
+        raise SystemExit(
+            "--qualification-owner must start with operator:pi-qualification:"
+        )
+    if len(f"{args.qualification_owner}:{args.samples - 1}") > 128:
+        raise SystemExit("Per-sample qualification owner exceeds 128 characters")
     environment_settings = get_settings()
     release = settings_for_release(args.release_dir)
     release_settings = merge_release_settings(environment_settings, release)
@@ -450,6 +471,9 @@ def main() -> int:
         blank_timeout=args.blank_timeout,
         arrival_concurrency=args.arrival_concurrency,
         interarrival_ms=args.interarrival_ms,
+        admin_subject=args.admin_subject,
+        admin_username=args.admin_username,
+        qualification_owner=args.qualification_owner,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())
