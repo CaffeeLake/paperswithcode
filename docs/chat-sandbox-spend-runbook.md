@@ -6,7 +6,7 @@ This runbook covers the application circuit. The current Starter policy uses the
 
 - Workspace: `$250` enforced monthly budget and native account-email notifications.
 - Current Starter staging: dedicated `pwc-chat-staging` namespace with the sole owner's personal token, no Environment cap, and application warning/trip `$75`/`$100`.
-- Future production activation retains the same `$75` warning, `$100` application trip, no Environment cap, and `$250` Workspace outer cap. It requires a distinct protected runtime and separately verified alerts, but production chat remains disabled until explicitly authorized.
+- Production uses a `$75` warning and `$100` application trip inside the provider's `$250` Environment and Workspace budgets. The local ledger prices resource requests; hourly provider reconciliation raises the effective value when actual burst usage is higher.
 - In Team mode, Environment-scoped service credentials must not list or terminate the other chat Environment's sandboxes.
 
 ## Incident response
@@ -18,6 +18,11 @@ This runbook covers the application circuit. The current Starter policy uses the
 5. Confirm zero provider sandboxes and zero unresolved reservations/termination states. Keep the circuit tripped on uncertainty.
 6. Compare the conservative ledger with Modal's month-to-date report. Provider spend is a floor and may only raise effective spend.
 7. Investigate non-chat Workspace spend before changing any cap.
+
+The watchdog also settles any open compute interval whose durable lease is
+already `terminated` or `failed`. This repair is idempotent and uses the lease
+terminal timestamp; it prevents a missed termination callback from accruing a
+full sandbox lifetime indefinitely.
 
 ## Staging qualification
 
@@ -101,6 +106,6 @@ sudo /usr/bin/python3 deploy/configure_host_env.py \
 
 ## Recovery
 
-Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction`, `reviewed-higher-caps`, or `reviewed-policy-transition` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. `reviewed-policy-transition` is limited to the same-cap starter-to-environment guardrail migration and cannot change the application or workspace caps. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.
+Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction`, `reviewed-higher-caps`, `reviewed-provider-cap`, or `reviewed-policy-transition` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. `reviewed-provider-cap` changes only the provider Environment cap and its attestation, while `reviewed-policy-transition` is limited to the same-cap starter-to-environment guardrail migration. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.
 
 After any provider policy change, record the Workspace setting, optional Team Environment settings, native notification recipients, operator identity, timestamp, and matching deployment attestation in the private operations audit trail. The sole owner must maintain MFA, verified recovery and billing email, and the current Modal support recovery path outside source control.
