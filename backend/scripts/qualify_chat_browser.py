@@ -73,6 +73,13 @@ class ChromePage(AbstractContextManager):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
+            env={
+                "HOME": self._profile.name,
+                "XDG_CACHE_HOME": self._profile.name,
+                "XDG_CONFIG_HOME": self._profile.name,
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+            },
         )
         base = f"http://127.0.0.1:{port}"
         deadline = time.monotonic() + 15
