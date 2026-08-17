@@ -93,6 +93,22 @@ def reviewed_policy_transition_allowed(state, settings: Settings) -> bool:
     )
 
 
+def reviewed_higher_caps_allowed(state, settings: Settings) -> bool:
+    """Accept only higher application guardrails below unchanged provider caps."""
+
+    return bool(
+        settings.chat_sandbox_budget_attestation != state.policy_attestation
+        and settings.chat_sandbox_application_cap_microusd
+        > state.application_cap_microusd
+        and state.warning_microusd
+        < settings.chat_sandbox_warning_microusd
+        < settings.chat_sandbox_application_cap_microusd
+        and settings.chat_sandbox_environment_cap_microusd
+        == state.environment_cap_microusd
+        and settings.chat_sandbox_workspace_cap_microusd == state.workspace_cap_microusd
+    )
+
+
 def main() -> None:
     args = parser().parse_args()
     settings = get_settings()
@@ -206,12 +222,10 @@ def main() -> None:
                 failure = "a post-trip completed orphan sweep is required"
             elif effective >= active_cap:
                 failure = "effective spend is at or above the active cap"
-            elif changes_caps and (
-                settings.chat_sandbox_budget_attestation == state.policy_attestation
-                or active_cap <= state.application_cap_microusd
-            ):
+            elif changes_caps and not reviewed_higher_caps_allowed(state, settings):
                 failure = (
-                    "higher caps require a higher application cap and new attestation"
+                    "higher caps require higher warning/application caps, unchanged "
+                    "provider caps, and a new attestation"
                 )
             elif changes_provider_cap and (
                 settings.chat_sandbox_warning_microusd != state.warning_microusd

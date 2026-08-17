@@ -135,6 +135,12 @@ _TEAM_SANDBOX_SPEND_POLICIES = {
         environment_cap_microusd=250_000_000,
         workspace_cap_microusd=250_000_000,
     ),
+    "v3": SandboxSpendPolicy(
+        warning_microusd=200_000_000,
+        application_cap_microusd=225_000_000,
+        environment_cap_microusd=250_000_000,
+        workspace_cap_microusd=250_000_000,
+    ),
 }
 _SANDBOX_CAPACITY_POLICY = SandboxCapacityPolicy(
     max_concurrency=2,
@@ -494,11 +500,14 @@ def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     if not settings.chat_sandbox_modal_owner_username:
         raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME is required")
     if settings.chat_sandbox_provider_mode == "team_environments":
-        environment_cap = 250 if team_policy_version == "v2" else 125
-        version = "v2" if team_policy_version == "v2" else "v1"
+        policy_suffix = {
+            "v1": "125-v1",
+            "v2": "250-v2",
+            "v3": "250-warn200-app225-v3",
+        }[team_policy_version]
         expected_attestation = (
             f"modal-workspace-{settings.chat_sandbox_modal_workspace}-250-"
-            f"{settings.environment}-{environment_cap}-{version}"
+            f"{settings.environment}-{policy_suffix}"
         )
     else:
         expected_attestation = (

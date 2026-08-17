@@ -696,7 +696,9 @@ def production_chat_preparation_values(
     if empty:
         raise ValueError("production chat environment is empty: " + ", ".join(empty))
     workspace = protected["PWC_CHAT_SANDBOX_MODAL_WORKSPACE"]
-    expected_attestation = f"modal-workspace-{workspace}-250-production-250-v2"
+    expected_attestation = (
+        f"modal-workspace-{workspace}-250-production-250-warn200-app225-v3"
+    )
     if protected["PWC_CHAT_SANDBOX_BUDGET_ATTESTATION"] != expected_attestation:
         raise ValueError(
             "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match the production policy"
@@ -717,11 +719,11 @@ def production_chat_preparation_values(
         "PWC_CHAT_GATEWAY_URL": (
             "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
         ),
-        "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "75000000",
+        "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "200000000",
         "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED": "true",
         "PWC_CHAT_SANDBOX_PROVIDER_MODE": "team_environments",
         "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": expected_attestation,
-        "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD": "100000000",
+        "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD": "225000000",
         "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD": "250000000",
         "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD": "250000000",
         "PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT": "pwc-chat-production",

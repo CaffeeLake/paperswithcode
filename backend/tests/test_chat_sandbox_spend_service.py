@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -19,6 +20,7 @@ from backend.models.database import (
 )
 from backend.scripts.manage_chat_sandbox_circuit import (
     operator_identity,
+    reviewed_higher_caps_allowed,
 )
 from backend.scripts.manage_chat_sandbox_circuit import (
     parser as circuit_parser,
@@ -712,6 +714,31 @@ def test_circuit_rearm_accepts_reviewed_provider_cap_basis():
         ]
     )
     assert args.basis == "reviewed-provider-cap"
+
+
+def test_reviewed_higher_caps_preserve_provider_caps():
+    current = SimpleNamespace(
+        warning_microusd=75_000_000,
+        application_cap_microusd=100_000_000,
+        environment_cap_microusd=250_000_000,
+        workspace_cap_microusd=250_000_000,
+        policy_attestation="policy-v2",
+    )
+    raised = settings(
+        chat_sandbox_warning_microusd=200_000_000,
+        chat_sandbox_application_cap_microusd=225_000_000,
+        chat_sandbox_environment_cap_microusd=250_000_000,
+        chat_sandbox_workspace_cap_microusd=250_000_000,
+        chat_sandbox_budget_attestation="policy-v3",
+    )
+
+    assert reviewed_higher_caps_allowed(current, raised)
+    assert not reviewed_higher_caps_allowed(
+        current,
+        raised.model_copy(
+            update={"chat_sandbox_environment_cap_microusd": 200_000_000}
+        ),
+    )
 
 
 def test_policy_change_without_new_attestation_trips_accounting_integrity():
