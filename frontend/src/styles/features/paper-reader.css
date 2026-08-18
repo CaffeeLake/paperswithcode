@@ -4,8 +4,9 @@
 .paper-reader-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); overflow: hidden; }
 .reader-workspace { position: relative; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .reader-paper-pane, .reader-assistant-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.reader-paper-pane { background: #fff; }
-.reader-assistant-pane { background: var(--bg); }
+.reader-paper-pane { background: #fff; transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
+.reader-assistant-pane { visibility: visible; background: var(--bg); opacity: 1; transform: translateX(0); transition: width 240ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 0s; }
+.reader-assistant-pane.is-collapsed { visibility: hidden; opacity: 0; transform: translateX(28px); pointer-events: none; transition: width 240ms cubic-bezier(.22, 1, .36, 1), opacity 140ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 0s linear 240ms; }
 .reader-resize-handle { position: relative; z-index: 5; width: 1px; flex: 0 0 1px; cursor: col-resize; background: var(--hairline-strong); touch-action: none; outline: none; }
 .reader-resize-handle::before { content: ""; position: absolute; inset: 0 -8px 0 0; }
 .reader-resize-handle:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
@@ -72,4 +73,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .paper-reader-shell * { scroll-behavior: auto !important; }
+  .reader-paper-pane, .reader-assistant-pane { transition-duration: .01ms !important; }
 }

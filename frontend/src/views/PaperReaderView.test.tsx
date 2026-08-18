@@ -32,10 +32,11 @@ vi.mock("@/lib/api/chat", () => ({
   chatApi: { getAvailability: mocks.getAvailability },
 }));
 vi.mock("@/components/pdf/PdfViewer", () => ({
-  PdfViewer: ({ url, paperTitle, paperHref, resources }: {
+  PdfViewer: ({ url, paperTitle, paperHref, resources, resizeActive }: {
     url: string;
     paperTitle: string;
     paperHref: string;
+    resizeActive?: boolean;
     resources?: {
       repository?: { href: string; stars: number };
       projectPage?: { href: string; label: string };
@@ -46,7 +47,7 @@ vi.mock("@/components/pdf/PdfViewer", () => ({
     {resources?.repository && <a href={resources.repository.href}>Official repository · {resources.repository.stars} stars</a>}
     {resources?.projectPage && <a href={resources.projectPage.href}>Project page</a>}
     {resources?.huggingFace && <a href={resources.huggingFace.href}>{resources.huggingFace.count} HF artifacts</a>}
-    <div role="region" aria-label="Paper PDF" data-url={url}>PDF viewer</div>
+    <div role="region" aria-label="Paper PDF" data-url={url} data-resize-active={String(Boolean(resizeActive))}>PDF viewer</div>
   </div>,
 }));
 vi.mock("@/views/ChatView", () => ({
@@ -84,7 +85,10 @@ describe("PaperReaderView", () => {
     });
   });
 
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it("renders the linked title, PDF, and chat-only workspace", async () => {
     renderReader();
@@ -125,6 +129,23 @@ describe("PaperReaderView", () => {
       href: "https://github.com/owner/official",
       stars: 0,
     });
+  });
+
+  it("animates the desktop chat collapse while keeping PDF live resize active", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
+    renderReader();
+
+    const toggle = await screen.findByRole("button", { name: "Hide Chat" });
+    const chatPanel = screen.getByRole("tabpanel", { name: "Chat" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(toggle);
+
+    expect(chatPanel).toHaveClass("is-collapsed");
+    expect(chatPanel).toHaveStyle({ width: "0px" });
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("region", { name: "Paper PDF" }))
+      .toHaveAttribute("data-resize-active", "true");
   });
 
   it("keeps the public PDF surface but disables chat when the live gate closes", async () => {

@@ -13,6 +13,7 @@ import { normalizePaperRouteId } from "@/lib/utils";
 import { ChatExperience } from "@/views/ChatView";
 
 const DEFAULT_RATIO = 66;
+const CHAT_TRANSITION_MS = 240;
 const RATIO_KEY = "pwc:reader:split-ratio";
 const sessionKey = (routeId: string) => `pwc:reader:session:${routeId}`;
 const collapsedKey = (routeId: string) => `pwc:reader:assistant-collapsed:${routeId}`;
@@ -113,8 +114,10 @@ export default function PaperReaderView() {
   const [initialPage, setInitialPage] = useState(() => storedPage(routeId));
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [resizeActive, setResizeActive] = useState(false);
+  const [chatTransitionActive, setChatTransitionActive] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+  const chatTransitionTimer = useRef(0);
   const currentPageRef = useRef(storedPage(routeId));
   const desktopSplit = workspaceWidth > 900 && workspaceWidth >= 840;
 
@@ -123,6 +126,8 @@ export default function PaperReaderView() {
   }, [navigate, rawRouteId, routeId]);
 
   useEffect(() => {
+    window.clearTimeout(chatTransitionTimer.current);
+    setChatTransitionActive(false);
     const storedSession = sessionStorage.getItem(sessionKey(routeId));
     setActiveSessionId(storedSession || undefined);
     setCollapsed(sessionStorage.getItem(collapsedKey(routeId)) === "1");
@@ -131,6 +136,8 @@ export default function PaperReaderView() {
     currentPageRef.current = nextPage;
     setInitialPage(nextPage);
   }, [routeId]);
+
+  useEffect(() => () => window.clearTimeout(chatTransitionTimer.current), []);
 
   useLayoutEffect(() => {
     const element = workspaceRef.current;
@@ -200,8 +207,14 @@ export default function PaperReaderView() {
     setResizeActive(false);
   };
   const setAssistantCollapsed = (next: boolean) => {
+    window.clearTimeout(chatTransitionTimer.current);
+    setChatTransitionActive(true);
     setCollapsed(next);
     sessionStorage.setItem(collapsedKey(routeId), next ? "1" : "0");
+    chatTransitionTimer.current = window.setTimeout(
+      () => setChatTransitionActive(false),
+      CHAT_TRANSITION_MS + 40,
+    );
   };
   const selectSession = (id: string) => {
     setActiveSessionId(id);
@@ -249,7 +262,7 @@ export default function PaperReaderView() {
           paperHref={`/paper/${canonicalRoute}`}
           resources={toolbarResources}
           initialPage={initialPage}
-          resizeActive={resizeActive}
+          resizeActive={resizeActive || chatTransitionActive}
           onPageChange={(page) => {
             currentPageRef.current = page;
             sessionStorage.setItem(pageKey(routeId), String(page));
@@ -281,13 +294,20 @@ export default function PaperReaderView() {
         }}
       />}
       <aside
-        className={`reader-assistant-pane${(!desktopSplit && mobileTab !== "assistant") || collapsed ? " is-hidden" : ""}`}
+        id="reader-chat-panel"
+        className={`reader-assistant-pane${!desktopSplit && mobileTab !== "assistant" ? " is-hidden" : ""}${desktopSplit && collapsed ? " is-collapsed" : ""}`}
         style={desktopSplit ? { width: collapsed ? 0 : `${100 - ratio}%` } : undefined}
         role="tabpanel"
         aria-label="Chat"
         aria-hidden={(!desktopSplit && mobileTab !== "assistant") || collapsed}
       >{assistant}</aside>
-      {desktopSplit && <button type="button" className="reader-collapse-assistant" onClick={() => setAssistantCollapsed(!collapsed)}>{collapsed ? "Chat" : "Hide Chat"}</button>}
+      {desktopSplit && <button
+        type="button"
+        className="reader-collapse-assistant"
+        aria-controls="reader-chat-panel"
+        aria-expanded={!collapsed}
+        onClick={() => setAssistantCollapsed(!collapsed)}
+      >{collapsed ? "Chat" : "Hide Chat"}</button>}
     </div>
   </div>;
 }
