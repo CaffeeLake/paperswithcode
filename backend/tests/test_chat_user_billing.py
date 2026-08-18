@@ -137,7 +137,7 @@ def test_gateway_latency_routing_is_independently_gated():
     assert payload["provider"] == {"sort": "latency"}
 
 
-def test_gateway_preferred_provider_preserves_fallbacks_parameters_and_price():
+def test_gateway_preferred_provider_bounds_fallbacks_parameters_and_price():
     payload = {}
     settings = Settings(
         _env_file=None,
@@ -153,6 +153,7 @@ def test_gateway_preferred_provider_preserves_fallbacks_parameters_and_price():
         "require_parameters": True,
         "max_price": {"prompt": 0.28, "completion": 0.56},
         "order": ["fireworks", "baseten/fp8"],
+        "only": ["fireworks", "baseten/fp8"],
     }
 
 

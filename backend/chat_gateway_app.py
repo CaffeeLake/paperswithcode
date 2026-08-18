@@ -282,6 +282,7 @@ def _prefer_fastest_openrouter_provider(
         if not order:
             raise RuntimeError("preferred-provider routing requires provider slugs")
         provider["order"] = order
+        provider["only"] = order
     else:
         provider.update(
             {
