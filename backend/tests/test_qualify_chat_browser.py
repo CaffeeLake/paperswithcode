@@ -125,6 +125,11 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
     page.select_model("openai/gpt-5.6-luna")
 
     assert any('select.value="openai/gpt-5.6-luna"' in item for item in evaluations)
+    assert any(
+        f'sessionStorage.setItem("{CHAT_MODEL_STORAGE_KEY}","openai/gpt-5.6-luna")'
+        in item
+        for item in evaluations
+    )
     waited = []
     monkeypatch.setattr(
         page,

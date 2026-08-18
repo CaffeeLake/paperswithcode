@@ -184,6 +184,7 @@ class ChromePage(AbstractContextManager):
 
     def select_model(self, model: str) -> None:
         encoded = json.dumps(model)
+        storage_key = json.dumps(CHAT_MODEL_STORAGE_KEY)
         self.wait_for(
             "(() => {"
             "const select=document.querySelector('select[aria-label=\"Research model\"]');"
@@ -197,14 +198,21 @@ class ChromePage(AbstractContextManager):
             "return false;"
             f"select.value={encoded};"
             "select.dispatchEvent(new Event('change',{bubbles:true}));"
+            f"sessionStorage.setItem({storage_key},{encoded});"
             "return true;})()"
         )
         if not selected:
             raise RuntimeError(f"Research model is unavailable: {model}")
+        settled = self.evaluate(
+            "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>"
+            "resolve(document.querySelector('select[aria-label=\"Research model\"]')"
+            f"?.value==={encoded}))))"
+        )
+        if not settled:
+            raise RuntimeError(f"Research model selection did not settle: {model}")
         self.wait_for(
             f"document.querySelector('select[aria-label=\"Research model\"]').value==={encoded}"
         )
-        storage_key = json.dumps(CHAT_MODEL_STORAGE_KEY)
         self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded}")
 
     def send_turn(self, prompt: str) -> dict[str, Any]:
