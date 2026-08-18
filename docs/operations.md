@@ -419,6 +419,12 @@ admin-triggered jobs:
 sudo pwc-cron enqueue_hf_daily_paper_curation --retry-job <job-uuid>
 ```
 
+Queued stages that have not started are rebound at dispatch to the exact active
+immutable release, including its repository SHA, skill hash, model, CLI, and
+validator metadata. This keeps delayed backlog work compatible with the
+release-bound bootstrap endpoint. Running and terminal attempts are never
+rebound.
+
 The admin dashboard groups stages under the parent paper workflow and exposes
 retry, cancel, pause/resume, URL-candidate provenance, proposals, validator
 findings, usage, reports, and private trace URIs. It warns at a three-hour queue

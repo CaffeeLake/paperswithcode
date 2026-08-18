@@ -219,6 +219,42 @@ def test_acknowledged_failures_are_outside_the_new_rate_window():
     assert state.consecutive_apply_failures == 0
 
 
+def test_unstarted_job_rebinds_to_the_active_bootstrap_release(monkeypatch):
+    from backend.services import codex_add_evals_service
+
+    active_revision = "f" * 40
+    monkeypatch.setattr(
+        codex_add_evals_service, "_git_revision", lambda: active_revision
+    )
+    settings = get_settings().model_copy(
+        update={
+            "codex_jobs_model": "gpt-5.6-sol",
+            "codex_jobs_reasoning_effort": "medium",
+            "codex_jobs_cli_version": "0.75.0",
+        }
+    )
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        kind="add-evals",
+        repository_sha="e" * 40,
+        skill_sha256="d" * 64,
+        model="older-model",
+        reasoning_effort="low",
+        codex_cli_version="0.74.0",
+        validator_version="older-validator",
+    )
+
+    CodexPaperJobService._bind_active_release(row, settings)
+
+    assert row.repository_sha == active_revision
+    assert row.skill_sha256 != "d" * 64
+    assert len(row.skill_sha256) == 64
+    assert row.model == "gpt-5.6-sol"
+    assert row.reasoning_effort == "medium"
+    assert row.codex_cli_version == "0.75.0"
+    assert row.validator_version == "scheduled-policy-v1"
+
+
 def test_remote_callbacks_identify_the_service_to_cloudflare():
     assert HELPER_USER_AGENT.startswith("PapersWithCode-Curation/")
     runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
