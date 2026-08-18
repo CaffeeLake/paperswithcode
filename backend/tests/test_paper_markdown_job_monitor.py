@@ -135,6 +135,91 @@ def test_complete_checkpoint_is_effective_success_despite_hf_error():
     )
 
 
+def test_efficiency_metrics_exclude_active_shard_progress(monkeypatch):
+    settings = SimpleNamespace(
+        hf_token="private-token",
+        paper_markdown_hf_namespace="huggingface",
+        paper_markdown_hf_bucket_id="huggingface/pwc-papers-content",
+        paper_markdown_incremental_monthly_budget_usd=100.0,
+        paper_markdown_backfill_budget_usd=750.0,
+    )
+    now = datetime.now(timezone.utc)
+
+    def job(job_id, stage, duration, run_id):
+        return SimpleNamespace(
+            id=job_id,
+            url=f"https://huggingface.co/jobs/huggingface/{job_id}",
+            status=SimpleNamespace(stage=stage, message=None),
+            labels={
+                "app": "pwc-paper-markdown",
+                "mode": "backfill",
+                "run_id": run_id,
+                "shard_id": "00000",
+            },
+            flavor=SimpleNamespace(name="l40sx1"),
+            created_at=now,
+            started_at=now,
+            finished_at=now if stage == "COMPLETED" else None,
+            durations=SimpleNamespace(total_secs=duration),
+        )
+
+    jobs = [
+        job("complete", "COMPLETED", 3600, "backfill-20260818T120000-11111111"),
+        job("active", "RUNNING", 1800, "backfill-20260818T130000-22222222"),
+    ]
+    progress = {
+        "backfill-20260818T120000-11111111": {
+            "status": "completed",
+            "total_papers": 10,
+            "processed_papers": 10,
+            "succeeded_papers": 10,
+            "paper_duration_p50_seconds": 100,
+            "paper_duration_p95_seconds": 200,
+            "updated_at": now.isoformat(),
+        },
+        "backfill-20260818T130000-22222222": {
+            "status": "running",
+            "total_papers": 100,
+            "processed_papers": 50,
+            "succeeded_papers": 50,
+            "paper_duration_p50_seconds": 1,
+            "paper_duration_p95_seconds": 2,
+            "updated_at": now.isoformat(),
+        },
+    }
+
+    class FakeApi:
+        def __init__(self, *, token):
+            assert token == "private-token"
+
+        def list_jobs(self, **_kwargs):
+            return iter(jobs)
+
+    class FakeFileSystem:
+        def __init__(self, *, token):
+            assert token == "private-token"
+
+        def open(self, path, _mode, *, block_size):
+            assert block_size == 0
+            run_id = path.split("/_jobs/progress/", 1)[1].split("/", 1)[0]
+            return io.BytesIO(json.dumps(progress[run_id]).encode())
+
+    monkeypatch.setattr(monitor, "get_settings", lambda: settings)
+    monkeypatch.setattr(monitor, "HfApi", FakeApi)
+    monkeypatch.setattr(monitor, "HfFileSystem", FakeFileSystem)
+    monkeypatch.setattr(monitor, "_coverage_history", lambda _now: {})
+    monitor.clear_paper_markdown_job_monitor_cache()
+
+    summary = monitor.get_paper_markdown_job_monitor()["summary"]
+
+    assert summary["succeeded_papers"] == 60
+    assert summary["estimated_dollars_per_successful_paper"] == 0.18
+    assert summary["papers_per_gpu_hour"] == 10
+    assert summary["paper_duration_p50_seconds"] == 100
+    assert summary["paper_duration_p95_seconds"] == 200
+    monitor.clear_paper_markdown_job_monitor_cache()
+
+
 def test_coverage_history_reports_seven_day_deltas(tmp_path, monkeypatch):
     monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
     history = tmp_path / "paper_markdown_coverage.jsonl"
