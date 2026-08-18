@@ -137,6 +137,56 @@ def test_gateway_latency_routing_is_independently_gated():
     assert payload["provider"] == {"sort": "latency"}
 
 
+def test_gateway_preferred_provider_preserves_fallbacks_parameters_and_price():
+    payload = {}
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_routing_enabled=True,
+        chat_openrouter_routing_policy="preferred_provider",
+        chat_openrouter_preferred_providers="fireworks, baseten/fp8",
+    )
+
+    _prefer_fastest_openrouter_provider(payload, settings)
+
+    assert payload["provider"] == {
+        "allow_fallbacks": True,
+        "require_parameters": True,
+        "max_price": {"prompt": 0.28, "completion": 0.56},
+        "order": ["fireworks", "baseten/fp8"],
+    }
+
+
+def test_gateway_preferred_provider_requires_configured_order():
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_routing_enabled=True,
+        chat_openrouter_routing_policy="preferred_provider",
+    )
+
+    with pytest.raises(RuntimeError, match="requires provider slugs"):
+        _prefer_fastest_openrouter_provider({}, settings)
+
+
+def test_gateway_price_performance_routing_preserves_fallbacks_and_price():
+    payload = {}
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_routing_enabled=True,
+        chat_openrouter_routing_policy="price_performance",
+    )
+
+    _prefer_fastest_openrouter_provider(payload, settings)
+
+    assert payload["provider"] == {
+        "allow_fallbacks": True,
+        "require_parameters": True,
+        "max_price": {"prompt": 0.28, "completion": 0.56},
+        "sort": "price",
+        "preferred_max_latency": {"p90": 3.0},
+        "preferred_min_throughput": {"p90": 50.0},
+    }
+
+
 @pytest.mark.parametrize(
     ("candidate", "expected", "system_count", "tool_count"),
     [

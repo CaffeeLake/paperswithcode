@@ -473,8 +473,21 @@ class Settings(BaseSettings):
     )
     chat_pi_provider_adapter_contract: str = Field(default="1", max_length=64)
     chat_openrouter_routing_enabled: bool = Field(default=False)
-    chat_openrouter_routing_policy: Literal["throughput", "latency"] = Field(
-        default="throughput"
+    chat_openrouter_routing_policy: Literal[
+        "throughput", "latency", "preferred_provider", "price_performance"
+    ] = Field(default="throughput")
+    chat_openrouter_preferred_providers: str = Field(default="", max_length=512)
+    chat_openrouter_max_prompt_price_per_million_usd: float = Field(
+        default=0.28, gt=0, le=100
+    )
+    chat_openrouter_max_completion_price_per_million_usd: float = Field(
+        default=0.56, gt=0, le=100
+    )
+    chat_openrouter_preferred_max_latency_p90_seconds: float = Field(
+        default=3, gt=0, le=60
+    )
+    chat_openrouter_preferred_min_throughput_p90: float = Field(
+        default=50, gt=0, le=10_000
     )
     chat_initial_payload_optimization_enabled: bool = Field(default=False)
     chat_initial_payload_optimization_candidate: Literal[

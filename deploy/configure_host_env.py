@@ -601,12 +601,31 @@ def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
     return values
 
 
-def staging_chat_routing_values(*, enabled: bool) -> dict[str, str]:
+def staging_chat_routing_values(
+    *, enabled: bool, policy: str = "latency"
+) -> dict[str, str]:
     """Toggle only the independently reversible staging routing experiment."""
 
     values = {"PWC_CHAT_OPENROUTER_ROUTING_ENABLED": str(enabled).lower()}
     if enabled:
-        values["PWC_CHAT_OPENROUTER_ROUTING_POLICY"] = "latency"
+        values["PWC_CHAT_OPENROUTER_ROUTING_POLICY"] = policy
+        if policy == "preferred_provider":
+            values.update(
+                {
+                    "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": "fireworks",
+                    "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
+                    "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+                }
+            )
+        elif policy == "price_performance":
+            values.update(
+                {
+                    "PWC_CHAT_OPENROUTER_PREFERRED_MAX_LATENCY_P90_SECONDS": "3",
+                    "PWC_CHAT_OPENROUTER_PREFERRED_MIN_THROUGHPUT_P90": "50",
+                    "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
+                    "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+                }
+            )
     return values
 
 
@@ -899,6 +918,11 @@ def main() -> int:
     parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
     parser.add_argument("--staging-chat-routing-enable-only", action="store_true")
     parser.add_argument("--staging-chat-routing-disable-only", action="store_true")
+    parser.add_argument(
+        "--staging-chat-routing-policy",
+        choices=("latency", "preferred_provider", "price_performance"),
+        default="latency",
+    )
     parser.add_argument("--staging-chat-payload-enable-only", action="store_true")
     parser.add_argument("--staging-chat-payload-disable-only", action="store_true")
     parser.add_argument(
@@ -963,7 +987,8 @@ def main() -> int:
             or args.staging_chat_routing_disable_only
         ):
             values = staging_chat_routing_values(
-                enabled=args.staging_chat_routing_enable_only
+                enabled=args.staging_chat_routing_enable_only,
+                policy=args.staging_chat_routing_policy,
             )
             label = "routing"
         else:

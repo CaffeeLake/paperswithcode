@@ -2768,6 +2768,31 @@ def test_staging_chat_routing_toggle_is_independent_and_latency_profiled():
     }
 
 
+def test_staging_chat_routing_toggle_selects_preferred_provider_profile():
+    assert configure_host_env.staging_chat_routing_values(
+        enabled=True, policy="preferred_provider"
+    ) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_ROUTING_POLICY": "preferred_provider",
+        "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": "fireworks",
+        "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
+        "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+    }
+
+
+def test_staging_chat_routing_toggle_selects_price_performance_profile():
+    assert configure_host_env.staging_chat_routing_values(
+        enabled=True, policy="price_performance"
+    ) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_ROUTING_POLICY": "price_performance",
+        "PWC_CHAT_OPENROUTER_PREFERRED_MAX_LATENCY_P90_SECONDS": "3",
+        "PWC_CHAT_OPENROUTER_PREFERRED_MIN_THROUGHPUT_P90": "50",
+        "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
+        "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+    }
+
+
 def test_staging_chat_payload_toggle_selects_one_exact_candidate():
     assert configure_host_env.staging_chat_payload_values(
         enabled=True, candidate="system_duplicates"

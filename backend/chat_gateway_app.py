@@ -259,7 +259,42 @@ def _prefer_fastest_openrouter_provider(
         if configured.chat_openrouter_routing_enabled
         else "throughput"
     )
-    payload["provider"] = {"sort": policy}
+    if policy in {"throughput", "latency"}:
+        payload["provider"] = {"sort": policy}
+        return
+
+    provider: dict[str, Any] = {
+        "allow_fallbacks": True,
+        "require_parameters": True,
+        "max_price": {
+            "prompt": configured.chat_openrouter_max_prompt_price_per_million_usd,
+            "completion": (
+                configured.chat_openrouter_max_completion_price_per_million_usd
+            ),
+        },
+    }
+    if policy == "preferred_provider":
+        order = [
+            slug.strip()
+            for slug in configured.chat_openrouter_preferred_providers.split(",")
+            if slug.strip()
+        ]
+        if not order:
+            raise RuntimeError("preferred-provider routing requires provider slugs")
+        provider["order"] = order
+    else:
+        provider.update(
+            {
+                "sort": "price",
+                "preferred_max_latency": {
+                    "p90": configured.chat_openrouter_preferred_max_latency_p90_seconds
+                },
+                "preferred_min_throughput": {
+                    "p90": configured.chat_openrouter_preferred_min_throughput_p90
+                },
+            }
+        )
+    payload["provider"] = provider
 
 
 def _optimize_initial_deepseek_payload(

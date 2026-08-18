@@ -172,6 +172,18 @@ def test_chat_provider_policy_accepts_isolated_production_openrouter(
     runtime_validation.validate_chat_provider_policy(settings)
 
 
+def test_chat_provider_policy_rejects_empty_preferred_provider_order(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_openrouter_routing_enabled = True
+    settings.chat_openrouter_routing_policy = "preferred_provider"
+    settings.chat_openrouter_preferred_providers = ""
+
+    with pytest.raises(RuntimeError, match="requires valid provider slugs"):
+        runtime_validation.validate_chat_provider_policy(settings)
+
+
 def test_chat_capacity_and_spend_policy_isolated_from_provider(settings_factory):
     settings, _release = settings_factory("staging")
     settings.hf_oauth_credential_secret = ""

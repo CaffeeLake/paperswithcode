@@ -700,6 +700,23 @@ def _validate_chat_openrouter_policy(settings: Settings) -> None:
     """Validate deployed OpenRouter credentials and durable accounting."""
 
     if (
+        settings.chat_openrouter_routing_enabled
+        and settings.chat_openrouter_routing_policy == "preferred_provider"
+    ):
+        providers = [
+            value.strip()
+            for value in settings.chat_openrouter_preferred_providers.split(",")
+            if value.strip()
+        ]
+        if not providers or any(
+            not re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", value)
+            for value in providers
+        ):
+            raise RuntimeError(
+                "preferred-provider routing requires valid provider slugs"
+            )
+
+    if (
         settings.environment == "staging"
         and not settings.chat_openrouter_server_funded_enabled
     ):
