@@ -231,7 +231,7 @@ export default function PaperReaderView() {
           if (event.key === "Home") setSavedRatio(45);
           if (event.key === "End") setSavedRatio(75);
         }}
-      ><button type="button" onClick={() => setSavedRatio(DEFAULT_RATIO)} title="Reset panel sizes" aria-label="Reset panel sizes">·</button></div>}
+      />}
       <aside
         className={`reader-assistant-pane${(!desktopSplit && mobileTab !== "assistant") || collapsed ? " is-hidden" : ""}`}
         style={desktopSplit ? { width: collapsed ? 0 : `${100 - ratio}%` } : undefined}
