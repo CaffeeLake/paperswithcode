@@ -36,6 +36,7 @@ from backend.services.chat_sandbox_service import SandboxSessionManager
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_BROWSER"
 ORIGIN = "https://staging.paperswithcode.co"
+CHAT_MODEL_STORAGE_KEY = "pwc:chat-oauth-model"
 
 
 def _free_port() -> int:
@@ -203,6 +204,8 @@ class ChromePage(AbstractContextManager):
         self.wait_for(
             f"document.querySelector('select[aria-label=\"Research model\"]').value==={encoded}"
         )
+        storage_key = json.dumps(CHAT_MODEL_STORAGE_KEY)
+        self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded}")
 
     def send_turn(self, prompt: str) -> dict[str, Any]:
         before = int(
@@ -424,7 +427,6 @@ def main() -> int:
         with ChromePage(
             cookies={settings.session_cookie_name: token, COOKIE_NAME: billing}
         ) as page:
-            page.select_model(selected_model)
             target_pairs = args.pilot_pairs or args.maximum_pairs
             for _index in range(target_pairs):
                 remaining = args.new_chat_spacing_seconds - (
@@ -433,6 +435,7 @@ def main() -> int:
                 if remaining > 0:
                     time.sleep(remaining)
                 page.navigate("/chat")
+                page.select_model(selected_model)
                 last_new_started = time.monotonic()
                 new = page.send_turn(
                     "Reason briefly, then state one concise reason benchmarks matter."

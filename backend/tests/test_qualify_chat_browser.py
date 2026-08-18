@@ -1,5 +1,6 @@
 from backend.scripts import qualify_chat_browser
 from backend.scripts.qualify_chat_browser import (
+    CHAT_MODEL_STORAGE_KEY,
     ChromePage,
     ORIGIN,
     pilot_passes,
@@ -124,3 +125,11 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
     page.select_model("openai/gpt-5.6-luna")
 
     assert any('select.value="openai/gpt-5.6-luna"' in item for item in evaluations)
+    waited = []
+    monkeypatch.setattr(
+        page,
+        "wait_for",
+        lambda expression, **_kwargs: waited.append(expression) or True,
+    )
+    page.select_model("openai/gpt-5.6-luna")
+    assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in waited)
