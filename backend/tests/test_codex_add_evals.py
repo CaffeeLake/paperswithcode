@@ -82,10 +82,10 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "hf.co/spaces/nielsr/pwc-codex-curator-2cbe03031346"
+        "hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c"
     )
     assert settings.codex_jobs_image_revision == (
-        "6542d9a9538f4983039e3249b0118ed478c8f980"
+        "11e9558b6c77e0989185baa453bc99229b226696"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
@@ -122,6 +122,12 @@ def test_remote_runner_uses_codex_075_compatible_non_git_flags():
     runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
     assert '"--skip-git-repo-check"' in runner
     assert '"--ephemeral"' not in runner
+
+
+def test_remote_runner_preserves_scoped_callback_token_for_agent_commands():
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+    assert '"shell_environment_policy.ignore_default_excludes=true"' in runner
+    assert 'os.environ.pop("OPENAI_API_KEY", None)' in runner
 
 
 def test_remote_add_evals_requires_configured_leaderboard_search():

@@ -269,6 +269,8 @@ def main() -> int:
             MODEL,
             "--config",
             f'model_reasoning_effort="{REASONING_EFFORT}"',
+            "--config",
+            "shell_environment_policy.ignore_default_excludes=true",
             "--cd",
             str(WORKTREE),
             "--output-last-message",
