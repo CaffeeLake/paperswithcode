@@ -43,7 +43,7 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
 MARKDOWN_IMAGE = re.compile(r"(!\[[^\]]*\]\()(?P<source>[^)\s]+)(\))")
 HTML_IMAGE = re.compile(
-    r"(<img\b[^>]*\bsrc=[\"'])(?P<source>[^\"']+)([\"'])", re.IGNORECASE
+    r"(<img\b[^>]*\bsrc=[\"'])(?P<source>[^\"']+)([\"'][^>]*>)", re.IGNORECASE
 )
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 FORMAT_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}

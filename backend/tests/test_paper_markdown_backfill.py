@@ -130,7 +130,10 @@ def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
             "title": "Missing figure",
             "output_key": "2607/2607.00001.md",
         },
-        "Paper body.\n\n![figure](missing_figure.webp)",
+        (
+            "Paper body.\n\n![figure](missing_figure.webp)\n\n"
+            '<img src="missing_plot.webp" alt="plot">'
+        ),
         {},
         tmp_path,
         allow_missing_images=True,
@@ -138,10 +141,15 @@ def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
 
     markdown = (tmp_path / "2607/2607.00001.md").read_text()
     assert "Paper body." in markdown
-    assert "1 generated image reference was omitted" in markdown
+    assert "2 generated image references were omitted" in markdown
     assert "missing_figure.webp" not in markdown
-    assert result["omitted_image_count"] == 1
-    assert result["omitted_image_sources"] == ["missing_figure.webp"]
+    assert "missing_plot.webp" not in markdown
+    assert 'alt="plot">' not in markdown
+    assert result["omitted_image_count"] == 2
+    assert result["omitted_image_sources"] == [
+        "missing_figure.webp",
+        "missing_plot.webp",
+    ]
 
 
 def test_arxiv_identity_and_markdown_key():
