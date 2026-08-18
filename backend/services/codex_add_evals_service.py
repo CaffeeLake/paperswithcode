@@ -1011,10 +1011,18 @@ class CodexPaperJobService:
         accepted_apply = bool(
             getattr(row, "submitted_at", None) is not None
             and getattr(row, "mutation_result", None) is not None
-            and (getattr(row, "validation_summary", None) or {}).get(
-                "post_write_verification"
+            and (
+                (getattr(row, "validation_summary", None) or {}).get(
+                    "post_write_verification"
+                )
+                == "passed"
+                or (
+                    (getattr(row, "validation_summary", None) or {}).get("mode")
+                    == "shadow"
+                    and (getattr(row, "mutation_result", None) or {}).get("status")
+                    == "shadow"
+                )
             )
-            == "passed"
         )
         if completion_error is None and not accepted_apply:
             completion_error = "Remote job completed without an accepted apply."

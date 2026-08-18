@@ -7,11 +7,13 @@ import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.models.api import ApplyMutationRequest
 from backend.models.database import (
     Paper,
     PaperCurationJob,
@@ -22,6 +24,10 @@ from backend.services.codex_add_evals_service import (
     CodexPaperJobService,
     codex_paper_job_service,
     deferred_workflows_for_release,
+)
+from backend.services.benchmark_gap_service import BenchmarkGapService
+from backend.services.codex_curation_callback_service import (
+    CodexCurationCallbackService,
 )
 from backend.utils.hf_daily_papers import fetch_hf_daily_papers
 from backend.utils.urls import get_paper_route_identifier
@@ -128,6 +134,50 @@ class HFDailyCurationService:
                 priority=50,
             )
         return retried.model_dump(mode="json")
+
+    def validator_replay(self, job_id: uuid.UUID) -> dict:
+        """Run a saved proposal through current read-only policy validators."""
+        row = self.db.get(PaperCurationJob, job_id)
+        if row is None:
+            raise LookupError("Curation job not found")
+        if row.proposal is None:
+            raise ValueError("Curation job has no saved proposal")
+        body = ApplyMutationRequest.model_validate(row.proposal)
+        replay_row = SimpleNamespace(
+            id=row.id,
+            kind=row.kind,
+            paper_id=row.paper_id,
+            trigger=row.trigger,
+            status="running",
+            submitted_at=None,
+            applied_at=None,
+            trace_status="disabled",
+            url_candidates=row.url_candidates,
+        )
+        accepted_gaps, rejected_gaps = BenchmarkGapService(self.db).validate(
+            body.benchmark_gaps,
+            paper=self.db.get(Paper, row.paper_id) if body.benchmark_gaps else None,
+        )
+        service = CodexCurationCallbackService(self.db)
+        try:
+            service._validate_mutation(replay_row, body)
+            validation = service._validate_scheduled_policy(replay_row, body)
+        except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+            return {
+                "job_id": str(row.id),
+                "valid": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "benchmark_gaps_accepted": len(accepted_gaps),
+                "benchmark_gaps_rejected": rejected_gaps,
+            }
+        return {
+            "job_id": str(row.id),
+            "valid": True,
+            "validation": validation,
+            "benchmark_gaps_accepted": len(accepted_gaps),
+            "benchmark_gaps_rejected": rejected_gaps,
+        }
 
     def status(self) -> dict:
         state = self._state()

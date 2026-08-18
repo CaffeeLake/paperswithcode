@@ -22,6 +22,7 @@ def main() -> int:
     action.add_argument("--enable-dispatch", action="store_true")
     action.add_argument("--disable-dispatch", action="store_true")
     action.add_argument("--retry-job", type=uuid.UUID)
+    action.add_argument("--validate-job", type=uuid.UUID)
     action.add_argument("--status", action="store_true")
     parser.add_argument("--reason")
     args = parser.parse_args()
@@ -33,6 +34,8 @@ def main() -> int:
             result = service.status()
         elif args.retry_job:
             result = service.retry_scheduled_job(args.retry_job)
+        elif args.validate_job:
+            result = service.validator_replay(args.validate_job)
         elif args.enable_dispatch:
             result = service.set_dispatch(True)
         elif args.disable_dispatch:
@@ -45,7 +48,7 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
         print(json.dumps(result, default=str, sort_keys=True))
-        return 0
+        return 1 if result.get("valid") is False else 0
     finally:
         try:
             next(session)

@@ -419,6 +419,15 @@ admin-triggered jobs:
 sudo pwc-cron enqueue_hf_daily_paper_curation --retry-job <job-uuid>
 ```
 
+Replay a saved proposal through the currently deployed callback validators
+without applying writes. The command reports current policy validity and
+isolated benchmark-gap rejections and exits nonzero when the mutation proposal
+is invalid:
+
+```bash
+sudo pwc-cron enqueue_hf_daily_paper_curation --validate-job <job-uuid>
+```
+
 Queued stages that have not started are rebound at dispatch to the exact active
 immutable release, including its repository SHA, skill hash, model, CLI,
 validator metadata, and hash-validated allowlisted bootstrap bundle. The bundle

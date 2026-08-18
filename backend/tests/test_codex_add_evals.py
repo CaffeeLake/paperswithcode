@@ -126,6 +126,11 @@ def test_launch_error_keeps_hub_validation_message():
             None,
             "failed",
         ),
+        (
+            {"policy": "scheduled-add-evals-v1", "mode": "shadow"},
+            {"status": "shadow"},
+            "completed",
+        ),
     ],
 )
 def test_completion_requires_an_accepted_verified_apply(

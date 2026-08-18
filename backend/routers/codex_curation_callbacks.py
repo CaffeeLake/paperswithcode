@@ -336,6 +336,11 @@ def apply_mutation(
             validation = service._validate_scheduled_policy(row, body)
             row.proposal = body.model_dump(mode="json")
             row.validation_summary = {**validation, "mode": "shadow"}
+            row.mutation_result = {
+                "status": "shadow",
+                "evaluations_created": 0,
+                "evaluations_updated": 0,
+            }
             row.submitted_at = datetime.now(UTC)
             db.commit()
             return {

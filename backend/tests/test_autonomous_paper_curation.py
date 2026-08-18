@@ -281,6 +281,72 @@ def test_callback_validation_rejection_is_not_classified_as_transient():
     assert _is_callback_validation_rejection(transient) is False
 
 
+def test_validator_replay_uses_saved_proposal_without_writes(monkeypatch):
+    from backend.services import hf_daily_curation_service
+
+    job_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=job_id,
+        kind="add-evals",
+        paper_id=42,
+        trigger="hf-daily-cron",
+        url_candidates=None,
+        proposal={
+            "evaluations": [],
+            "evaluation_removals": [],
+            "benchmark_gaps": [],
+            "validation_evidence": [],
+        },
+    )
+    paper = SimpleNamespace(id=42)
+
+    class Database:
+        def get(self, model, key):
+            if model is hf_daily_curation_service.PaperCurationJob and key == job_id:
+                return row
+            if model is hf_daily_curation_service.Paper and key == 42:
+                return paper
+            return None
+
+    class Gaps:
+        def __init__(self, db):
+            assert isinstance(db, Database)
+
+        def validate(self, gaps, *, paper):
+            assert gaps == []
+            assert paper is None
+            return [], []
+
+    class Callback:
+        def __init__(self, db):
+            assert isinstance(db, Database)
+
+        def _validate_mutation(self, replay_row, body):
+            assert replay_row.status == "running"
+            assert replay_row.trace_status == "disabled"
+            assert body.evaluations == []
+
+        def _validate_scheduled_policy(self, _replay_row, _body):
+            return {"policy": "scheduled-add-evals-v1", "evaluations": 0}
+
+    monkeypatch.setattr(hf_daily_curation_service, "BenchmarkGapService", Gaps)
+    monkeypatch.setattr(
+        hf_daily_curation_service, "CodexCurationCallbackService", Callback
+    )
+
+    result = HFDailyCurationService(
+        Database(), SimpleNamespace(), job_service=SimpleNamespace()
+    ).validator_replay(job_id)
+
+    assert result == {
+        "job_id": str(job_id),
+        "valid": True,
+        "validation": {"policy": "scheduled-add-evals-v1", "evaluations": 0},
+        "benchmark_gaps_accepted": 0,
+        "benchmark_gaps_rejected": [],
+    }
+
+
 def test_queued_operator_retry_is_prioritized_without_duplication():
     job_id = uuid.uuid4()
     row = SimpleNamespace(
