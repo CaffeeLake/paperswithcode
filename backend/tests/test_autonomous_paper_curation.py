@@ -614,6 +614,21 @@ def test_bootstrap_bundle_is_allowlisted_hashed_and_release_bound(monkeypatch):
     with pytest.raises(ValueError, match="active immutable release"):
         service.bootstrap_bundle(SimpleNamespace(repository_sha="e" * 40))
 
+    persisted = service_module._curator_bootstrap_bundle(revision)
+    monkeypatch.setattr(service_module, "_git_revision", lambda: "f" * 40)
+    assert (
+        service.bootstrap_bundle(
+            SimpleNamespace(repository_sha=revision, bootstrap_bundle=persisted)
+        )
+        == persisted
+    )
+
+    persisted["files"][0]["content_b64"] = base64.b64encode(b"tampered").decode()
+    with pytest.raises(ValueError, match="hash mismatch"):
+        service.bootstrap_bundle(
+            SimpleNamespace(repository_sha=revision, bootstrap_bundle=persisted)
+        )
+
 
 def test_benchmark_gap_validation_isolates_malformed_entries():
     class Database:

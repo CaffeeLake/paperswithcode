@@ -129,6 +129,42 @@ def _curator_skill_digest(kind: JobKind) -> str:
     return hashlib.sha256(b"\0".join(path.read_bytes() for path in paths)).hexdigest()
 
 
+def _curator_bootstrap_bundle(revision: str) -> dict:
+    root = Path(__file__).parents[2]
+    files = []
+    for relative in CURATOR_BOOTSTRAP_PATHS:
+        content = (root / relative).read_bytes()
+        files.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "content_b64": base64.b64encode(content).decode(),
+            }
+        )
+    return {"revision": revision, "files": files}
+
+
+def _validated_bootstrap_bundle(row: PaperCurationJob) -> dict:
+    bundle = row.bootstrap_bundle
+    if not isinstance(bundle, dict) or bundle.get("revision") != row.repository_sha:
+        raise ValueError("Persisted bootstrap revision does not match the job")
+    files = bundle.get("files")
+    if not isinstance(files, list) or len(files) != len(CURATOR_BOOTSTRAP_PATHS):
+        raise ValueError("Persisted bootstrap file allowlist is incomplete")
+    if {item.get("path") for item in files if isinstance(item, dict)} != set(
+        CURATOR_BOOTSTRAP_PATHS
+    ):
+        raise ValueError("Persisted bootstrap file allowlist is incomplete")
+    for item in files:
+        try:
+            content = base64.b64decode(item["content_b64"], validate=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Persisted bootstrap content is invalid") from exc
+        if hashlib.sha256(content).hexdigest() != item.get("sha256"):
+            raise ValueError("Persisted bootstrap hash mismatch")
+    return bundle
+
+
 def deferred_workflows_for_release(
     db: Session,
     limit: int,
@@ -289,6 +325,11 @@ class CodexPaperJobService:
         commit: bool = True,
     ) -> CodexPaperJob:
         repository_sha = _git_revision()
+        bootstrap_bundle = (
+            _curator_bootstrap_bundle(repository_sha)
+            if len(repository_sha) == 40
+            else None
+        )
         row = PaperCurationJob(
             id=uuid.uuid4(),
             kind=kind,
@@ -311,6 +352,7 @@ class CodexPaperJobService:
             else (0 if trigger == "admin" else 100),
             repository_sha=repository_sha if len(repository_sha) == 40 else None,
             skill_sha256=_curator_skill_digest(kind),
+            bootstrap_bundle=bootstrap_bundle,
             model=settings.codex_jobs_model,
             reasoning_effort=settings.codex_jobs_reasoning_effort,
             codex_cli_version=settings.codex_jobs_cli_version,
@@ -520,6 +562,7 @@ class CodexPaperJobService:
         previous = row.repository_sha
         row.repository_sha = revision
         row.skill_sha256 = _curator_skill_digest(row.kind)
+        row.bootstrap_bundle = _curator_bootstrap_bundle(revision)
         row.model = settings.codex_jobs_model
         row.reasoning_effort = settings.codex_jobs_reasoning_effort
         row.codex_cli_version = settings.codex_jobs_cli_version
@@ -903,22 +946,13 @@ class CodexPaperJobService:
         )
 
     def bootstrap_bundle(self, row: PaperCurationJob) -> dict:
-        """Return the minimal curation worktree from the exact active release."""
+        """Return the job's hash-validated minimal curation worktree."""
+        if getattr(row, "bootstrap_bundle", None) is not None:
+            return _validated_bootstrap_bundle(row)
         revision = _git_revision()
         if row.repository_sha != revision:
             raise ValueError("Job revision does not match the active immutable release")
-        root = Path(__file__).parents[2]
-        files = []
-        for relative in CURATOR_BOOTSTRAP_PATHS:
-            content = (root / relative).read_bytes()
-            files.append(
-                {
-                    "path": relative,
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                    "content_b64": base64.b64encode(content).decode(),
-                }
-            )
-        return {"revision": revision, "files": files}
+        return _curator_bootstrap_bundle(revision)
 
     @staticmethod
     def token_owner_for_other_job(
