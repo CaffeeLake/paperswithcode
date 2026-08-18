@@ -51,6 +51,7 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           INPUT_FULL: ${{ inputs.full }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          BACKFILL_PAUSED: ${{ vars.PAPER_MARKDOWN_BACKFILL_PAUSED }}
         run: |
           if ! ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
@@ -62,7 +63,9 @@ jobs:
           if [ "$SCHEDULE" = "43 2 * * *" ] || [ "$INPUT_FULL" = "true" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --full"
           fi
-          if [ "$INPUT_DRY_RUN" != "true" ]; then
+          if [ "$SCHEDULE" = "43 2 * * *" ] && [ "$BACKFILL_PAUSED" = "true" ]; then
+            echo "Scheduled full backfill dispatch is paused; running reconciliation dry."
+          elif [ "$INPUT_DRY_RUN" != "true" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --execute --confirm"
           fi
           ssh -o StrictHostKeyChecking=yes \
