@@ -33,6 +33,7 @@ from backend.services.curation_trace_service import (
     redact_trace,
     trace_json,
 )
+from backend.services.hf_daily_curation_service import HFDailyCurationService
 from jobs import url_preflight
 
 
@@ -213,6 +214,51 @@ def test_daily_schedule_avoids_the_organization_sync_minute():
     ).read_text()
     assert 'cron: "27 2 * * *"' in workflow
     assert 'cron: "20 2 * * *"' not in workflow
+
+
+def test_scheduled_job_retry_uses_the_shared_durable_queue():
+    job_id = uuid.uuid4()
+    row = SimpleNamespace(id=job_id, trigger="hf-daily-cron")
+    serialized = {
+        "id": str(uuid.uuid4()),
+        "retry_of_id": str(job_id),
+        "status": "queued",
+    }
+
+    class Database:
+        def get(self, _model, key):
+            return row if key == job_id else None
+
+    class JobService:
+        def retry(self, db, selected, settings):
+            assert isinstance(db, Database)
+            assert selected is row
+            assert settings is configuration
+            return SimpleNamespace(model_dump=lambda **_kwargs: serialized)
+
+    configuration = SimpleNamespace()
+    result = HFDailyCurationService(
+        Database(),
+        configuration,
+        job_service=JobService(),
+    ).retry_scheduled_job(job_id)
+
+    assert result == serialized
+
+
+def test_operator_retry_rejects_admin_jobs():
+    job_id = uuid.uuid4()
+
+    class Database:
+        def get(self, _model, _key):
+            return SimpleNamespace(trigger="admin")
+
+    with pytest.raises(ValueError, match="Only scheduled HF daily"):
+        HFDailyCurationService(
+            Database(),
+            SimpleNamespace(),
+            job_service=SimpleNamespace(),
+        ).retry_scheduled_job(job_id)
 
 
 def test_cross_job_callback_token_pauses_scheduled_dispatch(monkeypatch):

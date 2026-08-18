@@ -409,6 +409,13 @@ sudo pwc-cron enqueue_hf_daily_paper_curation --disable-dispatch \
 sudo pwc-cron enqueue_hf_daily_paper_curation --enable-dispatch
 ```
 
+Retry a terminal scheduled stage by its durable job UUID through the same
+allowlisted queue. This command refuses admin-triggered jobs:
+
+```bash
+sudo pwc-cron enqueue_hf_daily_paper_curation --retry-job <job-uuid>
+```
+
 The admin dashboard groups stages under the parent paper workflow and exposes
 retry, cancel, pause/resume, URL-candidate provenance, proposals, validator
 findings, usage, reports, and private trace URIs. It warns at a three-hour queue
