@@ -1,7 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Header from "@/components/Header";
 
@@ -17,6 +17,8 @@ vi.mock("@/lib/authContext", () => ({
 vi.mock("@/components/HfSignInButton", () => ({
   default: () => <button type="button">Sign in</button>,
 }));
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("Header navigation", () => {
   it("uses the same header layout class on Trending and Chat routes", () => {
@@ -65,6 +67,37 @@ describe("Header navigation", () => {
     expect(mobileLinks[1]).toHaveAccessibleName("Chat");
     expect(mobileLinks[2]).toHaveAccessibleName("Browse state-of-the-art");
     expect(within(mobileLinks[1]).getByText("New")).toBeVisible();
+  });
+
+  it("slides one shared indicator to the active desktop tab", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetLeft", "get")
+      .mockImplementation(function getOffsetLeft() {
+        return this.textContent?.includes("Chat") ? 96 : 0;
+      });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function getOffsetWidth() {
+        return this.classList.contains("nav-item") ? 64 : 0;
+      });
+    const user = userEvent.setup();
+
+    const { container } = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
+    const indicator = container.querySelector<HTMLElement>(".nav-indicator");
+    expect(indicator).not.toBeNull();
+    await waitFor(() => expect(indicator).toHaveStyle({
+      transform: "translateX(0px)",
+      width: "64px",
+    }));
+
+    await user.click(within(screen.getByRole("navigation")).getByRole("link", { name: "Chat" }));
+    await waitFor(() => expect(indicator).toHaveStyle({
+      transform: "translateX(96px)",
+      width: "64px",
+    }));
+    expect(container.querySelectorAll(".nav-indicator")).toHaveLength(1);
   });
 
   it("hides the CLI announcement on PDF reader routes", () => {
