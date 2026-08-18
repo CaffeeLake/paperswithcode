@@ -308,6 +308,32 @@ Approved/rejected rows stay in the table for auditing; the same SQL query
 with `status = 'approved'` or `status = 'rejected'` shows historical
 decisions along with `reviewed_by` and `reviewed_at`.
 
+### Apply an evidence-backed Codex review
+
+The repository CLI can apply a Codex approval or rejection through the same
+locked, validated mutation service as the admin API. It requires an explicit
+environment, confirmation token, UUID review-run identifier, and a review
+artifact of at most 128 KiB. Terminal decisions additionally require at least
+one source, numeric confidence of at least `0.9`, no unresolved questions, and
+`reviewed_revision` equal to `sha256:<pending_paper_edits.payload_hash>`.
+
+```bash
+PWC_ENVIRONMENT=production uv run --env-file backend/keys.env \
+  pwc submissions decide {edit_id} \
+  --environment production \
+  --decision approve \
+  --resolved-payload-file /path/to/resolved-payload.json \
+  --review-file /path/to/review.json \
+  --review-run-id {uuid} \
+  --confirm APPLY_SUBMISSION_REVIEW \
+  --json
+```
+
+The resulting row records `reviewed_by_kind = 'codex'`, the model, run ID,
+full evidence artifact, and resolved payload. Approvals also append the normal
+catalog mutation event. Repeating the exact run is idempotent; a stale revision,
+different terminal decision, or already-reviewed row fails closed.
+
 ### Payload shapes
 
 Each `proposed_payload` matches the underlying admin mutation endpoint:

@@ -1,7 +1,4 @@
-"""Repository-only submission review CLI.
-
-Apply remains fail-closed until the complete Phase 4 rollout gate is enabled.
-"""
+"""Repository-only, evidence-backed submission review CLI."""
 
 from __future__ import annotations
 
@@ -20,8 +17,8 @@ from backend.services.catalog_mutation_service import json_safe
 from backend.services.pending_edit_service import PendingEditService
 from backend.services.pending_edit_snapshots import PendingEditSnapshotService
 
-
-CODEX_SUBMISSION_APPLY_ENABLED = False
+TERMINAL_DECISIONS = frozenset({"approve", "reject"})
+MIN_TERMINAL_CONFIDENCE = 0.9
 
 
 def register_submission_commands(commands) -> None:
@@ -179,15 +176,52 @@ def _load_review(args: argparse.Namespace) -> dict:
     return artifact
 
 
+def _validate_terminal_review(
+    artifact: dict, row: PendingPaperEdit, resolved_payload: dict | None
+) -> None:
+    if not isinstance(artifact["sources"], list) or not artifact["sources"]:
+        raise ValueError("Terminal decisions require at least one evidence source")
+    if not isinstance(artifact["duplicate_checks"], list):
+        raise ValueError("duplicate_checks must be a list")
+    if not isinstance(artifact["material_changes"], list):
+        raise ValueError("material_changes must be a list")
+    questions = artifact["unresolved_questions"]
+    if not isinstance(questions, list) or questions:
+        raise ValueError("Terminal decisions require no unresolved questions")
+    confidence = artifact["confidence"]
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not MIN_TERMINAL_CONFIDENCE <= confidence <= 1
+    ):
+        raise ValueError(
+            f"Terminal decisions require numeric confidence >= {MIN_TERMINAL_CONFIDENCE}"
+        )
+    expected_revision = f"sha256:{row.payload_hash}"
+    if not row.payload_hash or artifact["reviewed_revision"] != expected_revision:
+        raise ValueError(
+            "Review artifact does not match the current submission revision"
+        )
+    for field in ("rationale", "model", "workflow_version", "codex_task_id"):
+        if not isinstance(artifact[field], str) or not artifact[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    if row.edit_type == "new_external_paper" and artifact["decision"] == "approve":
+        payload = resolved_payload or row.proposed_payload
+        if (
+            not isinstance(payload, dict)
+            or not payload.get("title")
+            or not payload.get("date_published")
+        ):
+            raise ValueError(
+                "External-paper approval requires a resolved title and publication date"
+            )
+
+
 def decide_submission(args: argparse.Namespace) -> int:
     artifact = _load_review(args)
     resolved_payload = None
     if args.resolved_payload_file:
         resolved_payload = json.loads(args.resolved_payload_file.read_text())
-    if args.decision in {"approve", "reject"} and not CODEX_SUBMISSION_APPLY_ENABLED:
-        raise ValueError(
-            "Codex submission apply is disabled until the complete security rollout gate passes"
-        )
     with db_manager.session_local() as db:
         identity = _verified_database(db, args.environment)
         row = (
@@ -198,14 +232,47 @@ def decide_submission(args: argparse.Namespace) -> int:
         )
         if row is None:
             raise ValueError("Submission not found")
-        if args.decision != "needs-human":
-            raise ValueError("Codex submission apply is currently recommendation-only")
-        if row.status != "pending":
-            raise ValueError("Only pending submissions can receive a recommendation")
         evidence = {**artifact, "resolved_payload": resolved_payload}
+        expected_status = (
+            "approved"
+            if args.decision == "approve"
+            else "rejected"
+            if args.decision == "reject"
+            else "pending"
+        )
         if row.review_run_id == args.review_run_id and row.review_evidence == evidence:
+            if row.status != expected_status:
+                raise ValueError("Review run is already attached to another decision")
             _emit({"database": identity, "submission": _serialize(row)}, args.json)
             return 0
+        if row.status != "pending":
+            raise ValueError(f"Submission is already {row.status}")
+
+        if args.decision in TERMINAL_DECISIONS:
+            _validate_terminal_review(artifact, row, resolved_payload)
+            service = PendingEditService(db)
+            reviewer_subject = f"codex-review:{args.review_run_id}"
+            review_kwargs = {
+                "edit_id": row.id,
+                "reviewer_username": "Codex",
+                "reviewer_hf_subject": reviewer_subject,
+                "reviewer_kind": "codex",
+                "review_run_id": args.review_run_id,
+                "review_model": str(artifact["model"])[:255],
+                "review_evidence": evidence,
+                "admin_note": artifact["rationale"],
+                "user_review_reason": artifact.get("user_review_reason")
+                or (artifact["rationale"] if args.decision == "reject" else None),
+            }
+            if args.decision == "approve":
+                row = service.approve(
+                    **review_kwargs, resolved_payload=resolved_payload
+                )
+            else:
+                row = service.reject(**review_kwargs)
+            _emit({"database": identity, "submission": _serialize(row)}, args.json)
+            return 0
+
         row.reviewed_by_kind = "codex"
         row.reviewed_by = "Codex"
         row.review_run_id = args.review_run_id

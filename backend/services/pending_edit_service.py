@@ -313,10 +313,16 @@ class PendingEditService:
         edit_id: int,
         reviewer_username: Optional[str],
         reviewer_hf_subject: Optional[str] = None,
+        reviewer_kind: str = "human",
+        review_run_id: Any = None,
+        review_model: Optional[str] = None,
+        review_evidence: Optional[dict[str, Any]] = None,
         resolved_payload: Optional[dict[str, Any]] = None,
         admin_note: Optional[str] = None,
         user_review_reason: Optional[str] = None,
     ) -> PendingPaperEdit:
+        if reviewer_kind not in {"human", "codex"}:
+            raise PendingEditError("Unsupported reviewer kind")
         row = self._pending_for_review(edit_id)
         spec = edit_spec(row.edit_type)
         if row.paper_id is None and spec.requires_paper:
@@ -366,8 +372,11 @@ class PendingEditService:
 
         row.status = "approved"
         row.reviewed_by = reviewer_username
-        row.reviewed_by_kind = "human"
+        row.reviewed_by_kind = reviewer_kind
         row.reviewed_by_hf_subject = reviewer_hf_subject
+        row.review_run_id = review_run_id
+        row.review_model = review_model
+        row.review_evidence = review_evidence
         row.applied_payload = applied_payload
         row.result_entity_type = result_type
         row.result_entity_id = result_id
@@ -469,14 +478,23 @@ class PendingEditService:
         edit_id: int,
         reviewer_username: Optional[str],
         reviewer_hf_subject: Optional[str] = None,
+        reviewer_kind: str = "human",
+        review_run_id: Any = None,
+        review_model: Optional[str] = None,
+        review_evidence: Optional[dict[str, Any]] = None,
         admin_note: Optional[str] = None,
         user_review_reason: Optional[str] = None,
     ) -> PendingPaperEdit:
+        if reviewer_kind not in {"human", "codex"}:
+            raise PendingEditError("Unsupported reviewer kind")
         row = self._pending_for_review(edit_id)
         row.status = "rejected"
         row.reviewed_by = reviewer_username
-        row.reviewed_by_kind = "human"
+        row.reviewed_by_kind = reviewer_kind
         row.reviewed_by_hf_subject = reviewer_hf_subject
+        row.review_run_id = review_run_id
+        row.review_model = review_model
+        row.review_evidence = review_evidence
         row.admin_note = admin_note
         row.user_review_reason = user_review_reason
         row.reviewed_at = datetime.now(timezone.utc)

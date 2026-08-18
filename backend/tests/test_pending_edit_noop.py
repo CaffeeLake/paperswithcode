@@ -6,8 +6,12 @@ Submissions that match the paper's current state must be rejected with a
 "empty" review cards. See `backend/services/pending_edit_service.py`.
 """
 
+import argparse
 import json
+import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -17,36 +21,53 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend import cli_submissions
+from backend.config import Settings
 from backend.models.database import (
     Base,
-    Method as DBMethod,
-    Paper as DBPaper,
+    CatalogMutationEvent,
     PaperMethod,
     PaperProjectPage,
     PaperRepository,
     PaperTask,
     PendingPaperEdit,
-    ProjectPage as DBProjectPage,
-    Repository as DBRepository,
-    Task as DBTask,
-    Dataset as DBDataset,
-    Metric as DBMetric,
-    Conference as DBConference,
     TaskDataset,
     TaskDatasetMetric,
-    CatalogMutationEvent,
+    UserProfile,
+)
+from backend.models.database import (
+    Conference as DBConference,
+)
+from backend.models.database import (
+    Dataset as DBDataset,
+)
+from backend.models.database import (
+    Method as DBMethod,
+)
+from backend.models.database import (
+    Metric as DBMetric,
+)
+from backend.models.database import (
+    Paper as DBPaper,
+)
+from backend.models.database import (
+    ProjectPage as DBProjectPage,
+)
+from backend.models.database import (
+    Repository as DBRepository,
+)
+from backend.models.database import (
+    Task as DBTask,
 )
 from backend.routers.pending_edits import _to_response
 from backend.services.pending_edit_service import (
-    PendingEditError,
     PendingEditAlreadyReviewedError,
     PendingEditConflictError,
+    PendingEditError,
     PendingEditService,
     SubmissionRateLimitError,
     SubmissionSuspendedError,
 )
-from backend.config import Settings
-from backend.models.database import UserProfile
 from backend.services.submission_rollback_service import SubmissionRollbackService
 
 
@@ -619,6 +640,91 @@ def test_adjusted_task_approval_is_atomic_audited_and_idempotent(db_session):
     assert event.entity_type == "submission_created_task"
     with pytest.raises(PendingEditAlreadyReviewedError):
         service.approve(edit_id=submitted.id, reviewer_username="admin")
+
+
+def test_codex_approval_preserves_review_identity_and_evidence(db_session):
+    service = PendingEditService(db_session)
+    submitted = service.submit(
+        paper_id=None,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        edit_type="new_task",
+        proposed_payload={"name": "Reviewed by Codex"},
+    )
+    run_id = uuid.uuid4()
+    evidence = {"decision": "approve", "sources": ["https://example.com"]}
+
+    reviewed = service.approve(
+        edit_id=submitted.id,
+        reviewer_username="Codex",
+        reviewer_hf_subject=f"codex-review:{run_id}",
+        reviewer_kind="codex",
+        review_run_id=run_id,
+        review_model="test-model",
+        review_evidence=evidence,
+    )
+
+    assert reviewed.reviewed_by_kind == "codex"
+    assert reviewed.review_run_id == run_id
+    assert reviewed.review_model == "test-model"
+    assert reviewed.review_evidence == evidence
+    event = db_session.get(CatalogMutationEvent, reviewed.catalog_event_id)
+    assert event.actor_hf_subject == f"codex-review:{run_id}"
+
+
+def test_codex_cli_applies_terminal_approval(db_session, tmp_path, monkeypatch):
+    submitted = PendingEditService(db_session).submit(
+        paper_id=None,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        edit_type="new_task",
+        proposed_payload={"name": "CLI-reviewed task"},
+    )
+    artifact = {
+        "decision": "approve",
+        "rationale": "Canonical task verified from the cited source.",
+        "sources": [{"url": "https://example.com/task"}],
+        "duplicate_checks": [],
+        "confidence": 0.99,
+        "unresolved_questions": [],
+        "model": "test-model",
+        "workflow_version": "v1",
+        "codex_task_id": "task",
+        "reviewed_revision": f"sha256:{submitted.payload_hash}",
+        "material_changes": [],
+    }
+    review_file = tmp_path / "review.json"
+    review_file.write_text(json.dumps(artifact))
+    run_id = uuid.uuid4()
+    monkeypatch.setattr(
+        cli_submissions,
+        "db_manager",
+        SimpleNamespace(session_local=lambda: nullcontext(db_session)),
+    )
+    monkeypatch.setattr(
+        cli_submissions,
+        "_verified_database",
+        lambda _db, selected: {"selected_environment": selected},
+    )
+
+    cli_submissions.decide_submission(
+        argparse.Namespace(
+            id=submitted.id,
+            environment="production",
+            decision="approve",
+            resolved_payload_file=None,
+            review_file=review_file,
+            review_run_id=run_id,
+            confirm="APPLY_SUBMISSION_REVIEW",
+            json=True,
+        )
+    )
+
+    db_session.expire_all()
+    reviewed = db_session.get(PendingPaperEdit, submitted.id)
+    assert reviewed.status == "approved"
+    assert reviewed.reviewed_by_kind == "codex"
+    assert reviewed.review_run_id == run_id
 
 
 def test_failed_taxonomy_application_leaves_submission_pending(

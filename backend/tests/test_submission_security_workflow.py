@@ -1,7 +1,4 @@
-import argparse
 import asyncio
-import json
-import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +6,8 @@ from fastapi import Response
 from starlette.requests import Request
 
 from backend.cli import build_parser
-from backend.cli_submissions import decide_submission
+from backend.cli_submissions import _validate_terminal_review
+from backend.models.database import PendingPaperEdit
 from backend.routers.papers import PaperSubmitRequest, submit_paper
 from backend.services import paper_submission_service as paper_submission_module
 from backend.services.pending_edit_errors import PendingEditError
@@ -122,34 +120,46 @@ def test_submission_cli_requires_explicit_environment():
     assert args.environment == "production"
 
 
-def test_codex_terminal_decisions_are_fail_closed(tmp_path):
+def test_codex_terminal_decisions_require_current_high_confidence_evidence():
     artifact = {
         "decision": "approve",
         "rationale": "Verified",
-        "sources": [],
+        "sources": [{"url": "https://example.com/paper"}],
         "duplicate_checks": [],
-        "confidence": 1,
+        "confidence": 0.99,
         "unresolved_questions": [],
         "model": "test-model",
         "workflow_version": "v1",
         "codex_task_id": "task",
-        "reviewed_revision": "abc",
+        "reviewed_revision": "sha256:abc",
         "material_changes": [],
     }
-    review_file = tmp_path / "review.json"
-    review_file.write_text(json.dumps(artifact))
-    args = argparse.Namespace(
-        id=1,
-        environment="production",
-        decision="approve",
-        resolved_payload_file=None,
-        review_file=review_file,
-        review_run_id=uuid.uuid4(),
-        confirm="APPLY_SUBMISSION_REVIEW",
-        json=True,
+    row = PendingPaperEdit(
+        edit_type="new_external_paper",
+        proposed_payload={"source_url": "https://example.com/paper"},
+        payload_hash="abc",
     )
-    with pytest.raises(ValueError, match="apply is disabled"):
-        decide_submission(args)
+    _validate_terminal_review(
+        artifact,
+        row,
+        {
+            "source_url": "https://example.com/paper",
+            "title": "Paper",
+            "date_published": "2026-08-18",
+        },
+    )
+
+    stale = {**artifact, "reviewed_revision": "sha256:old"}
+    with pytest.raises(ValueError, match="current submission revision"):
+        _validate_terminal_review(stale, row, None)
+
+    uncertain = {**artifact, "confidence": 0.8}
+    with pytest.raises(ValueError, match="numeric confidence"):
+        _validate_terminal_review(uncertain, row, None)
+
+    unresolved = {**artifact, "unresolved_questions": ["Is this canonical?"]}
+    with pytest.raises(ValueError, match="no unresolved questions"):
+        _validate_terminal_review(unresolved, row, None)
 
 
 def test_arbitrary_webpage_screenshots_are_disabled():
