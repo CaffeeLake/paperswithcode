@@ -187,12 +187,17 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, byt
 
 
 def canonicalize_assets(
-    arxiv_id: str, body: str, assets: dict[str, bytes]
-) -> tuple[str, dict[str, bytes], list[str]]:
+    arxiv_id: str,
+    body: str,
+    assets: dict[str, bytes],
+    *,
+    allow_missing_images: bool = False,
+) -> tuple[str, dict[str, bytes], list[str], list[str]]:
     """Validate images and replace Chandra-local references with public URLs."""
     source_to_url: dict[str, str] = {}
     canonical_assets: dict[str, bytes] = {}
     asset_keys: list[str] = []
+    omitted_sources: list[str] = []
     for source_name, data in sorted(assets.items()):
         if len(data) > MAX_IMAGE_BYTES:
             raise ValueError("image_too_large")
@@ -221,12 +226,20 @@ def canonicalize_assets(
             return match.group(0)
         replacement = source_to_url.get(Path(source).name)
         if replacement is None:
+            if allow_missing_images:
+                omitted_sources.append(source)
+                return ""
             raise ValueError(f"missing_extracted_image:{source}")
         return f"{match.group(1)}{replacement}{match.group(3)}"
 
     rewritten = MARKDOWN_IMAGE.sub(replace, body)
     rewritten = HTML_IMAGE.sub(replace, rewritten)
-    return rewritten, canonical_assets, sorted(set(asset_keys))
+    return (
+        rewritten,
+        canonical_assets,
+        sorted(set(asset_keys)),
+        sorted(set(omitted_sources)),
+    )
 
 
 def publish(
@@ -237,10 +250,23 @@ def publish(
     *,
     page_count: int | None = None,
     processed_pages: int | None = None,
+    allow_missing_images: bool = False,
 ) -> dict:
     arxiv_id = str(entry["arxiv_id"])
     version = str(entry["version"])
-    body, canonical_assets, asset_keys = canonicalize_assets(arxiv_id, body, assets)
+    body, canonical_assets, asset_keys, omitted_sources = canonicalize_assets(
+        arxiv_id,
+        body,
+        assets,
+        allow_missing_images=allow_missing_images,
+    )
+    if omitted_sources:
+        body = (
+            f"> **Image note:** {len(omitted_sources)} generated image "
+            f"reference{'s were' if len(omitted_sources) != 1 else ' was'} omitted "
+            f"because Chandra did not produce a corresponding validated asset.\n\n"
+            f"{body}"
+        )
     if page_count and processed_pages and page_count > processed_pages:
         body = (
             f"> **Truncated rendition:** This Markdown contains the first "
@@ -277,6 +303,8 @@ def publish(
             page_count and processed_pages and page_count > processed_pages
         ),
         "image_count": len(asset_keys),
+        "omitted_image_count": len(omitted_sources),
+        "omitted_image_sources": omitted_sources,
         "asset_keys": asset_keys,
         "asset_sha256": {
             key: hashlib.sha256(canonical_assets[key]).hexdigest() for key in asset_keys
@@ -285,7 +313,13 @@ def publish(
     }
 
 
-def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dict:
+def process(
+    entry: dict[str, object],
+    content_root: Path,
+    run_root: Path,
+    *,
+    allow_missing_images: bool = False,
+) -> dict:
     from pypdf import PdfReader
 
     started = time.monotonic()
@@ -309,6 +343,7 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
         content_root,
         page_count=page_count,
         processed_pages=processed_pages,
+        allow_missing_images=allow_missing_images,
     )
     return {
         **result,
@@ -451,6 +486,9 @@ def progress_payload(
         "failed_papers": len(failed),
         "already_existed_papers": len(already_existed),
         "extracted_images": sum(int(item.get("image_count") or 0) for item in results),
+        "omitted_images": sum(
+            int(item.get("omitted_image_count") or 0) for item in results
+        ),
         "error_samples": [
             {
                 "arxiv_id": item.get("arxiv_id"),
@@ -562,6 +600,7 @@ def main() -> None:
             if _TERMINATION_REQUESTED or time.monotonic() >= deadline:
                 break
             prior = _prior_status(args.content_root, str(entry["arxiv_id"]))
+            attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
             attempted_at = datetime.now(UTC)
             failure = None
             try:
@@ -580,12 +619,23 @@ def main() -> None:
                         else {}
                     )
                     started = time.monotonic()
-                    result = publish(entry, body, assets, args.content_root)
+                    result = publish(
+                        entry,
+                        body,
+                        assets,
+                        args.content_root,
+                        allow_missing_images=attempt_count >= MAX_ATTEMPTS,
+                    )
                     result["duration_seconds"] = round(time.monotonic() - started, 3)
                     if args.stub_delay_seconds:
                         time.sleep(args.stub_delay_seconds)
                 else:
-                    result = process(entry, args.content_root, result_path.parent)
+                    result = process(
+                        entry,
+                        args.content_root,
+                        result_path.parent,
+                        allow_missing_images=attempt_count >= MAX_ATTEMPTS,
+                    )
             except Exception as error:  # noqa: BLE001 - isolate failures per paper
                 failure = error
                 result = {

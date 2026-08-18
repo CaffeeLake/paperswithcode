@@ -138,7 +138,26 @@ describe("CronJobCard health axes", () => {
     const monitor: PaperMarkdownJobsResponse = {
       available: true,
       namespace: "huggingface",
-      jobs: [],
+      jobs: [
+        {
+          id: "job-omitted-image",
+          url: "https://huggingface.co/jobs/huggingface/job-omitted-image",
+          stage: "COMPLETED",
+          effective_outcome: "success",
+          mode: "backfill",
+          progress: {
+            status: "completed",
+            total_papers: 1,
+            processed_papers: 1,
+            succeeded_papers: 1,
+            failed_papers: 0,
+            already_existed_papers: 0,
+            extracted_images: 3,
+            omitted_images: 2,
+            error_samples: [],
+          },
+        },
+      ],
       summary: {},
       budgets: {
         live: budget,
@@ -175,6 +194,9 @@ describe("CronJobCard health axes", () => {
     expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · 0 of 1 planned · projects $86.73");
     expect(screen.getByText("All history · no automatic reset")).toBeInTheDocument();
     expect(screen.getAllByText(/not a provider invoice/i)).toHaveLength(2);
+    expect(
+      screen.getByText(/unresolved image references omitted after final retry/),
+    ).toHaveTextContent("2 unresolved image references omitted after final retry");
   });
 });
 
