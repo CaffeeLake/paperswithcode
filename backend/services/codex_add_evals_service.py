@@ -471,9 +471,7 @@ class CodexPaperJobService:
         row.attempt_count += 1
         db.commit()
         try:
-            image = settings.codex_jobs_image.replace(
-                "{sha}", row.repository_sha or _git_revision()
-            )
+            image = self._verified_job_image(db, settings, row)
             image_name = image.rsplit("/", 1)[-1]
             if "@sha256:" not in image and ":" not in image_name:
                 image = f"{image}:{row.repository_sha or _git_revision()}"
@@ -493,6 +491,43 @@ class CodexPaperJobService:
             row.finished_at = _now()
             db.commit()
             self._advance_workflow(db, row, settings)
+
+    def _verified_job_image(
+        self, db: Session, settings: Settings, row: PaperCurationJob
+    ) -> str:
+        image = settings.codex_jobs_image.replace(
+            "{sha}", row.repository_sha or _git_revision()
+        )
+        prefix = "hf.co/spaces/"
+        if not image.startswith(prefix):
+            return image
+        expected = settings.codex_jobs_image_revision
+        if not expected:
+            raise RuntimeError("Curator Space revision is not configured")
+        repo_id = image.removeprefix(prefix)
+        observed = None
+        for attempt in range(3):
+            try:
+                observed = self._api(settings).space_info(repo_id=repo_id).sha
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(2**attempt)
+        if observed == expected:
+            return image
+        if row.trigger == "hf-daily-cron":
+            state = db.get(PaperCurationSchedulerState, 1)
+            if state is not None:
+                state.paused_at = _now()
+                state.pause_condition = "curator_image_revision_mismatch"
+                state.pause_reason = (
+                    f"Curator Space revision changed from {expected} to {observed}"
+                )
+                db.commit()
+        raise RuntimeError(
+            f"Curator Space revision mismatch: expected {expected}, observed {observed}"
+        )
 
     def _run_job_with_retry(
         self,
