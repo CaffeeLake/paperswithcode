@@ -341,6 +341,38 @@ def _mark_and_report(
     return marked, result
 
 
+def _new_chat_acquisition_outcome(
+    *, session_id: uuid.UUID, started_at: datetime
+) -> str:
+    """Return the persisted acquisition outcome for one completed browser pair."""
+
+    with db_manager.session_local() as db:
+        outcome = db.scalar(
+            select(ChatTurnLatency.acquisition_outcome)
+            .where(
+                ChatTurnLatency.chat_session_id == session_id,
+                ChatTurnLatency.traffic_class == "new_chat",
+                ChatTurnLatency.admitted_at >= started_at,
+            )
+            .order_by(ChatTurnLatency.admitted_at.desc())
+            .limit(1)
+        )
+    if outcome not in {"pool_hit", "pool_miss"}:
+        raise RuntimeError(
+            f"Missing new-chat acquisition outcome for session {session_id}"
+        )
+    return outcome
+
+
+def reasoning_minimum_reached(
+    *, rendered: dict[str, int], minimum_reasoning: int
+) -> bool:
+    return bool(
+        rendered["new_pool_hit_reasoning"] >= minimum_reasoning
+        and rendered["followup_reasoning"] >= minimum_reasoning
+    )
+
+
 def qualification_passes(
     *,
     rendered: dict[str, int],
@@ -350,8 +382,9 @@ def qualification_passes(
     session_count: int,
 ) -> bool:
     return bool(
-        rendered["new_reasoning"] >= minimum_reasoning
-        and rendered["followup_reasoning"] >= minimum_reasoning
+        reasoning_minimum_reached(
+            rendered=rendered, minimum_reasoning=minimum_reasoning
+        )
         and all(
             gates[name]
             for name in (
@@ -437,6 +470,7 @@ def main() -> int:
     session_ids: set[uuid.UUID] = set()
     rendered = {
         "new_reasoning": 0,
+        "new_pool_hit_reasoning": 0,
         "new_tool": 0,
         "new_answer": 0,
         "followup_reasoning": 0,
@@ -473,6 +507,12 @@ def main() -> int:
                 session_id = uuid.UUID(new["path"].removeprefix("/chat/").split("/")[0])
                 session_ids.add(session_id)
                 rendered["new_reasoning"] += int(new["reasoning"])
+                acquisition_outcome = _new_chat_acquisition_outcome(
+                    session_id=session_id, started_at=started_at
+                )
+                rendered["new_pool_hit_reasoning"] += int(
+                    new["reasoning"] and acquisition_outcome == "pool_hit"
+                )
                 rendered["new_tool"] += int(new["tool"])
                 rendered["new_answer"] += int(new["answer"])
                 page.assert_release(settings.release_id)
@@ -483,8 +523,9 @@ def main() -> int:
                 rendered["followup_tool"] += int(followup["tool"])
                 rendered["followup_answer"] += int(followup["answer"])
                 if (
-                    rendered["new_reasoning"] >= args.minimum_reasoning
-                    and rendered["followup_reasoning"] >= args.minimum_reasoning
+                    reasoning_minimum_reached(
+                        rendered=rendered, minimum_reasoning=args.minimum_reasoning
+                    )
                     and len(session_ids) >= 50
                 ):
                     break

@@ -7,6 +7,7 @@ from backend.scripts.qualify_chat_browser import (
     ORIGIN,
     pilot_passes,
     qualification_passes,
+    reasoning_minimum_reached,
 )
 
 
@@ -89,7 +90,11 @@ def test_browser_navigation_waits_for_the_requested_path(monkeypatch):
 
 
 def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
-    rendered = {"new_reasoning": 50, "followup_reasoning": 50}
+    rendered = {
+        "new_reasoning": 50,
+        "new_pool_hit_reasoning": 50,
+        "followup_reasoning": 50,
+    }
     gates = {
         "component": True,
         "model_to_application": True,
@@ -116,6 +121,18 @@ def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
         marked=100,
         session_count=50,
     )
+
+
+def test_browser_gate_excludes_pool_misses_from_new_chat_minimum():
+    rendered = {
+        "new_reasoning": 50,
+        "new_pool_hit_reasoning": 49,
+        "followup_reasoning": 50,
+    }
+
+    assert not reasoning_minimum_reached(rendered=rendered, minimum_reasoning=50)
+    rendered["new_pool_hit_reasoning"] = 50
+    assert reasoning_minimum_reached(rendered=rendered, minimum_reasoning=50)
 
 
 def test_browser_pilot_requires_every_pair_and_reasoning_render():
