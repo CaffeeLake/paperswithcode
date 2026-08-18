@@ -411,12 +411,21 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         summary[f"platform_{failure_class}_rate"] = round(
             outcomes.get(failure_class, 0) / terminal_jobs, 4
         )
-    total_gpu_seconds = sum(
-        float(job.get("duration_seconds") or 0)
+    efficiency_jobs = [
+        job
         for job in history_jobs
-        if job["effective_outcome"] in {"success", "partial", "interrupted"}
+        if job["stage"] in {"COMPLETED", "ERROR", "CANCELED"}
+        and job["effective_outcome"] in {"success", "partial", "interrupted"}
+    ]
+    efficiency_progress = [
+        job["progress"] for job in efficiency_jobs if job.get("progress")
+    ]
+    total_gpu_seconds = sum(
+        float(job.get("duration_seconds") or 0) for job in efficiency_jobs
     )
-    successful_papers = summary["succeeded_papers"]
+    successful_papers = sum(
+        int(row.get("succeeded_papers") or 0) for row in efficiency_progress
+    )
     summary["estimated_dollars_per_successful_paper"] = (
         round(
             total_gpu_seconds
@@ -435,12 +444,12 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     )
     p50_values = sorted(
         float(row["paper_duration_p50_seconds"])
-        for row in progress_rows
+        for row in efficiency_progress
         if row.get("paper_duration_p50_seconds") is not None
     )
     p95_values = sorted(
         float(row["paper_duration_p95_seconds"])
-        for row in progress_rows
+        for row in efficiency_progress
         if row.get("paper_duration_p95_seconds") is not None
     )
     summary["paper_duration_p50_seconds"] = (
