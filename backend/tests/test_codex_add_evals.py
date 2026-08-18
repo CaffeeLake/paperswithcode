@@ -82,10 +82,10 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "hf.co/spaces/nielsr/pwc-codex-curator-16c0c607afef"
+        "hf.co/spaces/nielsr/pwc-codex-curator-2cbe03031346"
     )
     assert settings.codex_jobs_image_revision == (
-        "7fda78ad601a6559da157f397a174f83ec99da93"
+        "6542d9a9538f4983039e3249b0118ed478c8f980"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
