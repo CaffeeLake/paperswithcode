@@ -44,6 +44,12 @@ def _free_port() -> int:
         return int(candidate.getsockname()[1])
 
 
+def _connect_devtools(url: str):
+    """Keep the local CDP channel alive while model turns are in flight."""
+
+    return connect(url, open_timeout=5, ping_interval=None)
+
+
 class ChromePage(AbstractContextManager):
     """Small synchronous Chrome DevTools client with no browser test dependency."""
 
@@ -95,7 +101,7 @@ class ChromePage(AbstractContextManager):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Chrome DevTools did not become ready")
                 time.sleep(0.1)
-        self._socket = connect(target["webSocketDebuggerUrl"], open_timeout=5)
+        self._socket = _connect_devtools(target["webSocketDebuggerUrl"])
         self.command("Network.enable")
         self.command("Page.enable")
         self.command("Runtime.enable")
@@ -184,7 +190,7 @@ class ChromePage(AbstractContextManager):
             "(() => {"
             "const input=document.querySelector('textarea[role=combobox]');"
             "const send=document.querySelector('button[aria-label=\"Send message\"]');"
-            "if(!input || !send || send.disabled) return false;"
+            "if(!input || !send) return false;"
             "const setter=Object.getOwnPropertyDescriptor("
             "HTMLTextAreaElement.prototype,'value').set;"
             f"setter.call(input,{encoded});"
@@ -354,45 +360,46 @@ def main() -> int:
         "followup_answer": 0,
     }
     last_new_started = 0.0
-    with ChromePage(
-        cookies={settings.session_cookie_name: token, COOKIE_NAME: billing}
-    ) as page:
-        for _index in range(args.maximum_pairs):
-            remaining = args.new_chat_spacing_seconds - (
-                time.monotonic() - last_new_started
-            )
-            if remaining > 0:
-                time.sleep(remaining)
-            page.navigate("/chat")
-            last_new_started = time.monotonic()
-            new = page.send_turn(
-                "Reason briefly, then state one concise reason benchmarks matter."
-            )
-            session_id = uuid.UUID(new["path"].removeprefix("/chat/").split("/")[0])
-            session_ids.add(session_id)
-            rendered["new_reasoning"] += int(new["reasoning"])
-            rendered["new_tool"] += int(new["tool"])
-            rendered["new_answer"] += int(new["answer"])
-            followup = page.send_turn(
-                "Reason briefly, then restate that evidence in different words."
-            )
-            rendered["followup_reasoning"] += int(followup["reasoning"])
-            rendered["followup_tool"] += int(followup["tool"])
-            rendered["followup_answer"] += int(followup["answer"])
-            if (
-                rendered["new_reasoning"] >= args.minimum_reasoning
-                and rendered["followup_reasoning"] >= args.minimum_reasoning
-                and len(session_ids) >= 50
-            ):
-                break
-
     manager = SandboxSessionManager(settings)
 
     async def cleanup() -> None:
         for session_id in session_ids:
             await manager.terminate(session_id)
 
-    asyncio.run(cleanup())
+    try:
+        with ChromePage(
+            cookies={settings.session_cookie_name: token, COOKIE_NAME: billing}
+        ) as page:
+            for _index in range(args.maximum_pairs):
+                remaining = args.new_chat_spacing_seconds - (
+                    time.monotonic() - last_new_started
+                )
+                if remaining > 0:
+                    time.sleep(remaining)
+                page.navigate("/chat")
+                last_new_started = time.monotonic()
+                new = page.send_turn(
+                    "Reason briefly, then state one concise reason benchmarks matter."
+                )
+                session_id = uuid.UUID(new["path"].removeprefix("/chat/").split("/")[0])
+                session_ids.add(session_id)
+                rendered["new_reasoning"] += int(new["reasoning"])
+                rendered["new_tool"] += int(new["tool"])
+                rendered["new_answer"] += int(new["answer"])
+                followup = page.send_turn(
+                    "Reason briefly, then restate that evidence in different words."
+                )
+                rendered["followup_reasoning"] += int(followup["reasoning"])
+                rendered["followup_tool"] += int(followup["tool"])
+                rendered["followup_answer"] += int(followup["answer"])
+                if (
+                    rendered["new_reasoning"] >= args.minimum_reasoning
+                    and rendered["followup_reasoning"] >= args.minimum_reasoning
+                    and len(session_ids) >= 50
+                ):
+                    break
+    finally:
+        asyncio.run(cleanup())
 
     marked, gate_report = _mark_and_report(
         settings=settings,
