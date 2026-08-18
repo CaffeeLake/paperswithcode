@@ -144,6 +144,7 @@ export function createSmoothedChatStream(
   let wake: (() => void) | null = null;
   let arrivalAccumulator = 0;
   let lastArrivalAt = clock.now();
+  let firstDeltaAccepted = false;
 
   const notify = () => {
     wake?.();
@@ -172,6 +173,22 @@ export function createSmoothedChatStream(
     if (event.type === "reasoning_delta" || event.type === "answer_delta") {
       const type = event.type;
       if (!event.text) return;
+      if (!firstDeltaAccepted) {
+        firstDeltaAccepted = true;
+        arrivalAccumulator += event.text.length;
+        lastArrivalAt = now;
+        const firstCharacter = Array.from(event.text)[0];
+        enqueue({ type, text: firstCharacter }, now);
+        const remainder = event.text.slice(firstCharacter.length);
+        if (remainder) {
+          pendingType = type;
+          pendingText = remainder;
+          pendingArrivedAt = now;
+          flushPending(false);
+          while (pendingText.length >= config.maxPendingChars) flushPending(false);
+        }
+        return;
+      }
       if (pendingType && pendingType !== type) flushPending(true);
       if (!pendingType) {
         pendingType = type;

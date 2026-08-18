@@ -95,6 +95,27 @@ describe("semantic chat stream segmentation", () => {
 });
 
 describe("smoothed chat event ordering and timing", () => {
+  it("emits the first model delta immediately without waiting for a word boundary", async () => {
+    const clock = new VirtualClock();
+    const handle = createSmoothedChatStream(source(
+      { type: "reasoning_delta", text: "Think" },
+      { type: "reasoning_delta", text: "ing through the evidence" },
+      { type: "done", finish_reason: "success" },
+    ), { clock });
+    const iterator = handle.events[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+
+    expect(first.value).toEqual({ type: "reasoning_delta", text: "T" });
+    expect(clock.sleeps.every((delay) => delay === 0)).toBe(true);
+    const remaining = await collect(iterator);
+    expect([first.value, ...remaining]
+      .filter((event) => event?.type === "reasoning_delta")
+      .map((event) => event && "text" in event ? event.text : "")
+      .join(""))
+      .toBe("Thinking through the evidence");
+  });
+
   it("keeps reasoning, tools, answers, and completion in semantic order", async () => {
     const clock = new VirtualClock();
     const handle = createSmoothedChatStream(source(
@@ -109,6 +130,7 @@ describe("smoothed chat event ordering and timing", () => {
     const events = await collect(handle.events);
     expect(events.map((event) => event.type)).toEqual([
       "reasoning_start",
+      "reasoning_delta",
       "reasoning_delta",
       "reasoning_delta",
       "reasoning_delta",
@@ -150,6 +172,7 @@ describe("smoothed chat event ordering and timing", () => {
     const events = await collect(handle.events);
     expect(events.map((event) => event.type)).toEqual([
       "answer_delta",
+      "answer_delta",
       "session_title_delta",
       "answer_delta",
       "answer_delta",
@@ -166,6 +189,7 @@ describe("smoothed chat event ordering and timing", () => {
     ), { clock: new VirtualClock() });
     const events = await collect(handle.events);
     expect(events.map((event) => event.type)).toEqual([
+      "answer_delta",
       "answer_delta",
       "answer_delta",
       "error",
@@ -194,11 +218,11 @@ describe("smoothed chat event ordering and timing", () => {
     const clock = new VirtualClock();
     const handle = createSmoothedChatStream(input, { clock });
     const first = await handle.events.next();
-    expect(first.value).toMatchObject({ type: "answer_delta", text: "one " });
+    expect(first.value).toMatchObject({ type: "answer_delta", text: "o" });
     await Promise.resolve();
     const accepted = handle.takeAcceptedForStop();
     expect(accepted.filter((event) => event.type === "answer_delta").map((event) => event.text).join(""))
-      .toBe("two three four five");
+      .toBe("ne two three four five");
     expect(accepted.some((event) => event.type === "done" || event.type === "error")).toBe(false);
     release();
   });
@@ -213,7 +237,11 @@ describe("smoothed chat event ordering and timing", () => {
     await expect((async () => {
       for await (const event of handle.events) events.push(event);
     })()).rejects.toThrow("transport failed");
-    expect(events.map((event) => event.type)).toEqual(["answer_delta", "answer_delta"]);
+    expect(events.map((event) => event.type)).toEqual([
+      "answer_delta",
+      "answer_delta",
+      "answer_delta",
+    ]);
   });
 
   it("cancels a pacing wait promptly and closes the consumer", async () => {

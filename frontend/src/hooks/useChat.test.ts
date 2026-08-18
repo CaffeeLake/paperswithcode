@@ -869,6 +869,9 @@ describe("useChat workspace status and browser timing", () => {
     expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
       submission_to_first_visible_delta_ms: expect.any(Number),
     });
+    expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
+      submission_to_first_answer_delta_ms: expect.any(Number),
+    });
     const streamStartMs = reportChatLatencyMock.mock.calls[0][1]
       .submission_to_stream_start_ms;
     const firstVisibleMs = reportChatLatencyMock.mock.calls[1][1]
@@ -884,7 +887,7 @@ describe("useChat workspace status and browser timing", () => {
     expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
       terminal_classification: "complete",
     });
-    expect(reportChatLatencyMock).toHaveBeenCalledTimes(3);
+    expect(reportChatLatencyMock).toHaveBeenCalledTimes(4);
     unmount();
   });
 });
