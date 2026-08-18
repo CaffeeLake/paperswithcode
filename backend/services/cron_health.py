@@ -842,6 +842,19 @@ def _paper_markdown_contract(
     return status, reasons
 
 
+def _paper_markdown_monitor_snapshot() -> Dict[str, Any]:
+    """Use the short cache, but populate it once in a cold health process."""
+    from backend.services.paper_markdown_job_monitor import (
+        get_cached_paper_markdown_job_monitor,
+        get_paper_markdown_job_monitor,
+    )
+
+    snapshot = get_cached_paper_markdown_job_monitor()
+    if snapshot.get("updated_at") is None:
+        snapshot = get_paper_markdown_job_monitor()
+    return snapshot
+
+
 def _paper_embeddings_contract(
     status: str,
     reasons: List[str],
@@ -1832,11 +1845,7 @@ def build_cron_dashboard(
     for job in definitions:
         log_status = get_recent_log_status(job)
         if job.id == "paper_markdown_backfill":
-            from backend.services.paper_markdown_job_monitor import (
-                get_cached_paper_markdown_job_monitor,
-            )
-
-            remote = get_cached_paper_markdown_job_monitor()
+            remote = _paper_markdown_monitor_snapshot()
             metrics = dict(log_status.get("work_metrics") or {})
             metrics["remote_monitor_available"] = bool(remote.get("available"))
             if remote.get("available"):
