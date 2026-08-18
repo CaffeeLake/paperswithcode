@@ -40,6 +40,8 @@ def _queue_row(**overrides):
         "finished_at": None,
         "submitted_at": datetime.now(UTC),
         "applied_at": datetime.now(UTC),
+        "validation_summary": {"post_write_verification": "passed"},
+        "mutation_result": {"status": "applied"},
         "report": None,
         "error": None,
         "attempt_count": 1,
@@ -268,6 +270,7 @@ def test_legitimate_no_changes_submission_can_complete(monkeypatch):
     row = _queue_row(
         kind="add-evals",
         applied_at=None,
+        mutation_result={"status": "no_changes"},
         thumbnail_status=None,
         thumbnail_requested_at=None,
     )

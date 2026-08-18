@@ -508,7 +508,7 @@ def test_dispatch_acknowledgement_starts_a_fresh_failure_window():
     jobs = SimpleNamespace(dispatch_next=lambda *_args: None)
     result = HFDailyCurationService(
         Database(),
-        SimpleNamespace(),
+        get_settings(),
         job_service=jobs,
     ).set_dispatch(True)
 

@@ -195,6 +195,28 @@ class HFDailyCurationService:
             "pause_condition": state.pause_condition,
             "canary_released": state.canary_released,
             "oldest_scheduled_queued_at": oldest,
+            "configuration": {
+                "jobs_enabled": self.settings.codex_jobs_enabled,
+                "scheduler_enabled": self.settings.codex_curation_scheduler_enabled,
+                "direct_apply_enabled": (
+                    self.settings.codex_curation_direct_apply_enabled
+                ),
+                "trace_upload_enabled": (
+                    self.settings.codex_curation_trace_upload_enabled
+                ),
+                "trace_bucket_configured": bool(
+                    self.settings.codex_curation_trace_hf_bucket_id
+                ),
+                "image": self.settings.codex_jobs_image,
+                "image_revision": self.settings.codex_jobs_image_revision,
+                "model": self.settings.codex_jobs_model,
+                "reasoning_effort": self.settings.codex_jobs_reasoning_effort,
+                "codex_cli_version": self.settings.codex_jobs_cli_version,
+                "max_active": self.settings.codex_jobs_max_active,
+                "max_scheduled_active": self.settings.codex_jobs_max_scheduled_active,
+                "queue_depth": self.settings.codex_curation_queue_depth,
+                "canary_limit": self.settings.codex_curation_canary_limit,
+            },
         }
 
     def reconcile(
