@@ -119,6 +119,16 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _curator_skill_digest(kind: JobKind) -> str:
+    root = Path(__file__).parents[2]
+    skill_name = "enrich-paper" if kind == "enrich-paper" else "add-evals"
+    paths = [
+        root / ".agents/skills/remote-paper-curation/SKILL.md",
+        root / f".agents/skills/{skill_name}/SKILL.md",
+    ]
+    return hashlib.sha256(b"\0".join(path.read_bytes() for path in paths)).hexdigest()
+
+
 def deferred_workflows_for_release(
     db: Session,
     limit: int,
@@ -279,15 +289,6 @@ class CodexPaperJobService:
         commit: bool = True,
     ) -> CodexPaperJob:
         repository_sha = _git_revision()
-        root = Path(__file__).parents[2]
-        skill_name = "enrich-paper" if kind == "enrich-paper" else "add-evals"
-        skill_paths = [
-            root / ".agents/skills/remote-paper-curation/SKILL.md",
-            root / f".agents/skills/{skill_name}/SKILL.md",
-        ]
-        skill_digest = hashlib.sha256(
-            b"\0".join(path.read_bytes() for path in skill_paths)
-        ).hexdigest()
         row = PaperCurationJob(
             id=uuid.uuid4(),
             kind=kind,
@@ -309,7 +310,7 @@ class CodexPaperJobService:
             if priority is not None
             else (0 if trigger == "admin" else 100),
             repository_sha=repository_sha if len(repository_sha) == 40 else None,
-            skill_sha256=skill_digest,
+            skill_sha256=_curator_skill_digest(kind),
             model=settings.codex_jobs_model,
             reasoning_effort=settings.codex_jobs_reasoning_effort,
             codex_cli_version=settings.codex_jobs_cli_version,
@@ -474,12 +475,15 @@ class CodexPaperJobService:
             db.commit()
             return
 
-        callback_token = secrets.token_urlsafe(32)
-        row.status = "dispatching"
-        row.callback_token_hash = hashlib.sha256(callback_token.encode()).hexdigest()
-        row.attempt_count += 1
-        db.commit()
         try:
+            self._bind_active_release(row, settings)
+            callback_token = secrets.token_urlsafe(32)
+            row.status = "dispatching"
+            row.callback_token_hash = hashlib.sha256(
+                callback_token.encode()
+            ).hexdigest()
+            row.attempt_count += 1
+            db.commit()
             image = self._verified_job_image(db, settings, row)
             image_name = image.rsplit("/", 1)[-1]
             if (
@@ -504,6 +508,28 @@ class CodexPaperJobService:
             row.finished_at = _now()
             db.commit()
             self._advance_workflow(db, row, settings)
+
+    @staticmethod
+    def _bind_active_release(row: PaperCurationJob, settings: Settings) -> None:
+        """Bind an unstarted queue row to the release that will serve bootstrap."""
+        revision = _git_revision()
+        if len(revision) != 40:
+            raise RuntimeError("Active curation release revision is unavailable")
+        if row.repository_sha == revision:
+            return
+        previous = row.repository_sha
+        row.repository_sha = revision
+        row.skill_sha256 = _curator_skill_digest(row.kind)
+        row.model = settings.codex_jobs_model
+        row.reasoning_effort = settings.codex_jobs_reasoning_effort
+        row.codex_cli_version = settings.codex_jobs_cli_version
+        row.validator_version = "scheduled-policy-v1"
+        logger.info(
+            "rebound queued curation job %s from release %s to %s",
+            row.id,
+            previous,
+            revision,
+        )
 
     def _verified_job_image(
         self, db: Session, settings: Settings, row: PaperCurationJob
