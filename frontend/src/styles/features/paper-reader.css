@@ -7,6 +7,8 @@
 .reader-paper-pane { background: #fff; transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
 .reader-assistant-pane { visibility: visible; background: var(--bg); opacity: 1; transform: translateX(0); transition: width 240ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 0s; }
 .reader-assistant-pane.is-collapsed { visibility: hidden; opacity: 0; transform: translateX(28px); pointer-events: none; transition: width 240ms cubic-bezier(.22, 1, .36, 1), opacity 140ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 0s linear 240ms; }
+.reader-workspace.is-resizing { cursor: col-resize; user-select: none; }
+.reader-workspace.is-resizing .reader-paper-pane, .reader-workspace.is-resizing .reader-assistant-pane { transition: none; }
 .reader-resize-handle { position: relative; z-index: 5; width: 1px; flex: 0 0 1px; cursor: col-resize; background: var(--hairline-strong); touch-action: none; outline: none; }
 .reader-resize-handle::before { content: ""; position: absolute; inset: 0 -8px 0 0; }
 .reader-resize-handle:focus-visible { box-shadow: 0 0 0 2px var(--accent); }

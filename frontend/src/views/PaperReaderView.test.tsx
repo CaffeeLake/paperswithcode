@@ -148,6 +148,40 @@ describe("PaperReaderView", () => {
       .toHaveAttribute("data-resize-active", "true");
   });
 
+  it("coalesces desktop divider dragging without width transitions or per-move persistence", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
+    const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    renderReader();
+
+    const separator = await screen.findByRole("separator", { name: "Resize paper and Chat panels" });
+    const workspace = separator.closest<HTMLElement>(".reader-workspace");
+    const paperPane = screen.getByRole("tabpanel", { name: "Paper" });
+    expect(workspace).not.toBeNull();
+    vi.spyOn(workspace!, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      width: 1200,
+      top: 0,
+      right: 1200,
+      bottom: 800,
+      height: 800,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(separator, "setPointerCapture", { value: vi.fn() });
+
+    fireEvent.pointerDown(separator, { pointerId: 1, clientX: 792 });
+    expect(workspace).toHaveClass("is-resizing");
+    fireEvent.pointerMove(separator, { pointerId: 1, clientX: 840 });
+
+    await waitFor(() => expect(paperPane).toHaveStyle({ width: "70%" }));
+    expect(storageSpy).not.toHaveBeenCalledWith("pwc:reader:split-ratio", expect.anything());
+
+    fireEvent.pointerUp(separator, { pointerId: 1, clientX: 840 });
+    expect(workspace).not.toHaveClass("is-resizing");
+    expect(storageSpy).toHaveBeenCalledWith("pwc:reader:split-ratio", "70");
+  });
+
   it("keeps the public PDF surface but disables chat when the live gate closes", async () => {
     mocks.getAvailability.mockResolvedValueOnce({
       status: "available",

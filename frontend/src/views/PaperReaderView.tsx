@@ -116,8 +116,14 @@ export default function PaperReaderView() {
   const [resizeActive, setResizeActive] = useState(false);
   const [chatTransitionActive, setChatTransitionActive] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const paperPaneRef = useRef<HTMLElement>(null);
+  const assistantPaneRef = useRef<HTMLElement>(null);
+  const resizeHandleRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const chatTransitionTimer = useRef(0);
+  const resizeFrame = useRef(0);
+  const pendingClientX = useRef(0);
+  const pendingRatio = useRef(ratio);
   const currentPageRef = useRef(storedPage(routeId));
   const desktopSplit = workspaceWidth > 900 && workspaceWidth >= 840;
 
@@ -137,7 +143,10 @@ export default function PaperReaderView() {
     setInitialPage(nextPage);
   }, [routeId]);
 
-  useEffect(() => () => window.clearTimeout(chatTransitionTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(chatTransitionTimer.current);
+    cancelAnimationFrame(resizeFrame.current);
+  }, []);
 
   useLayoutEffect(() => {
     const element = workspaceRef.current;
@@ -184,17 +193,34 @@ export default function PaperReaderView() {
     return Math.max(minimumPdf, Math.min(maximumPdf, next));
   }, [workspaceWidth]);
 
-  useEffect(() => setRatio((value) => clampRatio(value)), [clampRatio]);
+  useEffect(() => setRatio((value) => {
+    const bounded = clampRatio(value);
+    pendingRatio.current = bounded;
+    return bounded;
+  }), [clampRatio]);
 
   const setSavedRatio = (next: number) => {
     const bounded = clampRatio(next);
+    pendingRatio.current = bounded;
     setRatio(bounded);
     localStorage.setItem(RATIO_KEY, String(bounded));
   };
+  const applyLiveRatio = (next: number) => {
+    const bounded = clampRatio(next);
+    pendingRatio.current = bounded;
+    if (paperPaneRef.current) paperPaneRef.current.style.width = `${bounded}%`;
+    if (assistantPaneRef.current) assistantPaneRef.current.style.width = `${100 - bounded}%`;
+    resizeHandleRef.current?.setAttribute("aria-valuenow", String(Math.round(bounded)));
+  };
   const resizeFromPointer = (clientX: number) => {
-    const rect = workspaceRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setSavedRatio((clientX - rect.left) / rect.width * 100);
+    pendingClientX.current = clientX;
+    if (resizeFrame.current) return;
+    resizeFrame.current = requestAnimationFrame(() => {
+      resizeFrame.current = 0;
+      const rect = workspaceRef.current?.getBoundingClientRect();
+      if (!rect?.width) return;
+      applyLiveRatio((pendingClientX.current - rect.left) / rect.width * 100);
+    });
   };
   const pointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     dragging.current = true;
@@ -203,7 +229,16 @@ export default function PaperReaderView() {
     resizeFromPointer(event.clientX);
   };
   const finishResize = () => {
+    if (!dragging.current) return;
+    if (resizeFrame.current) {
+      cancelAnimationFrame(resizeFrame.current);
+      resizeFrame.current = 0;
+      const rect = workspaceRef.current?.getBoundingClientRect();
+      if (rect?.width) applyLiveRatio((pendingClientX.current - rect.left) / rect.width * 100);
+    }
     dragging.current = false;
+    setRatio(pendingRatio.current);
+    localStorage.setItem(RATIO_KEY, String(pendingRatio.current));
     setResizeActive(false);
   };
   const setAssistantCollapsed = (next: boolean) => {
@@ -247,8 +282,9 @@ export default function PaperReaderView() {
       <button type="button" role="tab" aria-selected={mobileTab === "paper"} onClick={() => setMobileTab("paper")}>Paper</button>
       <button type="button" role="tab" aria-selected={mobileTab === "assistant"} onClick={() => setMobileTab("assistant")}>Chat</button>
     </div>}
-    <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}`}>
+    <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}${resizeActive ? " is-resizing" : ""}`}>
       <section
+        ref={paperPaneRef}
         className={`reader-paper-pane${!desktopSplit && mobileTab !== "paper" ? " is-hidden" : ""}`}
         style={desktopSplit ? { width: collapsed ? "100%" : `${ratio}%` } : undefined}
         role="tabpanel"
@@ -270,6 +306,7 @@ export default function PaperReaderView() {
         />
       </section>
       {desktopSplit && !collapsed && <div
+        ref={resizeHandleRef}
         className="reader-resize-handle"
         role="separator"
         aria-label="Resize paper and Chat panels"
@@ -294,6 +331,7 @@ export default function PaperReaderView() {
         }}
       />}
       <aside
+        ref={assistantPaneRef}
         id="reader-chat-panel"
         className={`reader-assistant-pane${!desktopSplit && mobileTab !== "assistant" ? " is-hidden" : ""}${desktopSplit && collapsed ? " is-collapsed" : ""}`}
         style={desktopSplit ? { width: collapsed ? 0 : `${100 - ratio}%` } : undefined}

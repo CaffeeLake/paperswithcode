@@ -115,11 +115,11 @@ export function PdfViewer({
   const pinchCommitTimer = useRef(0);
   const renderedZoom = useRef(1);
   const liveZoom = useRef(1);
+  const liveResizeScale = useRef(1);
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
   const [fitWidth, setFitWidth] = useState(700);
-  const [displayWidth, setDisplayWidth] = useState(700);
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -155,27 +155,29 @@ export function PdfViewer({
     if (!element) return;
     const update = () => {
       const nextWidth = Math.max(240, element.clientWidth - 10);
-      setDisplayWidth(nextWidth);
+      liveResizeScale.current = resizeActive ? nextWidth / fitWidth : 1;
+      pagesRef.current?.style.setProperty("--pdf-live-scale", String(liveResizeScale.current));
       if (!resizeActive) setFitWidth(nextWidth);
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [resizeActive]);
-
-  const liveResizeScale = resizeActive ? displayWidth / fitWidth : 1;
+  }, [fitWidth, resizeActive]);
 
   useLayoutEffect(() => {
     renderedZoom.current = zoom;
-    pagesRef.current?.style.setProperty("--pdf-live-scale", String(liveResizeScale));
+    if (!resizeActive) {
+      liveResizeScale.current = 1;
+      pagesRef.current?.style.setProperty("--pdf-live-scale", "1");
+    }
     if (!recenterAfterZoom.current) return;
     const element = scrollRef.current;
     if (element) {
       element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2);
     }
     recenterAfterZoom.current = false;
-  }, [liveResizeScale, pageWidth, zoom]);
+  }, [pageWidth, resizeActive, zoom]);
 
   const setCenteredZoom = useCallback((nextZoom: (value: number) => number) => {
     window.clearTimeout(pinchCommitTimer.current);
@@ -202,7 +204,7 @@ export function PdfViewer({
         liveZoom.current = next;
         pagesRef.current?.style.setProperty(
           "--pdf-live-scale",
-          String(liveResizeScale * next / renderedZoom.current),
+          String(liveResizeScale.current * next / renderedZoom.current),
         );
         window.clearTimeout(pinchCommitTimer.current);
         pinchCommitTimer.current = window.setTimeout(() => {
@@ -220,7 +222,7 @@ export function PdfViewer({
       pinchCommitTimer.current = 0;
       pinchDelta.current = 0;
     };
-  }, [liveResizeScale]);
+  }, []);
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));
@@ -381,7 +383,7 @@ export function PdfViewer({
         <div
           ref={pagesRef}
           className="pdf-pages"
-          style={{ "--pdf-live-scale": liveResizeScale } as CSSProperties}
+          style={{ "--pdf-live-scale": liveResizeScale.current } as CSSProperties}
         >
           {pageNumbers.map((pageNumber) => <LazyPdfPage
             key={pageNumber}
