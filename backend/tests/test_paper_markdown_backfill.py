@@ -369,6 +369,47 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
     assert progress["omitted_images"] == 0
 
 
+def test_chandra_worker_failure_records_duration(tmp_path):
+    content = tmp_path / "content"
+    stub = tmp_path / "stub"
+    manifest = content / "_jobs" / "manifests" / "run-failure" / "00000.jsonl"
+    manifest.parent.mkdir(parents=True)
+    stub.mkdir()
+    entry = {
+        "arxiv_id": "2607.24653",
+        "version": "v1",
+        "title": "Kimi K3",
+        "output_key": "2607/2607.24653.md",
+    }
+    manifest.write_text(json.dumps(entry) + "\n")
+    (stub / "2607.24653.md").write_text(
+        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(WORKER_SCRIPT),
+            "--manifest",
+            str(manifest),
+            "--content-root",
+            str(content),
+            "--stub-root",
+            str(stub),
+        ],
+        check=True,
+    )
+
+    status = json.loads((content / "_jobs" / "status" / "2607.24653.json").read_text())
+    assert status["status"] == "failed"
+    assert status["duration_seconds"] >= 0
+    progress = json.loads(
+        (content / "_jobs" / "progress" / "run-failure" / "00000.json").read_text()
+    )
+    assert progress["paper_duration_p50_seconds"] is not None
+    assert progress["paper_duration_p95_seconds"] is not None
+
+
 def test_chandra_worker_final_attempt_omits_missing_image(tmp_path):
     content = tmp_path / "content"
     stub = tmp_path / "stub"
