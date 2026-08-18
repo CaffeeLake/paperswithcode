@@ -646,6 +646,43 @@ def test_scheduled_evaluation_rejects_noncanonical_arxiv_source_url():
         )
 
 
+def test_scheduled_evaluation_rejects_multiple_models_per_leaderboard():
+    from backend.models.database import Paper
+
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        source_url=None,
+        arxiv_id="2601.00001",
+    )
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+    row = SimpleNamespace(
+        kind="add-evals",
+        paper_id=42,
+        trigger="hf-daily-cron",
+        trace_status="preapply_stored",
+    )
+    source = "https://paperswithcode.co/paper/2601.00001"
+
+    with pytest.raises(ValueError, match="best eligible target result"):
+        _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+            row,
+            ApplyMutationRequest(
+                evaluations=[
+                    _evaluation(model_name="Best Model", source_url=source),
+                    _evaluation(model_name="Lower Ablation", source_url=source),
+                ],
+                evaluation_removals=[],
+                benchmark_gaps=[],
+                validation_evidence=[],
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("row", "payload", "status_code", "detail"),
     [

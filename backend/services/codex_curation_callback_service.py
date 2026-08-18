@@ -791,6 +791,15 @@ class CodexCurationCallbackService:
         paper = self.db.get(Paper, row.paper_id)
         paper_route = paper.arxiv_id if paper.source != "external" else paper.id
         expected_source = f"https://paperswithcode.co/paper/{paper_route}"
+        leaderboard_keys = [
+            (item.task_id, item.dataset_id, item.best_metric)
+            for item in body.evaluations
+        ]
+        if len(leaderboard_keys) != len(set(leaderboard_keys)):
+            raise ValueError(
+                "Scheduled curation accepts only the best eligible target result "
+                "per leaderboard"
+            )
         evidence_by_id = {
             int(item["evaluation_id"]): item
             for item in body.validation_evidence
