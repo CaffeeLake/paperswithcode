@@ -299,7 +299,15 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             )
         if settings.codex_jobs_max_scheduled_active >= settings.codex_jobs_max_active:
             raise RuntimeError("scheduled paper curation must reserve an admin slot")
-        if "@sha256:" not in settings.codex_jobs_image:
+        image_is_digest = "@sha256:" in settings.codex_jobs_image
+        image_is_versioned_space = bool(
+            re.fullmatch(
+                r"hf\.co/spaces/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+-[0-9a-f]{12}",
+                settings.codex_jobs_image,
+            )
+            and re.fullmatch(r"[0-9a-f]{40}", settings.codex_jobs_image_revision)
+        )
+        if not image_is_digest and not image_is_versioned_space:
             raise RuntimeError(
                 "scheduled paper curation requires an immutable curator image"
             )

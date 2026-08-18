@@ -357,6 +357,55 @@ def test_hf_dispatch_retries_with_bounded_exponential_backoff(monkeypatch):
     assert all(call["image"] == "example/image:sha" for call in calls)
 
 
+def test_space_image_revision_is_verified_and_mismatch_pauses_daily_dispatch(
+    monkeypatch,
+):
+    expected = "a" * 40
+    state = SimpleNamespace(
+        paused_at=None,
+        pause_condition=None,
+        pause_reason=None,
+    )
+
+    class Hub:
+        observed = expected
+
+        def space_info(self, *, repo_id):
+            assert repo_id == "example/curator-0123456789ab"
+            return SimpleNamespace(sha=self.observed)
+
+    class Database:
+        commits = 0
+
+        def get(self, *_args):
+            return state
+
+        def commit(self):
+            self.commits += 1
+
+    service = CodexPaperJobService()
+    hub = Hub()
+    monkeypatch.setattr(service, "_api", lambda _settings: hub)
+    settings = get_settings().model_copy(
+        update={
+            "codex_jobs_image": "hf.co/spaces/example/curator-0123456789ab",
+            "codex_jobs_image_revision": expected,
+        }
+    )
+    row = SimpleNamespace(trigger="hf-daily-cron", repository_sha="b" * 40)
+    database = Database()
+
+    assert service._verified_job_image(database, settings, row) == (
+        "hf.co/spaces/example/curator-0123456789ab"
+    )
+
+    hub.observed = "c" * 40
+    with pytest.raises(RuntimeError, match="Curator Space revision mismatch"):
+        service._verified_job_image(database, settings, row)
+    assert state.pause_condition == "curator_image_revision_mismatch"
+    assert state.paused_at is not None
+
+
 def test_benchmark_gap_validation_isolates_malformed_entries():
     class Database:
         def get(self, _model, task_id):

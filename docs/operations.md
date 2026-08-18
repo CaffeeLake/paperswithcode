@@ -374,17 +374,24 @@ Configuration is fail-closed. Production direct apply requires all of:
 - `PWC_CODEX_CURATION_DIRECT_APPLY_ENABLED=true`;
 - `PWC_CODEX_CURATION_TRACE_UPLOAD_ENABLED=true`;
 - a private, fully qualified `PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID`;
-- an anonymously pullable curator image pinned as
-  `registry/repository@sha256:<digest>` in `PWC_CODEX_JOBS_IMAGE`;
+- an immutable curator image: either a registry digest or a content-versioned
+  public Docker Space plus its exact 40-character Hub revision;
 - pinned model `gpt5.6-Sol`, medium reasoning, and Codex CLI version.
 
-The checked-in image workflow publishes to GHCR with the repository-scoped
-Actions token; operators do not need to grant the GitHub CLI package-write
-access. Before enabling dispatch, verify the package itself (not only the source
-repository) is public and probe an anonymous pull from Hugging Face Jobs. A tag
-such as `latest` is never valid for scheduled production dispatch. When the
-runner or image changes, publish it, record the resulting manifest digest in the
-release configuration, and repeat the anonymous Jobs probe before deployment.
+The production image is the public, content-versioned Docker Space
+`hf.co/spaces/nielsr/pwc-codex-curator-5422ed514b19`, pinned to Hub revision
+`9f28f32a2d1b069b7b6910ab6a489809cd538fe3`. The dispatcher reads the Space
+revision before every launch and pauses daily dispatch if it differs. Never
+update a versioned curator Space in place: publish a new Space whose suffix is
+the first 12 characters of the runner SHA-256, record its exact Hub revision,
+run a standalone Jobs capability probe, then update both
+`PWC_CODEX_JOBS_IMAGE` and `PWC_CODEX_JOBS_IMAGE_REVISION`. A mutable registry
+tag such as `latest` is never valid for scheduled production dispatch.
+
+The initial image probe is recorded at
+`https://huggingface.co/jobs/nielsr/6a8462efcd3824960fcbe7fe`; its command
+checks the Codex version, PyPDF2 version, and full runner SHA-256. The public
+Space avoids Docker Hub and does not require personal GitHub Packages access.
 
 Pause and recovery are scoped to scheduled dispatch; admin jobs remain
 available:

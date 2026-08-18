@@ -101,6 +101,20 @@ def test_scheduled_curation_requires_digest_pinned_worker_image(settings_factory
     )
 
 
+def test_scheduled_curation_accepts_versioned_space_with_pinned_revision(
+    settings_factory,
+):
+    settings, _release = settings_factory("production")
+    settings.codex_curation_scheduler_enabled = True
+    settings.codex_curation_direct_apply_enabled = True
+    settings.codex_curation_trace_upload_enabled = True
+    settings.codex_curation_trace_hf_bucket_id = "example/private-traces"
+    settings.codex_jobs_image = "hf.co/spaces/example/curator-0123456789ab"
+    settings.codex_jobs_image_revision = "a" * 40
+
+    runtime_validation.validate_codex_jobs_configuration(settings)
+
+
 def test_chat_runtime_descriptor_classifies_enabled_dormant_and_legacy(
     settings_factory,
 ):

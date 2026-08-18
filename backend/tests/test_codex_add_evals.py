@@ -82,8 +82,10 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "ghcr.io/huggingface/paperswithcode-codex-curator"
-        "@sha256:426c9ad3e23e3db69fa66da5340a9ce8e37c02416ca878d7ad9e66054550ce21"
+        "hf.co/spaces/nielsr/pwc-codex-curator-5422ed514b19"
+    )
+    assert settings.codex_jobs_image_revision == (
+        "9f28f32a2d1b069b7b6910ab6a489809cd538fe3"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
