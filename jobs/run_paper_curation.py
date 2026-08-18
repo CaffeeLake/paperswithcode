@@ -261,8 +261,8 @@ def main() -> int:
         command = [
             "codex",
             "exec",
-            "--ephemeral",
             "--json",
+            "--skip-git-repo-check",
             "--sandbox",
             "danger-full-access",
             "--model",
