@@ -18,7 +18,12 @@ from backend.services.codex_curation_callback_service import (
 )
 
 
-def _evaluation(*, paper_id: int = 42, model_name: str) -> EvaluationCreateRequest:
+def _evaluation(
+    *,
+    paper_id: int = 42,
+    model_name: str,
+    source_url: str = "https://arxiv.org/abs/2601.00001",
+) -> EvaluationCreateRequest:
     return EvaluationCreateRequest(
         paper_id=paper_id,
         task_id=19,
@@ -26,7 +31,7 @@ def _evaluation(*, paper_id: int = 42, model_name: str) -> EvaluationCreateReque
         model_name=model_name,
         metrics={"GenEval Score": 0.9},
         best_metric="GenEval Score",
-        source_url="https://arxiv.org/abs/2601.00001",
+        source_url=source_url,
     )
 
 
@@ -526,7 +531,12 @@ def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
 def test_scheduled_evaluation_accepts_configured_metric_names():
     from backend.models.database import Evaluation, Metric, Paper, TaskDataset
 
-    paper = SimpleNamespace(source="arxiv", source_url=None, arxiv_id="2601.00001")
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        source_url=None,
+        arxiv_id="2601.00001",
+    )
     leaderboard = SimpleNamespace(supports_harness=False)
     metric = SimpleNamespace(name="GenEval Score", scale="0-1")
 
@@ -566,7 +576,12 @@ def test_scheduled_evaluation_accepts_configured_metric_names():
     result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
         row,
         ApplyMutationRequest(
-            evaluations=[_evaluation(model_name="Useful Model")],
+            evaluations=[
+                _evaluation(
+                    model_name="Useful Model",
+                    source_url="https://paperswithcode.co/paper/2601.00001",
+                )
+            ],
             evaluation_removals=[],
             benchmark_gaps=[],
             validation_evidence=[],
@@ -574,6 +589,61 @@ def test_scheduled_evaluation_accepts_configured_metric_names():
     )
 
     assert result == {"policy": "scheduled-add-evals-v1", "evaluations": 1}
+
+
+def test_scheduled_evaluation_rejects_noncanonical_arxiv_source_url():
+    from backend.models.database import Paper
+
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        source_url=None,
+        arxiv_id="2601.00001",
+    )
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+
+        def join(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            return SimpleNamespace(supports_harness=False)
+
+        def all(self):
+            return [SimpleNamespace(name="GenEval Score", scale="0-1")]
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+        def query(self, model):
+            return Query(model)
+
+    row = SimpleNamespace(
+        kind="add-evals",
+        paper_id=42,
+        trigger="hf-daily-cron",
+        trace_status="preapply_stored",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="canonical PwC paper URL",
+    ):
+        _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+            row,
+            ApplyMutationRequest(
+                evaluations=[_evaluation(model_name="Useful Model")],
+                evaluation_removals=[],
+                benchmark_gaps=[],
+                validation_evidence=[],
+            ),
+        )
 
 
 @pytest.mark.parametrize(

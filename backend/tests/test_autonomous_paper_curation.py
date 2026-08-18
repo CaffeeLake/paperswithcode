@@ -569,6 +569,27 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
     assert accepted[0]["_normalized"]["task_ids"] == [19]
     assert rejected == [{"index": 1, "error": "reasoning is required"}]
 
+    html_evidence = {
+        **valid,
+        "evidence": [
+            {
+                **valid["evidence"][0],
+                "source_kind": "paper_markdown",
+                "source_url": "https://arxiv.org/html/2608.00042",
+            }
+        ],
+    }
+    accepted, rejected = BenchmarkGapService(Database()).validate(
+        [html_evidence],
+        paper=SimpleNamespace(
+            source_url="https://arxiv.org/abs/2608.00042",
+            arxiv_id="2608.00042",
+        ),
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
+
 
 def test_benchmark_gap_rejects_server_owned_fields():
     class Database:

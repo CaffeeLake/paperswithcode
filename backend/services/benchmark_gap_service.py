@@ -92,6 +92,7 @@ def _paper_evidence_urls(paper: Paper | None) -> set[str] | None:
         values.update(
             {
                 f"https://arxiv.org/abs/{paper.arxiv_id}",
+                f"https://arxiv.org/html/{paper.arxiv_id}",
                 f"https://arxiv.org/pdf/{paper.arxiv_id}",
                 f"https://arxiv.org/pdf/{paper.arxiv_id}.pdf",
                 f"https://export.arxiv.org/abs/{paper.arxiv_id}",
