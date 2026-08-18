@@ -55,6 +55,11 @@ function PaperMarkdownBudgetCard({
   budget: PaperMarkdownBudget;
 }) {
   const percent = Math.min(100, budget.current_exposure_usd / budget.ceiling_usd * 100);
+  const planLabel = budget.affordable_jobs === 0 && budget.desired_jobs > 0
+    ? "No shard fits"
+    : budget.affordable_jobs < budget.desired_jobs
+      ? `${budget.affordable_jobs} of ${budget.desired_jobs} planned shards fit`
+      : `${budget.affordable_jobs} planned ${budget.affordable_jobs === 1 ? "shard fits" : "shards fit"}`;
   return (
     <div className={`cron-metric-card space-y-3 ${budget.can_launch_planned ? "" : "cron-status--broken"}`}>
       <div className="flex items-start justify-between gap-3">
@@ -65,7 +70,7 @@ function PaperMarkdownBudgetCard({
           </div>
         </div>
         <Badge variant="outline" className={budget.can_launch_planned ? "cron-status--healthy" : "cron-status--broken"}>
-          {budget.can_launch_planned ? "Next launch allowed" : "Next launch blocked"}
+          {planLabel}
         </Badge>
       </div>
       <div role="progressbar" aria-label={`${title} current budget exposure`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} className="h-2 rounded bg-muted">
@@ -76,8 +81,8 @@ function PaperMarkdownBudgetCard({
         <div><span className="cron-label">Active reservations</span><div>{formatUsd(budget.active_reserved_usd)}</div></div>
         <div><span className="cron-label">Current exposure</span><div>{formatUsd(budget.current_exposure_usd)}</div></div>
         <div><span className="cron-label">Cap / headroom</span><div>{formatUsd(budget.ceiling_usd)} / {formatUsd(budget.headroom_usd)}</div></div>
-        <div><span className="cron-label">Next launch reserves</span><div>{formatUsd(budget.planned_reserved_usd)}</div></div>
-        <div><span className="cron-label">After next launch</span><div>{formatUsd(budget.projected_usd)}</div></div>
+        <div><span className="cron-label">Affordable plan reserves</span><div>{formatUsd(budget.planned_reserved_usd)}</div></div>
+        <div><span className="cron-label">Projected exposure</span><div>{formatUsd(budget.projected_usd)}</div></div>
         <div><span className="cron-label">Rate assumption</span><div>{formatUsd(budget.hourly_rate_usd)}/hour · {budget.reservation_hours_per_job}h</div></div>
         <div><span className="cron-label">Window release</span><div>{budget.next_release_at ? `${formatUsd(budget.next_release_usd)} at ${formatCronDate(budget.next_release_at)}` : "None scheduled"}</div></div>
       </div>
@@ -202,6 +207,14 @@ function remoteStageClass(stage: string): string {
   return "cron-status--unknown";
 }
 
+function effectiveOutcomeClass(outcome?: string): string {
+  if (outcome === "success") return "cron-status--healthy";
+  if (outcome === "partial" || outcome === "interrupted") return "cron-status--degraded";
+  if (outcome === "infrastructure_failure" || outcome === "worker_failure") return "cron-status--broken";
+  if (outcome === "active") return "cron-status--running";
+  return "cron-status--unknown";
+}
+
 function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
   const progress = job.progress;
   const percentage = progress?.total_papers
@@ -220,6 +233,16 @@ function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
           <Badge variant="outline" className={remoteStageClass(job.stage)}>
             {job.stage.toLowerCase()}
           </Badge>
+          {job.effective_outcome && (
+            <Badge variant="outline" className={effectiveOutcomeClass(job.effective_outcome)}>
+              output: {job.effective_outcome.replace(/_/g, " ")}
+            </Badge>
+          )}
+          {job.failure_cause && (
+            <Badge variant="outline" className={effectiveOutcomeClass(job.effective_outcome)}>
+              cause: {job.failure_cause.replace(/_/g, " ")}
+            </Badge>
+          )}
           {job.url && (
             <a
               href={job.url}
@@ -327,6 +350,26 @@ function PaperMarkdownJobs({
               </div>
             ))}
           </div>
+          <p className="text-xs cron-muted mb-3">
+            Efficiency and backlog-clearance costs are admission-control estimates, not provider invoices.
+          </p>
+          {monitor.coverage && Object.keys(monitor.coverage).length > 0 && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-3">
+              {Object.values(monitor.coverage).map((coverage) => (
+                <div key={coverage.scope} className="cron-metric-card space-y-2 text-sm">
+                  <div className="font-semibold">
+                    {coverage.scope === "full" ? "Full catalog coverage" : "Recent 14-day coverage"}
+                  </div>
+                  <div className="text-lg font-semibold">{coverage.coverage_percentage.toFixed(2)}%</div>
+                  <div>{coverage.canonical_markdown_count.toLocaleString()} canonical / {coverage.eligible_papers.toLocaleString()} eligible · {coverage.missing_count.toLocaleString()} missing</div>
+                  <div className="cron-muted">Copied from upstream this reconciliation: {coverage.copied_from_upstream_count.toLocaleString()}</div>
+                  <div className="cron-muted">
+                    7-day Δ eligible {coverage.eligible_delta_7d ?? "collecting"} · canonical {coverage.canonical_delta_7d ?? "collecting"} · missing {coverage.missing_delta_7d ?? "collecting"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {monitor.jobs.length === 0 ? (
             <div className="cron-metric-card text-sm cron-muted">
               No OCR shards have been launched yet.
@@ -393,7 +436,7 @@ export function CronJobCard({
               {job.diagnostics && <div className="cron-message cron-message--warning">{job.diagnostics}</div>}
               {livePaperMarkdownBudget && (
                 <div className={`cron-message ${livePaperMarkdownBudget.can_launch_planned ? "" : "cron-message--error"}`}>
-                  <strong>Live GPU budget:</strong> {formatUsd(livePaperMarkdownBudget.current_exposure_usd)} current / {formatUsd(livePaperMarkdownBudget.ceiling_usd)} cap · next launch projects {formatUsd(livePaperMarkdownBudget.projected_usd)} · rolling 30 days
+                  <strong>Live GPU budget:</strong> {formatUsd(livePaperMarkdownBudget.current_exposure_usd)} current / {formatUsd(livePaperMarkdownBudget.ceiling_usd)} cap · {livePaperMarkdownBudget.affordable_jobs} of {livePaperMarkdownBudget.desired_jobs} planned · projects {formatUsd(livePaperMarkdownBudget.projected_usd)} · rolling 30 days
                 </div>
               )}
             </div>

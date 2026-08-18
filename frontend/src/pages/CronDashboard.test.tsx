@@ -121,10 +121,12 @@ describe("CronJobCard health axes", () => {
       next_release_usd: 4.5,
       spent_usd: 86.73,
       active_reserved_usd: 0,
-      planned_jobs: 1,
-      planned_reserved_usd: 21.6,
+      desired_jobs: 1,
+      affordable_jobs: 0,
+      planned_jobs: 0,
+      planned_reserved_usd: 0,
       current_exposure_usd: 86.73,
-      projected_usd: 108.33,
+      projected_usd: 86.73,
       ceiling_usd: 100,
       headroom_usd: 13.27,
       can_launch_planned: false,
@@ -148,6 +150,11 @@ describe("CronJobCard health axes", () => {
           next_release_at: null,
           next_release_usd: 0,
           ceiling_usd: 750,
+          desired_jobs: 4,
+          affordable_jobs: 3,
+          planned_jobs: 3,
+          planned_reserved_usd: 64.8,
+          projected_usd: 151.53,
           can_launch_planned: true,
         },
       },
@@ -163,9 +170,9 @@ describe("CronJobCard health axes", () => {
     );
 
     expect(screen.getByText("Rolling 30-day window")).toBeInTheDocument();
-    expect(screen.getByText("Next launch blocked")).toBeInTheDocument();
-    expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · next launch projects $108.33");
-    expect(screen.getAllByText("$108.33")).toHaveLength(2);
+    expect(screen.getByText("No shard fits")).toBeInTheDocument();
+    expect(screen.getByText("3 of 4 planned shards fit")).toBeInTheDocument();
+    expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · 0 of 1 planned · projects $86.73");
     expect(screen.getByText("All history · no automatic reset")).toBeInTheDocument();
     expect(screen.getAllByText(/not a provider invoice/i)).toHaveLength(2);
   });

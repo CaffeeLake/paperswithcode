@@ -21,10 +21,11 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -46,6 +47,17 @@ HTML_IMAGE = re.compile(
 )
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 FORMAT_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+STATUS_SCHEMA_VERSION = 2
+MAX_ATTEMPTS = int(os.environ.get("PWC_MARKDOWN_MAX_ATTEMPTS", "3"))
+VLLM_SHUTDOWN_TIMEOUT_SECONDS = int(
+    os.environ.get("PWC_MARKDOWN_VLLM_SHUTDOWN_TIMEOUT_SECONDS", "60")
+)
+_TERMINATION_REQUESTED = False
+
+
+def request_termination(_signum: int, _frame: object) -> None:
+    global _TERMINATION_REQUESTED
+    _TERMINATION_REQUESTED = True
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -289,6 +301,105 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
     }
 
 
+def _prior_status(content_root: Path, arxiv_id: str) -> dict:
+    path = content_root / "_jobs" / "status" / f"{arxiv_id}.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def classify_failure(error: Exception, attempt_count: int) -> tuple[str, bool]:
+    """Classify a paper failure without requiring scheduler string parsing."""
+    message = str(error)
+    error_class = type(error).__name__
+    retryable = False
+    if isinstance(error, httpx.TimeoutException):
+        error_class, retryable = "arxiv_timeout", True
+    elif isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        error_class = f"arxiv_http_{status}"
+        retryable = status == 429 or status >= 500
+    elif isinstance(error, subprocess.CalledProcessError):
+        error_class, retryable = "chandra_subprocess_failure", True
+    elif message.startswith("missing_extracted_image:"):
+        error_class, retryable = "missing_extracted_image", True
+    elif message.startswith(
+        ("asset_verification_failed:", "markdown_verification_failed")
+    ):
+        error_class, retryable = "artifact_verification_io", True
+    elif message.startswith("immutable_asset_conflict:"):
+        error_class = "immutable_asset_conflict"
+    elif message in {"invalid_pdf", "invalid_chandra_output"}:
+        error_class = message
+        retryable = message == "invalid_chandra_output" and attempt_count < 2
+    elif message in {
+        "invalid_extracted_image",
+        "unsupported_extracted_image",
+        "image_too_large",
+        "image_too_many_pixels",
+        "invalid_markdown_size",
+    }:
+        error_class = message
+    elif isinstance(error, OSError):
+        error_class, retryable = "transient_io", True
+    if attempt_count >= MAX_ATTEMPTS:
+        retryable = False
+    return error_class, retryable
+
+
+def status_record(
+    result: dict,
+    *,
+    prior: dict,
+    error: Exception | None = None,
+    attempted_at: datetime | None = None,
+) -> dict:
+    """Add retry metadata while retaining all legacy result fields."""
+    observed_at = attempted_at or datetime.now(UTC)
+    attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
+    retryable = False
+    error_class = None
+    next_retry_at = None
+    if error is not None:
+        error_class, retryable = classify_failure(error, attempt_count)
+        if retryable:
+            delay = timedelta(hours=min(24, 2 ** (attempt_count - 1)))
+            next_retry_at = (observed_at + delay).isoformat()
+    return {
+        **result,
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "attempt_count": attempt_count,
+        "error_class": error_class,
+        "retryable": retryable,
+        "attempted_at": observed_at.isoformat(),
+        "next_retry_at": next_retry_at,
+        "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
+    }
+
+
+def stop_vllm(process: subprocess.Popen[bytes] | None) -> str:
+    if process is None:
+        return "not_started"
+    if process.poll() is not None:
+        return "already_exited"
+    process.terminate()
+    try:
+        process.wait(timeout=VLLM_SHUTDOWN_TIMEOUT_SECONDS)
+        return "terminated"
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=30)
+            return "killed"
+        except subprocess.TimeoutExpired:
+            return "kill_timed_out"
+
+
 def progress_payload(
     *,
     run_id: str,
@@ -298,6 +409,8 @@ def progress_payload(
     status: str,
     started_at: str,
     fatal_error: str | None = None,
+    termination_requested: bool = False,
+    cleanup_state: str | None = None,
 ) -> dict:
     succeeded = [item for item in results if item.get("status") == "succeeded"]
     failed = [item for item in results if item.get("status") == "failed"]
@@ -323,9 +436,25 @@ def progress_payload(
             for item in failed[:5]
         ],
         "fatal_error": fatal_error,
+        "termination_requested": termination_requested,
+        "cleanup_state": cleanup_state,
+        "paper_duration_p50_seconds": percentile_duration(results, 0.50),
+        "paper_duration_p95_seconds": percentile_duration(results, 0.95),
         "started_at": started_at,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+
+
+def percentile_duration(results: list[dict], percentile: float) -> float | None:
+    values = sorted(
+        float(item["duration_seconds"])
+        for item in results
+        if item.get("duration_seconds") is not None
+    )
+    if not values:
+        return None
+    index = max(0, min(len(values) - 1, int((len(values) - 1) * percentile + 0.999)))
+    return round(values[index], 3)
 
 
 def main() -> None:
@@ -333,7 +462,20 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--content-root", type=Path, default=Path("/content"))
     parser.add_argument("--stub-root", type=Path)
+    parser.add_argument("--stub-delay-seconds", type=float, default=0)
+    parser.add_argument(
+        "--soft-deadline-seconds",
+        type=int,
+        default=int(os.environ.get("PWC_MARKDOWN_SOFT_DEADLINE_SECONDS", "40500")),
+    )
     args = parser.parse_args()
+    if args.soft_deadline_seconds < 0:
+        parser.error("--soft-deadline-seconds must not be negative")
+
+    global _TERMINATION_REQUESTED
+    _TERMINATION_REQUESTED = False
+    signal.signal(signal.SIGTERM, request_termination)
+    deadline = time.monotonic() + args.soft_deadline_seconds
 
     entries = [
         json.loads(line)
@@ -357,6 +499,7 @@ def main() -> None:
     results = list(completed.values())
     server = None
     fatal_error = None
+    cleanup_state = None
     atomic_write(
         progress_path,
         json.dumps(
@@ -393,6 +536,11 @@ def main() -> None:
         for entry in entries:
             if entry["arxiv_id"] in completed:
                 continue
+            if _TERMINATION_REQUESTED or time.monotonic() >= deadline:
+                break
+            prior = _prior_status(args.content_root, str(entry["arxiv_id"]))
+            attempted_at = datetime.now(UTC)
+            failure = None
             try:
                 if args.stub_root:
                     body = (args.stub_root / f"{entry['arxiv_id']}.md").read_text(
@@ -408,15 +556,26 @@ def main() -> None:
                         if asset_dir.exists()
                         else {}
                     )
+                    started = time.monotonic()
                     result = publish(entry, body, assets, args.content_root)
+                    result["duration_seconds"] = round(time.monotonic() - started, 3)
+                    if args.stub_delay_seconds:
+                        time.sleep(args.stub_delay_seconds)
                 else:
                     result = process(entry, args.content_root, result_path.parent)
             except Exception as error:  # noqa: BLE001 - isolate failures per paper
+                failure = error
                 result = {
                     "arxiv_id": entry["arxiv_id"],
                     "status": "failed",
                     "error": str(error)[:1000],
                 }
+            result = status_record(
+                result,
+                prior=prior,
+                error=failure,
+                attempted_at=attempted_at,
+            )
             results.append(result)
             atomic_write(
                 args.content_root / "_jobs" / "status" / f"{entry['arxiv_id']}.json",
@@ -448,14 +607,13 @@ def main() -> None:
         fatal_error = str(error)[:1000]
         raise
     finally:
-        if server is not None:
-            server.terminate()
+        cleanup_state = stop_vllm(server)
         final_status = (
             "failed"
             if fatal_error
             else "completed"
-            if len(results) >= len(entries)
-            else "stopped"
+            if len({item.get("arxiv_id") for item in results}) >= len(entries)
+            else "partial"
         )
         atomic_write(
             progress_path,
@@ -468,6 +626,8 @@ def main() -> None:
                     status=final_status,
                     started_at=started_at,
                     fatal_error=fatal_error,
+                    termination_requested=_TERMINATION_REQUESTED,
+                    cleanup_state=cleanup_state,
                 ),
                 sort_keys=True,
                 indent=2,

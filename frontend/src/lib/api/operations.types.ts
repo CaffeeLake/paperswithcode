@@ -107,6 +107,8 @@ export interface PaperMarkdownRemoteJob {
   started_at?: string | null;
   finished_at?: string | null;
   duration_seconds?: number | null;
+  effective_outcome?: string;
+  failure_cause?: string | null;
   progress?: PaperMarkdownJobProgress | null;
 }
 
@@ -117,7 +119,21 @@ export interface PaperMarkdownJobsResponse {
   jobs: PaperMarkdownRemoteJob[];
   summary: Record<string, number>;
   budgets: Record<string, PaperMarkdownBudget>;
+  coverage?: Record<string, PaperMarkdownCoverage>;
   error?: string | null;
+}
+
+export interface PaperMarkdownCoverage {
+  observed_at: string;
+  scope: string;
+  eligible_papers: number;
+  canonical_markdown_count: number;
+  copied_from_upstream_count: number;
+  missing_count: number;
+  coverage_percentage: number;
+  eligible_delta_7d?: number | null;
+  canonical_delta_7d?: number | null;
+  missing_delta_7d?: number | null;
 }
 
 export interface PaperMarkdownBudget {
@@ -129,6 +145,8 @@ export interface PaperMarkdownBudget {
   next_release_usd: number;
   spent_usd: number;
   active_reserved_usd: number;
+  desired_jobs: number;
+  affordable_jobs: number;
   planned_jobs: number;
   planned_reserved_usd: number;
   current_exposure_usd: number;
@@ -140,4 +158,5 @@ export interface PaperMarkdownBudget {
   reservation_hours_per_job: number;
   reservation_per_job_usd: number;
   relevant_jobs: number;
+  reason?: string | null;
 }

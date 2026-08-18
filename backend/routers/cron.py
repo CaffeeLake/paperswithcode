@@ -70,6 +70,7 @@ class PaperMarkdownJobsResponse(BaseModel):
     jobs: List[Dict[str, Any]] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
     budgets: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    coverage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     error: Optional[str] = None
 
 

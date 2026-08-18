@@ -7,10 +7,12 @@ import json
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from huggingface_hub import HfApi, Volume
+from huggingface_hub import HfApi, HfFileSystem, Volume
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy import select
 
 from backend.config import get_settings
@@ -22,13 +24,14 @@ from backend.services.paper_markdown_budget_service import (
 from scripts.utils.cron_helpers import CronJobBase
 
 ARXIV_ID = re.compile(r"^(?P<base>\d{4}\.\d{4,5})(?:v\d+)?$")
-ACTIVE_STAGES = {"PENDING", "RUNNING", "STARTING", "QUEUED"}
+ACTIVE_STAGES = {"PENDING", "RUNNING", "STARTING", "QUEUED", "SCHEDULING"}
 SCRIPT = (
     Path(__file__).resolve().parents[4]
     / "backend"
     / "scripts"
     / "generate_missing_paper_markdown.py"
 )
+COVERAGE_HISTORY_NAME = "paper_markdown_coverage.jsonl"
 
 
 def normalize_arxiv_id(value: str | None) -> str | None:
@@ -50,6 +53,52 @@ def job_stage(job: object) -> str:
     return str(getattr(stage, "value", stage) or "").upper()
 
 
+def status_disposition(
+    status: dict[str, object], *, now: datetime | None = None, max_attempts: int = 3
+) -> str:
+    """Return a persisted retry disposition without parsing free-form errors."""
+    state = str(status.get("status") or "").lower()
+    try:
+        attempts = max(0, int(status.get("attempt_count") or 0))
+    except (TypeError, ValueError):
+        return "permanent_failure"
+    if state in {"succeeded", "already_exists"}:
+        return "completed"
+    # Legacy failed records predate structured retry metadata. Admit each once
+    # so the worker can persist a classified v2 record without error-string
+    # inference in the scheduler.
+    if state == "failed" and not status.get("schema_version"):
+        return "retryable_due"
+    if attempts >= max_attempts:
+        return "attempts_exhausted"
+    if status.get("retryable") is not True:
+        return "permanent_failure"
+    retry_at = status.get("next_retry_at")
+    if not retry_at:
+        return "retryable_due"
+    try:
+        due_at = datetime.fromisoformat(str(retry_at).replace("Z", "+00:00"))
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=UTC)
+    except ValueError:
+        return "retryable_deferred"
+    return (
+        "retryable_due"
+        if due_at <= (now or datetime.now(UTC))
+        else "retryable_deferred"
+    )
+
+
+def append_coverage_history(payload: dict[str, object]) -> None:
+    """Keep append-only local evidence for seven-day coverage deltas."""
+    log_dir = Path(
+        os.environ.get("PWC_CRON_LOG_DIR", Path(__file__).resolve().parents[1] / "logs")
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / COVERAGE_HISTORY_NAME).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
 class PaperMarkdownBackfillJob(CronJobBase):
     def __init__(
         self,
@@ -69,7 +118,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
         self.batch_size = batch_size
         self.budget_projected_usd: float | None = None
         self.budget_ceiling_usd: float | None = None
+        self.budget_desired_jobs = 0
+        self.budget_affordable_jobs = 0
         self.api = HfApi(token=self.settings.hf_token or None)
+        self.filesystem = HfFileSystem(token=self.settings.hf_token or None)
 
     def _papers(self) -> list[dict[str, object]]:
         with db_manager.session_local() as db:
@@ -111,6 +163,30 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 found[entry.path] = entry
         return found
 
+    def _status_records(self, paths: list[str]) -> dict[str, dict[str, object]]:
+        existing = self._existing_paths(
+            self.settings.paper_markdown_hf_bucket_id, paths
+        )
+
+        def read(path: str) -> tuple[str, dict[str, object]]:
+            bucket_path = (
+                f"hf://buckets/{self.settings.paper_markdown_hf_bucket_id}/{path}"
+            )
+            try:
+                with self.filesystem.open(bucket_path, "rb", block_size=0) as handle:
+                    raw = handle.read(64 * 1024 + 1)
+                if len(raw) > 64 * 1024:
+                    return path, {"status": "oversized", "retryable": False}
+                payload = json.loads(raw)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, HfHubHTTPError):
+                return path, {"status": "unreadable", "retryable": False}
+            if isinstance(payload, dict):
+                return path, payload
+            return path, {"status": "invalid", "retryable": False}
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            return dict(executor.map(read, existing))
+
     def _copy_upstream(
         self, missing: list[dict[str, object]]
     ) -> tuple[list[dict[str, object]], int]:
@@ -145,50 +221,52 @@ class PaperMarkdownBackfillJob(CronJobBase):
         ]
         return remaining, len(copied_paths)
 
-    def _active_jobs(self) -> list[object]:
-        jobs = list(
+    def _remote_jobs(self) -> list[object]:
+        return list(
             self.api.list_jobs(
                 labels={"app": "pwc-paper-markdown"},
                 namespace=self.settings.paper_markdown_hf_namespace,
                 token=self.settings.hf_token or None,
             )
         )
-        return [job for job in jobs if job_stage(job) in ACTIVE_STAGES]
 
-    def _budget_available(self, planned_jobs: int) -> bool:
-        if not planned_jobs:
-            return True
-        all_jobs = list(
-            self.api.list_jobs(
-                labels={"app": "pwc-paper-markdown"},
-                namespace=self.settings.paper_markdown_hf_namespace,
-                token=self.settings.hf_token or None,
-            )
-        )
+    def _active_jobs(self, jobs: list[object]) -> list[object]:
+        mode = "backfill" if self.full else "live"
+        return [
+            job
+            for job in jobs
+            if job_stage(job) in ACTIVE_STAGES
+            and (getattr(job, "labels", None) or {}).get("mode") == mode
+        ]
+
+    def _budget_decision(
+        self, desired_jobs: int, jobs: list[object]
+    ) -> dict[str, object]:
         ceiling = (
             self.settings.paper_markdown_backfill_budget_usd
             if self.full
             else self.settings.paper_markdown_incremental_monthly_budget_usd
         )
         budget = paper_markdown_budget_snapshot(
-            all_jobs,
+            jobs,
             mode="backfill" if self.full else "live",
             ceiling_usd=ceiling,
-            planned_jobs=planned_jobs,
+            planned_jobs=desired_jobs,
         )
-        projected = budget["projected_usd"]
-        self.budget_projected_usd = projected
+        self.budget_desired_jobs = int(budget["desired_jobs"])
+        self.budget_affordable_jobs = int(budget["affordable_jobs"])
+        self.budget_projected_usd = float(budget["projected_usd"])
         self.budget_ceiling_usd = ceiling
-        if projected > ceiling:
+        if desired_jobs and not self.budget_affordable_jobs:
             self.logger.warning(
-                f"paper Markdown GPU budget exhausted: projected ${projected:.2f} "
-                f"exceeds ${ceiling:.2f}"
+                "paper Markdown GPU budget exhausted: %s",
+                budget["reason"],
             )
-            return False
-        return True
+        return budget
 
     def _launch(self, candidates: list[dict[str, object]]) -> list[dict[str, str]]:
-        active = self._active_jobs() if self.should_execute else []
+        remote_jobs = self._remote_jobs()
+        active = self._active_jobs(remote_jobs)
         concurrency = (
             self.settings.paper_markdown_backfill_concurrency if self.full else 1
         )
@@ -206,10 +284,17 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 raise ValueError(f"batch size must be between 1 and {maximum}")
             batch_size = self.batch_size
         plans = chunks(candidates, batch_size)[:available_slots]
+        budget = self._budget_decision(len(plans), remote_jobs)
+        affordable = int(budget["affordable_jobs"])
+        plans = plans[:affordable]
+        self.logger.info(
+            "paper Markdown admission: desired=%s affordable=%s launched=%s",
+            self.budget_desired_jobs,
+            self.budget_affordable_jobs,
+            len(plans) if self.should_execute else 0,
+        )
         if self.should_execute and plans and not self.confirm:
             raise ValueError("paid GPU dispatch requires --confirm")
-        if self.should_execute and not self._budget_available(len(plans)):
-            return []
 
         launched: list[dict[str, str]] = []
         run_id = f"{'backfill' if self.full else 'live'}-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -226,6 +311,9 @@ class PaperMarkdownBackfillJob(CronJobBase):
                         "shard_id": shard_id,
                         "papers": str(len(entries)),
                         "mode": "dry_run",
+                        "retried": str(
+                            sum(bool(item.get("retry")) for item in entries)
+                        ),
                     }
                 )
                 continue
@@ -241,6 +329,8 @@ class PaperMarkdownBackfillJob(CronJobBase):
                     f"/content/{manifest_key}",
                     "--content-root",
                     "/content",
+                    "--soft-deadline-seconds",
+                    str(self.settings.paper_markdown_soft_deadline_seconds),
                 ],
                 image=self.settings.paper_markdown_runtime_image,
                 flavor=self.settings.paper_markdown_hardware,
@@ -280,6 +370,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
                     "shard_id": shard_id,
                     "papers": str(len(entries)),
                     "hf_job_id": job_id,
+                    "retried": str(sum(bool(item.get("retry")) for item in entries)),
                 }
             )
         return launched
@@ -295,32 +386,70 @@ class PaperMarkdownBackfillJob(CronJobBase):
         missing = [item for item in papers if str(item["output_key"]) not in canonical]
         remaining, upstream_available = self._copy_upstream(missing)
         status_paths = [f"_jobs/status/{item['arxiv_id']}.json" for item in remaining]
-        attempted = self._existing_paths(
-            self.settings.paper_markdown_hf_bucket_id, status_paths
-        )
-        candidates = [
-            item
-            for item in remaining
-            if f"_jobs/status/{item['arxiv_id']}.json" not in attempted
-        ]
+        status_records = self._status_records(status_paths)
+        dispositions = {
+            path: status_disposition(payload)
+            for path, payload in status_records.items()
+        }
+        candidates = []
+        for item in remaining:
+            status_path = f"_jobs/status/{item['arxiv_id']}.json"
+            disposition = dispositions.get(status_path)
+            if disposition is None or disposition == "retryable_due":
+                candidates.append({**item, "retry": disposition == "retryable_due"})
         failed_or_completed = len(remaining) - len(candidates)
+        canonical_after_upstream = len(canonical) + upstream_available
+        coverage = {
+            "observed_at": datetime.now(UTC).isoformat(),
+            "scope": "full" if self.full else "recent_14_days",
+            "eligible_papers": len(papers),
+            "canonical_markdown_count": canonical_after_upstream,
+            "copied_from_upstream_count": upstream_available,
+            "missing_count": len(remaining),
+            "coverage_percentage": round(
+                canonical_after_upstream / len(papers) * 100, 2
+            )
+            if papers
+            else 100.0,
+        }
+        if self.should_execute:
+            append_coverage_history(coverage)
         launched = self._launch(candidates)
         metrics = {
             "mode": "backfill" if self.full else "live",
             "execute": self.should_execute,
             "eligible_papers": len(papers),
             "canonical_markdown": len(canonical),
+            "canonical_markdown_after_upstream": canonical_after_upstream,
+            "coverage_scope": coverage["scope"],
+            "coverage_percentage": coverage["coverage_percentage"],
             "missing_before": len(missing),
             "upstream_available": upstream_available,
             "missing_after_upstream": len(remaining),
             "previously_attempted": failed_or_completed,
+            "retryable_due": sum(
+                disposition == "retryable_due" for disposition in dispositions.values()
+            ),
+            "retryable_deferred": sum(
+                disposition == "retryable_deferred"
+                for disposition in dispositions.values()
+            ),
+            "permanent_failures": sum(
+                disposition == "permanent_failure"
+                for disposition in dispositions.values()
+            ),
+            "attempts_exhausted": sum(
+                disposition == "attempts_exhausted"
+                for disposition in dispositions.values()
+            ),
+            "retried_papers": sum(int(item.get("retried") or 0) for item in launched),
             "ocr_candidates": len(candidates),
             "jobs_planned_or_launched": len(launched),
+            "desired_jobs": self.budget_desired_jobs,
+            "affordable_jobs": self.budget_affordable_jobs,
             "papers_planned_or_launched": sum(int(item["papers"]) for item in launched),
             "budget_exhausted": (
-                self.budget_projected_usd is not None
-                and self.budget_ceiling_usd is not None
-                and self.budget_projected_usd > self.budget_ceiling_usd
+                self.budget_desired_jobs > 0 and self.budget_affordable_jobs == 0
             ),
             "budget_projected_usd": self.budget_projected_usd,
             "budget_ceiling_usd": self.budget_ceiling_usd,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from math import floor
 from typing import Any, Iterable
 
 PAPER_MARKDOWN_GPU_HOURLY_RATE_USD = 1.80
@@ -10,6 +12,62 @@ PAPER_MARKDOWN_JOB_RESERVATION_HOURS = 12.0
 PAPER_MARKDOWN_LIVE_WINDOW_DAYS = 30
 
 _ACTIVE_STAGES = {"PENDING", "RUNNING", "STARTING", "QUEUED", "SCHEDULING"}
+
+
+@dataclass(frozen=True)
+class PaperMarkdownBudgetDecision:
+    """Fail-closed admission decision shared by schedulers and operators."""
+
+    desired_jobs: int
+    affordable_jobs: int
+    current_exposure_usd: float
+    reservation_per_job_usd: float
+    planned_reservation_usd: float
+    projected_exposure_usd: float
+    ceiling_usd: float
+    headroom_usd: float
+    reason: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def paper_markdown_budget_decision(
+    *,
+    desired_jobs: int,
+    current_exposure_usd: float,
+    ceiling_usd: float,
+    reservation_per_job_usd: float,
+) -> PaperMarkdownBudgetDecision:
+    """Admit the largest requested prefix whose worst case fits the ceiling."""
+    if desired_jobs < 0:
+        raise ValueError("desired_jobs must not be negative")
+    if reservation_per_job_usd <= 0:
+        raise ValueError("reservation_per_job_usd must be positive")
+
+    headroom = max(0.0, float(ceiling_usd) - float(current_exposure_usd))
+    # Monetary inputs are reported to cents. The tiny epsilon makes an exact
+    # decimal boundary robust to binary floating-point representation without
+    # admitting a cent above the configured ceiling.
+    affordable = min(desired_jobs, floor((headroom + 1e-9) / reservation_per_job_usd))
+    planned = affordable * reservation_per_job_usd
+    projected = float(current_exposure_usd) + planned
+    reason = None
+    if desired_jobs and not affordable:
+        reason = "no shard fits within remaining budget"
+    elif affordable < desired_jobs:
+        reason = f"only {affordable} of {desired_jobs} desired shards fit"
+    return PaperMarkdownBudgetDecision(
+        desired_jobs=desired_jobs,
+        affordable_jobs=affordable,
+        current_exposure_usd=round(float(current_exposure_usd), 2),
+        reservation_per_job_usd=round(reservation_per_job_usd, 2),
+        planned_reservation_usd=round(planned, 2),
+        projected_exposure_usd=round(projected, 2),
+        ceiling_usd=round(float(ceiling_usd), 2),
+        headroom_usd=round(headroom, 2),
+        reason=reason,
+    )
 
 
 def _stage(job: object) -> str:
@@ -100,9 +158,13 @@ def paper_markdown_budget_snapshot(
             )
 
     releases.sort(key=lambda item: item[0])
-    planned_reserved = planned_jobs * reservation_per_job
     current_exposure = spent + active_reserved
-    projected = current_exposure + planned_reserved
+    decision = paper_markdown_budget_decision(
+        desired_jobs=planned_jobs,
+        current_exposure_usd=current_exposure,
+        ceiling_usd=ceiling_usd,
+        reservation_per_job_usd=reservation_per_job,
+    )
     next_release_at, next_release_usd = releases[0] if releases else (None, 0.0)
     return {
         "mode": mode,
@@ -113,13 +175,18 @@ def paper_markdown_budget_snapshot(
         "next_release_usd": round(next_release_usd, 2),
         "spent_usd": round(spent, 2),
         "active_reserved_usd": round(active_reserved, 2),
-        "planned_jobs": planned_jobs,
-        "planned_reserved_usd": round(planned_reserved, 2),
+        "desired_jobs": decision.desired_jobs,
+        "affordable_jobs": decision.affordable_jobs,
+        # Legacy keys now describe the actual admitted plan, which is the plan
+        # the scheduler will reserve and launch.
+        "planned_jobs": decision.affordable_jobs,
+        "planned_reserved_usd": decision.planned_reservation_usd,
         "current_exposure_usd": round(current_exposure, 2),
-        "projected_usd": round(projected, 2),
+        "projected_usd": decision.projected_exposure_usd,
         "ceiling_usd": round(float(ceiling_usd), 2),
         "headroom_usd": round(max(0.0, float(ceiling_usd) - current_exposure), 2),
-        "can_launch_planned": projected <= float(ceiling_usd),
+        "can_launch_planned": decision.affordable_jobs > 0 or planned_jobs == 0,
+        "reason": decision.reason,
         "hourly_rate_usd": PAPER_MARKDOWN_GPU_HOURLY_RATE_USD,
         "reservation_hours_per_job": PAPER_MARKDOWN_JOB_RESERVATION_HOURS,
         "reservation_per_job_usd": round(reservation_per_job, 2),

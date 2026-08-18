@@ -1053,6 +1053,11 @@ def test_hf_artifacts_fresh_db_metrics_are_healthy():
             "broken",
             "checkpoint is stale",
         ),
+        (
+            {"interrupted_shards": 1},
+            "degraded",
+            "partial progress",
+        ),
     ],
 )
 def test_paper_markdown_semantic_contract(metrics, expected, reason):

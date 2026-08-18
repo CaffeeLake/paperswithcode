@@ -42,7 +42,7 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
         "failed_papers": 3,
         "already_existed_papers": 0,
         "extracted_images": 87,
-        "updated_at": "2026-07-28T15:20:00Z",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
         "error_samples": [{"arxiv_id": "2607.00001", "error": "invalid_pdf"}],
     }
     job = SimpleNamespace(
@@ -97,9 +97,76 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     assert result["budgets"]["live"]["ceiling_usd"] == 100.0
     assert result["budgets"]["backfill"]["ceiling_usd"] == 750.0
     assert result["budgets"]["backfill"]["active_reserved_usd"] == 21.6
+    assert result["budgets"]["backfill"]["desired_jobs"] == 3
+    assert result["budgets"]["backfill"]["affordable_jobs"] == 3
     assert result["jobs"][0]["stage"] == "RUNNING"
+    assert result["jobs"][0]["effective_outcome"] == "active"
     assert result["jobs"][0]["progress"]["failed_papers"] == 3
     monitor.clear_paper_markdown_job_monitor_cache()
+
+
+def test_complete_checkpoint_is_effective_success_despite_hf_error():
+    progress = {
+        "status": "completed",
+        "total_papers": 100,
+        "processed_papers": 100,
+    }
+    assert monitor._effective_outcome("ERROR", progress) == "success"
+    assert (
+        monitor._effective_outcome(
+            "ERROR", {**progress, "status": "partial", "processed_papers": 80}
+        )
+        == "interrupted"
+    )
+    assert monitor._effective_outcome("ERROR", None) == "infrastructure_failure"
+    assert (
+        monitor._effective_outcome(
+            "COMPLETED", {**progress, "status": "failed", "fatal_error": "boom"}
+        )
+        == "worker_failure"
+    )
+    assert monitor._failure_cause("interrupted", "Process exited 143", {}) == "exit_143"
+    assert (
+        monitor._failure_cause("infrastructure_failure", "Volume mount failed", None)
+        == "volume_mount"
+    )
+
+
+def test_coverage_history_reports_seven_day_deltas(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    history = tmp_path / "paper_markdown_coverage.jsonl"
+    history.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "observed_at": "2026-08-10T00:00:00+00:00",
+                    "scope": "full",
+                    "eligible_papers": 100,
+                    "canonical_markdown_count": 80,
+                    "missing_count": 20,
+                    "copied_from_upstream_count": 2,
+                    "coverage_percentage": 80,
+                },
+                {
+                    "observed_at": "2026-08-18T00:00:00+00:00",
+                    "scope": "full",
+                    "eligible_papers": 105,
+                    "canonical_markdown_count": 90,
+                    "missing_count": 15,
+                    "copied_from_upstream_count": 1,
+                    "coverage_percentage": 85.71,
+                },
+            ]
+        )
+        + "\n"
+    )
+    coverage = monitor._coverage_history(datetime(2026, 8, 18, tzinfo=timezone.utc))[
+        "full"
+    ]
+    assert coverage["eligible_delta_7d"] == 5
+    assert coverage["canonical_delta_7d"] == 10
+    assert coverage["missing_delta_7d"] == -5
 
 
 def test_monitor_is_unavailable_without_a_token(monkeypatch):

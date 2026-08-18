@@ -826,7 +826,15 @@ def _paper_markdown_contract(
     terminal = int(work.get("terminal_shard_failures", 0) or 0)
     if terminal:
         status = _worse_output(status, "broken")
-        reasons.append(f"{terminal} remote OCR shard(s) ended in failure")
+        reasons.append(
+            f"{terminal} remote OCR shard(s) had no usable output or a worker failure"
+        )
+    interrupted = int(work.get("interrupted_shards", 0) or 0)
+    if interrupted:
+        status = _worse_output(status, "degraded")
+        reasons.append(
+            f"{interrupted} remote OCR shard(s) made partial progress before interruption"
+        )
     checkpoint_age = work.get("oldest_active_checkpoint_age_minutes")
     if checkpoint_age is not None and float(checkpoint_age) > 30:
         status = _worse_output(status, "broken")
@@ -1835,6 +1843,9 @@ def build_cron_dashboard(
                 summary = remote.get("summary") or {}
                 metrics["terminal_shard_failures"] = int(
                     summary.get("latest_run_failed_jobs", 0) or 0
+                )
+                metrics["interrupted_shards"] = int(
+                    summary.get("latest_run_interrupted_jobs", 0) or 0
                 )
                 metrics["oldest_active_checkpoint_age_minutes"] = int(
                     summary.get("oldest_active_checkpoint_age_minutes", 0) or 0
