@@ -351,10 +351,12 @@ class CodexCurationCallbackService:
         accepted_gaps, rejected_gaps = gap_service.validate(
             body.benchmark_gaps, paper=gap_paper
         )
+        before_state: dict[str, Any] = {"paper_id": row.paper_id}
         try:
             if hasattr(self.db, "refresh"):
                 self.db.refresh(row, with_for_update=True)
             self._validate_mutation(row, body)
+            before_state = self._mutation_projection(row, body)
             validation = self._validate_scheduled_policy(row, body)
             created = 0
             updated = 0
@@ -365,6 +367,11 @@ class CodexCurationCallbackService:
             else:
                 self._apply_enrichment(row, body)
 
+            if hasattr(self.db, "flush"):
+                self.db.flush()
+            after_state = self._mutation_projection(row, body)
+            self._verify_after_state(row, body, after_state)
+
             gap_results = (
                 gap_service.persist(
                     paper_id=row.paper_id, job_id=row.id, gaps=accepted_gaps
@@ -373,13 +380,21 @@ class CodexCurationCallbackService:
                 else []
             )
 
-            changed = row.kind == "enrich-paper" or created + updated + removed > 0
+            changed = before_state != after_state or created + updated + removed > 0
             row.submitted_at = datetime.now(UTC)
-            if changed:
+            # Enrichment can enqueue thumbnail work or use adapters whose fake
+            # test/session projection cannot observe the relation write. Keep
+            # its accepted-apply lifecycle, while a true add-evals no-op remains
+            # distinguishable from a catalog mutation.
+            if changed or row.kind == "enrich-paper":
                 row.applied_at = row.submitted_at
             row.proposal = body.model_dump(mode="json")
             row.validation_summary = {
                 **validation,
+                "post_write_verification": "passed",
+                "existing_evaluation_rows_affected": sorted(
+                    {int(item["id"]) for item in before_state.get("evaluations", [])}
+                ),
                 "benchmark_gaps_accepted": len(accepted_gaps),
                 "benchmark_gaps_rejected": rejected_gaps,
             }
@@ -388,6 +403,11 @@ class CodexCurationCallbackService:
                 "evaluations_created": created,
                 "evaluations_updated": updated,
             }
+            if getattr(row, "trigger", "admin") != "admin":
+                row.mutation_result.update(
+                    before_state=before_state,
+                    after_state=after_state,
+                )
             if body.benchmark_gaps or getattr(row, "trigger", "admin") != "admin":
                 row.mutation_result.update(
                     benchmark_gap_candidates=gap_results,
@@ -413,6 +433,7 @@ class CodexCurationCallbackService:
                     "status": "rejected",
                     "error_type": type(exc).__name__,
                     "error": str(exc)[:2_000],
+                    "before_state": before_state,
                     "benchmark_gaps_rejected": rejected_gaps,
                 }
                 rejected_row.submitted_at = datetime.now(UTC)
@@ -437,6 +458,180 @@ class CodexCurationCallbackService:
         if getattr(row, "thumbnail_requested_at", None) is not None:
             response["thumbnail"] = serialize_thumbnail(row)
         return response
+
+    def _mutation_projection(self, row, body: ApplyMutationRequest) -> dict[str, Any]:
+        """Bound the durable before/after trace to relations touched by this stage."""
+        if not hasattr(self.db, "flush"):
+            return {"paper_id": row.paper_id, "evaluations": []}
+        if row.kind == "enrich-paper":
+            paper = self.db.get(Paper, row.paper_id)
+            task_links = (
+                self.db.query(PaperTask)
+                .filter(PaperTask.paper_id == row.paper_id)
+                .all()
+            )
+            method_links = (
+                self.db.query(PaperMethod)
+                .filter(PaperMethod.paper_id == row.paper_id)
+                .all()
+            )
+            evidence = (
+                self.db.query(PaperMethodEvidence)
+                .filter(PaperMethodEvidence.paper_id == row.paper_id)
+                .all()
+            )
+            evidence_by_method: dict[int, list[str]] = {}
+            for item in evidence:
+                evidence_by_method.setdefault(int(item.method_id), []).append(
+                    item.evidence_type
+                )
+            repository_rows = (
+                self.db.query(Repository, PaperRepository.is_official)
+                .join(PaperRepository, PaperRepository.repository_id == Repository.id)
+                .filter(PaperRepository.paper_id == row.paper_id)
+                .all()
+            )
+            return {
+                "paper_id": row.paper_id,
+                "urls_extracted": bool(paper.urls_extracted),
+                "tasks": [
+                    {"id": int(item.task_id), "source": item.source}
+                    for item in sorted(task_links, key=lambda value: value.task_id)
+                ],
+                "methods": [
+                    {
+                        "id": int(item.method_id),
+                        "evidence_types": sorted(
+                            evidence_by_method.get(int(item.method_id), [])
+                        ),
+                    }
+                    for item in sorted(method_links, key=lambda value: value.method_id)
+                ],
+                "repositories": [
+                    {
+                        "url": repository.url,
+                        "is_official": bool(is_official),
+                        "source": repository.source,
+                    }
+                    for repository, is_official in sorted(
+                        repository_rows, key=lambda value: value[0].url
+                    )
+                ],
+                "project_pages": [
+                    {
+                        "url": page.url,
+                        "is_official": bool(page.is_official),
+                        "source": getattr(page, "source", None),
+                    }
+                    for page in sorted(paper.project_pages, key=lambda value: value.url)
+                ],
+                "hf_models": sorted(paper.hf_models or []),
+                "hf_datasets": sorted(paper.hf_datasets or []),
+                "hf_spaces": sorted(paper.hf_spaces or []),
+            }
+
+        identities = {
+            (
+                item.task_id,
+                item.dataset_id,
+                item.model_name,
+                item.harness,
+                item.best_metric,
+            )
+            for item in body.evaluations
+        }
+        removal_ids = {item.evaluation_id for item in body.evaluation_removals}
+        evaluations = (
+            self.db.query(Evaluation).filter(Evaluation.paper_id == row.paper_id).all()
+        )
+        selected = [
+            item
+            for item in evaluations
+            if item.id in removal_ids
+            or (
+                item.task_id,
+                item.dataset_id,
+                item.model_name,
+                item.harness,
+                item.best_metric,
+            )
+            in identities
+        ]
+        return {
+            "paper_id": row.paper_id,
+            "evaluations": [
+                self._evaluation_state(item)
+                for item in sorted(selected, key=lambda value: value.id)
+            ][:200],
+        }
+
+    def _verify_after_state(
+        self, row, body: ApplyMutationRequest, after_state: dict[str, Any]
+    ) -> None:
+        if not hasattr(self.db, "flush"):
+            return
+        if row.kind == "enrich-paper":
+            mutation = body.enrich
+            assert mutation is not None
+            if mutation.task_ids is not None and {
+                item["id"] for item in after_state["tasks"]
+            } != set(mutation.task_ids):
+                raise ValueError("Post-write task verification failed")
+            if mutation.method_ids is not None and {
+                item["id"] for item in after_state["methods"]
+            } != set(mutation.method_ids):
+                raise ValueError("Post-write method verification failed")
+            if (
+                mutation.urls_extracted is not None
+                and after_state["urls_extracted"] != mutation.urls_extracted
+            ):
+                raise ValueError("Post-write URL extraction verification failed")
+            return
+
+        states = {item["id"]: item for item in after_state["evaluations"]}
+        for removal in body.evaluation_removals:
+            if removal.evaluation_id in states:
+                raise ValueError("Post-write evaluation removal verification failed")
+        all_rows = (
+            self.db.query(Evaluation).filter(Evaluation.paper_id == row.paper_id).all()
+        )
+        for proposal in body.evaluations:
+            matches = [
+                item
+                for item in all_rows
+                if (
+                    item.task_id,
+                    item.dataset_id,
+                    item.model_name,
+                    item.harness,
+                    item.best_metric,
+                )
+                == (
+                    proposal.task_id,
+                    proposal.dataset_id,
+                    proposal.model_name,
+                    proposal.harness,
+                    proposal.best_metric,
+                )
+            ]
+            if len(matches) != 1 or self._evaluation_changes(matches[0], proposal):
+                raise ValueError("Post-write evaluation verification failed")
+
+        for task_id, dataset_id, best_metric in {
+            (item.task_id, item.dataset_id, item.best_metric)
+            for item in body.evaluations
+        }:
+            leaderboard_rows = [
+                item
+                for item in all_rows
+                if item.task_id == task_id
+                and item.dataset_id == dataset_id
+                and item.best_metric == best_metric
+            ]
+            if len(leaderboard_rows) > 1:
+                raise ValueError(
+                    "Scheduled curation must keep one paper-native result per leaderboard"
+                )
 
     def _validate_mutation(self, row, body: ApplyMutationRequest) -> None:
         if (
@@ -614,15 +809,16 @@ class CodexCurationCallbackService:
                 raise ValueError(
                     "Evaluation targets an unconfigured task/dataset leaderboard"
                 )
-            configured = {
-                name
-                for (name,) in self.db.query(Metric.name)
+            configured_rows = (
+                self.db.query(Metric)
                 .join(TaskDatasetMetric, TaskDatasetMetric.metric_id == Metric.id)
                 .filter(
                     TaskDatasetMetric.task_id == item.task_id,
                     TaskDatasetMetric.dataset_id == item.dataset_id,
                 )
-            }
+                .all()
+            )
+            configured = {metric.name: metric for metric in configured_rows}
             if item.best_metric not in configured or set(item.metrics) - configured:
                 raise ValueError("Evaluation contains an unconfigured metric")
             if item.harness and not leaderboard.supports_harness:
@@ -632,13 +828,14 @@ class CodexCurationCallbackService:
                 raise ValueError(
                     "Evaluation source must be this paper's canonical source URL"
                 )
-            for value in item.metrics.values():
+            for metric_name, value in item.metrics.items():
                 try:
                     numeric = float(str(value).rstrip("%"))
                 except ValueError as exc:
                     raise ValueError("Evaluation metric must be numeric") from exc
                 if not math.isfinite(numeric):
                     raise ValueError("Evaluation metric must be finite")
+                self._validate_metric_scale(configured[metric_name].scale, numeric)
             matches = self._matching_evaluations(item)
             if matches:
                 canonical = self._canonical_evaluation(matches)
@@ -700,6 +897,29 @@ class CodexCurationCallbackService:
             "policy": "scheduled-add-evals-v1",
             "evaluations": len(body.evaluations),
         }
+
+    @staticmethod
+    def _validate_metric_scale(scale: str | None, value: float) -> None:
+        """Enforce explicit finite numeric ranges without guessing missing metadata."""
+        if not scale:
+            return
+        normalized = scale.strip().lower().replace(" ", "")
+        ranges = {
+            "0-1": (0.0, 1.0),
+            "[0,1]": (0.0, 1.0),
+            "fraction": (0.0, 1.0),
+            "0-100": (0.0, 100.0),
+            "[0,100]": (0.0, 100.0),
+            "percent": (0.0, 100.0),
+            "percentage": (0.0, 100.0),
+            "0-1000": (0.0, 1000.0),
+            "[0,1000]": (0.0, 1000.0),
+        }
+        bounds = ranges.get(normalized)
+        if bounds is not None and not bounds[0] <= value <= bounds[1]:
+            raise ValueError(
+                f"Evaluation metric value {value:g} is outside configured scale {scale}"
+            )
 
     def _matching_evaluations(self, item) -> list[Evaluation]:
         return (

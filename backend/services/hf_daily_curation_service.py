@@ -21,6 +21,7 @@ from backend.models.database import (
 from backend.services.codex_add_evals_service import (
     CodexPaperJobService,
     codex_paper_job_service,
+    deferred_workflows_for_release,
 )
 from backend.utils.hf_daily_papers import fetch_hf_daily_papers
 from backend.utils.urls import get_paper_route_identifier
@@ -164,13 +165,7 @@ class HFDailyCurationService:
             "already_satisfied": 0,
         }
 
-        deferred = (
-            self.db.query(PaperCurationWorkflow)
-            .filter(PaperCurationWorkflow.status == "deferred")
-            .order_by(PaperCurationWorkflow.created_at, PaperCurationWorkflow.id)
-            .limit(create_capacity)
-            .all()
-        )
+        deferred = deferred_workflows_for_release(self.db, create_capacity)
         for workflow in deferred:
             paper = self.db.get(Paper, workflow.paper_id)
             if paper is None:
@@ -217,12 +212,7 @@ class HFDailyCurationService:
                 continue
             existing = (
                 self.db.query(PaperCurationWorkflow)
-                .filter(
-                    PaperCurationWorkflow.paper_id == paper.id,
-                    PaperCurationWorkflow.status.in_(
-                        {"queued", "running", "completed", "satisfied", "deferred"}
-                    ),
-                )
+                .filter(PaperCurationWorkflow.paper_id == paper.id)
                 .first()
             )
             if existing:

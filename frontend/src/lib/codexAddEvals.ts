@@ -75,11 +75,28 @@ export interface CodexPaperWorkflow {
   stages: CodexPaperJob[];
 }
 
+export interface BenchmarkCurationCandidate {
+  id: string;
+  canonical_name: string;
+  gap_type: string;
+  canonical_url: string | null;
+  task_ids: number[];
+  aliases: string[];
+  status: string;
+  distinct_paper_count: number;
+  confidence: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  promoted_at: string | null;
+  evidence_paper_ids: number[];
+}
+
 export interface CodexPaperJobsResponse {
   timestamp: string;
   jobs: CodexPaperJob[];
   summary: Record<CodexPaperJobStatus, number> & { total: number };
   workflows: CodexPaperWorkflow[];
+  benchmark_candidates: BenchmarkCurationCandidate[];
   scheduler: {
     dispatch_enabled: boolean;
     paused_at: string | null;
@@ -89,6 +106,25 @@ export interface CodexPaperJobsResponse {
     oldest_scheduled_queued_at: string | null;
     queue_age_level: "healthy" | "warning" | "critical";
   };
+}
+
+export async function promoteBenchmarkCandidate(
+  candidateId: string,
+  payload: { dataset_id: number; task_id: number; best_metric: string },
+): Promise<void> {
+  const response = await fetch(
+    apiUrl(`/api/v1/admin/codex-curation/jobs/benchmark-candidates/${candidateId}/promote`),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? `Could not promote benchmark candidate (${response.status}).`);
+  }
 }
 
 export function isCodexAddEvalsEnabled(): boolean {

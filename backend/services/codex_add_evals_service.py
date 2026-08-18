@@ -17,12 +17,14 @@ from typing import Literal
 
 from huggingface_hub import HfApi
 from huggingface_hub.errors import HfHubHTTPError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import (
+    BenchmarkCurationCandidate,
+    BenchmarkCurationEvidence,
     Paper,
     PaperCurationJob,
     PaperCurationSchedulerState,
@@ -99,12 +101,54 @@ class CodexPaperJobsResponse(BaseModel):
     timestamp: datetime
     jobs: list[CodexPaperJob]
     summary: CodexPaperJobCounts
-    workflows: list[dict] = []
-    scheduler: dict = {}
+    workflows: list[dict] = Field(default_factory=list)
+    benchmark_candidates: list[dict] = Field(default_factory=list)
+    scheduler: dict = Field(default_factory=dict)
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def deferred_workflows_for_release(
+    db: Session,
+    limit: int,
+    *,
+    policy_version: str | None = None,
+) -> list[PaperCurationWorkflow]:
+    """Release one starved workflow, then fill remaining capacity newest-first."""
+    if limit <= 0:
+        return []
+    query = db.query(PaperCurationWorkflow).filter(
+        PaperCurationWorkflow.status == "deferred"
+    )
+    if policy_version is not None:
+        query = query.filter(PaperCurationWorkflow.policy_version == policy_version)
+    overdue = (
+        query.filter(PaperCurationWorkflow.created_at < _now() - timedelta(hours=24))
+        .order_by(
+            PaperCurationWorkflow.created_at,
+            PaperCurationWorkflow.cohort_date,
+            PaperCurationWorkflow.cohort_order,
+            PaperCurationWorkflow.id,
+        )
+        .first()
+    )
+    selected = [overdue] if overdue is not None else []
+    newest = query
+    if overdue is not None:
+        newest = newest.filter(PaperCurationWorkflow.id != overdue.id)
+    selected.extend(
+        newest.order_by(
+            PaperCurationWorkflow.cohort_date.desc(),
+            PaperCurationWorkflow.cohort_order,
+            PaperCurationWorkflow.created_at,
+            PaperCurationWorkflow.id,
+        )
+        .limit(limit - len(selected))
+        .all()
+    )
+    return selected
 
 
 def _launch_error(exc: Exception) -> str:
@@ -287,7 +331,7 @@ class CodexPaperJobService:
             )
             if len(active) >= settings.codex_jobs_max_active:
                 return
-            scheduled_active = sum(item.trigger != "admin" for item in active)
+            scheduled_active = sum(item.trigger == "hf-daily-cron" for item in active)
             scheduler_state = db.get(PaperCurationSchedulerState, 1)
             usage_allowed = self._scheduled_usage_allowed(db, scheduler_state)
             scheduled_allowed = bool(
@@ -302,7 +346,7 @@ class CodexPaperJobService:
                 db.query(PaperCurationJob)
                 .filter(
                     PaperCurationJob.status == "queued",
-                    PaperCurationJob.trigger == "admin",
+                    PaperCurationJob.trigger.in_({"admin", "benchmark-promotion"}),
                 )
                 .order_by(
                     PaperCurationJob.priority,
@@ -330,7 +374,7 @@ class CodexPaperJobService:
                 PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
             )
             .filter(
-                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.trigger == "hf-daily-cron",
                 PaperCurationJob.status.in_(ACTIVE_STATUSES),
                 PaperCurationWorkflow.created_at < cutoff,
             )
@@ -343,7 +387,7 @@ class CodexPaperJobService:
                 PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
             )
             .filter(
-                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.trigger == "hf-daily-cron",
                 PaperCurationJob.status == "queued",
             )
         )
@@ -380,7 +424,7 @@ class CodexPaperJobService:
         rows = (
             db.query(PaperCurationJob)
             .filter(
-                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.trigger == "hf-daily-cron",
                 PaperCurationJob.finished_at >= now - timedelta(days=8),
             )
             .all()
@@ -483,7 +527,6 @@ class CodexPaperJobService:
                 secrets={
                     "PWC_CURATION_JOB_TOKEN": callback_token,
                     "OPENAI_API_KEY": settings.codex_jobs_openai_api_key,
-                    "GITHUB_TOKEN": settings.github_token,
                 },
                 flavor="cpu-basic",
                 timeout=f"{2100 if row.kind == 'add-evals' else 1500}s",
@@ -603,11 +646,52 @@ class CodexPaperJobService:
                     ],
                 }
             )
+        benchmark_candidates = []
+        for candidate in (
+            db.query(BenchmarkCurationCandidate)
+            .order_by(
+                BenchmarkCurationCandidate.status,
+                BenchmarkCurationCandidate.distinct_paper_count.desc(),
+                BenchmarkCurationCandidate.last_seen_at.desc(),
+            )
+            .limit(100)
+            .all()
+        ):
+            evidence_rows = (
+                db.query(BenchmarkCurationEvidence)
+                .filter(BenchmarkCurationEvidence.candidate_id == candidate.id)
+                .order_by(BenchmarkCurationEvidence.created_at)
+                .all()
+            )
+            benchmark_candidates.append(
+                {
+                    "id": str(candidate.id),
+                    "canonical_name": candidate.canonical_name,
+                    "gap_type": candidate.gap_type,
+                    "canonical_url": candidate.canonical_url,
+                    "task_ids": candidate.task_ids,
+                    "aliases": candidate.aliases,
+                    "status": candidate.status,
+                    "distinct_paper_count": candidate.distinct_paper_count,
+                    "confidence": candidate.confidence,
+                    "first_seen_at": candidate.first_seen_at.isoformat(),
+                    "last_seen_at": candidate.last_seen_at.isoformat(),
+                    "promoted_at": (
+                        candidate.promoted_at.isoformat()
+                        if candidate.promoted_at
+                        else None
+                    ),
+                    "evidence_paper_ids": sorted(
+                        {int(item.paper_id) for item in evidence_rows}
+                    ),
+                }
+            )
         scheduler_state = db.get(PaperCurationSchedulerState, 1)
         oldest_scheduled = (
             db.query(func.min(PaperCurationJob.created_at))
             .filter(
-                PaperCurationJob.trigger != "admin", PaperCurationJob.status == "queued"
+                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.status == "queued",
             )
             .scalar()
         )
@@ -616,6 +700,7 @@ class CodexPaperJobService:
             jobs=[self.serialize(row, settings) for row in rows],
             summary=counts,
             workflows=workflow_payload,
+            benchmark_candidates=benchmark_candidates,
             scheduler={
                 "dispatch_enabled": bool(
                     scheduler_state and scheduler_state.dispatch_enabled
@@ -652,7 +737,7 @@ class CodexPaperJobService:
     ) -> CodexPaperJob:
         if row.status not in TERMINAL_STATUSES:
             return self.serialize(row, settings)
-        return self.enqueue(
+        retried = self.enqueue(
             db,
             kind=row.kind,
             paper_id=row.paper_id,
@@ -666,7 +751,18 @@ class CodexPaperJobService:
             policy_version=row.policy_version,
             priority=0 if row.trigger == "admin" else row.priority,
             retry_of_id=row.id,
+            dispatch=False,
         )
+        if row.parent_workflow_id is not None:
+            workflow = db.get(PaperCurationWorkflow, row.parent_workflow_id)
+            if workflow is not None:
+                workflow.status = "running"
+                workflow.error = None
+                workflow.finished_at = None
+                db.commit()
+        self.dispatch_next(db, settings)
+        refreshed = db.get(PaperCurationJob, retried.id)
+        return self.serialize(refreshed, settings)
 
     def reconcile(self, db: Session, settings: Settings) -> None:
         """Mark finished remote Jobs that failed to call back, then advance FIFO."""
@@ -725,6 +821,24 @@ class CodexPaperJobService:
             row if secrets.compare_digest(candidate, row.callback_token_hash) else None
         )
 
+    @staticmethod
+    def token_owner_for_other_job(
+        db: Session, job_id: uuid.UUID, token: str
+    ) -> PaperCurationJob | None:
+        """Identify a valid active token presented outside its one-job scope."""
+        if not hasattr(db, "query"):
+            return None
+        candidate = hashlib.sha256(token.encode()).hexdigest()
+        return (
+            db.query(PaperCurationJob)
+            .filter(
+                PaperCurationJob.id != job_id,
+                PaperCurationJob.callback_token_hash == candidate,
+                PaperCurationJob.status.in_(ACTIVE_STATUSES),
+            )
+            .first()
+        )
+
     def complete(
         self,
         db: Session,
@@ -772,7 +886,7 @@ class CodexPaperJobService:
         return self.serialize(row, settings)
 
     def _evaluate_scheduled_health(self, db: Session, row: PaperCurationJob) -> None:
-        if getattr(row, "trigger", "admin") == "admin":
+        if getattr(row, "trigger", "admin") != "hf-daily-cron":
             return
         state = db.get(PaperCurationSchedulerState, 1)
         if state is None:
@@ -797,7 +911,7 @@ class CodexPaperJobService:
         recent = (
             db.query(PaperCurationJob)
             .filter(
-                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.trigger == "hf-daily-cron",
                 PaperCurationJob.status.in_({"completed", "failed"}),
             )
             .order_by(PaperCurationJob.finished_at.desc())
@@ -896,6 +1010,10 @@ class CodexPaperJobService:
                 workflow.status = "partial" if row.kind == "add-evals" else "failed"
                 workflow.error = row.error
                 workflow.finished_at = _now()
+        elif row.status == "canceled":
+            workflow.status = "canceled"
+            workflow.error = "Canceled by an administrator"
+            workflow.finished_at = _now()
         db.commit()
 
     def _release_canary_backlog(
@@ -923,19 +1041,8 @@ class CodexPaperJobService:
             .count()
         )
         capacity = max(0, settings.codex_curation_queue_depth - nonterminal)
-        deferred = (
-            db.query(PaperCurationWorkflow)
-            .filter(
-                PaperCurationWorkflow.policy_version == policy_version,
-                PaperCurationWorkflow.status == "deferred",
-            )
-            .order_by(
-                PaperCurationWorkflow.cohort_date.desc(),
-                PaperCurationWorkflow.cohort_order,
-                PaperCurationWorkflow.id,
-            )
-            .limit(capacity)
-            .all()
+        deferred = deferred_workflows_for_release(
+            db, capacity, policy_version=policy_version
         )
         for deferred_workflow in deferred:
             paper = db.get(Paper, deferred_workflow.paper_id)
@@ -981,6 +1088,7 @@ class CodexPaperJobService:
         row.status = "canceled"
         row.finished_at = _now()
         db.commit()
+        self._advance_workflow(db, row, settings)
         self.dispatch_next(db, settings)
         return self.serialize(row, settings)
 

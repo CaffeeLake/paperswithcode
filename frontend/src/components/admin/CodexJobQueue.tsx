@@ -21,6 +21,7 @@ import {
   retryCodexPaperJob,
   retryCodexTrace,
   cancelCodexPaperJob,
+  promoteBenchmarkCandidate,
   setCodexScheduler,
   type CodexPaperJob,
   type CodexPaperJobStatus,
@@ -79,6 +80,7 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
   const [policyVersion, setPolicyVersion] = useState("");
   const [cohortDate, setCohortDate] = useState("");
   const [reviewStatus, setReviewStatus] = useState("");
+  const [promotionInputs, setPromotionInputs] = useState<Record<string, { dataset: string; task: string; metric: string }>>({});
   const filters = { trigger, status, policy_version: policyVersion, cohort_date: cohortDate, review_status: reviewStatus };
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ["codexPaperJobs", refreshToken, filters],
@@ -91,6 +93,11 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
   const cancelJob = useMutation({ mutationFn: cancelCodexPaperJob, onSuccess: refresh });
   const retryTrace = useMutation({ mutationFn: retryCodexTrace, onSuccess: refresh });
   const scheduler = useMutation({ mutationFn: setCodexScheduler, onSuccess: refresh });
+  const promoteCandidate = useMutation({
+    mutationFn: ({ id, dataset, task, metric }: { id: string; dataset: string; task: string; metric: string }) =>
+      promoteBenchmarkCandidate(id, { dataset_id: Number(dataset), task_id: Number(task), best_metric: metric.trim() }),
+    onSuccess: refresh,
+  });
 
   const errorStatus = error && typeof error === "object" && "status" in error ? error.status : undefined;
 
@@ -101,7 +108,7 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
           <div>
             <CardTitle className="text-xl">Codex paper jobs</CardTitle>
             <CardDescription>
-              Durable queue and execution history for admin-triggered Hugging Face Jobs
+              Durable queue, two-stage daily workflows, traces, and benchmark-gap follow-up
             </CardDescription>
           </div>
           {isFetching && !isLoading && (
@@ -141,11 +148,11 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                 </div>
                 <Button
                   size="sm"
-                  variant={data.scheduler.paused_at ? "default" : "outline"}
+                  variant={data.scheduler.paused_at || !data.scheduler.dispatch_enabled ? "default" : "outline"}
                   disabled={scheduler.isPending}
-                  onClick={() => scheduler.mutate(data.scheduler.paused_at ? "resume" : "pause")}
+                  onClick={() => scheduler.mutate(data.scheduler.paused_at || !data.scheduler.dispatch_enabled ? "resume" : "pause")}
                 >
-                  {data.scheduler.paused_at ? "Acknowledge & resume" : "Pause scheduled dispatch"}
+                  {data.scheduler.paused_at ? "Acknowledge & resume" : !data.scheduler.dispatch_enabled ? "Enable scheduled dispatch" : "Pause scheduled dispatch"}
                 </Button>
               </div>
             </div>
@@ -270,11 +277,14 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                         <div key={stage.id} className="rounded border p-3">
                           <div className="font-medium">{kindLabels[stage.kind]} · {stage.status} · trace {stage.trace_status}</div>
                           <div className="mt-1 cron-muted">
-                            model {stage.model ?? "—"} · reasoning {stage.reasoning_effort ?? "—"} · tokens {(stage.input_tokens ?? 0) + (stage.output_tokens ?? 0)} · attempts {stage.attempt_count}
+                            model {stage.model ?? "—"} · reasoning {stage.reasoning_effort ?? "—"} · tokens {(stage.input_tokens ?? 0) + (stage.output_tokens ?? 0)} · duration {stage.duration_ms ?? 0} ms · attempts {stage.attempt_count}
                           </div>
-                          {stage.url_candidates && <div className="mt-1">URL candidates: {stage.url_candidates.candidates?.length ?? 0} · source layers: {stage.url_candidates.sources?.length ?? 0}</div>}
+                          {stage.error && <div className="mt-2 text-red-700">{stage.error}</div>}
+                          {stage.report && <div className="mt-2 whitespace-pre-wrap rounded border p-2">{stage.report}</div>}
+                          {stage.url_candidates && <details className="mt-2"><summary>URL candidates and provenance</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.url_candidates, null, 2)}</pre></details>}
                           {stage.validation_summary && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.validation_summary, null, 2)}</pre>}
                           {stage.proposal && <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.proposal, null, 2)}</pre>}
+                          {stage.mutation_result && <details className="mt-2"><summary>Accepted callback result and before/after state</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.mutation_result, null, 2)}</pre></details>}
                           {stage.trace_status === "complete" && (
                             <a className="mt-2 inline-flex items-center gap-1 hover:underline" href={`/api/v1/admin/codex-curation/jobs/${stage.id}/trace`} target="_blank" rel="noreferrer">
                               Authenticated trace manifest <ExternalLink className="h-3.5 w-3.5" />
@@ -285,6 +295,41 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                     </div>
                   </details>
                 ))}
+              </div>
+            )}
+            {data.benchmark_candidates.length > 0 && (
+              <div className="mt-8 space-y-3">
+                <h3 className="text-base font-semibold">Benchmark-gap backlog</h3>
+                {data.benchmark_candidates.map((candidate) => {
+                  const inputs = promotionInputs[candidate.id] ?? { dataset: "", task: candidate.task_ids[0]?.toString() ?? "", metric: "" };
+                  const valid = Number(inputs.dataset) > 0 && Number(inputs.task) > 0 && inputs.metric.trim().length > 0;
+                  return (
+                    <div key={candidate.id} className="rounded-md border p-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-medium">{candidate.canonical_name} · {candidate.gap_type} · {candidate.status}</div>
+                        <div className="cron-muted">{candidate.distinct_paper_count} paper{candidate.distinct_paper_count === 1 ? "" : "s"} · {candidate.confidence ?? "unknown"} confidence</div>
+                      </div>
+                      {candidate.canonical_url && <a className="mt-1 block hover:underline" href={candidate.canonical_url} target="_blank" rel="noreferrer">{candidate.canonical_url}</a>}
+                      <div className="mt-1 cron-muted">Task evidence: {candidate.task_ids.join(", ") || "none"} · Papers: {candidate.evidence_paper_ids.join(", ")}</div>
+                      {candidate.status !== "promoted" && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {(["dataset", "task", "metric"] as const).map((field) => (
+                            <input
+                              key={field}
+                              aria-label={`${candidate.canonical_name} ${field}`}
+                              className="w-36 rounded border px-2 py-1"
+                              placeholder={field === "metric" ? "Exact metric" : `${field} ID`}
+                              value={inputs[field]}
+                              onChange={(event) => setPromotionInputs((current) => ({ ...current, [candidate.id]: { ...inputs, [field]: event.target.value } }))}
+                            />
+                          ))}
+                          <Button size="sm" variant="outline" disabled={!valid || promoteCandidate.isPending} onClick={() => promoteCandidate.mutate({ id: candidate.id, ...inputs })}>Promote & requeue evidence papers</Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {promoteCandidate.error && <div className="cron-message cron-message--error">{promoteCandidate.error.message}</div>}
               </div>
             )}
             <p className="mt-4 text-xs cron-muted">

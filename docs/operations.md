@@ -374,7 +374,17 @@ Configuration is fail-closed. Production direct apply requires all of:
 - `PWC_CODEX_CURATION_DIRECT_APPLY_ENABLED=true`;
 - `PWC_CODEX_CURATION_TRACE_UPLOAD_ENABLED=true`;
 - a private, fully qualified `PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID`;
+- an anonymously pullable curator image pinned as
+  `registry/repository@sha256:<digest>` in `PWC_CODEX_JOBS_IMAGE`;
 - pinned model `gpt5.6-Sol`, medium reasoning, and Codex CLI version.
+
+The checked-in image workflow publishes to GHCR with the repository-scoped
+Actions token; operators do not need to grant the GitHub CLI package-write
+access. Before enabling dispatch, verify the package itself (not only the source
+repository) is public and probe an anonymous pull from Hugging Face Jobs. A tag
+such as `latest` is never valid for scheduled production dispatch. When the
+runner or image changes, publish it, record the resulting manifest digest in the
+release configuration, and repeat the anonymous Jobs probe before deployment.
 
 Pause and recovery are scoped to scheduled dispatch; admin jobs remain
 available:
@@ -399,6 +409,13 @@ false and run the reconciler with an explicit date/limit. Validator replay uses
 the persisted `proposal` and current callback validators. Revert a bad scoped
 mutation through the existing paper/evaluation admin surfaces using the stored
 before-state/diff; there is intentionally no broad automatic restore button.
+
+Benchmark gaps remain review-only until an administrator configures the exact
+existing task, dataset, and leaderboard metric. The dashboard promotion action
+then marks the candidate promoted and idempotently requeues only its evidence
+papers as `add-evals`; it never creates taxonomy, datasets, metrics, or
+leaderboards. Thumbnail generation and citation/reference tagging remain
+separate workflows.
 
 Apply `backend/database/migrations/add_autonomous_paper_curation.sql` before the
 first release that enables the scheduler. Thumbnail generation and the

@@ -19,10 +19,15 @@ from backend.models.database import (
     BenchmarkCurationCandidate,
     BenchmarkCurationEvidence,
     Dataset,
+    Metric,
     Paper,
+    PaperCurationJob,
     Task,
+    TaskDataset,
+    TaskDatasetMetric,
 )
 from backend.utils.public_urls import normalize_public_url
+from backend.utils.urls import get_paper_route_identifier
 
 GAP_TYPES = {
     "dataset_missing",
@@ -514,3 +519,125 @@ class BenchmarkGapService:
             )
             results.append({"candidate_id": str(row.id), "identity_key": identity_key})
         return results
+
+    def promote_and_enqueue(
+        self,
+        *,
+        candidate_id: uuid.UUID,
+        dataset_id: int,
+        task_id: int,
+        best_metric: str,
+        settings,
+        job_service,
+    ) -> dict[str, Any]:
+        """Confirm catalog configuration and enqueue only linked evidence papers."""
+        candidate = self.db.get(BenchmarkCurationCandidate, candidate_id)
+        if candidate is None:
+            raise LookupError("Benchmark candidate not found")
+        dataset = self.db.get(Dataset, dataset_id)
+        task = self.db.get(Task, task_id)
+        if dataset is None or task is None:
+            raise ValueError("Promotion requires an existing task and dataset")
+        leaderboard = self.db.get(TaskDataset, (task_id, dataset_id))
+        if leaderboard is None:
+            raise ValueError("Promotion requires an existing task/dataset leaderboard")
+        metric = (
+            self.db.query(Metric)
+            .join(TaskDatasetMetric, TaskDatasetMetric.metric_id == Metric.id)
+            .filter(
+                TaskDatasetMetric.task_id == task_id,
+                TaskDatasetMetric.dataset_id == dataset_id,
+                Metric.name == best_metric,
+            )
+            .one_or_none()
+        )
+        if metric is None:
+            raise ValueError("Promotion metric is not configured on the leaderboard")
+        if candidate.task_ids and task_id not in set(candidate.task_ids):
+            raise ValueError("Promotion task is outside the candidate task evidence")
+
+        evidence_rows = (
+            self.db.query(BenchmarkCurationEvidence)
+            .filter(BenchmarkCurationEvidence.candidate_id == candidate.id)
+            .order_by(BenchmarkCurationEvidence.created_at)
+            .all()
+        )
+        expected_metrics = {
+            item.get("name")
+            for evidence in evidence_rows
+            for item in ((evidence.payload.get("protocol") or {}).get("metrics") or [])
+            if isinstance(item, dict)
+        }
+        if expected_metrics and best_metric not in expected_metrics:
+            raise ValueError(
+                "Promotion metric does not match the captured paper evidence"
+            )
+
+        policy_version = f"benchmark-promotion-{str(candidate.id)[:12]}"
+        enqueued = []
+        skipped_active: list[int] = []
+        paper_ids = sorted({int(item.paper_id) for item in evidence_rows})
+        for paper_id in paper_ids:
+            existing = (
+                self.db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.paper_id == paper_id,
+                    PaperCurationJob.kind == "add-evals",
+                    PaperCurationJob.trigger == "benchmark-promotion",
+                    PaperCurationJob.policy_version == policy_version,
+                    PaperCurationJob.status.in_(
+                        {"queued", "dispatching", "running", "completed"}
+                    ),
+                )
+                .order_by(PaperCurationJob.created_at.desc())
+                .first()
+            )
+            if existing is not None:
+                enqueued.append(job_service.serialize(existing, settings))
+                continue
+            active = (
+                self.db.query(PaperCurationJob.id)
+                .filter(
+                    PaperCurationJob.paper_id == paper_id,
+                    PaperCurationJob.kind == "add-evals",
+                    PaperCurationJob.status.in_({"queued", "dispatching", "running"}),
+                )
+                .first()
+            )
+            if active is not None:
+                skipped_active.append(paper_id)
+                continue
+            paper = self.db.get(Paper, paper_id)
+            if paper is None:
+                continue
+            enqueued.append(
+                job_service.enqueue(
+                    self.db,
+                    kind="add-evals",
+                    paper_id=paper.id,
+                    paper_route=get_paper_route_identifier(
+                        paper.source, paper.arxiv_id, paper.id
+                    ),
+                    paper_title=paper.title,
+                    requested_by=f"benchmark-promotion:{candidate.id}",
+                    settings=settings,
+                    trigger="benchmark-promotion",
+                    policy_version=policy_version,
+                    priority=50,
+                    dispatch=False,
+                    commit=False,
+                )
+            )
+
+        candidate.status = "promoted"
+        candidate.promoted_at = datetime.now(UTC)
+        self.db.commit()
+        job_service.dispatch_next(self.db, settings)
+        return {
+            "candidate_id": str(candidate.id),
+            "dataset_id": dataset_id,
+            "task_id": task_id,
+            "best_metric": best_metric,
+            "enqueued_job_ids": [str(item.id) for item in enqueued],
+            "skipped_active_paper_ids": skipped_active,
+        }

@@ -85,6 +85,22 @@ def test_codex_jobs_configuration_isolated_from_auth(settings_factory):
     )
 
 
+def test_scheduled_curation_requires_digest_pinned_worker_image(settings_factory):
+    settings, _release = settings_factory("production")
+    settings.codex_curation_scheduler_enabled = True
+    settings.codex_curation_direct_apply_enabled = True
+    settings.codex_curation_trace_upload_enabled = True
+    settings.codex_curation_trace_hf_bucket_id = "example/private-traces"
+    settings.codex_jobs_image = "ghcr.io/example/curator:latest"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        runtime_validation.validate_codex_jobs_configuration(settings)
+
+    assert str(exc_info.value) == (
+        "scheduled paper curation requires an immutable curator image"
+    )
+
+
 def test_chat_runtime_descriptor_classifies_enabled_dormant_and_legacy(
     settings_factory,
 ):

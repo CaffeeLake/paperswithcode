@@ -2951,7 +2951,10 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
         "PWC_CODEX_JOBS_NAMESPACE": "nielsr",
         "PWC_CODEX_JOBS_OPENAI_API_KEY": "openai-secret",
         "PWC_CODEX_JOBS_TOKEN": "hf-secret",
-        "PWC_CODEX_JOBS_IMAGE": "ghcr.io/huggingface/paperswithcode-codex-curator",
+        "PWC_CODEX_JOBS_IMAGE": (
+            "ghcr.io/huggingface/paperswithcode-codex-curator"
+            "@sha256:426c9ad3e23e3db69fa66da5340a9ce8e37c02416ca878d7ad9e66054550ce21"
+        ),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
         "PWC_CODEX_JOBS_MODEL": "gpt5.6-Sol",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",

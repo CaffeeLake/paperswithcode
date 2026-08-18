@@ -153,6 +153,9 @@ class CurationTraceService:
         row.trace_uri = result.get("uri")
         row.trace_sha256 = sha256(proposal_bytes + events)
         row.trace_attempt_count += 1
+        state = self.db.get(PaperCurationSchedulerState, 1)
+        if state:
+            state.consecutive_trace_failures = 0
         self.db.commit()
         return result
 

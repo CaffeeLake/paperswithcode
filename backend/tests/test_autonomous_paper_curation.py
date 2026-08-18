@@ -4,15 +4,29 @@ import base64
 import gzip
 import json
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from jsonschema import Draft202012Validator
 
 from backend.config import get_settings
+from backend.models.database import (
+    BenchmarkCurationCandidate,
+    BenchmarkCurationEvidence,
+    Dataset,
+    Metric,
+    Paper,
+    Task,
+    TaskDataset,
+)
 from backend.services.benchmark_gap_service import BenchmarkGapService
 from backend.services.codex_add_evals_service import CodexPaperJobService
+from backend.services.codex_curation_callback_service import (
+    CodexCurationCallbackService,
+)
 from backend.services.curation_trace_service import (
     CurationTraceService,
     redact_trace,
@@ -200,6 +214,51 @@ def test_daily_schedule_avoids_the_organization_sync_minute():
     assert 'cron: "20 2 * * *"' not in workflow
 
 
+def test_cross_job_callback_token_pauses_scheduled_dispatch(monkeypatch):
+    from backend.routers import codex_curation_callbacks
+
+    added = []
+
+    class Database:
+        def get(self, *_args):
+            return None
+
+        def add(self, value):
+            added.append(value)
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(
+        codex_curation_callbacks.codex_paper_job_service,
+        "authenticate",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        codex_curation_callbacks.codex_paper_job_service,
+        "token_owner_for_other_job",
+        lambda *_args: object(),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        codex_curation_callbacks._callback_job(
+            uuid.uuid4(), "Bearer valid-for-another-job", Database()
+        )
+
+    assert error.value.status_code == 401
+    assert added[0].pause_condition == "cross_paper_authorization"
+    assert added[0].paused_at is not None
+
+
+@pytest.mark.parametrize(
+    ("scale", "value"),
+    [("0-1", 1.01), ("0-100", 100.01), ("0-1000", 1000.01)],
+)
+def test_metric_scale_guard_rejects_out_of_range_values(scale, value):
+    with pytest.raises(ValueError, match="outside configured scale"):
+        CodexCurationCallbackService._validate_metric_scale(scale, value)
+
+
 class _DispatchQuery:
     def __init__(self, database):
         self.database = database
@@ -294,6 +353,8 @@ def test_hf_dispatch_retries_with_bounded_exponential_backoff(monkeypatch):
     assert remote.id == "hf-job"
     assert len(calls) == 3
     assert sleeps == [1, 2]
+    assert all("GITHUB_TOKEN" not in call["secrets"] for call in calls)
+    assert all(call["image"] == "example/image:sha" for call in calls)
 
 
 def test_benchmark_gap_validation_isolates_malformed_entries():
@@ -409,13 +470,125 @@ def test_benchmark_gap_rejects_server_owned_fields():
     ]
 
 
+def test_reviewed_benchmark_promotion_requeues_only_evidence_papers():
+    candidate_id = uuid.uuid4()
+    candidate = SimpleNamespace(
+        id=candidate_id,
+        task_ids=[19],
+        status="candidate",
+        promoted_at=None,
+    )
+    evidence = SimpleNamespace(
+        candidate_id=candidate_id,
+        paper_id=42,
+        created_at=datetime(2026, 8, 18, tzinfo=UTC),
+        payload={"protocol": {"metrics": [{"name": "Accuracy"}]}},
+    )
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        arxiv_id="2608.00042",
+        title="Evidence paper",
+    )
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+
+        def join(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def one_or_none(self):
+            if self.model is Metric:
+                return SimpleNamespace(id=7, name="Accuracy")
+            return None
+
+        def all(self):
+            return [evidence] if self.model is BenchmarkCurationEvidence else []
+
+        def first(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.commits = 0
+
+        def get(self, model, key):
+            values = {
+                (BenchmarkCurationCandidate, candidate_id): candidate,
+                (Dataset, 8): SimpleNamespace(id=8),
+                (Task, 19): SimpleNamespace(id=19),
+                (TaskDataset, (19, 8)): SimpleNamespace(task_id=19, dataset_id=8),
+                (Paper, 42): paper,
+            }
+            return values.get((model, key))
+
+        def query(self, model):
+            return Query(model)
+
+        def commit(self):
+            self.commits += 1
+
+    class Jobs:
+        def __init__(self):
+            self.enqueued = []
+            self.dispatched = False
+
+        def enqueue(self, db, **values):
+            self.enqueued.append((db, values))
+            return SimpleNamespace(id=uuid.uuid4())
+
+        def dispatch_next(self, *_args):
+            self.dispatched = True
+
+    database = Database()
+    jobs = Jobs()
+    result = BenchmarkGapService(database).promote_and_enqueue(
+        candidate_id=candidate_id,
+        dataset_id=8,
+        task_id=19,
+        best_metric="Accuracy",
+        settings=get_settings(),
+        job_service=jobs,
+    )
+
+    assert result["skipped_active_paper_ids"] == []
+    assert len(result["enqueued_job_ids"]) == 1
+    assert jobs.enqueued[0][1] | {"settings": None} == {
+        "kind": "add-evals",
+        "paper_id": 42,
+        "paper_route": "2608.00042",
+        "paper_title": "Evidence paper",
+        "requested_by": f"benchmark-promotion:{candidate_id}",
+        "trigger": "benchmark-promotion",
+        "policy_version": f"benchmark-promotion-{str(candidate_id)[:12]}",
+        "priority": 50,
+        "dispatch": False,
+        "commit": False,
+        "settings": None,
+    }
+    assert candidate.status == "promoted"
+    assert candidate.promoted_at is not None
+    assert jobs.dispatched is True
+
+
 def test_trace_bundle_manifest_hashes_every_uploaded_object(tmp_path):
+    scheduler = SimpleNamespace(consecutive_trace_failures=2)
+
     class Database:
         def commit(self):
             pass
 
-        def get(self, *_args):
-            return None
+        def get(self, model, *_args):
+            from backend.models.database import PaperCurationSchedulerState
+
+            return scheduler if model is PaperCurationSchedulerState else None
 
     class Hub:
         def __init__(self):
@@ -476,6 +649,7 @@ def test_trace_bundle_manifest_hashes_every_uploaded_object(tmp_path):
     manifest_path = next(path for path in hub.objects if path.endswith("manifest.json"))
     manifest = json.loads(hub.objects[manifest_path])
     assert row.trace_status == "complete"
+    assert scheduler.consecutive_trace_failures == 0
     assert {"events.jsonl.gz", "prompt.txt", "proposal.json", "result.json"} <= set(
         manifest["objects"]
     )
