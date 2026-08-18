@@ -3742,6 +3742,32 @@ def test_cron_jobs_declare_bounded_execution_contracts():
         assert spec.health_job
 
 
+@pytest.mark.parametrize(
+    ("features", "expected"),
+    [
+        (
+            {"codex_add_evals": True, "codex_enrich_paper": True},
+            ("true", "true", "true"),
+        ),
+        ({"chat": False}, ("false", "false", "false")),
+    ],
+)
+def test_cron_codex_flags_follow_active_release(features, expected):
+    env = {
+        "PWC_CODEX_ADD_EVALS_ENABLED": "stale",
+        "PWC_CODEX_ENRICH_PAPER_ENABLED": "stale",
+        "PWC_CODEX_JOBS_ENABLED": "stale",
+    }
+
+    cron_launcher.apply_release_features(env, {"backend_features": features})
+
+    assert (
+        env["PWC_CODEX_ADD_EVALS_ENABLED"],
+        env["PWC_CODEX_ENRICH_PAPER_ENABLED"],
+        env["PWC_CODEX_JOBS_ENABLED"],
+    ) == expected
+
+
 def test_hot_workflow_runs_on_the_activated_production_schedule():
     workflow = (
         Path(__file__).resolve().parents[2]
