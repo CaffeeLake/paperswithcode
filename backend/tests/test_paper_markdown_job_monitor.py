@@ -42,6 +42,7 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
         "failed_papers": 3,
         "already_existed_papers": 0,
         "extracted_images": 87,
+        "omitted_images": 2,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "error_samples": [{"arxiv_id": "2607.00001", "error": "invalid_pdf"}],
     }
@@ -94,6 +95,7 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     assert result["summary"]["active_jobs"] == 1
     assert result["summary"]["processed_papers"] == 123
     assert result["summary"]["extracted_images"] == 87
+    assert result["summary"]["omitted_images"] == 2
     assert result["budgets"]["live"]["ceiling_usd"] == 100.0
     assert result["budgets"]["backfill"]["ceiling_usd"] == 750.0
     assert result["budgets"]["backfill"]["active_reserved_usd"] == 21.6
@@ -102,6 +104,7 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     assert result["jobs"][0]["stage"] == "RUNNING"
     assert result["jobs"][0]["effective_outcome"] == "active"
     assert result["jobs"][0]["progress"]["failed_papers"] == 3
+    assert result["jobs"][0]["progress"]["omitted_images"] == 2
     monitor.clear_paper_markdown_job_monitor_cache()
 
 
