@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from huggingface_hub.errors import HfHubHTTPError
 from httpx import Request, Response
@@ -110,6 +111,54 @@ def test_launch_error_keeps_hub_validation_message():
 
     assert "does not have permission" in message
     assert "HfHubHTTPError" not in message
+
+
+@pytest.mark.parametrize(
+    ("validation_summary", "mutation_result", "expected_status"),
+    [
+        (
+            {"post_write_verification": "passed"},
+            {"status": "no_changes"},
+            "completed",
+        ),
+        (
+            {"status": "rejected", "error": "invalid metric"},
+            None,
+            "failed",
+        ),
+    ],
+)
+def test_completion_requires_an_accepted_verified_apply(
+    validation_summary, mutation_result, expected_status
+):
+    row = SimpleNamespace(
+        status="running",
+        submitted_at=datetime.now(UTC),
+        validation_summary=validation_summary,
+        mutation_result=mutation_result,
+        thumbnail_status=None,
+        applied_at=None,
+        report=None,
+        error=None,
+        finished_at=None,
+    )
+
+    class Database:
+        def commit(self):
+            pass
+
+    service = CodexPaperJobService()
+    service.serialize = lambda candidate, _settings: candidate
+    service._advance_workflow = lambda *_args: None
+    service._evaluate_scheduled_health = lambda *_args: None
+    service.dispatch_next = lambda *_args: None
+
+    result = service.complete(
+        Database(), row, report="audit", error=None, settings=get_settings()
+    )
+
+    assert result.status == expected_status
+    assert (result.error is None) == (expected_status == "completed")
 
 
 def test_remote_callbacks_identify_the_service_to_cloudflare():

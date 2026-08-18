@@ -917,7 +917,15 @@ class CodexPaperJobService:
         if row.status in TERMINAL_STATUSES:
             return self.serialize(row, settings)
         completion_error = error
-        if completion_error is None and getattr(row, "submitted_at", None) is None:
+        accepted_apply = bool(
+            getattr(row, "submitted_at", None) is not None
+            and getattr(row, "mutation_result", None) is not None
+            and (getattr(row, "validation_summary", None) or {}).get(
+                "post_write_verification"
+            )
+            == "passed"
+        )
+        if completion_error is None and not accepted_apply:
             completion_error = "Remote job completed without an accepted apply."
         thumbnail_status = getattr(row, "thumbnail_status", None)
         if completion_error is None and thumbnail_status in {"queued", "processing"}:
