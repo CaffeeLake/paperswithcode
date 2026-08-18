@@ -781,7 +781,12 @@ class CodexPaperJobService:
         )
 
     def retry(
-        self, db: Session, row: PaperCurationJob, settings: Settings
+        self,
+        db: Session,
+        row: PaperCurationJob,
+        settings: Settings,
+        *,
+        priority: int | None = None,
     ) -> CodexPaperJob:
         if row.status not in TERMINAL_STATUSES:
             return self.serialize(row, settings)
@@ -797,7 +802,9 @@ class CodexPaperJobService:
             parent_workflow_id=row.parent_workflow_id,
             cohort_date=row.cohort_date,
             policy_version=row.policy_version,
-            priority=0 if row.trigger == "admin" else row.priority,
+            priority=(0 if row.trigger == "admin" else row.priority)
+            if priority is None
+            else priority,
             retry_of_id=row.id,
             dispatch=False,
         )
@@ -987,6 +994,11 @@ class CodexPaperJobService:
             .filter(
                 PaperCurationJob.trigger == "hf-daily-cron",
                 PaperCurationJob.status.in_({"completed", "failed"}),
+                *(
+                    [PaperCurationJob.finished_at > state.acknowledged_at]
+                    if state.acknowledged_at is not None
+                    else []
+                ),
             )
             .order_by(PaperCurationJob.finished_at.desc())
             .limit(25)
