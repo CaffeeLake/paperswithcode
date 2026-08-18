@@ -66,4 +66,14 @@ describe("Header navigation", () => {
     expect(mobileLinks[2]).toHaveAccessibleName("Browse state-of-the-art");
     expect(within(mobileLinks[1]).getByText("New")).toBeVisible();
   });
+
+  it("hides the CLI announcement on PDF reader routes", () => {
+    render(
+      <MemoryRouter initialEntries={["/pdf/2606.03748"]}>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });

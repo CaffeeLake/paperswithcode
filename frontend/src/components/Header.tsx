@@ -74,6 +74,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const closeMobile = () => setMobileOpen(false);
   const { user, logout } = useAuth();
   const location = useLocation();
+  const isReaderRoute = location.pathname.startsWith("/pdf/");
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
   const navLinks: readonly HeaderNavLink[] = isChatEnabled()
@@ -147,12 +148,12 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <HeaderIcon name={mobileOpen ? "close" : "menu"} size={14} />
           </button>
         </div>
-        <div className="site-announcement" role="status">
+        {!isReaderRoute && <div className="site-announcement" role="status">
           <span>New: Papers with Code CLI and Skill now </span>
           <a href={PWC_CLI_URL} target="_blank" rel="noreferrer">
             available
           </a>
-        </div>
+        </div>}
       </header>
       {mobileOpen && (
         <div className="mobile-nav-drawer" onClick={closeMobile}>

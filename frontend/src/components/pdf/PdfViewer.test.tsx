@@ -129,6 +129,11 @@ describe("PdfViewer resize rendering", () => {
     scrollSurface.dispatchEvent(pinchEvent);
 
     expect(pinchEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(Number(
+      screen.getByTestId("pdf-page").closest<HTMLElement>(".pdf-pages")?.style
+        .getPropertyValue("--pdf-live-scale"),
+    )).toBeGreaterThan(1));
+    expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "790");
     await waitFor(() => expect(Number(screen.getByTestId("pdf-page").dataset.width)).toBeGreaterThan(790));
   });
 });

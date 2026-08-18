@@ -62,11 +62,15 @@ export function PdfViewer({
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pagesRef = useRef<HTMLDivElement>(null);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const searchGeneration = useRef(0);
   const recenterAfterZoom = useRef(false);
   const pinchDelta = useRef(0);
   const pinchFrame = useRef(0);
+  const pinchCommitTimer = useRef(0);
+  const renderedZoom = useRef(1);
+  const liveZoom = useRef(1);
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
@@ -86,9 +90,17 @@ export function PdfViewer({
   }, []);
 
   useEffect(() => {
+    cancelAnimationFrame(pinchFrame.current);
+    window.clearTimeout(pinchCommitTimer.current);
+    pinchFrame.current = 0;
+    pinchCommitTimer.current = 0;
+    pinchDelta.current = 0;
     setPages(0);
     setPage(initialPage);
     setZoom(1);
+    renderedZoom.current = 1;
+    liveZoom.current = 1;
+    pagesRef.current?.style.setProperty("--pdf-live-scale", "1");
     setError("");
     setSearchQuery("");
     setMatches([]);
@@ -111,20 +123,23 @@ export function PdfViewer({
   const liveResizeScale = resizeActive ? displayWidth / fitWidth : 1;
 
   useLayoutEffect(() => {
+    renderedZoom.current = zoom;
+    pagesRef.current?.style.setProperty("--pdf-live-scale", String(liveResizeScale));
     if (!recenterAfterZoom.current) return;
     const element = scrollRef.current;
     if (element) {
       element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2);
     }
     recenterAfterZoom.current = false;
-  }, [pageWidth]);
+  }, [liveResizeScale, pageWidth, zoom]);
 
   const setCenteredZoom = useCallback((nextZoom: (value: number) => number) => {
-    setZoom((value) => {
-      const next = nextZoom(value);
-      recenterAfterZoom.current = next !== value;
-      return next;
-    });
+    window.clearTimeout(pinchCommitTimer.current);
+    const current = liveZoom.current;
+    const next = nextZoom(current);
+    liveZoom.current = next;
+    recenterAfterZoom.current = next !== renderedZoom.current;
+    setZoom(next);
   }, []);
 
   useEffect(() => {
@@ -139,17 +154,29 @@ export function PdfViewer({
         const delta = pinchDelta.current;
         pinchDelta.current = 0;
         pinchFrame.current = 0;
-        setCenteredZoom((value) => Math.max(0.5, Math.min(3, value * Math.exp(-delta * 0.002))));
+        const next = Math.max(0.5, Math.min(3, liveZoom.current * Math.exp(-delta * 0.002)));
+        liveZoom.current = next;
+        pagesRef.current?.style.setProperty(
+          "--pdf-live-scale",
+          String(liveResizeScale * next / renderedZoom.current),
+        );
+        window.clearTimeout(pinchCommitTimer.current);
+        pinchCommitTimer.current = window.setTimeout(() => {
+          recenterAfterZoom.current = next !== renderedZoom.current;
+          setZoom(liveZoom.current);
+        }, 180);
       });
     };
     element.addEventListener("wheel", handlePinch, { passive: false });
     return () => {
       element.removeEventListener("wheel", handlePinch);
       cancelAnimationFrame(pinchFrame.current);
+      window.clearTimeout(pinchCommitTimer.current);
       pinchFrame.current = 0;
+      pinchCommitTimer.current = 0;
       pinchDelta.current = 0;
     };
-  }, [setCenteredZoom]);
+  }, [liveResizeScale]);
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));
@@ -262,7 +289,6 @@ export function PdfViewer({
       searchMatch={activeMatch}
       searchCount={matches.length}
       searching={searching}
-      originalUrl={url}
       onPage={jumpToPage}
       onZoomIn={() => setCenteredZoom((value) => Math.min(3, value + 0.15))}
       onZoomOut={() => setCenteredZoom((value) => Math.max(0.5, value - 0.15))}
@@ -295,6 +321,7 @@ export function PdfViewer({
         externalLinkTarget="_blank"
       >
         <div
+          ref={pagesRef}
           className="pdf-pages"
           style={{ "--pdf-live-scale": liveResizeScale } as CSSProperties}
         >
