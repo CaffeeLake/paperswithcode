@@ -591,8 +591,8 @@ def test_scheduled_evaluation_accepts_configured_metric_names():
     assert result == {"policy": "scheduled-add-evals-v1", "evaluations": 1}
 
 
-def test_scheduled_evaluation_rejects_noncanonical_arxiv_source_url():
-    from backend.models.database import Paper
+def test_scheduled_evaluation_canonicalizes_noncanonical_arxiv_source_url():
+    from backend.models.database import Evaluation, Paper
 
     paper = SimpleNamespace(
         id=42,
@@ -615,6 +615,8 @@ def test_scheduled_evaluation_rejects_noncanonical_arxiv_source_url():
             return SimpleNamespace(supports_harness=False)
 
         def all(self):
+            if self.model is Evaluation:
+                return []
             return [SimpleNamespace(name="GenEval Score", scale="0-1")]
 
     class Database:
@@ -631,19 +633,22 @@ def test_scheduled_evaluation_rejects_noncanonical_arxiv_source_url():
         trace_status="preapply_stored",
     )
 
-    with pytest.raises(
-        ValueError,
-        match="canonical PwC paper URL",
-    ):
-        _service(Database(), SimpleNamespace())._validate_scheduled_policy(
-            row,
-            ApplyMutationRequest(
-                evaluations=[_evaluation(model_name="Useful Model")],
-                evaluation_removals=[],
-                benchmark_gaps=[],
-                validation_evidence=[],
-            ),
-        )
+    body = ApplyMutationRequest(
+        evaluations=[_evaluation(model_name="Useful Model")],
+        evaluation_removals=[],
+        benchmark_gaps=[],
+        validation_evidence=[],
+    )
+
+    result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+        row, body
+    )
+
+    assert result == {"policy": "scheduled-add-evals-v1", "evaluations": 1}
+    assert body.evaluations[0].source_url == (
+        "https://paperswithcode.co/paper/2601.00001"
+    )
+    assert body.evaluations[0].external_source_url is None
 
 
 def test_scheduled_evaluation_rejects_multiple_models_per_leaderboard():

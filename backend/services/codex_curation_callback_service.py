@@ -834,11 +834,13 @@ class CodexCurationCallbackService:
                 raise ValueError("Evaluation contains an unconfigured metric")
             if item.harness and not leaderboard.supports_harness:
                 raise ValueError("Harness is not supported by this leaderboard")
-            source = item.source_url or item.external_source_url
-            if source != expected_source:
-                raise ValueError(
-                    "Evaluation source must be this paper's canonical PwC paper URL"
-                )
+            # Scheduled jobs do not get to choose the catalog source URL.  The
+            # paper route is already known and is the only accepted value, so
+            # canonicalize it deterministically instead of turning a harmless
+            # agent formatting mistake into a circuit-breaker event.  Primary
+            # arXiv/HF URLs remain available in validation evidence and traces.
+            item.source_url = expected_source
+            item.external_source_url = None
             for metric_name, value in item.metrics.items():
                 try:
                     numeric = float(str(value).rstrip("%"))
