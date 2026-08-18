@@ -34,7 +34,7 @@ vi.mock("@/components/pdf/PdfViewer", () => ({
   </div>,
 }));
 vi.mock("@/views/ChatView", () => ({
-  ChatExperience: () => <div>Paper assistant</div>,
+  ChatExperience: () => <div>Paper chat</div>,
 }));
 
 import PaperReaderView from "@/views/PaperReaderView";
@@ -69,7 +69,7 @@ describe("PaperReaderView", () => {
 
   afterEach(() => vi.unstubAllEnvs());
 
-  it("renders the linked title, PDF, and Assistant-only workspace", async () => {
+  it("renders the linked title, PDF, and chat-only workspace", async () => {
     renderReader();
 
     expect(screen.getByRole("link", { name: /Attention Is All You Need/ }))
@@ -77,13 +77,13 @@ describe("PaperReaderView", () => {
     expect(screen.getByRole("region", { name: "Paper PDF" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Paper PDF" }))
       .toHaveAttribute("data-url", "https://arxiv.org/pdf/1706.03762v7");
-    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
-    expect(screen.getByText("Paper assistant")).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
+    expect(screen.getByText("Paper chat")).toBeVisible();
     expect(screen.queryByText("Notes")).not.toBeInTheDocument();
     await waitFor(() => expect(mocks.getAvailability).toHaveBeenCalled());
   });
 
-  it("keeps the public PDF surface but disables Assistant when the live gate closes", async () => {
+  it("keeps the public PDF surface but disables chat when the live gate closes", async () => {
     mocks.getAvailability.mockResolvedValueOnce({
       status: "available",
       reason: null,
@@ -97,8 +97,8 @@ describe("PaperReaderView", () => {
     renderReader();
 
     expect(screen.getByRole("region", { name: "Paper PDF" })).toBeVisible();
-    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
-    expect(await screen.findByText("Assistant is not enabled for this preview."))
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
+    expect(await screen.findByText("Chat is not enabled for this preview."))
       .toBeVisible();
   });
 });

@@ -27,7 +27,45 @@ function pdfErrorMessage(error: Error): string {
   return "The PDF could not be loaded from its source.";
 }
 
-function LazyPdfPage({ page, width }: { page: number; width: number }) {
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] ?? character);
+}
+
+export function highlightPdfText(text: string, query: string, active: boolean): string {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return escapeHtml(text);
+  const haystack = text.toLocaleLowerCase();
+  const className = `pdf-search-highlight${active ? " is-active" : ""}`;
+  let cursor = 0;
+  let match = haystack.indexOf(needle);
+  if (match < 0) return escapeHtml(text);
+  let result = "";
+  while (match >= 0) {
+    result += escapeHtml(text.slice(cursor, match));
+    result += `<mark class="${className}">${escapeHtml(text.slice(match, match + needle.length))}</mark>`;
+    cursor = match + needle.length;
+    match = haystack.indexOf(needle, cursor);
+  }
+  return result + escapeHtml(text.slice(cursor));
+}
+
+function LazyPdfPage({
+  page,
+  width,
+  searchQuery,
+  activeSearchPage,
+}: {
+  page: number;
+  width: number;
+  searchQuery: string;
+  activeSearchPage?: number;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(page <= 2);
   useEffect(() => {
@@ -47,6 +85,9 @@ function LazyPdfPage({ page, width }: { page: number; width: number }) {
       renderTextLayer
       renderAnnotationLayer
       loading={null}
+      customTextRenderer={searchQuery
+        ? ({ str }) => highlightPdfText(str, searchQuery, page === activeSearchPage)
+        : undefined}
     />}
   </div>;
 }
@@ -325,7 +366,13 @@ export function PdfViewer({
           className="pdf-pages"
           style={{ "--pdf-live-scale": liveResizeScale } as CSSProperties}
         >
-          {pageNumbers.map((pageNumber) => <LazyPdfPage key={pageNumber} page={pageNumber} width={pageWidth} />)}
+          {pageNumbers.map((pageNumber) => <LazyPdfPage
+            key={pageNumber}
+            page={pageNumber}
+            width={pageWidth}
+            searchQuery={searchQuery.trim()}
+            activeSearchPage={matches[activeMatch]}
+          />)}
         </div>
       </Document>}
     </div>

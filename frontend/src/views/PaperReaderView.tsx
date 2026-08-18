@@ -175,7 +175,7 @@ export default function PaperReaderView() {
     onSessionId={selectSession}
     onReaderSubmit={() => setMobileTab("assistant")}
     onReaderNewChat={newChat}
-  /> : <div className="reader-chat-unavailable">Assistant is not enabled for this preview.</div>;
+  /> : <div className="reader-chat-unavailable">Chat is not enabled for this preview.</div>;
 
   if (query.isLoading) return <div className="reader-status" role="status">Loading paper…</div>;
   if (query.error || !paper) return <div className="reader-status" role="alert"><p>Paper not found.</p><Link to="/papers">Browse papers</Link></div>;
@@ -185,7 +185,7 @@ export default function PaperReaderView() {
   return <div className="paper-reader-shell">
     {!desktopSplit && <div className="reader-tabs" role="tablist" aria-label="Reader panels">
       <button type="button" role="tab" aria-selected={mobileTab === "paper"} onClick={() => setMobileTab("paper")}>Paper</button>
-      <button type="button" role="tab" aria-selected={mobileTab === "assistant"} onClick={() => setMobileTab("assistant")}>Assistant</button>
+      <button type="button" role="tab" aria-selected={mobileTab === "assistant"} onClick={() => setMobileTab("assistant")}>Chat</button>
     </div>}
     <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}`}>
       <section
@@ -211,7 +211,7 @@ export default function PaperReaderView() {
       {desktopSplit && !collapsed && <div
         className="reader-resize-handle"
         role="separator"
-        aria-label="Resize paper and Assistant panels"
+        aria-label="Resize paper and Chat panels"
         aria-orientation="vertical"
         aria-valuemin={45}
         aria-valuemax={75}
@@ -236,10 +236,10 @@ export default function PaperReaderView() {
         className={`reader-assistant-pane${(!desktopSplit && mobileTab !== "assistant") || collapsed ? " is-hidden" : ""}`}
         style={desktopSplit ? { width: collapsed ? 0 : `${100 - ratio}%` } : undefined}
         role="tabpanel"
-        aria-label="Assistant"
+        aria-label="Chat"
         aria-hidden={(!desktopSplit && mobileTab !== "assistant") || collapsed}
       >{assistant}</aside>
-      {desktopSplit && <button type="button" className="reader-collapse-assistant" onClick={() => setAssistantCollapsed(!collapsed)}>{collapsed ? "Assistant" : "Hide Assistant"}</button>}
+      {desktopSplit && <button type="button" className="reader-collapse-assistant" onClick={() => setAssistantCollapsed(!collapsed)}>{collapsed ? "Chat" : "Hide Chat"}</button>}
     </div>
   </div>;
 }

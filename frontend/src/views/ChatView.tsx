@@ -641,7 +641,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
             setRouteLoadAttempt((attempt) => attempt + 1);
           }}>Try again</button>
         </div> : isEmpty && !pendingAutoDraft.text ? <div className="chat-empty"><div className="chat-empty-inner">
-          <div className="chat-empty-eyebrow">{mode === "paper" ? "Paper assistant" : "AI research assistant"}</div>
+          <div className="chat-empty-eyebrow">{mode === "paper" ? "Paper chat" : "Research chat"}</div>
           <h1 className="chat-empty-title">{mode === "paper" ? "Ask about this paper" : <>Ask <em>Papers With Code</em></>}</h1>
           <p className="chat-empty-sub">{mode === "paper" ? "Questions are grounded in the open paper. Add up to three other papers with @." : "Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow."}</p>
           {staging && <p className="chat-staging-access-note">

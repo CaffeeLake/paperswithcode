@@ -71,11 +71,11 @@ describe("Header navigation", () => {
 
   it("slides one shared indicator to the active desktop tab", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetLeft", "get")
-      .mockImplementation(function getOffsetLeft() {
+      .mockImplementation(function getOffsetLeft(this: HTMLElement) {
         return this.textContent?.includes("Chat") ? 96 : 0;
       });
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get")
-      .mockImplementation(function getOffsetWidth() {
+      .mockImplementation(function getOffsetWidth(this: HTMLElement) {
         return this.classList.contains("nav-item") ? 64 : 0;
       });
     const user = userEvent.setup();

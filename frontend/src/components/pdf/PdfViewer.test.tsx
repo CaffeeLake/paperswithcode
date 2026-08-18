@@ -24,7 +24,22 @@ vi.mock("react-pdf", () => ({
     Page: ({ width }: { width: number }) => <div data-testid="pdf-page" data-width={width} />,
 }));
 
-import { PdfViewer } from "./PdfViewer";
+import { highlightPdfText, PdfViewer } from "./PdfViewer";
+
+describe("highlightPdfText", () => {
+  it("escapes PDF text and wraps every case-insensitive match", () => {
+    expect(highlightPdfText("Alpha & <ALPHA>", "alpha", true)).toBe(
+      '<mark class="pdf-search-highlight is-active">Alpha</mark> &amp; &lt;'
+      + '<mark class="pdf-search-highlight is-active">ALPHA</mark>&gt;',
+    );
+  });
+
+  it("returns safely escaped text when there is no match", () => {
+    expect(highlightPdfText('<script>alert("x")</script>', "missing", false)).toBe(
+      "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
+    );
+  });
+});
 
 describe("PdfViewer resize rendering", () => {
   beforeEach(() => {

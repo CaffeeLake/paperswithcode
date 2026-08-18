@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 
@@ -38,12 +39,28 @@ export function PdfToolbar({
   onSearchQuery,
   onSearch,
 }: PdfToolbarProps) {
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    const logo = document.querySelector<HTMLElement>(".app-header .brand-mark");
+    if (!toolbar || !logo) return;
+    const alignTitle = () => {
+      const inset = logo.getBoundingClientRect().left - toolbar.getBoundingClientRect().left;
+      toolbar.style.setProperty("--reader-title-inset", `${Math.max(10, inset)}px`);
+    };
+    alignTitle();
+    const observer = new ResizeObserver(alignTitle);
+    observer.observe(toolbar);
+    observer.observe(logo);
+    return () => observer.disconnect();
+  }, []);
+
   const submitPage = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = Number(new FormData(event.currentTarget).get("page"));
     if (Number.isInteger(value)) onPage(value);
   };
-  return <div className="pdf-toolbar" aria-label="PDF controls">
+  return <div ref={toolbarRef} className="pdf-toolbar" aria-label="PDF controls">
     <div className="pdf-toolbar-paper">
       <Link to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
         {paperTitle}
