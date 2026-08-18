@@ -247,12 +247,7 @@ class ChromePage(AbstractContextManager):
 
 
 def _mark_and_report(
-    *,
-    settings,
-    session_ids: set[uuid.UUID],
-    started_at: datetime,
-    run_id: str,
-    scenario: str = "focused_latency",
+    *, settings, session_ids: set[uuid.UUID], started_at: datetime, run_id: str
 ) -> tuple[int, dict[str, Any]]:
     with db_manager.session_local() as db:
         rows = list(
@@ -266,7 +261,7 @@ def _mark_and_report(
         latency = ChatLatencyService(db)
         marked = sum(
             latency.mark_qualification(
-                str(row.request_id), run_id=run_id, scenario=scenario
+                str(row.request_id), run_id=run_id, scenario="focused_latency"
             )
             for row in rows
         )
@@ -430,7 +425,6 @@ def main() -> int:
         session_ids=session_ids,
         started_at=started_at,
         run_id=run_id,
-        scenario="routing_pilot" if args.pilot_pairs else "focused_latency",
     )
     gates = gate_report["gates"]
     if args.pilot_pairs:
