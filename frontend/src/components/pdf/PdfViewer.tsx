@@ -228,7 +228,6 @@ export function PdfViewer({
     <PdfToolbar
       paperTitle={paperTitle}
       paperHref={paperHref}
-      paperIdentifier={paperKey}
       page={page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}

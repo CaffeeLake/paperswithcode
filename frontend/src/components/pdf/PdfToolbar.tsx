@@ -4,7 +4,6 @@ import { Link } from "react-router-dom";
 interface PdfToolbarProps {
   paperTitle: string;
   paperHref: string;
-  paperIdentifier: string;
   page: number;
   pages: number;
   zoomPercent: number;
@@ -26,7 +25,6 @@ interface PdfToolbarProps {
 export function PdfToolbar({
   paperTitle,
   paperHref,
-  paperIdentifier,
   page,
   pages,
   zoomPercent,
@@ -54,7 +52,6 @@ export function PdfToolbar({
       <Link to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
         {paperTitle}
       </Link>
-      <span>arXiv:{paperIdentifier}</span>
     </div>
     <div className="pdf-toolbar-controls">
       <div className="pdf-toolbar-group">

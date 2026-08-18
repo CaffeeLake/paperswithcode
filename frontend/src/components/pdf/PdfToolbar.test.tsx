@@ -12,7 +12,6 @@ describe("PdfToolbar", () => {
     render(<MemoryRouter><PdfToolbar
         paperTitle="Example Paper"
         paperHref="/paper/2501.00001"
-        paperIdentifier="2501.00001"
         page={3}
         pages={12}
         zoomPercent={125}
@@ -33,7 +32,7 @@ describe("PdfToolbar", () => {
 
     expect(screen.getByRole("link", { name: "Example Paper — open paper page" }))
       .toHaveAttribute("href", "/paper/2501.00001");
-    expect(screen.getByText("arXiv:2501.00001")).toBeVisible();
+    expect(screen.queryByText(/arXiv:/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(onPage).toHaveBeenCalledWith(2);
     fireEvent.click(screen.getByRole("button", { name: "Fit width" }));
