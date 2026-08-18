@@ -15,6 +15,7 @@ from backend.config import get_settings
 from backend.main import create_app
 from backend.services.cron_health import (
     _gh_json,
+    _paper_markdown_monitor_snapshot,
     evaluate_job_health,
     fetch_systemd_status,
     fetch_workflow_status,
@@ -1074,6 +1075,39 @@ def test_paper_markdown_semantic_contract(metrics, expected, reason):
         )
     assert evaluated["output_health"]["status"] == expected
     assert reason in evaluated["output_health"]["reason"]
+
+
+def test_paper_markdown_monitor_snapshot_refreshes_only_a_cold_cache():
+    fresh = {
+        "available": True,
+        "updated_at": "2026-08-18T23:00:00Z",
+        "summary": {"active_jobs": 1},
+    }
+    with (
+        patch(
+            "backend.services.paper_markdown_job_monitor.get_cached_paper_markdown_job_monitor",
+            return_value={"available": False, "jobs": [], "summary": {}, "error": None},
+        ),
+        patch(
+            "backend.services.paper_markdown_job_monitor.get_paper_markdown_job_monitor",
+            return_value=fresh,
+        ) as refresh,
+    ):
+        assert _paper_markdown_monitor_snapshot() == fresh
+        refresh.assert_called_once_with()
+
+    cached = {**fresh, "summary": {"active_jobs": 2}}
+    with (
+        patch(
+            "backend.services.paper_markdown_job_monitor.get_cached_paper_markdown_job_monitor",
+            return_value=cached,
+        ),
+        patch(
+            "backend.services.paper_markdown_job_monitor.get_paper_markdown_job_monitor"
+        ) as refresh,
+    ):
+        assert _paper_markdown_monitor_snapshot() == cached
+        refresh.assert_not_called()
 
 
 def test_embedding_no_work_is_broken_when_eligible_rows_are_missing():
