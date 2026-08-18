@@ -379,8 +379,8 @@ Configuration is fail-closed. Production direct apply requires all of:
 - pinned model `gpt5.6-Sol`, medium reasoning, and Codex CLI version.
 
 The production image is the public, content-versioned Docker Space
-`hf.co/spaces/nielsr/pwc-codex-curator-5422ed514b19`, pinned to Hub revision
-`9f28f32a2d1b069b7b6910ab6a489809cd538fe3`. The dispatcher reads the Space
+`hf.co/spaces/nielsr/pwc-codex-curator-eb2936f28e80`, pinned to Hub revision
+`6f55d6be7313211f231feb7e9b49815e3c5642ba`. The dispatcher reads the Space
 revision before every launch and pauses daily dispatch if it differs. Never
 update a versioned curator Space in place: publish a new Space whose suffix is
 the first 12 characters of the runner SHA-256, record its exact Hub revision,
@@ -389,9 +389,15 @@ run a standalone Jobs capability probe, then update both
 tag such as `latest` is never valid for scheduled production dispatch.
 
 The initial image probe is recorded at
-`https://huggingface.co/jobs/nielsr/6a8462efcd3824960fcbe7fe`; its command
+`https://huggingface.co/jobs/nielsr/6a846a2dcd3824960fcbe98e`; its command
 checks the Codex version, PyPDF2 version, and full runner SHA-256. The public
 Space avoids Docker Hub and does not require personal GitHub Packages access.
+
+The private application repository credential is never sent to a remote job.
+After authenticating with its paper-scoped callback token, the runner downloads
+only the three curation skills, scoped API helper, proposal schema, and URL
+preflight module from the active immutable release. Every file is SHA-256
+verified and the bundle revision must equal the dispatched repository SHA.
 
 Pause and recovery are scoped to scheduled dispatch; admin jobs remain
 available:

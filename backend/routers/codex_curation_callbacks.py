@@ -271,6 +271,22 @@ def get_context(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+@router.get("/{job_id}/bootstrap")
+def bootstrap_job(
+    job_id: uuid.UUID,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Serve an allowlisted worktree bound to the active immutable release."""
+    _require_enabled(settings)
+    row = _callback_job(job_id, authorization, db)
+    try:
+        return codex_paper_job_service.bootstrap_bundle(row)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @router.get("/{job_id}/taxonomy")
 def search_taxonomy(
     job_id: uuid.UUID,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import uuid
 from datetime import UTC, date, datetime
@@ -453,6 +454,26 @@ def test_dispatch_does_not_append_registry_tag_to_verified_space(monkeypatch):
     assert launched["image"] == "hf.co/spaces/example/curator-0123456789ab"
     assert row.status == "running"
     assert row.hf_job_id == "hf-job"
+
+
+def test_bootstrap_bundle_is_allowlisted_hashed_and_release_bound(monkeypatch):
+    from backend.services import codex_add_evals_service as service_module
+
+    revision = "d" * 40
+    monkeypatch.setattr(service_module, "_git_revision", lambda: revision)
+    service = CodexPaperJobService()
+
+    bundle = service.bootstrap_bundle(SimpleNamespace(repository_sha=revision))
+
+    assert bundle["revision"] == revision
+    assert {item["path"] for item in bundle["files"]} == set(
+        service_module.CURATOR_BOOTSTRAP_PATHS
+    )
+    for item in bundle["files"]:
+        content = base64.b64decode(item["content_b64"], validate=True)
+        assert hashlib.sha256(content).hexdigest() == item["sha256"]
+    with pytest.raises(ValueError, match="active immutable release"):
+        service.bootstrap_bundle(SimpleNamespace(repository_sha="e" * 40))
 
 
 def test_benchmark_gap_validation_isolates_malformed_entries():

@@ -29,6 +29,14 @@ FINAL = Path("/tmp/codex-final.txt")
 CONTEXT = Path("/tmp/context.json")
 URL_CANDIDATES = Path("/tmp/url_candidates.json")
 USER_AGENT = "PapersWithCode-Curation/1.0 (+https://paperswithcode.co)"
+BOOTSTRAP_PATHS = {
+    ".agents/skills/add-evals/SKILL.md",
+    ".agents/skills/enrich-paper/SKILL.md",
+    ".agents/skills/remote-paper-curation/SKILL.md",
+    "jobs/curation_api.py",
+    "jobs/schemas/curation_proposal.schema.json",
+    "jobs/url_preflight.py",
+}
 
 
 class SourceEvidenceIncomplete(RuntimeError):
@@ -65,6 +73,27 @@ def trace_callback(path: str, payload: dict) -> dict:
                 time.sleep(2**attempt)
     assert last_error is not None
     raise last_error
+
+
+def bootstrap_worktree() -> None:
+    bundle = api_request("bootstrap")
+    if bundle.get("revision") != REVISION:
+        raise RuntimeError("Bootstrap revision does not match the dispatched release")
+    items = bundle.get("files")
+    if (
+        not isinstance(items, list)
+        or {item.get("path") for item in items if isinstance(item, dict)}
+        != BOOTSTRAP_PATHS
+    ):
+        raise RuntimeError("Bootstrap file allowlist is incomplete")
+    for item in items:
+        relative = item["path"]
+        content = base64.b64decode(item["content_b64"], validate=True)
+        if hashlib.sha256(content).hexdigest() != item.get("sha256"):
+            raise RuntimeError(f"Bootstrap hash mismatch for {relative}")
+        target = WORKTREE / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
 
 
 def thumbnail_completion_error(thumbnail: dict) -> str | None:
@@ -162,20 +191,7 @@ def _prompt(context: dict) -> str:
 
 def main() -> int:
     try:
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--filter=blob:none",
-                "https://github.com/huggingface/paperswithcode.git",
-                str(WORKTREE),
-            ],
-            check=True,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-        subprocess.run(
-            ["git", "checkout", "--detach", REVISION], cwd=WORKTREE, check=True
-        )
+        bootstrap_worktree()
         subprocess.run(
             ["codex", "login", "--with-api-key"],
             input=f"{os.environ['OPENAI_API_KEY']}\n",
