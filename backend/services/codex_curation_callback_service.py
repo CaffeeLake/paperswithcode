@@ -789,11 +789,8 @@ class CodexCurationCallbackService:
             }
 
         paper = self.db.get(Paper, row.paper_id)
-        expected_source = (
-            paper.source_url
-            if paper.source == "external"
-            else f"https://arxiv.org/abs/{paper.arxiv_id}"
-        )
+        paper_route = paper.arxiv_id if paper.source != "external" else paper.id
+        expected_source = f"https://paperswithcode.co/paper/{paper_route}"
         evidence_by_id = {
             int(item["evaluation_id"]): item
             for item in body.validation_evidence
@@ -831,7 +828,7 @@ class CodexCurationCallbackService:
             source = item.source_url or item.external_source_url
             if source != expected_source:
                 raise ValueError(
-                    "Evaluation source must be this paper's canonical source URL"
+                    "Evaluation source must be this paper's canonical PwC paper URL"
                 )
             for metric_name, value in item.metrics.items():
                 try:
