@@ -582,7 +582,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     models,
     selectedModel,
     onModelChange: (model: string) => void changeModel(model),
-    disabled: chatPaused,
+    disabled: chatPaused || authLoading,
     describedBy: chatPaused ? "chat-paused-description" : undefined,
     paperMentionsEnabled: Boolean(availabilityQuery.data?.paper_mentions_enabled),
     webSearchAvailable,

@@ -1,6 +1,7 @@
 from backend.scripts import qualify_chat_browser
 from backend.scripts.qualify_chat_browser import (
     ChromePage,
+    ORIGIN,
     pilot_passes,
     qualification_passes,
 )
@@ -31,6 +32,8 @@ def test_browser_populates_empty_composer_before_waiting_for_send(monkeypatch):
 
     def evaluate(expression: str):
         evaluations.append(expression)
+        if expression == "location.origin":
+            return ORIGIN
         if "querySelectorAll('.chat-msg-assistant').length" in expression:
             return 0
         if "HTMLTextAreaElement.prototype" in expression:

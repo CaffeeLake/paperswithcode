@@ -208,8 +208,14 @@ class ChromePage(AbstractContextManager):
             "document.querySelector('button[aria-label=\"Send message\"]').click()"
         )
         self.wait_for(
+            f"location.origin !== {json.dumps(ORIGIN)} || "
             f"document.querySelectorAll('.chat-msg-assistant').length > {before}"
         )
+        current_origin = str(self.evaluate("location.origin"))
+        if current_origin != ORIGIN:
+            raise RuntimeError(
+                f"Browser left the protected staging origin: {current_origin}"
+            )
         reasoning = False
         tool = False
         answer = False

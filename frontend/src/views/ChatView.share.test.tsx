@@ -14,6 +14,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   busy: false,
+  authLoading: false,
   authUser: { username: "owner", hf_user_id: "hf-owner" },
   messages: [{
     id: "user-1",
@@ -63,7 +64,7 @@ vi.mock("@/hooks/useChat", () => ({
 vi.mock("@/lib/authContext", () => ({
   useAuth: () => ({
     user: mocks.authUser,
-    isLoading: false,
+    isLoading: mocks.authLoading,
   }),
 }));
 vi.mock("@/components/ui/use-toast", () => ({
@@ -133,6 +134,7 @@ beforeEach(() => {
   sessionStorage.clear();
   vi.unstubAllEnvs();
   mocks.busy = false;
+  mocks.authLoading = false;
   mocks.messages.splice(0, mocks.messages.length, {
     id: "user-1",
     role: "user",
@@ -169,6 +171,19 @@ beforeEach(() => {
 });
 
 describe("ChatView inference authorization", () => {
+  it("keeps the composer disabled until authentication finishes loading", async () => {
+    mocks.messages.length = 0;
+    mocks.authLoading = true;
+    renderChat("/chat");
+
+    const input = screen.getByRole("combobox");
+    await userEvent.type(input, "A fast prompt");
+
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
+  });
+
   it("returns inference authorization to the reserved homepage session", async () => {
     mocks.messages.length = 0;
     sessionStorage.setItem(CHAT_DRAFT_KEY, "Compare recent vision-language models");
