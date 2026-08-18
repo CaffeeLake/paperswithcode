@@ -131,6 +131,21 @@ describe("SharedChatView", () => {
     );
   });
 
+  it("does not advertise OpenRouter on shared conversations", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...payload, model_provider: "openrouter" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    renderView();
+
+    expect(await screen.findByText("Generated with DeepSeek V4 Flash")).toBeVisible();
+    expect(screen.queryByText(/Powered by OpenRouter/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "OpenRouter" })).not.toBeInTheDocument();
+  });
+
   it("opens a fresh chat with the prompt as a draft so setup is shown before sending", async () => {
     const user = userEvent.setup();
     sessionStorage.setItem(CHAT_MODEL_KEY, "stale-model");

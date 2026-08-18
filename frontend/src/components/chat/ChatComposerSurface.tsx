@@ -53,9 +53,7 @@ export function ChatComposerSurface({
       <div className="chat-composer-inner">
         {content}
         <div className="chat-composer-foot">{isChatLive() ? <>
-          {provider === "openrouter"
-            ? <span className="chat-provider-attribution">Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>.</span>
-            : <span className="chat-provider-attribution">Powered by 🤗 <a href="https://huggingface.co/docs/inference-providers/en/index" target="_blank" rel="noreferrer">Inference Providers</a>.</span>}
+          {provider === "huggingface" && <span className="chat-provider-attribution">Powered by 🤗 <a href="https://huggingface.co/docs/inference-providers/en/index" target="_blank" rel="noreferrer">Inference Providers</a>.</span>}
           <span>The AI assistant can make mistakes. Double-check responses.</span>
         </> : <>Assistant preview — responses are simulated.</>}</div>
       </div>

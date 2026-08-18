@@ -307,6 +307,8 @@ describe("ChatView inference authorization", () => {
     expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
     expect(screen.queryByText(/% left this month/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/connected OpenRouter key will be used/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Powered by OpenRouter/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "OpenRouter" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/chat/usage"))).toBe(false);
   });
 
