@@ -88,6 +88,7 @@ export interface PaperMarkdownJobProgress {
   failed_papers: number;
   already_existed_papers: number;
   extracted_images: number;
+  omitted_images?: number;
   updated_at?: string | null;
   started_at?: string | null;
   fatal_error?: string | null;

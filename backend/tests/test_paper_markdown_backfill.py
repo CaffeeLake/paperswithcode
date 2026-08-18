@@ -107,6 +107,43 @@ def test_worker_collects_nested_chandra_images(tmp_path, monkeypatch):
     assert assets == {"figure.webp": b"nested-image"}
 
 
+def test_worker_rejects_missing_extracted_image_before_final_attempt(tmp_path):
+    with pytest.raises(ValueError, match="missing_extracted_image:missing_figure.webp"):
+        WORKER.publish(
+            {
+                "arxiv_id": "2607.00001",
+                "version": "v1",
+                "title": "Missing figure",
+                "output_key": "2607/2607.00001.md",
+            },
+            "Paper body.\n\n![figure](missing_figure.webp)",
+            {},
+            tmp_path,
+        )
+
+
+def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
+    result = WORKER.publish(
+        {
+            "arxiv_id": "2607.00001",
+            "version": "v1",
+            "title": "Missing figure",
+            "output_key": "2607/2607.00001.md",
+        },
+        "Paper body.\n\n![figure](missing_figure.webp)",
+        {},
+        tmp_path,
+        allow_missing_images=True,
+    )
+
+    markdown = (tmp_path / "2607/2607.00001.md").read_text()
+    assert "Paper body." in markdown
+    assert "1 generated image reference was omitted" in markdown
+    assert "missing_figure.webp" not in markdown
+    assert result["omitted_image_count"] == 1
+    assert result["omitted_image_sources"] == ["missing_figure.webp"]
+
+
 def test_arxiv_identity_and_markdown_key():
     assert MODULE.normalize_arxiv_id("2607.24653v2") == "2607.24653"
     assert MODULE.markdown_key("2607.24653") == "2607/2607.24653.md"
@@ -317,6 +354,54 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
     assert progress["succeeded_papers"] == 1
     assert progress["failed_papers"] == 0
     assert progress["extracted_images"] == 1
+    assert progress["omitted_images"] == 0
+
+
+def test_chandra_worker_final_attempt_omits_missing_image(tmp_path):
+    content = tmp_path / "content"
+    stub = tmp_path / "stub"
+    manifest = content / "_jobs" / "manifests" / "run-final" / "00000.jsonl"
+    status_path = content / "_jobs" / "status" / "2607.24653.json"
+    manifest.parent.mkdir(parents=True)
+    status_path.parent.mkdir(parents=True)
+    stub.mkdir()
+    entry = {
+        "arxiv_id": "2607.24653",
+        "version": "v1",
+        "title": "Kimi K3",
+        "output_key": "2607/2607.24653.md",
+    }
+    manifest.write_text(json.dumps(entry) + "\n")
+    (stub / "2607.24653.md").write_text(
+        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+    )
+    status_path.write_text(json.dumps({"status": "failed", "attempt_count": 2}))
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(WORKER_SCRIPT),
+            "--manifest",
+            str(manifest),
+            "--content-root",
+            str(content),
+            "--stub-root",
+            str(stub),
+        ],
+        check=True,
+    )
+
+    markdown = (content / entry["output_key"]).read_text()
+    status = json.loads(status_path.read_text())
+    assert "missing.webp" not in markdown
+    assert "1 generated image reference was omitted" in markdown
+    assert status["status"] == "succeeded"
+    assert status["attempt_count"] == 3
+    assert status["omitted_image_count"] == 1
+    progress = json.loads(
+        (content / "_jobs" / "progress" / "run-final" / "00000.json").read_text()
+    )
+    assert progress["omitted_images"] == 1
 
 
 def _write_stub_manifest(tmp_path: Path, count: int = 2):
