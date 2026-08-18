@@ -49,7 +49,10 @@ describe("chat style ownership", () => {
 
   it("aligns the desktop header brand with the chat navigation column", () => {
     expect(globalStyles).toContain("--app-leading-column-width: 280px");
-    expect(globalStyles).toContain("width: var(--app-leading-column-width)");
+    expect(globalStyles).toContain("--app-leading-column-center: 140px");
+    expect(globalStyles).toContain(".app-header-chat .brand");
+    expect(globalStyles).not.toContain(".app-header-chat .app-header-inner");
+    expect(globalStyles).not.toContain(".app-header-chat .nav");
     expect(featureStyles).toContain("width: var(--app-leading-column-width)");
   });
 });

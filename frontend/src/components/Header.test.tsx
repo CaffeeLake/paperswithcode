@@ -19,7 +19,7 @@ vi.mock("@/components/HfSignInButton", () => ({
 }));
 
 describe("Header navigation", () => {
-  it("uses the same header layout class on Trending and Chat routes", () => {
+  it("marks only Chat routes for visual brand alignment", () => {
     const trending = render(
       <MemoryRouter initialEntries={["/"]}>
         <Header onOpenSearch={vi.fn()} />
@@ -35,7 +35,7 @@ describe("Header navigation", () => {
       </MemoryRouter>,
     );
     expect(document.querySelector("header")).toHaveClass("app-header");
-    expect(document.querySelector("header")).not.toHaveClass("app-header-chat");
+    expect(document.querySelector("header")).toHaveClass("app-header-chat");
   });
 
   it("places Chat immediately after Trending in desktop and mobile navigation", async () => {
