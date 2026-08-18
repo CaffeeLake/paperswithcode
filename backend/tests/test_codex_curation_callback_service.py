@@ -648,7 +648,78 @@ def test_scheduled_evaluation_canonicalizes_noncanonical_arxiv_source_url():
     assert body.evaluations[0].source_url == (
         "https://paperswithcode.co/paper/2601.00001"
     )
-    assert body.evaluations[0].external_source_url is None
+    assert body.evaluations[0].external_source_url == (
+        "https://paperswithcode.co/paper/2601.00001"
+    )
+
+
+def test_scheduled_source_canonicalization_is_recorded_in_existing_row_diff():
+    from backend.models.database import Evaluation, Metric, Paper, TaskDataset
+
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        source_url=None,
+        arxiv_id="2601.00001",
+    )
+    existing = _stored_evaluation(methodology=None, metrics={"GenEval Score": 0.9})
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+
+        def join(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            if self.model is TaskDataset:
+                return SimpleNamespace(supports_harness=False)
+            return None
+
+        def all(self):
+            if self.model is Metric:
+                return [SimpleNamespace(name="GenEval Score", scale="0-1")]
+            if self.model is Evaluation:
+                return [existing]
+            return []
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+        def query(self, model):
+            return Query(model)
+
+    before = CodexCurationCallbackService._evaluation_state(existing)
+    audit = {
+        "evaluation_id": existing.id,
+        "before_state": before,
+        "field_diff": {},
+        "evidence": [{"source_url": "https://arxiv.org/abs/2601.00001"}],
+    }
+    body = ApplyMutationRequest(
+        evaluations=[_evaluation(model_name="Existing Model")],
+        validation_evidence=[audit],
+    )
+
+    result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+        SimpleNamespace(
+            kind="add-evals",
+            paper_id=42,
+            trigger="hf-daily-cron",
+            trace_status="preapply_stored",
+        ),
+        body,
+    )
+
+    assert result == {"policy": "scheduled-add-evals-v1", "evaluations": 1}
+    assert body.validation_evidence[0]["field_diff"]["source_url"] == {
+        "before": "https://arxiv.org/abs/2601.00001",
+        "after": "https://paperswithcode.co/paper/2601.00001",
+    }
 
 
 def test_scheduled_evaluation_rejects_multiple_models_per_leaderboard():

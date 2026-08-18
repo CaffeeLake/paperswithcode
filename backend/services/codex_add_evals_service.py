@@ -465,14 +465,10 @@ class CodexPaperJobService:
         ).first()
 
     @staticmethod
-    def _scheduled_usage_allowed(
+    def _scheduled_usage_snapshot(
         db: Session, state: PaperCurationSchedulerState | None
-    ) -> bool:
-        if state is None or state.first_enabled_at is None:
-            return True
+    ) -> dict:
         now = _now()
-        if state.first_enabled_at > now - timedelta(days=7):
-            return True
         rows = (
             db.query(PaperCurationJob)
             .filter(
@@ -490,7 +486,29 @@ class CodexPaperJobService:
         baseline = median(
             totals[now.date() - timedelta(days=offset)] for offset in range(1, 8)
         )
-        if baseline > 0 and totals[now.date()] > 2 * baseline:
+        baseline_active = bool(
+            state
+            and state.first_enabled_at
+            and state.first_enabled_at <= now - timedelta(days=7)
+        )
+        threshold = int(2 * baseline) if baseline_active and baseline > 0 else None
+        return {
+            "mode": "enforced" if baseline_active else "baseline_alert_only",
+            "current_day_tokens": int(totals[now.date()]),
+            "trailing_seven_day_median_tokens": int(baseline),
+            "pause_threshold_tokens": threshold,
+        }
+
+    @classmethod
+    def _scheduled_usage_allowed(
+        cls, db: Session, state: PaperCurationSchedulerState | None
+    ) -> bool:
+        if state is None or state.first_enabled_at is None:
+            return True
+        usage = cls._scheduled_usage_snapshot(db, state)
+        threshold = usage["pause_threshold_tokens"]
+        if threshold is not None and usage["current_day_tokens"] > threshold:
+            now = _now()
             state.paused_at = now
             state.pause_condition = "daily_token_guardrail"
             state.pause_reason = (
@@ -804,6 +822,7 @@ class CodexPaperJobService:
                 }
             )
         scheduler_state = db.get(PaperCurationSchedulerState, 1)
+        scheduled_usage = self._scheduled_usage_snapshot(db, scheduler_state)
         oldest_scheduled = (
             db.query(func.min(PaperCurationJob.created_at))
             .filter(
@@ -846,6 +865,7 @@ class CodexPaperJobService:
                     and oldest_scheduled < _now() - timedelta(hours=3)
                     else "healthy"
                 ),
+                "usage": scheduled_usage,
             },
         )
 

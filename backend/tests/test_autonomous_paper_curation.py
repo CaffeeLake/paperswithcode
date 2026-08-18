@@ -354,6 +354,52 @@ def test_dispatch_acknowledgement_starts_a_fresh_failure_window():
     assert state.consecutive_apply_failures == 0
 
 
+def test_scheduled_usage_snapshot_exposes_enforced_threshold(monkeypatch):
+    from backend.services import codex_add_evals_service
+
+    now = datetime(2026, 8, 18, 12, tzinfo=UTC)
+    monkeypatch.setattr(codex_add_evals_service, "_now", lambda: now)
+    rows = [
+        SimpleNamespace(
+            finished_at=now,
+            input_tokens=400,
+            output_tokens=200,
+        )
+    ] + [
+        SimpleNamespace(
+            finished_at=now - codex_add_evals_service.timedelta(days=offset),
+            input_tokens=80,
+            output_tokens=20,
+        )
+        for offset in range(1, 8)
+    ]
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def all(self):
+            return rows
+
+    class Database:
+        def query(self, *_args):
+            return Query()
+
+    snapshot = CodexPaperJobService._scheduled_usage_snapshot(
+        Database(),
+        SimpleNamespace(
+            first_enabled_at=now - codex_add_evals_service.timedelta(days=8)
+        ),
+    )
+
+    assert snapshot == {
+        "mode": "enforced",
+        "current_day_tokens": 600,
+        "trailing_seven_day_median_tokens": 100,
+        "pause_threshold_tokens": 200,
+    }
+
+
 def test_cross_job_callback_token_pauses_scheduled_dispatch(monkeypatch):
     from backend.routers import codex_curation_callbacks
 
@@ -743,6 +789,29 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
 
     assert len(accepted) == 1
     assert rejected == []
+
+    eprint_evidence = {
+        **valid,
+        "evidence": [
+            {
+                **valid["evidence"][0],
+                "source_kind": "paper_source",
+                "source_url": "https://export.arxiv.org/e-print/2608.00042",
+            }
+        ],
+    }
+    accepted, rejected = BenchmarkGapService(Database()).validate(
+        [eprint_evidence],
+        paper=SimpleNamespace(
+            source_url="https://arxiv.org/abs/2608.00042",
+            arxiv_id="2608.00042",
+        ),
+    )
+
+    assert rejected == []
+    assert accepted[0]["evidence"][0]["source_url"] == (
+        "https://arxiv.org/html/2608.00042"
+    )
 
 
 def test_benchmark_gap_rejects_server_owned_fields():

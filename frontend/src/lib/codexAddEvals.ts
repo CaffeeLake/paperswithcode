@@ -105,6 +105,12 @@ export interface CodexPaperJobsResponse {
     canary_released: boolean;
     oldest_scheduled_queued_at: string | null;
     queue_age_level: "healthy" | "warning" | "critical";
+    usage: {
+      mode: "baseline_alert_only" | "enforced";
+      current_day_tokens: number;
+      trailing_seven_day_median_tokens: number;
+      pause_threshold_tokens: number | null;
+    };
   };
 }
 

@@ -372,6 +372,23 @@ class CodexCurationCallbackService:
             after_state = self._mutation_projection(row, body)
             self._verify_after_state(row, body, after_state)
 
+            before_evaluations = {
+                int(item["id"]): item for item in before_state.get("evaluations", [])
+            }
+            after_evaluations = {
+                int(item["id"]): item for item in after_state.get("evaluations", [])
+            }
+            changed_existing_evaluations = sorted(
+                evaluation_id
+                for evaluation_id, before in before_evaluations.items()
+                if after_evaluations.get(evaluation_id) != before
+            )
+            flagged_existing_evaluations = (
+                changed_existing_evaluations
+                if getattr(row, "trigger", "admin") != "admin"
+                else []
+            )
+
             gap_results = (
                 gap_service.persist(
                     paper_id=row.paper_id, job_id=row.id, gaps=accepted_gaps
@@ -395,6 +412,14 @@ class CodexCurationCallbackService:
                 "existing_evaluation_rows_affected": sorted(
                     {int(item["id"]) for item in before_state.get("evaluations", [])}
                 ),
+                # Historical evaluation rows have no trustworthy author/source
+                # provenance column. Conservatively flag every changed existing
+                # row as manual-or-legacy so automatic corrections are prominent
+                # in the dashboard and trace instead of assuming automation.
+                "manual_or_legacy_evaluation_rows_affected": (
+                    flagged_existing_evaluations
+                ),
+                "requires_prominent_review": bool(flagged_existing_evaluations),
                 "benchmark_gaps_accepted": len(accepted_gaps),
                 "benchmark_gaps_rejected": rejected_gaps,
             }
@@ -840,7 +865,8 @@ class CodexCurationCallbackService:
             # agent formatting mistake into a circuit-breaker event.  Primary
             # arXiv/HF URLs remain available in validation evidence and traces.
             item.source_url = expected_source
-            item.external_source_url = None
+            # EvaluationService keeps both legacy source columns synchronized.
+            item.external_source_url = expected_source
             for metric_name, value in item.metrics.items():
                 try:
                     numeric = float(str(value).rstrip("%"))
@@ -865,6 +891,11 @@ class CodexCurationCallbackService:
                     raise ValueError(
                         "Existing evaluation changed after proposal context was read"
                     )
+                supplied_diff = dict(audit.get("field_diff") or {})
+                for field in ("source_url", "external_source_url"):
+                    if field in changes:
+                        supplied_diff[field] = changes[field]
+                audit["field_diff"] = supplied_diff
                 if audit.get("field_diff") != changes or not audit.get("evidence"):
                     raise ValueError(
                         "Evaluation update requires the exact field diff and primary evidence"

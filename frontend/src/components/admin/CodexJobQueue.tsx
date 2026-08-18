@@ -145,6 +145,11 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                   <div className="mt-1 text-xs cron-muted">
                     Canary {data.scheduler.canary_released ? "released" : "active"} · Queue age {data.scheduler.queue_age_level}
                   </div>
+                  <div className="mt-1 text-xs cron-muted">
+                    Scheduled usage today {data.scheduler.usage.current_day_tokens.toLocaleString()} tokens · {data.scheduler.usage.mode === "enforced"
+                      ? `pause threshold ${data.scheduler.usage.pause_threshold_tokens?.toLocaleString() ?? "not established"}`
+                      : "first-week alert-only baseline"} · trailing median {data.scheduler.usage.trailing_seven_day_median_tokens.toLocaleString()}
+                  </div>
                 </div>
                 <Button
                   size="sm"
@@ -275,7 +280,7 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                       {workflow.error && <div className="text-red-700">{workflow.error}</div>}
                       {workflow.stages.map((stage) => (
                         <div key={stage.id} className="rounded border p-3">
-                          <div className="font-medium">{kindLabels[stage.kind]} · {stage.status} · trace {stage.trace_status}</div>
+                          <div className="font-medium">{kindLabels[stage.kind]} · {stage.status} · trace {stage.trace_status} · review {stage.audit_status}</div>
                           <div className="mt-1 cron-muted">
                             model {stage.model ?? "—"} · reasoning {stage.reasoning_effort ?? "—"} · tokens {(stage.input_tokens ?? 0) + (stage.output_tokens ?? 0)} · duration {stage.duration_ms ?? 0} ms · attempts {stage.attempt_count}
                           </div>
@@ -283,6 +288,11 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                           {stage.report && <div className="mt-2 whitespace-pre-wrap rounded border p-2">{stage.report}</div>}
                           {stage.url_candidates && <details className="mt-2"><summary>URL candidates and provenance</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.url_candidates, null, 2)}</pre></details>}
                           {stage.validation_summary && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.validation_summary, null, 2)}</pre>}
+                          {Array.isArray(stage.validation_summary?.manual_or_legacy_evaluation_rows_affected) && stage.validation_summary.manual_or_legacy_evaluation_rows_affected.length > 0 && (
+                            <div className="mt-2 rounded border border-amber-500 bg-amber-50 p-2 font-medium text-amber-900">
+                              Manual or legacy evaluation rows changed: {stage.validation_summary.manual_or_legacy_evaluation_rows_affected.join(", ")}. Review the evidence and before/after diff.
+                            </div>
+                          )}
                           {stage.proposal && <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.proposal, null, 2)}</pre>}
                           {stage.mutation_result && <details className="mt-2"><summary>Accepted callback result and before/after state</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.mutation_result, null, 2)}</pre></details>}
                           {stage.trace_status === "complete" && (

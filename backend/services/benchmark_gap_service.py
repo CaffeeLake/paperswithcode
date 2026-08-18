@@ -104,6 +104,20 @@ def _paper_evidence_urls(paper: Paper | None) -> set[str] | None:
     return values
 
 
+def _paper_evidence_url_aliases(paper: Paper | None) -> dict[str, str]:
+    """Map exact same-paper transport URLs onto allowed durable evidence URLs."""
+    if paper is None or not paper.arxiv_id:
+        return {}
+    return {
+        f"https://export.arxiv.org/e-print/{paper.arxiv_id}": (
+            f"https://arxiv.org/html/{paper.arxiv_id}"
+        ),
+        f"https://arxiv.org/e-print/{paper.arxiv_id}": (
+            f"https://arxiv.org/html/{paper.arxiv_id}"
+        ),
+    }
+
+
 class BenchmarkGapService:
     def __init__(self, db: Session):
         self.db = db
@@ -114,15 +128,26 @@ class BenchmarkGapService:
         accepted: list[dict] = []
         rejected: list[dict] = []
         evidence_urls = _paper_evidence_urls(paper)
+        evidence_url_aliases = _paper_evidence_url_aliases(paper)
         for index, gap in enumerate(gaps):
             try:
-                accepted.append(self._validate_one(gap, evidence_urls=evidence_urls))
+                accepted.append(
+                    self._validate_one(
+                        gap,
+                        evidence_urls=evidence_urls,
+                        evidence_url_aliases=evidence_url_aliases,
+                    )
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 rejected.append({"index": index, "error": str(exc)[:500]})
         return accepted, rejected
 
     def _validate_one(
-        self, gap: dict, *, evidence_urls: set[str] | None = None
+        self,
+        gap: dict,
+        *,
+        evidence_urls: set[str] | None = None,
+        evidence_url_aliases: dict[str, str] | None = None,
     ) -> dict:
         if not isinstance(gap, dict):
             raise TypeError("gap must be an object")
@@ -286,6 +311,9 @@ class BenchmarkGapService:
                 raise ValueError("benchmark gaps require primary-paper evidence")
             source_url = normalize_public_url(
                 _bounded_text(evidence.get("source_url"), "evidence source URL", 2_000)
+            )
+            source_url = (evidence_url_aliases or {}).get(
+                _without_query_or_fragment(source_url), source_url
             )
             if (
                 evidence_urls is not None
