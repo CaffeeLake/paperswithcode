@@ -13,6 +13,7 @@ from backend.models.api import ApplyMutationRequest, EvaluationCreateRequest
 from backend.services.codex_curation_callback_service import (
     CodexCurationCallbackService,
     CodexCurationEvaluationPaperMismatchError,
+    CodexCurationMutationClosedError,
     CodexCurationPaperNotFoundError,
 )
 
@@ -486,6 +487,93 @@ def test_all_evaluation_paper_ids_are_checked_before_the_first_write():
     assert database.commits == 0
     assert database.rollbacks == 1
     assert not hasattr(row, "submitted_at")
+
+
+def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
+    from backend.models.database import PaperCurationSchedulerState
+
+    state = SimpleNamespace(paused_at=None, pause_condition=None, pause_reason=None)
+    row = SimpleNamespace(
+        id=42,
+        kind="add-evals",
+        status="completed",
+        submitted_at=datetime.now(UTC),
+        applied_at=None,
+        paper_id=42,
+        trigger="hf-daily-cron",
+        validation_summary={"post_write_verification": "passed"},
+    )
+
+    class Database(_MutationDatabase):
+        def get(self, model, _key):
+            return state if model is PaperCurationSchedulerState else row
+
+    database = Database()
+    with pytest.raises(
+        CodexCurationMutationClosedError,
+        match="This job may no longer apply mutations",
+    ):
+        _service(database, SimpleNamespace()).apply(
+            row, ApplyMutationRequest(evaluations=[])
+        )
+
+    assert state.paused_at is None
+    assert state.pause_condition is None
+    assert row.validation_summary == {"post_write_verification": "passed"}
+    assert database.commits == 0
+
+
+def test_scheduled_evaluation_accepts_configured_metric_names():
+    from backend.models.database import Evaluation, Metric, Paper, TaskDataset
+
+    paper = SimpleNamespace(source="arxiv", source_url=None, arxiv_id="2601.00001")
+    leaderboard = SimpleNamespace(supports_harness=False)
+    metric = SimpleNamespace(name="GenEval Score", scale="0-1")
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+
+        def join(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            return leaderboard if self.model is TaskDataset else None
+
+        def all(self):
+            if self.model is Metric:
+                return [metric]
+            if self.model is Evaluation:
+                return []
+            return []
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+        def query(self, model):
+            return Query(model)
+
+    row = SimpleNamespace(
+        kind="add-evals",
+        paper_id=42,
+        trigger="hf-daily-cron",
+        trace_status="preapply_stored",
+    )
+    result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+        row,
+        ApplyMutationRequest(
+            evaluations=[_evaluation(model_name="Useful Model")],
+            evaluation_removals=[],
+            benchmark_gaps=[],
+            validation_evidence=[],
+        ),
+    )
+
+    assert result == {"policy": "scheduled-add-evals-v1", "evaluations": 1}
 
 
 @pytest.mark.parametrize(

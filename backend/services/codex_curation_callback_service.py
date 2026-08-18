@@ -421,9 +421,12 @@ class CodexCurationCallbackService:
 
             if hasattr(self.db, "rollback"):
                 self.db.rollback()
+            mutation_closed = isinstance(exc, CodexCurationMutationClosedError)
             rejected_row = (
                 self.db.get(type(row), row.id)
-                if hasattr(self.db, "get") and hasattr(row, "id")
+                if not mutation_closed
+                and hasattr(self.db, "get")
+                and hasattr(row, "id")
                 else None
             )
             should_commit = False
@@ -438,7 +441,7 @@ class CodexCurationCallbackService:
                 }
                 rejected_row.submitted_at = datetime.now(UTC)
                 should_commit = True
-            if getattr(row, "trigger", "admin") != "admin":
+            if not mutation_closed and getattr(row, "trigger", "admin") != "admin":
                 state = self.db.get(PaperCurationSchedulerState, 1)
                 if state is not None:
                     state.paused_at = datetime.now(UTC)
@@ -819,7 +822,9 @@ class CodexCurationCallbackService:
                 .all()
             )
             configured = {metric.name: metric for metric in configured_rows}
-            if item.best_metric not in configured or set(item.metrics) - configured:
+            if item.best_metric not in configured or set(item.metrics) - set(
+                configured
+            ):
                 raise ValueError("Evaluation contains an unconfigured metric")
             if item.harness and not leaderboard.supports_harness:
                 raise ValueError("Harness is not supported by this leaderboard")
