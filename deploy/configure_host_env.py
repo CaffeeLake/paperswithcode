@@ -930,7 +930,10 @@ def production_codex_values(
         "PWC_CODEX_JOBS_NAMESPACE": namespace,
         "PWC_CODEX_JOBS_OPENAI_API_KEY": decoded_value(legacy["OPENAI_API_KEY"]),
         "PWC_CODEX_JOBS_TOKEN": decoded_value(legacy["PWC_HF_TOKEN"]),
-        "PWC_CODEX_JOBS_IMAGE": "ghcr.io/huggingface/paperswithcode-codex-curator",
+        "PWC_CODEX_JOBS_IMAGE": (
+            "ghcr.io/huggingface/paperswithcode-codex-curator"
+            "@sha256:426c9ad3e23e3db69fa66da5340a9ce8e37c02416ca878d7ad9e66054550ce21"
+        ),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
         "PWC_CODEX_JOBS_MODEL": "gpt5.6-Sol",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",

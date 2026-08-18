@@ -17,6 +17,7 @@ from backend.models.api import (
     CompleteJobRequest,
     CurationTraceFinalizeRequest,
     CurationTracePreapplyRequest,
+    PromoteBenchmarkCandidateRequest,
 )
 from backend.models.api import (
     CurationLink as CurationLink,
@@ -28,6 +29,7 @@ from backend.models.api import (
     EvaluationCreateRequest as EvaluationCreateRequest,
 )
 from backend.models.database import PaperCurationJob, PaperCurationSchedulerState
+from backend.services.benchmark_gap_service import BenchmarkGapService
 from backend.services.codex_add_evals_service import (
     CodexPaperJob,
     CodexPaperJobsResponse,
@@ -65,8 +67,27 @@ def _callback_job(
 ):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing job bearer token")
-    row = codex_paper_job_service.authenticate(db, job_id, authorization[7:])
+    token = authorization[7:]
+    row = codex_paper_job_service.authenticate(db, job_id, token)
     if row is None:
+        token_owner = codex_paper_job_service.token_owner_for_other_job(
+            db, job_id, token
+        )
+        if token_owner is not None:
+            state = db.get(PaperCurationSchedulerState, 1)
+            if state is None:
+                state = PaperCurationSchedulerState(id=1)
+                db.add(state)
+            if state.paused_at is None:
+                state.paused_at = datetime.now(UTC)
+                state.pause_condition = "cross_paper_authorization"
+                state.pause_reason = (
+                    "A valid curation callback token was presented for another job"
+                )
+                logger.error(
+                    "paper curation dispatch paused condition=cross_paper_authorization"
+                )
+            db.commit()
         raise HTTPException(status_code=401, detail="Invalid job bearer token")
     return row
 
@@ -122,6 +143,31 @@ def list_jobs(
         cohort_date=cohort_date,
         review_status=review_status,
     )
+
+
+@router.post("/benchmark-candidates/{candidate_id}/promote")
+def promote_benchmark_candidate(
+    candidate_id: uuid.UUID,
+    body: PromoteBenchmarkCandidateRequest,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Promote one reviewed gap and queue targeted evidence-paper rechecks."""
+    _require_enabled(settings)
+    try:
+        return BenchmarkGapService(db).promote_and_enqueue(
+            candidate_id=candidate_id,
+            dataset_id=body.dataset_id,
+            task_id=body.task_id,
+            best_metric=body.best_metric,
+            settings=settings,
+            job_service=codex_paper_job_service,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{job_id}/retry", response_model=CodexPaperJob)

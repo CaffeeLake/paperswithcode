@@ -273,10 +273,9 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             not settings.codex_jobs_namespace
             or not settings.codex_jobs_token
             or not settings.codex_jobs_openai_api_key
-            or not settings.github_token
         ):
             raise RuntimeError(
-                "Codex jobs require namespace, HF, OpenAI, and GitHub credentials"
+                "Codex jobs require namespace, HF, and OpenAI credentials"
             )
         expected_api_url = {
             "production": "https://paperswithcode.co/api/v1",
@@ -300,9 +299,7 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             )
         if settings.codex_jobs_max_scheduled_active >= settings.codex_jobs_max_active:
             raise RuntimeError("scheduled paper curation must reserve an admin slot")
-        if settings.codex_jobs_image.endswith(
-            ":latest"
-        ) or settings.codex_jobs_image.startswith("node:"):
+        if "@sha256:" not in settings.codex_jobs_image:
             raise RuntimeError(
                 "scheduled paper curation requires an immutable curator image"
             )

@@ -2562,6 +2562,12 @@ class ApplyMutationRequest(BaseModel):
     validation_evidence: list[dict] = Field(default_factory=list, max_length=200)
 
 
+class PromoteBenchmarkCandidateRequest(BaseModel):
+    dataset_id: int = Field(gt=0)
+    task_id: int = Field(gt=0)
+    best_metric: str = Field(min_length=1, max_length=200)
+
+
 class CurationTracePreapplyRequest(BaseModel):
     proposal: dict
     events_gzip_b64: str = Field(max_length=12_000_000)

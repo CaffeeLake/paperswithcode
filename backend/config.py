@@ -169,7 +169,10 @@ class Settings(BaseSettings):
     codex_jobs_token: str = Field(default="")
     codex_jobs_openai_api_key: str = Field(default="")
     codex_jobs_image: str = Field(
-        default="ghcr.io/huggingface/paperswithcode-codex-curator"
+        default=(
+            "ghcr.io/huggingface/paperswithcode-codex-curator"
+            "@sha256:426c9ad3e23e3db69fa66da5340a9ce8e37c02416ca878d7ad9e66054550ce21"
+        )
     )
     codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
     codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)

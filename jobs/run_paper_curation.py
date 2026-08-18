@@ -24,7 +24,6 @@ TRIGGER = os.environ.get("PWC_CURATION_TRIGGER", "admin")
 MODEL = os.environ.get("PWC_CURATION_MODEL", "gpt5.6-Sol")
 REASONING_EFFORT = os.environ.get("PWC_CURATION_REASONING_EFFORT", "medium")
 WORKTREE = Path("/tmp/paperswithcode")
-ASKPASS = Path("/tmp/pwc-git-askpass.sh")
 EVENTS = Path("/tmp/codex-events.jsonl")
 FINAL = Path("/tmp/codex-final.txt")
 CONTEXT = Path("/tmp/context.json")
@@ -163,16 +162,6 @@ def _prompt(context: dict) -> str:
 
 def main() -> int:
     try:
-        ASKPASS.write_text(
-            "#!/bin/sh\ncase \"$1\" in\n*Username*) printf '%s\\n' x-access-token;;\n*Password*) printf '%s\\n' \"$GITHUB_TOKEN\";;\nesac\n",
-            encoding="utf-8",
-        )
-        ASKPASS.chmod(0o700)
-        clone_env = {
-            **os.environ,
-            "GIT_ASKPASS": str(ASKPASS),
-            "GIT_TERMINAL_PROMPT": "0",
-        }
         subprocess.run(
             [
                 "git",
@@ -182,13 +171,11 @@ def main() -> int:
                 str(WORKTREE),
             ],
             check=True,
-            env=clone_env,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         subprocess.run(
             ["git", "checkout", "--detach", REVISION], cwd=WORKTREE, check=True
         )
-        ASKPASS.unlink(missing_ok=True)
-        os.environ.pop("GITHUB_TOKEN", None)
         subprocess.run(
             ["codex", "login", "--with-api-key"],
             input=f"{os.environ['OPENAI_API_KEY']}\n",
@@ -322,7 +309,6 @@ def main() -> int:
             pass
         return 1
     finally:
-        ASKPASS.unlink(missing_ok=True)
         shutil.rmtree(WORKTREE, ignore_errors=True)
 
 

@@ -83,6 +83,7 @@ def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
         "ghcr.io/huggingface/paperswithcode-codex-curator"
+        "@sha256:426c9ad3e23e3db69fa66da5340a9ce8e37c02416ca878d7ad9e66054550ce21"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
@@ -192,6 +193,10 @@ def test_dedicated_app_exposes_remote_callback_routes():
     assert "/api/v1/admin/codex-curation/jobs/{job_id}/context" in paths
     assert "/api/v1/admin/codex-curation/jobs/{job_id}/leaderboards" in paths
     assert "/api/v1/admin/codex-curation/jobs/{job_id}/thumbnail" in paths
+    assert (
+        "/api/v1/admin/codex-curation/jobs/benchmark-candidates/{candidate_id}/promote"
+        in paths
+    )
     assert "/api/v1/chat/models" not in paths
 
 
