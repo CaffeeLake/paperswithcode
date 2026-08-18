@@ -224,6 +224,11 @@ def extract_candidates(context: dict, *, fetch=_fetch) -> dict:
             for page in paper.get("project_pages", [])
             if page.get("url")
         )
+        project_pages.extend(
+            item["normalized_url"]
+            for item in candidates.values()
+            if item["kind"] == "project_page" and item["live"]
+        )
         for project_url in dict.fromkeys(project_pages):
             try:
                 html, final_url = fetch(project_url, MAX_TEXT_BYTES)

@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 import subprocess
+import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -432,7 +433,33 @@ class CodexPaperJobService:
             image_name = image.rsplit("/", 1)[-1]
             if "@sha256:" not in image and ":" not in image_name:
                 image = f"{image}:{row.repository_sha or _git_revision()}"
-            remote = self._api(settings).run_job(
+            remote = self._run_job_with_retry(
+                settings=settings,
+                row=row,
+                callback_token=callback_token,
+                image=image,
+            )
+            row.hf_job_id = str(remote.id)
+            row.status = "running"
+            row.started_at = _now()
+            db.commit()
+        except Exception as exc:
+            row.status = "failed"
+            row.error = _launch_error(exc)
+            row.finished_at = _now()
+            db.commit()
+            self._advance_workflow(db, row, settings)
+
+    def _run_job_with_retry(
+        self,
+        *,
+        settings: Settings,
+        row: PaperCurationJob,
+        callback_token: str,
+        image: str,
+    ):
+        def launch():
+            return self._api(settings).run_job(
                 image=image,
                 command=[
                     "bash",
@@ -469,16 +496,15 @@ class CodexPaperJobService:
                 },
                 namespace=settings.codex_jobs_namespace,
             )
-            row.hf_job_id = str(remote.id)
-            row.status = "running"
-            row.started_at = _now()
-            db.commit()
-        except Exception as exc:
-            row.status = "failed"
-            row.error = _launch_error(exc)
-            row.finished_at = _now()
-            db.commit()
-            self._advance_workflow(db, row, settings)
+
+        for attempt in range(3):
+            try:
+                return launch()
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(2**attempt)
+        raise AssertionError("unreachable")
 
     def get(
         self, db: Session, job_id: uuid.UUID, settings: Settings

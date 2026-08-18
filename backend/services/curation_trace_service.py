@@ -45,6 +45,27 @@ def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _ordered_trace_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_ordered_trace_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    keys = sorted(value)
+    if "reasoning" in value and "gap_type" in value:
+        keys.remove("reasoning")
+        keys.insert(0, "reasoning")
+    return {key: _ordered_trace_value(value[key]) for key in keys}
+
+
+def trace_json(value: Any, *, indent: int | None = None) -> bytes:
+    return json.dumps(
+        _ordered_trace_value(value),
+        ensure_ascii=False,
+        indent=indent,
+        separators=None if indent is not None else (",", ":"),
+    ).encode()
+
+
 class CurationTraceService:
     def __init__(self, db: Session, settings: Settings, hf_api: HfApi | None = None):
         self.db = db
@@ -111,9 +132,7 @@ class CurationTraceService:
         url_candidates: dict | None = None,
     ) -> dict:
         events = self.decode_events(events_gzip_b64)
-        proposal_bytes = json.dumps(
-            proposal, sort_keys=True, separators=(",", ":")
-        ).encode()
+        proposal_bytes = trace_json(proposal)
         prompt_bytes = redact_trace(prompt.encode())
         schema_bytes = (
             Path(__file__).parents[2] / "jobs/schemas/curation_proposal.schema.json"
@@ -141,9 +160,7 @@ class CurationTraceService:
         self._store_recovery_payload(row, payload)
         events = self.decode_events(payload["events_gzip_b64"])
         result_bytes = json.dumps(payload.get("result") or {}, sort_keys=True).encode()
-        gaps_bytes = json.dumps(
-            payload.get("benchmark_gaps") or {}, sort_keys=True
-        ).encode()
+        gaps_bytes = trace_json(payload.get("benchmark_gaps") or {})
         report_bytes = redact_trace((payload.get("report") or "").encode())
         manifest = {
             "schema_version": "curation-trace.v1",
@@ -163,9 +180,7 @@ class CurationTraceService:
         }
         object_values = {
             "events.jsonl.gz": gzip.compress(events, compresslevel=6),
-            "proposal.json": json.dumps(
-                row.proposal or {}, sort_keys=True, separators=(",", ":")
-            ).encode(),
+            "proposal.json": trace_json(row.proposal or {}),
             "result.json": result_bytes,
             "benchmark_gaps.json": gaps_bytes,
             "report.txt": report_bytes,

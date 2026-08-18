@@ -32,6 +32,10 @@ URL_CANDIDATES = Path("/tmp/url_candidates.json")
 USER_AGENT = "PapersWithCode-Curation/1.0 (+https://paperswithcode.co)"
 
 
+class SourceEvidenceIncomplete(RuntimeError):
+    pass
+
+
 def api_request(path: str, payload: dict | None = None, method: str = "GET") -> dict:
     request = urllib.request.Request(
         f"{API_URL}/admin/codex-curation/jobs/{JOB_ID}/{path}",
@@ -206,6 +210,43 @@ def main() -> int:
                 cwd=WORKTREE,
                 check=True,
             )
+            preflight = json.loads(URL_CANDIDATES.read_text(encoding="utf-8"))
+            if not preflight.get("complete"):
+                failed_sources = sorted(
+                    {
+                        str(item.get("source") or "unknown")
+                        for item in preflight.get("errors") or []
+                    }
+                )
+                empty_events = base64.b64encode(gzip.compress(b"")).decode()
+                failure = {
+                    "status": "source_evidence_incomplete",
+                    "failed_sources": failed_sources,
+                }
+                trace_callback(
+                    "trace/preapply",
+                    {
+                        "proposal": {},
+                        "events_gzip_b64": empty_events,
+                        "prompt": "Deterministic URL preflight failed before Codex execution.",
+                        "url_candidates": preflight,
+                    },
+                )
+                trace_callback(
+                    "trace/finalize",
+                    {
+                        "events_gzip_b64": empty_events,
+                        "result": failure,
+                        "benchmark_gaps": [],
+                        "report": "URL source evidence preflight was incomplete.",
+                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                        "duration_ms": 0,
+                    },
+                )
+                raise SourceEvidenceIncomplete(
+                    "URL source evidence preflight incomplete: "
+                    + ", ".join(failed_sources)
+                )
 
         prompt = _prompt(context)
         run_env = {
@@ -265,11 +306,16 @@ def main() -> int:
         return 1
     except Exception as exc:
         try:
+            error = (
+                str(exc)
+                if isinstance(exc, SourceEvidenceIncomplete)
+                else f"Remote runner failed ({type(exc).__name__})."
+            )
             callback(
                 "complete",
                 {
                     "report": "",
-                    "error": f"Remote runner failed ({type(exc).__name__}).",
+                    "error": error,
                 },
             )
         except urllib.error.URLError:

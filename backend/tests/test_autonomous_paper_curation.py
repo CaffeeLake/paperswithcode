@@ -8,10 +8,16 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+from jsonschema import Draft202012Validator
+
 from backend.config import get_settings
 from backend.services.benchmark_gap_service import BenchmarkGapService
 from backend.services.codex_add_evals_service import CodexPaperJobService
-from backend.services.curation_trace_service import CurationTraceService, redact_trace
+from backend.services.curation_trace_service import (
+    CurationTraceService,
+    redact_trace,
+    trace_json,
+)
 from jobs import url_preflight
 
 
@@ -109,6 +115,40 @@ def test_preflight_fetches_only_missing_metadata_layer_when_hf_detail_completes_
     assert result["sources"][0]["sha256"]
 
 
+def test_preflight_uses_discovered_project_candidate_for_conditional_html(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+    context = _context(project_page=False)
+    context["paper"]["repositories"] = []
+    context["paper"]["abstract"] = "Project: https://demo.github.io/paper"
+    fetched = []
+
+    def fetch(url: str, _limit: int):
+        fetched.append(url)
+        if "/api/papers/" in url:
+            return b"{}", url
+        if url.endswith(".md"):
+            return b"", url
+        if "/pdf/" in url:
+            raise ValueError("fixture has no PDF")
+        assert url == "https://demo.github.io/paper"
+        return b'<a href="https://github.com/example/discovered">code</a>', url
+
+    result = url_preflight.extract_candidates(context, fetch=fetch)
+
+    assert "https://demo.github.io/paper" in fetched
+    assert any(
+        item["normalized_url"] == "https://github.com/example/discovered"
+        and "project_page_html" in item["source_layers"]
+        for item in result["candidates"]
+    )
+
+
 def test_trace_redaction_removes_planted_credentials():
     redacted = redact_trace(
         b"Authorization: Bearer-secret\nOPENAI_API_KEY=sk-exampleexampleexample\nhf-exampleexampleexample"
@@ -122,6 +162,7 @@ def test_trace_redaction_removes_planted_credentials():
 
 def test_checked_in_proposal_schema_requires_benchmark_gaps():
     schema = json.loads(Path("jobs/schemas/curation_proposal.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
     assert "benchmark_gaps" in schema["required"]
     assert "evaluation_removals" in schema["required"]
     assert "validation_evidence" in schema["required"]
@@ -131,6 +172,24 @@ def test_checked_in_proposal_schema_requires_benchmark_gaps():
         ]
         == 2000
     )
+
+
+def test_trace_json_keeps_gap_reasoning_first_with_deterministic_nested_keys():
+    encoded = trace_json(
+        {
+            "benchmark_gaps": [
+                {
+                    "gap_type": "dataset_missing",
+                    "reasoning": "Evidence-based summary.",
+                    "assessment": {"why": "reusable", "confidence": "high"},
+                }
+            ]
+        }
+    ).decode()
+
+    gap = encoded[encoded.index("[{") + 2 : encoded.index("}]")]
+    assert gap.startswith('"reasoning":"Evidence-based summary."')
+    assert '"assessment":{"confidence":"high","why":"reusable"}' in encoded
 
 
 def test_daily_schedule_avoids_the_organization_sync_minute():
@@ -190,6 +249,53 @@ def test_newest_first_fallback_when_no_overdue_workflow_exists():
     assert CodexPaperJobService._next_scheduled_row(database) is newest
 
 
+def test_hf_dispatch_retries_with_bounded_exponential_backoff(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class Hub:
+        def run_job(self, **values):
+            calls.append(values)
+            if len(calls) < 3:
+                raise OSError("transient dispatch failure")
+            return SimpleNamespace(id="hf-job")
+
+    service = CodexPaperJobService()
+    monkeypatch.setattr(service, "_api", lambda _settings: Hub())
+    monkeypatch.setattr(
+        "backend.services.codex_add_evals_service.time.sleep", sleeps.append
+    )
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        kind="enrich-paper",
+        paper_id=42,
+        retry_of_id=None,
+        repository_sha="a" * 40,
+        trigger="hf-daily-cron",
+        model="gpt5.6-Sol",
+        reasoning_effort="medium",
+        codex_cli_version="0.75.0",
+    )
+    settings = get_settings().model_copy(
+        update={
+            "codex_jobs_namespace": "example",
+            "codex_jobs_openai_api_key": "test-openai",
+            "github_token": "test-github",
+        }
+    )
+
+    remote = service._run_job_with_retry(
+        settings=settings,
+        row=row,
+        callback_token="callback",
+        image="example/image:sha",
+    )
+
+    assert remote.id == "hf-job"
+    assert len(calls) == 3
+    assert sleeps == [1, 2]
+
+
 def test_benchmark_gap_validation_isolates_malformed_entries():
     class Database:
         def get(self, _model, task_id):
@@ -197,16 +303,82 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
 
     valid = {
         "reasoning": "A reusable public benchmark blocks a paper-native result.",
+        "local_ref": "gap-1",
         "gap_type": "dataset_missing",
         "proposed_benchmark": {
             "name": "ExampleBench",
             "aliases": ["Example Bench"],
-            "task_candidates": [{"task_id": 19}],
-            "canonical_sources": [{"url": "https://example.org/benchmark"}],
+            "description": "A reusable public benchmark.",
+            "task_candidates": [
+                {
+                    "task_id": 19,
+                    "task_name": "Example Task",
+                    "confidence": "high",
+                    "reason": "The paper evaluates this task.",
+                }
+            ],
+            "canonical_sources": [
+                {
+                    "kind": "homepage",
+                    "url": "https://example.org/benchmark",
+                    "title": "ExampleBench",
+                }
+            ],
         },
-        "blocked_evaluations": [{"model_name": "Introduced Model"}],
-        "evidence": [{"source_kind": "paper_pdf", "page": 7}],
-        "catalog_search": {"queries": ["ExampleBench"]},
+        "protocol": {
+            "dataset_version": "v1",
+            "splits": ["test"],
+            "evaluation_protocol": "Evaluate on the public test split.",
+            "metrics": [
+                {
+                    "name": "Accuracy",
+                    "direction": "higher_is_better",
+                    "unit": "percent",
+                    "native_scale": "0-100",
+                    "definition": "Exact-match accuracy.",
+                }
+            ],
+            "supports_harness": False,
+        },
+        "blocked_evaluations": [
+            {
+                "local_ref": "blocked-1",
+                "model_name": "Introduced Model",
+                "harness": None,
+                "split": "test",
+                "metrics": {"Accuracy": 87.4},
+                "best_metric": "Accuracy",
+                "methodology": "Official test split.",
+                "uses_additional_data": False,
+                "is_open": True,
+                "num_parameters": 7_000_000_000,
+                "hf_model_url": "https://huggingface.co/example/model",
+                "evidence_ids": ["e1"],
+            }
+        ],
+        "evidence": [
+            {
+                "evidence_id": "e1",
+                "source_kind": "paper_pdf",
+                "source_url": "https://arxiv.org/pdf/2608.00042",
+                "page": 7,
+                "section": "4.2",
+                "table": "Table 3",
+                "snippet": "ExampleBench test results.",
+                "supports": ["blocked-1"],
+            }
+        ],
+        "catalog_search": {
+            "queries": ["ExampleBench"],
+            "near_matches": [],
+            "conclusion": "No configured benchmark matches.",
+        },
+        "assessment": {
+            "recommendation": "add_candidate",
+            "confidence": "high",
+            "why_worth_adding": "The protocol is public and reusable.",
+            "ambiguities": [],
+        },
     }
 
     accepted, rejected = BenchmarkGapService(Database()).validate(
@@ -216,6 +388,25 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
     assert len(accepted) == 1
     assert accepted[0]["_normalized"]["task_ids"] == [19]
     assert rejected == [{"index": 1, "error": "reasoning is required"}]
+
+
+def test_benchmark_gap_rejects_server_owned_fields():
+    class Database:
+        def get(self, _model, task_id):
+            return SimpleNamespace(id=task_id)
+
+    invalid = {
+        "reasoning": "A gap.",
+        "candidate_id": "agent-invented",
+        "gap_type": "dataset_missing",
+    }
+
+    accepted, rejected = BenchmarkGapService(Database()).validate([invalid])
+
+    assert accepted == []
+    assert rejected == [
+        {"index": 0, "error": "agent proposal contains server-owned fields"}
+    ]
 
 
 def test_trace_bundle_manifest_hashes_every_uploaded_object(tmp_path):

@@ -201,7 +201,12 @@ class CodexCurationCallbackService:
                         "methodology": item.methodology,
                         "source_url": item.source_url,
                         "external_source_url": item.external_source_url,
+                        "uses_additional_data": item.uses_additional_data,
                         "is_open": item.is_open,
+                        "best_rank": item.best_rank,
+                        "evaluated_on": item.evaluated_on.isoformat()
+                        if item.evaluated_on
+                        else None,
                         "num_parameters": item.num_parameters,
                         "hf_model_url": item.hf_model_url,
                     }
@@ -342,7 +347,10 @@ class CodexCurationCallbackService:
 
     def apply(self, row, body: ApplyMutationRequest) -> dict[str, Any]:
         gap_service = BenchmarkGapService(self.db)
-        accepted_gaps, rejected_gaps = gap_service.validate(body.benchmark_gaps)
+        gap_paper = self.db.get(Paper, row.paper_id) if body.benchmark_gaps else None
+        accepted_gaps, rejected_gaps = gap_service.validate(
+            body.benchmark_gaps, paper=gap_paper
+        )
         try:
             if hasattr(self.db, "refresh"):
                 self.db.refresh(row, with_for_update=True)
@@ -634,6 +642,9 @@ class CodexCurationCallbackService:
             matches = self._matching_evaluations(item)
             if matches:
                 canonical = self._canonical_evaluation(matches)
+                changes = self._evaluation_changes(canonical, item)
+                if not changes and len(matches) == 1:
+                    continue
                 audit = evidence_by_id.get(canonical.id)
                 if not audit:
                     raise ValueError(
@@ -644,9 +655,9 @@ class CodexCurationCallbackService:
                     raise ValueError(
                         "Existing evaluation changed after proposal context was read"
                     )
-                if not audit.get("field_diff") or not audit.get("evidence"):
+                if audit.get("field_diff") != changes or not audit.get("evidence"):
                     raise ValueError(
-                        "Evaluation update requires a field diff and primary evidence"
+                        "Evaluation update requires the exact field diff and primary evidence"
                     )
                 if len(matches) > 1:
                     duplicate_ids = sorted(
@@ -660,6 +671,22 @@ class CodexCurationCallbackService:
                     if not audit.get("canonical_selection_reason"):
                         raise ValueError(
                             "Duplicate consolidation requires a selection reason"
+                        )
+                    duplicate_states = audit.get("duplicate_before_states")
+                    if not isinstance(duplicate_states, list):
+                        raise ValueError(
+                            "Duplicate consolidation requires every before-state"
+                        )
+                    states_by_id = {
+                        value.get("id"): value
+                        for value in duplicate_states
+                        if isinstance(value, dict)
+                    }
+                    if states_by_id != {
+                        value.id: self._evaluation_state(value) for value in matches
+                    }:
+                        raise ValueError(
+                            "Duplicate consolidation before-states are incomplete or stale"
                         )
         for removal in body.evaluation_removals:
             existing = self.db.get(Evaluation, removal.evaluation_id)
@@ -723,8 +750,36 @@ class CodexCurationCallbackService:
             "best_metric": value.best_metric,
             "source_url": value.source_url,
             "external_source_url": value.external_source_url,
+            "best_rank": value.best_rank,
+            "evaluated_on": value.evaluated_on.isoformat()
+            if value.evaluated_on
+            else None,
             "num_parameters": value.num_parameters,
             "hf_model_url": value.hf_model_url,
+        }
+
+    @classmethod
+    def _evaluation_changes(cls, existing: Evaluation, item) -> dict[str, dict]:
+        before = cls._evaluation_state(existing)
+        proposed = item.model_dump()
+        if proposed.get("evaluated_on") is not None:
+            proposed["evaluated_on"] = proposed["evaluated_on"].isoformat()
+        fields = (
+            "methodology",
+            "metrics",
+            "uses_additional_data",
+            "is_open",
+            "best_rank",
+            "evaluated_on",
+            "source_url",
+            "external_source_url",
+            "num_parameters",
+            "hf_model_url",
+        )
+        return {
+            field: {"before": before[field], "after": proposed[field]}
+            for field in fields
+            if before[field] != proposed[field]
         }
 
     def _apply_evaluations(self, body: ApplyMutationRequest) -> tuple[int, int]:
@@ -752,6 +807,9 @@ class CodexCurationCallbackService:
                 self.evaluation_service.create_evaluation(**values, commit=False)
                 created += 1
             else:
+                changes = self._evaluation_changes(existing, item)
+                if not changes and len(matches) == 1:
+                    continue
                 values.pop("paper_id")
                 self.evaluation_service.update_evaluation(
                     existing.id,
@@ -825,7 +883,7 @@ class CodexCurationCallbackService:
                 link = self.db.get(PaperMethod, (row.paper_id, method_id))
                 if link is not None:
                     self.db.delete(link)
-            for method_id in desired_methods - current_methods:
+            for method_id in desired_methods:
                 exclusion = self.db.get(PaperMethodExclusion, (row.paper_id, method_id))
                 if exclusion is not None:
                     self.db.delete(exclusion)
@@ -834,7 +892,7 @@ class CodexCurationCallbackService:
                 self.db,
                 (
                     {"paper_id": row.paper_id, "method_id": method_id}
-                    for method_id in desired_methods - current_methods
+                    for method_id in desired_methods
                 ),
                 evidence_type="curation",
                 details={"job_id": str(row.id), "policy_version": row.policy_version},

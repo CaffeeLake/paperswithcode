@@ -95,6 +95,30 @@ def _service(db, evaluation_service) -> CodexCurationCallbackService:
     )
 
 
+def _stored_evaluation(**overrides):
+    values = {
+        "id": 77,
+        "paper_id": 42,
+        "task_id": 19,
+        "dataset_id": 340,
+        "model_name": "Existing Model",
+        "harness": None,
+        "methodology": "Older evidence.",
+        "metrics": {"GenEval Score": 0.8},
+        "uses_additional_data": False,
+        "is_open": True,
+        "best_rank": None,
+        "best_metric": "GenEval Score",
+        "evaluated_on": None,
+        "source_url": "https://arxiv.org/abs/2601.00001",
+        "external_source_url": None,
+        "num_parameters": None,
+        "hf_model_url": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def test_context_projection_preserves_the_worker_payload():
     task = SimpleNamespace(id=19, name="Image generation", slug="image-generation")
     method = SimpleNamespace(id=59, name="Diffusion", slug="diffusion")
@@ -319,7 +343,7 @@ def test_leaderboard_inventory_orders_exact_matches_before_close_matches():
 
 
 def test_mixed_evaluation_apply_uses_one_final_transaction():
-    database = _MutationDatabase(existing=[None, SimpleNamespace(id=77)])
+    database = _MutationDatabase(existing=[None, _stored_evaluation()])
     calls = []
 
     class Evaluations:
@@ -364,6 +388,41 @@ def test_mixed_evaluation_apply_uses_one_final_transaction():
     assert calls[1][2]["num_parameters_set"] is True
     assert calls[1][2]["hf_model_url_set"] is True
     assert row.submitted_at == row.applied_at
+
+
+def test_exact_existing_evaluation_is_a_true_no_op():
+    existing = _stored_evaluation(
+        methodology=None,
+        metrics={"GenEval Score": 0.9},
+    )
+    database = _MutationDatabase(existing=[existing])
+
+    class Evaluations:
+        def create_evaluation(self, **_values):
+            raise AssertionError("exact duplicate must not be created")
+
+        def update_evaluation(self, *_args, **_values):
+            raise AssertionError("exact duplicate must not be rewritten")
+
+    row = SimpleNamespace(
+        kind="add-evals",
+        status="running",
+        submitted_at=None,
+        applied_at=None,
+        paper_id=42,
+    )
+
+    result = _service(database, Evaluations()).apply(
+        row,
+        ApplyMutationRequest(evaluations=[_evaluation(model_name="Existing Model")]),
+    )
+
+    assert result == {
+        "status": "no_changes",
+        "evaluations_created": 0,
+        "evaluations_updated": 0,
+    }
+    assert row.applied_at is None
 
 
 def test_late_evaluation_failure_rolls_back_the_whole_apply():
