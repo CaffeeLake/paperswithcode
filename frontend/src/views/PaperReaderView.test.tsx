@@ -16,9 +16,13 @@ vi.mock("@/hooks/usePapers", () => ({
       source: "arxiv",
       url_pdf: "https://arxiv.org/pdf/1706.03762v7.pdf",
       repositories: [
-        { id: "1", paper_id: "42", url: "https://github.com/attention-is-all-you-need/paper", num_stars: 1, is_official: true, source: "curated" },
+        { id: "1", paper_id: "42", url: "https://github.com/attention-is-all-you-need/paper", owner: "Attention", name: "paper", num_stars: 1200, is_official: true, source: "curated" },
         { id: "2", paper_id: "42", url: "https://github.com/community/paper", num_stars: 2, is_official: false, source: "curated" },
       ],
+      project_pages: [
+        { id: "3", paper_id: "42", url: "https://attention.example/project", is_official: true, source: "curated" },
+      ],
+      hf_artifact_summary: { model_count: 2, dataset_count: 1, space_count: 0, best_kind: "model", best_count: 2, best_url: "https://huggingface.co/models?other=arxiv:1706.03762" },
     },
     isLoading: false,
     error: null,
@@ -28,14 +32,20 @@ vi.mock("@/lib/api/chat", () => ({
   chatApi: { getAvailability: mocks.getAvailability },
 }));
 vi.mock("@/components/pdf/PdfViewer", () => ({
-  PdfViewer: ({ url, paperTitle, paperHref, officialRepositoryUrl }: {
+  PdfViewer: ({ url, paperTitle, paperHref, resources }: {
     url: string;
     paperTitle: string;
     paperHref: string;
-    officialRepositoryUrl?: string | null;
+    resources?: {
+      repository?: { href: string; label: string; stars: number };
+      projectPage?: { href: string; label: string };
+      huggingFace?: { href: string; count: number };
+    };
   }) => <div>
     <a href={paperHref} aria-label={`${paperTitle} — open paper page`}>{paperTitle}</a>
-    {officialRepositoryUrl && <a href={officialRepositoryUrl}>Official repository</a>}
+    {resources?.repository && <a href={resources.repository.href}>Official repository · {resources.repository.stars} stars</a>}
+    {resources?.projectPage && <a href={resources.projectPage.href}>Project page</a>}
+    {resources?.huggingFace && <a href={resources.huggingFace.href}>{resources.huggingFace.count} HF artifacts</a>}
     <div role="region" aria-label="Paper PDF" data-url={url}>PDF viewer</div>
   </div>,
 }));
@@ -43,7 +53,8 @@ vi.mock("@/views/ChatView", () => ({
   ChatExperience: () => <div>Paper chat</div>,
 }));
 
-import PaperReaderView, { officialGithubRepoHref } from "@/views/PaperReaderView";
+import PaperReaderView, { readerToolbarResources } from "@/views/PaperReaderView";
+import type { Paper } from "@/lib/api/papers.types";
 
 function renderReader() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -80,8 +91,12 @@ describe("PaperReaderView", () => {
 
     expect(screen.getByRole("link", { name: /Attention Is All You Need/ }))
       .toHaveAttribute("href", "/paper/1706.03762");
-    expect(screen.getByRole("link", { name: "Official repository" }))
+    expect(screen.getByRole("link", { name: "Official repository · 1200 stars" }))
       .toHaveAttribute("href", "https://github.com/attention-is-all-you-need/paper");
+    expect(screen.getByRole("link", { name: "Project page" }))
+      .toHaveAttribute("href", "https://attention.example/project");
+    expect(screen.getByRole("link", { name: "3 HF artifacts" }))
+      .toHaveAttribute("href", "https://huggingface.co/papers/1706.03762");
     expect(screen.getByRole("region", { name: "Paper PDF" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Paper PDF" }))
       .toHaveAttribute("data-url", "https://arxiv.org/pdf/1706.03762v7");
@@ -100,13 +115,17 @@ describe("PaperReaderView", () => {
       is_official: isOfficial,
       source: "test",
     });
-    expect(officialGithubRepoHref([
+    expect(readerToolbarResources({ repositories: [
       repository("https://github.com/community/unofficial", false),
       repository("https://example.com/owner/official", true),
-    ])).toBeNull();
-    expect(officialGithubRepoHref([
+    ] } as Paper).repository).toBeUndefined();
+    expect(readerToolbarResources({ repositories: [
       repository("https://github.com/owner/official", true),
-    ])).toBe("https://github.com/owner/official");
+    ] } as Paper).repository).toMatchObject({
+      href: "https://github.com/owner/official",
+      label: "owner/official",
+      stars: 0,
+    });
   });
 
   it("keeps the public PDF surface but disables chat when the live gate closes", async () => {

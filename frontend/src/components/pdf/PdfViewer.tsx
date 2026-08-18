@@ -7,13 +7,14 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 
 import { assertPdfWorkerConfigured } from "@/lib/pdf";
 import { PdfToolbar } from "./PdfToolbar";
+import type { PdfToolbarResources } from "./PdfToolbar";
 
 interface PdfViewerProps {
   url: string;
   paperKey: string;
   paperTitle: string;
   paperHref: string;
-  officialRepositoryUrl?: string | null;
+  resources?: PdfToolbarResources;
   initialPage?: number;
   resizeActive?: boolean;
   onPageChange?: (page: number) => void;
@@ -98,7 +99,7 @@ export function PdfViewer({
   paperKey,
   paperTitle,
   paperHref,
-  officialRepositoryUrl,
+  resources,
   initialPage = 1,
   resizeActive = false,
   onPageChange,
@@ -336,7 +337,7 @@ export function PdfViewer({
     <PdfToolbar
       paperTitle={paperTitle}
       paperHref={paperHref}
-      officialRepositoryUrl={officialRepositoryUrl}
+      resources={resources}
       page={page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}

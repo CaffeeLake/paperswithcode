@@ -1,12 +1,18 @@
 import { useLayoutEffect, useRef } from "react";
 import type { FormEvent } from "react";
-import { Github, X } from "lucide-react";
+import { ExternalLink, Github, X } from "lucide-react";
 import { Link } from "react-router-dom";
+
+export interface PdfToolbarResources {
+  repository?: { href: string; label: string; stars: number };
+  projectPage?: { href: string; label: string };
+  huggingFace?: { href: string; count: number };
+}
 
 interface PdfToolbarProps {
   paperTitle: string;
   paperHref: string;
-  officialRepositoryUrl?: string | null;
+  resources?: PdfToolbarResources;
   page: number;
   pages: number;
   zoomPercent: number;
@@ -27,7 +33,7 @@ interface PdfToolbarProps {
 export function PdfToolbar({
   paperTitle,
   paperHref,
-  officialRepositoryUrl,
+  resources,
   page,
   pages,
   zoomPercent,
@@ -70,14 +76,39 @@ export function PdfToolbar({
       <Link className="pdf-toolbar-title" to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
         {paperTitle}
       </Link>
-      {officialRepositoryUrl && <a
-        className="pdf-toolbar-github"
-        href={officialRepositoryUrl}
+      {resources?.repository && <a
+        className="pdf-toolbar-resource"
+        href={resources.repository.href}
         target="_blank"
         rel="noopener noreferrer"
         title="Official GitHub repository"
         aria-label="Open official GitHub repository"
-      ><Github size={17} strokeWidth={1.8} aria-hidden="true" /></a>}
+      >
+        <Github size={15} strokeWidth={1.8} aria-hidden="true" />
+        <span>{resources.repository.label}</span>
+        <span aria-label={`${resources.repository.stars} GitHub stars`}>★ {resources.repository.stars.toLocaleString()}</span>
+      </a>}
+      {resources?.projectPage && <a
+        className="pdf-toolbar-resource"
+        href={resources.projectPage.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={resources.projectPage.href}
+        aria-label={`Open project page at ${resources.projectPage.label}`}
+      >
+        <ExternalLink size={14} strokeWidth={1.8} aria-hidden="true" />
+        <span>{resources.projectPage.label}</span>
+      </a>}
+      {resources?.huggingFace && <a
+        className="pdf-toolbar-resource"
+        href={resources.huggingFace.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`Open ${resources.huggingFace.count} Hugging Face ${resources.huggingFace.count === 1 ? "artifact" : "artifacts"}`}
+      >
+        <span aria-hidden="true">🤗</span>
+        <span>{resources.huggingFace.count} HF {resources.huggingFace.count === 1 ? "artifact" : "artifacts"}</span>
+      </a>}
     </div>
     <div className="pdf-toolbar-controls">
       <div className="pdf-toolbar-group">

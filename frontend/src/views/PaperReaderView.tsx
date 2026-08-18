@@ -3,13 +3,14 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PdfViewer } from "@/components/pdf/PdfViewer";
+import type { PdfToolbarResources } from "@/components/pdf/PdfToolbar";
 import { usePaper } from "@/hooks/usePapers";
+import type { Paper } from "@/lib/api/papers.types";
 import { isPaperReaderChatEnabled } from "@/lib/apiUrl";
 import { chatApi } from "@/lib/api/chat";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 import { normalizePaperRouteId } from "@/lib/utils";
 import { ChatExperience } from "@/views/ChatView";
-import type { Repository } from "@/lib/api/papers.types";
 
 const DEFAULT_RATIO = 66;
 const RATIO_KEY = "pwc:reader:split-ratio";
@@ -41,16 +42,51 @@ export function directArxivPdfHref(value: unknown): string | null {
   return parsed.href;
 }
 
-export function officialGithubRepoHref(repositories: Repository[] | undefined): string | null {
-  for (const repository of repositories ?? []) {
+function resourceHostname(href: string): string {
+  return new URL(href).hostname.replace(/^www\./, "");
+}
+
+export function readerToolbarResources(paper: Paper | undefined): PdfToolbarResources {
+  if (!paper) return {};
+  const resources: PdfToolbarResources = {};
+  for (const repository of paper.repositories ?? []) {
     if (!repository.is_official) continue;
     const href = safeExternalHref(repository.url);
     if (!href) continue;
     const parsed = new URL(href);
+    const parts = parsed.pathname.split("/").filter(Boolean);
     if ((parsed.hostname === "github.com" || parsed.hostname === "www.github.com")
-      && parsed.pathname.split("/").filter(Boolean).length >= 2) return href;
+      && parts.length >= 2) {
+      resources.repository = {
+        href,
+        label: repository.owner && repository.name
+          ? `${repository.owner}/${repository.name}`
+          : `${parts[0]}/${parts[1].replace(/\.git$/, "")}`,
+        stars: repository.num_stars || 0,
+      };
+      break;
+    }
   }
-  return null;
+  const projectPages = [...(paper.project_pages ?? [])]
+    .sort((left, right) => Number(right.is_official) - Number(left.is_official));
+  for (const projectPage of projectPages) {
+    const href = safeExternalHref(projectPage.url);
+    if (!href) continue;
+    resources.projectPage = { href, label: resourceHostname(href) };
+    break;
+  }
+  const artifactCount = paper.hf_artifact_summary
+    ? paper.hf_artifact_summary.model_count
+      + paper.hf_artifact_summary.dataset_count
+      + paper.hf_artifact_summary.space_count
+    : new Set([...(paper.hf_models ?? []), ...(paper.hf_datasets ?? []), ...(paper.hf_spaces ?? [])]).size;
+  if (artifactCount > 0 && paper.arxiv_id) {
+    resources.huggingFace = {
+      href: `https://huggingface.co/papers/${paper.arxiv_id.replace(/v\d+$/i, "")}`,
+      count: artifactCount,
+    };
+  }
+  return resources;
 }
 
 export default function PaperReaderView() {
@@ -66,7 +102,7 @@ export default function PaperReaderView() {
   });
   const paper = query.data;
   const pdfUrl = directArxivPdfHref(paper?.url_pdf);
-  const officialRepositoryUrl = officialGithubRepoHref(paper?.repositories);
+  const toolbarResources = readerToolbarResources(paper);
   const canonicalRoute = paper?.arxiv_id?.replace(/v\d+$/i, "") || routeId;
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(() => {
     const stored = sessionStorage.getItem(sessionKey(routeId));
@@ -214,7 +250,7 @@ export default function PaperReaderView() {
           paperKey={canonicalRoute}
           paperTitle={paper.title}
           paperHref={`/paper/${canonicalRoute}`}
-          officialRepositoryUrl={officialRepositoryUrl}
+          resources={toolbarResources}
           initialPage={initialPage}
           resizeActive={resizeActive}
           onPageChange={(page) => {
