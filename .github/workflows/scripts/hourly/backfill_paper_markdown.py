@@ -71,6 +71,15 @@ def status_disposition(
         return "retryable_due"
     if attempts >= max_attempts:
         return "attempts_exhausted"
+    # Worker releases before the bounded arXiv-version fallback could classify a
+    # stale requested version as a permanent 404. Re-admit those records once;
+    # the corrected worker records that it tried the fallback chain.
+    if (
+        state == "failed"
+        and status.get("error_class") == "arxiv_http_404"
+        and status.get("version_fallback_attempted") is not True
+    ):
+        return "retryable_due"
     if status.get("retryable") is not True:
         return "permanent_failure"
     retry_at = status.get("next_retry_at")

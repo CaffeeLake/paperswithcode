@@ -207,6 +207,33 @@ def test_retry_disposition_uses_persisted_fields():
         )
         == "permanent_failure"
     )
+    assert (
+        MODULE.status_disposition(
+            {
+                "schema_version": 2,
+                "status": "failed",
+                "attempt_count": 1,
+                "error_class": "arxiv_http_404",
+                "retryable": False,
+            },
+            now=now,
+        )
+        == "retryable_due"
+    )
+    assert (
+        MODULE.status_disposition(
+            {
+                "schema_version": 2,
+                "status": "failed",
+                "attempt_count": 2,
+                "error_class": "arxiv_http_404",
+                "retryable": False,
+                "version_fallback_attempted": True,
+            },
+            now=now,
+        )
+        == "permanent_failure"
+    )
 
 
 def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):

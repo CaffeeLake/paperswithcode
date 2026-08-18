@@ -310,6 +310,7 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
         **result,
         "requested_version": version,
         "resolved_version": resolved_version,
+        "version_fallback_attempted": True,
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "duration_seconds": round(time.monotonic() - started, 3),
@@ -585,6 +586,8 @@ def main() -> None:
                     "arxiv_id": entry["arxiv_id"],
                     "status": "failed",
                     "error": str(error)[:1000],
+                    "requested_version": entry["version"],
+                    "version_fallback_attempted": not bool(args.stub_root),
                 }
             result = status_record(
                 result,
