@@ -56,8 +56,8 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
             "shard_id": "00000",
         },
         flavor=SimpleNamespace(name="l40sx1"),
-        created_at=datetime(2026, 7, 28, 15, 15, tzinfo=timezone.utc),
-        started_at=datetime(2026, 7, 28, 15, 16, tzinfo=timezone.utc),
+        created_at=datetime.now(timezone.utc),
+        started_at=datetime.now(timezone.utc),
         finished_at=None,
         durations=SimpleNamespace(total_secs=240),
     )

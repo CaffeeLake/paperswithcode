@@ -30,6 +30,9 @@ _JOB_STAGES = [
     "CANCELED",
 ]
 _CACHE_SECONDS = 20
+_HISTORY_DAYS = 7
+_MAX_HISTORY_JOBS = 200
+_MAX_DISPLAY_JOBS = 24
 _CACHE_LOCK = threading.Lock()
 _CACHE: tuple[float, dict[str, Any]] | None = None
 
@@ -248,8 +251,19 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         reverse=True,
     )
 
-    jobs: list[dict[str, Any]] = []
-    for job in remote_jobs[:24]:
+    snapshot_now = datetime.now(timezone.utc)
+    history_cutoff = snapshot_now - timedelta(days=_HISTORY_DAYS)
+    history_remote_jobs = [
+        job
+        for job in remote_jobs
+        if (
+            (created_at := getattr(job, "created_at", None)) is None
+            or created_at.astimezone(timezone.utc) >= history_cutoff
+            or _stage(job) in {"SCHEDULING", "RUNNING"}
+        )
+    ][:_MAX_HISTORY_JOBS]
+    history_jobs: list[dict[str, Any]] = []
+    for job in history_remote_jobs:
         labels = getattr(job, "labels", None) or {}
         run_id = labels.get("run_id")
         shard_id = labels.get("shard_id")
@@ -272,7 +286,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         effective_outcome = _effective_outcome(
             stage, progress, checkpoint_stale=checkpoint_stale
         )
-        jobs.append(
+        history_jobs.append(
             {
                 "id": str(getattr(job, "id", "")),
                 "url": str(getattr(job, "url", "")),
@@ -294,13 +308,14 @@ def _fetch(settings: Settings) -> dict[str, Any]:
             }
         )
 
+    jobs = history_jobs[:_MAX_DISPLAY_JOBS]
     stages: dict[str, int] = {}
-    for job in jobs:
+    for job in history_jobs:
         stages[job["stage"]] = stages.get(job["stage"], 0) + 1
-    progress_rows = [job["progress"] for job in jobs if job["progress"]]
+    progress_rows = [job["progress"] for job in history_jobs if job["progress"]]
     outcomes: dict[str, int] = {}
     failure_causes: dict[str, int] = {}
-    for job in jobs:
+    for job in history_jobs:
         outcome = job["effective_outcome"]
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
         if job.get("failure_cause"):
@@ -309,7 +324,6 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     latest_run_id = next((job.get("run_id") for job in jobs if job.get("run_id")), None)
     latest_run_jobs = [job for job in jobs if job.get("run_id") == latest_run_id]
     active_checkpoint_ages = []
-    snapshot_now = datetime.now(timezone.utc)
     for job in latest_run_jobs:
         if job["stage"] not in {
             "PENDING",
@@ -335,6 +349,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         )
     summary = {
         "visible_jobs": len(jobs),
+        "history_jobs_7d": len(history_jobs),
         "active_jobs": sum(
             count
             for stage, count in stages.items()
@@ -362,9 +377,33 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     summary.update(
         {f"cause_{key}_jobs": value for key, value in failure_causes.items()}
     )
+    terminal_outcomes = sum(
+        outcomes.get(outcome, 0)
+        for outcome in (
+            "success",
+            "partial",
+            "interrupted",
+            "infrastructure_failure",
+            "worker_failure",
+        )
+    )
+    summary["effective_success_rate_7d"] = (
+        round(outcomes.get("success", 0) / terminal_outcomes, 4)
+        if terminal_outcomes
+        else 0
+    )
+    summary["paper_failure_rate_7d"] = (
+        round(summary["failed_papers"] / summary["processed_papers"], 4)
+        if summary["processed_papers"]
+        else 0
+    )
     terminal_jobs = max(
         1,
-        sum(1 for job in jobs if job["stage"] in {"COMPLETED", "ERROR", "CANCELED"}),
+        sum(
+            1
+            for job in history_jobs
+            if job["stage"] in {"COMPLETED", "ERROR", "CANCELED"}
+        ),
     )
     for failure_class in ("infrastructure_failure", "interrupted", "worker_failure"):
         summary[f"platform_{failure_class}_rate"] = round(
@@ -372,7 +411,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         )
     total_gpu_seconds = sum(
         float(job.get("duration_seconds") or 0)
-        for job in jobs
+        for job in history_jobs
         if job["effective_outcome"] in {"success", "partial", "interrupted"}
     )
     successful_papers = summary["succeeded_papers"]
