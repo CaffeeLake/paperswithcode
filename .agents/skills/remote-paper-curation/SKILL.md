@@ -49,6 +49,13 @@ benchmark in the paper and confirming that none of the paper's own results match
 a configured leaderboard and metric. The helper will report `no_changes`; do
 not describe that outcome as an applied mutation.
 
+Scheduled `add-evals` accepts at most one result for each exact
+`(task_id, dataset_id, best_metric)` leaderboard. Select the benchmark-wise best
+eligible result from a model introduced by the paper, exactly as required by
+`add-evals/SKILL.md`; never submit lower-performing size/configuration variants,
+gamma sweeps, or other ablation rows. Apply the same best-eligible-only rule to
+`blocked_evaluations` inside benchmark gaps.
+
 For every paper-native result blocked by missing catalog configuration, include
 one structured `benchmark_gaps` entry conforming to
 `jobs/schemas/curation_proposal.schema.json`. Group all introduced-model results
