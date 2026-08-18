@@ -1,6 +1,6 @@
 /* Chat navigation styles */
 .chat-sidebar {
-  width: 280px;
+  width: var(--app-leading-column-width);
   flex: none;
   background: var(--bg-subtle);
   border-right: 1px solid var(--hairline);
@@ -8,7 +8,7 @@
   flex-direction: column;
   transition: margin-left 0.2s ease;
 }
-.chat-sidebar-closed { margin-left: -281px; }
+.chat-sidebar-closed { margin-left: calc(-1 * (var(--app-leading-column-width) + 1px)); }
 .chat-sidebar-top {
   display: flex;
   align-items: center;

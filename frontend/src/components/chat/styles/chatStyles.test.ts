@@ -46,4 +46,10 @@ describe("chat style ownership", () => {
     expect(featureStyles).toContain("@media (forced-colors: active)");
     expect(featureStyles).toContain("@media (hover: none), (pointer: coarse)");
   });
+
+  it("aligns the desktop header brand with the chat navigation column", () => {
+    expect(globalStyles).toContain("--app-leading-column-width: 280px");
+    expect(globalStyles).toContain("width: var(--app-leading-column-width)");
+    expect(featureStyles).toContain("width: var(--app-leading-column-width)");
+  });
 });
