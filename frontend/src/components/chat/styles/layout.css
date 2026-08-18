@@ -123,16 +123,3 @@
 @media (max-width: 560px) {
   .chat-topbar { padding-inline: 14px; }
 }
-
-@media (min-width: 901px) {
-  .app-header-chat .app-header-inner {
-    max-width: none;
-    padding-left: 0;
-  }
-  .app-header-chat .brand {
-    width: 280px;
-    flex: none;
-    justify-content: center;
-  }
-  .app-header-chat .nav { margin-left: 0; }
-}

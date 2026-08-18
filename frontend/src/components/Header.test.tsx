@@ -19,6 +19,25 @@ vi.mock("@/components/HfSignInButton", () => ({
 }));
 
 describe("Header navigation", () => {
+  it("uses the same header layout class on Trending and Chat routes", () => {
+    const trending = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(document.querySelector("header")).toHaveClass("app-header");
+    expect(document.querySelector("header")).not.toHaveClass("app-header-chat");
+
+    trending.unmount();
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(document.querySelector("header")).toHaveClass("app-header");
+    expect(document.querySelector("header")).not.toHaveClass("app-header-chat");
+  });
+
   it("places Chat immediately after Trending in desktop and mobile navigation", async () => {
     const user = userEvent.setup();
     render(
