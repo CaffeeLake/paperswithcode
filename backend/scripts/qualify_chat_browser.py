@@ -247,7 +247,12 @@ class ChromePage(AbstractContextManager):
 
 
 def _mark_and_report(
-    *, settings, session_ids: set[uuid.UUID], started_at: datetime, run_id: str
+    *,
+    settings,
+    session_ids: set[uuid.UUID],
+    started_at: datetime,
+    run_id: str,
+    scenario: str = "focused_latency",
 ) -> tuple[int, dict[str, Any]]:
     with db_manager.session_local() as db:
         rows = list(
@@ -261,7 +266,7 @@ def _mark_and_report(
         latency = ChatLatencyService(db)
         marked = sum(
             latency.mark_qualification(
-                str(row.request_id), run_id=run_id, scenario="focused_latency"
+                str(row.request_id), run_id=run_id, scenario=scenario
             )
             for row in rows
         )
@@ -309,6 +314,19 @@ def qualification_passes(
     )
 
 
+def pilot_passes(
+    *, rendered: dict[str, int], pairs: int, marked: int, session_count: int
+) -> bool:
+    """Accept a bounded smoke cohort without claiming release qualification."""
+
+    return bool(
+        session_count == pairs
+        and marked == pairs * 2
+        and rendered["new_reasoning"] == pairs
+        and rendered["followup_reasoning"] == pairs
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", type=Path, required=True)
@@ -317,6 +335,7 @@ def main() -> int:
     parser.add_argument("--qualification-owner", required=True)
     parser.add_argument("--minimum-reasoning", type=int, default=50)
     parser.add_argument("--maximum-pairs", type=int, default=150)
+    parser.add_argument("--pilot-pairs", type=int, default=0)
     parser.add_argument("--new-chat-spacing-seconds", type=float, default=30)
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args()
@@ -324,7 +343,11 @@ def main() -> int:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     if not args.qualification_owner.startswith("operator:pi-qualification:"):
         raise SystemExit("--qualification-owner must be a protected Pi operator run")
-    if not 50 <= args.minimum_reasoning <= args.maximum_pairs <= 150:
+    if args.pilot_pairs and not 1 <= args.pilot_pairs <= 10:
+        raise SystemExit("--pilot-pairs must be 1-10")
+    if not args.pilot_pairs and not (
+        50 <= args.minimum_reasoning <= args.maximum_pairs <= 150
+    ):
         raise SystemExit("require 50 <= minimum reasoning <= maximum pairs <= 150")
     if not 15 <= args.new_chat_spacing_seconds <= 300:
         raise SystemExit("new-chat spacing must be 15-300 seconds")
@@ -370,7 +393,8 @@ def main() -> int:
         with ChromePage(
             cookies={settings.session_cookie_name: token, COOKIE_NAME: billing}
         ) as page:
-            for _index in range(args.maximum_pairs):
+            target_pairs = args.pilot_pairs or args.maximum_pairs
+            for _index in range(target_pairs):
                 remaining = args.new_chat_spacing_seconds - (
                     time.monotonic() - last_new_started
                 )
@@ -406,19 +430,34 @@ def main() -> int:
         session_ids=session_ids,
         started_at=started_at,
         run_id=run_id,
+        scenario="routing_pilot" if args.pilot_pairs else "focused_latency",
     )
     gates = gate_report["gates"]
-    passed = qualification_passes(
-        rendered=rendered,
-        minimum_reasoning=args.minimum_reasoning,
-        gates=gates,
-        marked=marked,
-        session_count=len(session_ids),
+    if args.pilot_pairs:
+        passed = pilot_passes(
+            rendered=rendered,
+            pairs=args.pilot_pairs,
+            marked=marked,
+            session_count=len(session_ids),
+        )
+    else:
+        passed = qualification_passes(
+            rendered=rendered,
+            minimum_reasoning=args.minimum_reasoning,
+            gates=gates,
+            marked=marked,
+            session_count=len(session_ids),
+        )
+    status = (
+        ("pilot_passed" if passed else "pilot_failed")
+        if args.pilot_pairs
+        else ("passed" if passed else "failed")
     )
     print(
         json.dumps(
             {
-                "status": "passed" if passed else "failed",
+                "status": status,
+                "mode": "pilot" if args.pilot_pairs else "qualification",
                 "run_id": run_id,
                 "rendered": rendered,
                 "session_count": len(session_ids),

@@ -1,5 +1,9 @@
 from backend.scripts import qualify_chat_browser
-from backend.scripts.qualify_chat_browser import ChromePage, qualification_passes
+from backend.scripts.qualify_chat_browser import (
+    ChromePage,
+    pilot_passes,
+    qualification_passes,
+)
 
 
 def test_devtools_connection_disables_idle_ping_timeout(monkeypatch):
@@ -85,3 +89,18 @@ def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
         marked=100,
         session_count=50,
     )
+
+
+def test_browser_pilot_requires_every_pair_and_reasoning_render():
+    rendered = {
+        "new_reasoning": 5,
+        "new_tool": 0,
+        "new_answer": 5,
+        "followup_reasoning": 5,
+        "followup_tool": 0,
+        "followup_answer": 5,
+    }
+
+    assert pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
+    rendered["followup_reasoning"] = 4
+    assert not pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
