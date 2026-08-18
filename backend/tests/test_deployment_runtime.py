@@ -2986,6 +2986,81 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
     }
 
 
+def test_production_codex_only_updates_app_and_cron_environments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.env"
+    source.write_text(
+        "\n".join(
+            f"{key}=test-value"
+            for key in (
+                "PWC_DB_HOST",
+                "PWC_DB_NAME",
+                "PWC_DB_PASSWORD",
+                "PWC_DB_PORT",
+                "PWC_DB_USER",
+                "PWC_HF_OAUTH_CLIENT_ID",
+                "PWC_HF_OAUTH_CLIENT_SECRET",
+                "PWC_HF_TOKEN",
+                "PWC_JWT_SECRET",
+                "PWC_GITHUB_TOKEN",
+                "PWC_OPENROUTER_API_KEY",
+                "OPENAI_API_KEY",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text("APP_ONLY=keep\n", encoding="utf-8")
+    (config_root / "production-cron.env").write_text(
+        "CRON_ONLY=keep\n", encoding="utf-8"
+    )
+    writes = []
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: writes.append((path, lines, group)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-codex-only",
+            "--codex-jobs-namespace",
+            "nielsr",
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert [(path.name, group) for path, _, group in writes] == [
+        ("production.env", "pwc-production"),
+        ("production-cron.env", "pwc-cron"),
+    ]
+    app_lines = writes[0][1]
+    cron_lines = writes[1][1]
+    assert configure_host_env.decoded_value(app_lines["APP_ONLY"]) == "keep"
+    assert configure_host_env.decoded_value(cron_lines["CRON_ONLY"]) == "keep"
+    for lines in (app_lines, cron_lines):
+        assert (
+            configure_host_env.decoded_value(
+                lines["PWC_CODEX_CURATION_SCHEDULER_ENABLED"]
+            )
+            == "true"
+        )
+        assert (
+            configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE_REVISION"])
+            == "9f28f32a2d1b069b7b6910ab6a489809cd538fe3"
+        )
+
+
 def test_historical_semantic_scholar_key_is_cron_only_and_preserved():
     secondary = "PWC_SEMANTIC_SCHOLAR_API_KEY_2"
     legacy = {
