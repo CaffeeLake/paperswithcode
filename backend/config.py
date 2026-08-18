@@ -169,15 +169,15 @@ class Settings(BaseSettings):
     codex_jobs_token: str = Field(default="")
     codex_jobs_openai_api_key: str = Field(default="")
     codex_jobs_image: str = Field(
-        default="hf.co/spaces/nielsr/pwc-codex-curator-16c0c607afef"
+        default="hf.co/spaces/nielsr/pwc-codex-curator-2cbe03031346"
     )
     codex_jobs_image_revision: str = Field(
-        default="7fda78ad601a6559da157f397a174f83ec99da93"
+        default="6542d9a9538f4983039e3249b0118ed478c8f980"
     )
     codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
     codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)
     codex_jobs_cli_version: str = Field(default="0.75.0")
-    codex_jobs_model: str = Field(default="gpt5.6-Sol")
+    codex_jobs_model: str = Field(default="gpt-5.6-sol")
     codex_jobs_reasoning_effort: str = Field(default="medium")
     codex_jobs_max_active: int = Field(default=4, ge=1, le=16)
     codex_jobs_max_scheduled_active: int = Field(default=3, ge=0, le=15)
