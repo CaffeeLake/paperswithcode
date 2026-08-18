@@ -174,11 +174,15 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, byt
     if len(markdown_files) != 1:
         raise ValueError("invalid_chandra_output")
     markdown_path = markdown_files[0]
-    assets = {
-        path.name: path.read_bytes()
-        for path in markdown_path.parent.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    }
+    assets: dict[str, bytes] = {}
+    for path in output.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        data = path.read_bytes()
+        existing = assets.get(path.name)
+        if existing is not None and existing != data:
+            raise ValueError(f"ambiguous_chandra_asset:{path.name}")
+        assets[path.name] = data
     return markdown_path.read_text(encoding="utf-8"), assets
 
 
@@ -350,6 +354,8 @@ def classify_failure(error: Exception, attempt_count: int) -> tuple[str, bool]:
         error_class, retryable = "artifact_verification_io", True
     elif message.startswith("immutable_asset_conflict:"):
         error_class = "immutable_asset_conflict"
+    elif message.startswith("ambiguous_chandra_asset:"):
+        error_class = "ambiguous_chandra_asset"
     elif message in {"invalid_pdf", "invalid_chandra_output"}:
         error_class = message
         retryable = message == "invalid_chandra_output" and attempt_count < 2

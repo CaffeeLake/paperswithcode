@@ -89,6 +89,24 @@ def test_worker_download_pdf_does_not_fallback_on_rate_limit(monkeypatch):
     client.get.assert_called_once_with(url)
 
 
+def test_worker_collects_nested_chandra_images(tmp_path, monkeypatch):
+    output = tmp_path / "ocr"
+
+    def fake_run(*_args, **_kwargs):
+        document = output / "paper"
+        images = document / "images"
+        images.mkdir(parents=True)
+        (document / "paper.md").write_text("![figure](images/figure.webp)")
+        (images / "figure.webp").write_bytes(b"nested-image")
+
+    monkeypatch.setattr(WORKER.subprocess, "run", fake_run)
+
+    body, assets = WORKER.run_chandra(tmp_path / "paper.pdf", output, 1)
+
+    assert body == "![figure](images/figure.webp)"
+    assert assets == {"figure.webp": b"nested-image"}
+
+
 def test_arxiv_identity_and_markdown_key():
     assert MODULE.normalize_arxiv_id("2607.24653v2") == "2607.24653"
     assert MODULE.markdown_key("2607.24653") == "2607/2607.24653.md"
