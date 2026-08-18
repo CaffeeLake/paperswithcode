@@ -91,8 +91,11 @@ def test_worker_download_pdf_does_not_fallback_on_rate_limit(monkeypatch):
 
 def test_worker_collects_nested_chandra_images(tmp_path, monkeypatch):
     output = tmp_path / "ocr"
+    observed_timeout = None
 
-    def fake_run(*_args, **_kwargs):
+    def fake_run(*_args, **kwargs):
+        nonlocal observed_timeout
+        observed_timeout = kwargs.get("timeout")
         document = output / "paper"
         images = document / "images"
         images.mkdir(parents=True)
@@ -105,6 +108,7 @@ def test_worker_collects_nested_chandra_images(tmp_path, monkeypatch):
 
     assert body == "![figure](images/figure.webp)"
     assert assets == {"figure.webp": b"nested-image"}
+    assert observed_timeout == WORKER.CHANDRA_TIMEOUT_SECONDS
 
 
 def test_worker_rejects_missing_extracted_image_before_final_attempt(tmp_path):
@@ -544,6 +548,9 @@ def test_worker_failure_classification_and_forced_cleanup():
         "immutable_asset_conflict",
         False,
     )
+    assert WORKER.classify_failure(
+        subprocess.TimeoutExpired("chandra", WORKER.CHANDRA_TIMEOUT_SECONDS), 1
+    ) == ("chandra_timeout", True)
 
     class StubbornProcess:
         def __init__(self):

@@ -49,6 +49,9 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 FORMAT_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
 STATUS_SCHEMA_VERSION = 2
 MAX_ATTEMPTS = int(os.environ.get("PWC_MARKDOWN_MAX_ATTEMPTS", "3"))
+CHANDRA_TIMEOUT_SECONDS = int(
+    os.environ.get("PWC_MARKDOWN_CHANDRA_TIMEOUT_SECONDS", "1800")
+)
 VLLM_SHUTDOWN_TIMEOUT_SECONDS = int(
     os.environ.get("PWC_MARKDOWN_VLLM_SHUTDOWN_TIMEOUT_SECONDS", "60")
 )
@@ -169,6 +172,7 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, byt
         ],
         env=env,
         check=True,
+        timeout=CHANDRA_TIMEOUT_SECONDS,
     )
     markdown_files = list(output.rglob("*.md"))
     if len(markdown_files) != 1:
@@ -386,6 +390,8 @@ def classify_failure(error: Exception, attempt_count: int) -> tuple[str, bool]:
         status = error.response.status_code
         error_class = f"arxiv_http_{status}"
         retryable = status == 429 or status >= 500
+    elif isinstance(error, subprocess.TimeoutExpired):
+        error_class, retryable = "chandra_timeout", True
     elif isinstance(error, subprocess.CalledProcessError):
         error_class, retryable = "chandra_subprocess_failure", True
     elif message.startswith("missing_extracted_image:"):
