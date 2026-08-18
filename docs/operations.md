@@ -379,8 +379,8 @@ Configuration is fail-closed. Production direct apply requires all of:
 - pinned model `gpt-5.6-sol`, medium reasoning, and Codex CLI version.
 
 The production image is the public, content-versioned Docker Space
-`hf.co/spaces/nielsr/pwc-codex-curator-2cbe03031346`, pinned to Hub revision
-`6542d9a9538f4983039e3249b0118ed478c8f980`. The dispatcher reads the Space
+`hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c`, pinned to Hub revision
+`11e9558b6c77e0989185baa453bc99229b226696`. The dispatcher reads the Space
 revision before every launch and pauses daily dispatch if it differs. Never
 update a versioned curator Space in place: publish a new Space whose suffix is
 the first 12 characters of the runner SHA-256, record its exact Hub revision,
@@ -388,10 +388,11 @@ run a standalone Jobs capability probe, then update both
 `PWC_CODEX_JOBS_IMAGE` and `PWC_CODEX_JOBS_IMAGE_REVISION`. A mutable registry
 tag such as `latest` is never valid for scheduled production dispatch.
 
-The initial image probe is recorded at
-`https://huggingface.co/jobs/nielsr/6a846d95e55292eada79c631`; its command
-checks the Codex version, PyPDF2 version, and full runner SHA-256. The public
-Space avoids Docker Hub and does not require personal GitHub Packages access.
+The current image probe is recorded at
+`https://huggingface.co/jobs/nielsr/6a84724ecd3824960fcbeaf6`; its command
+checks the Codex version, PyPDF2 version, full runner SHA-256, exact model, and
+scoped callback-token inheritance. The public Space avoids Docker Hub and does
+not require personal GitHub Packages access.
 
 The private application repository credential is never sent to a remote job.
 After authenticating with its paper-scoped callback token, the runner downloads

@@ -2971,8 +2971,8 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
         "PWC_CODEX_JOBS_NAMESPACE": "nielsr",
         "PWC_CODEX_JOBS_OPENAI_API_KEY": "openai-secret",
         "PWC_CODEX_JOBS_TOKEN": "hf-secret",
-        "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-2cbe03031346"),
-        "PWC_CODEX_JOBS_IMAGE_REVISION": ("6542d9a9538f4983039e3249b0118ed478c8f980"),
+        "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c"),
+        "PWC_CODEX_JOBS_IMAGE_REVISION": ("11e9558b6c77e0989185baa453bc99229b226696"),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
         "PWC_CODEX_JOBS_MODEL": "gpt-5.6-sol",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
@@ -3057,7 +3057,7 @@ def test_production_codex_only_updates_app_and_cron_environments(
         )
         assert (
             configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE_REVISION"])
-            == "6542d9a9538f4983039e3249b0118ed478c8f980"
+            == "11e9558b6c77e0989185baa453bc99229b226696"
         )
 
 
