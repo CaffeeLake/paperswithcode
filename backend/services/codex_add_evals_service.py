@@ -473,7 +473,11 @@ class CodexPaperJobService:
         try:
             image = self._verified_job_image(db, settings, row)
             image_name = image.rsplit("/", 1)[-1]
-            if "@sha256:" not in image and ":" not in image_name:
+            if (
+                not image.startswith("hf.co/spaces/")
+                and "@sha256:" not in image
+                and ":" not in image_name
+            ):
                 image = f"{image}:{row.repository_sha or _git_revision()}"
             remote = self._run_job_with_retry(
                 settings=settings,

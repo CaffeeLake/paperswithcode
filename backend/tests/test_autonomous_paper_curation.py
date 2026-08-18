@@ -406,6 +406,55 @@ def test_space_image_revision_is_verified_and_mismatch_pauses_daily_dispatch(
     assert state.paused_at is not None
 
 
+def test_dispatch_does_not_append_registry_tag_to_verified_space(monkeypatch):
+    launched = {}
+
+    class Database:
+        def commit(self):
+            pass
+
+    service = CodexPaperJobService()
+    monkeypatch.setattr(
+        service,
+        "_verified_job_image",
+        lambda _db, _settings, _row: "hf.co/spaces/example/curator-0123456789ab",
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_job_with_retry",
+        lambda **values: launched.update(values) or SimpleNamespace(id="hf-job"),
+    )
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        kind="enrich-paper",
+        paper_id=42,
+        trigger="hf-daily-cron",
+        retry_of_id=None,
+        repository_sha="b" * 40,
+        model="gpt5.6-Sol",
+        reasoning_effort="medium",
+        codex_cli_version="0.75.0",
+        status="queued",
+        callback_token_hash=None,
+        attempt_count=0,
+        hf_job_id=None,
+        started_at=None,
+    )
+    settings = get_settings().model_copy(
+        update={
+            "codex_jobs_namespace": "example",
+            "codex_jobs_token": "hf-token",
+            "codex_jobs_openai_api_key": "openai-token",
+        }
+    )
+
+    service._dispatch_row(Database(), settings, row)
+
+    assert launched["image"] == "hf.co/spaces/example/curator-0123456789ab"
+    assert row.status == "running"
+    assert row.hf_job_id == "hf-job"
+
+
 def test_benchmark_gap_validation_isolates_malformed_entries():
     class Database:
         def get(self, _model, task_id):
