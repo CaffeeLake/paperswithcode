@@ -52,6 +52,8 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_DEFAULT_BACKEND",
     "PWC_CHAT_LANGFUSE_ENABLED",
     "PWC_CHAT_MAX_CONCURRENCY",
+    "PWC_CHAT_ALTERNATIVE_MODEL",
+    "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED",
     "PWC_CHAT_BLANK_POOL_ENABLED",
     "PWC_CHAT_BLANK_POOL_MAX",
     "PWC_CHAT_BLANK_POOL_MIN",
@@ -662,6 +664,28 @@ def staging_chat_payload_values(*, enabled: bool, candidate: str) -> dict[str, s
     return values
 
 
+def staging_chat_alternative_model_values(
+    *, enabled: bool, candidate: str
+) -> dict[str, str]:
+    """Toggle one reviewed staging model and its compatible prewarm profile."""
+
+    reviewed = {
+        "openai/gpt-5.6-luna",
+        "google/gemini-3.7-flash",
+    }
+    if candidate not in reviewed:
+        raise ValueError("alternative model candidate is not reviewed")
+    values = {
+        "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": str(enabled).lower(),
+        "PWC_CHAT_PI_PREWARM_MODEL": (
+            candidate if enabled else "deepseek/deepseek-v4-flash-0731"
+        ),
+    }
+    if enabled:
+        values["PWC_CHAT_ALTERNATIVE_MODEL"] = candidate
+    return values
+
+
 def staging_chat_spend_values() -> dict[str, str]:
     return {
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
@@ -971,6 +995,13 @@ def main() -> int:
         choices=("system_duplicates", "tool_duplicates"),
         default="system_duplicates",
     )
+    parser.add_argument("--staging-chat-alternative-enable-only", action="store_true")
+    parser.add_argument("--staging-chat-alternative-disable-only", action="store_true")
+    parser.add_argument(
+        "--staging-chat-alternative-model",
+        choices=("openai/gpt-5.6-luna", "google/gemini-3.7-flash"),
+        default="openai/gpt-5.6-luna",
+    )
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
@@ -996,6 +1027,8 @@ def main() -> int:
         args.staging_chat_routing_disable_only,
         args.staging_chat_payload_enable_only,
         args.staging_chat_payload_disable_only,
+        args.staging_chat_alternative_enable_only,
+        args.staging_chat_alternative_disable_only,
     )
     if any(experiment_modes):
         all_other_modes = (
@@ -1039,12 +1072,21 @@ def main() -> int:
                 ),
             )
             label = "routing"
-        else:
+        elif (
+            args.staging_chat_payload_enable_only
+            or args.staging_chat_payload_disable_only
+        ):
             values = staging_chat_payload_values(
                 enabled=args.staging_chat_payload_enable_only,
                 candidate=args.staging_chat_payload_candidate,
             )
             label = "payload optimization"
+        else:
+            values = staging_chat_alternative_model_values(
+                enabled=args.staging_chat_alternative_enable_only,
+                candidate=args.staging_chat_alternative_model,
+            )
+            label = "alternative model"
         staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
         write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
         print(f"configured staging chat {label} experiment")

@@ -419,15 +419,31 @@ def validate_chat_provider_policy(
     expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
     if settings.chat_deepseek_v4_flash_openrouter_route != expected_openrouter_route:
         raise RuntimeError("DeepSeek V4 Flash must use the reviewed OpenRouter route")
-    if len(discovered) != 1 or discovered[0] != {
-        "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "label": "DeepSeek V4 Flash",
-        "route": expected_openrouter_route,
-        "provider": "openrouter",
-    }:
-        raise RuntimeError(
-            "chat discovery must contain only OpenRouter DeepSeek V4 Flash"
+    expected_discovery = (
+        {
+            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "label": "DeepSeek V4 Flash",
+            "route": expected_openrouter_route,
+            "provider": "openrouter",
+        },
+    )
+    if settings.chat_alternative_model_enabled:
+        if settings.environment != "staging":
+            raise RuntimeError("alternative chat models are staging-only")
+        candidate_labels = {
+            "openai/gpt-5.6-luna": "GPT-5.6 Luna",
+            "google/gemini-3.7-flash": "Gemini 3.7 Flash",
+        }
+        expected_discovery += (
+            {
+                "id": settings.chat_alternative_model,
+                "label": candidate_labels[settings.chat_alternative_model],
+                "route": settings.chat_alternative_model,
+                "provider": "openrouter",
+            },
         )
+    if discovered != expected_discovery:
+        raise RuntimeError("chat discovery contains an unreviewed model configuration")
     if settings.chat_default_backend != "modal_cli":
         raise RuntimeError("deployed chat must use the isolated Modal backend")
     expected_modal_percentage = 100 if settings.chat_enabled else 0
@@ -824,6 +840,13 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             raise RuntimeError("Pi prewarm requires Pi as the default harness")
         if settings.chat_pi_prewarm_model not in settings.chat_route_providers:
             raise RuntimeError("Pi prewarm model is not in the route registry")
+        expected_prewarm_model = (
+            settings.chat_alternative_model
+            if settings.chat_alternative_model_enabled
+            else settings.chat_deepseek_v4_flash_openrouter_route
+        )
+        if settings.chat_pi_prewarm_model != expected_prewarm_model:
+            raise RuntimeError("Pi prewarm model does not match the qualified model")
         if not settings.chat_system_prompt_sha256:
             raise RuntimeError("Pi prewarm requires an immutable prompt digest")
 

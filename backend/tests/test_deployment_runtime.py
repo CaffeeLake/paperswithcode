@@ -2846,6 +2846,26 @@ def test_staging_chat_payload_toggle_selects_one_exact_candidate():
     ) == {"PWC_CHAT_INITIAL_PAYLOAD_OPTIMIZATION_ENABLED": "false"}
 
 
+def test_staging_chat_alternative_model_toggle_is_reviewed_and_reversible():
+    assert configure_host_env.staging_chat_alternative_model_values(
+        enabled=True, candidate="openai/gpt-5.6-luna"
+    ) == {
+        "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": "true",
+        "PWC_CHAT_ALTERNATIVE_MODEL": "openai/gpt-5.6-luna",
+        "PWC_CHAT_PI_PREWARM_MODEL": "openai/gpt-5.6-luna",
+    }
+    assert configure_host_env.staging_chat_alternative_model_values(
+        enabled=False, candidate="openai/gpt-5.6-luna"
+    ) == {
+        "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": "false",
+        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
+    }
+    with pytest.raises(ValueError, match="not reviewed"):
+        configure_host_env.staging_chat_alternative_model_values(
+            enabled=True, candidate="unreviewed/model"
+        )
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_staging_chat_pi_prewarm_mode_preserves_other_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool

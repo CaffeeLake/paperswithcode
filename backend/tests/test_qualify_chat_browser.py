@@ -107,3 +107,20 @@ def test_browser_pilot_requires_every_pair_and_reasoning_render():
     assert pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
     rendered["followup_reasoning"] = 4
     assert not pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
+
+
+def test_browser_selects_an_explicit_discovered_model(monkeypatch):
+    page = object.__new__(ChromePage)
+    page.timeout = 1
+    evaluations: list[str] = []
+
+    def evaluate(expression: str):
+        evaluations.append(expression)
+        return True
+
+    monkeypatch.setattr(page, "evaluate", evaluate)
+    monkeypatch.setattr(page, "wait_for", lambda *_args, **_kwargs: True)
+
+    page.select_model("openai/gpt-5.6-luna")
+
+    assert any('select.value="openai/gpt-5.6-luna"' in item for item in evaluations)

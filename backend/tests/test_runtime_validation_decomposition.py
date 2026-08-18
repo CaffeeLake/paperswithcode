@@ -172,6 +172,31 @@ def test_chat_provider_policy_accepts_isolated_production_openrouter(
     runtime_validation.validate_chat_provider_policy(settings)
 
 
+def test_chat_provider_policy_accepts_one_reviewed_staging_candidate(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_alternative_model_enabled = True
+    settings.chat_alternative_model = "openai/gpt-5.6-luna"
+    settings.chat_pi_prewarm_model = "openai/gpt-5.6-luna"
+
+    runtime_validation.validate_chat_provider_policy(settings)
+    runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_chat_provider_policy_rejects_alternative_model_in_production(
+    settings_factory,
+):
+    settings, _release = settings_factory("production")
+    settings.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+    )
+    settings.chat_alternative_model_enabled = True
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_provider_policy(settings)
+
+
 def test_chat_provider_policy_rejects_empty_preferred_provider_order(
     settings_factory,
 ):

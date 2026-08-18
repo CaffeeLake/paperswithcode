@@ -956,6 +956,20 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
             "deepseek/deepseek-v4-flash-0731"
         )
 
+    comparison = Settings(
+        environment="staging",
+        chat_openrouter_server_funded_enabled=True,
+        chat_alternative_model_enabled=True,
+        chat_alternative_model="openai/gpt-5.6-luna",
+    )
+    assert [choice["id"] for choice in comparison.chat_model_choices] == [
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "openai/gpt-5.6-luna",
+    ]
+    assert comparison.chat_model_routes["openai/gpt-5.6-luna"] == (
+        "openai/gpt-5.6-luna"
+    )
+
 
 def test_title_and_display_projection_bounds():
     assert (

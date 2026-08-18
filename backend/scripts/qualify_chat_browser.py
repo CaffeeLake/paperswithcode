@@ -181,6 +181,29 @@ class ChromePage(AbstractContextManager):
             timeout=30,
         )
 
+    def select_model(self, model: str) -> None:
+        encoded = json.dumps(model)
+        self.wait_for(
+            "(() => {"
+            "const select=document.querySelector('select[aria-label=\"Research model\"]');"
+            f"return Boolean(select && [...select.options].some(option=>option.value==={encoded}));"
+            "})()"
+        )
+        selected = self.evaluate(
+            "(() => {"
+            "const select=document.querySelector('select[aria-label=\"Research model\"]');"
+            f"if(!select || ![...select.options].some(option=>option.value==={encoded})) "
+            "return false;"
+            f"select.value={encoded};"
+            "select.dispatchEvent(new Event('change',{bubbles:true}));"
+            "return true;})()"
+        )
+        if not selected:
+            raise RuntimeError(f"Research model is unavailable: {model}")
+        self.wait_for(
+            f"document.querySelector('select[aria-label=\"Research model\"]').value==={encoded}"
+        )
+
     def send_turn(self, prompt: str) -> dict[str, Any]:
         before = int(
             self.evaluate("document.querySelectorAll('.chat-msg-assistant').length")
@@ -338,6 +361,7 @@ def main() -> int:
     parser.add_argument("--maximum-pairs", type=int, default=150)
     parser.add_argument("--pilot-pairs", type=int, default=0)
     parser.add_argument("--new-chat-spacing-seconds", type=float, default=30)
+    parser.add_argument("--model")
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args()
     if args.confirm != CONFIRMATION:
@@ -364,6 +388,12 @@ def main() -> int:
         or not settings.chat_pi_prewarm_enabled
     ):
         raise SystemExit("browser qualification requires the sealed staging Pi runtime")
+    selected_model = args.model or settings.chat_model_choices[0]["id"]
+    available_models = {choice["id"]: choice for choice in settings.chat_model_choices}
+    if selected_model not in available_models:
+        raise SystemExit("--model must be present in staging model discovery")
+    if available_models[selected_model]["route"] != settings.chat_pi_prewarm_model:
+        raise SystemExit("selected model must match the staging Pi prewarm profile")
     token = _encode_legacy_session(
         {
             "sub": args.admin_subject,
@@ -394,6 +424,7 @@ def main() -> int:
         with ChromePage(
             cookies={settings.session_cookie_name: token, COOKIE_NAME: billing}
         ) as page:
+            page.select_model(selected_model)
             target_pairs = args.pilot_pairs or args.maximum_pairs
             for _index in range(target_pairs):
                 remaining = args.new_chat_spacing_seconds - (
@@ -459,6 +490,7 @@ def main() -> int:
                 "status": status,
                 "mode": "pilot" if args.pilot_pairs else "qualification",
                 "run_id": run_id,
+                "model": selected_model,
                 "rendered": rendered,
                 "session_count": len(session_ids),
                 "qualification_rows_marked": marked,

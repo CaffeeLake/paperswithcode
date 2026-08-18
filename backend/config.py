@@ -284,6 +284,12 @@ class Settings(BaseSettings):
     chat_deepseek_v4_flash_openrouter_route: str = Field(
         default="deepseek/deepseek-v4-flash-0731"
     )
+    # A staging-only, default-off candidate used for bounded model qualification.
+    # Production discovery and the default model remain unchanged.
+    chat_alternative_model_enabled: bool = Field(default=False)
+    chat_alternative_model: Literal[
+        "openai/gpt-5.6-luna", "google/gemini-3.7-flash"
+    ] = Field(default="openai/gpt-5.6-luna")
     # Read-only compatibility inputs for rolling back releases whose staging
     # registry still exposed the two GPT routes.
     chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
@@ -542,11 +548,25 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:
-        return (
+        choices = (
             {
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
                 "label": "DeepSeek V4 Flash",
                 "route": self.chat_deepseek_v4_flash_openrouter_route,
+                "provider": "openrouter",
+            },
+        )
+        if self.environment != "staging" or not self.chat_alternative_model_enabled:
+            return choices
+        labels = {
+            "openai/gpt-5.6-luna": "GPT-5.6 Luna",
+            "google/gemini-3.7-flash": "Gemini 3.7 Flash",
+        }
+        return choices + (
+            {
+                "id": self.chat_alternative_model,
+                "label": labels[self.chat_alternative_model],
+                "route": self.chat_alternative_model,
                 "provider": "openrouter",
             },
         )
@@ -587,7 +607,7 @@ class Settings(BaseSettings):
             "openai/gpt-5.6-luna",
             "openai/gpt-5.6-terra",
         ):
-            routes[legacy_model] = canonical_route
+            routes.setdefault(legacy_model, canonical_route)
         return routes
 
     @property
@@ -605,7 +625,7 @@ class Settings(BaseSettings):
             "openai/gpt-5.6-luna",
             "openai/gpt-5.6-terra",
         ):
-            providers[legacy_model] = canonical_provider
+            providers.setdefault(legacy_model, canonical_provider)
         return providers
 
     @property
