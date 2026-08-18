@@ -161,6 +161,64 @@ def test_completion_requires_an_accepted_verified_apply(
     assert (result.error is None) == (expected_status == "completed")
 
 
+def test_acknowledged_failures_are_outside_the_new_rate_window():
+    acknowledged_at = datetime.now(UTC)
+    state = SimpleNamespace(
+        acknowledged_at=acknowledged_at,
+        consecutive_apply_failures=0,
+        paused_at=None,
+        pause_condition=None,
+        pause_reason=None,
+    )
+
+    class Query:
+        def __init__(self):
+            self.after_acknowledgement = False
+
+        def filter(self, *conditions):
+            self.after_acknowledgement = any(
+                getattr(getattr(condition, "left", None), "key", None) == "finished_at"
+                and getattr(getattr(condition, "right", None), "value", None)
+                == acknowledged_at
+                for condition in conditions
+            )
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def all(self):
+            if self.after_acknowledgement:
+                return []
+            return [
+                SimpleNamespace(status="failed", error="validator failure")
+                for _ in range(25)
+            ]
+
+    class Database:
+        def get(self, *_args):
+            return state
+
+        def query(self, *_args):
+            return Query()
+
+        def commit(self):
+            pass
+
+    row = SimpleNamespace(
+        trigger="hf-daily-cron",
+        status="completed",
+        error=None,
+    )
+    CodexPaperJobService()._evaluate_scheduled_health(Database(), row)
+
+    assert state.paused_at is None
+    assert state.consecutive_apply_failures == 0
+
+
 def test_remote_callbacks_identify_the_service_to_cloudflare():
     assert HELPER_USER_AGENT.startswith("PapersWithCode-Curation/")
     runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")

@@ -410,7 +410,10 @@ sudo pwc-cron enqueue_hf_daily_paper_curation --enable-dispatch
 ```
 
 Retry a terminal scheduled stage by its durable job UUID through the same
-allowlisted queue. This command refuses admin-triggered jobs:
+allowlisted queue. Operator retries use priority 50 (ahead of ordinary daily
+work but behind priority-0 admin jobs), and repeating the command for an already
+queued retry promotes that row without duplicating it. This command refuses
+admin-triggered jobs:
 
 ```bash
 sudo pwc-cron enqueue_hf_daily_paper_curation --retry-job <job-uuid>
@@ -422,7 +425,9 @@ findings, usage, reports, and private trace URIs. It warns at a three-hour queue
 age and becomes critical at five hours. Scheduled dispatch automatically pauses
 after a server invariant breach, three consecutive trace/apply/verification
 failures, a greater-than-20% non-source failure rate in the latest 25 stages, or
-the post-baseline daily token guardrail. Resuming is an explicit acknowledgement.
+the post-baseline daily token guardrail. Resuming is an explicit acknowledgement
+that resets the consecutive counters and starts a fresh 25-stage failure-rate
+window; a recurring invariant breach still pauses immediately.
 
 Trace finalization retries storage without rerunning Codex or rolling back an
 accepted catalog mutation. To replay a cohort without writes, set direct apply

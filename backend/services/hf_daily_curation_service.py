@@ -66,11 +66,14 @@ class HFDailyCurationService:
         state = self._state()
         state.dispatch_enabled = enabled
         if enabled:
+            acknowledged_at = datetime.now(UTC)
             state.paused_at = None
             state.pause_reason = None
             state.pause_condition = None
-            state.acknowledged_at = datetime.now(UTC)
-            state.first_enabled_at = state.first_enabled_at or datetime.now(UTC)
+            state.acknowledged_at = acknowledged_at
+            state.first_enabled_at = state.first_enabled_at or acknowledged_at
+            state.consecutive_trace_failures = 0
+            state.consecutive_apply_failures = 0
             logger.warning("paper curation dispatch resumed")
         else:
             state.paused_at = datetime.now(UTC)
@@ -89,7 +92,18 @@ class HFDailyCurationService:
             raise LookupError("Curation job not found")
         if row.trigger != "hf-daily-cron":
             raise ValueError("Only scheduled HF daily curation jobs may be retried")
-        retried = self.job_service.retry(self.db, row, self.settings)
+        if row.status == "queued":
+            row.priority = min(row.priority, 50)
+            self.db.commit()
+            self.job_service.dispatch_next(self.db, self.settings)
+            retried = self.job_service.serialize(row, self.settings)
+        else:
+            retried = self.job_service.retry(
+                self.db,
+                row,
+                self.settings,
+                priority=50,
+            )
         return retried.model_dump(mode="json")
 
     def status(self) -> dict:

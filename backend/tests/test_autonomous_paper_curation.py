@@ -218,7 +218,7 @@ def test_daily_schedule_avoids_the_organization_sync_minute():
 
 def test_scheduled_job_retry_uses_the_shared_durable_queue():
     job_id = uuid.uuid4()
-    row = SimpleNamespace(id=job_id, trigger="hf-daily-cron")
+    row = SimpleNamespace(id=job_id, trigger="hf-daily-cron", status="failed")
     serialized = {
         "id": str(uuid.uuid4()),
         "retry_of_id": str(job_id),
@@ -230,10 +230,11 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
             return row if key == job_id else None
 
     class JobService:
-        def retry(self, db, selected, settings):
+        def retry(self, db, selected, settings, *, priority):
             assert isinstance(db, Database)
             assert selected is row
             assert settings is configuration
+            assert priority == 50
             return SimpleNamespace(model_dump=lambda **_kwargs: serialized)
 
     configuration = SimpleNamespace()
@@ -244,6 +245,55 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
     ).retry_scheduled_job(job_id)
 
     assert result == serialized
+
+
+def test_queued_operator_retry_is_prioritized_without_duplication():
+    job_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=job_id,
+        trigger="hf-daily-cron",
+        status="queued",
+        priority=100,
+    )
+
+    class Database:
+        committed = False
+
+        def get(self, _model, _key):
+            return row
+
+        def commit(self):
+            self.committed = True
+
+    class JobService:
+        dispatched = False
+
+        def dispatch_next(self, *_args):
+            self.dispatched = True
+
+        def serialize(self, selected, _settings):
+            assert selected is row
+            return SimpleNamespace(
+                model_dump=lambda **_kwargs: {
+                    "id": str(job_id),
+                    "priority": row.priority,
+                }
+            )
+
+        def retry(self, *_args, **_kwargs):
+            raise AssertionError("queued jobs must not be duplicated")
+
+    database = Database()
+    jobs = JobService()
+    result = HFDailyCurationService(
+        database,
+        SimpleNamespace(),
+        job_service=jobs,
+    ).retry_scheduled_job(job_id)
+
+    assert result == {"id": str(job_id), "priority": 50}
+    assert database.committed is True
+    assert jobs.dispatched is True
 
 
 def test_operator_retry_rejects_admin_jobs():
@@ -259,6 +309,49 @@ def test_operator_retry_rejects_admin_jobs():
             SimpleNamespace(),
             job_service=SimpleNamespace(),
         ).retry_scheduled_job(job_id)
+
+
+def test_dispatch_acknowledgement_starts_a_fresh_failure_window():
+    state = SimpleNamespace(
+        dispatch_enabled=True,
+        paused_at=datetime.now(UTC),
+        pause_reason="Historical failures",
+        pause_condition="terminal_failure_rate",
+        acknowledged_at=None,
+        first_enabled_at=datetime.now(UTC),
+        consecutive_trace_failures=3,
+        consecutive_apply_failures=3,
+        canary_released=True,
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def scalar(self):
+            return None
+
+    class Database:
+        def get(self, *_args):
+            return state
+
+        def query(self, *_args):
+            return Query()
+
+        def commit(self):
+            pass
+
+    jobs = SimpleNamespace(dispatch_next=lambda *_args: None)
+    result = HFDailyCurationService(
+        Database(),
+        SimpleNamespace(),
+        job_service=jobs,
+    ).set_dispatch(True)
+
+    assert result["paused_at"] is None
+    assert state.acknowledged_at is not None
+    assert state.consecutive_trace_failures == 0
+    assert state.consecutive_apply_failures == 0
 
 
 def test_cross_job_callback_token_pauses_scheduled_dispatch(monkeypatch):
