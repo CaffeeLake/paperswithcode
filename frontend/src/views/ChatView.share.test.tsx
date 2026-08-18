@@ -280,7 +280,7 @@ describe("ChatView inference authorization", () => {
   });
 
   it("sends directly when inference permission is already connected", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
       new Response(JSON.stringify({
         connected: String(input).includes("/me/inference-billing"),
         available: true,
@@ -305,6 +305,9 @@ describe("ChatView inference authorization", () => {
       paperMentions: [],
     }));
     expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
+    expect(screen.queryByText(/% left this month/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connected OpenRouter key will be used/i)).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/chat/usage"))).toBe(false);
   });
 
   it("auto-sends an authorized prompt exactly once across remounts", async () => {

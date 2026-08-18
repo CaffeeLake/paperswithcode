@@ -30,7 +30,6 @@ import { isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
   OPENROUTER_CREDENTIAL_QUERY_KEY,
-  OPENROUTER_USAGE_QUERY_KEY,
   useOpenRouterCredential,
 } from "@/lib/openrouter";
 import {
@@ -63,7 +62,6 @@ const readStoredDraft = (): ChatDraft | null => {
   return emptyDraft(raw);
 };
 
-export { OpenRouterUsageNotice } from "@/components/chat/ChatNotices";
 export { ChatCapacityDialog };
 
 type RouteSessionState = {
@@ -241,7 +239,6 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     },
     onProviderTerminal: () => {
       if (selectedProviderRef.current === "openrouter") {
-        void queryClient.invalidateQueries({ queryKey: OPENROUTER_USAGE_QUERY_KEY });
         void queryClient.invalidateQueries({ queryKey: OPENROUTER_CREDENTIAL_QUERY_KEY });
       }
     },
@@ -558,11 +555,6 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   }, []);
   const current = sessions.find((session) => session.id === routeSessionId);
   const isEmpty = chat.messages.length === 0;
-  const lastOpenRouterError = [...chat.messages].reverse().find(
-    (message) => message.role === "assistant" && message.errorCode,
-  )?.errorCode;
-  const byokExpected = lastOpenRouterError === "openrouter_unavailable"
-    || lastOpenRouterError === "openrouter_monthly_budget_exhausted";
   const routeStateMatches = routeSessionState?.id === routeSessionId;
   const isRouteSessionLoading = Boolean(routeSessionId && (
     authLoading || (user && (!routeStateMatches || routeSessionState?.status === "loading"))
@@ -659,8 +651,6 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
             variant="empty"
             composerProps={composerProps}
             provider={selectedProvider}
-            openRouterFallbackEnabled={openRouterFallbackEnabled}
-            byokExpected={byokExpected}
             paused={chatPaused}
             suggestions={mode === "paper" ? READER_PROMPTS : SUGGESTED_CHAT_PROMPTS}
           />
@@ -683,8 +673,6 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
             variant="followup"
             composerProps={composerProps}
             provider={selectedProvider}
-            openRouterFallbackEnabled={openRouterFallbackEnabled}
-            byokExpected={byokExpected}
             paused={chatPaused}
           />
         </>}

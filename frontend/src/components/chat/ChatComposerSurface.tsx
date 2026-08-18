@@ -1,7 +1,7 @@
 import type { ComponentProps } from "react";
 
 import Composer from "./Composer";
-import { BillingNotice, OpenRouterUsageNotice } from "./ChatNotices";
+import { BillingNotice } from "./ChatNotices";
 import { isChatLive } from "@/lib/chat";
 import type { ChatModelChoice } from "@/lib/chatSessions";
 
@@ -9,8 +9,6 @@ interface ChatComposerSurfaceProps {
   variant: "empty" | "followup";
   composerProps: ComponentProps<typeof Composer>;
   provider: ChatModelChoice["provider"];
-  openRouterFallbackEnabled: boolean;
-  byokExpected: boolean;
   paused: boolean;
   suggestions?: readonly string[];
 }
@@ -19,18 +17,11 @@ export function ChatComposerSurface({
   variant,
   composerProps,
   provider,
-  openRouterFallbackEnabled,
-  byokExpected,
   paused,
   suggestions = [],
 }: ChatComposerSurfaceProps) {
   const content = <>
     <BillingNotice provider={provider} />
-    <OpenRouterUsageNotice
-      enabled={provider === "openrouter"}
-      fallbackEnabled={openRouterFallbackEnabled}
-      byokExpected={byokExpected}
-    />
     {paused && <div
       id="chat-paused-description"
       className="chat-paused-banner"
