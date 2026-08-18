@@ -297,22 +297,75 @@ class CodexPaperJobService:
                 and usage_allowed
                 and scheduled_active < settings.codex_jobs_max_scheduled_active
             )
-            query = db.query(PaperCurationJob).filter(
-                PaperCurationJob.status == "queued"
+            row = (
+                db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.status == "queued",
+                    PaperCurationJob.trigger == "admin",
+                )
+                .order_by(
+                    PaperCurationJob.priority,
+                    PaperCurationJob.created_at,
+                    PaperCurationJob.id,
+                )
+                .first()
             )
-            if not scheduled_allowed:
-                query = query.filter(PaperCurationJob.trigger == "admin")
-            row = query.order_by(
-                PaperCurationJob.priority,
-                PaperCurationJob.cohort_date.desc().nullslast(),
-                PaperCurationJob.created_at,
-                PaperCurationJob.id,
-            ).first()
+            if row is None and scheduled_allowed:
+                row = self._next_scheduled_row(db)
             if row is None:
                 return
             self._dispatch_row(db, settings, row)
             if row.status == "failed":
                 continue
+
+    @staticmethod
+    def _next_scheduled_row(db: Session) -> PaperCurationJob | None:
+        """Reserve one slot for the oldest 24-hour workflow, then stay newest-first."""
+        cutoff = _now() - timedelta(hours=24)
+        overdue_active = (
+            db.query(PaperCurationJob.id)
+            .join(
+                PaperCurationWorkflow,
+                PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
+            )
+            .filter(
+                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.status.in_(ACTIVE_STATUSES),
+                PaperCurationWorkflow.created_at < cutoff,
+            )
+            .first()
+        )
+        base = (
+            db.query(PaperCurationJob)
+            .join(
+                PaperCurationWorkflow,
+                PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
+            )
+            .filter(
+                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.status == "queued",
+            )
+        )
+        if overdue_active is None:
+            overdue = (
+                base.filter(PaperCurationWorkflow.created_at < cutoff)
+                .order_by(
+                    PaperCurationWorkflow.created_at,
+                    PaperCurationWorkflow.cohort_order,
+                    PaperCurationJob.created_at,
+                    PaperCurationJob.id,
+                )
+                .first()
+            )
+            if overdue is not None:
+                return overdue
+        return base.order_by(
+            PaperCurationJob.priority,
+            PaperCurationJob.cohort_date.desc().nullslast(),
+            PaperCurationWorkflow.cohort_order,
+            PaperCurationJob.created_at,
+            PaperCurationJob.id,
+        ).first()
 
     @staticmethod
     def _scheduled_usage_allowed(

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from backend.config import get_settings
 from backend.services.benchmark_gap_service import BenchmarkGapService
+from backend.services.codex_add_evals_service import CodexPaperJobService
 from backend.services.curation_trace_service import CurationTraceService, redact_trace
 from jobs import url_preflight
 
@@ -138,6 +139,55 @@ def test_daily_schedule_avoids_the_organization_sync_minute():
     ).read_text()
     assert 'cron: "27 2 * * *"' in workflow
     assert 'cron: "20 2 * * *"' not in workflow
+
+
+class _DispatchQuery:
+    def __init__(self, database):
+        self.database = database
+
+    def join(self, *_args):
+        return self
+
+    def filter(self, *_args):
+        return self
+
+    def order_by(self, *args):
+        self.database.orderings.append([str(value) for value in args])
+        return self
+
+    def first(self):
+        return self.database.first_results.pop(0)
+
+
+class _DispatchDatabase:
+    def __init__(self, *first_results):
+        self.first_results = list(first_results)
+        self.orderings = []
+
+    def query(self, *_args):
+        return _DispatchQuery(self)
+
+
+def test_overdue_dispatch_reserves_only_one_slot_before_newest_first():
+    oldest_overdue = object()
+    newest = object()
+    first_slot = _DispatchDatabase(None, oldest_overdue)
+    remaining_slot = _DispatchDatabase(object(), newest)
+
+    assert CodexPaperJobService._next_scheduled_row(first_slot) is oldest_overdue
+    assert CodexPaperJobService._next_scheduled_row(remaining_slot) is newest
+    assert any(
+        "cohort_order" in value
+        for ordering in remaining_slot.orderings
+        for value in ordering
+    )
+
+
+def test_newest_first_fallback_when_no_overdue_workflow_exists():
+    newest = object()
+    database = _DispatchDatabase(None, None, newest)
+
+    assert CodexPaperJobService._next_scheduled_row(database) is newest
 
 
 def test_benchmark_gap_validation_isolates_malformed_entries():

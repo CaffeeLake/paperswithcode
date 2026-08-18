@@ -183,9 +183,6 @@ class HFDailyCurationService:
             kind = (
                 "add-evals" if workflow.enrich_satisfied_by_job_id else "enrich-paper"
             )
-            overdue = workflow.created_at and workflow.created_at < datetime.now(
-                UTC
-            ) - timedelta(hours=24)
             self.job_service.enqueue(
                 self.db,
                 kind=kind,
@@ -198,7 +195,7 @@ class HFDailyCurationService:
                 parent_workflow_id=workflow.id,
                 cohort_date=workflow.cohort_date,
                 policy_version=workflow.policy_version,
-                priority=50 if overdue else 100,
+                priority=100,
                 dispatch=False,
                 commit=False,
             )
