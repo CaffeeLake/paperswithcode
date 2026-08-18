@@ -263,6 +263,16 @@ COMMANDS: dict[str, Job] = {
 }
 
 
+def apply_release_features(env: dict[str, str], manifest: dict) -> None:
+    """Make CRON capability flags follow the active immutable release."""
+    features = manifest["backend_features"]
+    add_evals = bool(features.get("codex_add_evals"))
+    enrich_paper = bool(features.get("codex_enrich_paper"))
+    env["PWC_CODEX_ADD_EVALS_ENABLED"] = "true" if add_evals else "false"
+    env["PWC_CODEX_ENRICH_PAPER_ENABLED"] = "true" if enrich_paper else "false"
+    env["PWC_CODEX_JOBS_ENABLED"] = "true" if add_evals or enrich_paper else "false"
+
+
 def main() -> int:
     manifest = json.loads((CURRENT / "release.json").read_text())
     if len(sys.argv) == 2 and sys.argv[1] == "status":
@@ -313,6 +323,7 @@ def main() -> int:
     env["PWC_RELEASE_ID"] = manifest["release_id"]
     env["PWC_CRON_LOG_DIR"] = str(LOG_DIR)
     env["PYTHONPATH"] = str(CURRENT / ".github" / "workflows")
+    apply_release_features(env, manifest)
     if job in {
         "preload_thumbnails",
         "mirror_thumbnails_to_disk",
