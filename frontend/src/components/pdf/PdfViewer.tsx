@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy, TextItem } from "pdfjs-dist/types/src/display/api";
@@ -64,6 +64,7 @@ export function PdfViewer({
   const scrollRef = useRef<HTMLDivElement>(null);
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const searchGeneration = useRef(0);
+  const recenterAfterZoom = useRef(false);
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
@@ -106,6 +107,23 @@ export function PdfViewer({
   }, [resizeActive]);
 
   const liveResizeScale = resizeActive ? displayWidth / fitWidth : 1;
+
+  useLayoutEffect(() => {
+    if (!recenterAfterZoom.current) return;
+    const element = scrollRef.current;
+    if (element) {
+      element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2);
+    }
+    recenterAfterZoom.current = false;
+  }, [pageWidth]);
+
+  const setCenteredZoom = (nextZoom: (value: number) => number) => {
+    setZoom((value) => {
+      const next = nextZoom(value);
+      recenterAfterZoom.current = next !== value;
+      return next;
+    });
+  };
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));
@@ -221,9 +239,9 @@ export function PdfViewer({
       searching={searching}
       originalUrl={url}
       onPage={jumpToPage}
-      onZoomIn={() => setZoom((value) => Math.min(3, value + 0.15))}
-      onZoomOut={() => setZoom((value) => Math.max(0.5, value - 0.15))}
-      onFitWidth={() => setZoom(1)}
+      onZoomIn={() => setCenteredZoom((value) => Math.min(3, value + 0.15))}
+      onZoomOut={() => setCenteredZoom((value) => Math.max(0.5, value - 0.15))}
+      onFitWidth={() => setCenteredZoom(() => 1)}
       onToggleSearch={() => setSearchOpen((value) => !value)}
       onSearchQuery={setSearchQuery}
       onSearch={navigateMatch}

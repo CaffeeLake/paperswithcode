@@ -10,7 +10,10 @@ vi.mock("@/lib/pdf", () => ({
 }));
 
 vi.mock("./PdfToolbar", () => ({
-  PdfToolbar: () => <div>PDF toolbar</div>,
+  PdfToolbar: ({ onZoomIn }: { onZoomIn: () => void }) => <div>
+    PDF toolbar
+    <button type="button" onClick={onZoomIn}>Zoom in</button>
+  </div>,
 }));
 
 vi.mock("react-pdf", () => ({
@@ -91,5 +94,20 @@ describe("PdfViewer resize rendering", () => {
     expect(screen.getByTestId("pdf-page").closest(".pdf-pages")).toHaveStyle({
       "--pdf-live-scale": "1",
     });
+  });
+
+  it("centers the document horizontally after zooming", () => {
+    render(<PdfViewer
+      url="https://arxiv.org/pdf/1706.03762"
+      paperKey="1706.03762"
+      paperTitle="Attention Is All You Need"
+      paperHref="/paper/1706.03762"
+    />);
+    const scrollSurface = screen.getByRole("region", { name: "Paper PDF" });
+    Object.defineProperty(scrollSurface, "scrollWidth", { configurable: true, value: 1200 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+
+    expect(scrollSurface.scrollLeft).toBe(200);
   });
 });
