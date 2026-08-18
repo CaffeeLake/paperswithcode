@@ -758,8 +758,11 @@ def _validate_chat_openrouter_policy(settings: Settings) -> None:
         raise RuntimeError("server-funded OpenRouter chat requires an OpenRouter key")
     if settings.chat_openrouter_workspace_monthly_budget_usd != 200:
         raise RuntimeError("OpenRouter workspace budget must equal $200")
-    if settings.chat_openrouter_monthly_user_budget_usd != 5:
-        raise RuntimeError("OpenRouter per-user budget must equal $5")
+    expected_user_budget = 1 if settings.environment == "staging" else 5
+    if settings.chat_openrouter_monthly_user_budget_usd != expected_user_budget:
+        raise RuntimeError(
+            f"OpenRouter per-user budget must equal ${expected_user_budget}"
+        )
     if (
         settings.chat_openrouter_daily_budget_usd != 10
         or settings.chat_openrouter_rate_limit_window_seconds != 600

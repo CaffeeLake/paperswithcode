@@ -32,6 +32,7 @@ from backend.services.openrouter_usage_extractor import OpenRouterUsageExtractor
 from backend.services.openrouter_user_budget_service import (
     OpenRouterAbuseLimitExceeded,
     OpenRouterPricingUnavailable,
+    OpenRouterUserBudgetService,
     RequestBounds,
     safe_maximum_microusd,
     utc_month,
@@ -432,42 +433,17 @@ def test_byok_remains_available_when_funded_preview_is_disabled(monkeypatch):
     assert error.value.code == "openrouter_unavailable"
 
 
-def test_non_admin_staging_users_are_redirected_to_production_or_byok(monkeypatch):
-    monkeypatch.setattr(
-        "backend.routers.chat.OpenRouterBYOKService.selected",
-        lambda _service, _owner: None,
-    )
-    with pytest.raises(ChatServiceError) as moved:
-        asyncio.run(
-            _authorize_openrouter(
-                _settings(chat_openrouter_server_funded_enabled=True),
-                SimpleNamespace(),
-                "hf-user",
-                shared_funding_allowed=False,
-            )
-        )
-    assert moved.value.status_code == 403
-    assert moved.value.code == "openrouter_staging_funding_disabled"
-    assert moved.value.details == {
-        "production_chat_url": "https://paperswithcode.co/chat"
-    }
+def test_non_admin_staging_users_receive_shared_funding(monkeypatch):
+    async def allow(_settings):
+        return None
 
-    revision = uuid.uuid4()
-    monkeypatch.setattr(
-        "backend.routers.chat.OpenRouterBYOKService.selected",
-        lambda _service, _owner: SimpleNamespace(token="sk-or-user", revision=revision),
-    )
+    monkeypatch.setattr(chat_router, "require_openrouter_budget", allow)
     admission = asyncio.run(
         _authorize_openrouter(
             _settings(chat_openrouter_server_funded_enabled=True),
-            SimpleNamespace(),
-            "hf-user",
-            shared_funding_allowed=False,
         )
     )
-    assert admission == chat_router.OpenRouterAdmission(
-        "openrouter_byok", "sk-or-user", revision
-    )
+    assert admission.mode == "openrouter_funded"
 
 
 def test_production_funding_is_unchanged_for_non_admins(monkeypatch):
@@ -481,10 +457,20 @@ def test_production_funding_is_unchanged_for_non_admins(monkeypatch):
                 environment="production",
                 chat_openrouter_server_funded_enabled=True,
             ),
-            shared_funding_allowed=False,
         )
     )
     assert admission.mode == "openrouter_funded"
+
+
+def test_staging_admin_retains_five_dollar_monthly_allowance():
+    settings = _settings(
+        chat_openrouter_monthly_user_budget_usd=1,
+        admin_hf_subjects="admin-subject",
+    )
+    service = OpenRouterUserBudgetService(SimpleNamespace(), settings)
+
+    assert service.limit_microusd_for("regular-subject") == 1_000_000
+    assert service.limit_microusd_for("admin-subject") == 5_000_000
 
 
 def test_recent_auth_and_same_origin_csrf_are_both_required(monkeypatch):
@@ -721,10 +707,9 @@ def test_usage_reports_shared_credit_failure_separately_from_user_allowance(
     assert result["unavailable_reason"] == "shared_credits_exhausted"
 
 
-def test_usage_redirects_non_admin_staging_users_without_provider_lookup(
-    monkeypatch,
-):
+def test_usage_reports_non_admin_staging_allowance(monkeypatch):
     user_status = SimpleNamespace(
+        available=True,
         public_dict=lambda: {
             "used_percent": 12,
             "remaining_percent": 88,
@@ -741,13 +726,11 @@ def test_usage_redirects_non_admin_staging_users_without_provider_lookup(
         def status_percentage(self, _owner):
             return user_status
 
-    async def unexpected_provider_lookup(_settings):
-        raise AssertionError("non-admin staging status must not query shared credits")
+    async def shared_status(_settings):
+        return SimpleNamespace(within_budget=True, unavailable_reason=None)
 
     monkeypatch.setattr(chat_router, "OpenRouterUserBudgetService", UserBudget)
-    monkeypatch.setattr(
-        chat_router, "openrouter_budget_status", unexpected_provider_lookup
-    )
+    monkeypatch.setattr(chat_router, "openrouter_budget_status", shared_status)
 
     result = asyncio.run(
         chat_router.get_openrouter_usage(
@@ -757,6 +740,6 @@ def test_usage_redirects_non_admin_staging_users_without_provider_lookup(
         )
     )
 
-    assert result["available"] is False
-    assert result["unavailable_reason"] == "staging_funding_disabled"
-    assert result["production_chat_url"] == "https://paperswithcode.co/chat"
+    assert result["available"] is True
+    assert result["remaining_percent"] == 88
+    assert result["unavailable_reason"] is None

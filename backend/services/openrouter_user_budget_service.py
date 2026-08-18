@@ -199,6 +199,14 @@ class OpenRouterUserBudgetService:
     def limit_microusd(self) -> int:
         return usd_to_microusd(self.settings.chat_openrouter_monthly_user_budget_usd)
 
+    def limit_microusd_for(self, owner_id: str) -> int:
+        if (
+            self.settings.environment == "staging"
+            and owner_id in self.settings.admin_hf_subject_set
+        ):
+            return usd_to_microusd(Decimal("5.00"))
+        return self.limit_microusd
+
     def _usage(self, owner_id: str, month_start: date, *, lock: bool = False):
         query = select(ChatOpenRouterMonthlyUsage).where(
             ChatOpenRouterMonthlyUsage.hf_user_id == owner_id,
@@ -214,7 +222,7 @@ class OpenRouterUserBudgetService:
             .values(
                 hf_user_id=owner_id,
                 month_start=month_start,
-                limit_microusd=self.limit_microusd,
+                limit_microusd=self.limit_microusd_for(owner_id),
                 reserved_microusd=0,
                 spent_microusd=0,
                 unknown_cost_calls=0,
@@ -338,7 +346,7 @@ class OpenRouterUserBudgetService:
         if row is None:
             consumed = 0
             active_reserved = 0
-            authoritative_remaining = self.limit_microusd
+            authoritative_remaining = self.limit_microusd_for(owner_id)
         else:
             unknown_reserved = int(
                 self.db.scalar(
@@ -359,7 +367,9 @@ class OpenRouterUserBudgetService:
             authoritative_remaining = max(
                 0, row.limit_microusd - row.spent_microusd - row.reserved_microusd
             )
-        limit_value = row.limit_microusd if row is not None else self.limit_microusd
+        limit_value = (
+            row.limit_microusd if row is not None else self.limit_microusd_for(owner_id)
+        )
         remaining = max(0, limit_value - consumed)
         effectively_depleted = (
             active_reserved == 0
@@ -386,7 +396,7 @@ class OpenRouterUserBudgetService:
         month_start, _ = utc_month(current)
         row = self._usage(owner_id, month_start)
         available = (
-            self.limit_microusd
+            self.limit_microusd_for(owner_id)
             if row is None
             else max(0, row.limit_microusd - row.spent_microusd - row.reserved_microusd)
         )
@@ -441,7 +451,7 @@ class OpenRouterUserBudgetService:
             )
         self._enforce_abuse_circuit(owner_id, reserved, current)
         usage = self._ensure_usage(owner_id, month_start)
-        if usage.limit_microusd != self.limit_microusd:
+        if usage.limit_microusd != self.limit_microusd_for(owner_id):
             # A month's limit is an immutable snapshot. Config changes apply
             # only to newly created buckets.
             logger.info(

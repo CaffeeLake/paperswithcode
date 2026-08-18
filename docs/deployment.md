@@ -333,8 +333,10 @@ explicit `provider.sort=throughput` request policy is equivalent to the
 `:nitro` suffix while preserving the stable route used by durable accounting.
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` environment workspace limit.
-Durable PostgreSQL reservations enforce the separate `$5` per-user ceiling
-before each funded gateway dispatch. The same reservation transaction enforces
+Durable PostgreSQL reservations enforce a separate `$1` per-user ceiling on
+staging and a `$5` per-user ceiling on production before each funded gateway
+dispatch. Allowlisted staging admin subjects retain the `$5` ceiling. The same
+reservation transaction enforces
 30 funded provider calls per user and 80 globally per rolling 10 minutes, plus a
 guarded `$10` UTC-day application circuit. Settled calls count at actual cost;
 in-flight and unknown-cost calls count at their conservative reservation. Only

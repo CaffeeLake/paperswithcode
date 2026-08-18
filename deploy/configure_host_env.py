@@ -294,7 +294,7 @@ def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, s
     active_line = current.get("PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION")
     active_version = (decoded_value(active_line).strip() if active_line else "") or "1"
     return {
-        "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "5.00",
+        "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "1.00",
         "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD": "200.00",
         "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": keyring,
         "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": active_version,
@@ -487,6 +487,7 @@ def production_openrouter_values(
     if staging_key and provider_key == staging_key:
         raise ValueError("production must not reuse the staging OpenRouter key")
     values = staging_openrouter_accounting_values(source)
+    values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] = "5.00"
     try:
         keyring = json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"])
         active_version = str(
