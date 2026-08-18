@@ -24,7 +24,10 @@ from backend.models.database import (
     TaskDataset,
 )
 from backend.services.benchmark_gap_service import BenchmarkGapService
-from backend.services.codex_add_evals_service import CodexPaperJobService
+from backend.services.codex_add_evals_service import (
+    CodexPaperJobService,
+    _is_callback_validation_rejection,
+)
 from backend.services.codex_curation_callback_service import (
     CodexCurationCallbackService,
 )
@@ -33,7 +36,10 @@ from backend.services.curation_trace_service import (
     redact_trace,
     trace_json,
 )
-from backend.services.hf_daily_curation_service import HFDailyCurationService
+from backend.services.hf_daily_curation_service import (
+    HFDailyCurationService,
+    _dispatched_canary_workflows,
+)
 from jobs import url_preflight
 
 
@@ -216,6 +222,13 @@ def test_daily_schedule_avoids_the_organization_sync_minute():
     assert 'cron: "20 2 * * *"' not in workflow
 
 
+def test_canary_gate_excludes_durable_deferred_overflow():
+    completed = SimpleNamespace(status="completed", deferred_reason=None)
+    deferred = SimpleNamespace(status="deferred", deferred_reason="canary_cap")
+
+    assert _dispatched_canary_workflows([completed, deferred]) == [completed]
+
+
 def test_scheduled_job_retry_uses_the_shared_durable_queue():
     job_id = uuid.uuid4()
     row = SimpleNamespace(id=job_id, trigger="hf-daily-cron", status="failed")
@@ -228,6 +241,13 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
     class Database:
         def get(self, _model, key):
             return row if key == job_id else None
+
+        def query(self, *_args):
+            return SimpleNamespace(
+                filter=lambda *_args: SimpleNamespace(
+                    order_by=lambda *_args: SimpleNamespace(first=lambda: None)
+                )
+            )
 
     class JobService:
         def retry(self, db, selected, settings, *, priority):
@@ -247,6 +267,20 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
     assert result == serialized
 
 
+def test_callback_validation_rejection_is_not_classified_as_transient():
+    rejected = SimpleNamespace(
+        error="Remote job completed without an accepted apply.",
+        validation_summary={"status": "rejected", "error": "bad payload"},
+    )
+    transient = SimpleNamespace(
+        error="Codex process timed out",
+        validation_summary=None,
+    )
+
+    assert _is_callback_validation_rejection(rejected) is True
+    assert _is_callback_validation_rejection(transient) is False
+
+
 def test_queued_operator_retry_is_prioritized_without_duplication():
     job_id = uuid.uuid4()
     row = SimpleNamespace(
@@ -261,6 +295,13 @@ def test_queued_operator_retry_is_prioritized_without_duplication():
 
         def get(self, _model, _key):
             return row
+
+        def query(self, *_args):
+            return SimpleNamespace(
+                filter=lambda *_args: SimpleNamespace(
+                    order_by=lambda *_args: SimpleNamespace(first=lambda: None)
+                )
+            )
 
         def commit(self):
             self.committed = True
@@ -292,6 +333,63 @@ def test_queued_operator_retry_is_prioritized_without_duplication():
     ).retry_scheduled_job(job_id)
 
     assert result == {"id": str(job_id), "priority": 50}
+    assert database.committed is True
+    assert jobs.dispatched is True
+
+
+def test_repeating_operator_retry_returns_active_child_attempt():
+    job_id = uuid.uuid4()
+    failed = SimpleNamespace(id=job_id, trigger="hf-daily-cron", status="failed")
+    active = SimpleNamespace(id=uuid.uuid4(), status="running", priority=100)
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def first(self):
+            return active
+
+    class Database:
+        committed = False
+
+        def get(self, *_args):
+            return failed
+
+        def query(self, *_args):
+            return Query()
+
+        def commit(self):
+            self.committed = True
+
+    class Jobs:
+        dispatched = False
+
+        def dispatch_next(self, *_args):
+            self.dispatched = True
+
+        def serialize(self, row, _settings):
+            assert row is active
+            return SimpleNamespace(
+                model_dump=lambda **_kwargs: {
+                    "id": str(active.id),
+                    "status": active.status,
+                    "priority": active.priority,
+                }
+            )
+
+        def retry(self, *_args, **_kwargs):
+            raise AssertionError("an active child retry must be reused")
+
+    database = Database()
+    jobs = Jobs()
+    result = HFDailyCurationService(
+        database, SimpleNamespace(), job_service=jobs
+    ).retry_scheduled_job(job_id)
+
+    assert result == {"id": str(active.id), "status": "running", "priority": 50}
     assert database.committed is True
     assert jobs.dispatched is True
 

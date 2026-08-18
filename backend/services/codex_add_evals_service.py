@@ -119,6 +119,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _is_callback_validation_rejection(row: PaperCurationJob) -> bool:
+    return (getattr(row, "validation_summary", None) or {}).get("status") == "rejected"
+
+
 def _curator_skill_digest(kind: JobKind) -> str:
     root = Path(__file__).parents[2]
     skill_name = "enrich-paper" if kind == "enrich-paper" else "add-evals"
@@ -1151,6 +1155,7 @@ class CodexPaperJobService:
         elif row.status == "failed":
             if (
                 row.retry_of_id is None
+                and not _is_callback_validation_rejection(row)
                 and "validation" not in (row.error or "").lower()
             ):
                 # Preserve every remote attempt as its own immutable job row.

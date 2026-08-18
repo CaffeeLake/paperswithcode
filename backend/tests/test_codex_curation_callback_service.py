@@ -431,6 +431,18 @@ def test_exact_existing_evaluation_is_a_true_no_op():
     assert row.applied_at is None
 
 
+def test_evaluation_diff_ignores_omitted_server_managed_rank_and_date():
+    existing = _stored_evaluation(
+        methodology="Retained methodology",
+        best_rank=3,
+        evaluated_on=datetime(2026, 8, 1, tzinfo=UTC).date(),
+        metrics={"GenEval Score": 0.9},
+    )
+    proposal = _evaluation(model_name="Existing Model")
+
+    assert CodexCurationCallbackService._evaluation_changes(existing, proposal) == {}
+
+
 def test_late_evaluation_failure_rolls_back_the_whole_apply():
     database = _MutationDatabase(existing=[None, None])
 

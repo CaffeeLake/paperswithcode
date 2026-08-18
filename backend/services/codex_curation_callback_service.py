@@ -1028,6 +1028,13 @@ class CodexCurationCallbackService:
         proposed = item.model_dump()
         if proposed.get("evaluated_on") is not None:
             proposed["evaluated_on"] = proposed["evaluated_on"].isoformat()
+        # These legacy update fields have no explicit "set" sentinel in
+        # EvaluationService: None means omitted, not clear.  best_rank is also
+        # recalculated after writes, so an omitted rank must accept the derived
+        # catalog value during post-write verification.
+        for field in ("methodology", "best_rank", "evaluated_on"):
+            if proposed.get(field) is None:
+                proposed[field] = before[field]
         fields = (
             "methodology",
             "metrics",

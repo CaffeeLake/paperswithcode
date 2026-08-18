@@ -30,6 +30,13 @@ FetchCohort = Callable[[date], list[str]]
 logger = logging.getLogger(__name__)
 
 
+def _dispatched_canary_workflows(
+    workflows: list[PaperCurationWorkflow],
+) -> list[PaperCurationWorkflow]:
+    """Exclude durable deferred overflow from the initial canary gate."""
+    return [workflow for workflow in workflows if workflow.deferred_reason is None]
+
+
 def fetch_hf_daily_cohort(cohort_date: date) -> list[str]:
     """Fetch a complete HF daily list, preserving upstream order."""
     payloads = asyncio.run(fetch_hf_daily_papers(cohort_date.isoformat()))
@@ -92,6 +99,22 @@ class HFDailyCurationService:
             raise LookupError("Curation job not found")
         if row.trigger != "hf-daily-cron":
             raise ValueError("Only scheduled HF daily curation jobs may be retried")
+        active_retry = (
+            self.db.query(PaperCurationJob)
+            .filter(
+                PaperCurationJob.retry_of_id == row.id,
+                PaperCurationJob.status.in_({"queued", "dispatching", "running"}),
+            )
+            .order_by(PaperCurationJob.created_at.desc())
+            .first()
+        )
+        if active_retry is not None:
+            active_retry.priority = min(active_retry.priority, 50)
+            self.db.commit()
+            self.job_service.dispatch_next(self.db, self.settings)
+            return self.job_service.serialize(active_retry, self.settings).model_dump(
+                mode="json"
+            )
         if row.status == "queued":
             row.priority = min(row.priority, 50)
             self.db.commit()
@@ -143,7 +166,9 @@ class HFDailyCurationService:
                     discovered.append((cohort_date, order, arxiv_id))
 
         state = self._state()
-        existing_canary = (
+        # Deferred overflow is durable backlog, not part of the initial ten
+        # workflows whose terminal health decides whether that backlog may run.
+        policy_workflows = (
             self.db.query(PaperCurationWorkflow)
             .filter(
                 PaperCurationWorkflow.policy_version
@@ -151,6 +176,7 @@ class HFDailyCurationService:
             )
             .all()
         )
+        existing_canary = _dispatched_canary_workflows(policy_workflows)
         if existing_canary and not state.canary_released:
             terminal = [
                 item
@@ -267,7 +293,13 @@ class HFDailyCurationService:
                 evals_satisfied_by_job_id=admin_success["add-evals"].id
                 if admin_success["add-evals"]
                 else None,
-                deferred_reason=None if status == "queued" else "queue_or_canary_cap",
+                deferred_reason=(
+                    None
+                    if status == "queued"
+                    else "queue_cap"
+                    if state.canary_released
+                    else "canary_cap"
+                ),
             )
             if all(admin_success.values()):
                 workflow.status = "satisfied"
