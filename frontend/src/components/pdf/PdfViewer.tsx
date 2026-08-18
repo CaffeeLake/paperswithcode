@@ -65,6 +65,8 @@ export function PdfViewer({
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const searchGeneration = useRef(0);
   const recenterAfterZoom = useRef(false);
+  const pinchDelta = useRef(0);
+  const pinchFrame = useRef(0);
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
@@ -117,13 +119,37 @@ export function PdfViewer({
     recenterAfterZoom.current = false;
   }, [pageWidth]);
 
-  const setCenteredZoom = (nextZoom: (value: number) => number) => {
+  const setCenteredZoom = useCallback((nextZoom: (value: number) => number) => {
     setZoom((value) => {
       const next = nextZoom(value);
       recenterAfterZoom.current = next !== value;
       return next;
     });
-  };
+  }, []);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const handlePinch = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      pinchDelta.current += event.deltaY;
+      if (pinchFrame.current) return;
+      pinchFrame.current = requestAnimationFrame(() => {
+        const delta = pinchDelta.current;
+        pinchDelta.current = 0;
+        pinchFrame.current = 0;
+        setCenteredZoom((value) => Math.max(0.5, Math.min(3, value * Math.exp(-delta * 0.002))));
+      });
+    };
+    element.addEventListener("wheel", handlePinch, { passive: false });
+    return () => {
+      element.removeEventListener("wheel", handlePinch);
+      cancelAnimationFrame(pinchFrame.current);
+      pinchFrame.current = 0;
+      pinchDelta.current = 0;
+    };
+  }, [setCenteredZoom]);
 
   const setCurrentPage = useCallback((next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));

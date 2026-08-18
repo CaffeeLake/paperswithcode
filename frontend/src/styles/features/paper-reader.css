@@ -4,7 +4,7 @@
 .paper-reader-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); overflow: hidden; }
 .reader-workspace { position: relative; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .reader-paper-pane, .reader-assistant-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.reader-paper-pane { background: #3f4248; }
+.reader-paper-pane { background: #fff; }
 .reader-assistant-pane { background: var(--bg); }
 .reader-resize-handle { position: relative; z-index: 5; width: 1px; flex: 0 0 1px; cursor: col-resize; background: var(--hairline-strong); touch-action: none; outline: none; }
 .reader-resize-handle::before { content: ""; position: absolute; inset: 0 -8px 0 0; }
@@ -35,14 +35,14 @@
 .pdf-search-controls { position: absolute; z-index: 10; right: 8px; top: calc(100% + 5px); display: flex; align-items: center; gap: 5px; padding: 7px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--bg-elevated); box-shadow: 0 5px 20px #0003; }
 .pdf-search-controls input { width: min(260px, 45vw); min-height: 30px; border: 1px solid var(--hairline); border-radius: 4px; padding: 4px 7px; background: var(--bg); color: var(--ink); }
 .pdf-search-controls span { min-width: 70px; color: var(--ink-soft); text-align: center; }
-.pdf-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-color: var(--ink-faint) var(--bg-subtle); scrollbar-gutter: stable; }
+.pdf-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; background: #fff; scrollbar-color: var(--ink-faint) var(--bg-subtle); scrollbar-gutter: stable; }
 .pdf-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
 .pdf-scroll::-webkit-scrollbar-track { background: var(--bg-subtle); }
 .pdf-scroll::-webkit-scrollbar-thumb { border: 3px solid var(--bg-subtle); border-radius: 999px; background: var(--ink-faint); }
 .pdf-pages { display: flex; width: max-content; min-width: 100%; flex-direction: column; align-items: center; gap: 8px; zoom: var(--pdf-live-scale, 1); }
 .pdf-page { background: #fff; box-shadow: 0 1px 5px #0008; }
 .pdf-page .react-pdf__Page { margin: 0; }
-.pdf-loading, .pdf-error { min-height: 50vh; display: grid; place-content: center; color: #fff; text-align: center; padding: 24px; }
+.pdf-loading, .pdf-error { min-height: 50vh; display: grid; place-content: center; color: var(--ink); text-align: center; padding: 24px; }
 .pdf-error a, .pdf-error button { color: inherit; }
 .chat-page--reader .chat-main { min-width: 0; }
 .chat-page--reader .chat-topbar { min-height: 48px; padding: 7px 112px 7px 20px; }

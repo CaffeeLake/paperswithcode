@@ -110,4 +110,25 @@ describe("PdfViewer resize rendering", () => {
 
     expect(scrollSurface.scrollLeft).toBe(200);
   });
+
+  it("zooms on a trackpad pinch without blocking ordinary scrolling", async () => {
+    render(<PdfViewer
+      url="https://arxiv.org/pdf/1706.03762"
+      paperKey="1706.03762"
+      paperTitle="Attention Is All You Need"
+      paperHref="/paper/1706.03762"
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Load PDF" }));
+    await waitFor(() => expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "790"));
+    const scrollSurface = screen.getByRole("region", { name: "Paper PDF" });
+    const scrollEvent = new WheelEvent("wheel", { cancelable: true, deltaY: 40 });
+    scrollSurface.dispatchEvent(scrollEvent);
+    expect(scrollEvent.defaultPrevented).toBe(false);
+
+    const pinchEvent = new WheelEvent("wheel", { cancelable: true, ctrlKey: true, deltaY: -100 });
+    scrollSurface.dispatchEvent(pinchEvent);
+
+    expect(pinchEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(Number(screen.getByTestId("pdf-page").dataset.width)).toBeGreaterThan(790));
+  });
 });
