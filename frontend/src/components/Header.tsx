@@ -71,6 +71,8 @@ const SearchShortcutHint: React.FC = () => {
 
 const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const navRef = React.useRef<HTMLElement>(null);
+  const navIndicatorRef = React.useRef<HTMLSpanElement>(null);
   const closeMobile = () => setMobileOpen(false);
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -82,6 +84,40 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
     ? [NAV_LINKS[0], { to: "/chat", label: "Chat", end: false, badge: "New" }, ...NAV_LINKS.slice(1)]
     : NAV_LINKS;
 
+  React.useLayoutEffect(() => {
+    const nav = navRef.current;
+    const indicator = navIndicatorRef.current;
+    if (!nav || !indicator) return;
+
+    let disposed = false;
+    const updateIndicator = () => {
+      if (disposed) return;
+      const activeLink = nav.querySelector<HTMLElement>(".nav-item.active");
+      const width = activeLink?.offsetWidth ?? 0;
+      indicator.style.width = `${width}px`;
+      indicator.style.transform = `translateX(${activeLink?.offsetLeft ?? 0}px)`;
+      indicator.style.opacity = width > 0 ? "1" : "0";
+    };
+
+    updateIndicator();
+    const readyFrame = window.requestAnimationFrame(() => {
+      indicator.classList.add("nav-indicator-ready");
+    });
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updateIndicator);
+    resizeObserver?.observe(nav);
+    window.addEventListener("resize", updateIndicator);
+    void document.fonts?.ready.then(updateIndicator);
+
+    return () => {
+      disposed = true;
+      window.cancelAnimationFrame(readyFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateIndicator);
+    };
+  }, [location.pathname, navLinks.length]);
+
   return (
     <>
       <header className={`app-header${isChatPage ? " app-header-chat" : ""}`}>
@@ -92,7 +128,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               Papers <em>With Code</em>
             </span>
           </NavLink>
-          <nav className="nav">
+          <nav className="nav" ref={navRef}>
             {navLinks.map(({ to, label, end, badge }) => (
               <NavLink
                 key={to}
@@ -104,6 +140,11 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
                 {badge && <span className="nav-new-badge" aria-hidden="true">{badge}</span>}
               </NavLink>
             ))}
+            <span
+              ref={navIndicatorRef}
+              className="nav-indicator"
+              aria-hidden="true"
+            />
           </nav>
           <div className="header-spacer"></div>
           <a
