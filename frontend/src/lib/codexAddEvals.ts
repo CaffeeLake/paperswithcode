@@ -36,12 +36,59 @@ export interface CodexPaperJob {
   error: string | null;
   attempt_count: number;
   thumbnail: CodexThumbnailResult | null;
+  parent_workflow_id: string | null;
+  trigger: "admin" | "hf-daily-cron" | "benchmark-promotion";
+  cohort_date: string | null;
+  policy_version: string;
+  repository_sha: string | null;
+  model: string | null;
+  reasoning_effort: string | null;
+  codex_cli_version: string | null;
+  trace_status: string;
+  trace_uri: string | null;
+  proposal: Record<string, unknown> | null;
+  validation_summary: Record<string, unknown> | null;
+  mutation_result: Record<string, unknown> | null;
+  url_candidates: {
+    candidates?: Array<Record<string, unknown>>;
+    sources?: Array<Record<string, unknown>>;
+    errors?: Array<Record<string, unknown>>;
+  } | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  audit_status: string;
+}
+
+export interface CodexPaperWorkflow {
+  id: string;
+  paper_id: number;
+  cohort_date: string;
+  policy_version: string;
+  status: string;
+  review_status: string;
+  dependency_override: boolean;
+  deferred_reason: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+  stages: CodexPaperJob[];
 }
 
 export interface CodexPaperJobsResponse {
   timestamp: string;
   jobs: CodexPaperJob[];
   summary: Record<CodexPaperJobStatus, number> & { total: number };
+  workflows: CodexPaperWorkflow[];
+  scheduler: {
+    dispatch_enabled: boolean;
+    paused_at: string | null;
+    pause_reason: string | null;
+    pause_condition: string | null;
+    canary_released: boolean;
+    oldest_scheduled_queued_at: string | null;
+    queue_age_level: "healthy" | "warning" | "critical";
+  };
 }
 
 export function isCodexAddEvalsEnabled(): boolean {
@@ -107,13 +154,49 @@ export async function cancelCodexEnrichPaperJob(jobId: string): Promise<CodexPap
   }));
 }
 
-export async function getCodexPaperJobs(limit = 100): Promise<CodexPaperJobsResponse> {
+export interface CodexJobFilters {
+  trigger?: string;
+  status?: string;
+  policy_version?: string;
+  cohort_date?: string;
+  review_status?: string;
+}
+
+export async function getCodexPaperJobs(limit = 100, filters: CodexJobFilters = {}): Promise<CodexPaperJobsResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
   const response = await fetch(
-    apiUrl(`/api/v1/admin/codex-curation/jobs?limit=${limit}`),
+    apiUrl(`/api/v1/admin/codex-curation/jobs?${query}`),
     { credentials: "include", cache: "no-store" },
   );
   if (response.ok) return (await response.json()) as CodexPaperJobsResponse;
   const error = new Error(`Could not load Codex jobs (${response.status}).`);
   Object.assign(error, { status: response.status });
   throw error;
+}
+
+export async function retryCodexPaperJob(jobId: string): Promise<CodexPaperJob> {
+  return readJobResponse(await fetch(apiUrl(`/api/v1/admin/codex-curation/jobs/${jobId}/retry`), {
+    method: "POST", credentials: "include",
+  }));
+}
+
+export async function retryCodexTrace(jobId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/v1/admin/codex-curation/jobs/${jobId}/retry-trace`), {
+    method: "POST", credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Could not retry trace upload (${response.status}).`);
+}
+
+export async function cancelCodexPaperJob(jobId: string): Promise<CodexPaperJob> {
+  return readJobResponse(await fetch(apiUrl(`/api/v1/admin/codex-curation/jobs/${jobId}`), {
+    method: "DELETE", credentials: "include",
+  }));
+}
+
+export async function setCodexScheduler(action: "pause" | "resume"): Promise<void> {
+  const response = await fetch(apiUrl(`/api/v1/admin/codex-curation/jobs/scheduler/${action}`), {
+    method: "POST", credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Could not ${action} scheduled curation (${response.status}).`);
 }

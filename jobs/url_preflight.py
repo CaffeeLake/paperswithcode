@@ -1,0 +1,268 @@
+"""Bounded, deterministic URL-candidate extraction for remote enrichment jobs."""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import UTC, datetime
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Iterable
+
+from PyPDF2 import PdfReader
+
+GITHUB_URL_PATTERN = r"\bhttps?:\/\/github\.com[^\s]*\b"
+PROJECT_PAGE_URL_PATTERN = r"\bhttps?:\/\/[^\s\/]+\.github\.io[^\s]*\b"
+MAX_TEXT_BYTES = 2_000_000
+MAX_PDF_BYTES = 20_000_000
+TIMEOUT_SECONDS = 20
+TEMPLATE_REPOSITORIES = {"academicpages/academicpages.github.io", "alshedivat/al-folio"}
+
+
+class _Links(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            value = dict(attrs).get("href")
+            if value:
+                self.urls.append(value)
+
+
+def _fetch(url: str, limit: int) -> tuple[bytes, str]:
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "PapersWithCode-Curation/1.0"}
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        final_url = response.geturl()
+        content_length = int(response.headers.get("Content-Length") or 0)
+        if content_length > limit:
+            raise ValueError(f"response exceeds {limit} bytes")
+        body = response.read(limit + 1)
+        if len(body) > limit:
+            raise ValueError(f"response exceeds {limit} bytes")
+        return body, final_url
+
+
+def normalize_candidate(raw: str, base_url: str | None = None) -> str | None:
+    raw = raw.strip().rstrip(".,;:!?)]}'\"")
+    if base_url:
+        raw = urllib.parse.urljoin(base_url, raw)
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    host = parsed.hostname.lower()
+    if host == "github.com":
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            return None
+        return f"https://github.com/{parts[0]}/{parts[1].removesuffix('.git')}"
+    if not host.endswith(".github.io"):
+        return None
+    path = parsed.path.rstrip("/")
+    return urllib.parse.urlunsplit(("https", host, path, "", ""))
+
+
+def _kind(url: str) -> str:
+    return (
+        "github"
+        if urllib.parse.urlsplit(url).hostname == "github.com"
+        else "project_page"
+    )
+
+
+def _hint(url: str) -> str | None:
+    parsed = urllib.parse.urlsplit(url)
+    identity = f"{parsed.path.strip('/')}".lower()
+    return (
+        "known_website_template_repository"
+        if identity in TEMPLATE_REPOSITORIES
+        else None
+    )
+
+
+def _matches(text: str) -> Iterable[str]:
+    for pattern in (GITHUB_URL_PATTERN, PROJECT_PAGE_URL_PATTERN):
+        yield from re.findall(pattern, text)
+
+
+def extract_candidates(context: dict, *, fetch=_fetch) -> dict:
+    paper = context["paper"]
+    arxiv_id = paper.get("arxiv_id")
+    extracted_at = datetime.now(UTC).isoformat()
+    candidates: dict[str, dict] = {}
+    errors: list[dict] = []
+    sources: list[dict] = []
+
+    def fetched(source: str, url: str, body: bytes, final_url: str) -> None:
+        sources.append(
+            {
+                "source": source,
+                "url": url,
+                "final_url": final_url,
+                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            }
+        )
+
+    def add(raw: str, source: str, base_url: str | None = None) -> None:
+        normalized = normalize_candidate(raw, base_url)
+        if not normalized:
+            return
+        current = candidates.setdefault(
+            normalized,
+            {
+                "kind": _kind(normalized),
+                "url": raw,
+                "normalized_url": normalized,
+                "source_layers": [],
+                "live": None,
+                "extracted_at": extracted_at,
+                "rejection_hint": _hint(normalized),
+            },
+        )
+        if source not in current["source_layers"]:
+            current["source_layers"].append(source)
+
+    for raw in _matches(paper.get("abstract") or ""):
+        add(raw, "stored_abstract")
+
+    for repository in paper.get("repositories") or []:
+        if repository.get("is_official") and repository.get("url"):
+            add(
+                repository["url"],
+                f"job_context.repository.{repository.get('source') or 'unknown'}",
+            )
+    for project_page in paper.get("project_pages") or []:
+        if project_page.get("is_official") and project_page.get("url"):
+            add(
+                project_page["url"],
+                f"job_context.project_page.{project_page.get('source') or 'unknown'}",
+            )
+
+    def check_liveness() -> None:
+        for item in candidates.values():
+            if item["live"] is not None:
+                continue
+            try:
+                request = urllib.request.Request(
+                    item["normalized_url"],
+                    method="HEAD",
+                    headers={"User-Agent": "PapersWithCode-Curation/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    item["live"] = response.status < 400
+            except urllib.error.HTTPError as exc:
+                item["live"] = exc.code in {401, 403, 405, 429}
+            except Exception:
+                item["live"] = False
+
+    def has_live(kind: str) -> bool:
+        return any(
+            item["kind"] == kind and item["live"] and not item["rejection_hint"]
+            for item in candidates.values()
+        )
+
+    check_liveness()
+
+    project_pages: list[str] = []
+    if arxiv_id and not (has_live("github") and has_live("project_page")):
+        try:
+            url = f"https://huggingface.co/api/papers/{arxiv_id}"
+            metadata_raw, final_url = fetch(url, MAX_TEXT_BYTES)
+            fetched("hf_api", url, metadata_raw, final_url)
+            metadata = json.loads(metadata_raw)
+            for field in ("githubRepo", "projectPage"):
+                if metadata.get(field):
+                    add(metadata[field], f"hf_api.{field}")
+            if metadata.get("projectPage"):
+                project_pages.append(metadata["projectPage"])
+        except Exception as exc:
+            errors.append({"source": "hf_api", "error": type(exc).__name__})
+        check_liveness()
+    if arxiv_id and not (has_live("github") and has_live("project_page")):
+        try:
+            url = f"https://huggingface.co/papers/{arxiv_id}.md"
+            markdown, final_url = fetch(url, MAX_TEXT_BYTES)
+            fetched("hf_markdown", url, markdown, final_url)
+            for raw in _matches(markdown.decode("utf-8", "replace")):
+                add(raw, "hf_markdown")
+        except Exception as exc:
+            errors.append({"source": "hf_markdown", "error": type(exc).__name__})
+        check_liveness()
+    if arxiv_id and not (has_live("github") and has_live("project_page")):
+        try:
+            url = f"https://arxiv.org/pdf/{arxiv_id}"
+            pdf, final_url = fetch(url, MAX_PDF_BYTES)
+            fetched("pdf_first_two_pages", url, pdf, final_url)
+            reader = PdfReader(io.BytesIO(pdf), strict=False)
+            for page_number, page in enumerate(reader.pages[:2], start=1):
+                for raw in _matches(page.extract_text() or ""):
+                    add(raw, f"pdf_page_{page_number}_text")
+                annotations = page.get("/Annots") or []
+                for annotation_ref in annotations:
+                    annotation = annotation_ref.get_object()
+                    uri = (annotation.get("/A") or {}).get("/URI")
+                    if uri:
+                        add(str(uri), f"pdf_page_{page_number}_hyperlink")
+        except Exception as exc:
+            errors.append(
+                {"source": "pdf_first_two_pages", "error": type(exc).__name__}
+            )
+        check_liveness()
+
+    if not has_live("github"):
+        project_pages.extend(
+            page.get("url", "")
+            for page in paper.get("project_pages", [])
+            if page.get("url")
+        )
+        for project_url in dict.fromkeys(project_pages):
+            try:
+                html, final_url = fetch(project_url, MAX_TEXT_BYTES)
+                fetched("project_page_html", project_url, html, final_url)
+                parser = _Links()
+                parser.feed(html.decode("utf-8", "replace"))
+                for raw in parser.urls:
+                    add(raw, "project_page_html", final_url)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "source": "project_page_html",
+                        "url": project_url,
+                        "error": type(exc).__name__,
+                    }
+                )
+
+    check_liveness()
+
+    return {
+        "schema_version": "url-candidates.v1",
+        "paper_id": paper["id"],
+        "complete": not errors,
+        "candidates": list(candidates.values())[:50],
+        "sources": sources[:20],
+        "errors": errors[:20],
+    }
+
+
+def main() -> None:
+    import sys
+
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: url_preflight.py CONTEXT.json OUTPUT.json")
+    context = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    Path(sys.argv[2]).write_text(
+        json.dumps(extract_candidates(context), indent=2), encoding="utf-8"
+    )
+
+
+if __name__ == "__main__":
+    main()

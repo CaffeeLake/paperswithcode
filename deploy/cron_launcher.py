@@ -179,6 +179,15 @@ COMMANDS: dict[str, Job] = {
         timeout="2h",
         idempotency="upsert papers by stable source identity",
     ),
+    "enqueue_hf_daily_paper_curation": job(
+        "-m",
+        "backend.scripts.enqueue_hf_daily_paper_curation",
+        timeout="30m",
+        idempotency=(
+            "reconcile the rolling seven-day HF cohort into versioned per-paper "
+            "workflows and the shared bounded curation queue"
+        ),
+    ),
     "sync_hf_organizations": job(
         "-m",
         "scripts.daily.sync_hf_organizations",

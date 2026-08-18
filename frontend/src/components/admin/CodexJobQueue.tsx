@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   CircleSlash2,
@@ -11,11 +12,16 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCronDate } from "@/lib/cronStatus";
 import {
   getCodexPaperJobs,
+  retryCodexPaperJob,
+  retryCodexTrace,
+  cancelCodexPaperJob,
+  setCodexScheduler,
   type CodexPaperJob,
   type CodexPaperJobStatus,
 } from "@/lib/codexAddEvals";
@@ -67,12 +73,24 @@ function resultText(job: CodexPaperJob) {
 }
 
 export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps) {
+  const queryClient = useQueryClient();
+  const [trigger, setTrigger] = useState("");
+  const [status, setStatus] = useState("");
+  const [policyVersion, setPolicyVersion] = useState("");
+  const [cohortDate, setCohortDate] = useState("");
+  const [reviewStatus, setReviewStatus] = useState("");
+  const filters = { trigger, status, policy_version: policyVersion, cohort_date: cohortDate, review_status: reviewStatus };
   const { data, isLoading, isFetching, error } = useQuery({
-    queryKey: ["codexPaperJobs", refreshToken],
-    queryFn: () => getCodexPaperJobs(100),
+    queryKey: ["codexPaperJobs", refreshToken, filters],
+    queryFn: () => getCodexPaperJobs(100, filters),
     refetchInterval: autoRefresh ? 10_000 : false,
     retry: false,
   });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["codexPaperJobs"] });
+  const retryJob = useMutation({ mutationFn: retryCodexPaperJob, onSuccess: refresh });
+  const cancelJob = useMutation({ mutationFn: cancelCodexPaperJob, onSuccess: refresh });
+  const retryTrace = useMutation({ mutationFn: retryCodexTrace, onSuccess: refresh });
+  const scheduler = useMutation({ mutationFn: setCodexScheduler, onSuccess: refresh });
 
   const errorStatus = error && typeof error === "object" && "status" in error ? error.status : undefined;
 
@@ -112,6 +130,25 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
 
         {data && (
           <>
+            <div className={`cron-message mb-5 ${data.scheduler.paused_at ? "cron-message--error" : ""}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <strong>Scheduled dispatch: {data.scheduler.paused_at ? "paused" : data.scheduler.dispatch_enabled ? "enabled" : "disabled"}</strong>
+                  {data.scheduler.pause_reason && <div className="mt-1 text-xs">{data.scheduler.pause_reason}</div>}
+                  <div className="mt-1 text-xs cron-muted">
+                    Canary {data.scheduler.canary_released ? "released" : "active"} · Queue age {data.scheduler.queue_age_level}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant={data.scheduler.paused_at ? "default" : "outline"}
+                  disabled={scheduler.isPending}
+                  onClick={() => scheduler.mutate(data.scheduler.paused_at ? "resume" : "pause")}
+                >
+                  {data.scheduler.paused_at ? "Acknowledge & resume" : "Pause scheduled dispatch"}
+                </Button>
+              </div>
+            </div>
             <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
               {(["queued", "dispatching", "running", "completed", "failed", "canceled"] as const).map(
                 (status) => (
@@ -125,6 +162,19 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                 <div className="cron-label">Total</div>
                 <div className="mt-1 text-xl font-semibold">{data.summary.total}</div>
               </div>
+            </div>
+            <div className="mb-5 grid gap-3 sm:grid-cols-5">
+              <select aria-label="Trigger" className="rounded border px-2 py-1 text-sm" value={trigger} onChange={(event) => setTrigger(event.target.value)}>
+                <option value="">All triggers</option><option value="admin">Admin</option><option value="hf-daily-cron">HF daily cron</option>
+              </select>
+              <select aria-label="Status" className="rounded border px-2 py-1 text-sm" value={status} onChange={(event) => setStatus(event.target.value)}>
+                <option value="">All statuses</option>{Object.keys(statusStyles).map((value) => <option key={value}>{value}</option>)}
+              </select>
+              <input aria-label="Policy version" className="rounded border px-2 py-1 text-sm" placeholder="Policy version" value={policyVersion} onChange={(event) => setPolicyVersion(event.target.value)} />
+              <input aria-label="Cohort date" type="date" className="rounded border px-2 py-1 text-sm" value={cohortDate} onChange={(event) => setCohortDate(event.target.value)} />
+              <select aria-label="Review status" className="rounded border px-2 py-1 text-sm" value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value)}>
+                <option value="">All review states</option><option value="unreviewed">Unreviewed</option><option value="approved">Approved</option><option value="corrected">Corrected</option>
+              </select>
             </div>
 
             {data.jobs.length === 0 ? (
@@ -188,12 +238,54 @@ export function CodexJobQueue({ autoRefresh, refreshToken }: CodexJobQueueProps)
                               {detail}
                             </p>
                           )}
+                          <div className="mt-2 flex gap-2">
+                            {(["failed", "canceled"] as string[]).includes(job.status) && (
+                              <Button size="sm" variant="outline" onClick={() => retryJob.mutate(job.id)}>Retry</Button>
+                            )}
+                            {(["queued", "dispatching", "running"] as string[]).includes(job.status) && (
+                              <Button size="sm" variant="outline" onClick={() => cancelJob.mutate(job.id)}>Cancel</Button>
+                            )}
+                            {job.trace_status === "finalize_failed" && (
+                              <Button size="sm" variant="outline" onClick={() => retryTrace.mutate(job.id)}>Retry trace</Button>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
                   })}
                 </TableBody>
               </Table>
+            )}
+            {data.workflows.length > 0 && (
+              <div className="mt-8 space-y-3">
+                <h3 className="text-base font-semibold">Scheduled paper workflows</h3>
+                {data.workflows.map((workflow) => (
+                  <details key={workflow.id} className="rounded-md border p-3">
+                    <summary className="cursor-pointer text-sm font-medium">
+                      Paper #{workflow.paper_id} · {workflow.cohort_date} · {workflow.status} · {workflow.policy_version}
+                    </summary>
+                    <div className="mt-3 space-y-3 text-xs">
+                      {workflow.error && <div className="text-red-700">{workflow.error}</div>}
+                      {workflow.stages.map((stage) => (
+                        <div key={stage.id} className="rounded border p-3">
+                          <div className="font-medium">{kindLabels[stage.kind]} · {stage.status} · trace {stage.trace_status}</div>
+                          <div className="mt-1 cron-muted">
+                            model {stage.model ?? "—"} · reasoning {stage.reasoning_effort ?? "—"} · tokens {(stage.input_tokens ?? 0) + (stage.output_tokens ?? 0)} · attempts {stage.attempt_count}
+                          </div>
+                          {stage.url_candidates && <div className="mt-1">URL candidates: {stage.url_candidates.candidates?.length ?? 0} · source layers: {stage.url_candidates.sources?.length ?? 0}</div>}
+                          {stage.validation_summary && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.validation_summary, null, 2)}</pre>}
+                          {stage.proposal && <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap">{JSON.stringify(stage.proposal, null, 2)}</pre>}
+                          {stage.trace_status === "complete" && (
+                            <a className="mt-2 inline-flex items-center gap-1 hover:underline" href={`/api/v1/admin/codex-curation/jobs/${stage.id}/trace`} target="_blank" rel="noreferrer">
+                              Authenticated trace manifest <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
             )}
             <p className="mt-4 text-xs cron-muted">
               Showing the 100 most recent jobs · Queue totals include full history · Updated {formatCronDate(data.timestamp)}

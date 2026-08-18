@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import json
 import os
 import time
@@ -50,6 +52,42 @@ def request(
     return result
 
 
+def _trace_payload(proposal: dict) -> dict:
+    events_path = os.environ.get("PWC_CURATION_EVENTS_PATH", "")
+    raw = b""
+    if events_path and os.path.exists(events_path):
+        with open(events_path, "rb") as handle:
+            raw = handle.read(8_000_001)
+        if len(raw) > 8_000_000:
+            raise ValueError("Codex event trace exceeds the pre-apply limit")
+    candidates = None
+    candidates_path = "/tmp/url_candidates.json"
+    if os.path.exists(candidates_path):
+        with open(candidates_path, encoding="utf-8") as handle:
+            candidates = json.load(handle)
+    return {
+        "proposal": proposal,
+        "events_gzip_b64": base64.b64encode(
+            gzip.compress(raw, compresslevel=6)
+        ).decode(),
+        "prompt": os.environ.get("PWC_CURATION_PROMPT", ""),
+        "url_candidates": candidates,
+    }
+
+
+def store_trace_with_retry(path: str, payload: dict) -> dict:
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            return request(path, "POST", payload, timeout=300)
+        except Exception as error:
+            last_error = error
+            if attempt < 4:
+                time.sleep(2**attempt)
+    assert last_error is not None
+    raise last_error
+
+
 def wait_for_thumbnail(timeout_seconds: int, poll_seconds: int = 5) -> dict:
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -88,7 +126,9 @@ def main() -> None:
         wait_for_thumbnail(args.wait_seconds, args.poll_seconds)
     else:
         with open(args.json_file, encoding="utf-8") as handle:
-            request("apply", "POST", json.load(handle), timeout=300)
+            proposal = json.load(handle)
+        store_trace_with_retry("trace/preapply", _trace_payload(proposal))
+        request("apply", "POST", proposal, timeout=300)
 
 
 if __name__ == "__main__":

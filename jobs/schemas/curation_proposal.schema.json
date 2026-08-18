@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperswithcode.co/schemas/curation-proposal.v1.json",
+  "title": "Papers With Code paper curation proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "evaluations": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["paper_id", "task_id", "dataset_id", "model_name", "metrics", "best_metric", "source_url"],
+        "properties": {
+          "paper_id": {"type": "integer"},
+          "task_id": {"type": "integer"},
+          "dataset_id": {"type": "integer"},
+          "model_name": {"type": "string"},
+          "harness": {"type": ["string", "null"]},
+          "metrics": {"type": "object", "minProperties": 1},
+          "best_metric": {"type": "string"},
+          "source_url": {"type": "string", "format": "uri"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "evaluation_removals": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["evaluation_id", "reason", "before_state", "evidence"],
+        "properties": {
+          "evaluation_id": {"type": "integer"},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "before_state": {"type": "object"},
+          "evidence": {"type": "array", "minItems": 1, "maxItems": 20}
+        },
+        "additionalProperties": false
+      }
+    },
+    "enrich": {"type": ["object", "null"]},
+    "benchmark_gaps": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": ["reasoning", "local_ref", "gap_type", "proposed_benchmark", "protocol", "catalog_search", "evidence", "blocked_evaluations", "assessment"],
+        "properties": {
+          "reasoning": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "gap_type": {"enum": ["dataset_missing", "task_dataset_association_missing", "metric_configuration_missing", "task_missing"]},
+          "blocked_evaluations": {"type": "array", "minItems": 1, "maxItems": 30},
+          "evidence": {"type": "array", "minItems": 1, "maxItems": 50}
+        },
+        "additionalProperties": true
+      }
+    },
+    "validation_evidence": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": ["evaluation_id", "before_state", "field_diff", "evidence"],
+        "properties": {
+          "evaluation_id": {"type": "integer"},
+          "before_state": {"type": "object"},
+          "field_diff": {"type": "object", "minProperties": 1},
+          "evidence": {"type": "array", "minItems": 1},
+          "duplicate_evaluation_ids": {"type": "array", "items": {"type": "integer"}},
+          "canonical_selection_reason": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": ["evaluations", "evaluation_removals", "benchmark_gaps", "validation_evidence"]
+}

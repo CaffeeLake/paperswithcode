@@ -2525,6 +2525,10 @@ class CurationLink(BaseModel):
     url: str
     is_official: bool = True
 
+    _normalize_url = field_validator("url", mode="before")(
+        normalize_optional_public_url
+    )
+
 
 class EnrichPaperMutation(BaseModel):
     task_ids: list[int] | None = None
@@ -2534,11 +2538,44 @@ class EnrichPaperMutation(BaseModel):
     thumbnail_url: str | None = None
     regenerate_thumbnail: bool = False
     urls_extracted: bool | None = None
+    hf_models: list[str] | None = Field(default=None, max_length=50)
+    hf_datasets: list[str] | None = Field(default=None, max_length=50)
+    hf_spaces: list[str] | None = Field(default=None, max_length=50)
+    task_removal_reasons: dict[int, str] = Field(default_factory=dict)
+    method_removal_reasons: dict[int, str] = Field(default_factory=dict)
+
+
+class EvaluationRemovalRequest(BaseModel):
+    evaluation_id: int
+    reason: str = Field(min_length=1, max_length=2_000)
+    before_state: dict
+    evidence: list[dict] = Field(min_length=1, max_length=20)
 
 
 class ApplyMutationRequest(BaseModel):
     evaluations: list[EvaluationCreateRequest] = Field(default_factory=list)
+    evaluation_removals: list[EvaluationRemovalRequest] = Field(
+        default_factory=list, max_length=100
+    )
     enrich: EnrichPaperMutation | None = None
+    benchmark_gaps: list[dict] = Field(default_factory=list, max_length=30)
+    validation_evidence: list[dict] = Field(default_factory=list, max_length=200)
+
+
+class CurationTracePreapplyRequest(BaseModel):
+    proposal: dict
+    events_gzip_b64: str = Field(max_length=12_000_000)
+    prompt: str = Field(default="", max_length=80_000)
+    url_candidates: dict | None = None
+
+
+class CurationTraceFinalizeRequest(BaseModel):
+    events_gzip_b64: str = Field(max_length=12_000_000)
+    result: dict = Field(default_factory=dict)
+    benchmark_gaps: dict | list = Field(default_factory=dict)
+    report: str = Field(default="", max_length=40_000)
+    usage: dict = Field(default_factory=dict)
+    duration_ms: int | None = Field(default=None, ge=0)
 
 
 class CompleteJobRequest(BaseModel):

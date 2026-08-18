@@ -2885,6 +2885,17 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
         "PWC_CODEX_JOBS_NAMESPACE": "nielsr",
         "PWC_CODEX_JOBS_OPENAI_API_KEY": "openai-secret",
         "PWC_CODEX_JOBS_TOKEN": "hf-secret",
+        "PWC_CODEX_JOBS_IMAGE": "ghcr.io/huggingface/paperswithcode-codex-curator",
+        "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
+        "PWC_CODEX_JOBS_MODEL": "gpt5.6-Sol",
+        "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
+        "PWC_CODEX_JOBS_MAX_ACTIVE": "4",
+        "PWC_CODEX_JOBS_MAX_SCHEDULED_ACTIVE": "3",
+        "PWC_CODEX_CURATION_SCHEDULER_ENABLED": "true",
+        "PWC_CODEX_CURATION_DIRECT_APPLY_ENABLED": "true",
+        "PWC_CODEX_CURATION_TRACE_UPLOAD_ENABLED": "true",
+        "PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID": "nielsr/curate-papers-traces",
+        "PWC_CODEX_CURATION_POLICY_VERSION": "hf-daily-v1",
     }
 
 

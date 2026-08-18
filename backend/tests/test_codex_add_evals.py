@@ -20,7 +20,7 @@ from backend.services.codex_add_evals_service import (
     CodexPaperJobCounts,
     CodexPaperJobsResponse,
     CodexPaperJobService,
-    CURATOR_BOOTSTRAP_COMMAND,
+    CURATOR_COMMAND,
     _git_revision,
     _launch_error,
     _release_git_revision,
@@ -79,12 +79,14 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
     assert _release_git_revision(tmp_path) == revision
 
 
-def test_remote_job_bootstrap_uses_public_image_and_pinned_runner():
+def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
-    assert settings.codex_jobs_image == "node:22-bookworm"
+    assert settings.codex_jobs_image == (
+        "ghcr.io/huggingface/paperswithcode-codex-curator"
+    )
     assert settings.codex_jobs_namespace == ""
-    assert "${PWC_GIT_SHA}/jobs/run_paper_curation.py" in CURATOR_BOOTSTRAP_COMMAND
-    assert "Authorization: Bearer ${GITHUB_TOKEN}" in CURATOR_BOOTSTRAP_COMMAND
+    assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
+    assert "npm install" not in CURATOR_COMMAND
 
 
 def test_launch_error_keeps_hub_validation_message():
@@ -221,6 +223,7 @@ def test_scoped_worker_can_search_configured_leaderboards(monkeypatch):
         "_leaderboard_inventory",
         lambda _db, query: inventory if query == "GenEval" else [],
     )
+    monkeypatch.setattr(codex_curation_callbacks, "_consume_query", lambda *_args: None)
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_database_session] = lambda: SimpleNamespace()

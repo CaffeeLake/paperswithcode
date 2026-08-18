@@ -1,0 +1,57 @@
+name: Cron - Enqueue HF Daily Paper Curation
+
+on:
+  schedule:
+    - cron: "27 2 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Optional final UTC cohort date (YYYY-MM-DD)"
+        required: false
+        type: string
+      limit:
+        description: "Optional paper limit"
+        required: false
+        type: number
+
+concurrency:
+  group: cron-enqueue-hf-daily-paper-curation
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      - name: Add VPS host key
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -z "$VPS_HOST" ] || [[ "$VPS_HOST" == *"://"* || "$VPS_HOST" == *"@"* || "$VPS_HOST" == *"/"* || "$VPS_HOST" =~ [[:space:]] ]]; then
+            echo "VPS_HOST must be a bare hostname or IP address"
+            exit 1
+          fi
+          ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Reconcile curation cohort through installed launcher
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          TARGET_DATE: ${{ inputs.date }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS=""
+          if [ -n "$TARGET_DATE" ]; then
+            [[ "$TARGET_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || exit 2
+            ARGS="$ARGS --date $TARGET_DATE"
+          fi
+          if [ -n "$LIMIT" ]; then
+            [[ "$LIMIT" =~ ^[0-9]+$ ]] || exit 2
+            ARGS="$ARGS --limit $LIMIT"
+          fi
+          ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
+            "sudo /usr/local/sbin/pwc-cron enqueue_hf_daily_paper_curation$ARGS"

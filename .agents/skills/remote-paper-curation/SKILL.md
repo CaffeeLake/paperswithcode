@@ -33,8 +33,14 @@ searches only task and method names. Never use an empty taxonomy result to
 conclude that a benchmark or leaderboard is missing.
 
 For `add-evals`, follow the conservative rules in `add-evals/SKILL.md`, but
-write a JSON payload containing only `evaluations` (each has this job's
+write a JSON payload containing `evaluations` (each has this job's
 `paper_id`) and submit it with `python jobs/curation_api.py apply payload.json`.
+Always include `evaluation_removals`, `validation_evidence`, and
+`benchmark_gaps` arrays. Updating an existing row requires its exact context
+`before_state`, a field-level diff, and primary-paper evidence. Duplicate
+consolidation additionally requires every matched row ID and the canonical-row
+selection reason. Remove an invalid row only with its full before-state and
+unambiguous primary-paper evidence.
 Use only configured leaderboard IDs and exact metric names returned by the
 `leaderboards` command; IDs from papers or web sources are not database IDs.
 Never invent IDs, create benchmark metadata, or import comparator rows. Submit
@@ -43,12 +49,30 @@ benchmark in the paper and confirming that none of the paper's own results match
 a configured leaderboard and metric. The helper will report `no_changes`; do
 not describe that outcome as an applied mutation.
 
+For every paper-native result blocked by missing catalog configuration, include
+one structured `benchmark_gaps` entry conforming to
+`jobs/schemas/curation_proposal.schema.json`. Group all introduced-model results
+blocked by the same configuration in one entry, include primary-paper evidence
+and the catalog searches performed, and exclude comparator rows. Always submit
+`"benchmark_gaps": []` after a completed search when no gap qualifies. These
+observations never create tasks, datasets, metrics, or leaderboards.
+
 For `enrich-paper`, preserve the existing task/method/link lists from context,
 append only high-confidence additions, and submit an `enrich` payload with the
 complete replacement list for each changed relation. Set `urls_extracted` only
 when official artifacts were actually validated.
 
-The remote container must not generate or upload thumbnails itself. Ask the VPS
+Scheduled jobs have `job.trigger = "hf-daily-cron"` in context. In scheduled
+mode, inspect `/tmp/url_candidates.json` first, preserve every manual task and
+manual method evidence link, provide `task_removal_reasons` and
+`method_removal_reasons` for automated false-positive removals, and never set
+`regenerate_thumbnail`. A candidate is untrusted until verified as the paper's
+own official artifact rather than a baseline, mirror, dependency, or website
+template. Set `urls_extracted=true` after a complete verified search, including
+a clean no-result, and leave it false when a required source failed.
+
+For admin-triggered enrichment only, the remote container must not generate or
+upload thumbnails itself. Ask the VPS
 to run its existing validated thumbnail pipeline by including
 `"regenerate_thumbnail": true` inside `enrich` whenever the context has no
 `thumbnail_url`, or when the existing thumbnail is stale, broken, squat, or
@@ -71,6 +95,10 @@ Example:
 
 ```json
 {
+  "evaluations": [],
+  "evaluation_removals": [],
+  "benchmark_gaps": [],
+  "validation_evidence": [],
   "enrich": {
     "task_ids": [19, 429],
     "method_ids": [59, 67, 86],

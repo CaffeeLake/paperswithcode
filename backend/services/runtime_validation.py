@@ -286,6 +286,26 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             raise RuntimeError(
                 f"{settings.environment} Codex jobs must target {expected_api_url}"
             )
+    if settings.codex_curation_scheduler_enabled:
+        if settings.environment != "production":
+            raise RuntimeError("scheduled paper curation is production-only")
+        if not settings.codex_jobs_enabled:
+            raise RuntimeError("scheduled paper curation requires Codex Jobs")
+        if settings.codex_curation_direct_apply_enabled and (
+            not settings.codex_curation_trace_upload_enabled
+            or not settings.codex_curation_trace_hf_bucket_id
+        ):
+            raise RuntimeError(
+                "direct scheduled curation requires private trace storage"
+            )
+        if settings.codex_jobs_max_scheduled_active >= settings.codex_jobs_max_active:
+            raise RuntimeError("scheduled paper curation must reserve an admin slot")
+        if settings.codex_jobs_image.endswith(
+            ":latest"
+        ) or settings.codex_jobs_image.startswith("node:"):
+            raise RuntimeError(
+                "scheduled paper curation requires an immutable curator image"
+            )
 
 
 def validate_environment_policy(settings: Settings) -> None:

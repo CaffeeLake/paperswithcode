@@ -37,6 +37,7 @@ from backend.database.paper_merge import (
 from backend.services.organization_sync_service import (
     link_daily_paper_organizations,
 )
+from backend.utils.hf_daily_papers import fetch_hf_daily_papers
 from scripts.utils.cron_helpers import DatabaseCronJob
 from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 
@@ -166,61 +167,9 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
 
     async def fetch_daily_papers(self, date: str) -> List[Dict]:
         """Fetch one complete daily cohort from Hugging Face, or fail closed."""
-        url = "https://huggingface.co/api/daily_papers"
-        papers = []
-        seen_arxiv_ids = set()
-
-        async with aiohttp.ClientSession() as session:
-            page = 0
-            while True:
-                params = {
-                    "date": date,
-                    "p": page,
-                    "limit": self.DAILY_PAPERS_PAGE_SIZE,
-                    "sort": "publishedAt",
-                }
-                try:
-                    response_context = session.get(
-                        url,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    )
-                    async with response_context as response:
-                        if response.status == 400 and page == 0:
-                            # HF returns 400 for a date whose daily-papers list
-                            # does not exist yet (e.g. shortly after 00:00 UTC).
-                            self.logger.info(
-                                f"No daily-papers list yet for {date} (HTTP 400)"
-                            )
-                            return []
-                        if response.status != 200:
-                            message = (
-                                "Failed to fetch complete daily-papers cohort "
-                                f"for {date}: HTTP {response.status} on page {page}"
-                            )
-                            self.logger.error(message)
-                            raise RuntimeError(message)
-
-                        page_papers = await response.json()
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    message = (
-                        "Failed to fetch complete daily-papers cohort "
-                        f"for {date} on page {page}: {exc}"
-                    )
-                    self.logger.error(message)
-                    raise RuntimeError(message) from exc
-
-                for paper_data in page_papers:
-                    arxiv_id = paper_data.get("paper", {}).get("id")
-                    if arxiv_id is not None:
-                        if arxiv_id in seen_arxiv_ids:
-                            continue
-                        seen_arxiv_ids.add(arxiv_id)
-                    papers.append(paper_data)
-
-                if len(page_papers) < self.DAILY_PAPERS_PAGE_SIZE:
-                    return papers
-                page += 1
+        return await fetch_hf_daily_papers(
+            date, session_factory=aiohttp.ClientSession, logger=self.logger
+        )
 
     def process_paper(self, paper_data: Dict):
         """Process a single daily-papers entry."""

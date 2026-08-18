@@ -851,7 +851,9 @@ def production_chat_admission_values(
     return {key: "true" for key in activation_keys}
 
 
-def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
+def production_codex_values(
+    legacy: dict[str, str], namespace: str, *, scheduled: bool = True
+) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
         # flags from release.json, preserving rollback compatibility.
@@ -861,6 +863,19 @@ def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str,
         "PWC_CODEX_JOBS_NAMESPACE": namespace,
         "PWC_CODEX_JOBS_OPENAI_API_KEY": decoded_value(legacy["OPENAI_API_KEY"]),
         "PWC_CODEX_JOBS_TOKEN": decoded_value(legacy["PWC_HF_TOKEN"]),
+        "PWC_CODEX_JOBS_IMAGE": "ghcr.io/huggingface/paperswithcode-codex-curator",
+        "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
+        "PWC_CODEX_JOBS_MODEL": "gpt5.6-Sol",
+        "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
+        "PWC_CODEX_JOBS_MAX_ACTIVE": "4",
+        "PWC_CODEX_JOBS_MAX_SCHEDULED_ACTIVE": "3",
+        "PWC_CODEX_CURATION_SCHEDULER_ENABLED": "true" if scheduled else "false",
+        "PWC_CODEX_CURATION_DIRECT_APPLY_ENABLED": "true" if scheduled else "false",
+        "PWC_CODEX_CURATION_TRACE_UPLOAD_ENABLED": "true" if scheduled else "false",
+        "PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID": (
+            f"{namespace}/curate-papers-traces" if scheduled else ""
+        ),
+        "PWC_CODEX_CURATION_POLICY_VERSION": "hf-daily-v1",
     }
 
 
@@ -1477,7 +1492,9 @@ def main() -> int:
             staging = assign(
                 read_lines(CONFIG_ROOT / "staging.env"),
                 {
-                    **production_codex_values(legacy, args.codex_jobs_namespace),
+                    **production_codex_values(
+                        legacy, args.codex_jobs_namespace, scheduled=False
+                    ),
                     "PWC_CODEX_JOBS_API_URL": (
                         "https://staging.paperswithcode.co/api/v1"
                     ),
@@ -1535,7 +1552,9 @@ def main() -> int:
             "PWC_CODEX_ADD_EVALS_SPOOL_DIR": (
                 "/var/lib/paperswithcode/production/recovery-spool"
             ),
-            **production_codex_values(legacy, args.codex_jobs_namespace),
+            **production_codex_values(
+                legacy, args.codex_jobs_namespace, scheduled=True
+            ),
             "PWC_CRON_ENABLED": "true",
             "PWC_CRON_LOCK_DIR": "/var/lib/paperswithcode/production/cron-locks",
             "PWC_CRON_LOG_DIR": "/var/lib/paperswithcode/production/cron-logs",
@@ -1574,7 +1593,9 @@ def main() -> int:
         {
             **shared_auth,
             **shared_roles,
-            **production_codex_values(legacy, args.codex_jobs_namespace),
+            **production_codex_values(
+                legacy, args.codex_jobs_namespace, scheduled=False
+            ),
             "PWC_CATALOG_MUTATIONS_ENABLED": "false",
             "PWC_CONTRIBUTOR_DIRECT_EDITS_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": "/var/lib/paperswithcode/staging/chat-agent",

@@ -662,6 +662,32 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_jobs=("run",),
     ),
     CronJobDefinition(
+        id="enqueue_hf_daily_paper_curation",
+        display_name="HF Daily Paper Curation",
+        category="daily",
+        schedule="27 2 * * * (daily)",
+        script_path="backend/scripts/enqueue_hf_daily_paper_curation.py",
+        log_name="enqueue_hf_daily_paper_curation",
+        process_patterns=("enqueue_hf_daily_paper_curation",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/"
+            "enqueue_hf_daily_paper_curation.lock"
+        ),
+        expected_runtime_minutes=20,
+        stale_after_minutes=1800,
+        critical=True,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            SELECT max(created_at) AS last_write,
+                   count(*) FILTER (WHERE status IN ('queued','running')) AS active,
+                   count(*) FILTER (WHERE status = 'deferred') AS deferred,
+                   count(*) FILTER (WHERE status IN ('failed','partial')) AS failed
+            FROM paper_curation_workflows
+        """,
+        workflow_file="cron-enqueue-hf-daily-paper-curation.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="sync_hf_organizations",
         display_name="Sync HF Organizations",
         category="daily",
@@ -1031,6 +1057,7 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "sync_coarena": ((SchedulePolicy.fixed(60, offset_minutes=50),), 20),
     "sync_arc_prize": ((SchedulePolicy.fixed(60, offset_minutes=10),), 20),
     "import_hf_daily_papers": ((SchedulePolicy.fixed(60),), 20),
+    "enqueue_hf_daily_paper_curation": ((SchedulePolicy.daily(2, 27),), 60),
     "sync_hf_organizations": ((SchedulePolicy.daily(2, 20),), 60),
     "calculate_organization_trending_scores": ((SchedulePolicy.daily(3, 40),), 60),
     "refresh_paper_embeddings": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),

@@ -156,12 +156,32 @@ def test_context_projection_preserves_the_worker_payload():
         "date_published": datetime(2026, 1, 1, tzinfo=UTC),
         "urls_extracted": True,
         "thumbnail_url": "/thumbnails/42.jpg",
-        "tasks": [{"id": 19, "name": "Image generation", "slug": "image-generation"}],
-        "methods": [{"id": 59, "name": "Diffusion", "slug": "diffusion"}],
-        "repositories": [
-            {"url": "https://github.com/example/model", "is_official": True}
+        "tasks": [
+            {
+                "id": 19,
+                "name": "Image generation",
+                "slug": "image-generation",
+                "source": "unknown",
+            }
         ],
-        "project_pages": [{"url": "https://example.com/project", "is_official": True}],
+        "methods": [
+            {"id": 59, "name": "Diffusion", "slug": "diffusion", "evidence": []}
+        ],
+        "repositories": [
+            {
+                "url": "https://github.com/example/model",
+                "is_official": True,
+                "source": None,
+            }
+        ],
+        "project_pages": [
+            {"url": "https://example.com/project", "is_official": True, "source": None}
+        ],
+        "hf_models": [],
+        "hf_datasets": [],
+        "hf_spaces": [],
+        "method_exclusions": [],
+        "evaluations": [],
     }
 
 

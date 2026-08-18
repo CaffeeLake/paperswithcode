@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
@@ -12,10 +15,19 @@ from backend.database.connection import get_database_session
 from backend.models.api import (
     ApplyMutationRequest,
     CompleteJobRequest,
+    CurationTraceFinalizeRequest,
+    CurationTracePreapplyRequest,
+)
+from backend.models.api import (
     CurationLink as CurationLink,
+)
+from backend.models.api import (
     EnrichPaperMutation as EnrichPaperMutation,
+)
+from backend.models.api import (
     EvaluationCreateRequest as EvaluationCreateRequest,
 )
+from backend.models.database import PaperCurationJob, PaperCurationSchedulerState
 from backend.services.codex_add_evals_service import (
     CodexPaperJob,
     CodexPaperJobsResponse,
@@ -31,11 +43,14 @@ from backend.services.codex_curation_callback_service import (
     CodexCurationPaperNotFoundError,
 )
 from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
+from backend.services.curation_trace_service import CurationTraceService
 from backend.services.evaluation_service import EvaluationService
+from backend.services.hf_daily_curation_service import HFDailyCurationService
 from backend.services.paper_service import PaperService
 from backend.utils.auth import require_hf_admin
 
 router = APIRouter(prefix="/admin/codex-curation/jobs", tags=["admin"])
+logger = logging.getLogger(__name__)
 
 
 def _require_enabled(settings: Settings) -> None:
@@ -71,16 +86,128 @@ def _leaderboard_inventory(db: Session, query: str) -> list[dict]:
     return _service(db).leaderboard_inventory(query)
 
 
+def _consume_query(db: Session, row: PaperCurationJob, field: str) -> None:
+    db.refresh(row, with_for_update=True)
+    value = getattr(row, field)
+    if value >= 30:
+        db.rollback()
+        raise HTTPException(status_code=429, detail="Scoped query limit reached")
+    setattr(row, field, value + 1)
+    db.commit()
+
+
 @router.get("", response_model=CodexPaperJobsResponse)
 def list_jobs(
     limit: int = Query(default=100, ge=1, le=500),
+    trigger: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    policy_version: str | None = Query(default=None),
+    cohort_date: date | None = Query(default=None),
+    review_status: str | None = Query(default=None),
     _admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
     """List the durable paper-curation queue and recent execution history."""
     _require_enabled(settings)
-    return codex_paper_job_service.list_jobs(db, settings, limit=limit)
+    if not any((trigger, status, policy_version, cohort_date, review_status)):
+        return codex_paper_job_service.list_jobs(db, settings, limit=limit)
+    return codex_paper_job_service.list_jobs(
+        db,
+        settings,
+        limit=limit,
+        trigger=trigger,
+        status=status,
+        policy_version=policy_version,
+        cohort_date=cohort_date,
+        review_status=review_status,
+    )
+
+
+@router.post("/{job_id}/retry", response_model=CodexPaperJob)
+def retry_job(
+    job_id: uuid.UUID,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = db.get(PaperCurationJob, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return codex_paper_job_service.retry(db, row, settings)
+
+
+@router.post("/{job_id}/retry-trace")
+def retry_trace_upload(
+    job_id: uuid.UUID,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = db.get(PaperCurationJob, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if row.trace_status != "finalize_failed":
+        raise HTTPException(
+            status_code=409, detail="Trace is not awaiting finalization"
+        )
+    try:
+        return CurationTraceService(db, settings).retry_finalize(row)
+    except (ValueError, RuntimeError, HfHubHTTPError, OSError) as error:
+        row.trace_attempt_count += 1
+        db.commit()
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.get("/{job_id}/trace")
+def get_trace_manifest(
+    job_id: uuid.UUID,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = db.get(PaperCurationJob, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        return CurationTraceService(db, settings).read_manifest(row)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.delete("/{job_id}", response_model=CodexPaperJob)
+def cancel_job(
+    job_id: uuid.UUID,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = db.get(PaperCurationJob, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return codex_paper_job_service.cancel(db, row, settings)
+
+
+@router.post("/scheduler/{action}")
+def scheduler_action(
+    action: str,
+    _admin: dict = Depends(require_hf_admin),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    service = HFDailyCurationService(db, settings)
+    if action == "resume":
+        return service.set_dispatch(True)
+    if action == "pause":
+        return service.set_dispatch(False, reason="paused from admin dashboard")
+    raise HTTPException(status_code=404, detail="Unknown scheduler action")
 
 
 @router.get("/{job_id}/context")
@@ -107,7 +234,8 @@ def search_taxonomy(
     settings: Settings = Depends(get_settings),
 ):
     _require_enabled(settings)
-    _callback_job(job_id, authorization, db)
+    row = _callback_job(job_id, authorization, db)
+    _consume_query(db, row, "taxonomy_query_count")
     return _service(db).search_taxonomy(q)
 
 
@@ -121,7 +249,8 @@ def search_leaderboards(
 ):
     """Search only existing, fully configured leaderboards for a scoped worker."""
     _require_enabled(settings)
-    _callback_job(job_id, authorization, db)
+    row = _callback_job(job_id, authorization, db)
+    _consume_query(db, row, "leaderboard_query_count")
     return {"query": q, "leaderboards": _leaderboard_inventory(db, q)}
 
 
@@ -136,7 +265,23 @@ def apply_mutation(
     _require_enabled(settings)
     row = _callback_job(job_id, authorization, db)
     try:
-        return _service(db).apply(row, body)
+        service = _service(db)
+        if (
+            getattr(row, "trigger", "admin") != "admin"
+            and not settings.codex_curation_direct_apply_enabled
+        ):
+            service._validate_mutation(row, body)
+            validation = service._validate_scheduled_policy(row, body)
+            row.proposal = body.model_dump(mode="json")
+            row.validation_summary = {**validation, "mode": "shadow"}
+            row.submitted_at = datetime.now(UTC)
+            db.commit()
+            return {
+                "status": "shadow",
+                "evaluations_created": 0,
+                "evaluations_updated": 0,
+            }
+        return service.apply(row, body)
     except CodexCurationMutationClosedError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except CodexCurationEnrichmentNotAllowedError as error:
@@ -147,6 +292,74 @@ def apply_mutation(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except CodexCurationEnrichmentRequiredError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/{job_id}/trace/preapply")
+def store_preapply_trace(
+    job_id: uuid.UUID,
+    body: CurationTracePreapplyRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = _callback_job(job_id, authorization, db)
+    if row.status not in {"dispatching", "running"} or row.submitted_at is not None:
+        raise HTTPException(
+            status_code=409, detail="Job no longer accepts trace preflight"
+        )
+    try:
+        return CurationTraceService(db, settings).preapply(
+            row,
+            proposal=body.proposal,
+            events_gzip_b64=body.events_gzip_b64,
+            prompt=body.prompt,
+            url_candidates=body.url_candidates,
+        )
+    except (ValueError, RuntimeError, HfHubHTTPError, OSError) as error:
+        row.trace_status = "preapply_failed"
+        row.trace_attempt_count += 1
+        state = db.get(PaperCurationSchedulerState, 1)
+        if state and row.trigger != "admin":
+            state.consecutive_trace_failures += 1
+            if state.consecutive_trace_failures >= 3:
+                state.paused_at = datetime.now(UTC)
+                state.pause_condition = "trace_upload_failures"
+                state.pause_reason = "Three consecutive scheduled trace uploads failed"
+                logger.error(
+                    "paper curation dispatch paused condition=trace_upload_failures"
+                )
+        db.commit()
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.post("/{job_id}/trace/finalize")
+def finalize_trace(
+    job_id: uuid.UUID,
+    body: CurationTraceFinalizeRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = _callback_job(job_id, authorization, db)
+    try:
+        return CurationTraceService(db, settings).finalize(row, body.model_dump())
+    except (ValueError, RuntimeError, HfHubHTTPError, OSError) as error:
+        row.trace_status = "finalize_failed"
+        row.trace_attempt_count += 1
+        state = db.get(PaperCurationSchedulerState, 1)
+        if state and row.trigger != "admin":
+            state.consecutive_trace_failures += 1
+            if state.consecutive_trace_failures >= 3:
+                state.paused_at = datetime.now(UTC)
+                state.pause_condition = "trace_upload_failures"
+                state.pause_reason = "Three consecutive scheduled trace uploads failed"
+                logger.error(
+                    "paper curation dispatch paused condition=trace_upload_failures"
+                )
+        db.commit()
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.get("/{job_id}/thumbnail")

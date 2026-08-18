@@ -18,7 +18,7 @@ from backend.models.database import (
 )
 
 EVIDENCE_TYPES = frozenset(
-    {"source", "keyword", "reference", "manual", "legacy_unknown"}
+    {"source", "keyword", "reference", "curation", "manual", "legacy_unknown"}
 )
 
 

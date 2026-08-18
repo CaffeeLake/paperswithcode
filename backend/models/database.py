@@ -821,6 +821,51 @@ class PaperCurationJob(Base):
     paper_route: Mapped[str] = mapped_column(String(255), nullable=False)
     paper_title: Mapped[str] = mapped_column(Text, nullable=False)
     requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_curation_workflows.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    trigger: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="admin", server_default="admin"
+    )
+    cohort_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    policy_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="admin-v1", server_default="admin-v1"
+    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    repository_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    skill_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    prompt_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    reasoning_effort: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    codex_cli_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    validator_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    trace_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    trace_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    trace_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    trace_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    proposal: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    validation_summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    mutation_result: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    url_candidates: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    taxonomy_query_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    leaderboard_query_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    retry_of_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paper_curation_jobs.id"), nullable=True
+    )
+    audit_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unreviewed", server_default="unreviewed"
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
     hf_job_id: Mapped[Optional[str]] = mapped_column(
         String(64), unique=True, nullable=True
@@ -876,6 +921,11 @@ class PaperCurationJob(Base):
     )
 
     paper: Mapped[Paper] = relationship("Paper")
+    parent_workflow: Mapped[Optional["PaperCurationWorkflow"]] = relationship(
+        "PaperCurationWorkflow",
+        back_populates="jobs",
+        foreign_keys=[parent_workflow_id],
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -890,13 +940,186 @@ class PaperCurationJob(Base):
             "thumbnail_status IS NULL OR thumbnail_status IN ('queued', 'processing', 'succeeded', 'failed')",
             name="paper_curation_jobs_thumbnail_status_check",
         ),
+        CheckConstraint(
+            "trigger IN ('admin', 'hf-daily-cron', 'benchmark-promotion')",
+            name="paper_curation_jobs_trigger_check",
+        ),
         Index("idx_paper_curation_jobs_queue", "status", "created_at"),
         Index("idx_paper_curation_jobs_paper", "paper_id", "created_at"),
+        Index("idx_paper_curation_jobs_workflow", "parent_workflow_id", "created_at"),
+        Index(
+            "idx_paper_curation_jobs_dispatch",
+            "status",
+            "priority",
+            "cohort_date",
+            "created_at",
+        ),
+        Index(
+            "uq_active_scheduled_paper_curation_stage",
+            "paper_id",
+            "kind",
+            "policy_version",
+            unique=True,
+            postgresql_where=text(
+                "trigger <> 'admin' AND status IN ('queued', 'dispatching', 'running')"
+            ),
+        ),
         Index(
             "idx_paper_curation_jobs_thumbnail_queue",
             "thumbnail_status",
             "thumbnail_requested_at",
         ),
+    )
+
+
+class PaperCurationWorkflow(Base):
+    """One durable two-stage scheduled curation workflow for a paper."""
+
+    __tablename__ = "paper_curation_workflows"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    cohort_date: Mapped[date] = mapped_column(Date, nullable=False)
+    cohort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    review_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unreviewed"
+    )
+    enrich_satisfied_by_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paper_curation_jobs.id"), nullable=True
+    )
+    evals_satisfied_by_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paper_curation_jobs.id"), nullable=True
+    )
+    dependency_override: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    deferred_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    paper: Mapped[Paper] = relationship("Paper")
+    jobs: Mapped[List[PaperCurationJob]] = relationship(
+        "PaperCurationJob",
+        back_populates="parent_workflow",
+        foreign_keys=[PaperCurationJob.parent_workflow_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'partial', 'deferred', 'canceled', 'satisfied')",
+            name="paper_curation_workflows_status_check",
+        ),
+        Index(
+            "idx_paper_curation_workflows_queue",
+            "status",
+            "cohort_date",
+            "cohort_order",
+        ),
+        Index(
+            "uq_active_paper_curation_workflow",
+            "paper_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'deferred')"),
+        ),
+    )
+
+
+class BenchmarkCurationCandidate(Base):
+    """Queryable aggregate of benchmark gaps reported by scheduled add-evals."""
+
+    __tablename__ = "benchmark_curation_candidates"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    identity_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    gap_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    canonical_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    task_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    aliases: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="candidate")
+    distinct_paper_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    confidence: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    promoted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class BenchmarkCurationEvidence(Base):
+    __tablename__ = "benchmark_curation_evidence"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("benchmark_curation_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paper_curation_jobs.id"), nullable=False
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "paper_id", "job_id", name="uq_benchmark_gap_evidence_job"
+        ),
+        Index("idx_benchmark_curation_evidence_paper", "paper_id", "candidate_id"),
+    )
+
+
+class PaperCurationSchedulerState(Base):
+    __tablename__ = "paper_curation_scheduler_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    dispatch_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    paused_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pause_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pause_condition: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    canary_released: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    first_enabled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consecutive_trace_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    consecutive_apply_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -1213,7 +1436,7 @@ class PaperMethodEvidence(Base):
         ),
         CheckConstraint(
             "evidence_type IN "
-            "('source', 'keyword', 'reference', 'manual', 'legacy_unknown')",
+            "('source', 'keyword', 'reference', 'curation', 'manual', 'legacy_unknown')",
             name="paper_method_evidence_type_check",
         ),
         Index("idx_paper_method_evidence_method_type", "method_id", "evidence_type"),

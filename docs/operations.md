@@ -323,6 +323,62 @@ Each `proposed_payload` matches the underlying admin mutation endpoint:
 | Cron logs filling disk | Verify `systemd-tmpfiles` policy; production CRON logs are bounded to 30 days. Use `pwc-status` to include disk usage in the audit. |
 
 _Last updated: 7 November 2025_
+## Autonomous HF daily-paper curation
+
+The daily reconciler runs at `02:27 UTC` through the installed immutable-release
+launcher:
+
+```bash
+sudo pwc-cron enqueue_hf_daily_paper_curation --dry-run
+sudo pwc-cron enqueue_hf_daily_paper_curation
+sudo pwc-cron enqueue_hf_daily_paper_curation --status
+```
+
+It scans the exact rolling seven-day Hugging Face daily cohorts, records missing
+imports, creates one durable parent workflow per paper, and uses the shared
+admin/scheduled queue. Each workflow runs `enrich-paper` before `add-evals`.
+Scheduled work may use three of four global slots; one remains reserved for
+admin work. The first production run is capped at ten workflows until every
+canary reaches a successful terminal state. The nonterminal scheduled backlog
+is capped at 200, with overflow recorded as durable deferred workflows.
+
+Configuration is fail-closed. Production direct apply requires all of:
+
+- `PWC_CODEX_CURATION_SCHEDULER_ENABLED=true`;
+- `PWC_CODEX_CURATION_DIRECT_APPLY_ENABLED=true`;
+- `PWC_CODEX_CURATION_TRACE_UPLOAD_ENABLED=true`;
+- a private, fully qualified `PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID`;
+- pinned model `gpt5.6-Sol`, medium reasoning, and Codex CLI version.
+
+Pause and recovery are scoped to scheduled dispatch; admin jobs remain
+available:
+
+```bash
+sudo pwc-cron enqueue_hf_daily_paper_curation --disable-dispatch \
+  --reason "operator investigation"
+sudo pwc-cron enqueue_hf_daily_paper_curation --enable-dispatch
+```
+
+The admin dashboard groups stages under the parent paper workflow and exposes
+retry, cancel, pause/resume, URL-candidate provenance, proposals, validator
+findings, usage, reports, and private trace URIs. It warns at a three-hour queue
+age and becomes critical at five hours. Scheduled dispatch automatically pauses
+after a server invariant breach, three consecutive trace/apply/verification
+failures, a greater-than-20% non-source failure rate in the latest 25 stages, or
+the post-baseline daily token guardrail. Resuming is an explicit acknowledgement.
+
+Trace finalization retries storage without rerunning Codex or rolling back an
+accepted catalog mutation. To replay a cohort without writes, set direct apply
+false and run the reconciler with an explicit date/limit. Validator replay uses
+the persisted `proposal` and current callback validators. Revert a bad scoped
+mutation through the existing paper/evaluation admin surfaces using the stored
+before-state/diff; there is intentionally no broad automatic restore button.
+
+Apply `backend/database/migrations/add_autonomous_paper_curation.sql` before the
+first release that enables the scheduler. Thumbnail generation and the
+citation/reference method linker remain separate jobs and are not dependencies
+of this workflow.
+
 ## Durable chat sessions (staging)
 
 Chat content is private user data. PostgreSQL is the live source of truth;

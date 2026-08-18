@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import subprocess
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from statistics import median
 from typing import Literal
 
 from huggingface_hub import HfApi
@@ -19,8 +21,16 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
-from backend.models.database import PaperCurationJob
+from backend.models.database import (
+    Paper,
+    PaperCurationJob,
+    PaperCurationSchedulerState,
+    PaperCurationWorkflow,
+)
 from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
+from backend.utils.urls import get_paper_route_identifier
+
+logger = logging.getLogger(__name__)
 
 JobKind = Literal["add-evals", "enrich-paper"]
 JobStatus = Literal[
@@ -28,15 +38,7 @@ JobStatus = Literal[
 ]
 ACTIVE_STATUSES = {"dispatching", "running"}
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
-CURATOR_BOOTSTRAP_COMMAND = """set -eu
-apt-get update
-apt-get install -y --no-install-recommends curl git python3 ca-certificates
-rm -rf /var/lib/apt/lists/*
-ln -sf /usr/bin/python3 /usr/local/bin/python
-npm install --global @openai/codex
-curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://raw.githubusercontent.com/huggingface/paperswithcode/${PWC_GIT_SHA}/jobs/run_paper_curation.py" -o /tmp/run_paper_curation.py
-python3 /tmp/run_paper_curation.py
-"""
+CURATOR_COMMAND = "exec python3 /runner/run_paper_curation.py"
 
 
 class CodexPaperJob(BaseModel):
@@ -58,6 +60,28 @@ class CodexPaperJob(BaseModel):
     error: str | None = None
     attempt_count: int
     thumbnail: dict | None = None
+    parent_workflow_id: uuid.UUID | None = None
+    trigger: str = "admin"
+    cohort_date: date | None = None
+    policy_version: str = "admin-v1"
+    priority: int = 100
+    repository_sha: str | None = None
+    skill_sha256: str | None = None
+    prompt_sha256: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    codex_cli_version: str | None = None
+    trace_status: str = "pending"
+    trace_uri: str | None = None
+    trace_sha256: str | None = None
+    proposal: dict | None = None
+    validation_summary: dict | None = None
+    mutation_result: dict | None = None
+    url_candidates: dict | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    duration_ms: int | None = None
+    audit_status: str = "unreviewed"
 
 
 class CodexPaperJobCounts(BaseModel):
@@ -74,6 +98,8 @@ class CodexPaperJobsResponse(BaseModel):
     timestamp: datetime
     jobs: list[CodexPaperJob]
     summary: CodexPaperJobCounts
+    workflows: list[dict] = []
+    scheduler: dict = {}
 
 
 def _now() -> datetime:
@@ -152,6 +178,28 @@ class CodexPaperJobService:
                 if getattr(row, "thumbnail_requested_at", None) is not None
                 else None
             ),
+            parent_workflow_id=getattr(row, "parent_workflow_id", None),
+            trigger=getattr(row, "trigger", "admin"),
+            cohort_date=getattr(row, "cohort_date", None),
+            policy_version=getattr(row, "policy_version", "admin-v1"),
+            priority=getattr(row, "priority", 100),
+            repository_sha=getattr(row, "repository_sha", None),
+            skill_sha256=getattr(row, "skill_sha256", None),
+            prompt_sha256=getattr(row, "prompt_sha256", None),
+            model=getattr(row, "model", None),
+            reasoning_effort=getattr(row, "reasoning_effort", None),
+            codex_cli_version=getattr(row, "codex_cli_version", None),
+            trace_status=getattr(row, "trace_status", "pending"),
+            trace_uri=getattr(row, "trace_uri", None),
+            trace_sha256=getattr(row, "trace_sha256", None),
+            proposal=getattr(row, "proposal", None),
+            validation_summary=getattr(row, "validation_summary", None),
+            mutation_result=getattr(row, "mutation_result", None),
+            url_candidates=getattr(row, "url_candidates", None),
+            input_tokens=getattr(row, "input_tokens", None),
+            output_tokens=getattr(row, "output_tokens", None),
+            duration_ms=getattr(row, "duration_ms", None),
+            audit_status=getattr(row, "audit_status", "unreviewed"),
         )
 
     # Compatibility name for callers and tests that predate the public serializer.
@@ -167,7 +215,25 @@ class CodexPaperJobService:
         paper_title: str,
         requested_by: str,
         settings: Settings,
+        trigger: str = "admin",
+        parent_workflow_id: uuid.UUID | None = None,
+        cohort_date=None,
+        policy_version: str | None = None,
+        priority: int | None = None,
+        dispatch: bool = True,
+        retry_of_id: uuid.UUID | None = None,
+        commit: bool = True,
     ) -> CodexPaperJob:
+        repository_sha = _git_revision()
+        root = Path(__file__).parents[2]
+        skill_name = "enrich-paper" if kind == "enrich-paper" else "add-evals"
+        skill_paths = [
+            root / ".agents/skills/remote-paper-curation/SKILL.md",
+            root / f".agents/skills/{skill_name}/SKILL.md",
+        ]
+        skill_digest = hashlib.sha256(
+            b"\0".join(path.read_bytes() for path in skill_paths)
+        ).hexdigest()
         row = PaperCurationJob(
             id=uuid.uuid4(),
             kind=kind,
@@ -176,32 +242,120 @@ class CodexPaperJobService:
             paper_title=paper_title,
             requested_by=requested_by,
             status="queued",
+            trigger=trigger,
+            parent_workflow_id=parent_workflow_id,
+            cohort_date=cohort_date,
+            policy_version=policy_version
+            or (
+                settings.codex_curation_policy_version
+                if trigger != "admin"
+                else "admin-v1"
+            ),
+            priority=priority
+            if priority is not None
+            else (0 if trigger == "admin" else 100),
+            repository_sha=repository_sha if len(repository_sha) == 40 else None,
+            skill_sha256=skill_digest,
+            model=settings.codex_jobs_model,
+            reasoning_effort=settings.codex_jobs_reasoning_effort,
+            codex_cli_version=settings.codex_jobs_cli_version,
+            validator_version="scheduled-policy-v1",
+            retry_of_id=retry_of_id,
         )
         db.add(row)
-        db.commit()
-        db.refresh(row)
-        self.dispatch_next(db, settings)
-        db.refresh(row)
+        if commit:
+            db.commit()
+            db.refresh(row)
+        else:
+            db.flush()
+        if dispatch:
+            self.dispatch_next(db, settings)
+        if commit:
+            db.refresh(row)
         return self.serialize(row, settings)
 
     def dispatch_next(self, db: Session, settings: Settings) -> None:
-        """Launch exactly one queued Job when no remote curation Job is active."""
+        """Fill configured shared capacity while reserving one slot for admin work."""
         if not settings.codex_jobs_enabled:
             return
-        if (
+        while True:
+            active = (
+                db.query(PaperCurationJob)
+                .filter(PaperCurationJob.status.in_(ACTIVE_STATUSES))
+                .all()
+            )
+            if len(active) >= settings.codex_jobs_max_active:
+                return
+            scheduled_active = sum(item.trigger != "admin" for item in active)
+            scheduler_state = db.get(PaperCurationSchedulerState, 1)
+            usage_allowed = self._scheduled_usage_allowed(db, scheduler_state)
+            scheduled_allowed = bool(
+                settings.codex_curation_scheduler_enabled
+                and scheduler_state
+                and scheduler_state.dispatch_enabled
+                and scheduler_state.paused_at is None
+                and usage_allowed
+                and scheduled_active < settings.codex_jobs_max_scheduled_active
+            )
+            query = db.query(PaperCurationJob).filter(
+                PaperCurationJob.status == "queued"
+            )
+            if not scheduled_allowed:
+                query = query.filter(PaperCurationJob.trigger == "admin")
+            row = query.order_by(
+                PaperCurationJob.priority,
+                PaperCurationJob.cohort_date.desc().nullslast(),
+                PaperCurationJob.created_at,
+                PaperCurationJob.id,
+            ).first()
+            if row is None:
+                return
+            self._dispatch_row(db, settings, row)
+            if row.status == "failed":
+                continue
+
+    @staticmethod
+    def _scheduled_usage_allowed(
+        db: Session, state: PaperCurationSchedulerState | None
+    ) -> bool:
+        if state is None or state.first_enabled_at is None:
+            return True
+        now = _now()
+        if state.first_enabled_at > now - timedelta(days=7):
+            return True
+        rows = (
             db.query(PaperCurationJob)
-            .filter(PaperCurationJob.status.in_(ACTIVE_STATUSES))
-            .first()
-        ):
-            return
-        row = (
-            db.query(PaperCurationJob)
-            .filter(PaperCurationJob.status == "queued")
-            .order_by(PaperCurationJob.created_at, PaperCurationJob.id)
-            .first()
+            .filter(
+                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.finished_at >= now - timedelta(days=8),
+            )
+            .all()
         )
-        if row is None:
-            return
+        totals = {now.date() - timedelta(days=offset): 0 for offset in range(8)}
+        for row in rows:
+            if row.finished_at and row.finished_at.date() in totals:
+                totals[row.finished_at.date()] += (row.input_tokens or 0) + (
+                    row.output_tokens or 0
+                )
+        baseline = median(
+            totals[now.date() - timedelta(days=offset)] for offset in range(1, 8)
+        )
+        if baseline > 0 and totals[now.date()] > 2 * baseline:
+            state.paused_at = now
+            state.pause_condition = "daily_token_guardrail"
+            state.pause_reason = (
+                "Scheduled token usage exceeded twice the trailing seven-day median"
+            )
+            db.commit()
+            logger.error(
+                "paper curation dispatch paused condition=daily_token_guardrail"
+            )
+            return False
+        return True
+
+    def _dispatch_row(
+        self, db: Session, settings: Settings, row: PaperCurationJob
+    ) -> None:
         if (
             not settings.codex_jobs_namespace
             or not settings.codex_jobs_token
@@ -219,14 +373,32 @@ class CodexPaperJobService:
         row.attempt_count += 1
         db.commit()
         try:
+            image = settings.codex_jobs_image.replace(
+                "{sha}", row.repository_sha or _git_revision()
+            )
+            image_name = image.rsplit("/", 1)[-1]
+            if "@sha256:" not in image and ":" not in image_name:
+                image = f"{image}:{row.repository_sha or _git_revision()}"
             remote = self._api(settings).run_job(
-                image=settings.codex_jobs_image,
-                command=["bash", "-lc", CURATOR_BOOTSTRAP_COMMAND],
+                image=image,
+                command=[
+                    "bash",
+                    "-lc",
+                    f"sleep 2; {CURATOR_COMMAND}"
+                    if row.retry_of_id is not None
+                    else CURATOR_COMMAND,
+                ],
                 env={
                     "PWC_CURATION_API_URL": settings.codex_jobs_api_url.rstrip("/"),
                     "PWC_CURATION_JOB_ID": str(row.id),
                     "PWC_CURATION_KIND": row.kind,
-                    "PWC_GIT_SHA": _git_revision(),
+                    "PWC_GIT_SHA": row.repository_sha or _git_revision(),
+                    "PWC_CURATION_TRIGGER": row.trigger,
+                    "PWC_CURATION_MODEL": row.model or settings.codex_jobs_model,
+                    "PWC_CURATION_REASONING_EFFORT": row.reasoning_effort
+                    or settings.codex_jobs_reasoning_effort,
+                    "PWC_CODEX_CLI_VERSION": row.codex_cli_version
+                    or settings.codex_jobs_cli_version,
                 },
                 secrets={
                     "PWC_CURATION_JOB_TOKEN": callback_token,
@@ -234,7 +406,7 @@ class CodexPaperJobService:
                     "GITHUB_TOKEN": settings.github_token,
                 },
                 flavor="cpu-basic",
-                timeout=f"{settings.codex_jobs_timeout_seconds}s",
+                timeout=f"{2100 if row.kind == 'add-evals' else 1500}s",
                 labels={
                     "product": "paperswithcode",
                     "workflow": "paper-curation",
@@ -253,6 +425,7 @@ class CodexPaperJobService:
             row.error = _launch_error(exc)
             row.finished_at = _now()
             db.commit()
+            self._advance_workflow(db, row, settings)
 
     def get(
         self, db: Session, job_id: uuid.UUID, settings: Settings
@@ -262,13 +435,34 @@ class CodexPaperJobService:
         return self.serialize(row, settings) if row else None
 
     def list_jobs(
-        self, db: Session, settings: Settings, *, limit: int = 100
+        self,
+        db: Session,
+        settings: Settings,
+        *,
+        limit: int = 100,
+        trigger: str | None = None,
+        status: str | None = None,
+        policy_version: str | None = None,
+        cohort_date: date | None = None,
+        review_status: str | None = None,
     ) -> CodexPaperJobsResponse:
         """Return recent curation history plus counts for the full durable queue."""
         self.reconcile(db, settings)
+        query = db.query(PaperCurationJob)
+        if trigger:
+            query = query.filter(PaperCurationJob.trigger == trigger)
+        if status:
+            query = query.filter(PaperCurationJob.status == status)
+        if policy_version:
+            query = query.filter(PaperCurationJob.policy_version == policy_version)
+        if cohort_date:
+            query = query.filter(PaperCurationJob.cohort_date == cohort_date)
+        if review_status:
+            query = query.filter(PaperCurationJob.audit_status == review_status)
         rows = (
-            db.query(PaperCurationJob)
-            .order_by(PaperCurationJob.created_at.desc(), PaperCurationJob.id.desc())
+            query.order_by(
+                PaperCurationJob.created_at.desc(), PaperCurationJob.id.desc()
+            )
             .limit(limit)
             .all()
         )
@@ -280,10 +474,119 @@ class CodexPaperJobService:
         ):
             setattr(counts, job_status, int(count))
             counts.total += int(count)
+        workflow_query = db.query(PaperCurationWorkflow)
+        if policy_version:
+            workflow_query = workflow_query.filter(
+                PaperCurationWorkflow.policy_version == policy_version
+            )
+        if cohort_date:
+            workflow_query = workflow_query.filter(
+                PaperCurationWorkflow.cohort_date == cohort_date
+            )
+        if status:
+            workflow_query = workflow_query.filter(
+                PaperCurationWorkflow.status == status
+            )
+        if review_status:
+            workflow_query = workflow_query.filter(
+                PaperCurationWorkflow.review_status == review_status
+            )
+        workflows = (
+            workflow_query.order_by(
+                PaperCurationWorkflow.created_at.desc(), PaperCurationWorkflow.id.desc()
+            )
+            .limit(limit)
+            .all()
+        )
+        workflow_payload = []
+        for workflow in workflows:
+            jobs = sorted(
+                workflow.jobs, key=lambda item: (item.created_at, str(item.id))
+            )
+            workflow_payload.append(
+                {
+                    "id": str(workflow.id),
+                    "paper_id": workflow.paper_id,
+                    "cohort_date": workflow.cohort_date.isoformat(),
+                    "policy_version": workflow.policy_version,
+                    "status": workflow.status,
+                    "review_status": workflow.review_status,
+                    "dependency_override": workflow.dependency_override,
+                    "deferred_reason": workflow.deferred_reason,
+                    "error": workflow.error,
+                    "created_at": workflow.created_at.isoformat(),
+                    "finished_at": workflow.finished_at.isoformat()
+                    if workflow.finished_at
+                    else None,
+                    "stages": [
+                        self.serialize(job, settings).model_dump(mode="json")
+                        for job in jobs
+                    ],
+                }
+            )
+        scheduler_state = db.get(PaperCurationSchedulerState, 1)
+        oldest_scheduled = (
+            db.query(func.min(PaperCurationJob.created_at))
+            .filter(
+                PaperCurationJob.trigger != "admin", PaperCurationJob.status == "queued"
+            )
+            .scalar()
+        )
         return CodexPaperJobsResponse(
             timestamp=_now(),
             jobs=[self.serialize(row, settings) for row in rows],
             summary=counts,
+            workflows=workflow_payload,
+            scheduler={
+                "dispatch_enabled": bool(
+                    scheduler_state and scheduler_state.dispatch_enabled
+                ),
+                "paused_at": scheduler_state.paused_at.isoformat()
+                if scheduler_state and scheduler_state.paused_at
+                else None,
+                "pause_reason": scheduler_state.pause_reason
+                if scheduler_state
+                else None,
+                "pause_condition": scheduler_state.pause_condition
+                if scheduler_state
+                else None,
+                "canary_released": bool(
+                    scheduler_state and scheduler_state.canary_released
+                ),
+                "oldest_scheduled_queued_at": oldest_scheduled.isoformat()
+                if oldest_scheduled
+                else None,
+                "queue_age_level": (
+                    "critical"
+                    if oldest_scheduled
+                    and oldest_scheduled < _now() - timedelta(hours=5)
+                    else "warning"
+                    if oldest_scheduled
+                    and oldest_scheduled < _now() - timedelta(hours=3)
+                    else "healthy"
+                ),
+            },
+        )
+
+    def retry(
+        self, db: Session, row: PaperCurationJob, settings: Settings
+    ) -> CodexPaperJob:
+        if row.status not in TERMINAL_STATUSES:
+            return self.serialize(row, settings)
+        return self.enqueue(
+            db,
+            kind=row.kind,
+            paper_id=row.paper_id,
+            paper_route=row.paper_route,
+            paper_title=row.paper_title,
+            requested_by="admin-retry",
+            settings=settings,
+            trigger=row.trigger,
+            parent_workflow_id=row.parent_workflow_id,
+            cohort_date=row.cohort_date,
+            policy_version=row.policy_version,
+            priority=0 if row.trigger == "admin" else row.priority,
+            retry_of_id=row.id,
         )
 
     def reconcile(self, db: Session, settings: Settings) -> None:
@@ -305,7 +608,7 @@ class CodexPaperJobService:
                 namespace=settings.codex_jobs_namespace
             )
         }
-        changed = False
+        changed_rows: list[PaperCurationJob] = []
         for row in active:
             remote = remote_jobs.get(row.hf_job_id or "")
             stage = str(getattr(getattr(remote, "status", None), "stage", ""))
@@ -317,20 +620,26 @@ class CodexPaperJobService:
                     else f"Hugging Face Job ended with {stage.lower()}."
                 )
                 row.finished_at = _now()
-                changed = True
+                changed_rows.append(row)
             elif stage == "CANCELED":
                 row.status = "canceled"
                 row.finished_at = _now()
-                changed = True
-        if changed:
+                changed_rows.append(row)
+        if changed_rows:
             db.commit()
+            for row in changed_rows:
+                self._advance_workflow(db, row, settings)
             self.dispatch_next(db, settings)
 
     def authenticate(
         self, db: Session, job_id: uuid.UUID, token: str
     ) -> PaperCurationJob | None:
         row = db.get(PaperCurationJob, job_id)
-        if row is None or not row.callback_token_hash:
+        if (
+            row is None
+            or not row.callback_token_hash
+            or row.status in TERMINAL_STATUSES
+        ):
             return None
         candidate = hashlib.sha256(token.encode()).hexdigest()
         return (
@@ -362,13 +671,224 @@ class CodexPaperJobService:
                 getattr(row, "thumbnail_error", None)
                 or "Requested thumbnail generation failed."
             )
-        row.status = "failed" if completion_error else "completed"
+        # A valid mutation is not rolled back or rerun solely because final trace
+        # storage failed. Its trace remains retryable and visible to operators.
+        trace_finalize_failed = bool(
+            completion_error
+            and completion_error.startswith("Trace finalization failed")
+            and row.applied_at is not None
+        )
+        row.status = (
+            "completed"
+            if completion_error is None or trace_finalize_failed
+            else "failed"
+        )
         row.report = report[:40_000] or None
         row.error = completion_error[:4_000] if completion_error else None
         row.finished_at = _now()
         db.commit()
+        self._advance_workflow(db, row, settings)
+        self._evaluate_scheduled_health(db, row)
         self.dispatch_next(db, settings)
         return self.serialize(row, settings)
+
+    def _evaluate_scheduled_health(self, db: Session, row: PaperCurationJob) -> None:
+        if getattr(row, "trigger", "admin") == "admin":
+            return
+        state = db.get(PaperCurationSchedulerState, 1)
+        if state is None:
+            return
+        source_failure = any(
+            value in (row.error or "").lower()
+            for value in (
+                "source evidence",
+                "insufficient evidence",
+                "unavailable source",
+            )
+        )
+        if row.status == "failed" and not source_failure:
+            state.consecutive_apply_failures += 1
+        elif row.status == "completed":
+            state.consecutive_apply_failures = 0
+        condition = None
+        reason = None
+        if state.consecutive_apply_failures >= 3:
+            condition = "apply_or_verification_failures"
+            reason = "Three consecutive scheduled apply or verification stages failed"
+        recent = (
+            db.query(PaperCurationJob)
+            .filter(
+                PaperCurationJob.trigger != "admin",
+                PaperCurationJob.status.in_({"completed", "failed"}),
+            )
+            .order_by(PaperCurationJob.finished_at.desc())
+            .limit(25)
+            .all()
+        )
+        counted_failures = [
+            item
+            for item in recent
+            if item.status == "failed"
+            and not any(
+                value in (item.error or "").lower()
+                for value in (
+                    "source evidence",
+                    "insufficient evidence",
+                    "unavailable source",
+                )
+            )
+        ]
+        if len(recent) == 25 and len(counted_failures) / 25 > 0.20:
+            condition = "terminal_failure_rate"
+            reason = "More than 20% of the latest 25 scheduled stages failed"
+        if condition and state.paused_at is None:
+            state.paused_at = _now()
+            state.pause_condition = condition
+            state.pause_reason = reason
+            logger.error("paper curation dispatch paused condition=%s", condition)
+        db.commit()
+
+    def _advance_workflow(
+        self, db: Session, row: PaperCurationJob, settings: Settings
+    ) -> None:
+        if getattr(row, "parent_workflow_id", None) is None:
+            return
+        workflow = db.get(PaperCurationWorkflow, row.parent_workflow_id)
+        if workflow is None:
+            return
+        if row.status == "completed" and row.kind == "enrich-paper":
+            workflow.status = "running"
+            exists = (
+                db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.parent_workflow_id == workflow.id,
+                    PaperCurationJob.kind == "add-evals",
+                )
+                .first()
+            )
+            if exists is None and workflow.evals_satisfied_by_job_id is None:
+                self.enqueue(
+                    db,
+                    kind="add-evals",
+                    paper_id=row.paper_id,
+                    paper_route=row.paper_route,
+                    paper_title=row.paper_title,
+                    requested_by="hf-daily-cron",
+                    settings=settings,
+                    trigger="hf-daily-cron",
+                    parent_workflow_id=workflow.id,
+                    cohort_date=workflow.cohort_date,
+                    policy_version=workflow.policy_version,
+                    priority=100,
+                    dispatch=False,
+                )
+            elif workflow.evals_satisfied_by_job_id is not None:
+                workflow.status = "completed"
+                workflow.finished_at = _now()
+        elif row.status == "completed" and row.kind == "add-evals":
+            workflow.status = "completed"
+            workflow.finished_at = _now()
+            self._release_canary_backlog(db, workflow.policy_version, settings)
+        elif row.status == "failed":
+            if (
+                row.retry_of_id is None
+                and "validation" not in (row.error or "").lower()
+            ):
+                # Preserve every remote attempt as its own immutable job row.
+                self.enqueue(
+                    db,
+                    kind=row.kind,
+                    paper_id=row.paper_id,
+                    paper_route=row.paper_route,
+                    paper_title=row.paper_title,
+                    requested_by="hf-daily-cron-retry",
+                    settings=settings,
+                    trigger=row.trigger,
+                    parent_workflow_id=workflow.id,
+                    cohort_date=workflow.cohort_date,
+                    policy_version=workflow.policy_version,
+                    priority=row.priority,
+                    dispatch=False,
+                    retry_of_id=row.id,
+                    commit=False,
+                )
+                workflow.status = "running"
+            else:
+                workflow.status = "partial" if row.kind == "add-evals" else "failed"
+                workflow.error = row.error
+                workflow.finished_at = _now()
+        db.commit()
+
+    def _release_canary_backlog(
+        self, db: Session, policy_version: str, settings: Settings
+    ) -> None:
+        state = db.get(PaperCurationSchedulerState, 1)
+        if state is None or state.canary_released:
+            return
+        canary = (
+            db.query(PaperCurationWorkflow)
+            .filter(
+                PaperCurationWorkflow.policy_version == policy_version,
+                PaperCurationWorkflow.status != "deferred",
+            )
+            .all()
+        )
+        if not canary or any(
+            item.status not in {"completed", "satisfied"} for item in canary
+        ):
+            return
+        state.canary_released = True
+        nonterminal = (
+            db.query(PaperCurationWorkflow)
+            .filter(PaperCurationWorkflow.status.in_({"queued", "running"}))
+            .count()
+        )
+        capacity = max(0, settings.codex_curation_queue_depth - nonterminal)
+        deferred = (
+            db.query(PaperCurationWorkflow)
+            .filter(
+                PaperCurationWorkflow.policy_version == policy_version,
+                PaperCurationWorkflow.status == "deferred",
+            )
+            .order_by(
+                PaperCurationWorkflow.cohort_date.desc(),
+                PaperCurationWorkflow.cohort_order,
+                PaperCurationWorkflow.id,
+            )
+            .limit(capacity)
+            .all()
+        )
+        for deferred_workflow in deferred:
+            paper = db.get(Paper, deferred_workflow.paper_id)
+            if paper is None:
+                deferred_workflow.status = "failed"
+                deferred_workflow.error = "Paper was deleted before canary release"
+                continue
+            kind = (
+                "add-evals"
+                if deferred_workflow.enrich_satisfied_by_job_id
+                else "enrich-paper"
+            )
+            self.enqueue(
+                db,
+                kind=kind,
+                paper_id=paper.id,
+                paper_route=get_paper_route_identifier(
+                    paper.source, paper.arxiv_id, paper.id
+                ),
+                paper_title=paper.title,
+                requested_by="hf-daily-cron",
+                settings=settings,
+                trigger="hf-daily-cron",
+                parent_workflow_id=deferred_workflow.id,
+                cohort_date=deferred_workflow.cohort_date,
+                policy_version=deferred_workflow.policy_version,
+                priority=100,
+                dispatch=False,
+                commit=False,
+            )
+            deferred_workflow.status = "queued"
+            deferred_workflow.deferred_reason = None
 
     def cancel(
         self, db: Session, row: PaperCurationJob, settings: Settings

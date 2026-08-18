@@ -168,9 +168,24 @@ class Settings(BaseSettings):
     codex_jobs_namespace: str = Field(default="")
     codex_jobs_token: str = Field(default="")
     codex_jobs_openai_api_key: str = Field(default="")
-    codex_jobs_image: str = Field(default="node:22-bookworm")
+    codex_jobs_image: str = Field(
+        default="ghcr.io/huggingface/paperswithcode-codex-curator"
+    )
     codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
     codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)
+    codex_jobs_cli_version: str = Field(default="0.75.0")
+    codex_jobs_model: str = Field(default="gpt5.6-Sol")
+    codex_jobs_reasoning_effort: str = Field(default="medium")
+    codex_jobs_max_active: int = Field(default=4, ge=1, le=16)
+    codex_jobs_max_scheduled_active: int = Field(default=3, ge=0, le=15)
+    codex_curation_scheduler_enabled: bool = Field(default=False)
+    codex_curation_direct_apply_enabled: bool = Field(default=False)
+    codex_curation_trace_upload_enabled: bool = Field(default=False)
+    codex_curation_trace_hf_bucket_id: str = Field(default="")
+    codex_curation_policy_version: str = Field(default="hf-daily-v1")
+    codex_curation_queue_depth: int = Field(default=200, ge=1, le=2000)
+    codex_curation_reconcile_limit: int = Field(default=200, ge=1, le=500)
+    codex_curation_canary_limit: int = Field(default=10, ge=1, le=100)
 
     # Hugging Face OAuth configuration (for "Sign in with Hugging Face")
     hf_oauth_client_id: str = Field(
