@@ -18,7 +18,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isChatEnabled } from "@/lib/apiUrl";
 import type { AuthUser } from "@/lib/authContext";
 
 interface UserMenuProps {
@@ -76,11 +75,6 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
             Hugging Face profile
           </a>
         </DropdownMenuItem>
-        {isChatEnabled() && (
-          <DropdownMenuItem asChild>
-            <Link to="/chat">Chat</Link>
-          </DropdownMenuItem>
-        )}
         <DropdownMenuItem asChild>
           <Link to="/frameworks">Frameworks</Link>
         </DropdownMenuItem>

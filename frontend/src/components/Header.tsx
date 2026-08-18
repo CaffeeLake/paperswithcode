@@ -71,6 +71,9 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
     && (location.pathname === "/chat" || location.pathname.startsWith("/chat/"));
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
+  const navLinks = isChatEnabled()
+    ? [NAV_LINKS[0], { to: "/chat", label: "Chat", end: false } as const, ...NAV_LINKS.slice(1)]
+    : NAV_LINKS;
 
   return (
     <>
@@ -83,7 +86,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             </span>
           </NavLink>
           <nav className="nav">
-            {NAV_LINKS.map(({ to, label, end }) => (
+            {navLinks.map(({ to, label, end }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -161,7 +164,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               <HeaderIcon name="search" size={14} />
               <span>Search papers, authors, domains…</span>
             </button>
-            {NAV_LINKS.map(({ to, label, end }) => (
+            {navLinks.map(({ to, label, end }) => (
               <NavLink
                 key={to}
                 to={to}
