@@ -50,9 +50,9 @@ const PapersListView: React.FC = () => {
   const requestedOrder = searchParams.get("order_by");
   const sortBy: SortKey = requestedOrder === "citation_count"
     ? "cited"
-    : requestedOrder === "trending" || (!requestedOrder && isRepositoryFeed)
-      ? "trending"
-      : "new";
+    : requestedOrder === "date_published"
+      ? "new"
+      : "trending";
   const requestedTime = searchParams.get("time");
   const period = requestedTime === "today"
     ? "Today"
