@@ -82,10 +82,10 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "hf.co/spaces/nielsr/pwc-codex-curator-eb2936f28e80"
+        "hf.co/spaces/nielsr/pwc-codex-curator-16c0c607afef"
     )
     assert settings.codex_jobs_image_revision == (
-        "6f55d6be7313211f231feb7e9b49815e3c5642ba"
+        "7fda78ad601a6559da157f397a174f83ec99da93"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
@@ -116,6 +116,12 @@ def test_remote_callbacks_identify_the_service_to_cloudflare():
     assert HELPER_USER_AGENT.startswith("PapersWithCode-Curation/")
     runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
     assert '"User-Agent": USER_AGENT' in runner
+
+
+def test_remote_runner_uses_codex_075_compatible_non_git_flags():
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+    assert '"--skip-git-repo-check"' in runner
+    assert '"--ephemeral"' not in runner
 
 
 def test_remote_add_evals_requires_configured_leaderboard_search():
