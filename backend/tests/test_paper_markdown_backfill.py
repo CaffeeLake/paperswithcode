@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from PIL import Image
 
@@ -38,6 +39,56 @@ WORKER = importlib.util.module_from_spec(WORKER_SPEC)
 WORKER_SPEC.loader.exec_module(WORKER)
 
 
+def test_worker_download_pdf_falls_back_to_existing_arxiv_version(monkeypatch):
+    requested_urls: list[str] = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, url: str):
+            requested_urls.append(url)
+            status = 200 if url.endswith("v1.pdf") else 404
+            content = b"%PDF-valid" if status == 200 else b"missing"
+            return httpx.Response(
+                status, content=content, request=httpx.Request("GET", url)
+            )
+
+    monkeypatch.setattr(WORKER.httpx, "Client", Client)
+
+    pdf, resolved_version = WORKER.download_pdf("1401.3590", "v3")
+
+    assert pdf == b"%PDF-valid"
+    assert resolved_version == "v1"
+    assert [url.rsplit("v", 1)[-1] for url in requested_urls] == [
+        "3.pdf",
+        "2.pdf",
+        "1.pdf",
+    ]
+
+
+def test_worker_download_pdf_does_not_fallback_on_rate_limit(monkeypatch):
+    client = Mock()
+    url = "https://arxiv.org/pdf/1401.3590v3.pdf"
+    client.get.return_value = httpx.Response(
+        429, content=b"rate limited", request=httpx.Request("GET", url)
+    )
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=None)
+    monkeypatch.setattr(WORKER.httpx, "Client", Mock(return_value=client))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        WORKER.download_pdf("1401.3590", "v3")
+
+    client.get.assert_called_once_with(url)
+
+
 def test_arxiv_identity_and_markdown_key():
     assert MODULE.normalize_arxiv_id("2607.24653v2") == "2607.24653"
     assert MODULE.markdown_key("2607.24653") == "2607/2607.24653.md"
@@ -65,7 +116,7 @@ def _scheduler(*, execute: bool, confirm: bool, full: bool = True):
     job.budget_affordable_jobs = 0
     job.budget_projected_usd = None
     job.budget_ceiling_usd = None
-    job._remote_jobs = lambda: []
+    job._remote_jobs = list
     return job
 
 

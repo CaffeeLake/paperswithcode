@@ -118,17 +118,31 @@ def start_vllm() -> subprocess.Popen[bytes]:
     return process
 
 
-def download_pdf(arxiv_id: str, version: str) -> bytes:
-    url = f"https://arxiv.org/pdf/{arxiv_id}{version}.pdf"
+def _arxiv_version_candidates(version: str) -> list[str]:
+    match = re.fullmatch(r"v([1-9][0-9]*)", version)
+    if match is None:
+        return [version]
+    requested = int(match.group(1))
+    lower_versions = range(min(requested - 1, 10), 0, -1)
+    return [version, *(f"v{number}" for number in lower_versions)]
+
+
+def download_pdf(arxiv_id: str, version: str) -> tuple[bytes, str]:
     with httpx.Client(
         headers={"User-Agent": USER_AGENT}, timeout=180, follow_redirects=True
     ) as client:
-        response = client.get(url)
-        response.raise_for_status()
-    data = response.content
-    if not data.startswith(b"%PDF-") or len(data) > 150 * 1024 * 1024:
-        raise ValueError("invalid_pdf")
-    return data
+        candidates = _arxiv_version_candidates(version)
+        for index, candidate in enumerate(candidates):
+            url = f"https://arxiv.org/pdf/{arxiv_id}{candidate}.pdf"
+            response = client.get(url)
+            if response.status_code == 404 and index + 1 < len(candidates):
+                continue
+            response.raise_for_status()
+            data = response.content
+            if not data.startswith(b"%PDF-") or len(data) > 150 * 1024 * 1024:
+                raise ValueError("invalid_pdf")
+            return data, candidate
+    raise RuntimeError("arxiv_version_candidates_exhausted")
 
 
 def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, bytes]]:
@@ -278,14 +292,14 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
         return {"arxiv_id": arxiv_id, "status": "already_exists"}
 
     paper_dir = run_root / arxiv_id
-    pdf_data = download_pdf(arxiv_id, version)
+    pdf_data, resolved_version = download_pdf(arxiv_id, version)
     page_count = len(PdfReader(BytesIO(pdf_data), strict=True).pages)
     processed_pages = min(page_count, MAX_PAGES)
     pdf_path = paper_dir / "paper.pdf"
     atomic_write(pdf_path, pdf_data)
     body, assets = run_chandra(pdf_path, paper_dir / "ocr", processed_pages)
     result = publish(
-        entry,
+        {**entry, "version": resolved_version},
         body,
         assets,
         content_root,
@@ -294,6 +308,8 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
     )
     return {
         **result,
+        "requested_version": version,
+        "resolved_version": resolved_version,
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "duration_seconds": round(time.monotonic() - started, 3),
