@@ -2794,6 +2794,22 @@ def test_staging_chat_routing_toggle_accepts_an_explicit_preferred_provider():
     }
 
 
+def test_staging_chat_routing_toggle_accepts_bounded_price_ceilings():
+    assert configure_host_env.staging_chat_routing_values(
+        enabled=True,
+        policy="preferred_provider",
+        preferred_providers="deepseek",
+        max_prompt_price_per_million_usd=0.22,
+        max_completion_price_per_million_usd=0.66,
+    ) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_ROUTING_POLICY": "preferred_provider",
+        "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": "deepseek",
+        "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.22",
+        "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.66",
+    }
+
+
 def test_staging_chat_routing_toggle_rejects_empty_preferred_providers():
     with pytest.raises(
         ValueError, match="preferred-provider routing requires provider slugs"

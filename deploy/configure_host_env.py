@@ -606,6 +606,8 @@ def staging_chat_routing_values(
     enabled: bool,
     policy: str = "latency",
     preferred_providers: str = "fireworks",
+    max_prompt_price_per_million_usd: float = 0.28,
+    max_completion_price_per_million_usd: float = 0.56,
 ) -> dict[str, str]:
     """Toggle only the independently reversible staging routing experiment."""
 
@@ -622,11 +624,21 @@ def staging_chat_routing_values(
                 raise ValueError("preferred-provider routing requires provider slugs")
             if len(providers) > 512:
                 raise ValueError("preferred-provider routing exceeds 512 characters")
+            prices = (
+                max_prompt_price_per_million_usd,
+                max_completion_price_per_million_usd,
+            )
+            if any(price <= 0 or price > 100 for price in prices):
+                raise ValueError("preferred-provider price ceilings must be 0-100")
             values.update(
                 {
                     "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": providers,
-                    "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
-                    "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+                    "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": (
+                        f"{max_prompt_price_per_million_usd:g}"
+                    ),
+                    "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": (
+                        f"{max_completion_price_per_million_usd:g}"
+                    ),
                 }
             )
         elif policy == "price_performance":
@@ -940,6 +952,18 @@ def main() -> int:
         default="fireworks",
         help="comma-separated OpenRouter provider tags for the preferred-provider pilot",
     )
+    parser.add_argument(
+        "--staging-chat-routing-max-prompt-price",
+        type=float,
+        default=0.28,
+        help="preferred-provider prompt price ceiling in USD per million tokens",
+    )
+    parser.add_argument(
+        "--staging-chat-routing-max-completion-price",
+        type=float,
+        default=0.56,
+        help="preferred-provider completion price ceiling in USD per million tokens",
+    )
     parser.add_argument("--staging-chat-payload-enable-only", action="store_true")
     parser.add_argument("--staging-chat-payload-disable-only", action="store_true")
     parser.add_argument(
@@ -1007,6 +1031,12 @@ def main() -> int:
                 enabled=args.staging_chat_routing_enable_only,
                 policy=args.staging_chat_routing_policy,
                 preferred_providers=args.staging_chat_preferred_providers,
+                max_prompt_price_per_million_usd=(
+                    args.staging_chat_routing_max_prompt_price
+                ),
+                max_completion_price_per_million_usd=(
+                    args.staging_chat_routing_max_completion_price
+                ),
             )
             label = "routing"
         else:
