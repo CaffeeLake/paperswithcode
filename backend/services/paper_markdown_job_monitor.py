@@ -194,6 +194,7 @@ def _read_progress(
         "failed_papers",
         "already_existed_papers",
         "extracted_images",
+        "omitted_images",
     )
     progress: dict[str, Any] = {
         key: max(0, int(payload.get(key) or 0)) for key in integer_fields
@@ -361,6 +362,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         "succeeded_papers": sum(row["succeeded_papers"] for row in progress_rows),
         "failed_papers": sum(row["failed_papers"] for row in progress_rows),
         "extracted_images": sum(row["extracted_images"] for row in progress_rows),
+        "omitted_images": sum(row["omitted_images"] for row in progress_rows),
         "latest_run_failed_jobs": sum(
             1
             for job in latest_run_jobs

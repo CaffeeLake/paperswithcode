@@ -217,6 +217,7 @@ function effectiveOutcomeClass(outcome?: string): string {
 
 function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
   const progress = job.progress;
+  const omittedImages = progress?.omitted_images ?? 0;
   const percentage = progress?.total_papers
     ? Math.min(100, (progress.processed_papers / progress.total_papers) * 100)
     : 0;
@@ -274,6 +275,11 @@ function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
             <span><strong>{progress.already_existed_papers.toLocaleString()}</strong> skipped</span>
             <span><strong>{progress.extracted_images.toLocaleString()}</strong> images</span>
           </div>
+          {omittedImages > 0 && (
+            <div className="text-xs cron-muted">
+              <strong>{omittedImages.toLocaleString()}</strong> unresolved image references omitted after final retry
+            </div>
+          )}
           {progress.updated_at && (
             <div className="text-xs cron-muted">Progress updated {formatCronDate(progress.updated_at)}</div>
           )}
