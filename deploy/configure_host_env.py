@@ -1557,11 +1557,17 @@ def main() -> int:
         parser.error("legacy environment is missing: " + ", ".join(missing))
 
     if args.production_codex_only:
+        codex_values = production_codex_values(legacy, args.codex_jobs_namespace)
         production = assign(
             read_lines(CONFIG_ROOT / "production.env"),
-            production_codex_values(legacy, args.codex_jobs_namespace),
+            codex_values,
         )
         write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
+        production_cron = assign(
+            read_lines(CONFIG_ROOT / "production-cron.env"),
+            codex_values,
+        )
+        write_env(CONFIG_ROOT / "production-cron.env", production_cron, "pwc-cron")
         if args.staging_codex_too:
             staging = assign(
                 read_lines(CONFIG_ROOT / "staging.env"),
@@ -1576,9 +1582,9 @@ def main() -> int:
                 },
             )
             write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
-            print("installed production and staging Codex credentials")
+            print("installed production, CRON, and staging Codex credentials")
         else:
-            print("installed production Codex credentials")
+            print("installed production and CRON Codex credentials")
         return 0
     if args.staging_codex_too:
         parser.error("--staging-codex-too requires --production-codex-only")
