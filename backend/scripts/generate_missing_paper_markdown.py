@@ -368,6 +368,13 @@ def _prior_status(content_root: Path, arxiv_id: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def should_omit_missing_images(prior: dict, attempt_count: int) -> bool:
+    """Allow one full retry before publishing with phantom image refs omitted."""
+    return attempt_count >= MAX_ATTEMPTS or (
+        attempt_count >= 2 and prior.get("error_class") == "missing_extracted_image"
+    )
+
+
 def classify_failure(error: Exception, attempt_count: int) -> tuple[str, bool]:
     """Classify a paper failure without requiring scheduler string parsing."""
     message = str(error)
@@ -601,6 +608,7 @@ def main() -> None:
                 break
             prior = _prior_status(args.content_root, str(entry["arxiv_id"]))
             attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
+            allow_missing_images = should_omit_missing_images(prior, attempt_count)
             attempted_at = datetime.now(UTC)
             failure = None
             try:
@@ -624,7 +632,7 @@ def main() -> None:
                         body,
                         assets,
                         args.content_root,
-                        allow_missing_images=attempt_count >= MAX_ATTEMPTS,
+                        allow_missing_images=allow_missing_images,
                     )
                     result["duration_seconds"] = round(time.monotonic() - started, 3)
                     if args.stub_delay_seconds:
@@ -634,7 +642,7 @@ def main() -> None:
                         entry,
                         args.content_root,
                         result_path.parent,
-                        allow_missing_images=attempt_count >= MAX_ATTEMPTS,
+                        allow_missing_images=allow_missing_images,
                     )
             except Exception as error:  # noqa: BLE001 - isolate failures per paper
                 failure = error
