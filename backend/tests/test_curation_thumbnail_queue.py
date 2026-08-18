@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -56,6 +58,34 @@ def _queue_row(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_remote_runner_bootstraps_only_hash_verified_files(tmp_path, monkeypatch):
+    contents = {
+        path: f"content for {path}".encode()
+        for path in run_paper_curation.BOOTSTRAP_PATHS
+    }
+    monkeypatch.setattr(run_paper_curation, "WORKTREE", tmp_path / "worktree")
+    monkeypatch.setattr(
+        run_paper_curation,
+        "api_request",
+        lambda path: {
+            "revision": run_paper_curation.REVISION,
+            "files": [
+                {
+                    "path": relative,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "content_b64": base64.b64encode(content).decode(),
+                }
+                for relative, content in contents.items()
+            ],
+        },
+    )
+
+    run_paper_curation.bootstrap_worktree()
+
+    for relative, content in contents.items():
+        assert (run_paper_curation.WORKTREE / relative).read_bytes() == content
 
 
 class _Query:

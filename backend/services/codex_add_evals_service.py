@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -42,6 +43,14 @@ JobStatus = Literal[
 ACTIVE_STATUSES = {"dispatching", "running"}
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
 CURATOR_COMMAND = "exec python3 /runner/run_paper_curation.py"
+CURATOR_BOOTSTRAP_PATHS = (
+    ".agents/skills/add-evals/SKILL.md",
+    ".agents/skills/enrich-paper/SKILL.md",
+    ".agents/skills/remote-paper-curation/SKILL.md",
+    "jobs/curation_api.py",
+    "jobs/schemas/curation_proposal.schema.json",
+    "jobs/url_preflight.py",
+)
 
 
 class CodexPaperJob(BaseModel):
@@ -859,6 +868,24 @@ class CodexPaperJobService:
         return (
             row if secrets.compare_digest(candidate, row.callback_token_hash) else None
         )
+
+    def bootstrap_bundle(self, row: PaperCurationJob) -> dict:
+        """Return the minimal curation worktree from the exact active release."""
+        revision = _git_revision()
+        if row.repository_sha != revision:
+            raise ValueError("Job revision does not match the active immutable release")
+        root = Path(__file__).parents[2]
+        files = []
+        for relative in CURATOR_BOOTSTRAP_PATHS:
+            content = (root / relative).read_bytes()
+            files.append(
+                {
+                    "path": relative,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "content_b64": base64.b64encode(content).decode(),
+                }
+            )
+        return {"revision": revision, "files": files}
 
     @staticmethod
     def token_owner_for_other_job(
