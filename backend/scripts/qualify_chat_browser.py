@@ -182,9 +182,15 @@ class ChromePage(AbstractContextManager):
             timeout=30,
         )
 
-    def select_model(self, model: str) -> None:
+    def select_model(self, model: str, *, only_available: bool = False) -> None:
         encoded = json.dumps(model)
         storage_key = json.dumps(CHAT_MODEL_STORAGE_KEY)
+        if only_available:
+            self.wait_for(
+                "Boolean(document.querySelector('[aria-label=\"Research model\"]'))"
+            )
+            self.evaluate(f"sessionStorage.setItem({storage_key},{encoded})")
+            return
         self.wait_for(
             "(() => {"
             "const select=document.querySelector('select[aria-label=\"Research model\"]');"
@@ -443,7 +449,9 @@ def main() -> int:
                 if remaining > 0:
                     time.sleep(remaining)
                 page.navigate("/chat")
-                page.select_model(selected_model)
+                page.select_model(
+                    selected_model, only_available=len(available_models) == 1
+                )
                 last_new_started = time.monotonic()
                 new = page.send_turn(
                     "Reason briefly, then state one concise reason benchmarks matter."

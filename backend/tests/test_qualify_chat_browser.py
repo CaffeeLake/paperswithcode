@@ -138,3 +138,26 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
     )
     page.select_model("openai/gpt-5.6-luna")
     assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in waited)
+
+
+def test_browser_accepts_the_only_discovered_model_without_a_select(monkeypatch):
+    page = object.__new__(ChromePage)
+    page.timeout = 1
+    evaluated: list[str] = []
+    waited: list[str] = []
+    monkeypatch.setattr(
+        page,
+        "evaluate",
+        lambda expression: evaluated.append(expression) or True,
+    )
+    monkeypatch.setattr(
+        page,
+        "wait_for",
+        lambda expression, **_kwargs: waited.append(expression) or True,
+    )
+
+    page.select_model("deepseek-ai/DeepSeek-V4-Flash-0731", only_available=True)
+
+    assert any('[aria-label="Research model"]' in expression for expression in waited)
+    assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in evaluated)
+    assert not any("select.value" in expression for expression in evaluated)
