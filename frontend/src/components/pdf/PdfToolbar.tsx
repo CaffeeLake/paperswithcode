@@ -16,7 +16,6 @@ interface PdfToolbarProps {
   onPage: (page: number) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  onFitWidth: () => void;
   onToggleSearch: () => void;
   onSearchQuery: (query: string) => void;
   onSearch: (direction: 1 | -1) => void;
@@ -37,7 +36,6 @@ export function PdfToolbar({
   onPage,
   onZoomIn,
   onZoomOut,
-  onFitWidth,
   onToggleSearch,
   onSearchQuery,
   onSearch,
@@ -67,7 +65,6 @@ export function PdfToolbar({
         <button type="button" onClick={onZoomOut} aria-label="Zoom out">−</button>
         <span className="pdf-zoom-value" aria-live="polite">{zoomPercent}%</span>
         <button type="button" onClick={onZoomIn} aria-label="Zoom in">+</button>
-        <button type="button" onClick={onFitWidth}>Fit width</button>
         <button type="button" onClick={onToggleSearch} aria-expanded={searchOpen} aria-controls="pdf-search-controls">Search</button>
         <a href={originalUrl} target="_blank" rel="noopener noreferrer" download>Open original</a>
       </div>

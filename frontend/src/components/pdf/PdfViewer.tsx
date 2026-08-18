@@ -240,7 +240,6 @@ export function PdfViewer({
       onPage={jumpToPage}
       onZoomIn={() => setCenteredZoom((value) => Math.min(3, value + 0.15))}
       onZoomOut={() => setCenteredZoom((value) => Math.max(0.5, value - 0.15))}
-      onFitWidth={() => setCenteredZoom(() => 1)}
       onToggleSearch={() => setSearchOpen((value) => !value)}
       onSearchQuery={setSearchQuery}
       onSearch={navigateMatch}

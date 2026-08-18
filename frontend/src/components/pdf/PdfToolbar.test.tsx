@@ -5,9 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { PdfToolbar } from "./PdfToolbar";
 
 describe("PdfToolbar", () => {
-  it("supports page, fit-width, search, and original controls", () => {
+  it("supports page, zoom, search, and original controls", () => {
     const onPage = vi.fn();
-    const onFitWidth = vi.fn();
     const onToggleSearch = vi.fn();
     render(<MemoryRouter><PdfToolbar
         paperTitle="Example Paper"
@@ -24,7 +23,6 @@ describe("PdfToolbar", () => {
         onPage={onPage}
         onZoomIn={vi.fn()}
         onZoomOut={vi.fn()}
-        onFitWidth={onFitWidth}
         onToggleSearch={onToggleSearch}
         onSearchQuery={vi.fn()}
         onSearch={vi.fn()}
@@ -35,8 +33,7 @@ describe("PdfToolbar", () => {
     expect(screen.queryByText(/arXiv:/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(onPage).toHaveBeenCalledWith(2);
-    fireEvent.click(screen.getByRole("button", { name: "Fit width" }));
-    expect(onFitWidth).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Fit width" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(onToggleSearch).toHaveBeenCalledOnce();
     expect(screen.getByRole("link", { name: "Open original" })).toHaveAttribute(
