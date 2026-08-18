@@ -59,9 +59,6 @@ export function readerToolbarResources(paper: Paper | undefined): PdfToolbarReso
       && parts.length >= 2) {
       resources.repository = {
         href,
-        label: repository.owner && repository.name
-          ? `${repository.owner}/${repository.name}`
-          : `${parts[0]}/${parts[1].replace(/\.git$/, "")}`,
         stars: repository.num_stars || 0,
       };
       break;

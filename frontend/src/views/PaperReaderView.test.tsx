@@ -37,7 +37,7 @@ vi.mock("@/components/pdf/PdfViewer", () => ({
     paperTitle: string;
     paperHref: string;
     resources?: {
-      repository?: { href: string; label: string; stars: number };
+      repository?: { href: string; stars: number };
       projectPage?: { href: string; label: string };
       huggingFace?: { href: string; count: number };
     };
@@ -123,7 +123,6 @@ describe("PaperReaderView", () => {
       repository("https://github.com/owner/official", true),
     ] } as Paper).repository).toMatchObject({
       href: "https://github.com/owner/official",
-      label: "owner/official",
       stars: 0,
     });
   });

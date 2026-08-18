@@ -4,7 +4,7 @@ import { ExternalLink, Github, X } from "lucide-react";
 import { Link } from "react-router-dom";
 
 export interface PdfToolbarResources {
-  repository?: { href: string; label: string; stars: number };
+  repository?: { href: string; stars: number };
   projectPage?: { href: string; label: string };
   huggingFace?: { href: string; count: number };
 }
@@ -85,7 +85,6 @@ export function PdfToolbar({
         aria-label="Open official GitHub repository"
       >
         <Github size={15} strokeWidth={1.8} aria-hidden="true" />
-        <span>{resources.repository.label}</span>
         <span aria-label={`${resources.repository.stars} GitHub stars`}>★ {resources.repository.stars.toLocaleString()}</span>
       </a>}
       {resources?.projectPage && <a

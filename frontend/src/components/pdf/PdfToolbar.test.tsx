@@ -20,7 +20,7 @@ describe("PdfToolbar", () => {
         paperTitle="Example Paper"
         paperHref="/paper/2501.00001"
         resources={{
-          repository: { href: "https://github.com/example/paper", label: "example/paper", stars: 1234 },
+          repository: { href: "https://github.com/example/paper", stars: 1234 },
           projectPage: { href: "https://example.org/project", label: "example.org" },
           huggingFace: { href: "https://huggingface.co/papers/2501.00001", count: 3 },
         }}
@@ -48,6 +48,7 @@ describe("PdfToolbar", () => {
       .toHaveAttribute("href", "/paper/2501.00001");
     expect(screen.getByRole("link", { name: "Open official GitHub repository" }))
       .toHaveAttribute("href", "https://github.com/example/paper");
+    expect(screen.queryByText("example/paper")).not.toBeInTheDocument();
     expect(screen.getByLabelText("1234 GitHub stars")).toHaveTextContent("★ 1,234");
     expect(screen.getByRole("link", { name: "Open project page at example.org" }))
       .toHaveAttribute("href", "https://example.org/project");
