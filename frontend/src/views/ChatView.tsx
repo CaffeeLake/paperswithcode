@@ -362,7 +362,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
       // true. This effect also watches `chat.busy` so saved routes can load
       // after an in-flight turn settles; resetting unconditionally here
       // aborted brand-new turns before their first SSE event arrived.
-      if (loadedRouteSessionIdRef.current !== null) {
+      if (loadedRouteSessionIdRef.current !== null && !chat.busy) {
         loadedRouteSessionIdRef.current = null;
         chat.reset();
         setWebSearchEnabled(false);

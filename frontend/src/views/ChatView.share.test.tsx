@@ -544,6 +544,21 @@ describe("ChatView new-session sidebar", () => {
     act(() => mocks.chatOptions?.onTitle("Good OCR Models"));
     expect(screen.getByText("Good OCR Models", { selector: ".chat-session-title" })).toBeInTheDocument();
   });
+
+  it("does not reset a busy new-session stream while its route catches up", async () => {
+    mocks.messages.length = 0;
+    mocks.busy = true;
+    mocks.listSessions.mockResolvedValue([]);
+    renderChat("/chat");
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+
+    act(() => mocks.chatOptions?.onSessionId(sessionId));
+
+    expect(await screen.findByTestId("chat-location")).toHaveTextContent(
+      `/chat/${sessionId}`,
+    );
+    expect(mocks.reset).not.toHaveBeenCalled();
+  });
 });
 
 describe("ChatView web search", () => {
