@@ -412,6 +412,58 @@ def test_chandra_worker_final_attempt_omits_missing_image(tmp_path):
     assert progress["omitted_images"] == 1
 
 
+def test_chandra_worker_omits_missing_image_after_one_retry(tmp_path):
+    content = tmp_path / "content"
+    stub = tmp_path / "stub"
+    manifest = content / "_jobs" / "manifests" / "run-retry" / "00000.jsonl"
+    status_path = content / "_jobs" / "status" / "2607.24653.json"
+    manifest.parent.mkdir(parents=True)
+    status_path.parent.mkdir(parents=True)
+    stub.mkdir()
+    entry = {
+        "arxiv_id": "2607.24653",
+        "version": "v1",
+        "title": "Kimi K3",
+        "output_key": "2607/2607.24653.md",
+    }
+    manifest.write_text(json.dumps(entry) + "\n")
+    (stub / "2607.24653.md").write_text(
+        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+    )
+    status_path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "attempt_count": 1,
+                "error_class": "missing_extracted_image",
+                "retryable": True,
+            }
+        )
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(WORKER_SCRIPT),
+            "--manifest",
+            str(manifest),
+            "--content-root",
+            str(content),
+            "--stub-root",
+            str(stub),
+        ],
+        check=True,
+    )
+
+    markdown = (content / entry["output_key"]).read_text()
+    status = json.loads(status_path.read_text())
+    assert "missing.webp" not in markdown
+    assert "1 generated image reference was omitted" in markdown
+    assert status["status"] == "succeeded"
+    assert status["attempt_count"] == 2
+    assert status["omitted_image_count"] == 1
+
+
 def _write_stub_manifest(tmp_path: Path, count: int = 2):
     content = tmp_path / "content"
     stub = tmp_path / "stub"
