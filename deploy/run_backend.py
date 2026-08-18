@@ -20,7 +20,9 @@ def configure_release_environment(release: Path) -> dict:
     manifest = validate_manifest(release)
     features = manifest["backend_features"]
     runtime_data_dir = Path(os.environ["PWC_RUNTIME_DATA_DIR"])
-    hf_cache_dir = runtime_data_dir / "hf-cache"
+    # Request-path Hub/Xet writes must not share the CRON-owned cache. The host
+    # layout provisions this directory for the application service identity.
+    hf_cache_dir = runtime_data_dir / "hf-app-cache"
     os.environ.setdefault("HF_HOME", str(hf_cache_dir))
     os.environ.setdefault("HF_XET_CACHE", str(hf_cache_dir / "xet"))
     os.environ["PWC_RELEASE_ID"] = manifest["release_id"]

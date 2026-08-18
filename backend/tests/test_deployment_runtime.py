@@ -1808,8 +1808,8 @@ def test_backend_launcher_uses_release_specific_feature_flags(
     assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_ENRICH_PAPER_ENABLED"] == "true"
-    assert os.environ["HF_HOME"] == str(runtime_data_dir / "hf-cache")
-    assert os.environ["HF_XET_CACHE"] == str(runtime_data_dir / "hf-cache" / "xet")
+    assert os.environ["HF_HOME"] == str(runtime_data_dir / "hf-app-cache")
+    assert os.environ["HF_XET_CACHE"] == str(runtime_data_dir / "hf-app-cache" / "xet")
 
 
 def test_backend_launcher_preserves_explicit_hugging_face_cache(
