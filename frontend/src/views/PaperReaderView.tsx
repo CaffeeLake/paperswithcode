@@ -9,6 +9,7 @@ import { chatApi } from "@/lib/api/chat";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 import { normalizePaperRouteId } from "@/lib/utils";
 import { ChatExperience } from "@/views/ChatView";
+import type { Repository } from "@/lib/api/papers.types";
 
 const DEFAULT_RATIO = 66;
 const RATIO_KEY = "pwc:reader:split-ratio";
@@ -40,6 +41,18 @@ export function directArxivPdfHref(value: unknown): string | null {
   return parsed.href;
 }
 
+export function officialGithubRepoHref(repositories: Repository[] | undefined): string | null {
+  for (const repository of repositories ?? []) {
+    if (!repository.is_official) continue;
+    const href = safeExternalHref(repository.url);
+    if (!href) continue;
+    const parsed = new URL(href);
+    if ((parsed.hostname === "github.com" || parsed.hostname === "www.github.com")
+      && parsed.pathname.split("/").filter(Boolean).length >= 2) return href;
+  }
+  return null;
+}
+
 export default function PaperReaderView() {
   const { arxivId: rawRouteId } = useParams<{ arxivId: string }>();
   const routeId = normalizePaperRouteId(rawRouteId ?? "").replace(/v\d+$/i, "");
@@ -53,6 +66,7 @@ export default function PaperReaderView() {
   });
   const paper = query.data;
   const pdfUrl = directArxivPdfHref(paper?.url_pdf);
+  const officialRepositoryUrl = officialGithubRepoHref(paper?.repositories);
   const canonicalRoute = paper?.arxiv_id?.replace(/v\d+$/i, "") || routeId;
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(() => {
     const stored = sessionStorage.getItem(sessionKey(routeId));
@@ -200,6 +214,7 @@ export default function PaperReaderView() {
           paperKey={canonicalRoute}
           paperTitle={paper.title}
           paperHref={`/paper/${canonicalRoute}`}
+          officialRepositoryUrl={officialRepositoryUrl}
           initialPage={initialPage}
           resizeActive={resizeActive}
           onPageChange={(page) => {

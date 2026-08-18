@@ -20,9 +20,11 @@
 .reader-chat-unavailable { height: 100%; display: grid; place-content: center; color: var(--ink-muted); padding: 24px; text-align: center; }
 .pdf-viewer { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .pdf-toolbar { position: relative; min-height: 48px; flex: 0 0 auto; display: flex; align-items: center; gap: 16px; padding: 7px 10px 7px var(--reader-title-inset, 32px); border-bottom: 1px solid var(--hairline); background: var(--bg); color: var(--ink); font-size: 12px; }
-.pdf-toolbar-paper { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
-.pdf-toolbar-paper a { min-width: 0; overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.pdf-toolbar-paper a:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.pdf-toolbar-paper { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; }
+.pdf-toolbar-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-toolbar-title:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.pdf-toolbar-github { flex: 0 0 auto; display: inline-flex; align-items: center; color: var(--ink-soft); }
+.pdf-toolbar-github:hover { color: var(--ink); }
 .pdf-toolbar-controls { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
 .pdf-toolbar-group { display: flex; align-items: center; gap: 5px; }
 .pdf-toolbar button, .pdf-toolbar-controls a { min-height: 30px; border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 8px; background: var(--bg-elevated); color: var(--ink); text-decoration: none; }
@@ -35,6 +37,7 @@
 .pdf-search-controls { position: absolute; z-index: 10; right: 8px; top: calc(100% + 5px); display: flex; align-items: center; gap: 5px; padding: 7px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--bg-elevated); box-shadow: 0 5px 20px #0003; }
 .pdf-search-controls input { width: min(260px, 45vw); min-height: 30px; border: 1px solid var(--hairline); border-radius: 4px; padding: 4px 7px; background: var(--bg); color: var(--ink); }
 .pdf-search-controls span { min-width: 70px; color: var(--ink-soft); text-align: center; }
+.pdf-search-controls button { display: inline-flex; align-items: center; justify-content: center; }
 .pdf-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; background: #fff; scrollbar-color: var(--ink-faint) var(--bg-subtle); scrollbar-gutter: stable; }
 .pdf-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
 .pdf-scroll::-webkit-scrollbar-track { background: var(--bg-subtle); }

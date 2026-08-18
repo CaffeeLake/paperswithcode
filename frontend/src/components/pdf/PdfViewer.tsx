@@ -13,6 +13,7 @@ interface PdfViewerProps {
   paperKey: string;
   paperTitle: string;
   paperHref: string;
+  officialRepositoryUrl?: string | null;
   initialPage?: number;
   resizeActive?: boolean;
   onPageChange?: (page: number) => void;
@@ -97,6 +98,7 @@ export function PdfViewer({
   paperKey,
   paperTitle,
   paperHref,
+  officialRepositoryUrl,
   initialPage = 1,
   resizeActive = false,
   onPageChange,
@@ -225,6 +227,15 @@ export function PdfViewer({
     onPageChange?.(bounded);
   }, [onPageChange, pages]);
 
+  const closeSearch = useCallback(() => {
+    searchGeneration.current += 1;
+    setSearchOpen(false);
+    setSearchQuery("");
+    setMatches([]);
+    setActiveMatch(0);
+    setSearching(false);
+  }, []);
+
   useEffect(() => {
     const element = scrollRef.current;
     if (!element || !pages) return;
@@ -261,11 +272,14 @@ export function PdfViewer({
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setSearchOpen(true);
+      } else if (event.key === "Escape" && searchOpen) {
+        event.preventDefault();
+        closeSearch();
       }
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, []);
+  }, [closeSearch, searchOpen]);
 
   useEffect(() => {
     const pdf = documentRef.current;
@@ -322,6 +336,7 @@ export function PdfViewer({
     <PdfToolbar
       paperTitle={paperTitle}
       paperHref={paperHref}
+      officialRepositoryUrl={officialRepositoryUrl}
       page={page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}
@@ -333,7 +348,8 @@ export function PdfViewer({
       onPage={jumpToPage}
       onZoomIn={() => setCenteredZoom((value) => Math.min(3, value + 0.15))}
       onZoomOut={() => setCenteredZoom((value) => Math.max(0.5, value - 0.15))}
-      onToggleSearch={() => setSearchOpen((value) => !value)}
+      onToggleSearch={() => searchOpen ? closeSearch() : setSearchOpen(true)}
+      onCloseSearch={closeSearch}
       onSearchQuery={setSearchQuery}
       onSearch={navigateMatch}
     />

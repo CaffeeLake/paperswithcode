@@ -10,9 +10,16 @@ vi.mock("@/lib/pdf", () => ({
 }));
 
 vi.mock("./PdfToolbar", () => ({
-  PdfToolbar: ({ onZoomIn }: { onZoomIn: () => void }) => <div>
+  PdfToolbar: ({ searchOpen, onZoomIn, onToggleSearch, onCloseSearch }: {
+    searchOpen: boolean;
+    onZoomIn: () => void;
+    onToggleSearch: () => void;
+    onCloseSearch: () => void;
+  }) => <div>
     PDF toolbar
     <button type="button" onClick={onZoomIn}>Zoom in</button>
+    <button type="button" onClick={onToggleSearch}>Search</button>
+    {searchOpen && <button type="button" onClick={onCloseSearch}>Close search</button>}
   </div>,
 }));
 
@@ -150,5 +157,19 @@ describe("PdfViewer resize rendering", () => {
     )).toBeGreaterThan(1));
     expect(screen.getByTestId("pdf-page")).toHaveAttribute("data-width", "790");
     await waitFor(() => expect(Number(screen.getByTestId("pdf-page").dataset.width)).toBeGreaterThan(790));
+  });
+
+  it("closes PDF search with Escape", () => {
+    render(<PdfViewer
+      url="https://arxiv.org/pdf/1706.03762"
+      paperKey="1706.03762"
+      paperTitle="Attention Is All You Need"
+      paperHref="/paper/1706.03762"
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(screen.getByRole("button", { name: "Close search" })).toBeVisible();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Close search" })).not.toBeInTheDocument();
   });
 });

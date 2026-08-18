@@ -8,6 +8,7 @@ describe("PdfToolbar", () => {
   it("supports page, zoom, and search controls", () => {
     const onPage = vi.fn();
     const onToggleSearch = vi.fn();
+    const onCloseSearch = vi.fn();
     const header = document.createElement("header");
     header.className = "app-header";
     const logo = document.createElement("span");
@@ -18,10 +19,11 @@ describe("PdfToolbar", () => {
     const view = render(<MemoryRouter><PdfToolbar
         paperTitle="Example Paper"
         paperHref="/paper/2501.00001"
+        officialRepositoryUrl="https://github.com/example/paper"
         page={3}
         pages={12}
         zoomPercent={125}
-        searchOpen={false}
+        searchOpen
         searchQuery=""
         searchMatch={0}
         searchCount={0}
@@ -30,6 +32,7 @@ describe("PdfToolbar", () => {
         onZoomIn={vi.fn()}
         onZoomOut={vi.fn()}
         onToggleSearch={onToggleSearch}
+        onCloseSearch={onCloseSearch}
         onSearchQuery={vi.fn()}
         onSearch={vi.fn()}
       /></MemoryRouter>);
@@ -39,12 +42,16 @@ describe("PdfToolbar", () => {
     });
     expect(screen.getByRole("link", { name: "Example Paper — open paper page" }))
       .toHaveAttribute("href", "/paper/2501.00001");
+    expect(screen.getByRole("link", { name: "Open official GitHub repository" }))
+      .toHaveAttribute("href", "https://github.com/example/paper");
     expect(screen.queryByText(/arXiv:/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(onPage).toHaveBeenCalledWith(2);
     expect(screen.queryByRole("button", { name: "Fit width" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(onToggleSearch).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }));
+    expect(onCloseSearch).toHaveBeenCalledOnce();
     expect(screen.queryByRole("link", { name: "Open original" })).not.toBeInTheDocument();
     header.remove();
   });

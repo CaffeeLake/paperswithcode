@@ -1,10 +1,12 @@
 import { useLayoutEffect, useRef } from "react";
 import type { FormEvent } from "react";
+import { Github, X } from "lucide-react";
 import { Link } from "react-router-dom";
 
 interface PdfToolbarProps {
   paperTitle: string;
   paperHref: string;
+  officialRepositoryUrl?: string | null;
   page: number;
   pages: number;
   zoomPercent: number;
@@ -17,6 +19,7 @@ interface PdfToolbarProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onToggleSearch: () => void;
+  onCloseSearch: () => void;
   onSearchQuery: (query: string) => void;
   onSearch: (direction: 1 | -1) => void;
 }
@@ -24,6 +27,7 @@ interface PdfToolbarProps {
 export function PdfToolbar({
   paperTitle,
   paperHref,
+  officialRepositoryUrl,
   page,
   pages,
   zoomPercent,
@@ -36,6 +40,7 @@ export function PdfToolbar({
   onZoomIn,
   onZoomOut,
   onToggleSearch,
+  onCloseSearch,
   onSearchQuery,
   onSearch,
 }: PdfToolbarProps) {
@@ -62,9 +67,17 @@ export function PdfToolbar({
   };
   return <div ref={toolbarRef} className="pdf-toolbar" aria-label="PDF controls">
     <div className="pdf-toolbar-paper">
-      <Link to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
+      <Link className="pdf-toolbar-title" to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
         {paperTitle}
       </Link>
+      {officialRepositoryUrl && <a
+        className="pdf-toolbar-github"
+        href={officialRepositoryUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Official GitHub repository"
+        aria-label="Open official GitHub repository"
+      ><Github size={17} strokeWidth={1.8} aria-hidden="true" /></a>}
     </div>
     <div className="pdf-toolbar-controls">
       <div className="pdf-toolbar-group">
@@ -95,6 +108,9 @@ export function PdfToolbar({
       <span role="status">{searching ? "Searching…" : searchQuery ? `${searchCount ? searchMatch + 1 : 0} of ${searchCount}` : ""}</span>
       <button type="button" onClick={() => onSearch(-1)} disabled={!searchCount} aria-label="Previous match">↑</button>
       <button type="button" onClick={() => onSearch(1)} disabled={!searchCount} aria-label="Next match">↓</button>
+      <button type="button" onClick={onCloseSearch} aria-label="Close search" title="Close search">
+        <X size={16} aria-hidden="true" />
+      </button>
     </div>}
   </div>;
 }
