@@ -65,6 +65,27 @@ def test_browser_populates_empty_composer_before_waiting_for_send(monkeypatch):
     assert result["reasoning"] is True
 
 
+def test_browser_navigation_waits_for_the_requested_path(monkeypatch):
+    page = object.__new__(ChromePage)
+    navigated: list[tuple[str, dict]] = []
+    waited: list[str] = []
+    monkeypatch.setattr(
+        page,
+        "command",
+        lambda method, params: navigated.append((method, params)) or {},
+    )
+    monkeypatch.setattr(
+        page,
+        "wait_for",
+        lambda expression, **_kwargs: waited.append(expression) or True,
+    )
+
+    page.navigate("/chat")
+
+    assert navigated == [("Page.navigate", {"url": f"{ORIGIN}/chat"})]
+    assert any('location.pathname === "/chat"' in expression for expression in waited)
+
+
 def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
     rendered = {"new_reasoning": 50, "followup_reasoning": 50}
     gates = {

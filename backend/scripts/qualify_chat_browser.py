@@ -176,7 +176,9 @@ class ChromePage(AbstractContextManager):
 
     def navigate(self, path: str) -> None:
         self.command("Page.navigate", {"url": f"{ORIGIN}{path}"})
+        encoded_path = json.dumps(path)
         self.wait_for(
+            f"location.pathname === {encoded_path} && "
             "document.readyState === 'complete' && "
             "Boolean(document.querySelector('textarea[role=combobox]'))",
             timeout=30,
