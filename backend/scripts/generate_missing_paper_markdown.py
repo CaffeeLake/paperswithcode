@@ -616,6 +616,7 @@ def main() -> None:
             attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
             allow_missing_images = should_omit_missing_images(prior, attempt_count)
             attempted_at = datetime.now(UTC)
+            paper_started = time.monotonic()
             failure = None
             try:
                 if args.stub_root:
@@ -659,6 +660,9 @@ def main() -> None:
                     "requested_version": entry["version"],
                     "version_fallback_attempted": not bool(args.stub_root),
                 }
+            result.setdefault(
+                "duration_seconds", round(time.monotonic() - paper_started, 3)
+            )
             result = status_record(
                 result,
                 prior=prior,
