@@ -27,25 +27,24 @@ describe("Header navigation", () => {
       </MemoryRouter>,
     );
 
-    const desktopLabels = within(screen.getByRole("navigation"))
-      .getAllByRole("link")
-      .map((link) => link.textContent);
-    expect(desktopLabels.slice(0, 3)).toEqual([
-      "Trending",
-      "Chat",
-      "Browse state-of-the-art",
-    ]);
+    const desktopLinks = within(screen.getByRole("navigation")).getAllByRole("link");
+    expect(desktopLinks[0]).toHaveAccessibleName("Trending");
+    expect(desktopLinks[1]).toHaveAccessibleName("Chat");
+    expect(desktopLinks[2]).toHaveAccessibleName("Browse state-of-the-art");
+    expect(within(desktopLinks[1]).getByText("New")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "New: Papers with Code CLI and Skill now available",
+    );
+    expect(within(screen.getByRole("status")).queryByRole("link", { name: "chat" }))
+      .not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Open menu" }));
     const mobilePanel = document.querySelector(".mobile-nav-panel");
     expect(mobilePanel).not.toBeNull();
-    const mobileLabels = within(mobilePanel as HTMLElement)
-      .getAllByRole("link")
-      .map((link) => link.textContent);
-    expect(mobileLabels.slice(0, 3)).toEqual([
-      "Trending",
-      "Chat",
-      "Browse state-of-the-art",
-    ]);
+    const mobileLinks = within(mobilePanel as HTMLElement).getAllByRole("link");
+    expect(mobileLinks[0]).toHaveAccessibleName("Trending");
+    expect(mobileLinks[1]).toHaveAccessibleName("Chat");
+    expect(mobileLinks[2]).toHaveAccessibleName("Browse state-of-the-art");
+    expect(within(mobileLinks[1]).getByText("New")).toBeVisible();
   });
 });

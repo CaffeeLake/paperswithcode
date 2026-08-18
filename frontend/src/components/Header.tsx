@@ -31,14 +31,21 @@ const FEEDBACK_URL =
   "https://github.com/huggingface/paperswithcode-feedback/issues";
 const PWC_CLI_URL = "https://github.com/huggingface/pwc-cli";
 
-const NAV_LINKS = [
+type HeaderNavLink = {
+  to: string;
+  label: string;
+  end: boolean;
+  badge?: string;
+};
+
+const NAV_LINKS: readonly HeaderNavLink[] = [
   { to: "/", label: "Trending", end: true },
   { to: "/tasks", label: "Browse state-of-the-art", end: false },
   { to: "/methods", label: "Methods", end: false },
   { to: "/conferences", label: "Conferences", end: false },
   { to: "/organizations", label: "Organizations", end: false },
   { to: "/submit", label: "Submit", end: false },
-] as const;
+];
 
 // Apple devices use Cmd as the primary modifier; everyone else (Windows,
 // Linux, ChromeOS, …) uses Ctrl. `navigator.userAgentData` is the modern
@@ -71,8 +78,8 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
     && (location.pathname === "/chat" || location.pathname.startsWith("/chat/"));
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
-  const navLinks = isChatEnabled()
-    ? [NAV_LINKS[0], { to: "/chat", label: "Chat", end: false } as const, ...NAV_LINKS.slice(1)]
+  const navLinks: readonly HeaderNavLink[] = isChatEnabled()
+    ? [NAV_LINKS[0], { to: "/chat", label: "Chat", end: false, badge: "New" }, ...NAV_LINKS.slice(1)]
     : NAV_LINKS;
 
   return (
@@ -86,14 +93,15 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             </span>
           </NavLink>
           <nav className="nav">
-            {navLinks.map(({ to, label, end }) => (
+            {navLinks.map(({ to, label, end, badge }) => (
               <NavLink
                 key={to}
                 to={to}
                 end={end}
-                className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
+                className={({ isActive }) => `nav-item${badge ? " nav-item-with-badge" : ""}${isActive ? " active" : ""}`}
               >
-                {label}
+                <span>{label}</span>
+                {badge && <span className="nav-new-badge" aria-hidden="true">{badge}</span>}
               </NavLink>
             ))}
           </nav>
@@ -146,8 +154,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           <a href={PWC_CLI_URL} target="_blank" rel="noreferrer">
             available
           </a>
-          <span> as well as </span>
-          <NavLink to="/chat">chat</NavLink>
         </div>
       </header>
       {mobileOpen && (
@@ -164,15 +170,16 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               <HeaderIcon name="search" size={14} />
               <span>Search papers, authors, domains…</span>
             </button>
-            {navLinks.map(({ to, label, end }) => (
+            {navLinks.map(({ to, label, end, badge }) => (
               <NavLink
                 key={to}
                 to={to}
                 end={end}
-                className="mobile-nav-link"
+                className={`mobile-nav-link${badge ? " mobile-nav-link-with-badge" : ""}`}
                 onClick={closeMobile}
               >
-                {label}
+                <span>{label}</span>
+                {badge && <span className="nav-new-badge" aria-hidden="true">{badge}</span>}
               </NavLink>
             ))}
             <a
