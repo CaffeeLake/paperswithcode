@@ -602,7 +602,10 @@ def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
 
 
 def staging_chat_routing_values(
-    *, enabled: bool, policy: str = "latency"
+    *,
+    enabled: bool,
+    policy: str = "latency",
+    preferred_providers: str = "fireworks",
 ) -> dict[str, str]:
     """Toggle only the independently reversible staging routing experiment."""
 
@@ -610,9 +613,18 @@ def staging_chat_routing_values(
     if enabled:
         values["PWC_CHAT_OPENROUTER_ROUTING_POLICY"] = policy
         if policy == "preferred_provider":
+            providers = ",".join(
+                provider.strip()
+                for provider in preferred_providers.split(",")
+                if provider.strip()
+            )
+            if not providers:
+                raise ValueError("preferred-provider routing requires provider slugs")
+            if len(providers) > 512:
+                raise ValueError("preferred-provider routing exceeds 512 characters")
             values.update(
                 {
-                    "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": "fireworks",
+                    "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": providers,
                     "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
                     "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
                 }
@@ -923,6 +935,11 @@ def main() -> int:
         choices=("latency", "preferred_provider", "price_performance"),
         default="latency",
     )
+    parser.add_argument(
+        "--staging-chat-preferred-providers",
+        default="fireworks",
+        help="comma-separated OpenRouter provider tags for the preferred-provider pilot",
+    )
     parser.add_argument("--staging-chat-payload-enable-only", action="store_true")
     parser.add_argument("--staging-chat-payload-disable-only", action="store_true")
     parser.add_argument(
@@ -989,6 +1006,7 @@ def main() -> int:
             values = staging_chat_routing_values(
                 enabled=args.staging_chat_routing_enable_only,
                 policy=args.staging_chat_routing_policy,
+                preferred_providers=args.staging_chat_preferred_providers,
             )
             label = "routing"
         else:

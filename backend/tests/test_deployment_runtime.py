@@ -2780,6 +2780,31 @@ def test_staging_chat_routing_toggle_selects_preferred_provider_profile():
     }
 
 
+def test_staging_chat_routing_toggle_accepts_an_explicit_preferred_provider():
+    assert configure_host_env.staging_chat_routing_values(
+        enabled=True,
+        policy="preferred_provider",
+        preferred_providers=" baseten/fp8 ",
+    ) == {
+        "PWC_CHAT_OPENROUTER_ROUTING_ENABLED": "true",
+        "PWC_CHAT_OPENROUTER_ROUTING_POLICY": "preferred_provider",
+        "PWC_CHAT_OPENROUTER_PREFERRED_PROVIDERS": "baseten/fp8",
+        "PWC_CHAT_OPENROUTER_MAX_PROMPT_PRICE_PER_MILLION_USD": "0.28",
+        "PWC_CHAT_OPENROUTER_MAX_COMPLETION_PRICE_PER_MILLION_USD": "0.56",
+    }
+
+
+def test_staging_chat_routing_toggle_rejects_empty_preferred_providers():
+    with pytest.raises(
+        ValueError, match="preferred-provider routing requires provider slugs"
+    ):
+        configure_host_env.staging_chat_routing_values(
+            enabled=True,
+            policy="preferred_provider",
+            preferred_providers=" , ",
+        )
+
+
 def test_staging_chat_routing_toggle_selects_price_performance_profile():
     assert configure_host_env.staging_chat_routing_values(
         enabled=True, policy="price_performance"
