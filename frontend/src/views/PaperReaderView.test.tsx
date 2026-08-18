@@ -135,7 +135,7 @@ describe("PaperReaderView", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
     renderReader();
 
-    const toggle = await screen.findByRole("button", { name: "Hide Chat" });
+    const toggle = await screen.findByRole("button", { name: "Hide chat" });
     const chatPanel = screen.getByRole("tabpanel", { name: "Chat" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
@@ -143,7 +143,7 @@ describe("PaperReaderView", () => {
 
     expect(chatPanel).toHaveClass("is-collapsed");
     expect(chatPanel).toHaveStyle({ width: "0px" });
-    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Open chat" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("region", { name: "Paper PDF" }))
       .toHaveAttribute("data-resize-active", "true");
   });

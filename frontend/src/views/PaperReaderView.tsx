@@ -345,7 +345,7 @@ export default function PaperReaderView() {
         aria-controls="reader-chat-panel"
         aria-expanded={!collapsed}
         onClick={() => setAssistantCollapsed(!collapsed)}
-      >{collapsed ? "Chat" : "Hide Chat"}</button>}
+      >{collapsed ? "Open chat" : "Hide chat"}</button>}
     </div>
   </div>;
 }
