@@ -82,6 +82,16 @@ class HFDailyCurationService:
             self.job_service.dispatch_next(self.db, self.settings)
         return self.status()
 
+    def retry_scheduled_job(self, job_id: uuid.UUID) -> dict:
+        """Retry one terminal scheduled stage through the shared durable queue."""
+        row = self.db.get(PaperCurationJob, job_id)
+        if row is None:
+            raise LookupError("Curation job not found")
+        if row.trigger != "hf-daily-cron":
+            raise ValueError("Only scheduled HF daily curation jobs may be retried")
+        retried = self.job_service.retry(self.db, row, self.settings)
+        return retried.model_dump(mode="json")
+
     def status(self) -> dict:
         state = self._state()
         oldest = (
