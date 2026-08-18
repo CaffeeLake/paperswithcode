@@ -223,6 +223,17 @@ class ChromePage(AbstractContextManager):
         )
         self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded}")
 
+    def assert_release(self, expected: str) -> None:
+        actual = self.evaluate(
+            "fetch('/health',{cache:'no-store'})"
+            ".then(response=>response.ok ? response.json() : null)"
+            ".then(payload=>payload?.release_id ?? null)"
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"Staging release changed during qualification: {actual or 'unknown'}"
+            )
+
     def send_turn(self, prompt: str) -> dict[str, Any]:
         before = int(
             self.evaluate("document.querySelectorAll('.chat-msg-assistant').length")
@@ -451,6 +462,7 @@ def main() -> int:
                 if remaining > 0:
                     time.sleep(remaining)
                 page.navigate("/chat")
+                page.assert_release(settings.release_id)
                 page.select_model(
                     selected_model, only_available=len(available_models) == 1
                 )
@@ -463,6 +475,7 @@ def main() -> int:
                 rendered["new_reasoning"] += int(new["reasoning"])
                 rendered["new_tool"] += int(new["tool"])
                 rendered["new_answer"] += int(new["answer"])
+                page.assert_release(settings.release_id)
                 followup = page.send_turn(
                     "Reason briefly, then restate that evidence in different words."
                 )

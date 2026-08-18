@@ -1,3 +1,5 @@
+import pytest
+
 from backend.scripts import qualify_chat_browser
 from backend.scripts.qualify_chat_browser import (
     CHAT_MODEL_STORAGE_KEY,
@@ -182,3 +184,11 @@ def test_browser_accepts_the_only_discovered_model_without_a_select(monkeypatch)
     assert any('[aria-label="Research model"]' in expression for expression in waited)
     assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in evaluated)
     assert not any("select.value" in expression for expression in evaluated)
+
+
+def test_browser_rejects_a_release_change(monkeypatch):
+    page = object.__new__(ChromePage)
+    monkeypatch.setattr(page, "evaluate", lambda _expression: "other-staging")
+
+    with pytest.raises(RuntimeError, match="Staging release changed"):
+        page.assert_release("expected-staging")
