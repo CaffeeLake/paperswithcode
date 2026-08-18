@@ -163,6 +163,10 @@ describe("PapersListView repository scopes", () => {
 
     renderView("/papers");
 
+    expect(paperParams).toHaveBeenLastCalledWith(expect.objectContaining({
+      order_by: "trending",
+    }));
+    expect(screen.getByRole("button", { name: "trending" })).toHaveClass("active");
     expect(screen.getByRole("button", { name: "Has code" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
   });
