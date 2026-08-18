@@ -75,7 +75,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const isReaderRoute = location.pathname.startsWith("/pdf/");
-  const isChatRoute = location.pathname === "/chat" || location.pathname.startsWith("/chat/");
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
   const navLinks: readonly HeaderNavLink[] = isChatEnabled()
@@ -84,7 +83,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
 
   return (
     <>
-      <header className={`app-header${isChatRoute ? " app-header-chat" : ""}`}>
+      <header className="app-header">
         <div className="app-header-inner">
           <NavLink to="/" className="brand" onClick={closeMobile}>
             <span className="brand-mark"></span>
