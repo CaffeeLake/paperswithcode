@@ -14,7 +14,7 @@ VALUES (
     'Image Dehazing',
     'image-dehazing',
     'Image dehazing recovers a clear image from an input degraded by atmospheric haze or fog, restoring visibility, contrast, and color while preserving scene structure. It is a subtask of [Image Restoration](/tasks/image-restoration) and is commonly evaluated on paired synthetic or real hazy and haze-free images.',
-    'image dehazing, single image dehazing, image dehaze, dehazing, haze removal, fog removal, atmospheric haze removal',
+    'image dehazing, single image dehazing, image dehaze, dehazing, haze removal, atmospheric haze removal',
     (SELECT area_id FROM tasks WHERE slug = 'image-restoration' LIMIT 1),
     (SELECT level + 1 FROM tasks WHERE slug = 'image-restoration' LIMIT 1),
     (SELECT id FROM tasks WHERE slug = 'image-restoration' LIMIT 1),
