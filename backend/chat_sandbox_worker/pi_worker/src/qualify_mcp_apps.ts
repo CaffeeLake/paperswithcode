@@ -64,7 +64,12 @@ try {
   while (Date.now() < deadline) {
     const names = created.session.getActiveToolNames();
     const server = status?.servers.find((entry) => entry.name === "excalidraw");
-    if (server?.status === "connected" && EXCALIDRAW_MODEL_TOOLS.every((name) => names.includes(name))) {
+    const view = status?.servers.find((entry) => entry.name === "excalidraw_view");
+    if (
+      server?.status === "connected"
+      && view?.status === "connected"
+      && EXCALIDRAW_MODEL_TOOLS.every((name) => names.includes(name))
+    ) {
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

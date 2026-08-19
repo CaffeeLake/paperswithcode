@@ -257,12 +257,15 @@ export class PiWorker {
     });
     await created.session.bindExtensions({ mode: "print" });
     created.extensionsResult.runtime.refreshTools();
-    this.mcpReadiness = await this.settleMcpReadiness(created.session);
-    if (excalidrawEnabled() && !this.mcpReadiness.ready) {
-      created.session.setActiveToolsByName(
-        created.session.getActiveToolNames().filter((name) => !isExcalidrawModelTool(name)),
-      );
+    this.mcpReadiness = await this.settleMcpReadiness(created.session, () => {
       created.extensionsResult.runtime.refreshTools();
+    });
+    if (excalidrawEnabled() && !this.mcpReadiness.ready) {
+      const withoutExcalidraw = () =>
+        created.session.getActiveToolNames().filter((name) => !isExcalidrawModelTool(name));
+      created.session.setActiveToolsByName(withoutExcalidraw());
+      created.extensionsResult.runtime.refreshTools();
+      created.session.setActiveToolsByName(withoutExcalidraw());
       const registered = [...created.session.getActiveToolNames()].sort();
       this.mcpReadiness = {
         ...this.mcpReadiness,
@@ -276,25 +279,30 @@ export class PiWorker {
     this.emit(run.request_id, { type: "_latency", phase: "agent_session_ready", elapsed_ms: Math.round(performance.now() - phaseStarted) });
   }
 
-  private async settleMcpReadiness(session: AgentSession): Promise<McpReadinessSnapshot> {
+  private async settleMcpReadiness(session: AgentSession, refreshTools: () => void): Promise<McpReadinessSnapshot> {
     const started = performance.now();
     const timeoutMs = 12_000;
     const snapshotOf = (timedOut = false): McpReadinessSnapshot => {
       const server = this.mcpStatus?.servers?.find((entry) => entry.name === "excalidraw");
+      const view = this.mcpStatus?.servers?.find((entry) => entry.name === "excalidraw_view");
+      const viewPending = view !== undefined && view.status !== "connected" && view.status !== "failed";
       return assessExcalidrawReadiness({
         enabled: excalidrawEnabled(),
-        serverStatus: server?.status,
+        serverStatus: viewPending ? "not-connected" : server?.status,
         activeTools: session.getActiveToolNames(),
         createViewDefinition: session.getToolDefinition("create_view") as { parameters?: unknown } | undefined,
         latencyMs: Math.round(performance.now() - started),
         timedOut,
       });
     };
+    const stillSettling = (snapshot: McpReadinessSnapshot) =>
+      snapshot.failure_class === "configured_not_connected" || snapshot.failure_class === "connected_missing_tools";
     if (!excalidrawEnabled()) return snapshotOf();
     const deadline = started + timeoutMs;
     let current = snapshotOf();
-    while (!current.ready && current.failure_class === "configured_not_connected" && performance.now() < deadline) {
+    while (!current.ready && stillSettling(current) && performance.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
+      refreshTools();
       current = snapshotOf();
     }
     if (!current.ready && current.failure_class === "configured_not_connected" && performance.now() >= deadline) {

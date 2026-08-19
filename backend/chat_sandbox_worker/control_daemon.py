@@ -330,7 +330,7 @@ def _serve_turn(
         stage = "worker_done_send"
         connection.sendall(worker_done)
         return session_id, agent_harness, agent
-    except BaseException:
+    except BaseException as exc:
         try:
             connection.sendall(
                 encode_frame(
@@ -339,6 +339,7 @@ def _serve_turn(
                         "type": "_control_failure",
                         "request_id": str(run["request_id"]),
                         "stage": stage,
+                        "error_class": type(exc).__name__[:64],
                     }
                 )
             )

@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "84"
+WORKER_CONTRACT_VERSION = "85"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 28
@@ -38,7 +38,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-bzOjkqrf9LbJxbMPMU1SFB"
+MODAL_IMAGE_ID = "im-dTCGUSfkR8lbShxOx4mPG8"
 # Production uses a distinct immutable image because Modal image IDs are scoped
 # to their environment.
 PRODUCTION_MODAL_IMAGE_ID = "im-Sbjgm1jjAJAqBo10ZtLY3w"

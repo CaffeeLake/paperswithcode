@@ -10,15 +10,34 @@ export type ExcalidrawTransport =
   | { url: string }
   | { command: string; args: string[] };
 
+export type ExcalidrawViewTransport = { command: string; args: string[] };
+
+export function mcpDirectToolsList(excalidraw: ExcalidrawTransport | false): string[] {
+  const tools = ["exa/search_web"];
+  if (!excalidraw) return tools;
+  if ("url" in excalidraw) {
+    tools.push("excalidraw/read_me", "excalidraw_view/create_view");
+  } else {
+    tools.push(...EXCALIDRAW_MODEL_TOOLS.map((tool) => `excalidraw/${tool}`));
+  }
+  return tools;
+}
+
 export function createWebMcpExtension(
   command = process.execPath,
   args = [new URL("./exa_mcp_server.js", import.meta.url).pathname],
   options?: {
     excalidraw?: ExcalidrawTransport | false;
+    excalidrawView?: ExcalidrawViewTransport;
     onStatus?: (snapshot: McpStatusSnapshot) => void;
   },
 ): ExtensionFactory {
   const excalidraw = options?.excalidraw === false ? false : (options?.excalidraw ?? (excalidrawEnabled() ? { url: EXCALIDRAW_ENDPOINT } : false));
+  const localView = options?.excalidrawView ?? {
+    command: process.execPath,
+    args: [new URL("./excalidraw_view_mcp_server.js", import.meta.url).pathname],
+  };
+  const remoteOnly = Boolean(excalidraw && "url" in excalidraw);
   const adapter = createMcpAdapter({
     config: {
       mcpServers: {
@@ -43,11 +62,27 @@ export function createWebMcpExtension(
             auth: false,
             oauth: false,
             httpTransport: "streamable-http",
-            directTools: [...EXCALIDRAW_MODEL_TOOLS],
+            // Remote create_view returns MCP App protocol payloads that crash
+            // the persistent worker.  Live URL transports keep read_me only;
+            // create_view is a local stdio ack.  Command fixtures already
+            // implement a tiny create_view, so they keep both tools.
+            directTools: remoteOnly ? ["read_me"] : [...EXCALIDRAW_MODEL_TOOLS],
             toolPrefix: "none",
-            includeTools: [...EXCALIDRAW_MODEL_TOOLS],
+            includeTools: remoteOnly ? ["read_me"] : [...EXCALIDRAW_MODEL_TOOLS],
             exposeResources: false,
-            requestTimeoutMs: 12_000,
+            requestTimeoutMs: remoteOnly ? 8_000 : 12_000,
+          },
+        } : {}),
+        ...(remoteOnly ? {
+          excalidraw_view: {
+            command: localView.command,
+            args: localView.args,
+            lifecycle: "eager",
+            directTools: ["create_view"],
+            toolPrefix: "none",
+            includeTools: ["create_view"],
+            exposeResources: false,
+            requestTimeoutMs: 4_000,
           },
         } : {}),
       },
@@ -67,7 +102,7 @@ export function createWebMcpExtension(
   });
   return (pi) => {
     const previous = process.env.MCP_DIRECT_TOOLS;
-    process.env.MCP_DIRECT_TOOLS = ["exa/search_web", ...(excalidraw ? EXCALIDRAW_MODEL_TOOLS.map((tool) => `excalidraw/${tool}`) : [])].join(",");
+    process.env.MCP_DIRECT_TOOLS = mcpDirectToolsList(excalidraw).join(",");
     try {
       adapter(pi);
       if (options?.onStatus) {

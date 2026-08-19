@@ -820,8 +820,9 @@ class WorkerTurnExecution:
                 raise item
             if item.get("type") == "_control_failure":
                 logger.warning(
-                    "persistent worker control failed stage=%s",
+                    "persistent worker control failed stage=%s error_class=%s",
                     item.get("stage"),
+                    item.get("error_class"),
                 )
                 raise SandboxError(
                     "sandbox_worker_failed",

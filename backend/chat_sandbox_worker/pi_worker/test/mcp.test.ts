@@ -10,13 +10,14 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { type McpStatusSnapshot } from "pi-mcp-adapter";
-import { createWebMcpExtension } from "../src/mcp.js";
+import { createWebMcpExtension, mcpDirectToolsList } from "../src/mcp.js";
 import { assessExcalidrawReadiness } from "../src/mcp_app_registry.js";
 import { createProvider } from "../src/provider.js";
 
 const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).pathname;
 const exaServer = new URL("../src/exa_mcp_server.ts", import.meta.url).pathname;
 const excalidrawFixture = new URL("./fixtures/excalidraw_mcp_server.ts", import.meta.url).pathname;
+const excalidrawView = new URL("../src/excalidraw_view_mcp_server.ts", import.meta.url).pathname;
 
 async function openSession(options: {
   tools: string[];
@@ -29,6 +30,7 @@ async function openSession(options: {
     retry: { enabled: false },
   });
   let status: McpStatusSnapshot | undefined;
+  const waitingForView = Boolean(options.excalidraw && "url" in options.excalidraw);
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir,
@@ -47,6 +49,9 @@ async function openSession(options: {
           ["--import", tsx, exaServer],
           {
             excalidraw: options.excalidraw ?? false,
+            ...(waitingForView
+              ? { excalidrawView: { command: process.execPath, args: ["--import", tsx, excalidrawView] } }
+              : {}),
             onStatus: (snapshot) => {
               status = snapshot;
             },
@@ -72,7 +77,14 @@ async function openSession(options: {
   const deadline = Date.now() + 8_000;
   while (options.excalidraw && Date.now() < deadline) {
     const server = status?.servers.find((entry) => entry.name === "excalidraw");
-    if (server && server.status !== "not-connected") break;
+    const view = status?.servers.find((entry) => entry.name === "excalidraw_view");
+    if (
+      server
+      && server.status !== "not-connected"
+      && (!waitingForView || (view && view.status !== "not-connected"))
+    ) {
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
     created.extensionsResult.runtime.refreshTools();
   }
@@ -133,8 +145,16 @@ test("Excalidraw connection failure omits the tools and keeps local research too
   try {
     created.extensionsResult.runtime.refreshTools();
     const names = created.session.getActiveToolNames();
+    assert.ok(names.includes("create_view"));
+    assert.equal(names.includes("read_me"), false);
+    assert.equal(status?.servers.find((entry) => entry.name === "excalidraw_view")?.status, "connected");
+    const definition = created.session.getToolDefinition("create_view") as { parameters?: { properties?: Record<string, unknown> } } | undefined;
+    assert.ok(definition?.parameters?.properties && "elements" in definition.parameters.properties);
     created.session.setActiveToolsByName(names.filter((name) => name !== "read_me" && name !== "create_view"));
     created.extensionsResult.runtime.refreshTools();
+    created.session.setActiveToolsByName(
+      created.session.getActiveToolNames().filter((name) => name !== "read_me" && name !== "create_view"),
+    );
     const active = created.session.getActiveToolNames().sort();
     assert.deepEqual(active.filter((name) => name === "read_me" || name === "create_view"), []);
     assert.ok(active.includes("search_web"));
@@ -163,4 +183,16 @@ test("a mismatched metadata cache cannot mark Excalidraw ready", async () => {
   });
   assert.equal(snapshot.ready, false);
   assert.equal(snapshot.failure_class, "configured_not_connected");
+});
+
+test("URL Excalidraw keeps create_view on a local ack server", () => {
+  assert.deepEqual(mcpDirectToolsList(false), ["exa/search_web"]);
+  assert.deepEqual(
+    mcpDirectToolsList({ url: "https://mcp.excalidraw.com/mcp" }),
+    ["exa/search_web", "excalidraw/read_me", "excalidraw_view/create_view"],
+  );
+  assert.deepEqual(
+    mcpDirectToolsList({ command: "node", args: ["fixture.js"] }),
+    ["exa/search_web", "excalidraw/read_me", "excalidraw/create_view"],
+  );
 });
