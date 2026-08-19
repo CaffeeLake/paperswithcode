@@ -1,7 +1,7 @@
 import React from "react";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { AppBlock } from "@/lib/chat";
-import { withFramedDiagram } from "./excalidrawCamera";
+import { withCenteredTitle } from "./excalidrawTitle";
 import {
   appsHostEnabled,
   excalidrawClient,
@@ -124,7 +124,7 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
       try {
         const parsed = JSON.parse(elements) as unknown;
         void host.sendToolInput({
-          arguments: { elements: Array.isArray(parsed) ? withFramedDiagram(parsed) : parsed },
+          arguments: { elements: Array.isArray(parsed) ? withCenteredTitle(parsed) : parsed },
         });
         void host.sendToolResult(blockRef.current.result as never);
       } catch {

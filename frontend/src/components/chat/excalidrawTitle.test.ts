@@ -8,56 +8,43 @@ describe("withCenteredTitle", () => {
     expect(withCenteredTitle(elements)).toEqual(elements);
   });
 
-  it("centers and shrinks a wide title over the diagram", () => {
-    const fitted = withCenteredTitle([
-      { id: "title", type: "text", x: 80, y: 20, width: 1180, height: 48, fontSize: 36, text: "RF-DETR: Weight-Sharing NAS for Real-Time Detection" },
-      { id: "box", type: "rectangle", x: 100, y: 120, width: 800, height: 400 },
-    ]);
-    const title = fitted[0] as { x: number; width: number; fontSize: number; textAlign: string };
-    expect(title.textAlign).toBe("center");
-    expect(title.width).toBe(800 - 32);
-    expect(title.x).toBe(100 + 16);
-    expect(title.fontSize).toBeCloseTo(36 * ((800 - 32) / 1180), 5);
-    expect(fitted[1]).toEqual({ id: "box", type: "rectangle", x: 100, y: 120, width: 800, height: 400 });
-  });
-
-  it("keeps a cameraUpdate when recentering the title", () => {
+  it("keeps the model camera and shrinks a wide title to fit inside it", () => {
     const camera = { type: "cameraUpdate", x: 0, y: 0, width: 800, height: 600 };
     const fitted = withCenteredTitle([
       camera,
       { id: "title", type: "text", x: 150, y: 10, fontSize: 24, text: "RF-DETR: Weight-Sharing NAS for Real-Time Detection" },
-      { id: "zone", type: "rectangle", x: 20, y: 90, width: 760, height: 210 },
-    ]);
-    expect(fitted[0]).toEqual(camera);
-    const title = fitted[1] as { x: number; width: number; textAlign: string };
-    expect(title.textAlign).toBe("center");
-    expect(title.width).toBe(760 - 32);
-    expect(title.x).toBe(20 + 16);
-  });
-
-  it("shrinks a long subtitle to the diagram body instead of the subtitle width", () => {
-    const fitted = withCenteredTitle([
-      { id: "title", type: "text", x: 80, y: 10, width: 400, height: 28, fontSize: 24, text: "DSpark" },
-      { id: "sub", type: "text", x: 40, y: 44, width: 1100, height: 20, fontSize: 14, text: "Speculative decoding: a light draft model proposes tokens, the big target verifies them in one forward pass" },
       { id: "box", type: "rectangle", x: 20, y: 90, width: 760, height: 210 },
     ]);
-    const title = fitted[0] as { x: number; width: number; textAlign: string };
-    const subtitle = fitted[1] as { x: number; width: number; textAlign: string };
-    expect(title.textAlign).toBe("center");
-    expect(title.width).toBe(400);
-    expect(subtitle.textAlign).toBe("center");
-    expect(subtitle.width).toBe(760 - 32);
-    expect(subtitle.x).toBe(20 + 16);
+    expect(fitted[0]).toEqual(camera);
+    const title = fitted[1] as { x: number; width: number; fontSize: number; textAlign: string; autoResize: boolean };
+    expect(title.textAlign).toBe("left");
+    expect(title.autoResize).toBe(false);
+    expect(title.width).toBeLessThanOrEqual(800 - 56);
+    expect(title.x).toBeGreaterThanOrEqual(28);
+    expect(title.x + title.width).toBeLessThanOrEqual(772);
+    expect(title.fontSize).toBeLessThan(24);
+    expect(fitted[2]).toEqual({ id: "box", type: "rectangle", x: 20, y: 90, width: 760, height: 210 });
   });
 
-  it("centers a fitting title without shrinking it", () => {
+  it("leaves a short title that already fits the camera", () => {
     const fitted = withCenteredTitle([
-      { id: "title", type: "text", x: 0, y: 10, width: 200, height: 24, fontSize: 20, text: "DFlash" },
-      { id: "box", type: "rectangle", x: 50, y: 80, width: 900, height: 200 },
+      { type: "cameraUpdate", x: 0, y: 0, width: 800, height: 600 },
+      { id: "title", type: "text", x: 200, y: 10, fontSize: 20, text: "DFlash" },
+      { id: "box", type: "rectangle", x: 50, y: 80, width: 700, height: 200 },
     ]);
-    const title = fitted[0] as { x: number; width: number; fontSize: number };
-    expect(title.width).toBe(200);
+    const title = fitted[1] as { x: number; fontSize: number; text?: string };
+    expect(title.x).toBe(200);
     expect(title.fontSize).toBe(20);
-    expect(title.x).toBe(50 + (900 - 200) / 2);
+  });
+
+  it("shrinks a long subtitle that would clip the camera", () => {
+    const fitted = withCenteredTitle([
+      { type: "cameraUpdate", x: 0, y: 0, width: 800, height: 600 },
+      { id: "sub", type: "text", x: 120, y: 48, fontSize: 15, text: "Speculative decoding: a light draft model proposes tokens, the big target verifies them in one pass" },
+    ]);
+    const subtitle = fitted[1] as { x: number; width: number; textAlign: string };
+    expect(subtitle.textAlign).toBe("left");
+    expect(subtitle.x).toBeGreaterThanOrEqual(28);
+    expect(subtitle.x + subtitle.width).toBeLessThanOrEqual(772);
   });
 });
