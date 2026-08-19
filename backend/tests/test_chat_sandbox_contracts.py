@@ -2606,6 +2606,12 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "never identify yourself as Pi or Claude" in prompt
     assert "direct network clients" in prompt
     assert "`command -v <name>` succeeds" in prompt
+    visual_instruction = (
+        "When `read_me` and `create_view` are available, use them any time the user asks\n"
+        "for a visual explanation or visualization."
+    )
+    assert visual_instruction in prompt
+    assert prompt.index("## Tool usage") < prompt.index(visual_instruction)
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
     assert "Never output a bare repository slug" in prompt
     assert "## Available research areas and representative tasks" in prompt
