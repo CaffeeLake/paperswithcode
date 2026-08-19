@@ -649,3 +649,57 @@ def test_worker_failure_classification_and_forced_cleanup():
     process = StubbornProcess()
     assert WORKER.stop_vllm(process) == "killed"
     assert process.killed is True
+
+
+def test_worker_gracefully_terminates_vllm():
+    class GracefulProcess:
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            assert timeout == WORKER.VLLM_SHUTDOWN_TIMEOUT_SECONDS
+            return 0
+
+        def kill(self):
+            raise AssertionError("graceful shutdown must not kill vLLM")
+
+    process = GracefulProcess()
+    assert WORKER.stop_vllm(process) == "terminated"
+    assert process.terminated is True
+
+
+def test_worker_startup_failure_writes_failed_checkpoint(tmp_path, monkeypatch):
+    content, _, manifest, _ = _write_stub_manifest(tmp_path, 1)
+
+    def fail_startup():
+        raise RuntimeError("vLLM startup failed")
+
+    monkeypatch.setattr(WORKER, "start_vllm", fail_startup)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(WORKER_SCRIPT),
+            "--manifest",
+            str(manifest),
+            "--content-root",
+            str(content),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="vLLM startup failed"):
+        WORKER.main()
+
+    progress = json.loads(
+        (content / "_jobs" / "progress" / "run-2" / "00000.json").read_text()
+    )
+    assert progress["status"] == "failed"
+    assert progress["processed_papers"] == 0
+    assert progress["fatal_error"] == "vLLM startup failed"
+    assert progress["cleanup_state"] == "not_started"
