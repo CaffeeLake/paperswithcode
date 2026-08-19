@@ -31,7 +31,7 @@ jobs:
           timeout 10 bash -c "cat < /dev/null > /dev/tcp/$VPS_HOST/22"
           ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-      - name: Refresh Artificial Analysis evaluations on VPS
+      - name: Refresh Artificial Analysis index evaluations on VPS
         env:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_HOST: ${{ secrets.VPS_HOST }}

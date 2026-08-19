@@ -19,7 +19,7 @@ executes them from a checkout. GitHub Actions invokes the installed
 | `5 * * * *` | `.github/workflows/scripts/hourly/sync_3d_arena.py` | Refresh paper-linked Elo results from the living 3D Arena leaderboard. |
 | `55 * * * *` | `.github/workflows/scripts/hourly/sync_tabarena.py` | Refresh paper-linked Elo results from the living TabArena model leaderboard. |
 | `15 * * * *` | `.github/workflows/scripts/hourly/sync_open_asr.py` | Discover unambiguous arXiv-backed models and refresh paper-linked WER and RTFx results from the living Open ASR Leaderboard. |
-| `35 * * * *` | `.github/workflows/scripts/hourly/sync_artificial_analysis.py` | Index missing reviewed model releases and refresh paper-linked Artificial Analysis Intelligence Index scores from the official API. |
+| `35 * * * *` | `.github/workflows/scripts/hourly/sync_artificial_analysis.py` | Index missing reviewed model releases and refresh paper-linked Artificial Analysis Intelligence and Agentic Index scores from the official API. |
 | `20 2 * * *` | `.github/workflows/scripts/daily/sync_hf_organizations.py` | Reconcile the strict featured HF organization manifest and append new paper links. |
 | `40 3 * * *` | `.github/workflows/scripts/daily/calculate_organization_trending_scores.py` | Snapshot organization momentum and refresh rolling 30-day ranks. |
 | `30 4 * * *` | `.github/workflows/scripts/daily/preload_thumbnails.py` | Generate and upload missing paper thumbnails to the HF bucket. |

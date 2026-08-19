@@ -146,8 +146,8 @@ COMMANDS: dict[str, Job] = {
         "scripts.hourly.sync_artificial_analysis",
         timeout="30m",
         idempotency=(
-            "index reviewed model releases and upsert Artificial Analysis scores "
-            "from validated API data"
+            "index reviewed model releases and upsert Artificial Analysis "
+            "Intelligence and Agentic Index scores from validated API data"
         ),
     ),
     "sync_programbench": job(

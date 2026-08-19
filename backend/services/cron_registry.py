@@ -485,7 +485,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     ),
     CronJobDefinition(
         id="sync_artificial_analysis",
-        display_name="Sync Artificial Analysis Intelligence Index",
+        display_name="Sync Artificial Analysis Indexes",
         category="hourly",
         schedule="35 * * * * (hourly)",
         script_path="hourly/sync_artificial_analysis.py",
@@ -507,7 +507,10 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    count(*) AS matched_evaluations
             FROM evaluations e
             JOIN datasets d ON d.id = e.dataset_id
-            WHERE d.slug = 'artificial-analysis-intelligence-index'
+            WHERE d.slug IN (
+                    'artificial-analysis-intelligence-index',
+                    'artificial-analysis-agentic-index'
+                  )
               AND e.best_metric = 'Score'
               AND e.external_source_url LIKE
                   'https://artificialanalysis.ai/models/%'

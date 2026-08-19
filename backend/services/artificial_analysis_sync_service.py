@@ -1,4 +1,4 @@
-"""Synchronize Artificial Analysis Intelligence Index results into PwC."""
+"""Synchronize Artificial Analysis Intelligence and Agentic Index results."""
 
 from __future__ import annotations
 
@@ -30,14 +30,50 @@ from backend.services.paper_ingestion_service import PaperIngestionService
 
 API_ENDPOINT = "https://artificialanalysis.ai/api/v2/language/models/free"
 SOURCE_URL_PREFIX = "https://artificialanalysis.ai/models/"
-DATASET_SLUG = "artificial-analysis-intelligence-index"
-TASK_SLUG = "agents"
 METRIC_NAME = "Score"
 MANAGED_METHODOLOGY_PREFIX = (
     "Managed by the Papers with Code Artificial Analysis live sync."
 )
-MIN_EXPECTED_MODELS = 100
-MAX_EXPECTED_MODELS = 1_000
+
+
+@dataclass(frozen=True)
+class ArtificialAnalysisIndex:
+    key: str
+    evaluation_key: str
+    dataset_slug: str
+    task_slug: str
+    label: str
+    min_expected_models: int
+    max_expected_models: int
+
+
+INDEXES: tuple[ArtificialAnalysisIndex, ...] = (
+    ArtificialAnalysisIndex(
+        key="intelligence",
+        evaluation_key="artificial_analysis_intelligence_index",
+        dataset_slug="artificial-analysis-intelligence-index",
+        task_slug="language-modeling",
+        label="Intelligence Index",
+        min_expected_models=100,
+        max_expected_models=1_000,
+    ),
+    ArtificialAnalysisIndex(
+        key="agentic",
+        evaluation_key="artificial_analysis_agentic_index",
+        dataset_slug="artificial-analysis-agentic-index",
+        task_slug="agents",
+        label="Agentic Index",
+        min_expected_models=20,
+        max_expected_models=1_000,
+    ),
+)
+INDEXES_BY_KEY = {index.key: index for index in INDEXES}
+INTELLIGENCE_INDEX = INDEXES_BY_KEY["intelligence"]
+AGENTIC_INDEX = INDEXES_BY_KEY["agentic"]
+DATASET_SLUG = INTELLIGENCE_INDEX.dataset_slug
+TASK_SLUG = INTELLIGENCE_INDEX.task_slug
+MIN_EXPECTED_MODELS = INTELLIGENCE_INDEX.min_expected_models
+MAX_EXPECTED_MODELS = INTELLIGENCE_INDEX.max_expected_models
 
 
 @dataclass(frozen=True)
@@ -190,7 +226,7 @@ MODEL_PAPER_IDENTITIES: dict[str, PaperIdentity] = {
 class ArtificialAnalysisEntry:
     slug: str
     name: str
-    score: float
+    scores: dict[str, float]
     release_date: date
 
 
@@ -215,6 +251,19 @@ class ArtificialAnalysisDiscovery:
 
 
 @dataclass
+class ArtificialAnalysisIndexStats:
+    fetched: int = 0
+    selected: int = 0
+    matched: int = 0
+    created: int = 0
+    updated: int = 0
+    missing_papers: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+@dataclass
 class ArtificialAnalysisSyncStats:
     fetched: int = 0
     selected: int = 0
@@ -223,9 +272,33 @@ class ArtificialAnalysisSyncStats:
     updated: int = 0
     indexed_papers: int = 0
     missing_papers: list[str] = field(default_factory=list)
+    indexes: dict[str, ArtificialAnalysisIndexStats] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return self.__dict__.copy()
+        payload = {
+            "fetched": self.fetched,
+            "selected": self.selected,
+            "matched": self.matched,
+            "created": self.created,
+            "updated": self.updated,
+            "indexed_papers": self.indexed_papers,
+            "missing_papers": self.missing_papers,
+        }
+        payload.update({key: stats.to_dict() for key, stats in self.indexes.items()})
+        return payload
+
+
+def _parse_score(raw_score: Any, *, slug: str, index: ArtificialAnalysisIndex) -> float:
+    if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
+        raise TypeError(
+            f"Artificial Analysis {index.label} score is invalid for {slug}"
+        )
+    score = float(raw_score)
+    if not math.isfinite(score) or not -100 <= score <= 100:
+        raise ValueError(
+            f"Artificial Analysis {index.label} score is out of bounds for {slug}"
+        )
+    return score
 
 
 def _parse_page(payload: Any) -> tuple[str, list[ArtificialAnalysisEntry], dict]:
@@ -249,29 +322,33 @@ def _parse_page(payload: Any) -> tuple[str, list[ArtificialAnalysisEntry], dict]
         slug = row.get("slug")
         name = row.get("name")
         evaluations = row.get("evaluations")
-        raw_score = (
-            evaluations.get("artificial_analysis_intelligence_index")
-            if isinstance(evaluations, dict)
-            else None
-        )
-        if raw_score is None:
+        scores: dict[str, float] = {}
+        for index in INDEXES:
+            raw_score = (
+                evaluations.get(index.evaluation_key)
+                if isinstance(evaluations, dict)
+                else None
+            )
+            if raw_score is None:
+                continue
+            if not isinstance(slug, str) or not slug or len(slug) > 255:
+                raise ValueError("Artificial Analysis row has an invalid slug")
+            if not isinstance(name, str) or not name or len(name) > 255:
+                raise ValueError(f"Artificial Analysis row {slug} has an invalid name")
+            scores[index.key] = _parse_score(raw_score, slug=slug, index=index)
+        if not scores:
             continue
         if not isinstance(slug, str) or not slug or len(slug) > 255:
             raise ValueError("Artificial Analysis row has an invalid slug")
         if not isinstance(name, str) or not name or len(name) > 255:
             raise ValueError(f"Artificial Analysis row {slug} has an invalid name")
-        if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
-            raise TypeError(f"Artificial Analysis score is invalid for {slug}")
-        score = float(raw_score)
-        if not math.isfinite(score) or not -100 <= score <= 100:
-            raise ValueError(f"Artificial Analysis score is out of bounds for {slug}")
         try:
             released = date.fromisoformat(row["release_date"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
                 f"Artificial Analysis release date is invalid for {slug}"
             ) from exc
-        entries.append(ArtificialAnalysisEntry(slug, name, score, released))
+        entries.append(ArtificialAnalysisEntry(slug, name, scores, released))
     return version, entries, pagination
 
 
@@ -322,19 +399,22 @@ def fetch_artificial_analysis_leaderboard(
         if owned_client:
             active_client.close()
 
-    if not MIN_EXPECTED_MODELS <= len(all_entries) <= MAX_EXPECTED_MODELS:
-        raise ValueError(
-            f"Artificial Analysis returned {len(all_entries)} scored models; expected "
-            f"{MIN_EXPECTED_MODELS}-{MAX_EXPECTED_MODELS}"
-        )
     slugs = [entry.slug for entry in all_entries]
     if len(slugs) != len(set(slugs)):
         raise ValueError("Artificial Analysis response contains duplicate model slugs")
-    missing = sorted(set(MODEL_PAPER_IDENTITIES) - set(slugs))
-    if missing:
-        raise ValueError(
-            f"Artificial Analysis is missing reviewed models: {','.join(missing)}"
-        )
+    for index in INDEXES:
+        scored = [entry.slug for entry in all_entries if index.key in entry.scores]
+        if not index.min_expected_models <= len(scored) <= index.max_expected_models:
+            raise ValueError(
+                f"Artificial Analysis {index.label} returned {len(scored)} scored "
+                f"models; expected {index.min_expected_models}-{index.max_expected_models}"
+            )
+        missing = sorted(set(MODEL_PAPER_IDENTITIES) - set(scored))
+        if missing:
+            raise ValueError(
+                f"Artificial Analysis {index.label} is missing reviewed models: "
+                f"{','.join(missing)}"
+            )
     return ArtificialAnalysisLeaderboard(version or "unknown", all_entries)
 
 
@@ -399,14 +479,20 @@ class ArtificialAnalysisSyncService:
     def __init__(self, db: Session):
         self.db = db
 
-    def _leaderboard_identity(self) -> tuple[Task, Dataset]:
-        task = self.db.query(Task).filter(Task.slug == TASK_SLUG).one_or_none()
+    def _leaderboard_identity(
+        self, index: ArtificialAnalysisIndex
+    ) -> tuple[Task, Dataset]:
+        task = self.db.query(Task).filter(Task.slug == index.task_slug).one_or_none()
         dataset = (
-            self.db.query(Dataset).filter(Dataset.slug == DATASET_SLUG).one_or_none()
+            self.db.query(Dataset)
+            .filter(Dataset.slug == index.dataset_slug)
+            .one_or_none()
         )
         metric = self.db.query(Metric).filter(Metric.name == METRIC_NAME).one_or_none()
         if task is None or dataset is None or metric is None:
-            raise RuntimeError("Artificial Analysis leaderboard is not configured")
+            raise RuntimeError(
+                f"Artificial Analysis {index.label} leaderboard is not configured"
+            )
         configured = (
             self.db.query(TaskDatasetMetric)
             .filter(
@@ -417,8 +503,102 @@ class ArtificialAnalysisSyncService:
             .one_or_none()
         )
         if configured is None:
-            raise RuntimeError("Artificial Analysis metric is not linked to the task")
+            raise RuntimeError(
+                f"Artificial Analysis {index.label} metric is not linked to the task"
+            )
         return task, dataset
+
+    def _sync_index(
+        self,
+        index: ArtificialAnalysisIndex,
+        leaderboard: ArtificialAnalysisLeaderboard,
+        *,
+        discovery: ArtificialAnalysisDiscovery,
+        now: datetime,
+        commit: bool,
+    ) -> ArtificialAnalysisIndexStats:
+        selected = [
+            entry
+            for entry in leaderboard.entries
+            if entry.slug in MODEL_PAPER_IDENTITIES and index.key in entry.scores
+        ]
+        if len(selected) != len(MODEL_PAPER_IDENTITIES):
+            raise ValueError(
+                f"Refusing to synchronize an incomplete reviewed model set for "
+                f"{index.label}"
+            )
+        stats = ArtificialAnalysisIndexStats(
+            fetched=sum(
+                1 for entry in leaderboard.entries if index.key in entry.scores
+            ),
+            selected=len(selected),
+        )
+        task, dataset = self._leaderboard_identity(index)
+        candidate_rows = (
+            self.db.query(Evaluation)
+            .filter(
+                Evaluation.task_id == task.id,
+                Evaluation.dataset_id == dataset.id,
+            )
+            .all()
+        )
+        rows_by_slug = {
+            row.external_source_url.removeprefix(SOURCE_URL_PREFIX): row
+            for row in candidate_rows
+            if (row.external_source_url or "").startswith(SOURCE_URL_PREFIX)
+        }
+        for entry in selected:
+            paper_id = discovery.papers.get(entry.slug)
+            if paper_id is None:
+                if commit:
+                    raise RuntimeError(f"No reviewed paper resolved for {entry.slug}")
+                stats.missing_papers.append(entry.slug)
+                continue
+            row = rows_by_slug.get(entry.slug)
+            if row is None:
+                row = Evaluation(
+                    paper_id=paper_id,
+                    task_id=task.id,
+                    dataset_id=dataset.id,
+                    model_name=entry.name,
+                )
+                self.db.add(row)
+                stats.created += 1
+            else:
+                stats.updated += 1
+            identity = MODEL_PAPER_IDENTITIES[entry.slug]
+            source_url = f"{SOURCE_URL_PREFIX}{entry.slug}"
+            row.paper_id = paper_id
+            row.model_name = entry.name
+            row.methodology = (
+                f"{MANAGED_METHODOLOGY_PREFIX} Artificial Analysis Data API v2 "
+                f"{index.label} {leaderboard.index_version}; fetched "
+                f"{now.isoformat()}. Score is stored exactly as returned by the API."
+            )
+            row.metrics = {METRIC_NAME: entry.scores[index.key]}
+            row.uses_additional_data = False
+            row.is_open = identity.is_open
+            row.best_metric = METRIC_NAME
+            row.evaluated_on = now.date()
+            row.external_source_url = source_url
+            row.source_url = source_url
+            row.external = True
+            row.updated_at = now
+            if (
+                self.db.query(PaperTask)
+                .filter(PaperTask.paper_id == paper_id, PaperTask.task_id == task.id)
+                .first()
+                is None
+            ):
+                self.db.add(
+                    PaperTask(paper_id=paper_id, task_id=task.id, source="auto")
+                )
+            stats.matched += 1
+        self.db.flush()
+        EvaluationService(self.db).recalculate_ranks(
+            task.id, dataset.id, metric_name=METRIC_NAME, commit=False
+        )
+        return stats
 
     def sync(
         self,
@@ -431,88 +611,25 @@ class ArtificialAnalysisSyncService:
         now = fetched_at or datetime.now(UTC)
         if now.tzinfo is None:
             now = now.replace(tzinfo=UTC)
-        selected = [
-            entry
-            for entry in leaderboard.entries
-            if entry.slug in MODEL_PAPER_IDENTITIES
-        ]
-        if len(selected) != len(MODEL_PAPER_IDENTITIES):
-            raise ValueError("Refusing to synchronize an incomplete reviewed model set")
         stats = ArtificialAnalysisSyncStats(
             fetched=len(leaderboard.entries),
-            selected=len(selected),
             indexed_papers=len(discovery.indexed_papers),
         )
         try:
-            task, dataset = self._leaderboard_identity()
-            candidate_rows = (
-                self.db.query(Evaluation)
-                .filter(
-                    Evaluation.task_id == task.id,
-                    Evaluation.dataset_id == dataset.id,
+            for index in INDEXES:
+                index_stats = self._sync_index(
+                    index,
+                    leaderboard,
+                    discovery=discovery,
+                    now=now,
+                    commit=commit,
                 )
-                .all()
-            )
-            rows_by_slug = {
-                row.external_source_url.removeprefix(SOURCE_URL_PREFIX): row
-                for row in candidate_rows
-                if (row.external_source_url or "").startswith(SOURCE_URL_PREFIX)
-            }
-            for entry in selected:
-                paper_id = discovery.papers.get(entry.slug)
-                if paper_id is None:
-                    if commit:
-                        raise RuntimeError(
-                            f"No reviewed paper resolved for {entry.slug}"
-                        )
-                    stats.missing_papers.append(entry.slug)
-                    continue
-                row = rows_by_slug.get(entry.slug)
-                if row is None:
-                    row = Evaluation(
-                        paper_id=paper_id,
-                        task_id=task.id,
-                        dataset_id=dataset.id,
-                        model_name=entry.name,
-                    )
-                    self.db.add(row)
-                    stats.created += 1
-                else:
-                    stats.updated += 1
-                identity = MODEL_PAPER_IDENTITIES[entry.slug]
-                source_url = f"{SOURCE_URL_PREFIX}{entry.slug}"
-                row.paper_id = paper_id
-                row.model_name = entry.name
-                row.methodology = (
-                    f"{MANAGED_METHODOLOGY_PREFIX} Artificial Analysis Data API v2 "
-                    f"Intelligence Index {leaderboard.index_version}; fetched "
-                    f"{now.isoformat()}. Score is stored exactly as returned by the API."
-                )
-                row.metrics = {METRIC_NAME: entry.score}
-                row.uses_additional_data = False
-                row.is_open = identity.is_open
-                row.best_metric = METRIC_NAME
-                row.evaluated_on = now.date()
-                row.external_source_url = source_url
-                row.source_url = source_url
-                row.external = True
-                row.updated_at = now
-                if (
-                    self.db.query(PaperTask)
-                    .filter(
-                        PaperTask.paper_id == paper_id, PaperTask.task_id == task.id
-                    )
-                    .first()
-                    is None
-                ):
-                    self.db.add(
-                        PaperTask(paper_id=paper_id, task_id=task.id, source="auto")
-                    )
-                stats.matched += 1
-            self.db.flush()
-            EvaluationService(self.db).recalculate_ranks(
-                task.id, dataset.id, metric_name=METRIC_NAME, commit=False
-            )
+                stats.indexes[index.key] = index_stats
+                stats.selected += index_stats.selected
+                stats.matched += index_stats.matched
+                stats.created += index_stats.created
+                stats.updated += index_stats.updated
+                stats.missing_papers.extend(index_stats.missing_papers)
             if commit:
                 self.db.commit()
             else:

@@ -1,6 +1,7 @@
 """Contract, paper-indexing, and idempotency tests for Artificial Analysis."""
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
@@ -34,12 +35,19 @@ def _compile_postgres_types_sqlite(_element, _compiler, **_kw):
     return "JSON"
 
 
-def _api_row(slug: str, score: float = 42.5):
+def _api_row(
+    slug: str, intelligence: float | None = 42.5, agentic: float | None = 41.0
+):
+    evaluations = {}
+    if intelligence is not None:
+        evaluations["artificial_analysis_intelligence_index"] = intelligence
+    if agentic is not None:
+        evaluations["artificial_analysis_agentic_index"] = agentic
     return {
         "slug": slug,
         "name": slug.replace("-", " ").title(),
         "release_date": "2026-08-01",
-        "evaluations": {"artificial_analysis_intelligence_index": score},
+        "evaluations": evaluations,
     }
 
 
@@ -57,7 +65,16 @@ class _Response:
 def test_fetches_every_api_page_and_validates_reviewed_models(monkeypatch):
     identity = aa.PaperIdentity(arxiv_id="2608.00001", is_open=True)
     monkeypatch.setattr(aa, "MODEL_PAPER_IDENTITIES", {"reviewed-model": identity})
-    monkeypatch.setattr(aa, "MIN_EXPECTED_MODELS", 2)
+    monkeypatch.setattr(
+        aa,
+        "INDEXES",
+        (
+            replace(
+                aa.INTELLIGENCE_INDEX, min_expected_models=2, max_expected_models=10
+            ),
+            replace(aa.AGENTIC_INDEX, min_expected_models=1, max_expected_models=10),
+        ),
+    )
     pages = [
         {
             "intelligence_index_version": "4.1",
@@ -67,7 +84,7 @@ def test_fetches_every_api_page_and_validates_reviewed_models(monkeypatch):
         {
             "intelligence_index_version": "4.1",
             "pagination": {"has_more": False, "total_pages": 2},
-            "data": [_api_row("other-model", 12.3)],
+            "data": [_api_row("other-model", intelligence=12.3, agentic=None)],
         },
     ]
 
@@ -87,6 +104,8 @@ def test_fetches_every_api_page_and_validates_reviewed_models(monkeypatch):
         "reviewed-model",
         "other-model",
     ]
+    assert leaderboard.entries[0].scores == {"intelligence": 42.5, "agentic": 41.0}
+    assert leaderboard.entries[1].scores == {"intelligence": 12.3}
 
 
 def _session() -> Session:
@@ -104,12 +123,27 @@ def _session() -> Session:
         ],
     )
     session = Session(engine)
-    task = Task(id=14, name="Agents", slug=aa.TASK_SLUG)
-    dataset = Dataset(id=581, name="Artificial Analysis", slug=aa.DATASET_SLUG)
+    language = Task(
+        id=5, name="Language Modeling", slug=aa.INTELLIGENCE_INDEX.task_slug
+    )
+    agents = Task(id=14, name="Agents", slug=aa.AGENTIC_INDEX.task_slug)
+    intelligence = Dataset(
+        id=581, name="Artificial Analysis", slug=aa.INTELLIGENCE_INDEX.dataset_slug
+    )
+    agentic = Dataset(
+        id=582, name="Artificial Analysis Agentic", slug=aa.AGENTIC_INDEX.dataset_slug
+    )
     metric = Metric(id=1, name=aa.METRIC_NAME, direction="higher_is_better")
-    session.add_all([task, dataset, metric])
-    session.add(
-        TaskDatasetMetric(task_id=task.id, dataset_id=dataset.id, metric_id=metric.id)
+    session.add_all([language, agents, intelligence, agentic, metric])
+    session.add_all(
+        [
+            TaskDatasetMetric(
+                task_id=language.id, dataset_id=intelligence.id, metric_id=metric.id
+            ),
+            TaskDatasetMetric(
+                task_id=agents.id, dataset_id=agentic.id, metric_id=metric.id
+            ),
+        ]
     )
     session.commit()
     return session
@@ -180,7 +214,7 @@ def test_sync_adopts_existing_row_and_is_idempotent(monkeypatch):
     session.add(
         Evaluation(
             paper_id=paper.id,
-            task_id=14,
+            task_id=5,
             dataset_id=581,
             model_name="Old label",
             metrics={aa.METRIC_NAME: 1.0},
@@ -198,7 +232,10 @@ def test_sync_adopts_existing_row_and_is_idempotent(monkeypatch):
         "4.1",
         [
             aa.ArtificialAnalysisEntry(
-                "reviewed-model", "Reviewed Model (high)", 42.5, date(2026, 8, 1)
+                "reviewed-model",
+                "Reviewed Model (high)",
+                {"intelligence": 42.5, "agentic": 39.0},
+                date(2026, 8, 1),
             )
         ],
     )
@@ -212,11 +249,21 @@ def test_sync_adopts_existing_row_and_is_idempotent(monkeypatch):
         leaderboard, discovery=discovery, fetched_at=now
     )
 
-    row = session.query(Evaluation).one()
-    assert first.updated == second.updated == 1
-    assert first.created == second.created == 0
-    assert row.model_name == "Reviewed Model (high)"
-    assert row.metrics == {aa.METRIC_NAME: 42.5}
-    assert row.is_open is True
-    assert row.source_url == source_url
-    assert session.query(PaperTask).count() == 1
+    intelligence_row = (
+        session.query(Evaluation).filter(Evaluation.dataset_id == 581).one()
+    )
+    agentic_row = session.query(Evaluation).filter(Evaluation.dataset_id == 582).one()
+    assert first.indexes["intelligence"].updated == 1
+    assert first.indexes["agentic"].created == 1
+    assert second.indexes["intelligence"].updated == 1
+    assert second.indexes["agentic"].updated == 1
+    assert first.created == 1
+    assert first.updated == 1
+    assert intelligence_row.model_name == "Reviewed Model (high)"
+    assert intelligence_row.metrics == {aa.METRIC_NAME: 42.5}
+    assert intelligence_row.task_id == 5
+    assert agentic_row.metrics == {aa.METRIC_NAME: 39.0}
+    assert agentic_row.task_id == 14
+    assert intelligence_row.is_open is True
+    assert intelligence_row.source_url == source_url
+    assert {row.task_id for row in session.query(PaperTask).all()} == {5, 14}

@@ -1,4 +1,4 @@
-"""Index reviewed model papers and refresh Artificial Analysis evaluations."""
+"""Index reviewed model papers and refresh Artificial Analysis index evaluations."""
 
 import argparse
 
