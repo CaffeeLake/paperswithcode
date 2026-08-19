@@ -208,8 +208,8 @@ OPENROUTER_UNAVAILABLE_MESSAGE = (
 )
 
 
-def _require_staging_openrouter(settings: Settings) -> None:
-    if settings.environment != "staging":
+def _require_openrouter_settings(settings: Settings) -> None:
+    if not settings.chat_enabled:
         raise HTTPException(status_code=404, detail="Not found")
 
 
@@ -528,7 +528,7 @@ async def get_openrouter_usage(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    _require_staging_openrouter(settings)
+    _require_openrouter_settings(settings)
     try:
         user_status = OpenRouterUserBudgetService(db, settings).status_percentage(
             user["hf_user_id"]
@@ -568,7 +568,7 @@ def get_openrouter_key_status(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    _require_staging_openrouter(settings)
+    _require_openrouter_settings(settings)
     try:
         return (
             OpenRouterBYOKService(db, settings).status(user["hf_user_id"]).public_dict()
@@ -594,7 +594,7 @@ async def connect_openrouter_key(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    _require_staging_openrouter(settings)
+    _require_openrouter_settings(settings)
     _require_recent_auth(request, user, settings)
     try:
         status = await OpenRouterBYOKService(db, settings).connect(
@@ -621,7 +621,7 @@ def set_openrouter_fallback(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    _require_staging_openrouter(settings)
+    _require_openrouter_settings(settings)
     if body.enabled:
         _require_recent_auth(request, user, settings)
     else:
@@ -644,7 +644,7 @@ def disconnect_openrouter_key(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    _require_staging_openrouter(settings)
+    _require_openrouter_settings(settings)
     _require_recent_auth(request, user, settings)
     OpenRouterBYOKService(db, settings).disconnect(user["hf_user_id"])
     db.commit()

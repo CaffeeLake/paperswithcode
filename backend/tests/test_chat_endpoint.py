@@ -374,15 +374,42 @@ def test_sandbox_spend_admin_status_preserves_qualification_scope(monkeypatch):
     assert exc_info.value.detail == "Unknown qualification"
 
 
-def test_production_openrouter_api_is_absent():
+def test_openrouter_key_api_is_absent_when_chat_is_disabled():
     with pytest.raises(Exception) as exc_info:
         chat_router.get_openrouter_key_status(
             user={"hf_user_id": "owner-1"},
             db=SimpleNamespace(),
-            settings=Settings(environment="production"),
+            settings=Settings(environment="production", chat_enabled=False),
         )
 
     assert exc_info.value.status_code == 404
+
+
+def test_production_openrouter_key_api_is_available_when_chat_is_enabled(monkeypatch):
+    class FakeService:
+        def __init__(self, *_args):
+            pass
+
+        def status(self, owner_id):
+            assert owner_id == "owner-1"
+            return SimpleNamespace(
+                public_dict=lambda: {
+                    "connected": False,
+                    "verified_at": None,
+                    "fallback_enabled": False,
+                }
+            )
+
+    monkeypatch.setattr(chat_router, "OpenRouterBYOKService", FakeService)
+    assert chat_router.get_openrouter_key_status(
+        user={"hf_user_id": "owner-1"},
+        db=SimpleNamespace(),
+        settings=Settings(environment="production", chat_enabled=True),
+    ) == {
+        "connected": False,
+        "verified_at": None,
+        "fallback_enabled": False,
+    }
 
 
 def test_delete_session_reports_success_only_after_durable_and_workspace_verification(
