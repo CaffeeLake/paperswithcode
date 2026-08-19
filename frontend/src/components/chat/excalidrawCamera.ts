@@ -1,5 +1,7 @@
-/** Padding around scene bounds so Excalifont glyphs are not clipped by the App's camera. */
-export const EXCALIDRAW_CAMERA_PADDING = 80;
+/** Minimum inset so Excalifont glyphs are not clipped. Extra empty space comes from
+ * matching the App's 4:3 frame, and is split equally around the drawing. */
+const MIN_PADDING = 24;
+const ASPECT = 4 / 3;
 
 type Camera = { x: number; y: number; width: number; height: number };
 
@@ -52,6 +54,40 @@ function union(left: Camera, right: Camera): Camera {
   };
 }
 
+export function paddingForBounds(bounds: Camera): number {
+  return Math.max(MIN_PADDING, Math.round(Math.max(bounds.width, bounds.height) * 0.03));
+}
+
+/** Expand padded content bounds to a centered 4:3 camera so the remote App does
+ * not add leftover space on only the right or bottom. */
+export function cameraForBounds(bounds: Camera): Camera {
+  const pad = paddingForBounds(bounds);
+  const padded = {
+    x: bounds.x - pad,
+    y: bounds.y - pad,
+    width: bounds.width + pad * 2,
+    height: bounds.height + pad * 2,
+  };
+  const ratio = padded.width / padded.height;
+  if (Math.abs(ratio - ASPECT) < 0.01) return padded;
+  if (ratio > ASPECT) {
+    const height = Math.round(padded.width * 3 / 4);
+    return {
+      x: padded.x,
+      y: padded.y - Math.round((height - padded.height) / 2),
+      width: padded.width,
+      height,
+    };
+  }
+  const width = Math.round(padded.height * 4 / 3);
+  return {
+    x: padded.x - Math.round((width - padded.width) / 2),
+    y: padded.y,
+    width,
+    height: padded.height,
+  };
+}
+
 /** The remote Excalidraw App defaults to a 1024×768 camera at the origin, which
  * clips titles that sit outside that rectangle. Inject a fitted `cameraUpdate`. */
 export function withFittedCamera(elements: unknown[]): unknown[] {
@@ -67,14 +103,5 @@ export function withFittedCamera(elements: unknown[]): unknown[] {
     bounds = bounds ? union(bounds, box) : box;
   }
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return elements;
-  return [
-    ...draw,
-    {
-      type: "cameraUpdate",
-      x: bounds.x - EXCALIDRAW_CAMERA_PADDING,
-      y: bounds.y - EXCALIDRAW_CAMERA_PADDING,
-      width: bounds.width + EXCALIDRAW_CAMERA_PADDING * 2,
-      height: bounds.height + EXCALIDRAW_CAMERA_PADDING * 2,
-    },
-  ];
+  return [...draw, { type: "cameraUpdate", ...cameraForBounds(bounds) }];
 }
