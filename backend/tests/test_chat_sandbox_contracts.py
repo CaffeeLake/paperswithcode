@@ -2641,9 +2641,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-LwUMhNX4o3o4pITCWj8bT7"
+    assert MODAL_IMAGE_ID == "im-ztn9DP8ENveyAUXaFqEHud"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-Sbjgm1jjAJAqBo10ZtLY3w"
-    assert WORKER_CONTRACT_VERSION == "81"
+    assert WORKER_CONTRACT_VERSION == "82"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2861,28 +2861,34 @@ def test_image_publication_initializes_modal_app(monkeypatch, capsys):
             events.append("lookup")
 
     class Run:
-        def __enter__(self):
+        async def __aenter__(self):
             events.append("enter")
 
-        def __exit__(self, *_args):
+        async def __aexit__(self, *_args):
             events.append("exit")
 
     class App:
-        def run(self):
-            return Run()
+        class run:
+            @staticmethod
+            def aio():
+                return Run()
 
     class Built:
         object_id = "im-test"
 
-        def publish(self, name):
-            assert events == ["lookup", "enter", "build"]
-            events.append(f"publish:{name}")
+        class publish:
+            @staticmethod
+            async def aio(name):
+                assert events == ["lookup", "enter", "build"]
+                events.append(f"publish:{name}")
 
     class Image:
-        def build(self, _app):
-            assert events == ["lookup", "enter"]
-            events.append("build")
-            return Built()
+        class build:
+            @staticmethod
+            async def aio(_app):
+                assert events == ["lookup", "enter"]
+                events.append("build")
+                return Built()
 
     monkeypatch.setattr(publish_image, "app", App())
     monkeypatch.setattr(publish_image, "image", Image())
