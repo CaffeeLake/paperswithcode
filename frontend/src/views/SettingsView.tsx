@@ -44,7 +44,12 @@ function openRouterErrorMessage(error: unknown, fallback: string): string {
 
 const SettingsView: React.FC = () => {
   const { user, isLoading: authLoading } = useAuth();
-  const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
+  const {
+    preferences,
+    setHideClosedSourceEvals,
+    canPersist,
+    isLoading: preferencesLoading,
+  } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
   const chatEnabled = isChatEnabled();
@@ -78,6 +83,16 @@ const SettingsView: React.FC = () => {
   const usage = usageQuery.data;
   const credential = credentialQuery.data;
   const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
+  const providerDataLoading = chatEnabled && Boolean(user) && (
+    modelsQuery.isLoading
+    || (!modelsQuery.isError && (
+      (huggingFaceEnabled && billingQuery.isLoading)
+      || (openRouterEnabled && (usageQuery.isLoading || credentialQuery.isLoading))
+    ))
+  );
+  const initialSettingsLoading = (
+    authLoading || preferencesLoading || theme === undefined || providerDataLoading
+  );
   const selectBillingAccountMutation = useMutation({
     mutationFn: (billTo: string | null) => (
       chatApi.selectInferenceBillingAccount(billTo)
@@ -158,6 +173,11 @@ const SettingsView: React.FC = () => {
         </div>
       </div>
 
+      {initialSettingsLoading ? (
+        <div className="settings-page-loading" role="status" aria-live="polite">
+          <span className="sr-only">Loading settings…</span>
+        </div>
+      ) : <div className="settings-page-content">
       {user && <section className="settings-section">
         <h2 className="settings-section-title">Catalog access</h2>
         <div className="settings-note settings-note-flush">
@@ -175,11 +195,7 @@ const SettingsView: React.FC = () => {
 
       {chatEnabled && <section className="settings-section">
         <h2 className="settings-section-title">Chat usage &amp; billing</h2>
-        {authLoading && !user ? (
-          <div className="settings-billing-loading" role="status" aria-live="polite">
-            Checking account…
-          </div>
-        ) : !user ? (
+        {!user ? (
           <div className="settings-note settings-note-flush">
             <span>
               Sign in to manage billing and credentials for the enabled chat providers.
@@ -187,10 +203,6 @@ const SettingsView: React.FC = () => {
             <div className="settings-note-action">
               <HfSignInButton returnTo="/settings" authorizeInference />
             </div>
-          </div>
-        ) : modelsQuery.isLoading ? (
-          <div className="settings-billing-loading" role="status">
-            Checking enabled chat providers…
           </div>
         ) : modelsQuery.isError ? (
           <div className="settings-billing-loading" role="alert">
@@ -205,8 +217,10 @@ const SettingsView: React.FC = () => {
               </div>
               {billing?.connected && <span className="settings-connected-badge">Connected</span>}
             </div>
-            {billingLoading && !billing ? (
-              <div className="settings-billing-loading">Checking Hugging Face billing…</div>
+            {billingQuery.isError ? (
+              <div className="settings-billing-loading" role="alert">
+                Hugging Face billing is currently unavailable.
+              </div>
             ) : billing?.connected ? <div className="settings-billing">
               <div className="settings-row-label">
                 {billing.bill_to
@@ -465,6 +479,7 @@ const SettingsView: React.FC = () => {
           </div>
         )}
       </section>
+      </div>}
     </div>
   );
 };

@@ -1,4 +1,8 @@
 /* settings feature styles */
+.settings-page-content,
+.settings-page-loading {
+  min-height: min(680px, calc(100vh - 180px));
+}
 .settings-section {
   border: 1px solid var(--hairline);
   border-radius: 10px;

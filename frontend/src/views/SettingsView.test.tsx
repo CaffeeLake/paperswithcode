@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ const mockAuth = vi.hoisted(() => ({
   },
 }));
 const mockCanPersist = vi.hoisted(() => ({ value: true }));
+const mockPreferencesLoading = vi.hoisted(() => ({ value: false }));
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
@@ -29,6 +30,7 @@ vi.mock("@/lib/preferencesContext", () => ({
     preferences: { hideClosedSourceEvals: false },
     setHideClosedSourceEvals: vi.fn(),
     canPersist: mockCanPersist.value,
+    isLoading: mockPreferencesLoading.value,
   }),
 }));
 
@@ -147,6 +149,7 @@ describe("SettingsView provider-aware chat billing", () => {
       isLoading: false,
     };
     mockCanPersist.value = true;
+    mockPreferencesLoading.value = false;
   });
 
   afterEach(() => {
@@ -186,6 +189,39 @@ describe("SettingsView provider-aware chat billing", () => {
     expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
     expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
     expect(await screen.findByText("96% left")).toBeVisible();
+  });
+
+  it("reveals settings atomically after all provider data is ready", async () => {
+    let resolveBilling!: (response: Response) => void;
+    let billingRequested = false;
+    const billingResponse = new Promise<Response>((resolve) => {
+      resolveBilling = resolve;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/chat/models")) {
+        return jsonResponse(providerModels(["huggingface"]));
+      }
+      if (url.includes("/me/inference-billing")) {
+        billingRequested = true;
+        return billingResponse;
+      }
+      return jsonResponse({ detail: "unexpected request" }, 500);
+    });
+
+    renderSettings();
+    await waitFor(() => expect(billingRequested).toBe(true));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading settings…");
+    expect(screen.queryByRole("heading", { name: "Catalog access" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+
+    act(() => resolveBilling(jsonResponse(personalStatus)));
+
+    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("lets a connected HF user select an organization billing account", async () => {
@@ -241,7 +277,7 @@ describe("SettingsView provider-aware chat billing", () => {
 
     renderSettings();
 
-    expect(screen.getByRole("status")).toHaveTextContent("Checking account…");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading settings…");
     expect(screen.queryByRole("button", { name: "Sign in with Hugging Face" })).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
