@@ -161,6 +161,7 @@ describe("SettingsView provider-aware chat billing", () => {
     expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
     expect(await screen.findByText("Personal account · @nielsr")).toBeVisible();
+    expect(screen.queryByText("Re-sign in with Hugging Face")).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/me/inference-billing"))).toBe(true);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/chat/usage"))).toBe(false);
   });
