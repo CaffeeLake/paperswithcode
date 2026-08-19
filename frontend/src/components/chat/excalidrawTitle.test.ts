@@ -21,6 +21,20 @@ describe("withCenteredTitle", () => {
     expect(fitted[1]).toEqual({ id: "box", type: "rectangle", x: 100, y: 120, width: 800, height: 400 });
   });
 
+  it("keeps a cameraUpdate when recentering the title", () => {
+    const camera = { type: "cameraUpdate", x: 0, y: 0, width: 800, height: 600 };
+    const fitted = withCenteredTitle([
+      camera,
+      { id: "title", type: "text", x: 150, y: 10, fontSize: 24, text: "RF-DETR: Weight-Sharing NAS for Real-Time Detection" },
+      { id: "zone", type: "rectangle", x: 20, y: 90, width: 760, height: 210 },
+    ]);
+    expect(fitted[0]).toEqual(camera);
+    const title = fitted[1] as { x: number; width: number; textAlign: string };
+    expect(title.textAlign).toBe("center");
+    expect(title.width).toBe(760 - 32);
+    expect(title.x).toBe(20 + 16);
+  });
+
   it("centers a fitting title without shrinking it", () => {
     const fitted = withCenteredTitle([
       { id: "title", type: "text", x: 0, y: 10, width: 200, height: 24, fontSize: 20, text: "DFlash" },

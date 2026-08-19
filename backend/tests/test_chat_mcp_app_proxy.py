@@ -190,6 +190,141 @@ def test_frontend_host_uses_same_origin_proxy_path():
         / "frontend/src/components/chat/mcpAppRegistry.ts"
     ).read_text(encoding="utf-8")
     assert 'EXCALIDRAW_HOST_PATH = "/api/v1/chat/mcp-apps/excalidraw"' in source
+    assert (
+        'EXCALIDRAW_HOST_HTML_PATH = "/api/v1/chat/mcp-apps/excalidraw/html"' in source
+    )
     assert "hostMcpUrl()" in source
+    assert "loadExcalidrawAppHtml()" in source
     assert 'credentials: "include"' in source
     assert "new URL(EXCALIDRAW_ENDPOINT)" not in source
+
+
+HTML_PATH = f"{PROXY_PATH}/html"
+APP_HTML = "<!DOCTYPE html><html><body>" + ("diagram" * 200) + "</body></html>"
+
+
+def _sse(payload: dict) -> bytes:
+    import json
+
+    return (
+        f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+    )
+
+
+class _FakeHtmlResponse:
+    def __init__(self, status_code: int, content: bytes):
+        self.status_code = status_code
+        self.content = content
+        self.headers = httpx.Headers({"Content-Type": "text/event-stream"})
+
+
+class _FakeHtmlClient:
+    def __init__(self, **kwargs):
+        assert kwargs.get("follow_redirects") is False
+        self.calls: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def request(self, method, url, headers=None, content=None):
+        import json
+
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers, "content": content}
+        )
+        payload = json.loads(content or b"{}")
+        name = payload.get("method")
+        if name == "initialize":
+            return _FakeHtmlResponse(
+                200,
+                _sse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                            "serverInfo": {"name": "Excalidraw", "version": "1"},
+                        },
+                    }
+                ),
+            )
+        if name == "notifications/initialized":
+            return _FakeHtmlResponse(202, b"")
+        if name == "resources/read":
+            return _FakeHtmlResponse(
+                200,
+                _sse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "contents": [
+                                {
+                                    "uri": "ui://excalidraw/mcp-app.html",
+                                    "mimeType": "text/html;profile=mcp-app",
+                                    "text": APP_HTML,
+                                }
+                            ]
+                        },
+                    }
+                ),
+            )
+        raise AssertionError(f"unexpected MCP method {name}")
+
+
+def test_mcp_jsonrpc_result_parses_sse_and_json():
+    import json
+
+    sse = _sse({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+    assert chat_mcp_app_proxy.mcp_jsonrpc_result(sse) == {"ok": True}
+    raw = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}).encode()
+    assert chat_mcp_app_proxy.mcp_jsonrpc_result(raw) == {"ok": True}
+
+
+def test_html_endpoint_returns_cached_app_shell(monkeypatch):
+    chat_mcp_app_proxy.reset_excalidraw_app_html_cache()
+    clients: list[_FakeHtmlClient] = []
+
+    def factory(**kwargs):
+        client = _FakeHtmlClient(**kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(chat_mcp_app_proxy.httpx, "AsyncClient", factory)
+    with TestClient(_app(_settings())) as client:
+        first = client.get(
+            HTML_PATH,
+            headers={
+                "Origin": "https://testserver",
+                "sec-fetch-site": "same-origin",
+            },
+        )
+        second = client.get(
+            HTML_PATH,
+            headers={
+                "Origin": "https://testserver",
+                "sec-fetch-site": "same-origin",
+            },
+        )
+    assert first.status_code == 200
+    assert first.text == APP_HTML
+    assert first.headers["content-type"].startswith("text/html;profile=mcp-app")
+    assert second.content == first.content
+    assert len(clients) == 1
+    forwarded = {key.lower() for key in clients[0].calls[0]["headers"]}
+    assert "cookie" not in forwarded
+    assert "authorization" not in forwarded
+
+
+def test_html_endpoint_hidden_outside_staging():
+    chat_mcp_app_proxy.reset_excalidraw_app_html_cache()
+    with TestClient(_app(_settings(environment="production"))) as client:
+        response = client.get(
+            HTML_PATH,
+            headers={"Origin": "https://testserver", "sec-fetch-site": "same-origin"},
+        )
+    assert response.status_code == 404

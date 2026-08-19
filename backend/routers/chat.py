@@ -55,7 +55,11 @@ from backend.services.chat_feedback_service import (
 )
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_live_stream_service import live_chat_stream_registry
-from backend.services.chat_mcp_app_proxy import forward_excalidraw_mcp
+from backend.services.chat_mcp_app_proxy import (
+    APP_HTML_MIME,
+    fetch_excalidraw_app_html,
+    forward_excalidraw_mcp,
+)
 from backend.services.chat_paper_context_service import (
     ChatPaperContextService,
     PreparedPaperTurn,
@@ -448,6 +452,29 @@ def list_models(
     }
 
 
+def _require_mcp_apps_host(settings: Settings) -> None:
+    if (
+        not settings.chat_enabled
+        or not settings.chat_mcp_apps_host_enabled
+        or settings.environment != "staging"
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@router.get("/mcp-apps/excalidraw/html")
+async def excalidraw_app_html(
+    request: Request,
+    user: dict = Depends(require_user),
+    settings: Settings = Depends(get_settings),
+):
+    """Cached Excalidraw App shell for historical and live diagram frames."""
+    del user
+    _require_mcp_apps_host(settings)
+    _require_same_origin_csrf(request, settings)
+    html = await fetch_excalidraw_app_html()
+    return Response(content=html, media_type=APP_HTML_MIME)
+
+
 @router.api_route("/mcp-apps/excalidraw", methods=["GET", "POST", "DELETE"])
 async def proxy_excalidraw_mcp_app(
     request: Request,
@@ -456,12 +483,7 @@ async def proxy_excalidraw_mcp_app(
 ):
     """Same-origin App-host proxy. Staging-only; never forwards PwC cookies."""
     del user
-    if (
-        not settings.chat_enabled
-        or not settings.chat_mcp_apps_host_enabled
-        or settings.environment != "staging"
-    ):
-        raise HTTPException(status_code=404, detail="Not found")
+    _require_mcp_apps_host(settings)
     _require_same_origin_csrf(request, settings)
     return await forward_excalidraw_mcp(request)
 

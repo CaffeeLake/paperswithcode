@@ -52,4 +52,9 @@ describe("chat style ownership", () => {
     expect(globalStyles).toContain("width: var(--app-leading-column-width)");
     expect(featureStyles).toContain("width: var(--app-leading-column-width)");
   });
+
+  it("keeps inline Excalidraw frames at the App 4:3 aspect", () => {
+    expect(featureStyles).toContain("aspect-ratio: 4 / 3");
+    expect(featureStyles).toContain(".chat-mcp-app-fullscreen iframe { height: calc(100vh - 72px) !important; aspect-ratio: auto; }");
+  });
 });
