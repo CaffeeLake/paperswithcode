@@ -13,6 +13,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import (
+    EMPTY_EGRESS_POLICY_DIGEST,
+    egress_policy_digest,
+)
 from backend.models.database import ChatSandboxLease, ChatSandboxPool
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
@@ -218,6 +222,8 @@ class ChatSandboxCapacityRepository:
             and lease.image_version == self.settings.chat_modal_image_version
             and lease.worker_contract_version
             == self.settings.chat_worker_contract_version
+            and (lease.egress_policy_digest or EMPTY_EGRESS_POLICY_DIGEST)
+            == egress_policy_digest(self.settings)
             and lease.worker_generation is not None
         )
 
@@ -384,6 +390,7 @@ class ChatSandboxCapacityRepository:
                 app_release_id=self.settings.release_id,
                 image_version=self.settings.chat_modal_image_version,
                 worker_contract_version=self.settings.chat_worker_contract_version,
+                egress_policy_digest=egress_policy_digest(self.settings),
                 worker_generation=worker_generation,
                 state="starting",
                 lease_token_hash=token_hash,

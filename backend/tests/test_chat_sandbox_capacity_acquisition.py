@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.models.database import (
     ChatSandboxBudgetState,
     ChatSandboxCircuitEvent,
@@ -136,6 +137,7 @@ def _lease(
         image_version=settings.chat_modal_image_version,
         worker_contract_version=settings.chat_worker_contract_version,
         worker_generation=worker_generation,
+        egress_policy_digest=egress_policy_digest(settings),
         state=state,
         lease_token_hash=token_hash,
         lease_expires_at=expires_at,
@@ -511,7 +513,7 @@ def test_repository_missing_lease_is_start_eligible_without_mutation():
 
 @pytest.mark.parametrize(
     "mismatch",
-    ["image", "contract", "generation"],
+    ["image", "contract", "egress", "generation"],
 )
 def test_each_compatibility_mismatch_requires_provider_recovery(mismatch):
     settings = _settings()
@@ -525,6 +527,8 @@ def test_each_compatibility_mismatch_requires_provider_recovery(mismatch):
         lease.image_version = "im-old"
     elif mismatch == "contract":
         lease.worker_contract_version = "worker-old"
+    elif mismatch == "egress":
+        lease.egress_policy_digest = "0" * 64
     else:
         lease.worker_generation = None
     repository = ChatSandboxCapacityRepository(

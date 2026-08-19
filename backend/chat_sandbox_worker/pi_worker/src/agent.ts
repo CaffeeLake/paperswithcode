@@ -7,8 +7,16 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { PiEventAdapter, reasoningIsVisible, type PwCEvent } from "./events.js";
+import { type McpStatusSnapshot } from "pi-mcp-adapter";
 import { createWebMcpExtension } from "./mcp.js";
-import { excalidrawEnabled } from "./mcp_app_registry.js";
+import {
+  EXCALIDRAW_MODEL_TOOLS,
+  assessExcalidrawReadiness,
+  excalidrawEnabled,
+  isExcalidrawModelTool,
+  toolNameDigest,
+  type McpReadinessSnapshot,
+} from "./mcp_app_registry.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
 import { loadPromptAsset, renderPrompt } from "./prompt.js";
@@ -43,6 +51,8 @@ export class PiWorker {
   private prewarmedModel: string | undefined;
   private policyExtension: ReturnType<typeof pwcExtension> | undefined;
   private webMcpExtension: ReturnType<typeof createWebMcpExtension> | undefined;
+  private mcpStatus: McpStatusSnapshot | undefined;
+  private mcpReadiness: McpReadinessSnapshot | undefined;
   private activeProfile: string | undefined;
   private readonly policy = new PolicyController({
     maximumCalls: Number(process.env.PWC_CHAT_MAX_TOOL_CALLS ?? 12),
@@ -68,7 +78,15 @@ export class PiWorker {
     process.env.MCP_UI_VIEWER = "none";
     this.promptAsset = await loadPromptAsset();
     this.policyExtension = pwcExtension(this.policy);
-    this.webMcpExtension = createWebMcpExtension();
+    this.webMcpExtension = createWebMcpExtension(
+      process.execPath,
+      [new URL("./exa_mcp_server.js", import.meta.url).pathname],
+      {
+        onStatus: (snapshot) => {
+          this.mcpStatus = snapshot;
+        },
+      },
+    );
     if (process.env.PWC_CHAT_PI_PREWARM_ENABLED !== "true") return;
     const model = process.env.PWC_CHAT_PI_PREWARM_MODEL;
     if (!model) throw new Error("Pi prewarm model is missing");
@@ -231,7 +249,7 @@ export class PiWorker {
       modelRuntime: provider.runtime,
       model: provider.model,
       thinkingLevel: thinkingLevel(run.reasoning_effort),
-      tools: ["read", "bash", "search_web", ...(excalidrawEnabled() ? ["read_me", "create_view"] : [])],
+      tools: ["read", "bash", "search_web", ...(excalidrawEnabled() ? [...EXCALIDRAW_MODEL_TOOLS] : [])],
       excludeTools: ["edit", "write", "grep", "find", "ls", "ask_question"],
       resourceLoader: loader,
       settingsManager: settings,
@@ -239,9 +257,50 @@ export class PiWorker {
     });
     await created.session.bindExtensions({ mode: "print" });
     created.extensionsResult.runtime.refreshTools();
+    this.mcpReadiness = await this.settleMcpReadiness(created.session);
+    if (excalidrawEnabled() && !this.mcpReadiness.ready) {
+      created.session.setActiveToolsByName(
+        created.session.getActiveToolNames().filter((name) => !isExcalidrawModelTool(name)),
+      );
+      created.extensionsResult.runtime.refreshTools();
+      const registered = [...created.session.getActiveToolNames()].sort();
+      this.mcpReadiness = {
+        ...this.mcpReadiness,
+        registered_tool_names: registered,
+        registered_tool_digest: toolNameDigest(registered),
+      };
+    }
+    this.emit(run.request_id, { type: "_mcp_readiness", ...this.mcpReadiness });
     this.session = created.session;
     this.activeProfile = profile;
     this.emit(run.request_id, { type: "_latency", phase: "agent_session_ready", elapsed_ms: Math.round(performance.now() - phaseStarted) });
+  }
+
+  private async settleMcpReadiness(session: AgentSession): Promise<McpReadinessSnapshot> {
+    const started = performance.now();
+    const timeoutMs = 12_000;
+    const snapshotOf = (timedOut = false): McpReadinessSnapshot => {
+      const server = this.mcpStatus?.servers?.find((entry) => entry.name === "excalidraw");
+      return assessExcalidrawReadiness({
+        enabled: excalidrawEnabled(),
+        serverStatus: server?.status,
+        activeTools: session.getActiveToolNames(),
+        createViewDefinition: session.getToolDefinition("create_view") as { parameters?: unknown } | undefined,
+        latencyMs: Math.round(performance.now() - started),
+        timedOut,
+      });
+    };
+    if (!excalidrawEnabled()) return snapshotOf();
+    const deadline = started + timeoutMs;
+    let current = snapshotOf();
+    while (!current.ready && current.failure_class === "configured_not_connected" && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      current = snapshotOf();
+    }
+    if (!current.ready && current.failure_class === "configured_not_connected" && performance.now() >= deadline) {
+      return snapshotOf(true);
+    }
+    return current;
   }
 
   private mirrorNativeEntries(): void {

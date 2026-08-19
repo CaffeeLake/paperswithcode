@@ -19,8 +19,11 @@ from backend.chat_sandbox_worker.contract import (
     MODAL_APP_NAME,
     PROVIDER_OUTPUT_TOKEN_LIMIT,
 )
+from backend.chat_sandbox_worker.mcp_app_registry import (
+    egress_policy_digest,
+    sandbox_outbound_domains,
+)
 from backend.config import Settings
-from backend.services.chat_runtime_contract import dedicated_gateway_hostname
 
 ImageResolver = Callable[[str], Awaitable[object]]
 WebSocketConnector = Callable[..., Awaitable[object]]
@@ -110,6 +113,7 @@ def sandbox_environment(
         "PWC_CHAT_MCP_APPS_HOST_ENABLED": str(
             settings.chat_mcp_apps_host_enabled
         ).lower(),
+        "PWC_CHAT_EGRESS_POLICY_DIGEST": egress_policy_digest(settings),
     }
 
 
@@ -135,7 +139,7 @@ class ModalSandboxProviderAdapter:
         worker_generation: str | None = None,
     ) -> object:
         try:
-            gateway_host = dedicated_gateway_hostname(self.settings.chat_gateway_url)
+            outbound_domains = sandbox_outbound_domains(self.settings)
         except ValueError as error:
             raise SandboxError(
                 "gateway_unavailable", "The research gateway is not configured"
@@ -194,7 +198,7 @@ class ModalSandboxProviderAdapter:
             workdir="/workspace",
             cpu=(self.settings.chat_sandbox_cpu, cpu_limit),
             memory=(self.settings.chat_sandbox_memory_mib, memory_limit),
-            outbound_domain_allowlist=[gateway_host],
+            outbound_domain_allowlist=outbound_domains,
             inbound_cidr_allowlist=None if persistent_enabled else [],
             encrypted_ports=[],
             unencrypted_ports=[],

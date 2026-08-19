@@ -40,6 +40,7 @@ RUNTIME_FAILURE_PATTERNS = {
     "langfuse_initialization_failure": "chat Langfuse trace initialization failed",
     "langfuse_finalization_failure": "chat Langfuse trace finalization failed",
     "langfuse_client_failure": "chat Langfuse client initialization failed",
+    "excalidraw_mcp_unready": "chat Excalidraw MCP registration failed",
     "paper_curation_dispatch_pause": "paper curation dispatch paused",
     "paper_curation_dispatch_recovery": "paper curation dispatch resumed",
 }

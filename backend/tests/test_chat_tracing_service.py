@@ -205,6 +205,10 @@ def test_provider_request_trace_is_content_free_and_records_usage(monkeypatch):
         model="provider/model",
         provider_mode="openrouter_funded",
         reasoning_effort="low",
+        offered_tool_count=4,
+        offered_tool_names=["create_view", "read", "read_me", "search_web"],
+        offered_tool_digest="a" * 64,
+        mcp_provider_states={"excalidraw": "ready"},
     )
     trace.first_byte(125)
     trace.finish(
@@ -219,9 +223,17 @@ def test_provider_request_trace_is_content_free_and_records_usage(monkeypatch):
             provider="Baseten",
         ),
         status_code=200,
+        tool_call_returned=True,
     )
 
     assert client.root is not None and client.root.ended
+    assert client.root.fields["metadata"]["offered_tool_names"] == [
+        "create_view",
+        "read",
+        "read_me",
+        "search_web",
+    ]
+    assert client.root.fields["metadata"]["tool_call_returned"] is True
     assert "input" not in client.root.fields
     assert "output" not in client.root.fields
     assert client.root.fields["trace_context"] == {"trace_id": "b" * 32}

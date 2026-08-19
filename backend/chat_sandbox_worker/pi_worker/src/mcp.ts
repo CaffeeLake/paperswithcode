@@ -1,12 +1,24 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createMcpAdapter } from "pi-mcp-adapter";
-import { EXCALIDRAW_ENDPOINT, EXCALIDRAW_MODEL_TOOLS, excalidrawEnabled } from "./mcp_app_registry.js";
+import { createMcpAdapter, MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter";
+import {
+  EXCALIDRAW_ENDPOINT,
+  EXCALIDRAW_MODEL_TOOLS,
+  excalidrawEnabled,
+} from "./mcp_app_registry.js";
+
+export type ExcalidrawTransport =
+  | { url: string }
+  | { command: string; args: string[] };
 
 export function createWebMcpExtension(
   command = process.execPath,
   args = [new URL("./exa_mcp_server.js", import.meta.url).pathname],
+  options?: {
+    excalidraw?: ExcalidrawTransport | false;
+    onStatus?: (snapshot: McpStatusSnapshot) => void;
+  },
 ): ExtensionFactory {
-  const excalidraw = excalidrawEnabled();
+  const excalidraw = options?.excalidraw === false ? false : (options?.excalidraw ?? (excalidrawEnabled() ? { url: EXCALIDRAW_ENDPOINT } : false));
   const adapter = createMcpAdapter({
     config: {
       mcpServers: {
@@ -24,8 +36,13 @@ export function createWebMcpExtension(
           excalidraw: {
             // The adapter owns only model-visible calls.  Its built-in viewer
             // is loopback-only inside Modal and must never be projected.
-            url: EXCALIDRAW_ENDPOINT,
-            lifecycle: "lazy",
+            ...("url" in excalidraw
+              ? { url: excalidraw.url }
+              : { command: excalidraw.command, args: excalidraw.args }),
+            lifecycle: "eager",
+            auth: false,
+            oauth: false,
+            httpTransport: "streamable-http",
             directTools: [...EXCALIDRAW_MODEL_TOOLS],
             toolPrefix: "none",
             includeTools: [...EXCALIDRAW_MODEL_TOOLS],
@@ -44,6 +61,7 @@ export function createWebMcpExtension(
         elicitation: false,
         scriptMode: false,
         showStatusIcon: false,
+        autoAuth: false,
       },
     },
   });
@@ -52,6 +70,11 @@ export function createWebMcpExtension(
     process.env.MCP_DIRECT_TOOLS = ["exa/search_web", ...(excalidraw ? EXCALIDRAW_MODEL_TOOLS.map((tool) => `excalidraw/${tool}`) : [])].join(",");
     try {
       adapter(pi);
+      if (options?.onStatus) {
+        pi.events.on(MCP_STATUS_EVENT, (data: unknown) => {
+          options.onStatus?.(data as McpStatusSnapshot);
+        });
+      }
     } finally {
       if (previous === undefined) delete process.env.MCP_DIRECT_TOOLS;
       else process.env.MCP_DIRECT_TOOLS = previous;

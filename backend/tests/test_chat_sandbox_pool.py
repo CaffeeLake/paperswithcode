@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.chat_sandbox_worker.protocol import encode_frame
 from backend.config import Settings
 from backend.models.database import (
@@ -342,6 +343,7 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
         "release": "release-a",
         "image": "im-current",
         "contract": "14",
+        "egress": egress_policy_digest(settings),
     }
     with factory() as db:
         pool = db.execute(select(ChatSandboxPool)).scalar_one()

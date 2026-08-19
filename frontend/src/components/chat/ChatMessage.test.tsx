@@ -688,4 +688,36 @@ describe("AssistantMessage", () => {
 
     expect(container.querySelectorAll(".chat-caret")).toHaveLength(0);
   });
+
+  it("renders an Excalidraw App placeholder and keeps the textual answer", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: false,
+      blocks: [
+        {
+          kind: "app",
+          schema_version: 1,
+          instance_id: "app-1",
+          provider: "excalidraw",
+          server: "excalidraw",
+          tool: "create_view",
+          resource_uri: "ui://excalidraw/mcp-app.html",
+          status: "loading",
+          input: { elements: "[]" },
+          result: { content: [], structuredContent: {}, isError: false },
+          csp: {},
+          permissions: { clipboardWrite: true },
+          height: 525,
+        },
+        { kind: "answer", text: "This schematic compares the two methods.", done: true },
+      ],
+    });
+
+    expect(screen.getByRole("region", { name: "Interactive Excalidraw diagram" })).toBeVisible();
+    expect(screen.getByText("Visual explanation")).toBeVisible();
+    expect(screen.getByText(/processed by the remote Excalidraw MCP service/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry diagram" })).toBeVisible();
+    expect(screen.getByText("This schematic compares the two methods.")).toBeVisible();
+  });
 });

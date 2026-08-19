@@ -24,12 +24,14 @@ def test_runtime_failure_counts_never_return_raw_journal_content():
         "chat transcript mirror failed session_id=another-private-id",
         "chat research producer failed error=ConnectionClosedError",
         "POST /api/internal/chat-gateway/session-store 403 Forbidden",
+        "chat Excalidraw MCP registration failed failure_class=configured_not_connected",
     ]
 
     assert runtime_failure_counts(messages) == {
         "stream_persistence_failure": 1,
         "transcript_mirror_failure": 1,
         "session_store_forbidden": 1,
+        "excalidraw_mcp_unready": 1,
     }
 
 

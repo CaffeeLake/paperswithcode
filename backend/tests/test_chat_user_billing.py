@@ -10,7 +10,9 @@ from backend.chat_gateway_app import (
     _apply_openrouter_reasoning_policy,
     _byok_provider_error_code,
     _huggingface_provider_error_code,
+    _offered_tool_inventory,
     _optimize_initial_deepseek_payload,
+    _payload_contains_tool_use,
     _prefer_fastest_openrouter_provider,
     _provider_headers,
     _provider_target,
@@ -209,6 +211,56 @@ def test_initial_payload_optimization_removes_one_exact_candidate_at_a_time(
     assert removed == expected
     assert len(payload["system"]) == system_count
     assert len(payload["tools"]) == tool_count
+
+
+@pytest.mark.parametrize("provider_mode", ["huggingface", "openrouter_funded"])
+def test_gateway_inventory_offers_excalidraw_tools_without_capturing_schemas(
+    provider_mode,
+):
+    del provider_mode
+    payload = {
+        "tools": [
+            {
+                "name": "create_view",
+                "description": "secret diagram schema",
+                "input_schema": {"secret": True},
+            },
+            {"name": "read", "input_schema": {}},
+            {"name": "read_me", "input_schema": {"html": "<iframe>"}},
+            {"name": "search_web", "input_schema": {}},
+        ]
+    }
+
+    inventory = _offered_tool_inventory(payload)
+
+    assert inventory["offered_tool_names"] == [
+        "create_view",
+        "read",
+        "read_me",
+        "search_web",
+    ]
+    assert inventory["offered_tool_count"] == 4
+    assert "secret" not in str(inventory)
+    assert "iframe" not in str(inventory)
+    unique = _optimize_initial_deepseek_payload(
+        {
+            "tools": [
+                {"name": "read_me", "input_schema": {}},
+                {"name": "create_view", "input_schema": {}},
+            ]
+        },
+        "tool_duplicates",
+    )
+    assert unique == {"system_blocks": 0, "tools": 0}
+
+
+def test_gateway_detects_tool_use_without_retaining_payload_text():
+    assert _payload_contains_tool_use(
+        b'{"content":[{"type":"tool_use","name":"read_me"}]}'
+    )
+    assert not _payload_contains_tool_use(
+        b'{"content":[{"type":"text","text":"hello"}]}'
+    )
 
 
 def test_gateway_enforces_reasoning_effort_and_hides_reasoning():

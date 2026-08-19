@@ -9,17 +9,26 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { type McpStatusSnapshot } from "pi-mcp-adapter";
 import { createWebMcpExtension } from "../src/mcp.js";
+import { assessExcalidrawReadiness } from "../src/mcp_app_registry.js";
 import { createProvider } from "../src/provider.js";
 
-test("Pi exposes only the capability-backed Exa MCP search tool", async () => {
+const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).pathname;
+const exaServer = new URL("../src/exa_mcp_server.ts", import.meta.url).pathname;
+const excalidrawFixture = new URL("./fixtures/excalidraw_mcp_server.ts", import.meta.url).pathname;
+
+async function openSession(options: {
+  tools: string[];
+  excalidraw?: { command: string; args: string[] } | { url: string } | false;
+}) {
   const agentDir = await mkdtemp(path.join(tmpdir(), "pwc-pi-mcp-"));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   const settings = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
   });
-  const server = new URL("../src/exa_mcp_server.ts", import.meta.url).pathname;
-  const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).pathname;
+  let status: McpStatusSnapshot | undefined;
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir,
@@ -33,7 +42,16 @@ test("Pi exposes only the capability-backed Exa MCP search tool", async () => {
     extensionFactories: [
       {
         name: "pwc-exa-mcp",
-        factory: createWebMcpExtension(process.execPath, ["--import", tsx, server]),
+        factory: createWebMcpExtension(
+          process.execPath,
+          ["--import", tsx, exaServer],
+          {
+            excalidraw: options.excalidraw ?? false,
+            onStatus: (snapshot) => {
+              status = snapshot;
+            },
+          },
+        ),
         hidden: true,
       },
     ],
@@ -44,14 +62,26 @@ test("Pi exposes only the capability-backed Exa MCP search tool", async () => {
     cwd: process.cwd(),
     modelRuntime: provider.runtime,
     model: provider.model,
-    tools: ["search_web"],
+    tools: options.tools,
     resourceLoader: loader,
     settingsManager: settings,
     sessionManager: SessionManager.inMemory(process.cwd()),
   });
-  try {
-    await created.session.bindExtensions({ mode: "print" });
+  await created.session.bindExtensions({ mode: "print" });
+  created.extensionsResult.runtime.refreshTools();
+  const deadline = Date.now() + 8_000;
+  while (options.excalidraw && Date.now() < deadline) {
+    const server = status?.servers.find((entry) => entry.name === "excalidraw");
+    if (server && server.status !== "not-connected") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
     created.extensionsResult.runtime.refreshTools();
+  }
+  return { agentDir, created, status };
+}
+
+test("Pi exposes only the capability-backed Exa MCP search tool", async () => {
+  const { agentDir, created } = await openSession({ tools: ["search_web"], excalidraw: false });
+  try {
     assert.deepEqual(created.session.getActiveToolNames(), ["search_web"]);
     assert.deepEqual(created.session.getAllTools().map((tool) => tool.name), ["search_web"]);
     assert.match(
@@ -63,4 +93,74 @@ test("Pi exposes only the capability-backed Exa MCP search tool", async () => {
     created.session.dispose();
     await rm(agentDir, { recursive: true, force: true });
   }
+});
+
+test("successful Excalidraw discovery registers only model-visible tools", async () => {
+  const { agentDir, created, status } = await openSession({
+    tools: ["read", "bash", "search_web", "read_me", "create_view"],
+    excalidraw: { command: process.execPath, args: ["--import", tsx, excalidrawFixture] },
+  });
+  try {
+    created.extensionsResult.runtime.refreshTools();
+    const names = created.session.getActiveToolNames().sort();
+    assert.ok(names.includes("read_me"));
+    assert.ok(names.includes("create_view"));
+    assert.ok(names.includes("search_web"));
+    assert.ok(names.includes("read"));
+    assert.ok(names.includes("bash"));
+    assert.equal(names.includes("save_checkpoint"), false);
+    assert.equal(names.includes("export_to_excalidraw"), false);
+    const snapshot = assessExcalidrawReadiness({
+      enabled: true,
+      serverStatus: status?.servers.find((entry) => entry.name === "excalidraw")?.status,
+      activeTools: names,
+      createViewDefinition: created.session.getToolDefinition("create_view") as { parameters?: unknown } | undefined,
+    });
+    assert.equal(snapshot.ready, true);
+    assert.match(created.session.getToolDefinition("read_me")?.description ?? "", /Excalidraw/u);
+  } finally {
+    await created.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    created.session.dispose();
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("Excalidraw connection failure omits the tools and keeps local research tools", async () => {
+  const { agentDir, created, status } = await openSession({
+    tools: ["read", "bash", "search_web", "read_me", "create_view"],
+    excalidraw: { url: "https://127.0.0.1:1/mcp" },
+  });
+  try {
+    created.extensionsResult.runtime.refreshTools();
+    const names = created.session.getActiveToolNames();
+    created.session.setActiveToolsByName(names.filter((name) => name !== "read_me" && name !== "create_view"));
+    created.extensionsResult.runtime.refreshTools();
+    const active = created.session.getActiveToolNames().sort();
+    assert.deepEqual(active.filter((name) => name === "read_me" || name === "create_view"), []);
+    assert.ok(active.includes("search_web"));
+    assert.ok(active.includes("read"));
+    assert.ok(active.includes("bash"));
+    const snapshot = assessExcalidrawReadiness({
+      enabled: true,
+      serverStatus: status?.servers.find((entry) => entry.name === "excalidraw")?.status ?? "failed",
+      activeTools: active,
+    });
+    assert.equal(snapshot.ready, false);
+    assert.ok(snapshot.failure_class);
+  } finally {
+    await created.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    created.session.dispose();
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("a mismatched metadata cache cannot mark Excalidraw ready", async () => {
+  const snapshot = assessExcalidrawReadiness({
+    enabled: true,
+    serverStatus: "cached",
+    activeTools: ["create_view", "read_me", "search_web"],
+    createViewDefinition: { parameters: { type: "object", properties: { elements: { type: "string" } } } },
+  });
+  assert.equal(snapshot.ready, false);
+  assert.equal(snapshot.failure_class, "configured_not_connected");
 });

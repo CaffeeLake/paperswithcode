@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "excalidraw",
+      "endpoint": "https://mcp.excalidraw.com/mcp",
+      "hostname": "mcp.excalidraw.com",
+      "worker_flag": "chat_excalidraw_enabled",
+      "model_tools": ["read_me", "create_view"],
+      "app_tools": [
+        "export_to_excalidraw",
+        "save_checkpoint",
+        "read_checkpoint"
+      ],
+      "resource_uri": "ui://excalidraw/mcp-app.html"
+    }
+  ]
+}

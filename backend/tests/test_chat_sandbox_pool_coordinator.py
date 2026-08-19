@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.models.database import (
     ChatSandboxBudgetState,
     ChatSandboxCircuitEvent,
@@ -424,6 +425,7 @@ def _pool_tags(harness: _Harness, row: ChatSandboxPool) -> dict[str, str]:
         "release": row.app_release_id,
         "image": row.image_version,
         "contract": row.worker_contract_version,
+        "egress": row.egress_policy_digest,
     }
 
 
@@ -436,6 +438,7 @@ def _orphan_tags(harness: _Harness) -> dict[str, str]:
         "release": harness.settings.release_id,
         "image": harness.settings.chat_modal_image_version,
         "contract": harness.settings.chat_worker_contract_version,
+        "egress": egress_policy_digest(harness.settings),
     }
 
 
@@ -1007,6 +1010,7 @@ def test_replenish_creates_control_pings_and_lands_the_exact_spend_interval():
                 "release": harness.settings.release_id,
                 "image": harness.settings.chat_modal_image_version,
                 "contract": harness.settings.chat_worker_contract_version,
+                "egress": egress_policy_digest(harness.settings),
             },
             "worker_generation": pool.worker_generation,
         }

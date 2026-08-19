@@ -15,6 +15,7 @@ from typing import Literal, Protocol
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.services.chat_sandbox_capacity_repository import (
     CapacityUnavailable,
     ChatSandboxCapacityRepository,
@@ -551,6 +552,7 @@ class ChatSandboxAcquisitionCoordinator:
                         ).hexdigest()[:16],
                         "release": self.settings.release_id,
                         "image": self.settings.chat_modal_image_version,
+                        "egress": egress_policy_digest(self.settings),
                     },
                     worker_generation=claim.worker_generation,
                 )

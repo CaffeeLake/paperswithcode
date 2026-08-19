@@ -320,6 +320,7 @@ class ChatSandboxPoolCreationCoordinator:
             "release": self.settings.release_id,
             "image": self.settings.chat_modal_image_version,
             "contract": self.settings.chat_worker_contract_version,
+            "egress": reservation.compatibility.egress_policy_digest,
         }
 
     async def _resolve_landing(self, started: StartedBlank) -> LandingResolution:

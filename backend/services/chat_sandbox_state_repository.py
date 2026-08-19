@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.models.database import ChatSandboxLease, ChatSession
 
 LEASE_MAINTENANCE_BATCH_SIZE = 100
@@ -371,6 +372,7 @@ class ChatSandboxStateRepository:
         lease.app_release_id = self.settings.release_id
         lease.image_version = self.settings.chat_modal_image_version
         lease.worker_contract_version = self.settings.chat_worker_contract_version
+        lease.egress_policy_digest = egress_policy_digest(self.settings)
         lease.worker_generation = worker_generation
         lease.lease_token_hash = token_hash
         lease.lease_expires_at = now + timedelta(seconds=ready_timeout_seconds + 15)

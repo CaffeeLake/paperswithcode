@@ -1168,6 +1168,7 @@ class _ChatSchemaDB:
                 rows.extend(
                     [
                         ("chat_sandbox_leases", "worker_generation"),
+                        ("chat_sandbox_leases", "egress_policy_digest"),
                         ("chat_sandbox_pool", "modal_sandbox_id"),
                         ("chat_sandbox_pool", "worker_generation"),
                         ("chat_sandbox_pool", "billing_month"),
@@ -1178,6 +1179,7 @@ class _ChatSchemaDB:
                         ("chat_sandbox_pool", "reasoning_profile"),
                         ("chat_sandbox_pool", "prompt_digest"),
                         ("chat_sandbox_pool", "provider_adapter_contract"),
+                        ("chat_sandbox_pool", "egress_policy_digest"),
                         ("chat_sandbox_pool", "provider_create_ms"),
                         ("chat_sandbox_pool", "backend_control_connect_ms"),
                         ("chat_sandbox_pool", "broker_ready_ms"),
@@ -2436,6 +2438,7 @@ def test_common_chat_migrations_support_isolated_production_schema():
         "add_chat_paper_mentions.sql",
         "add_chat_primary_paper.sql",
         "add_chat_title_budget.sql",
+        "add_chat_sandbox_egress_policy.sql",
     )
 
     for name in migrations:
@@ -2467,6 +2470,21 @@ def test_chat_archiving_migration_is_additive_and_idempotent():
     assert "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ" in migration
     assert "WHERE archived_at IS NULL" in migration
     assert "DROP " not in migration
+
+
+def test_chat_sandbox_egress_policy_migration_is_environment_scoped_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_sandbox_egress_policy.sql"
+    ).read_text()
+
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
+    assert "egress_policy_digest VARCHAR(64) NOT NULL" in migration
+    assert "ADD COLUMN IF NOT EXISTS egress_policy_digest" in migration
+    assert "DROP " not in migration
+    assert (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945" in migration
+    )
 
 
 def test_chat_title_budget_migration_is_environment_isolated_and_idempotent():

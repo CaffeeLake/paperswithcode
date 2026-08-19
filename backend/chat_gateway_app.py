@@ -334,6 +334,27 @@ def _optimize_initial_deepseek_payload(
     return {"system_blocks": removed_system, "tools": removed_tools}
 
 
+def _offered_tool_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        names: list[str] = []
+    else:
+        names = sorted(
+            str(tool["name"])
+            for tool in tools
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        )
+    return {
+        "offered_tool_count": len(names),
+        "offered_tool_names": names,
+        "offered_tool_digest": hashlib.sha256(",".join(names).encode()).hexdigest(),
+    }
+
+
+def _payload_contains_tool_use(payload: bytes) -> bool:
+    return b'"type":"tool_use"' in payload or b'"type": "tool_use"' in payload
+
+
 def _apply_openrouter_reasoning_policy(
     payload: dict[str, Any], effort: str, *, show_reasoning: bool
 ) -> None:
@@ -890,6 +911,7 @@ async def messages(
         db.commit()
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
+    inventory = _offered_tool_inventory(payload)
     provider_trace = start_provider_request_trace(
         settings=settings,
         trace_id=trace_id,
@@ -903,6 +925,9 @@ async def messages(
             if settings.chat_openrouter_routing_enabled
             else "throughput"
         ),
+        offered_tool_count=inventory["offered_tool_count"],
+        offered_tool_names=inventory["offered_tool_names"],
+        offered_tool_digest=inventory["offered_tool_digest"],
     )
     upstream_headers = _provider_headers(
         provider_token,
@@ -931,6 +956,7 @@ async def messages(
             usage=OpenRouterUsageExtractor().result(),
             status_code=None,
             error_code="provider_transport_error",
+            tool_call_returned=False,
         )
         raise HTTPException(status_code=502, detail="Model provider failed") from None
     _record_gateway_timing(
@@ -966,9 +992,12 @@ async def messages(
 
     async def chunks():
         first_byte = True
+        saw_tool_use = False
         try:
             async for chunk in upstream.aiter_bytes():
                 extractor.feed(chunk)
+                if not saw_tool_use and _payload_contains_tool_use(chunk):
+                    saw_tool_use = True
                 if first_byte:
                     first_byte = False
                     elapsed_ms = round((time.perf_counter() - gateway_started) * 1000)
@@ -1001,6 +1030,7 @@ async def messages(
                     if upstream.status_code < 400
                     else f"provider_http_{upstream.status_code}"
                 ),
+                tool_call_returned=saw_tool_use,
             )
             logger.info(
                 "chat provider stream complete call_class=research turn=%s "
@@ -1048,5 +1078,6 @@ async def messages(
             if upstream.status_code < 400
             else f"provider_http_{upstream.status_code}"
         ),
+        tool_call_returned=_payload_contains_tool_use(body),
     )
     return Response(body, status_code=upstream.status_code, headers=headers)

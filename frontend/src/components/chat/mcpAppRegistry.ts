@@ -2,7 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export const EXCALIDRAW_ENDPOINT = "https://mcp.excalidraw.com/mcp";
+export const EXCALIDRAW_HOSTNAME = "mcp.excalidraw.com";
 export const EXCALIDRAW_RESOURCE_URI = "ui://excalidraw/mcp-app.html";
+export const EXCALIDRAW_MODEL_TOOLS = ["read_me", "create_view"] as const;
 export const EXCALIDRAW_APP_TOOLS = new Set([
   "export_to_excalidraw", "save_checkpoint", "read_checkpoint",
 ]);
@@ -12,14 +14,17 @@ const MAX_APP_SESSION_BYTES = 1024 * 1024;
 export interface McpAppProvider {
   id: "excalidraw";
   endpoint: typeof EXCALIDRAW_ENDPOINT;
+  hostname: typeof EXCALIDRAW_HOSTNAME;
   resourceUri: typeof EXCALIDRAW_RESOURCE_URI;
+  modelTools: readonly (typeof EXCALIDRAW_MODEL_TOOLS)[number][];
   appTools: ReadonlySet<string>;
 }
 
 export const MCP_APP_PROVIDERS: Readonly<Record<string, McpAppProvider>> = {
   excalidraw: {
-    id: "excalidraw", endpoint: EXCALIDRAW_ENDPOINT,
-    resourceUri: EXCALIDRAW_RESOURCE_URI, appTools: EXCALIDRAW_APP_TOOLS,
+    id: "excalidraw", endpoint: EXCALIDRAW_ENDPOINT, hostname: EXCALIDRAW_HOSTNAME,
+    resourceUri: EXCALIDRAW_RESOURCE_URI, modelTools: EXCALIDRAW_MODEL_TOOLS,
+    appTools: EXCALIDRAW_APP_TOOLS,
   },
 };
 

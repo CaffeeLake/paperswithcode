@@ -427,6 +427,7 @@ class ProviderRequestTrace:
         usage: Any,
         status_code: int | None,
         error_code: str | None = None,
+        tool_call_returned: bool | None = None,
     ) -> None:
         if self.closed:
             return
@@ -453,6 +454,8 @@ class ProviderRequestTrace:
             "generation_id": getattr(usage, "generation_id", None),
             "upstream_provider": getattr(usage, "provider", None),
         }
+        if tool_call_returned is not None:
+            metadata["tool_call_returned"] = tool_call_returned
         try:
             self.observation.update(
                 usage_details=usage_details or None,
@@ -481,8 +484,9 @@ class NullProviderRequestTrace:
         usage: Any,
         status_code: int | None,
         error_code: str | None = None,
+        tool_call_returned: bool | None = None,
     ) -> None:
-        del usage, status_code, error_code
+        del usage, status_code, error_code, tool_call_returned
 
 
 def start_provider_request_trace(
@@ -495,6 +499,10 @@ def start_provider_request_trace(
     provider_mode: str,
     reasoning_effort: str,
     routing_policy: str = "throughput",
+    offered_tool_count: int | None = None,
+    offered_tool_names: list[str] | None = None,
+    offered_tool_digest: str | None = None,
+    mcp_provider_states: dict[str, str] | None = None,
 ) -> ProviderRequestTrace | NullProviderRequestTrace:
     if not trace_id:
         return NullProviderRequestTrace()
@@ -511,6 +519,14 @@ def start_provider_request_trace(
             "reasoning_effort": reasoning_effort,
             "routing_policy": routing_policy,
         }
+        if offered_tool_count is not None:
+            metadata["offered_tool_count"] = offered_tool_count
+        if offered_tool_names is not None:
+            metadata["offered_tool_names"] = offered_tool_names
+        if offered_tool_digest is not None:
+            metadata["offered_tool_digest"] = offered_tool_digest
+        if mcp_provider_states is not None:
+            metadata["mcp_provider_states"] = mcp_provider_states
         observation = client.start_observation(
             trace_context={"trace_id": trace_id},
             name="provider-request",

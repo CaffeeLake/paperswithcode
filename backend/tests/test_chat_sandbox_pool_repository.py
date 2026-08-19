@@ -128,6 +128,7 @@ def _pool(
         provider_adapter_contract=(
             repository_compatibility(settings).provider_adapter_contract
         ),
+        egress_policy_digest=repository_compatibility(settings).egress_policy_digest,
         worker_generation=generation,
         app_release_id=settings.release_id,
         created_at=now - timedelta(minutes=2),
@@ -266,6 +267,7 @@ def _provider_tags(settings: Settings, row: ChatSandboxPool) -> dict[str, str]:
         "release": row.app_release_id,
         "image": row.image_version,
         "contract": row.worker_contract_version,
+        "egress": row.egress_policy_digest,
     }
 
 
@@ -294,6 +296,8 @@ def test_compatible_candidates_are_oldest_ready_first_and_release_agnostic():
     wrong_image.image_version = "im-other"
     wrong_contract = _pool(settings, sandbox_id="sb-wrong-contract")
     wrong_contract.worker_contract_version = "worker-v0"
+    wrong_egress = _pool(settings, sandbox_id="sb-wrong-egress")
+    wrong_egress.egress_policy_digest = "0" * 64
     wrong_resources = _pool(settings, sandbox_id="sb-wrong-resources")
     wrong_resources.cpu_limit = 2
     expiring = _pool(
@@ -310,6 +314,7 @@ def test_compatible_candidates_are_oldest_ready_first_and_release_agnostic():
                 previous_release,
                 expiring,
                 wrong_contract,
+                wrong_egress,
                 oldest,
                 wrong_resources,
             ]
@@ -792,6 +797,7 @@ def test_land_provider_creation_requires_and_lands_exact_reservation():
         "claim_generation",
         "image",
         "contract",
+        "egress",
         "release",
         "resources",
     ],
@@ -825,6 +831,8 @@ def test_stale_landing_cannot_overwrite_any_successor_identity(mutation):
             successor.image_version = "im-successor"
         elif mutation == "contract":
             successor.worker_contract_version = "worker-successor"
+        elif mutation == "egress":
+            successor.egress_policy_digest = "0" * 64
         elif mutation == "release":
             successor.app_release_id = "release-successor"
         elif mutation == "resources":

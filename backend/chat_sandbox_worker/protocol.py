@@ -28,6 +28,7 @@ class WorkerEventValidator:
         "_mirror_error",
         "_execution_telemetry",
         "_latency",
+        "_mcp_readiness",
         "usage",
         "reasoning_start",
         "reasoning_delta",

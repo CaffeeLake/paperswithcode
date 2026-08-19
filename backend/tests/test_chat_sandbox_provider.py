@@ -98,12 +98,55 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     assert options["cpu"] == (0.125, 1)
     assert options["memory"] == (512, 2048)
     assert options["outbound_domain_allowlist"] == ["gateway.example.test"]
+    assert options["env"]["PWC_CHAT_EXCALIDRAW_ENABLED"] == "false"
+    assert options["env"]["PWC_CHAT_EGRESS_POLICY_DIGEST"] == (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    )
     assert options["inbound_cidr_allowlist"] == []
     assert options["encrypted_ports"] == []
     assert options["unencrypted_ports"] == []
     assert options["include_oidc_identity_token"] is False
     assert options["env"]["PWC_CHAT_WORKER_GENERATION"] == "generation-a"
     assert options["env"]["PWC_CHAT_SHOW_REASONING"] == "true"
+
+
+def test_enabled_excalidraw_passes_reviewed_hostname_to_modal(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def lookup(name, *, create_if_missing):
+        return object()
+
+    async def resolve_image(_reference):
+        return object()
+
+    async def create(*_command, **options):
+        captured["options"] = options
+        return SimpleNamespace(object_id="sb-created")
+
+    monkeypatch.setattr(chat_sandbox_provider.modal.App, "lookup", _AsyncCall(lookup))
+    monkeypatch.setattr(
+        chat_sandbox_provider.modal.Sandbox,
+        "create",
+        _AsyncCall(create),
+    )
+    settings = _settings(
+        chat_persistent_worker_enabled=False,
+        chat_excalidraw_enabled=True,
+    )
+    provider = ModalSandboxProviderAdapter(settings, image_resolver=resolve_image)
+    asyncio.run(provider.create(name="chat-test", tags={"service": "pwc-chat"}))
+
+    options = captured["options"]
+    assert options["outbound_domain_allowlist"] == [
+        "gateway.example.test",
+        "mcp.excalidraw.com",
+    ]
+    assert options["env"]["PWC_CHAT_EXCALIDRAW_ENABLED"] == "true"
+    assert "OPENROUTER_API_KEY" not in options["env"]
+    assert "HF_TOKEN" not in options["env"]
+    digest = options["env"]["PWC_CHAT_EGRESS_POLICY_DIGEST"]
+    assert digest != "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    assert len(digest) == 64
 
 
 def test_pi_prewarm_environment_is_pool_only_and_contains_no_credential():

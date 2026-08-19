@@ -2564,6 +2564,23 @@ def test_worker_protocol_treats_transcript_mirror_failure_as_terminal():
     validator.accept({"type": "worker_done", "status": "complete"})
 
 
+def test_worker_protocol_accepts_content_free_mcp_readiness():
+    validator = WorkerEventValidator()
+    validator.accept(
+        {
+            "type": "_mcp_readiness",
+            "ready": False,
+            "failure_class": "configured_not_connected",
+            "enabled_provider_ids": ["excalidraw"],
+            "registered_tool_names": ["bash", "read", "search_web"],
+            "registration_latency_ms": 12,
+            "egress_policy_digest": "a" * 64,
+        }
+    )
+    validator.accept({"type": "done"})
+    validator.accept({"type": "worker_done", "status": "complete"})
+
+
 def test_worker_protocol_allows_terminal_less_correlated_cancellation():
     validator = WorkerEventValidator()
     with pytest.raises(ProtocolError, match="without a correlated cancellation"):
@@ -2647,9 +2664,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-qnCdvgKhTUYmdPs8kaKSSv"
+    assert MODAL_IMAGE_ID == "im-HTcQSTbBgWiLe033nhRWgp"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-Sbjgm1jjAJAqBo10ZtLY3w"
-    assert WORKER_CONTRACT_VERSION == "82"
+    assert WORKER_CONTRACT_VERSION == "83"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

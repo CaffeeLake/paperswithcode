@@ -15,6 +15,10 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.chat_sandbox_worker.mcp_app_registry import (
+    EMPTY_EGRESS_POLICY_DIGEST,
+    egress_policy_digest,
+)
 from backend.models.database import (
     ChatSandboxComputeInterval,
     ChatSandboxLease,
@@ -57,6 +61,7 @@ class PoolCompatibility:
     reasoning_profile: str = "generic"
     prompt_digest: str = "generic"
     provider_adapter_contract: str = "generic"
+    egress_policy_digest: str = EMPTY_EGRESS_POLICY_DIGEST
 
 
 @dataclass(frozen=True)
@@ -220,6 +225,7 @@ class ChatSandboxPoolRepository:
                 if pi_prewarm
                 else "generic"
             ),
+            egress_policy_digest=egress_policy_digest(self.settings),
         )
 
     def acquire_capacity_lock(self, db: Session, *, wait: bool = True) -> bool:
@@ -322,6 +328,7 @@ class ChatSandboxPoolRepository:
                 app_release_id=self.settings.release_id,
                 image_version=compatibility.image_version,
                 worker_contract_version=compatibility.worker_contract_version,
+                egress_policy_digest=compatibility.egress_policy_digest,
                 worker_generation=row.worker_generation,
                 state="ready",
                 last_activity_at=now,
@@ -415,6 +422,7 @@ class ChatSandboxPoolRepository:
                 reasoning_profile=compatibility.reasoning_profile,
                 prompt_digest=compatibility.prompt_digest,
                 provider_adapter_contract=compatibility.provider_adapter_contract,
+                egress_policy_digest=compatibility.egress_policy_digest,
                 worker_generation=reservation.worker_generation,
                 app_release_id=reservation.app_release_id,
                 claim_generation=reservation.claim_generation,
@@ -471,6 +479,7 @@ class ChatSandboxPoolRepository:
             or row.reasoning_profile != compatibility.reasoning_profile
             or row.prompt_digest != compatibility.prompt_digest
             or row.provider_adapter_contract != compatibility.provider_adapter_contract
+            or row.egress_policy_digest != compatibility.egress_policy_digest
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -514,6 +523,7 @@ class ChatSandboxPoolRepository:
             or row.reasoning_profile != compatibility.reasoning_profile
             or row.prompt_digest != compatibility.prompt_digest
             or row.provider_adapter_contract != compatibility.provider_adapter_contract
+            or row.egress_policy_digest != compatibility.egress_policy_digest
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -559,6 +569,7 @@ class ChatSandboxPoolRepository:
             or row.reasoning_profile != compatibility.reasoning_profile
             or row.prompt_digest != compatibility.prompt_digest
             or row.provider_adapter_contract != compatibility.provider_adapter_contract
+            or row.egress_policy_digest != compatibility.egress_policy_digest
             or row.app_release_id != reservation.app_release_id
             or row.cpu_request != compatibility.cpu_request
             or row.cpu_limit != compatibility.cpu_limit
@@ -699,6 +710,7 @@ class ChatSandboxPoolRepository:
                 or row.prompt_digest != compatibility.prompt_digest
                 or row.provider_adapter_contract
                 != compatibility.provider_adapter_contract
+                or row.egress_policy_digest != compatibility.egress_policy_digest
                 or row.cpu_request != compatibility.cpu_request
                 or row.cpu_limit != compatibility.cpu_limit
                 or row.memory_request_mib != compatibility.memory_request_mib
@@ -920,6 +932,7 @@ class ChatSandboxPoolRepository:
             and tags.get("release") == pool.app_release_id
             and tags.get("image") == pool.image_version
             and tags.get("contract") == pool.worker_contract_version
+            and tags.get("egress") == pool.egress_policy_digest
         )
         if (
             exact_identity
@@ -1043,6 +1056,7 @@ class ChatSandboxPoolRepository:
             ChatSandboxPool.prompt_digest == compatibility.prompt_digest,
             ChatSandboxPool.provider_adapter_contract
             == compatibility.provider_adapter_contract,
+            ChatSandboxPool.egress_policy_digest == compatibility.egress_policy_digest,
             ChatSandboxPool.cpu_request == compatibility.cpu_request,
             ChatSandboxPool.cpu_limit == compatibility.cpu_limit,
             ChatSandboxPool.memory_request_mib == compatibility.memory_request_mib,

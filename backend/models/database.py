@@ -2457,6 +2457,12 @@ class ChatSandboxLease(Base):
     app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
     image_version: Mapped[str] = mapped_column(String(255), nullable=False)
     worker_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    egress_policy_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        default="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    )
     worker_generation: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     state: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="starting"
@@ -2528,6 +2534,12 @@ class ChatSandboxPool(Base):
     )
     provider_adapter_contract: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default="generic"
+    )
+    egress_policy_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        default="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     )
     worker_generation: Mapped[str] = mapped_column(String(64), nullable=False)
     app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)

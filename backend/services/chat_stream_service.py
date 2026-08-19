@@ -1036,6 +1036,29 @@ class ChatStreamOrchestrator:
                     event.get("recovery_outcome"),
                 )
                 continue
+            if kind == "_mcp_readiness":
+                ready = event.get("ready") is True
+                failure_class = event.get("failure_class")
+                logger.info(
+                    "chat MCP readiness request_id=%s enabled=%s ready=%s "
+                    "failure_class=%s latency_ms=%s tool_count=%s "
+                    "egress_digest=%s",
+                    self.request_id,
+                    ",".join(event.get("enabled_provider_ids") or []),
+                    ready,
+                    failure_class or "none",
+                    event.get("registration_latency_ms"),
+                    len(event.get("registered_tool_names") or []),
+                    event.get("egress_policy_digest"),
+                )
+                if self.settings.chat_excalidraw_enabled and not ready:
+                    logger.warning(
+                        "chat Excalidraw MCP registration failed "
+                        "request_id=%s failure_class=%s",
+                        self.request_id,
+                        failure_class or "configured_not_connected",
+                    )
+                continue
             if kind == "usage":
                 usage = event.get("usage") or {}
                 token_count = (
