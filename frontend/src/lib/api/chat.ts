@@ -19,6 +19,13 @@ import { apiFetch, apiRequest } from "./request";
 
 export interface InferenceBillingStatus {
   connected: boolean;
+  account_type: string | null;
+  monthly_credits_usd: number | null;
+  pay_as_you_go: boolean;
+  usage_url: string;
+  token_url: string;
+  bill_to: string | null;
+  organizations: Array<{ name: string; display_name: string }>;
 }
 
 export class ChatApi {
@@ -100,6 +107,13 @@ export class ChatApi {
 
   getInferenceBilling(): Promise<InferenceBillingStatus> {
     return this.request("/me/inference-billing", { cache: "no-store" });
+  }
+
+  selectInferenceBillingAccount(billTo: string | null): Promise<InferenceBillingStatus> {
+    return this.request("/me/inference-billing", {
+      method: "PATCH",
+      body: JSON.stringify({ bill_to: billTo }),
+    });
   }
 
   prewarmPaperContext(routeId: string): Promise<void> {

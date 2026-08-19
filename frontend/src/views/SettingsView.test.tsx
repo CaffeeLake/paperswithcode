@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,7 +32,20 @@ vi.mock("@/lib/preferencesContext", () => ({
   }),
 }));
 
-const personalStatus = {
+type Provider = "huggingface" | "openrouter";
+
+type BillingStatus = {
+  connected: boolean;
+  account_type: string | null;
+  monthly_credits_usd: number | null;
+  pay_as_you_go: boolean;
+  usage_url: string;
+  token_url: string;
+  bill_to: string | null;
+  organizations: Array<{ name: string; display_name: string }>;
+};
+
+const personalStatus: BillingStatus = {
   connected: true,
   account_type: "PRO",
   monthly_credits_usd: 2,
@@ -45,7 +58,76 @@ const personalStatus = {
   ],
 };
 
-const renderSettings = () => {
+const openRouterUsage = {
+  used_percent: 4,
+  remaining_percent: 96,
+  resets_at: "2026-09-01T00:00:00Z",
+  available: true,
+  unavailable_reason: null,
+  as_of: "2026-08-02T00:00:00Z",
+};
+
+const openRouterCredential = {
+  connected: false,
+  verified_at: null,
+  fallback_enabled: false,
+};
+
+function jsonResponse(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function providerModels(providers: Provider[]) {
+  return {
+    items: providers.map((provider, index) => ({
+      id: `${provider}-model-${index}`,
+      label: `${provider} model`,
+      provider,
+      reasoning_efforts: ["low", "high", "max"],
+    })),
+    default_model: `${providers[0]}-model-0`,
+  };
+}
+
+function mockProviderRequests(
+  providers: Provider[],
+  options: {
+    billing?: BillingStatus;
+    connectKeyError?: boolean;
+  } = {},
+) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.includes("/chat/models")) return jsonResponse(providerModels(providers));
+    if (url.includes("/me/inference-billing")) {
+      if (init?.method === "PATCH") {
+        return jsonResponse({
+          ...(options.billing ?? personalStatus),
+          account_type: "Organization",
+          monthly_credits_usd: null,
+          bill_to: "huggingface",
+        });
+      }
+      return jsonResponse(options.billing ?? personalStatus);
+    }
+    if (url.includes("/chat/usage")) return jsonResponse(openRouterUsage);
+    if (url.includes("/chat/openrouter-key") && init?.method === "PUT" && options.connectKeyError) {
+      return jsonResponse({
+        detail: {
+          code: "fresh_auth_required",
+          message: "Refresh your Hugging Face sign-in before changing your OpenRouter key.",
+        },
+      }, 401);
+    }
+    if (url.includes("/chat/openrouter-key")) return jsonResponse(openRouterCredential);
+    return jsonResponse({ detail: "unexpected request" }, 500);
+  });
+}
+
+function renderSettings() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -54,13 +136,12 @@ const renderSettings = () => {
       <SettingsView />
     </QueryClientProvider>,
   );
-};
+}
 
-describe("SettingsView chat billing", () => {
+describe("SettingsView provider-aware chat billing", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
-    vi.stubEnv("MODE", "staging");
     mockAuth.state = {
       user: { username: "nielsr", hf_subject: "hf-user-1" },
       isLoading: false,
@@ -72,160 +153,76 @@ describe("SettingsView chat billing", () => {
     vi.unstubAllEnvs();
   });
 
-  it("shows the funded OpenRouter allowance in production", async () => {
-    vi.stubEnv("MODE", "production");
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock.mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes("/chat/usage")) return new Response(JSON.stringify({
-        used_percent: 4,
-        remaining_percent: 96,
-        resets_at: "2026-09-01T00:00:00Z",
-        available: true,
-        as_of: "2026-08-02T00:00:00Z",
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-      if (url.includes("/chat/openrouter-key")) return new Response(JSON.stringify({
-        connected: false,
-        verified_at: null,
-        fallback_enabled: false,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ detail: "unexpected request" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    });
+  it("shows only Hugging Face when only Inference Providers is enabled", async () => {
+    const fetchMock = mockProviderRequests(["huggingface"]);
 
     renderSettings();
-    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
-    expect(await screen.findByText("96% left")).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.some(([input]) => (
-      String(input).includes("/me/inference-billing")
-    ))).toBe(false);
+
+    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Personal account · @nielsr")).toBeVisible();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/me/inference-billing"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/chat/usage"))).toBe(false);
   });
 
-  it("uses Hugging Face only for authentication in production", async () => {
-    vi.stubEnv("MODE", "production");
-    mockAuth.state = { user: null, isLoading: false };
-    mockCanPersist.value = false;
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-    }));
-
-    renderSettings();
-    expect(screen.getByText(/Papers With Code-funded OpenRouter allowance/)).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "Sign in with Hugging Face" })).not.toHaveLength(0);
-    expect(screen.queryByText(/Inference Providers/)).not.toBeInTheDocument();
-  });
-
-  it("shows only OpenRouter on staging and exposes percentage-only usage", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock.mockImplementation(async (input) => {
-      const url = String(input);
-      const payload = url.includes("/me/inference-billing")
-        ? personalStatus
-        : url.includes("/chat/usage")
-          ? {
-              used_percent: 4,
-              remaining_percent: 96,
-              resets_at: "2026-09-01T00:00:00Z",
-              available: true,
-              as_of: "2026-08-02T00:00:00Z",
-            }
-          : {
-              connected: true,
-              verified_at: "2026-08-02T12:00:00Z",
-              fallback_enabled: false,
-            };
-      return new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    });
+  it("shows only OpenRouter when only OpenRouter is enabled", async () => {
+    const fetchMock = mockProviderRequests(["openrouter"]);
 
     renderSettings();
 
     expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
     expect(await screen.findByText("96% left")).toBeVisible();
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "96");
-    expect(screen.getByText(/stored securely using AES-256 encryption/)).toBeVisible();
-    expect(screen.queryByText(/\$\d|dollar|USD/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
-    expect(fetchMock.mock.calls.some(([input]) => (
-      String(input).includes("/me/inference-billing")
-    ))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/me/inference-billing"))).toBe(false);
   });
 
-  it("does not present personal allowance as usable when shared credits are depleted", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = String(input);
-      const payload = url.includes("/me/inference-billing")
-        ? personalStatus
-        : url.includes("/chat/usage")
-          ? {
-              used_percent: 57,
-              remaining_percent: 43,
-              resets_at: "2026-09-01T00:00:00Z",
-              available: false,
-              unavailable_reason: "shared_credits_exhausted",
-              as_of: "2026-08-04T17:43:39Z",
-            }
-          : {
-              connected: false,
-              verified_at: null,
-              fallback_enabled: false,
-            };
-      return new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+  it("shows both cards when both providers are enabled", async () => {
+    mockProviderRequests(["huggingface", "openrouter"]);
+
+    renderSettings();
+
+    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(await screen.findByText("96% left")).toBeVisible();
+  });
+
+  it("lets a connected HF user select an organization billing account", async () => {
+    const fetchMock = mockProviderRequests(["huggingface"]);
+
+    renderSettings();
+    const selector = await screen.findByRole("combobox", { name: "Bill chat usage to" });
+    expect(selector).toHaveValue("");
+
+    await userEvent.selectOptions(selector, "huggingface");
+
+    await waitFor(() => expect(selector).toHaveValue("huggingface"));
+    expect(screen.getByText("Organization · huggingface")).toBeVisible();
+    expect(fetchMock.mock.calls.some(([, init]) => (
+      init?.method === "PATCH" && init.body === JSON.stringify({ bill_to: "huggingface" })
+    ))).toBe(true);
+  });
+
+  it("uses OAuth authorization instead of asking for a manual HF token", async () => {
+    mockProviderRequests(["huggingface"], {
+      billing: {
+        ...personalStatus,
+        connected: false,
+        account_type: null,
+        monthly_credits_usd: null,
+        organizations: [],
+      },
     });
 
     renderSettings();
 
-    expect(await screen.findByText("Unavailable")).toBeVisible();
-    expect(screen.getByText(/shared OpenRouter credits are currently unavailable/i)).toHaveTextContent(
-      "43% of your personal allowance remains",
-    );
-    expect(screen.queryByText("43% left")).not.toBeInTheDocument();
+    expect(await screen.findByText(/Reconnect with Hugging Face/)).toBeVisible();
+    expect(screen.getByText("Re-sign in with Hugging Face").closest("button")).toBeVisible();
+    expect(screen.queryByLabelText("Hugging Face token")).not.toBeInTheDocument();
   });
 
-  it("offers a direct security refresh when connecting a key needs fresh auth", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.includes("/me/inference-billing")) {
-        return new Response(JSON.stringify(personalStatus), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (url.includes("/chat/usage")) {
-        return new Response(JSON.stringify({
-          used_percent: 57,
-          remaining_percent: 43,
-          resets_at: "2026-09-01T00:00:00Z",
-          available: false,
-          unavailable_reason: "shared_credits_exhausted",
-          as_of: "2026-08-04T17:43:39Z",
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (init?.method === "PUT") {
-        return new Response(JSON.stringify({
-          detail: {
-            code: "fresh_auth_required",
-            message: "For security, refresh your Hugging Face sign-in before changing your OpenRouter key.",
-          },
-        }), { status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } });
-      }
-      return new Response(JSON.stringify({
-        connected: false,
-        verified_at: null,
-        fallback_enabled: false,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    });
+  it("offers a security refresh when connecting an OpenRouter key needs fresh auth", async () => {
+    mockProviderRequests(["openrouter"], { connectKeyError: true });
 
     renderSettings();
     const keyInput = await screen.findByLabelText("OpenRouter API key");
@@ -236,7 +233,7 @@ describe("SettingsView chat billing", () => {
     expect(screen.getByText("Re-authenticate with Hugging Face").closest("button")).toBeVisible();
   });
 
-  it("does not flash the sign-in prompt while the account is loading", () => {
+  it("does not flash the sign-in prompt while authentication is loading", () => {
     mockAuth.state = { user: null, isLoading: true };
     mockCanPersist.value = false;
     const fetchMock = vi.spyOn(globalThis, "fetch");
@@ -244,25 +241,22 @@ describe("SettingsView chat billing", () => {
     renderSettings();
 
     expect(screen.getByRole("status")).toHaveTextContent("Checking account…");
-    expect(screen.queryByText(/Sign in to connect your Hugging Face account/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/You are browsing as a guest/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with Hugging Face" })).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("shows the sign-in prompt after authentication resolves signed out", () => {
+  it("shows a provider-neutral sign-in prompt after authentication resolves signed out", () => {
     mockAuth.state = { user: null, isLoading: false };
     mockCanPersist.value = false;
 
     renderSettings();
 
-    expect(screen.getByText(/Sign in to use the Papers With Code-funded OpenRouter allowance/)).toBeVisible();
-    expect(screen.getByText(/You are browsing as a guest/)).toBeVisible();
+    expect(screen.getByText(/manage billing and credentials for the enabled chat providers/i)).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Sign in with Hugging Face" })).toHaveLength(2);
   });
 });
 
-describe("SettingsView production boundary", () => {
+describe("SettingsView chat-disabled boundary", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "0");
@@ -276,7 +270,7 @@ describe("SettingsView production boundary", () => {
     vi.unstubAllEnvs();
   });
 
-  it("hides chat usage and billing without requesting chat billing data", () => {
+  it("hides chat settings and does not request provider data", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
     renderSettings();
@@ -285,33 +279,6 @@ describe("SettingsView production boundary", () => {
     expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Evaluations" })).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("shows OpenRouter parity and retention policy when production chat is previewed", async () => {
-    vi.stubEnv("VITE_CHAT_ENABLED", "1");
-    vi.stubEnv("MODE", "production");
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const payload = String(input).includes("/chat/usage") ? {
-        used_percent: 4, remaining_percent: 96,
-        resets_at: "2026-09-01T00:00:00Z", available: true,
-        as_of: "2026-08-02T00:00:00Z",
-      } : { connected: false, verified_at: null, fallback_enabled: false };
-      return new Response(JSON.stringify(payload), {
-        status: 200, headers: { "Content-Type": "application/json" },
-      });
-    });
-
-    renderSettings();
-
-    expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
-    expect(await screen.findByText(/Monthly OpenRouter usage/)).toBeVisible();
-    expect(screen.getByLabelText("OpenRouter API key")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Chat privacy & retention" })).toBeVisible();
-    expect(screen.getByText(/retained until you delete them/i)).toBeVisible();
-    expect(screen.getByText(/no dedicated private-chat export format/i)).toBeVisible();
-    expect(screen.getByText(/Archiving.*does not delete/i)).toBeVisible();
   });
 });

@@ -6,7 +6,7 @@
  */
 
 import React from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
@@ -48,17 +48,53 @@ const SettingsView: React.FC = () => {
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
   const chatEnabled = isChatEnabled();
+  const [billingError, setBillingError] = React.useState("");
   const [openRouterError, setOpenRouterError] = React.useState("");
   const [openRouterErrorCode, setOpenRouterErrorCode] = React.useState("");
   const [openRouterKey, setOpenRouterKey] = React.useState("");
   const queryClient = useQueryClient();
-  const usageQuery = useOpenRouterUsage(chatEnabled && Boolean(user));
+  const modelsQuery = useQuery({
+    queryKey: ["chat", "models", "settings"],
+    enabled: chatEnabled && Boolean(user),
+    queryFn: () => chatApi.getModels(),
+  });
+  const enabledProviders = new Set(
+    (modelsQuery.data?.items ?? []).map((model) => model.provider),
+  );
+  const huggingFaceEnabled = enabledProviders.has("huggingface");
+  const openRouterEnabled = enabledProviders.has("openrouter");
+  const billingQuery = useQuery({
+    queryKey: ["inference-billing", user?.hf_subject],
+    enabled: chatEnabled && Boolean(user) && huggingFaceEnabled,
+    queryFn: () => chatApi.getInferenceBilling(),
+  });
+  const billing = billingQuery.data ?? null;
+  const usageQuery = useOpenRouterUsage(
+    chatEnabled && Boolean(user) && openRouterEnabled,
+  );
   const credentialQuery = useOpenRouterCredential(
-    chatEnabled && Boolean(user),
+    chatEnabled && Boolean(user) && openRouterEnabled,
   );
   const usage = usageQuery.data;
   const credential = credentialQuery.data;
   const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
+  const selectBillingAccountMutation = useMutation({
+    mutationFn: (billTo: string | null) => (
+      chatApi.selectInferenceBillingAccount(billTo)
+    ),
+    onSuccess: (status) => {
+      queryClient.setQueryData(["inference-billing", user?.hf_subject], status);
+      setBillingError("");
+    },
+    onError: (error) => {
+      setBillingError(
+        error instanceof Error
+          ? error.message
+          : "Could not change the billing account.",
+      );
+    },
+  });
+  const billingLoading = billingQuery.isLoading || selectBillingAccountMutation.isPending;
   const setOpenRouterMutationError = (error: unknown, fallback: string) => {
     setOpenRouterError(openRouterErrorMessage(error, fallback));
     setOpenRouterErrorCode(error instanceof ApiError ? error.code ?? "" : "");
@@ -146,14 +182,82 @@ const SettingsView: React.FC = () => {
         ) : !user ? (
           <div className="settings-note settings-note-flush">
             <span>
-              Sign in to use the Papers With Code-funded OpenRouter allowance for research chat.
+              Sign in to manage billing and credentials for the enabled chat providers.
             </span>
             <div className="settings-note-action">
-              <HfSignInButton returnTo="/settings" />
+              <HfSignInButton returnTo="/settings" authorizeInference />
             </div>
           </div>
+        ) : modelsQuery.isLoading ? (
+          <div className="settings-billing-loading" role="status">
+            Checking enabled chat providers…
+          </div>
+        ) : modelsQuery.isError ? (
+          <div className="settings-billing-loading" role="alert">
+            Could not load the enabled chat providers.
+          </div>
         ) : <div className="settings-provider-grid">
-          <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
+          {huggingFaceEnabled && <section className="settings-provider-card" aria-labelledby="inference-providers-heading">
+            <div className="settings-provider-heading">
+              <div>
+                <h3 id="inference-providers-heading">Inference Providers</h3>
+                <p>Hugging Face-billed model usage</p>
+              </div>
+              {billing?.connected && <span className="settings-connected-badge">Connected</span>}
+            </div>
+            {billingLoading && !billing ? (
+              <div className="settings-billing-loading">Checking Hugging Face billing…</div>
+            ) : billing?.connected ? <div className="settings-billing">
+              <div className="settings-row-label">
+                {billing.bill_to
+                  ? `Organization · ${billing.bill_to}`
+                  : `Personal account · @${user.username}`}
+              </div>
+              <p className="settings-row-desc">
+                Usage for Hugging Face Inference Providers is billed by Hugging Face
+                to your selected account. Included Hugging Face usage is applied first;
+                pay-as-you-go billing follows your Hugging Face plan and billing settings.
+                Papers With Code does not fund, meter, or reset these credits.
+              </p>
+              <label className="settings-token-label" htmlFor="hf-billing-account">
+                Bill chat usage to
+              </label>
+              <select
+                id="hf-billing-account"
+                className="settings-billing-select"
+                value={billing.bill_to ?? ""}
+                onChange={(event) => {
+                  setBillingError("");
+                  selectBillingAccountMutation.mutate(event.target.value || null);
+                }}
+                disabled={billingLoading}
+              >
+                <option value="">Personal account (@{user.username})</option>
+                {billing.organizations.map((organization) => (
+                  <option key={organization.name} value={organization.name}>
+                    {organization.display_name} ({organization.name})
+                  </option>
+                ))}
+              </select>
+              {billingError && <div className="settings-token-error">{billingError}</div>}
+              <div className="settings-billing-actions">
+                <a className="button button-primary" href={billing.usage_url} target="_blank" rel="noreferrer">
+                  View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
+                </a>
+                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
+              </div>
+            </div> : <div className="settings-billing-connect">
+              <p className="settings-row-desc">
+                Reconnect with Hugging Face to authorize Inference Providers. Hugging
+                Face bills your personal account or the organization you select.
+              </p>
+              <div className="settings-billing-actions">
+                <HfSignInButton returnTo="/settings" label="Re-sign in with Hugging Face" authorizeInference />
+              </div>
+            </div>}
+          </section>}
+
+          {openRouterEnabled && <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
             <div className="settings-provider-heading">
               <div>
                 <h3 id="openrouter-heading">OpenRouter</h3>
@@ -267,7 +371,7 @@ const SettingsView: React.FC = () => {
                 </div>}
               </div>}
             </div>
-          </section>
+          </section>}
         </div>}
       </section>}
 
