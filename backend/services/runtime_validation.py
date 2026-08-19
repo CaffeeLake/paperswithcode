@@ -421,7 +421,7 @@ def validate_chat_provider_policy(
             "enabled chat requires the Hugging Face OAuth authentication path"
         )
     discovered = settings.chat_model_choices
-    expected_huggingface_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+    expected_huggingface_route = "deepseek-ai/DeepSeek-V4-Flash-0731:together"
     expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
     if settings.chat_deepseek_v4_flash_route != expected_huggingface_route:
         raise RuntimeError("DeepSeek V4 Flash must use the reviewed Hugging Face route")

@@ -328,7 +328,7 @@ content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
 Production and staging expose DeepSeek V4 Flash under one stable public model
 ID. `PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER` selects the user-funded Hugging Face
-route `deepseek-ai/DeepSeek-V4-Flash-0731:fastest` by default or the
+route `deepseek-ai/DeepSeek-V4-Flash-0731:together` by default or the
 server-funded OpenRouter route `deepseek/deepseek-v4-flash-0731`. Both routes
 remain registered at the private gateway so a rolling switch does not invalidate
 already-issued capabilities. Hugging Face turns use each authenticated user's

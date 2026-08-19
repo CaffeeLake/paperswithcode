@@ -281,8 +281,10 @@ class Settings(BaseSettings):
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
+    # Pin a live provider. `:fastest` hops across backends and currently
+    # includes Hugging Face providers whose mapping is in error.
     chat_deepseek_v4_flash_route: str = Field(
-        default="deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+        default="deepseek-ai/DeepSeek-V4-Flash-0731:together"
     )
     chat_deepseek_v4_flash_openrouter_route: str = Field(
         default="deepseek/deepseek-v4-flash-0731"
