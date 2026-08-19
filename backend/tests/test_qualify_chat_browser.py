@@ -185,8 +185,11 @@ def test_browser_selects_reasoning_effort(monkeypatch):
     page.timeout = 1
     evaluations: list[str] = []
     waited: list[str] = []
+    evaluation_results = iter((True, True))
     monkeypatch.setattr(
-        page, "evaluate", lambda expression: evaluations.append(expression) or True
+        page,
+        "evaluate",
+        lambda expression: evaluations.append(expression) or next(evaluation_results),
     )
     monkeypatch.setattr(
         page,
@@ -201,6 +204,7 @@ def test_browser_selects_reasoning_effort(monkeypatch):
         'sessionStorage.setItem("pwc:chat-reasoning-effort","high")' in expression
         for expression in evaluations
     )
+    assert any('[role="listbox"]' in expression for expression in waited)
     assert any("Reasoning effort:" in expression for expression in waited)
 
 

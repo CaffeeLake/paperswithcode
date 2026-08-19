@@ -58,7 +58,9 @@ class ChromePage(AbstractContextManager):
     def __init__(self, *, cookies: dict[str, str], timeout: float = 240) -> None:
         self.cookies = cookies
         self.timeout = timeout
-        self._profile = tempfile.TemporaryDirectory(prefix="pwc-chat-browser-")
+        self._profile = tempfile.TemporaryDirectory(
+            prefix="pwc-chat-browser-", ignore_cleanup_errors=True
+        )
         self._process: subprocess.Popen[str] | None = None
         self._socket = None
         self._next_id = 0
@@ -233,11 +235,18 @@ class ChromePage(AbstractContextManager):
         self.wait_for(
             "Boolean(document.querySelector('button[aria-label^=\"Reasoning effort:\"]'))"
         )
-        selected = self.evaluate(
+        opened = self.evaluate(
             "(() => {"
             "const trigger=document.querySelector('button[aria-label^=\"Reasoning effort:\"]');"
             "if(!trigger) return false;"
             "trigger.click();"
+            "return true;})()"
+        )
+        if not opened:
+            raise RuntimeError("Reasoning effort picker is unavailable")
+        self.wait_for("Boolean(document.querySelector('[role=\"listbox\"]'))")
+        selected = self.evaluate(
+            "(() => {"
             "const options=[...document.querySelectorAll('[role=\"option\"]')];"
             f"const option=options.find(node=>node.querySelector('strong')?.textContent==={encoded_label});"
             "if(!option) return false;"
@@ -247,9 +256,10 @@ class ChromePage(AbstractContextManager):
         )
         if not selected:
             raise RuntimeError(f"Reasoning effort is unavailable: {effort}")
+        encoded_aria_label = json.dumps(f"Reasoning effort: {label}")
         self.wait_for(
             "document.querySelector('button[aria-label^=\"Reasoning effort:\"]')"
-            f"?.getAttribute('aria-label')===`Reasoning effort: ${{{encoded_label}}}`"
+            f"?.getAttribute('aria-label')==={encoded_aria_label}"
         )
         self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded_effort}")
 
