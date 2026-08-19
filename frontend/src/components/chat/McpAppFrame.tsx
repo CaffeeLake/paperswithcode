@@ -1,6 +1,7 @@
 import React from "react";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { AppBlock } from "@/lib/chat";
+import { withFittedCamera } from "./excalidrawCamera";
 import { appsHostEnabled, excalidrawClient, providerFor } from "./mcpAppRegistry";
 
 const clampHeight = (height: number) => Math.max(240, Math.min(720, height));
@@ -95,7 +96,10 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     host.oninitialized = () => {
       initialized.current = true;
       try {
-        void host.sendToolInput({ arguments: { elements: JSON.parse(elements) } });
+        const parsed = JSON.parse(elements) as unknown;
+        void host.sendToolInput({
+          arguments: { elements: Array.isArray(parsed) ? withFittedCamera(parsed) : parsed },
+        });
         void host.sendToolResult(blockRef.current.result as never);
       } catch {
         setState("error");
