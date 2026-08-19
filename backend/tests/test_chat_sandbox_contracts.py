@@ -2641,7 +2641,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-ztn9DP8ENveyAUXaFqEHud"
+    assert MODAL_IMAGE_ID == "im-iBxAV0PciJzRtDNSYA5XC1"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-Sbjgm1jjAJAqBo10ZtLY3w"
     assert WORKER_CONTRACT_VERSION == "82"
     assert CHAT_SANDBOX_REGION == "eu-west"
@@ -2855,40 +2855,37 @@ def test_image_publication_initializes_modal_app(monkeypatch, capsys):
     events: list[str] = []
 
     class Lookup:
-        async def aio(self, name, *, create_if_missing):
+        def __call__(self, name, *, create_if_missing):
             assert name == MODAL_APP_NAME
             assert create_if_missing is True
             events.append("lookup")
 
     class Run:
-        async def __aenter__(self):
+        def __enter__(self):
             events.append("enter")
 
-        async def __aexit__(self, *_args):
+        def __exit__(self, *_args):
             events.append("exit")
 
     class App:
-        class run:
-            @staticmethod
-            def aio():
-                return Run()
+        @staticmethod
+        def run():
+            return Run()
 
     class Built:
         object_id = "im-test"
 
-        class publish:
-            @staticmethod
-            async def aio(name):
-                assert events == ["lookup", "enter", "build"]
-                events.append(f"publish:{name}")
+        @staticmethod
+        def publish(name):
+            assert events == ["lookup", "enter", "build"]
+            events.append(f"publish:{name}")
 
     class Image:
-        class build:
-            @staticmethod
-            async def aio(_app):
-                assert events == ["lookup", "enter"]
-                events.append("build")
-                return Built()
+        @staticmethod
+        def build(_app):
+            assert events == ["lookup", "enter"]
+            events.append("build")
+            return Built()
 
     monkeypatch.setattr(publish_image, "app", App())
     monkeypatch.setattr(publish_image, "image", Image())
