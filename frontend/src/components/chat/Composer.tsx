@@ -4,12 +4,14 @@ import React, { useEffect, useRef, useState } from "react";
 
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
+import { PaperSelectionCard } from "@/components/chat/PaperSelectionCard";
 import { ArrowUpIcon, Spinner } from "@/components/chat/icons";
 import ModelPicker, { type ModelPickerOption } from "@/components/chat/ModelPicker";
 import ReasoningEffortPicker from "@/components/chat/ReasoningEffortPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
+import { emptyChatDraft } from "@/lib/paperSelection";
 
 interface ComposerProps {
   onSend: (draft: ChatDraft) => void;
@@ -25,6 +27,7 @@ interface ComposerProps {
   disabled?: boolean;
   describedBy?: string;
   paperMentionsEnabled?: boolean;
+  paperSelectionEnabled?: boolean;
   webSearchAvailable?: boolean;
   webSearchEnabled?: boolean;
   onWebSearchChange?: (enabled: boolean) => void;
@@ -32,12 +35,13 @@ interface ComposerProps {
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
 }
 
-const EMPTY_DRAFT: ChatDraft = { text: "", paperMentions: [] };
+const EMPTY_DRAFT: ChatDraft = emptyChatDraft();
 
 const Composer: React.FC<ComposerProps> = ({
   onSend, busy, placeholder, autoFocus, draft, onDraftChange, onStop,
   models = [], selectedModel, onModelChange, disabled = false, describedBy,
   paperMentionsEnabled = false,
+  paperSelectionEnabled = true,
   webSearchAvailable = false,
   webSearchEnabled = false,
   onWebSearchChange,
@@ -72,26 +76,46 @@ const Composer: React.FC<ComposerProps> = ({
   const submit = () => {
     const leading = value.text.length - value.text.trimStart().length;
     const text = value.text.trim();
-    if (!text || busy || disabled) return;
+    const selectionBlocked = Boolean(value.paperSelection) && !paperSelectionEnabled;
+    if (!text || busy || disabled || selectionBlocked) return;
     const end = leading + text.length;
     const normalized: ChatDraft = {
       text,
       paperMentions: value.paperMentions
         .filter((mention) => mention.start >= leading && mention.end <= end)
         .map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })),
+      ...(value.paperSelection ? { paperSelection: value.paperSelection } : {}),
     };
     onSend(normalized);
   };
 
+  const selectionBlocked = Boolean(value.paperSelection) && !paperSelectionEnabled;
+  const canSend = Boolean(value.text.trim()) && !selectionBlocked;
+
   return (
     <div className="chat-composer">
+      {value.paperSelection && (
+        <PaperSelectionCard
+          selection={value.paperSelection}
+          editable
+          onRemove={() => {
+            change({ text: value.text, paperMentions: value.paperMentions });
+            ref.current?.focus();
+          }}
+        />
+      )}
+      {selectionBlocked && (
+        <div className="chat-paper-selection-disabled" role="status">
+          Paper selection is currently disabled. Remove the selected passage or wait for the feature to recover.
+        </div>
+      )}
       <div className="chat-composer-textarea-wrap">
         <PaperMentionHighlights text={value.text} mentions={value.paperMentions} scrollTop={scrollTop} />
         <textarea
           ref={ref}
           rows={1}
           value={value.text}
-          placeholder={placeholder || "Ask anything about research…"}
+          placeholder={placeholder || (value.paperSelection ? "Ask about this selection…" : "Ask anything about research…")}
           onChange={(event) => mentions.updateText(event.target.value, event.target.selectionStart)}
           onSelect={(event) => mentions.refresh(event.currentTarget.selectionStart)}
           onClick={(event) => mentions.refresh(event.currentTarget.selectionStart)}
@@ -145,7 +169,7 @@ const Composer: React.FC<ComposerProps> = ({
           )}
           <span className="chat-composer-hint">Enter to send · Shift+Enter for newline</span>
         </div>
-        <button type="button" className={`chat-send${(busy || value.text.trim()) ? " chat-send-on" : ""}`} onClick={busy ? onStop : submit} disabled={disabled || (busy ? !onStop : !value.text.trim())} aria-label={busy ? "Stop generating" : "Send message"}>
+        <button type="button" className={`chat-send${(busy || canSend) ? " chat-send-on" : ""}`} onClick={busy ? onStop : submit} disabled={disabled || (busy ? !onStop : !canSend)} aria-label={busy ? "Stop generating" : "Send message"}>
           {busy ? (onStop ? <span aria-hidden="true">■</span> : <Spinner light />) : <ArrowUpIcon />}
         </button>
       </div>

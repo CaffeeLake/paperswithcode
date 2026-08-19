@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PdfViewer } from "@/components/pdf/PdfViewer";
@@ -8,6 +8,7 @@ import { usePaper } from "@/hooks/usePapers";
 import type { Paper } from "@/lib/api/papers.types";
 import { isPaperReaderChatEnabled } from "@/lib/apiUrl";
 import { chatApi } from "@/lib/api/chat";
+import type { PaperSelectionDraft } from "@/lib/chat";
 import { safeExternalHref } from "@/lib/safeExternalHref";
 import { normalizePaperRouteId } from "@/lib/utils";
 import { ChatExperience } from "@/views/ChatView";
@@ -90,7 +91,6 @@ export function readerToolbarResources(paper: Paper | undefined): PdfToolbarReso
 export default function PaperReaderView() {
   const { arxivId: rawRouteId } = useParams<{ arxivId: string }>();
   const routeId = normalizePaperRouteId(rawRouteId ?? "").replace(/v\d+$/i, "");
-  const navigate = useNavigate();
   const query = usePaper(routeId, Boolean(routeId));
   const availabilityQuery = useQuery({
     queryKey: ["chatAvailability"],
@@ -111,6 +111,8 @@ export default function PaperReaderView() {
     () => sessionStorage.getItem(collapsedKey(routeId)) === "1",
   );
   const [mobileTab, setMobileTab] = useState<"paper" | "assistant">("paper");
+  const [paperSelection, setPaperSelection] = useState<PaperSelectionDraft | undefined>();
+  const [selectionStatus, setSelectionStatus] = useState("");
   const [initialPage, setInitialPage] = useState(() => storedPage(routeId));
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [resizeActive, setResizeActive] = useState(false);
@@ -125,11 +127,16 @@ export default function PaperReaderView() {
   const pendingClientX = useRef(0);
   const pendingRatio = useRef(ratio);
   const currentPageRef = useRef(storedPage(routeId));
+  const paperVersionRef = useRef(paper?.version);
   const desktopSplit = workspaceWidth > 900 && workspaceWidth >= 840;
 
   useEffect(() => {
-    if (rawRouteId && rawRouteId !== routeId) navigate(`/pdf/${routeId}`, { replace: true });
-  }, [navigate, rawRouteId, routeId]);
+    if (paper?.version && paperVersionRef.current && paper.version !== paperVersionRef.current) {
+      setPaperSelection(undefined);
+      setSelectionStatus("");
+    }
+    paperVersionRef.current = paper?.version;
+  }, [paper?.version]);
 
   useEffect(() => {
     window.clearTimeout(chatTransitionTimer.current);
@@ -138,6 +145,8 @@ export default function PaperReaderView() {
     setActiveSessionId(storedSession || undefined);
     setCollapsed(sessionStorage.getItem(collapsedKey(routeId)) === "1");
     setMobileTab("paper");
+    setPaperSelection(undefined);
+    setSelectionStatus("");
     const nextPage = storedPage(routeId);
     currentPageRef.current = nextPage;
     setInitialPage(nextPage);
@@ -258,7 +267,20 @@ export default function PaperReaderView() {
   const newChat = () => {
     setActiveSessionId(undefined);
     sessionStorage.removeItem(sessionKey(routeId));
+    setPaperSelection(undefined);
+    setSelectionStatus("");
   };
+
+  const selectionEnabled = availabilityQuery.data?.paper_reader_selection_enabled === true;
+  const attachSelection = (selection: PaperSelectionDraft) => {
+    setPaperSelection(selection);
+    setSelectionStatus(`Selection from page ${selection.page} added to chat`);
+    if (desktopSplit && collapsed) setAssistantCollapsed(false);
+  };
+  const handlePaperSelectionChange = useCallback((selection?: PaperSelectionDraft) => {
+    setPaperSelection(selection);
+    if (!selection) setSelectionStatus("");
+  }, []);
 
   const assistantEnabled = isPaperReaderChatEnabled()
     && availabilityQuery.data?.paper_reader_chat_enabled !== false;
@@ -267,6 +289,8 @@ export default function PaperReaderView() {
     routeSessionId={activeSessionId}
     primaryPaper={{ id: paper.id, routeId: canonicalRoute, title: paper.title }}
     currentPage={() => currentPageRef.current}
+    paperSelection={paperSelection}
+    onPaperSelectionChange={handlePaperSelectionChange}
     onSessionId={selectSession}
     onReaderSubmit={() => setMobileTab("assistant")}
     onReaderNewChat={newChat}
@@ -280,7 +304,16 @@ export default function PaperReaderView() {
   return <div className="paper-reader-shell">
     {!desktopSplit && <div className="reader-tabs" role="tablist" aria-label="Reader panels">
       <button type="button" role="tab" aria-selected={mobileTab === "paper"} onClick={() => setMobileTab("paper")}>Paper</button>
-      <button type="button" role="tab" aria-selected={mobileTab === "assistant"} onClick={() => setMobileTab("assistant")}>Chat</button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mobileTab === "assistant"}
+        aria-label={paperSelection && mobileTab !== "assistant" ? "Chat, selection attached" : "Chat"}
+        onClick={() => setMobileTab("assistant")}
+      >
+        Chat
+        {paperSelection && mobileTab !== "assistant" && <span className="reader-tab-pending" aria-hidden="true" />}
+      </button>
     </div>}
     <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}${resizeActive ? " is-resizing" : ""}`}>
       <section
@@ -299,6 +332,10 @@ export default function PaperReaderView() {
           resources={toolbarResources}
           initialPage={initialPage}
           resizeActive={resizeActive || chatTransitionActive}
+          selectionEnabled={selectionEnabled}
+          paperVersion={paper.version}
+          onPaperSelection={attachSelection}
+          onPaperSelectionError={setSelectionStatus}
           onPageChange={(page) => {
             currentPageRef.current = page;
             sessionStorage.setItem(pageKey(routeId), String(page));
@@ -339,6 +376,7 @@ export default function PaperReaderView() {
         aria-label="Chat"
         aria-hidden={(!desktopSplit && mobileTab !== "assistant") || collapsed}
       >{assistant}</aside>
+      <div className="sr-only" aria-live="polite">{selectionStatus}</div>
       {desktopSplit && <button
         type="button"
         className="reader-collapse-assistant"

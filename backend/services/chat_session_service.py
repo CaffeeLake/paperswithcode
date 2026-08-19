@@ -31,6 +31,7 @@ from backend.services.chat_edit_service import (
     INACTIVE_STATUSES,
     PREPARING_STATUS,
     ChatEditService,
+    user_message_projection_bytes,
 )
 from backend.services.chat_title_service import normalize_title
 
@@ -167,6 +168,7 @@ class _TurnCreationPlan:
     paper_mentions: list[dict]
     primary_paper_context: dict | None
     viewer_context: dict | None
+    paper_selection: dict | None
     is_first_turn: bool
     title_should_generate: bool
 
@@ -217,25 +219,7 @@ def _payload_bytes(*values: object) -> int:
 
 def _message_projection_bytes(message: ChatMessageRecord) -> int:
     if message.role == "user":
-        if message.effective_prompt is None:
-            return len(message.content.encode())
-        return (
-            len(message.content.encode())
-            + len(message.effective_prompt.encode())
-            + _payload_bytes(
-                message.paper_mentions or [],
-                *(
-                    [message.primary_paper_context]
-                    if getattr(message, "primary_paper_context", None)
-                    else []
-                ),
-                *(
-                    [message.viewer_context]
-                    if getattr(message, "viewer_context", None)
-                    else []
-                ),
-            )
-        )
+        return user_message_projection_bytes(message)
     return len(message.content.encode())
 
 
@@ -1127,6 +1111,7 @@ class ChatSessionService:
         paper_mentions: list[dict],
         primary_paper_context: dict | None = None,
         viewer_context: dict | None = None,
+        paper_selection: dict | None = None,
     ) -> _TurnCreationPlan:
         is_first_turn = (
             replacement.is_first_prompt
@@ -1145,6 +1130,7 @@ class ChatSessionService:
             paper_mentions=paper_mentions,
             primary_paper_context=primary_paper_context,
             viewer_context=viewer_context,
+            paper_selection=paper_selection,
             is_first_turn=is_first_turn,
             title_should_generate=(is_first_turn and session.title_source != "user"),
         )
@@ -1186,6 +1172,7 @@ class ChatSessionService:
             paper_mentions=plan.paper_mentions,
             primary_paper_context=plan.primary_paper_context,
             viewer_context=plan.viewer_context,
+            paper_selection=plan.paper_selection,
             effective_prompt=plan.effective_prompt,
             client_message_id=client_message_id,
             web_search_enabled=web_search_enabled,
@@ -1266,6 +1253,7 @@ class ChatSessionService:
         primary_paper_id: int | None = None,
         primary_paper_context: dict | None = None,
         viewer_context: dict | None = None,
+        paper_selection: dict | None = None,
         initial_model: str | None = None,
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
@@ -1358,6 +1346,7 @@ class ChatSessionService:
             + _payload_bytes(paper_mentions)
             + (_payload_bytes(primary_paper_context) if primary_paper_context else 0)
             + (_payload_bytes(viewer_context) if viewer_context else 0)
+            + (_payload_bytes(paper_selection) if paper_selection else 0)
         )
         owner_total_bytes = self._load_owner_storage_bytes(owner)
         model, model_route = self._validate_model(session.selected_model)
@@ -1402,6 +1391,7 @@ class ChatSessionService:
             paper_mentions=paper_mentions,
             primary_paper_context=primary_paper_context,
             viewer_context=viewer_context,
+            paper_selection=paper_selection,
         )
         message = self._apply_turn_creation(
             session,

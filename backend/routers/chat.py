@@ -139,6 +139,7 @@ def _prepare_paper_turn(
             replace_message_id=body.replace_message_id,
             primary_route_id=body.primary_paper_route_id,
             viewer_context=body.viewer_context,
+            paper_selection=body.paper_selection,
         )
 
 
@@ -398,6 +399,7 @@ def _message(row: ChatMessageRecord) -> ChatMessageResponse:
         role=row.role,
         content=row.content,
         paper_mentions=row.paper_mentions or [],
+        paper_selection=getattr(row, "paper_selection", None),
         viewer_context=getattr(row, "viewer_context", None),
         revision=row.revision,
         status=row.status,
@@ -1071,7 +1073,15 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
-    if body.primary_paper_route_id is not None:
+    if body.paper_selection is not None and not settings.paper_reader_selection_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "paper_selection_disabled",
+                "message": "Paper selection is currently disabled. Remove it before sending.",
+            },
+        )
+    if body.primary_paper_route_id is not None or body.paper_selection is not None:
         if not settings.paper_reader_chat_enabled:
             raise HTTPException(
                 status_code=404,
@@ -1198,6 +1208,7 @@ async def stream_chat(
                     primary_paper_id=prepared.primary_paper_id,
                     primary_paper_context=prepared.primary_paper_context,
                     viewer_context=prepared.viewer_context,
+                    paper_selection=prepared.paper_selection,
                     initial_model=body.initial_model,
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,

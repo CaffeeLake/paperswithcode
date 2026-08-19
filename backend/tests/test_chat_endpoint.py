@@ -355,6 +355,78 @@ def test_stream_spend_rejection_preserves_exact_503_before_admission(monkeypatch
     }
 
 
+def test_stream_rejects_paper_selection_when_flag_is_off(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        chat_enabled=True,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        paper_reader_chat_enabled=True,
+        paper_reader_selection_enabled=False,
+        environment="staging",
+    )
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    body = ChatRequest(
+        message="Explain this",
+        client_message_id="selection-disabled",
+        primary_paper_route_id="2501.00001",
+        paper_selection={
+            "route_id": "2501.00001",
+            "paper_version": "v1",
+            "page": 4,
+            "text": "quoted evidence",
+        },
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            chat_router.stream_chat(
+                body,
+                _cookie_request(),
+                {"hf_user_id": "owner-1", "username": "owner", "role": "admin"},
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "paper_selection_disabled"
+
+
+def test_stream_gates_selection_follow_ups_to_staging_reviewers(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        chat_enabled=True,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        paper_reader_chat_enabled=True,
+        paper_reader_selection_enabled=True,
+        environment="staging",
+    )
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    body = ChatRequest(
+        message="Explain this",
+        client_message_id="selection-follow-up",
+        session_id=uuid.uuid4(),
+        paper_selection={
+            "route_id": "2501.00001",
+            "paper_version": "v1",
+            "page": 4,
+            "text": "quoted evidence",
+        },
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            chat_router.stream_chat(
+                body,
+                _cookie_request(),
+                {"hf_user_id": "owner-1", "username": "owner"},
+            )
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["code"] == "staging_access_required"
+
+
 def test_sandbox_spend_admin_status_preserves_qualification_scope(monkeypatch):
     settings = Settings(_env_file=None, environment="staging")
     seen: list[str] = []

@@ -1,4 +1,5 @@
 import type { ChatDraft, ReasoningEffort } from "@/lib/chat";
+import { emptyChatDraft, parseChatDraft } from "@/lib/paperSelection";
 
 export const CHAT_DRAFT_KEY = "pwc:chat-oauth-draft";
 export const CHAT_MODEL_KEY = "pwc:chat-oauth-model";
@@ -33,17 +34,21 @@ export function queueChatLaunch(
   const question = rawText.trim();
   if (!question) return;
   const trailingBoundary = leading + question.length;
+  const paperMentions = typeof prompt === "string"
+    ? []
+    : prompt.paperMentions
+        .filter((mention) => mention.start >= leading && mention.end <= trailingBoundary)
+        .map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading }));
   const draft: ChatDraft = {
     text: question,
-    paperMentions: typeof prompt === "string"
-      ? []
-      : prompt.paperMentions
-          .filter((mention) => mention.start >= leading && mention.end <= trailingBoundary)
-          .map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })),
+    paperMentions,
+    ...(typeof prompt !== "string" && prompt.paperSelection
+      ? { paperSelection: prompt.paperSelection }
+      : {}),
   };
   sessionStorage.setItem(
     CHAT_DRAFT_KEY,
-    draft.paperMentions.length ? JSON.stringify(draft) : question,
+    draft.paperMentions.length || draft.paperSelection ? JSON.stringify(draft) : question,
   );
   if (options.autoSend === false) sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
   else sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
@@ -62,10 +67,9 @@ export function readQueuedChatLaunch(): QueuedChatLaunch | null {
   if (sessionStorage.getItem(CHAT_AUTO_SEND_KEY) !== "1") return null;
   const stored = sessionStorage.getItem(CHAT_DRAFT_KEY)?.trim();
   if (!stored) return null;
-  let draft: ChatDraft = { text: stored, paperMentions: [] };
+  let draft: ChatDraft = emptyChatDraft(stored);
   try {
-    const parsed = JSON.parse(stored) as ChatDraft;
-    if (typeof parsed.text === "string" && Array.isArray(parsed.paperMentions)) draft = parsed;
+    draft = parseChatDraft(JSON.parse(stored), stored) ?? emptyChatDraft(stored);
   } catch { /* Legacy and mention-free launches store plain text. */ }
   const prompt = draft.text.trim();
   if (!prompt) return null;

@@ -14,7 +14,7 @@ import { useChatArchive } from "@/components/chat/useChatArchive";
 import { PanelIcon, Spinner } from "@/components/chat/icons";
 import { hfLoginUrl } from "@/components/HfSignInButton";
 import { useChat } from "@/hooks/useChat";
-import { isChatLive, type ChatDraft, type ReasoningEffort } from "@/lib/chat";
+import { isChatLive, type ChatDraft, type PaperSelectionDraft, type ReasoningEffort } from "@/lib/chat";
 import {
   CHAT_AUTO_SEND_KEY,
   CHAT_AUTH_ATTEMPTED_KEY,
@@ -25,6 +25,7 @@ import {
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
+import { emptyChatDraft, parseChatDraft } from "@/lib/paperSelection";
 import { chatApi } from "@/lib/api/chat";
 import { isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
@@ -46,7 +47,7 @@ import {
   updateSession,
 } from "@/lib/chatSessions";
 
-const emptyDraft = (text = ""): ChatDraft => ({ text, paperMentions: [] });
+const emptyDraft = emptyChatDraft;
 const READER_PROMPTS = [
   "Summarize the main contributions",
   "Explain in simple terms",
@@ -56,8 +57,7 @@ const readStoredDraft = (): ChatDraft | null => {
   const raw = sessionStorage.getItem(CHAT_DRAFT_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as ChatDraft;
-    if (typeof parsed.text === "string" && Array.isArray(parsed.paperMentions)) return parsed;
+    return parseChatDraft(JSON.parse(raw), raw);
   } catch { /* Legacy storage contained only the text. */ }
   return emptyDraft(raw);
 };
@@ -75,6 +75,8 @@ export interface ChatExperienceProps {
   routeSessionId?: string;
   primaryPaper?: { id: string; routeId: string; title: string };
   currentPage?: () => number;
+  paperSelection?: PaperSelectionDraft;
+  onPaperSelectionChange?: (selection?: PaperSelectionDraft) => void;
   onSessionId?: (sessionId: string) => void;
   onReaderSubmit?: () => void;
   onReaderNewChat?: () => void;
@@ -85,6 +87,8 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   routeSessionId: suppliedSessionId,
   primaryPaper,
   currentPage,
+  paperSelection,
+  onPaperSelectionChange,
   onSessionId: onReaderSessionId,
   onReaderSubmit,
   onReaderNewChat,
@@ -244,13 +248,16 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     },
     onInterrupted: (interruptedDraft) => {
       setDraft(interruptedDraft);
+      onPaperSelectionChange?.(interruptedDraft.paperSelection);
     },
   });
   const sendChat = chat.send;
 
   useEffect(() => {
-    if (chat.capacityRequest) setDraft(chat.capacityRequest.draft);
-  }, [chat.capacityRequest]);
+    if (!chat.capacityRequest) return;
+    setDraft(chat.capacityRequest.draft);
+    onPaperSelectionChange?.(chat.capacityRequest.draft.paperSelection);
+  }, [chat.capacityRequest, onPaperSelectionChange]);
 
   const authorizeInference = useCallback((nextDraft: ChatDraft) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -273,12 +280,16 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
     setPendingAutoDraft(emptyDraft());
     setDraft(nextDraft);
+    onPaperSelectionChange?.(nextDraft.paperSelection);
     setSessionError(message);
-  }, [selectedModel]);
+  }, [onPaperSelectionChange, selectedModel]);
 
   const send = useCallback(async (nextDraft: ChatDraft) => {
+    const payload = onPaperSelectionChange
+      ? (paperSelection ? { ...nextDraft, paperSelection } : { text: nextDraft.text, paperMentions: nextDraft.paperMentions })
+      : nextDraft;
     if (!user) {
-      authorizeInference(nextDraft);
+      authorizeInference(payload);
       return;
     }
     if (selectedProvider === "huggingface" && !inferenceConnectedRef.current) {
@@ -289,18 +300,18 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
         if (!billing.connected) {
           if (sessionStorage.getItem(CHAT_AUTH_ATTEMPTED_KEY) === "1") {
             restoreAuthorizationPrompt(
-              nextDraft,
+              payload,
               "Hugging Face inference authorization was not completed. Your prompt is ready to retry.",
             );
             return;
           }
-          authorizeInference(nextDraft);
+          authorizeInference(payload);
           return;
         }
         inferenceConnectedRef.current = true;
       } catch (error) {
         restoreAuthorizationPrompt(
-          nextDraft,
+          payload,
           error instanceof Error
             ? error.message
             : "Could not check Hugging Face authorization.",
@@ -312,9 +323,9 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     }
     const streamRouteSessionId = routeSessionIdRef.current ?? null;
     sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
-    if (!sendChat(nextDraft)) {
+    if (!sendChat(payload)) {
       restoreAuthorizationPrompt(
-        nextDraft,
+        payload,
         "Your prompt was not sent. It is ready to retry.",
       );
       return;
@@ -326,8 +337,9 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
     clearQueuedChatLaunch();
     setDraft(emptyDraft());
+    onPaperSelectionChange?.(undefined);
     if (mode === "paper") onReaderSubmit?.();
-  }, [authorizeInference, mode, onReaderSubmit, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
+  }, [authorizeInference, mode, onPaperSelectionChange, onReaderSubmit, paperSelection, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -348,10 +360,11 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     const savedDraft = readStoredDraft();
     const shouldAutoSend = sessionStorage.getItem(CHAT_AUTO_SEND_KEY) === "1";
     if (savedDraft) {
+      onPaperSelectionChange?.(savedDraft.paperSelection);
       if (shouldAutoSend) setPendingAutoDraft(savedDraft);
       else setDraft(savedDraft);
     }
-  }, [authLoading, refreshSessions, user]);
+  }, [authLoading, onPaperSelectionChange, refreshSessions, user]);
 
   useEffect(() => {
     if (!routeSessionId) {
@@ -468,6 +481,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     activeStreamSessionIdRef.current = null;
     chat.reset();
     setDraft(emptyDraft());
+    onPaperSelectionChange?.(undefined);
     setWebSearchEnabled(false);
     setReasoningEffort("low");
     setLiveTitle("");
@@ -565,18 +579,29 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   const openRouterFallbackEnabled = Boolean(
     openRouterCredentialQuery.data?.fallback_enabled,
   );
+  const composerDraft = onPaperSelectionChange
+    ? (paperSelection ? { ...draft, paperSelection } : { text: draft.text, paperMentions: draft.paperMentions })
+    : draft;
   const composerProps = {
     onSend: send,
     busy: chat.busy,
     onStop: chat.stop,
-    draft,
-    onDraftChange: setDraft,
+    draft: composerDraft,
+    onDraftChange: (next: ChatDraft) => {
+      if (onPaperSelectionChange) {
+        setDraft({ text: next.text, paperMentions: next.paperMentions });
+        if (next.paperSelection !== paperSelection) onPaperSelectionChange(next.paperSelection);
+      } else {
+        setDraft(next);
+      }
+    },
     models,
     selectedModel,
     onModelChange: (model: string) => void changeModel(model),
     disabled: chatPaused || authLoading,
     describedBy: chatPaused ? "chat-paused-description" : undefined,
     paperMentionsEnabled: Boolean(availabilityQuery.data?.paper_mentions_enabled),
+    paperSelectionEnabled: availabilityQuery.data?.paper_reader_selection_enabled === true,
     webSearchAvailable,
     webSearchEnabled,
     onWebSearchChange: setWebSearchEnabled,
@@ -626,6 +651,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
               sessionId={routeSessionId}
               busy={chat.busy}
               loading={isRouteSessionLoading}
+              hasPaperSelection={chat.messages.some((message) => Boolean(message.paperSelection))}
               onError={setSessionError}
             />
           )}
@@ -682,12 +708,17 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
           retryAt={chat.capacityRequest.retryAt}
           onCancel={chat.cancelCapacity}
           onRetry={() => {
-            if (chat.retryCapacity()) setDraft(emptyDraft());
+            if (chat.retryCapacity()) {
+              setDraft(emptyDraft());
+              onPaperSelectionChange?.(undefined);
+            }
           }}
         />
       )}
       {chat.disabledRequest && <ChatDisabledDialog onClose={() => {
-        setDraft(chat.disabledRequest?.draft ?? draft);
+        const restored = chat.disabledRequest?.draft ?? draft;
+        setDraft(restored);
+        onPaperSelectionChange?.(restored.paperSelection);
         chat.dismissDisabled();
         void availabilityQuery.refetch();
       }} />}

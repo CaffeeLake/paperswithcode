@@ -5,6 +5,7 @@ import type { Paper } from "@/lib/api/papers.types";
 import { chatApi } from "@/lib/api/chat";
 import { papersApi } from "@/lib/api/papers";
 import type { ChatDraft, PaperMentionDraft } from "@/lib/chat";
+import { withDraftText } from "@/lib/paperSelection";
 
 export const MAX_PAPER_MENTIONS = 10;
 export const MAX_DISTINCT_PAPERS = 3;
@@ -96,7 +97,7 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
 
   const updateText = React.useCallback((next: string, caret?: number) => {
     const mentions = reconcilePaperMentions(draft.text, next, draft.paperMentions);
-    const nextDraft = { text: next, paperMentions: mentions };
+    const nextDraft = withDraftText(draft, next, mentions);
     onChange(nextDraft);
     const position = caret ?? textareaRef.current?.selectionStart ?? next.length;
     if (enabled && !mentions.some((mention) => position > mention.start && position <= mention.end)) {
@@ -133,7 +134,7 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
       start: active.start,
       end: active.start + marker.length,
     };
-    onChange({ text: nextText, paperMentions: [...shifted, mention].sort((a, b) => a.start - b.start) });
+    onChange(withDraftText(draft, nextText, [...shifted, mention].sort((a, b) => a.start - b.start)));
     setActive(null);
     setMessage("");
     window.requestAnimationFrame(() => {

@@ -46,7 +46,7 @@ const SharedTranscript: React.FC<{ detail: ChatShareDetail }> = ({ detail }) => 
   return (
     <div className="shared-chat-transcript">
       {messages.map((message) => message.role === "user"
-        ? <UserMessage key={message.id} id={message.id} text={message.text ?? ""} paperMentions={message.paperMentions ?? []} />
+        ? <UserMessage key={message.id} id={message.id} text={message.text ?? ""} paperMentions={message.paperMentions ?? []} paperSelection={message.paperSelection} />
         : <AssistantMessage key={message.id} msg={message} papers={papers} onToggleBlock={toggleBlock} />)}
     </div>
   );

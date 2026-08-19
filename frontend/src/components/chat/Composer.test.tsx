@@ -131,3 +131,35 @@ describe("Composer paper mentions", () => {
     expect(screen.queryByLabelText("Attached papers")).not.toBeInTheDocument();
   });
 });
+
+describe("Composer paper selection", () => {
+  it("renders the card above an empty composer and does not send without a question", () => {
+    const onSend = vi.fn();
+    const onDraftChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <Composer
+          draft={{
+            text: "",
+            paperMentions: [],
+            paperSelection: {
+              routeId: "2608.09119",
+              paperVersion: "v1",
+              page: 4,
+              text: "quoted evidence",
+            },
+          }}
+          onDraftChange={onDraftChange}
+          onSend={onSend}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Selection · Page 4")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Ask about this selection…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove selected paper passage" }));
+    expect(onDraftChange).toHaveBeenCalledWith({ text: "", paperMentions: [] });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});

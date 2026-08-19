@@ -11,6 +11,7 @@ import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { McpAppFrame } from "@/components/chat/McpAppFrame";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
+import { PaperSelectionCard } from "@/components/chat/PaperSelectionCard";
 import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
@@ -24,6 +25,7 @@ import type {
   ChatPaperHit,
   ChatDraft,
   PaperMentionDraft,
+  PaperSelectionDraft,
   ReasoningBlock,
   ToolBlock,
 } from "@/lib/chat";
@@ -274,6 +276,7 @@ const AppBlockView: React.FC<{ block: AppBlock }> = ({ block }) => <McpAppFrame 
 interface UserEditorProps {
   id?: string;
   text: string;
+  paperSelection?: PaperSelectionDraft;
   editNotice?: string;
   onCancel?: () => void;
   onResend?: (text: string) => boolean;
@@ -298,8 +301,9 @@ const useEditorTextarea = (text: string) => {
   return { textareaRef, resize };
 };
 
-const PlainUserEditor: React.FC<UserEditorProps> = ({ id, text, editNotice, onCancel, onResend, onResendDraft }) => {
+const PlainUserEditor: React.FC<UserEditorProps> = ({ id, text, paperSelection, editNotice, onCancel, onResend, onResendDraft }) => {
   const [value, setValue] = React.useState(text);
+  const [selection, setSelection] = React.useState(paperSelection);
   const [submitting, setSubmitting] = React.useState(false);
   const { textareaRef, resize } = useEditorTextarea(text);
   React.useLayoutEffect(resize, [resize, value]);
@@ -307,11 +311,16 @@ const PlainUserEditor: React.FC<UserEditorProps> = ({ id, text, editNotice, onCa
   const resend = () => {
     if (!valid || submitting) return;
     setSubmitting(true);
-    const accepted = onResendDraft?.({ text: value, paperMentions: [] }) ?? onResend?.(value) ?? false;
+    const accepted = onResendDraft?.({
+      text: value,
+      paperMentions: [],
+      ...(selection ? { paperSelection: selection } : {}),
+    }) ?? onResend?.(value) ?? false;
     if (!accepted) setSubmitting(false);
   };
   return <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
     <div className="chat-inline-editor">
+      {selection && <PaperSelectionCard selection={selection} editable onRemove={() => setSelection(undefined)} />}
       <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value} maxLength={8_000}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
@@ -328,9 +337,13 @@ const PlainUserEditor: React.FC<UserEditorProps> = ({ id, text, editNotice, onCa
 };
 
 const MentionUserEditor: React.FC<UserEditorProps & { paperMentions: PaperMentionDraft[]; enabled: boolean }> = ({
-  id, text, paperMentions, enabled, editNotice, onCancel, onResend, onResendDraft,
+  id, text, paperMentions, paperSelection, enabled, editNotice, onCancel, onResend, onResendDraft,
 }) => {
-  const [value, setValue] = React.useState<ChatDraft>({ text, paperMentions });
+  const [value, setValue] = React.useState<ChatDraft>({
+    text,
+    paperMentions,
+    ...(paperSelection ? { paperSelection } : {}),
+  });
   const [submitting, setSubmitting] = React.useState(false);
   const [scrollTop, setScrollTop] = React.useState(0);
   const { textareaRef, resize } = useEditorTextarea(text);
@@ -345,6 +358,13 @@ const MentionUserEditor: React.FC<UserEditorProps & { paperMentions: PaperMentio
   };
   return <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
     <div className="chat-inline-editor">
+      {value.paperSelection && (
+        <PaperSelectionCard
+          selection={value.paperSelection}
+          editable
+          onRemove={() => setValue({ text: value.text, paperMentions: value.paperMentions })}
+        />
+      )}
       <div className="chat-inline-editor-textarea-wrap">
         <PaperMentionHighlights text={value.text} mentions={value.paperMentions} scrollTop={scrollTop} variant="editor" />
         <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value.text} maxLength={8_000}
@@ -375,6 +395,7 @@ export const UserMessage: React.FC<{
   id?: string;
   text: string;
   paperMentions?: PaperMentionDraft[];
+  paperSelection?: PaperSelectionDraft;
   paperMentionsEnabled?: boolean;
   isInitial?: boolean;
   editingAllowed?: boolean;
@@ -388,6 +409,7 @@ export const UserMessage: React.FC<{
   id,
   text,
   paperMentions = [],
+  paperSelection,
   paperMentionsEnabled = false,
   editingAllowed = false,
   editing = false,
@@ -418,14 +440,15 @@ export const UserMessage: React.FC<{
 
   if (editing) {
     if (!paperMentionsEnabled && paperMentions.length === 0) {
-      return <PlainUserEditor id={id} text={text} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
+      return <PlainUserEditor id={id} text={text} paperSelection={paperSelection} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
     }
-    return <MentionUserEditor id={id} text={text} paperMentions={paperMentions} enabled={paperMentionsEnabled} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
+    return <MentionUserEditor id={id} text={text} paperMentions={paperMentions} paperSelection={paperSelection} enabled={paperMentionsEnabled} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
   }
 
   return (
     <div className="chat-msg chat-msg-user" data-message-id={id}>
       <div className="chat-user-message-wrap">
+        {paperSelection && <PaperSelectionCard selection={paperSelection} />}
         <div className="chat-bubble" onDoubleClick={selectDoubleClickedWord}>
           <InlinePaperMentions text={text} mentions={paperMentions} />
         </div>

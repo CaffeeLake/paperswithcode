@@ -30,6 +30,9 @@ export function useChatArchive({
     restoreDraft({
       text: failedMessage?.text ?? "",
       paperMentions: failedMessage?.paperMentions ?? [],
+      ...(failedMessage?.paperSelection
+        ? { paperSelection: failedMessage.paperSelection }
+        : {}),
     });
     clearTitle();
   };

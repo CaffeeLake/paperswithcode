@@ -6,6 +6,8 @@ import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 
 import { assertPdfWorkerConfigured } from "@/lib/pdf";
+import type { PaperSelectionDraft } from "@/lib/chat";
+import { usePdfSelection } from "@/hooks/usePdfSelection";
 import { PdfToolbar } from "./PdfToolbar";
 import type { PdfToolbarResources } from "./PdfToolbar";
 
@@ -17,6 +19,10 @@ interface PdfViewerProps {
   resources?: PdfToolbarResources;
   initialPage?: number;
   resizeActive?: boolean;
+  selectionEnabled?: boolean;
+  paperVersion?: string;
+  onPaperSelection?: (selection: PaperSelectionDraft) => void;
+  onPaperSelectionError?: (message: string) => void;
   onPageChange?: (page: number) => void;
 }
 
@@ -102,6 +108,10 @@ export function PdfViewer({
   resources,
   initialPage = 1,
   resizeActive = false,
+  selectionEnabled = false,
+  paperVersion = "",
+  onPaperSelection,
+  onPaperSelectionError,
   onPageChange,
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -129,6 +139,17 @@ export function PdfViewer({
   const [matches, setMatches] = useState<number[]>([]);
   const [activeMatch, setActiveMatch] = useState(0);
   const pageWidth = Math.max(240, Math.round(fitWidth * zoom));
+
+  usePdfSelection({
+    enabled: selectionEnabled && Boolean(paperVersion),
+    pagesRoot: pagesRef,
+    routeId: paperKey,
+    paperVersion,
+    numPages: pages || undefined,
+    resetKey: `${paperKey}-${retry}`,
+    onSelect: onPaperSelection,
+    onError: onPaperSelectionError,
+  });
 
   useEffect(() => {
     assertPdfWorkerConfigured();

@@ -17,6 +17,18 @@
 .reader-tabs { height: 40px; flex: 0 0 auto; display: flex; border-bottom: 1px solid var(--border); background: var(--surface); }
 .reader-tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-muted); }
 .reader-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 600; }
+.reader-tab-pending {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+@media (forced-colors: active) {
+  .reader-tab-pending { border: 1px solid ButtonText; }
+}
 .reader-workspace .is-hidden { position: absolute !important; inset: 0; width: 100% !important; visibility: hidden; pointer-events: none; }
 .reader-workspace.is-tabs > .reader-paper-pane, .reader-workspace.is-tabs > .reader-assistant-pane { width: 100%; }
 .reader-status { min-height: 100dvh; display: grid; place-content: center; gap: 12px; text-align: center; }

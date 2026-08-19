@@ -12,6 +12,7 @@ import {
   resumeChat,
   streamChat,
 } from "@/lib/chat";
+import { emptyChatDraft, toPaperSelectionWire } from "@/lib/paperSelection";
 import {
   ChatLatencyTracker,
   type ChatTerminalClassification,
@@ -111,7 +112,7 @@ export function useChat(options: UseChatOptions) {
   const activeMessagesGenerationRef = useRef<number | null>(null);
   const activeProjectionVisibleRef = useRef(false);
   const optionsRef = useRef(options);
-  const promptRef = useRef<ChatDraft>({ text: "", paperMentions: [] });
+  const promptRef = useRef<ChatDraft>(emptyChatDraft());
   const idRef = useRef(0);
   const messagesGenerationRef = useRef(0);
   const activeSessionIdRef = useRef(options.sessionId);
@@ -411,7 +412,11 @@ export function useChat(options: UseChatOptions) {
           if (event.type === "sandbox_start") {
             armWorkspaceStatus(controller, messagesGeneration);
           }
-          if (event.type === "lifecycle") {
+          if (
+            event.type === "sandbox_ready"
+            || event.type === "workspace_ready"
+            || event.type === "lifecycle"
+          ) {
             clearWorkspaceStatus(controller);
           }
           if (
@@ -527,6 +532,12 @@ export function useChat(options: UseChatOptions) {
                 "paper_context_unavailable",
                 "paper_mention_unavailable",
                 "paper_mentions_disabled",
+                "paper_selection_disabled",
+                "paper_selection_requires_reader",
+                "paper_selection_paper_mismatch",
+                "paper_selection_version_mismatch",
+                "paper_selection_page_invalid",
+                "paper_selection_too_large",
                 "chat_storage_quota_exceeded",
               ].includes(error.code ?? "")
             ) {
@@ -622,7 +633,7 @@ export function useChat(options: UseChatOptions) {
   };
 
   const send = useStableCallback((input: ChatDraft | string) => {
-    const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
+    const draft = typeof input === "string" ? emptyChatDraft(input.trim()) : input;
     const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const current = messagesRef.current;
@@ -630,7 +641,13 @@ export function useChat(options: UseChatOptions) {
     const replacement = latestUser?.status && latestUser.status !== "complete" && latestUser.revision
       ? { replace_message_id: latestUser.id, prior_revision: latestUser.revision }
       : null;
-    const nextUser: ChatMessage = { id: nextId(), role: "user", text: question, paperMentions: draft.paperMentions };
+    const nextUser: ChatMessage = {
+      id: nextId(),
+      role: "user",
+      text: question,
+      paperMentions: draft.paperMentions,
+      paperSelection: draft.paperSelection,
+    };
     const nextAssistant: ChatMessage = { id: nextId(), role: "assistant", streaming: true, blocks: [] };
     const replaceIndex = replacement && latestUser
       ? findLastMatchingIndex(current, (message) => message.id === latestUser.id)
@@ -650,13 +667,14 @@ export function useChat(options: UseChatOptions) {
         ? { primary_paper_route_id: optionsRef.current.primaryPaperRouteId }
         : {}),
       ...(viewerContext ? { viewer_context: viewerContext } : {}),
+      ...(draft.paperSelection ? { paper_selection: toPaperSelectionWire(draft.paperSelection) } : {}),
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
     }, optimistic, current);
   });
 
   const editAndResend = useStableCallback((messageId: string, input: ChatDraft | string) => {
-    const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
+    const draft = typeof input === "string" ? emptyChatDraft(input.trim()) : input;
     const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const snapshot = messagesRef.current.slice();
@@ -671,6 +689,7 @@ export function useChat(options: UseChatOptions) {
       role: "user",
       text: question,
       paperMentions: draft.paperMentions,
+      paperSelection: draft.paperSelection,
       revision: target.revision + 1,
       status: "generating",
     };
@@ -693,6 +712,7 @@ export function useChat(options: UseChatOptions) {
         ? { primary_paper_route_id: optionsRef.current.primaryPaperRouteId }
         : {}),
       ...(viewerContext ? { viewer_context: viewerContext } : {}),
+      ...(draft.paperSelection ? { paper_selection: toPaperSelectionWire(draft.paperSelection) } : {}),
       replace_message_id: target.id,
       prior_revision: target.revision,
     }, optimistic, snapshot, {
@@ -830,6 +850,7 @@ export function useChat(options: UseChatOptions) {
         const draft: ChatDraft = {
           text: lastUser.text ?? "",
           paperMentions: lastUser.paperMentions ?? [],
+          ...(lastUser.paperSelection ? { paperSelection: lastUser.paperSelection } : {}),
         };
         const optimistic = [
           ...restored,

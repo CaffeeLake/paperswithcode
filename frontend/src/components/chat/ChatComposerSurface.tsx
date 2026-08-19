@@ -42,7 +42,13 @@ export function ChatComposerSurface({
         key={example}
         className="chat-example"
         disabled={paused}
-        onClick={() => composerProps.onSend({ text: example, paperMentions: [] })}
+        onClick={() => composerProps.onSend({
+          text: example,
+          paperMentions: [],
+          ...(composerProps.draft?.paperSelection
+            ? { paperSelection: composerProps.draft.paperSelection }
+            : {}),
+        })}
       >{example}</button>)}
     </div>}
   </>;

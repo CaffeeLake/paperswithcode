@@ -14,6 +14,7 @@ vi.mock("@/hooks/usePapers", () => ({
       arxiv_id: "1706.03762",
       title: "Attention Is All You Need",
       source: "arxiv",
+      version: "v7",
       url_pdf: "https://arxiv.org/pdf/1706.03762v7.pdf",
       repositories: [
         { id: "1", paper_id: "42", url: "https://github.com/attention-is-all-you-need/paper", owner: "Attention", name: "paper", num_stars: 1200, is_official: true, source: "curated" },
@@ -32,11 +33,14 @@ vi.mock("@/lib/api/chat", () => ({
   chatApi: { getAvailability: mocks.getAvailability },
 }));
 vi.mock("@/components/pdf/PdfViewer", () => ({
-  PdfViewer: ({ url, paperTitle, paperHref, resources, resizeActive }: {
+  PdfViewer: ({ url, paperTitle, paperHref, resources, resizeActive, selectionEnabled, paperVersion, onPaperSelection }: {
     url: string;
     paperTitle: string;
     paperHref: string;
     resizeActive?: boolean;
+    selectionEnabled?: boolean;
+    paperVersion?: string;
+    onPaperSelection?: (selection: { routeId: string; paperVersion: string; page: number; text: string }) => void;
     resources?: {
       repository?: { href: string; stars: number };
       projectPage?: { href: string; label: string };
@@ -47,11 +51,19 @@ vi.mock("@/components/pdf/PdfViewer", () => ({
     {resources?.repository && <a href={resources.repository.href}>Official repository · {resources.repository.stars} stars</a>}
     {resources?.projectPage && <a href={resources.projectPage.href}>Project page</a>}
     {resources?.huggingFace && <a href={resources.huggingFace.href}>{resources.huggingFace.count} HF artifacts</a>}
-    <div role="region" aria-label="Paper PDF" data-url={url} data-resize-active={String(Boolean(resizeActive))}>PDF viewer</div>
+    <div role="region" aria-label="Paper PDF" data-url={url} data-resize-active={String(Boolean(resizeActive))} data-selection-enabled={String(Boolean(selectionEnabled))} data-paper-version={paperVersion || ""}>PDF viewer</div>
+    <button type="button" onClick={() => onPaperSelection?.({
+      routeId: "1706.03762",
+      paperVersion: paperVersion || "v7",
+      page: 4,
+      text: "Attention Is All You Need",
+    })}>Attach selection</button>
   </div>,
 }));
 vi.mock("@/views/ChatView", () => ({
-  ChatExperience: () => <div>Paper chat</div>,
+  ChatExperience: ({ paperSelection }: { paperSelection?: { page: number } }) => (
+    <div>Paper chat{paperSelection ? ` selection page ${paperSelection.page}` : ""}</div>
+  ),
 }));
 
 import PaperReaderView, { readerToolbarResources } from "@/views/PaperReaderView";
@@ -199,5 +211,53 @@ describe("PaperReaderView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(await screen.findByText("Chat is not enabled for this preview."))
       .toBeVisible();
+  });
+
+  it("keeps selection capture off until the live flag is on", async () => {
+    renderReader();
+    await waitFor(() => expect(mocks.getAvailability).toHaveBeenCalled());
+    expect(screen.getByRole("region", { name: "Paper PDF" }))
+      .toHaveAttribute("data-selection-enabled", "false");
+  });
+
+  it("restores collapsed desktop chat for a selection without switching the paper tab", async () => {
+    mocks.getAvailability.mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: true,
+      native_pdf_reader_enabled: true,
+      paper_reader_chat_enabled: true,
+      paper_reader_selection_enabled: true,
+    });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
+    renderReader();
+    fireEvent.click(await screen.findByRole("button", { name: "Hide chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "Attach selection" }));
+    expect(screen.getByRole("tabpanel", { name: "Chat" })).not.toHaveClass("is-collapsed");
+    expect(screen.getByText("Paper chat selection page 4")).toBeVisible();
+  });
+
+  it("marks the Chat tab as pending without switching away from the paper", async () => {
+    mocks.getAvailability.mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: true,
+      native_pdf_reader_enabled: true,
+      paper_reader_chat_enabled: true,
+      paper_reader_selection_enabled: true,
+    });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(500);
+    renderReader();
+    expect(await screen.findByRole("tab", { name: "Chat" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Attach selection" }));
+    expect(screen.getByRole("tab", { name: "Chat, selection attached" })).toBeVisible();
+    expect(screen.getByRole("tabpanel", { name: "Paper" })).not.toHaveClass("is-hidden");
+    expect(document.getElementById("reader-chat-panel")).toHaveClass("is-hidden");
+    expect(document.getElementById("reader-chat-panel")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("button", { name: "Hide chat" })).not.toBeInTheDocument();
   });
 });

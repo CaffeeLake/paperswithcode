@@ -1,6 +1,6 @@
 import { chatApi } from "@/lib/api/chat";
 import { ApiError } from "@/lib/apiTransport";
-import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft, ReasoningEffort } from "@/lib/chat";
+import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft, PaperSelectionDraft, ReasoningEffort } from "@/lib/chat";
 
 export interface ChatSession {
   id: string;
@@ -29,6 +29,15 @@ export interface ChatSessionDetail extends ChatSession {
     role: "user" | "assistant";
     content: string;
     paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
+    paper_selection?: {
+      route_id: string;
+      paper_version: string;
+      page: number;
+      text: string;
+      text_sha256?: string;
+      included_bytes?: number;
+      page_verified?: boolean;
+    } | null;
     viewer_context?: { page: number } | null;
     revision: number;
     status: string;
@@ -53,6 +62,15 @@ export interface PublicChatMessage {
   role: "user" | "assistant";
   content: string;
   paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
+  paper_selection?: {
+    route_id: string;
+    paper_version: string;
+    page: number;
+    text: string;
+    text_sha256?: string;
+    included_bytes?: number;
+    page_verified?: boolean;
+  } | null;
   display_blocks: ChatBlock[];
   citations: ChatCitation[];
   model?: string | null;
@@ -188,6 +206,16 @@ function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlo
   });
 }
 
+function toPaperSelection(selection?: ChatSessionDetail["messages"][number]["paper_selection"]): PaperSelectionDraft | undefined {
+  if (!selection?.text) return undefined;
+  return {
+    routeId: selection.route_id,
+    paperVersion: selection.paper_version,
+    page: selection.page,
+    text: selection.text,
+  };
+}
+
 export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
   const failureMessage = (code: string | null): string => {
     if (code === "hf_inference_billing_exhausted") {
@@ -230,6 +258,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
         ...mention,
         key: mention.occurrence_id,
       })),
+      paperSelection: toPaperSelection(message.paper_selection),
       revision: message.revision,
       status: message.status,
       error: message.status === "complete" ? undefined : message.error_code || message.status,
@@ -258,6 +287,7 @@ export function publicShareToUiMessages(detail: ChatShareDetail): ChatMessage[] 
           ...mention,
           key: mention.occurrence_id,
         })),
+        paperSelection: toPaperSelection(message.paper_selection),
       }
     : {
         id: message.id,

@@ -92,6 +92,7 @@ def _public_projection(rows: list[ChatMessageRecord]) -> list[PublicChatMessage]
                 role="user",
                 content=row.content,
                 paper_mentions=getattr(row, "paper_mentions", None) or [],
+                paper_selection=getattr(row, "paper_selection", None),
             )
         )
         if row.status not in {"error", "interrupted"}:

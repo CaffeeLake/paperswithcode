@@ -240,6 +240,44 @@ describe("useChat durable capacity handling", () => {
     expect(onInterrupted).toHaveBeenCalledWith(draft);
   });
 
+  it("sends a typed paper selection and restores it after a selection admission error", async () => {
+    let request: ChatStreamRequest | undefined;
+    streamChatMock.mockImplementation((next: ChatStreamRequest) => {
+      request = next;
+      return (async function* () {
+        yield* stream()();
+        throw new ChatStreamError(
+          "Paper selection is currently disabled. Remove it before sending.",
+          "paper_selection_disabled",
+          409,
+        );
+      })();
+    });
+    const original = uiTurn("user-1", "Earlier");
+    const draft = {
+      text: "What does this mean?",
+      paperMentions: [],
+      paperSelection: {
+        routeId: "2608.09119",
+        paperVersion: "v1",
+        page: 4,
+        text: "quoted evidence",
+      },
+    };
+    const { result, onInterrupted } = renderChat();
+    act(() => result.current.load(original));
+    act(() => expect(result.current.send(draft)).toBe(true));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(request?.paper_selection).toEqual({
+      route_id: "2608.09119",
+      paper_version: "v1",
+      page: 4,
+      text: "quoted evidence",
+    });
+    expect(result.current.messages).toEqual(original);
+    expect(onInterrupted).toHaveBeenCalledWith(draft);
+  });
+
   it("preserves the draft without a timed retry when chat is disabled", async () => {
     streamChatMock.mockImplementation(() => (async function* () {
       yield* stream()();

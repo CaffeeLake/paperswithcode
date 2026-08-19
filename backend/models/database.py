@@ -2312,6 +2312,7 @@ class ChatMessageRecord(Base):
     )
     primary_paper_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     viewer_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    paper_selection: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     effective_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     langfuse_trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)

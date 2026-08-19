@@ -77,6 +77,7 @@ export function ChatConversation({
           id="queued-launch-preview"
           text={queuedDraft.text}
           paperMentions={queuedDraft.paperMentions}
+          paperSelection={queuedDraft.paperSelection}
           isInitial
         />}
         {messages.map((message) => message.role === "user"
@@ -85,6 +86,7 @@ export function ChatConversation({
               id={message.id}
               text={message.text ?? ""}
               paperMentions={message.paperMentions ?? []}
+              paperSelection={message.paperSelection}
               paperMentionsEnabled={paperMentionsEnabled}
               isInitial={message.id === firstUserId}
               editingAllowed={!busy && Boolean(message.revision)}

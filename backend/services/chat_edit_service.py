@@ -32,39 +32,36 @@ INACTIVE_STATUSES = ("superseded", PREPARING_STATUS)
 def _projection_bytes(message: ChatMessageRecord) -> int:
     content = getattr(message, "content", "")
     if message.role == "user":
-        effective_prompt = getattr(message, "effective_prompt", None)
-        if effective_prompt is None:
-            return len(content.encode())
-        mentions = len(
-            json.dumps(
-                getattr(message, "paper_mentions", None) or [],
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode()
-        )
-        return len(content.encode()) + len(effective_prompt.encode()) + mentions
-    payload = len(
-        json.dumps(
-            getattr(message, "display_blocks", None) or [],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
-    )
-    payload += len(
-        json.dumps(
-            getattr(message, "citations", None) or [],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
-    )
-    payload += len(
-        json.dumps(
-            getattr(message, "followups", None) or [],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
+        return user_message_projection_bytes(message)
+    payload = _payload_bytes(
+        getattr(message, "display_blocks", None) or [],
+        getattr(message, "citations", None) or [],
+        getattr(message, "followups", None) or [],
     )
     return len(content.encode()) + payload
+
+
+def _payload_bytes(*values: object) -> int:
+    return sum(
+        len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+        for value in values
+        if value is not None
+    )
+
+
+def user_message_projection_bytes(message: ChatMessageRecord) -> int:
+    content = getattr(message, "content", "") or ""
+    effective_prompt = getattr(message, "effective_prompt", None)
+    if effective_prompt is None:
+        return len(content.encode())
+    extras: list[object] = [getattr(message, "paper_mentions", None) or []]
+    for field in ("primary_paper_context", "viewer_context", "paper_selection"):
+        value = getattr(message, field, None)
+        if value:
+            extras.append(value)
+    return (
+        len(content.encode()) + len(effective_prompt.encode()) + _payload_bytes(*extras)
+    )
 
 
 class ChatEditService:

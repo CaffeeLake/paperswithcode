@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Literal, Union
@@ -67,6 +68,55 @@ class ViewerContextRequest(BaseModel):
     page: int = Field(ge=1, le=10_000)
 
 
+PAPER_SELECTION_MAX_CHARS = 8_000
+PAPER_SELECTION_MAX_BYTES = 16_384
+
+
+def normalize_paper_selection_text(value: str) -> str:
+    text = value.replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
+    text = re.sub(r"[^\S\n]+", " ", text)
+    return text.strip()
+
+
+class PaperSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=200, strip_whitespace=True),
+    ]
+    paper_version: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=32, strip_whitespace=True),
+    ]
+    page: int = Field(ge=1, le=10_000)
+    text: Annotated[
+        str, StringConstraints(min_length=1, max_length=PAPER_SELECTION_MAX_CHARS)
+    ]
+
+    @field_validator("text")
+    @classmethod
+    def normalize_and_bound_text(cls, value: str) -> str:
+        normalized = normalize_paper_selection_text(value)
+        if not normalized:
+            raise ValueError("Paper selection must not be empty")
+        if len(normalized.encode("utf-8")) > PAPER_SELECTION_MAX_BYTES:
+            raise ValueError("Paper selection exceeds the maximum size")
+        return normalized
+
+
+class PaperSelectionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: str
+    paper_version: str
+    page: int
+    text: str
+    text_sha256: str
+    included_bytes: int
+    page_verified: Literal[False] = False
+
+
 class PrimaryPaperProjection(BaseModel):
     """Authoritative safe session projection for a reader-bound paper."""
 
@@ -111,6 +161,7 @@ class ChatRequest(BaseModel):
         | None
     ) = None
     viewer_context: ViewerContextRequest | None = None
+    paper_selection: PaperSelectionRequest | None = None
 
     @model_validator(mode="after")
     def validate_message(self) -> "ChatRequest":
@@ -140,6 +191,10 @@ class ChatRequest(BaseModel):
             self.session_id is None and self.primary_paper_route_id is None
         ):
             raise ValueError("Viewer context requires a paper-bound chat")
+        if self.paper_selection is not None and (
+            self.session_id is None and self.primary_paper_route_id is None
+        ):
+            raise ValueError("Paper selection requires a paper-bound chat")
         return self
 
 
@@ -385,6 +440,7 @@ class ChatMessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
+    paper_selection: PaperSelectionSnapshot | None = None
     viewer_context: ViewerContextRequest | None = None
     revision: int
     status: str
@@ -414,6 +470,7 @@ class PublicChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(max_length=256_000)
     paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
+    paper_selection: PaperSelectionSnapshot | None = None
     display_blocks: list[DisplayBlock] = Field(default_factory=list)
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
     model: str | None = Field(default=None, max_length=255)

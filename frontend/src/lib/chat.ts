@@ -143,6 +143,7 @@ export interface ChatStreamRequest {
   reasoning_effort?: ReasoningEffort;
   primary_paper_route_id?: string;
   viewer_context?: { page: number };
+  paper_selection?: PaperSelectionWire;
 }
 
 export interface PaperMentionDraft {
@@ -157,9 +158,24 @@ export interface PaperMentionDraft {
 
 export type PaperMentionWire = Pick<PaperMentionDraft, "route_id" | "title" | "start" | "end">;
 
+export interface PaperSelectionDraft {
+  routeId: string;
+  paperVersion: string;
+  page: number;
+  text: string;
+}
+
+export interface PaperSelectionWire {
+  route_id: string;
+  paper_version: string;
+  page: number;
+  text: string;
+}
+
 export interface ChatDraft {
   text: string;
   paperMentions: PaperMentionDraft[];
+  paperSelection?: PaperSelectionDraft;
 }
 
 /* ---------- UI message model (also persisted for session history) ---------- */
@@ -239,6 +255,7 @@ export interface ChatMessage {
   revision?: number;
   status?: string;
   paperMentions?: PaperMentionDraft[];
+  paperSelection?: PaperSelectionDraft;
 }
 
 export const isChatLive = (): boolean => {

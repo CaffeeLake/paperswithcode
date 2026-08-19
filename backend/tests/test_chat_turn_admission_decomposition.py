@@ -132,6 +132,7 @@ def test_reader_context_is_reclaimed_with_replaced_user_projection():
         paper_mentions=[],
         primary_paper_context={"route_id": "1706.03762"},
         viewer_context={"page": 7},
+        paper_selection={"page": 4, "text": "quoted"},
     )
 
     assert _message_projection_bytes(message) == sum(
@@ -142,6 +143,7 @@ def test_reader_context_is_reclaimed_with_replaced_user_projection():
             "[]",
             '{"route_id":"1706.03762"}',
             '{"page":7}',
+            '{"page":4,"text":"quoted"}',
         )
     )
 

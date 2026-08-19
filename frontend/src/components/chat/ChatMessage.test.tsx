@@ -39,6 +39,25 @@ describe("UserMessage", () => {
     expect(screen.getByText(/Compare/)).toHaveTextContent("Compare Attention Is All You Need today");
   });
 
+  it("renders a historical selection card without a remove control", () => {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><UserMessage
+          text="What does this mean?"
+          paperSelection={{
+            routeId: "2608.09119",
+            paperVersion: "v1",
+            page: 4,
+            text: "quoted evidence",
+          }}
+        /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Selection · Page 4")).toBeInTheDocument();
+    expect(screen.getByText("quoted evidence")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove selected paper passage" })).not.toBeInTheDocument();
+  });
+
   it("renders new paper-title markers without a visible at-sign", () => {
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>

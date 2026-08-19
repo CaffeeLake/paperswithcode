@@ -10,6 +10,7 @@ interface ChatSharingProps {
   sessionId: string;
   busy: boolean;
   loading: boolean;
+  hasPaperSelection?: boolean;
   onError: (message: string) => void;
 }
 
@@ -17,6 +18,7 @@ export function ChatSharing({
   sessionId,
   busy,
   loading,
+  hasPaperSelection = false,
   onError,
 }: ChatSharingProps) {
   const { toast } = useToast();
@@ -25,6 +27,9 @@ export function ChatSharing({
 
   const share = async () => {
     if (busy || pending) return;
+    if (hasPaperSelection && !window.confirm(
+      "This public link will include the selected paper passage. Anyone with the link can read that passage. Continue?",
+    )) return;
     setPending(true);
     try {
       const result = await createOrRefreshShare(sessionId);

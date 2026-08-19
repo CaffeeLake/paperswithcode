@@ -1147,6 +1147,7 @@ class _ChatSchemaDB:
                         ("chat_sessions", "primary_paper_id"),
                         ("chat_messages", "primary_paper_context"),
                         ("chat_messages", "viewer_context"),
+                        ("chat_messages", "paper_selection"),
                     ]
                 )
             if self.include_edit_columns:

@@ -86,6 +86,7 @@ def _row(
     error_code=None,
     model=None,
     paper_mentions=None,
+    paper_selection=None,
     effective_prompt=None,
 ):
     return SimpleNamespace(
@@ -100,6 +101,7 @@ def _row(
         error_code=error_code,
         model=model,
         paper_mentions=paper_mentions or [],
+        paper_selection=paper_selection,
         effective_prompt=effective_prompt,
     )
 
@@ -221,6 +223,15 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     user = _row(
         1,
         content="Read @A paper",
+        paper_selection={
+            "route_id": "2501.00001",
+            "paper_version": "v2",
+            "page": 4,
+            "text": "quoted evidence",
+            "text_sha256": "a" * 64,
+            "included_bytes": 16,
+            "page_verified": False,
+        },
         paper_mentions=[
             {
                 "occurrence_id": "mention-1",
@@ -280,6 +291,15 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     assert payload["messages"][1]["finish_reason"] == "tool_limit"
     assert payload["messages"][1]["display_blocks"][1]["status"] == "error"
     assert payload["messages"][0]["paper_mentions"][0]["route_id"] == "2501.00001"
+    assert payload["messages"][0]["paper_selection"] == {
+        "route_id": "2501.00001",
+        "paper_version": "v2",
+        "page": 4,
+        "text": "quoted evidence",
+        "text_sha256": "a" * 64,
+        "included_bytes": 16,
+        "page_verified": False,
+    }
     serialized = str(payload)
     assert "private exact model input" not in serialized
     assert "secret-provider-route" not in serialized
