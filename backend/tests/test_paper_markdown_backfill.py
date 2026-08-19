@@ -171,6 +171,7 @@ def _scheduler(*, execute: bool, confirm: bool, full: bool = True):
             "paper_markdown_backfill_concurrency": 4,
             "paper_markdown_incremental_batch_size": 100,
             "paper_markdown_backfill_batch_size": 100,
+            "paper_markdown_hf_bucket_id": "test/paper-markdown",
         },
     )()
     job.full = full
@@ -216,6 +217,38 @@ def test_budget_exhaustion_is_a_successful_noop(monkeypatch):
         job, "_budget_decision", lambda _desired, _jobs: {"affordable_jobs": 0}
     )
     assert job._launch(_candidates(1)) == []
+
+
+def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    papers = _candidates(2)
+    job = _scheduler(execute=False, confirm=False)
+    job._papers = Mock(return_value=papers)
+    job._existing_paths = Mock(return_value={papers[0]["output_key"]: object()})
+    job._copy_upstream = Mock(return_value=([papers[1]], 0))
+    job._status_records = Mock(return_value={})
+    job._launch = Mock(return_value=[])
+
+    job.run()
+    job.run()
+
+    history = tmp_path / MODULE.COVERAGE_HISTORY_NAME
+    rows = [json.loads(line) for line in history.read_text().splitlines()]
+    assert len(rows) == 2
+    assert all(
+        row | {"observed_at": None}
+        == {
+            "observed_at": None,
+            "scope": "full",
+            "eligible_papers": 2,
+            "canonical_markdown_count": 1,
+            "copied_from_upstream_count": 0,
+            "missing_count": 1,
+            "coverage_percentage": 50.0,
+        }
+        for row in rows
+    )
+    job._launch.assert_called_with([{**papers[1], "retry": False}])
 
 
 @pytest.mark.parametrize("affordable", [0, 1, 3, 4])

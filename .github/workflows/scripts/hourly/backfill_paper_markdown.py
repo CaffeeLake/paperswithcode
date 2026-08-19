@@ -421,8 +421,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
             if papers
             else 100.0,
         }
-        if self.should_execute:
-            append_coverage_history(coverage)
+        append_coverage_history(coverage)
         launched = self._launch(candidates)
         metrics = {
             "mode": "backfill" if self.full else "live",
