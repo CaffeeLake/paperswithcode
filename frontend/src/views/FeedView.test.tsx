@@ -57,19 +57,19 @@ describe("AskAssistant", () => {
       .toBeVisible();
   });
 
-  it("offers only DeepSeek through OpenRouter on staging", () => {
+  it("offers only DeepSeek through Hugging Face on staging", () => {
     expect(FALLBACK_CHAT_MODELS).toHaveLength(1);
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
       id: "deepseek-ai/DeepSeek-V4-Flash-0731",
       label: "DeepSeek V4 Flash",
-      provider: "openrouter",
+      provider: "huggingface",
     });
     renderAskAssistant();
 
     expect(screen.queryByRole("link", { name: "OpenRouter" }))
       .not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Inference Providers" }))
-      .not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inference Providers" }))
+      .toBeVisible();
   });
 
   it("shows only a read-only DeepSeek label in the production preview", () => {
@@ -81,8 +81,8 @@ describe("AskAssistant", () => {
     );
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByText(/Luna|Terra/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Inference Providers" }))
-      .not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inference Providers" }))
+      .toBeVisible();
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {

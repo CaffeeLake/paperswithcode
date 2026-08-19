@@ -928,7 +928,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "deepseek-ai/DeepSeek-V4-Flash-0731",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek/deepseek-v4-flash-0731"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
     for legacy_id in (
         "google/gemma-4-31B-it",
@@ -943,18 +943,40 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         )
     assert (
         production.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "openrouter"
+        == "huggingface"
+    )
+    assert production.chat_effective_pi_prewarm_model == (
+        "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
     assert staging.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek/deepseek-v4-flash-0731"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
     assert staging.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "openrouter"
+        "huggingface"
     )
     for legacy_id in ("openai/gpt-5.6-luna", "openai/gpt-5.6-terra"):
         assert staging.chat_model_routes[legacy_id] == (
-            "deepseek/deepseek-v4-flash-0731"
+            "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
         )
+
+    openrouter = Settings(
+        environment="production",
+        chat_deepseek_v4_flash_provider="openrouter",
+    )
+    assert openrouter.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
+        "deepseek/deepseek-v4-flash-0731"
+    )
+    assert (
+        openrouter.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        == "openrouter"
+    )
+    assert openrouter.chat_effective_pi_prewarm_model == (
+        "deepseek/deepseek-v4-flash-0731"
+    )
+    assert "deepseek/deepseek-v4-flash-0731" in openrouter.chat_openrouter_routes
+    assert openrouter.chat_route_providers[production.chat_deepseek_v4_flash_route] == (
+        "huggingface"
+    )
 
     comparison = Settings(
         environment="staging",

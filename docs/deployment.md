@@ -325,14 +325,21 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-Production and staging expose only DeepSeek V4 Flash through their respective,
-environment-isolated OpenRouter credentials, keyrings, ledgers, and gateways.
-Both use the stable
-`deepseek/deepseek-v4-flash-0731` route with Nitro throughput sorting. The
-explicit `provider.sort=throughput` request policy is equivalent to the
-`:nitro` suffix while preserving the stable route used by durable accounting.
-Admission checks provider-authoritative monthly usage before each turn, and the
-provider key must prove an exact monthly `$200` environment workspace limit.
+Production and staging expose DeepSeek V4 Flash under one stable public model
+ID. `PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER` selects the user-funded Hugging Face
+route `deepseek-ai/DeepSeek-V4-Flash-0731:fastest` by default or the
+server-funded OpenRouter route `deepseek/deepseek-v4-flash-0731`. Both routes
+remain registered at the private gateway so a rolling switch does not invalidate
+already-issued capabilities. Hugging Face turns use each authenticated user's
+OAuth inference credential and are billed to that user's selected HF billing
+account.
+
+When OpenRouter is selected, its environment-isolated credentials, keyrings,
+ledgers, and gateway accounting remain active. The explicit
+`provider.sort=throughput` request policy is equivalent to the `:nitro` suffix
+while preserving the stable route used by durable accounting. Admission checks
+provider-authoritative monthly usage before each funded turn, and the provider
+key must prove an exact monthly `$200` environment workspace limit.
 Durable PostgreSQL reservations enforce a separate `$1` per-user ceiling on
 staging and a `$5` per-user ceiling on production before each funded gateway
 dispatch. Allowlisted staging admin subjects retain the `$5` ceiling. The same

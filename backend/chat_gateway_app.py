@@ -735,7 +735,7 @@ async def messages(
         _prefer_fastest_openrouter_provider(payload, settings)
         if (
             settings.chat_initial_payload_optimization_enabled
-            and model == settings.chat_pi_prewarm_model
+            and model == settings.chat_effective_pi_prewarm_model
             and row.provider_requests == 0
         ):
             removed = _optimize_initial_deepseek_payload(

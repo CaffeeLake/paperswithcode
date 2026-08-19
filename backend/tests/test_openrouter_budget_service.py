@@ -51,22 +51,25 @@ def _client(
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def test_deployed_model_registry_keeps_closed_openrouter_model_discoverable():
+def test_deployed_model_registry_defaults_to_user_funded_huggingface():
     settings = _settings(chat_openrouter_server_funded_enabled=False)
 
     assert settings.chat_model_choices == settings.chat_model_registry
     assert (
         settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "deepseek/deepseek-v4-flash-0731"
+        == "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
     assert (
         settings.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "openrouter"
+        == "huggingface"
     )
 
 
-def test_staging_exposes_explicitly_enabled_shared_provider():
-    settings = _settings(chat_openrouter_server_funded_enabled=True)
+def test_staging_can_switch_back_to_explicitly_enabled_shared_provider():
+    settings = _settings(
+        chat_openrouter_server_funded_enabled=True,
+        chat_deepseek_v4_flash_provider="openrouter",
+    )
 
     assert settings.chat_model_choices == (
         {

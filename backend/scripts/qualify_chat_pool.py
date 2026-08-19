@@ -249,7 +249,7 @@ class PoolQualification:
             raise ValueError("Configured memory request does not match the candidate")
         if (
             self.settings.chat_model_routes.get(self.selected_model)
-            != self.settings.chat_pi_prewarm_model
+            != self.settings.chat_effective_pi_prewarm_model
         ):
             raise ValueError("Selected model does not map to the Pi prewarm route")
 

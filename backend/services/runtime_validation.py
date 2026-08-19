@@ -421,15 +421,23 @@ def validate_chat_provider_policy(
             "enabled chat requires the Hugging Face OAuth authentication path"
         )
     discovered = settings.chat_model_choices
+    expected_huggingface_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     expected_openrouter_route = "deepseek/deepseek-v4-flash-0731"
+    if settings.chat_deepseek_v4_flash_route != expected_huggingface_route:
+        raise RuntimeError("DeepSeek V4 Flash must use the reviewed Hugging Face route")
     if settings.chat_deepseek_v4_flash_openrouter_route != expected_openrouter_route:
         raise RuntimeError("DeepSeek V4 Flash must use the reviewed OpenRouter route")
+    expected_provider = settings.chat_deepseek_v4_flash_provider
     expected_discovery = (
         {
             "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
             "label": "DeepSeek V4 Flash",
-            "route": expected_openrouter_route,
-            "provider": "openrouter",
+            "route": (
+                expected_huggingface_route
+                if expected_provider == "huggingface"
+                else expected_openrouter_route
+            ),
+            "provider": expected_provider,
         },
     )
     if settings.chat_alternative_model_enabled:
@@ -846,14 +854,15 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             raise RuntimeError("Pi prewarm requires persistent workers")
         if settings.chat_default_agent_harness != "pi":
             raise RuntimeError("Pi prewarm requires Pi as the default harness")
-        if settings.chat_pi_prewarm_model not in settings.chat_route_providers:
+        prewarm_model = settings.chat_effective_pi_prewarm_model
+        if prewarm_model not in settings.chat_route_providers:
             raise RuntimeError("Pi prewarm model is not in the route registry")
         expected_prewarm_model = (
             settings.chat_alternative_model
             if settings.chat_alternative_model_enabled
-            else settings.chat_deepseek_v4_flash_openrouter_route
+            else settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
         )
-        if settings.chat_pi_prewarm_model != expected_prewarm_model:
+        if prewarm_model != expected_prewarm_model:
             raise RuntimeError("Pi prewarm model does not match the qualified model")
         if not settings.chat_system_prompt_sha256:
             raise RuntimeError("Pi prewarm requires an immutable prompt digest")

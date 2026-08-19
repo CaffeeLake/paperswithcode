@@ -369,7 +369,7 @@ def _mark_and_report(
         argparse.Namespace(
             release_id=settings.release_id,
             image_id=settings.chat_modal_image_version,
-            model=settings.chat_pi_prewarm_model,
+            model=settings.chat_effective_pi_prewarm_model,
             after=started_at,
             run_id=run_id,
             pool_target=settings.chat_blank_pool_min,
@@ -498,7 +498,10 @@ def main() -> int:
     available_models = {choice["id"]: choice for choice in settings.chat_model_choices}
     if selected_model not in available_models:
         raise SystemExit("--model must be present in staging model discovery")
-    if available_models[selected_model]["route"] != settings.chat_pi_prewarm_model:
+    if (
+        available_models[selected_model]["route"]
+        != settings.chat_effective_pi_prewarm_model
+    ):
         raise SystemExit("selected model must match the staging Pi prewarm profile")
     if args.reasoning_effort != settings.chat_pi_prewarm_reasoning_effort:
         raise SystemExit(

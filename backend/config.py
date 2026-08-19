@@ -287,6 +287,13 @@ class Settings(BaseSettings):
     chat_deepseek_v4_flash_openrouter_route: str = Field(
         default="deepseek/deepseek-v4-flash-0731"
     )
+    chat_deepseek_v4_flash_provider: Literal["huggingface", "openrouter"] = Field(
+        default="huggingface",
+        description=(
+            "Provider selected for the stable DeepSeek V4 Flash model ID; both "
+            "routes remain registered for rolling switches"
+        ),
+    )
     # A staging-only, default-off candidate used for bounded model qualification.
     # Production discovery and the default model remain unchanged.
     chat_alternative_model_enabled: bool = Field(default=False)
@@ -477,10 +484,7 @@ class Settings(BaseSettings):
     chat_blank_pool_rotate_before_seconds: int = Field(default=3600, ge=60, le=43200)
     chat_blank_pool_refill_concurrency: int = Field(default=1, ge=1, le=4)
     chat_pi_prewarm_enabled: bool = Field(default=False)
-    chat_pi_prewarm_model: str = Field(
-        default="deepseek/deepseek-v4-flash-0731",
-        max_length=255,
-    )
+    chat_pi_prewarm_model: str = Field(default="", max_length=255)
     chat_pi_prewarm_reasoning_effort: Literal["low", "high", "max"] = Field(
         default="low"
     )
@@ -555,12 +559,18 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:
+        deepseek_provider = self.chat_deepseek_v4_flash_provider
+        deepseek_route = (
+            self.chat_deepseek_v4_flash_route
+            if deepseek_provider == "huggingface"
+            else self.chat_deepseek_v4_flash_openrouter_route
+        )
         choices = (
             {
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
                 "label": "DeepSeek V4 Flash",
-                "route": self.chat_deepseek_v4_flash_openrouter_route,
-                "provider": "openrouter",
+                "route": deepseek_route,
+                "provider": deepseek_provider,
             },
         )
         if self.environment != "staging" or not self.chat_alternative_model_enabled:
@@ -580,11 +590,14 @@ class Settings(BaseSettings):
 
     @property
     def chat_openrouter_routes(self) -> tuple[str, ...]:
-        return tuple(
+        routes = [
             choice["route"]
             for choice in self.chat_model_registry
             if choice["provider"] == "openrouter"
-        )
+        ]
+        if self.chat_deepseek_v4_flash_openrouter_route not in routes:
+            routes.append(self.chat_deepseek_v4_flash_openrouter_route)
+        return tuple(routes)
 
     @property
     def chat_model_choices(self) -> tuple[dict[str, str], ...]:
@@ -640,10 +653,20 @@ class Settings(BaseSettings):
         providers = {
             choice["route"]: choice["provider"] for choice in self.chat_model_registry
         }
-        # Rolling compatibility for capabilities issued by the immediately
-        # previous HF-backed release. Current model selection never chooses it.
+        # Both routes remain valid across a rolling provider switch. New turns use
+        # chat_deepseek_v4_flash_provider while already-issued capabilities keep
+        # their immutable route.
         providers.setdefault(self.chat_deepseek_v4_flash_route, "huggingface")
+        providers.setdefault(self.chat_deepseek_v4_flash_openrouter_route, "openrouter")
         return providers
+
+    @property
+    def chat_effective_pi_prewarm_model(self) -> str:
+        if self.chat_pi_prewarm_model:
+            return self.chat_pi_prewarm_model
+        if self.chat_alternative_model_enabled:
+            return self.chat_alternative_model
+        return self.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
 
     # GitHub API configuration
     github_token: str = Field(

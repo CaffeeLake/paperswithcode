@@ -99,7 +99,7 @@ def sandbox_environment(
         "PWC_CHAT_PI_PREWARM_ENABLED": str(
             settings.chat_pi_prewarm_enabled and pi_prewarm
         ).lower(),
-        "PWC_CHAT_PI_PREWARM_MODEL": settings.chat_pi_prewarm_model,
+        "PWC_CHAT_PI_PREWARM_MODEL": settings.chat_effective_pi_prewarm_model,
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": (
             settings.chat_pi_prewarm_reasoning_effort
         ),

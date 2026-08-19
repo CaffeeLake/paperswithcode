@@ -83,14 +83,14 @@ export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: DEFAULT_CHAT_MODEL,
     label: "DeepSeek V4 Flash",
-    provider: "openrouter",
+    provider: "huggingface",
   },
 ];
 export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: DEFAULT_CHAT_MODEL,
     label: "DeepSeek V4 Flash",
-    provider: "openrouter",
+    provider: "huggingface",
   },
 ];
 // Compatibility export for staging-focused consumers and tests. Deployed UI

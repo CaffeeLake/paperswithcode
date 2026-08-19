@@ -203,7 +203,9 @@ class ChatSandboxPoolRepository:
                 self.settings.chat_pi_version if pi_prewarm else "generic"
             ),
             model_profile=(
-                self.settings.chat_pi_prewarm_model if pi_prewarm else "generic"
+                self.settings.chat_effective_pi_prewarm_model
+                if pi_prewarm
+                else "generic"
             ),
             reasoning_profile=(
                 self.settings.chat_pi_prewarm_reasoning_effort

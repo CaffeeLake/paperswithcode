@@ -66,7 +66,8 @@ def provider_health(db: Session, settings: Settings, now: datetime) -> ProviderH
     terminal = ChatMessageRecord.status.in_(("complete", "error", "interrupted"))
     scope = (
         ChatMessageRecord.role == "user",
-        ChatMessageRecord.model_route == settings.chat_deepseek_v4_flash_route,
+        ChatMessageRecord.model_route
+        == settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"],
         ChatMessageRecord.created_at >= start,
         ChatMessageRecord.created_at <= now,
         terminal,
