@@ -715,9 +715,44 @@ describe("AssistantMessage", () => {
     });
 
     expect(screen.getByRole("region", { name: "Interactive Excalidraw diagram" })).toBeVisible();
-    expect(screen.getByText("Visual explanation")).toBeVisible();
-    expect(screen.getByText(/processed by the remote Excalidraw MCP service/)).toBeVisible();
+    expect(screen.queryByText("Visual explanation")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Experimental/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/processed by the remote Excalidraw MCP service/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry diagram" })).toBeVisible();
     expect(screen.getByText("This schematic compares the two methods.")).toBeVisible();
+  });
+
+  it("exits an Excalidraw diagram fullscreen overlay on Escape", async () => {
+    const user = userEvent.setup();
+    const { container } = renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: false,
+      blocks: [
+        {
+          kind: "app",
+          schema_version: 1,
+          instance_id: "app-1",
+          provider: "excalidraw",
+          server: "excalidraw",
+          tool: "create_view",
+          resource_uri: "ui://excalidraw/mcp-app.html",
+          status: "loading",
+          input: { elements: "[]" },
+          result: { content: [], structuredContent: {}, isError: false },
+          csp: {},
+          permissions: { clipboardWrite: true },
+          height: 525,
+        },
+      ],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Fullscreen" }));
+    expect(container.querySelector(".chat-mcp-app-fullscreen")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(container.querySelector(".chat-mcp-app-fullscreen")).toBeNull();
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeVisible();
   });
 });

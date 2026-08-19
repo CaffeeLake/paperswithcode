@@ -18,8 +18,43 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
   const [height, setHeight] = React.useState(clampHeight(block.height));
   const [fullscreen, setFullscreen] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
+  const root = React.useRef<HTMLSectionElement>(null);
   const elements = block.input.elements;
   const clipboardWrite = Boolean(block.permissions.clipboardWrite);
+
+  const exitFullscreen = React.useCallback(() => {
+    setFullscreen(false);
+    if (document.fullscreenElement) void document.exitFullscreen();
+  }, []);
+
+  const toggleFullscreen = React.useCallback(() => {
+    if (fullscreen) {
+      exitFullscreen();
+      return;
+    }
+    setFullscreen(true);
+    void root.current?.requestFullscreen?.().catch(() => undefined);
+  }, [exitFullscreen, fullscreen]);
+
+  React.useEffect(() => {
+    if (!fullscreen) return;
+    const node = root.current;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.fullscreenElement) return;
+      exitFullscreen();
+    };
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      if (document.fullscreenElement === node) void document.exitFullscreen();
+    };
+  }, [exitFullscreen, fullscreen]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -77,9 +112,10 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
   }, [block.result, state]);
 
   const unavailable = state === "unavailable" || state === "incompatible" || state === "error";
-  return <section className={`chat-mcp-app${fullscreen ? " chat-mcp-app-fullscreen" : ""}`} aria-label="Interactive Excalidraw diagram">
-    <header><strong>Visual explanation</strong><span>Experimental · powered by Excalidraw</span><button type="button" onClick={() => setFullscreen((value) => !value)}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button></header>
-    <p className="chat-mcp-disclosure">Diagram content is processed by the remote Excalidraw MCP service.</p>
+  return <section ref={root} className={`chat-mcp-app${fullscreen ? " chat-mcp-app-fullscreen" : ""}`} aria-label="Interactive Excalidraw diagram">
+    <header>
+      <button type="button" onClick={toggleFullscreen}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+    </header>
     {state === "loading" && <div className="chat-mcp-loading" role="status">Loading interactive diagram…</div>}
     {unavailable && <div className="chat-mcp-error">Interactive diagram unavailable. The cited text answer is still available.<button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry diagram</button></div>}
     {html && state === "ready" && <iframe ref={frame} title="Interactive Excalidraw diagram" sandbox="allow-scripts" allow={clipboardWrite ? "clipboard-write" : undefined} srcDoc={html} style={{ height }} />}
