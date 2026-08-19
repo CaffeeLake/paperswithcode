@@ -83,7 +83,7 @@ def profile_features(
         "chat": environment == "staging" or production_chat_enabled,
         "native_pdf_reader": environment == "staging",
         "paper_reader_chat": environment == "staging",
-        "paper_reader_selection": False,
+        "paper_reader_selection": environment == "staging",
         # Staging inherits production capabilities and layers preview features
         # such as chat on top.
         "codex_add_evals": True,
