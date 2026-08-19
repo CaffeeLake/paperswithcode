@@ -51,6 +51,8 @@ def test_checked_in_manifest_matches_python_and_typescript_allowlists():
         assert re.search(
             r'EXCALIDRAW_MODEL_TOOLS = \["read_me", "create_view"\]', source
         )
+    assert 'EXCALIDRAW_HOST_PATH = "/api/v1/chat/mcp-apps/excalidraw"' in frontend
+    assert "new URL(EXCALIDRAW_ENDPOINT)" not in frontend
 
 
 def test_disabled_excalidraw_preserves_gateway_only_egress():

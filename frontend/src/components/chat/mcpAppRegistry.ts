@@ -1,8 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { apiUrl } from "@/lib/apiUrl";
 
 export const EXCALIDRAW_ENDPOINT = "https://mcp.excalidraw.com/mcp";
 export const EXCALIDRAW_HOSTNAME = "mcp.excalidraw.com";
+export const EXCALIDRAW_HOST_PATH = "/api/v1/chat/mcp-apps/excalidraw";
 export const EXCALIDRAW_RESOURCE_URI = "ui://excalidraw/mcp-app.html";
 export const EXCALIDRAW_MODEL_TOOLS = ["read_me", "create_view"] as const;
 export const EXCALIDRAW_APP_TOOLS = new Set([
@@ -37,10 +39,14 @@ export function providerFor(value: string): McpAppProvider | undefined {
   return MCP_APP_PROVIDERS[value];
 }
 
+export function hostMcpUrl(): URL {
+  return new URL(apiUrl(EXCALIDRAW_HOST_PATH), window.location.origin);
+}
+
 class BoundedProviderClient {
   private readonly client = new Client({ name: "pwc-chat-mcp-app-host", version: "1" });
-  private readonly transport = new StreamableHTTPClientTransport(new URL(EXCALIDRAW_ENDPOINT), {
-    requestInit: { credentials: "omit" },
+  private readonly transport = new StreamableHTTPClientTransport(hostMcpUrl(), {
+    requestInit: { credentials: "include" },
   });
   private connected: Promise<void> | undefined;
   private bytes = 0;

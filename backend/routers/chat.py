@@ -55,6 +55,7 @@ from backend.services.chat_feedback_service import (
 )
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_live_stream_service import live_chat_stream_registry
+from backend.services.chat_mcp_app_proxy import forward_excalidraw_mcp
 from backend.services.chat_paper_context_service import (
     ChatPaperContextService,
     PreparedPaperTurn,
@@ -431,6 +432,24 @@ def list_models(
         ],
         "default_model": settings.chat_model_choices[0]["id"],
     }
+
+
+@router.api_route("/mcp-apps/excalidraw", methods=["GET", "POST", "DELETE"])
+async def proxy_excalidraw_mcp_app(
+    request: Request,
+    user: dict = Depends(require_user),
+    settings: Settings = Depends(get_settings),
+):
+    """Same-origin App-host proxy. Staging-only; never forwards PwC cookies."""
+    del user
+    if (
+        not settings.chat_enabled
+        or not settings.chat_mcp_apps_host_enabled
+        or settings.environment != "staging"
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    _require_same_origin_csrf(request, settings)
+    return await forward_excalidraw_mcp(request)
 
 
 @router.get("/availability", response_model=ChatAvailabilityResponse)
