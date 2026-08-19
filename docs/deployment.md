@@ -278,6 +278,23 @@ Use `--staging-chat-pi-prewarm-disable-only` for the independent rollback. The
 existing `--staging-chat-pool-enable-only` and
 `--staging-chat-pool-disable-only` modes control admission separately.
 
+Production Pi prewarm is a separately authorized chat change. It reuses the
+qualified DeepSeek Hugging Face `:baseten` / `low` profile and requires the
+already-admitted one-blank production pool. It does not enable Luna, Gemini, or
+any other alternative model:
+
+```bash
+sudo /srv/paperswithcode/.venv/bin/python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-chat-pi-prewarm-enable-only \
+  --confirm ENABLE_PRODUCTION_CHAT_PI_PREWARM
+sudo pwc-deploy production <exact-current-main-sha> \
+  --refresh-environment --confirm DEPLOY_PRODUCTION
+```
+
+Use `--production-chat-pi-prewarm-disable-only` with
+`--confirm DISABLE_PRODUCTION_CHAT_PI_PREWARM` for the independent rollback.
+
 ```bash
 sudo systemd-run --quiet --wait --pipe --collect \
   --uid=pwc-staging --gid=pwc-staging \

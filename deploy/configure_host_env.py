@@ -590,6 +590,10 @@ def staging_chat_pool_values(*, enabled: bool) -> dict[str, str]:
     return values
 
 
+# Must match Settings.chat_deepseek_v4_flash_route when Hugging Face is selected.
+STAGING_DEEPSEEK_PREWARM_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+
+
 def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
     """Toggle only the qualified staging Pi prewarm profile."""
 
@@ -597,11 +601,47 @@ def staging_chat_pi_prewarm_values(*, enabled: bool) -> dict[str, str]:
     if enabled:
         values.update(
             {
-                "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
+                "PWC_CHAT_PI_PREWARM_MODEL": STAGING_DEEPSEEK_PREWARM_MODEL,
                 "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
             }
         )
     return values
+
+
+def _decoded_flag(current: dict[str, str], key: str) -> str:
+    line = current.get(key)
+    if not line:
+        return "false"
+    return decoded_value(line).strip().lower()
+
+
+def production_chat_pi_prewarm_values(
+    current_production: dict[str, str], *, enabled: bool
+) -> dict[str, str]:
+    """Toggle production Pi prewarm only on an already-admitted DeepSeek pool."""
+
+    if enabled:
+        required = {
+            "PWC_CHAT_ENABLED": "true",
+            "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED": "true",
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "true",
+        }
+        missing = [
+            key
+            for key, expected in required.items()
+            if _decoded_flag(current_production, key) != expected
+        ]
+        if missing:
+            raise ValueError(
+                "production Pi prewarm requires an already-admitted chat pool: "
+                + ", ".join(missing)
+            )
+        if _decoded_flag(current_production, "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED") == (
+            "true"
+        ):
+            raise ValueError("production Pi prewarm cannot use an alternative model")
+    return staging_chat_pi_prewarm_values(enabled=enabled)
 
 
 def staging_chat_routing_values(
@@ -681,7 +721,7 @@ def staging_chat_alternative_model_values(
     values = {
         "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": str(enabled).lower(),
         "PWC_CHAT_PI_PREWARM_MODEL": (
-            candidate if enabled else "deepseek/deepseek-v4-flash-0731"
+            candidate if enabled else STAGING_DEEPSEEK_PREWARM_MODEL
         ),
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": (
             reasoning_effort if enabled else "low"
@@ -1021,6 +1061,10 @@ def main() -> int:
     parser.add_argument("--production-chat-seal-only", action="store_true")
     parser.add_argument("--production-chat-install-only", action="store_true")
     parser.add_argument("--production-chat-admission-enable-only", action="store_true")
+    parser.add_argument("--production-chat-pi-prewarm-enable-only", action="store_true")
+    parser.add_argument(
+        "--production-chat-pi-prewarm-disable-only", action="store_true"
+    )
     parser.add_argument("--modal-profile")
     parser.add_argument(
         "--modal-profile-config",
@@ -1065,6 +1109,8 @@ def main() -> int:
             args.production_chat_seal_only,
             args.production_chat_install_only,
             args.production_chat_admission_enable_only,
+            args.production_chat_pi_prewarm_enable_only,
+            args.production_chat_pi_prewarm_disable_only,
         )
         if sum(experiment_modes) != 1 or any(all_other_modes):
             parser.error("staging chat experiment toggles must run alone")
@@ -1128,6 +1174,8 @@ def main() -> int:
             args.production_chat_seal_only,
             args.production_chat_install_only,
             args.production_chat_admission_enable_only,
+            args.production_chat_pi_prewarm_enable_only,
+            args.production_chat_pi_prewarm_disable_only,
         )
         if (
             args.staging_chat_pi_prewarm_enable_only
@@ -1164,6 +1212,8 @@ def main() -> int:
             args.production_chat_seal_only,
             args.production_chat_install_only,
             args.production_chat_admission_enable_only,
+            args.production_chat_pi_prewarm_enable_only,
+            args.production_chat_pi_prewarm_disable_only,
         )
         if any(conflicting_modes) or args.codex_jobs_namespace or args.modal_profile:
             parser.error(
@@ -1199,6 +1249,8 @@ def main() -> int:
             args.production_cron_github_only,
             args.production_chat_seal_only,
             args.production_chat_install_only,
+            args.production_chat_pi_prewarm_enable_only,
+            args.production_chat_pi_prewarm_disable_only,
         )
         if any(other_modes):
             parser.error(
@@ -1226,6 +1278,65 @@ def main() -> int:
         print(
             "enabled production funded dispatch, public and sandbox admission, "
             "and the one-blank pool; no service was restarted"
+        )
+        return 0
+    if (
+        args.production_chat_pi_prewarm_enable_only
+        or args.production_chat_pi_prewarm_disable_only
+    ):
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.production_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_chat_pi_prewarm_enable_only,
+            args.staging_chat_pi_prewarm_disable_only,
+            args.staging_web_search_only,
+            args.production_web_search_only,
+            args.staging_github_only,
+            args.production_cron_github_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+            args.production_chat_admission_enable_only,
+        )
+        if (
+            args.production_chat_pi_prewarm_enable_only
+            and args.production_chat_pi_prewarm_disable_only
+        ) or any(other_modes):
+            parser.error(
+                "production Pi prewarm enable/disable cannot be combined with other modes"
+            )
+        enabled = args.production_chat_pi_prewarm_enable_only
+        confirmation = (
+            "ENABLE_PRODUCTION_CHAT_PI_PREWARM"
+            if enabled
+            else "DISABLE_PRODUCTION_CHAT_PI_PREWARM"
+        )
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        current_production = read_lines(CONFIG_ROOT / "production.env")
+        try:
+            values = production_chat_pi_prewarm_values(
+                current_production, enabled=enabled
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "production.env",
+            assign(current_production, values),
+            "pwc-production",
+        )
+        print(
+            f"{'enabled' if enabled else 'disabled'} production Pi prewarm; "
+            "no service was restarted"
         )
         return 0
     if args.production_cron_github_only:
@@ -1383,6 +1494,8 @@ def main() -> int:
             args.production_chat_seal_only,
             args.production_chat_install_only,
             args.production_chat_admission_enable_only,
+            args.production_chat_pi_prewarm_enable_only,
+            args.production_chat_pi_prewarm_disable_only,
         )
         if any(other_modes):
             parser.error(

@@ -2772,12 +2772,63 @@ def test_staging_chat_pool_toggle_is_narrow_and_bounded():
 def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():
     assert configure_host_env.staging_chat_pi_prewarm_values(enabled=True) == {
         "PWC_CHAT_PI_PREWARM_ENABLED": "true",
-        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek-ai/DeepSeek-V4-Flash-0731:baseten",
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
     assert configure_host_env.staging_chat_pi_prewarm_values(enabled=False) == {
         "PWC_CHAT_PI_PREWARM_ENABLED": "false"
     }
+
+
+def test_production_chat_pi_prewarm_reuses_deepseek_profile_on_admitted_pool():
+    current = {
+        "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": (
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED=true"
+        ),
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": (
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true"
+        ),
+    }
+    assert configure_host_env.production_chat_pi_prewarm_values(
+        current, enabled=True
+    ) == configure_host_env.staging_chat_pi_prewarm_values(enabled=True)
+    assert configure_host_env.production_chat_pi_prewarm_values(
+        current, enabled=False
+    ) == configure_host_env.staging_chat_pi_prewarm_values(enabled=False)
+
+
+def test_production_chat_pi_prewarm_rejects_unadmitted_or_alternative_pool():
+    admitted = {
+        "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": (
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED=true"
+        ),
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": (
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true"
+        ),
+    }
+    closed_pool = {
+        **admitted,
+        "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=false",
+    }
+    with pytest.raises(ValueError, match="already-admitted chat pool"):
+        configure_host_env.production_chat_pi_prewarm_values(
+            closed_pool,
+            enabled=True,
+        )
+    with pytest.raises(ValueError, match="alternative model"):
+        configure_host_env.production_chat_pi_prewarm_values(
+            {
+                **admitted,
+                "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": (
+                    "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED=true"
+                ),
+            },
+            enabled=True,
+        )
 
 
 def test_staging_chat_routing_toggle_is_independent_and_latency_profiled():
@@ -2881,7 +2932,7 @@ def test_staging_chat_alternative_model_toggle_is_reviewed_and_reversible():
         enabled=False, candidate="openai/gpt-5.6-luna"
     ) == {
         "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": "false",
-        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_PI_PREWARM_MODEL": "deepseek-ai/DeepSeek-V4-Flash-0731:baseten",
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
     assert (
@@ -2943,6 +2994,106 @@ def test_staging_chat_pi_prewarm_mode_preserves_other_configuration(
     assert configure_host_env.decoded_value(
         written["lines"]["PWC_CHAT_PI_PREWARM_ENABLED"]
     ) == ("true" if enabled else "false")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_production_chat_pi_prewarm_mode_preserves_other_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text(
+        "UNRELATED=preserved\n"
+        "PWC_CHAT_ENABLED=true\n"
+        "PWC_CHAT_BLANK_POOL_ENABLED=true\n"
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED=true\n"
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    mode = (
+        "--production-chat-pi-prewarm-enable-only"
+        if enabled
+        else "--production-chat-pi-prewarm-disable-only"
+    )
+    confirm = (
+        "ENABLE_PRODUCTION_CHAT_PI_PREWARM"
+        if enabled
+        else "DISABLE_PRODUCTION_CHAT_PI_PREWARM"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            mode,
+            "--confirm",
+            confirm,
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == config_root / "production.env"
+    assert written["group"] == "pwc-production"
+    assert configure_host_env.decoded_value(written["lines"]["UNRELATED"]) == (
+        "preserved"
+    )
+    assert configure_host_env.decoded_value(
+        written["lines"]["PWC_CHAT_PI_PREWARM_ENABLED"]
+    ) == ("true" if enabled else "false")
+    if enabled:
+        assert (
+            configure_host_env.decoded_value(
+                written["lines"]["PWC_CHAT_PI_PREWARM_MODEL"]
+            )
+            == "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+        )
+        assert (
+            configure_host_env.decoded_value(
+                written["lines"]["PWC_CHAT_PI_PREWARM_REASONING_EFFORT"]
+            )
+            == "low"
+        )
+
+
+def test_production_chat_pi_prewarm_mode_requires_exact_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text(
+        "PWC_CHAT_ENABLED=true\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-chat-pi-prewarm-enable-only",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        configure_host_env.main()
 
 
 def test_staging_chat_alert_values_are_distinct_https_destinations():
