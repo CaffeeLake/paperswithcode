@@ -35,6 +35,21 @@ describe("withCenteredTitle", () => {
     expect(title.x).toBe(20 + 16);
   });
 
+  it("shrinks a long subtitle to the diagram body instead of the subtitle width", () => {
+    const fitted = withCenteredTitle([
+      { id: "title", type: "text", x: 80, y: 10, width: 400, height: 28, fontSize: 24, text: "DSpark" },
+      { id: "sub", type: "text", x: 40, y: 44, width: 1100, height: 20, fontSize: 14, text: "Speculative decoding: a light draft model proposes tokens, the big target verifies them in one forward pass" },
+      { id: "box", type: "rectangle", x: 20, y: 90, width: 760, height: 210 },
+    ]);
+    const title = fitted[0] as { x: number; width: number; textAlign: string };
+    const subtitle = fitted[1] as { x: number; width: number; textAlign: string };
+    expect(title.textAlign).toBe("center");
+    expect(title.width).toBe(400);
+    expect(subtitle.textAlign).toBe("center");
+    expect(subtitle.width).toBe(760 - 32);
+    expect(subtitle.x).toBe(20 + 16);
+  });
+
   it("centers a fitting title without shrinking it", () => {
     const fitted = withCenteredTitle([
       { id: "title", type: "text", x: 0, y: 10, width: 200, height: 24, fontSize: 20, text: "DFlash" },
