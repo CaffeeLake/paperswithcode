@@ -800,17 +800,44 @@ class CodexCurationCallbackService:
                         "Scheduled enrichment cannot remove an existing repository"
                     )
             if mutation.project_pages is not None:
-                current_urls = {
-                    page.url for page in self.db.get(Paper, row.paper_id).project_pages
+                current_pages = {
+                    page.url: getattr(page, "source", "unknown")
+                    for page in self.db.get(Paper, row.paper_id).project_pages
                 }
-                if not current_urls <= {link.url for link in mutation.project_pages}:
+                removed_pages = set(current_pages) - {
+                    link.url for link in mutation.project_pages
+                }
+                protected_pages = {
+                    url for url in removed_pages if current_pages[url] != "hf_api"
+                }
+                if protected_pages:
                     raise ValueError(
-                        "Scheduled enrichment cannot remove an existing project page"
+                        "Scheduled enrichment cannot remove a non-HF-imported project page"
                     )
+                if removed_pages and mutation.urls_extracted is not True:
+                    raise ValueError(
+                        "Scheduled project-page removal requires a complete URL search"
+                    )
+                missing_reasons = {
+                    url
+                    for url in removed_pages
+                    if not mutation.project_page_removal_reasons.get(url, "").strip()
+                }
+                if missing_reasons:
+                    raise ValueError(
+                        "Every HF-imported project-page removal requires a reason"
+                    )
+                if any(
+                    len(reason) > 2_000
+                    for url, reason in mutation.project_page_removal_reasons.items()
+                    if url in removed_pages
+                ):
+                    raise ValueError("Project-page removal reason is too long")
             return {
                 "policy": "scheduled-enrich-v1",
                 "removed_auto_tasks": sorted(removed_auto_tasks),
                 "removed_methods": sorted(removed_methods),
+                "removed_hf_api_project_pages": sorted(removed_pages),
             }
 
         paper = self.db.get(Paper, row.paper_id)

@@ -78,6 +78,14 @@ own official artifact rather than a baseline, mirror, dependency, or website
 template. Set `urls_extracted=true` after a complete verified search, including
 a clean no-result, and leave it false when a required source failed.
 
+An importer-written project page with `source: "hf_api"` may be removed only
+after directly checking it and finding that it is unrelated or generic (for
+example, a lab team page rather than the paper project). Keep all manual or
+unknown-source pages. When removing an HF-imported page, set
+`urls_extracted: true` and include
+`project_page_removal_reasons: {"<exact URL>": "concise checked evidence"}`
+in `enrich`; otherwise preserve the complete existing page list.
+
 For admin-triggered enrichment only, the remote container must not generate or
 upload thumbnails itself. Ask the VPS
 to run its existing validated thumbnail pipeline by including

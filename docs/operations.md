@@ -459,6 +459,13 @@ papers as `add-evals`; it never creates taxonomy, datasets, metrics, or
 leaderboards. Thumbnail generation and citation/reference tagging remain
 separate workflows.
 
+Scheduled enrichment preserves every repository and every manual or
+unknown-source project page. It may remove an importer-written `hf_api` project
+page only after a complete URL search and a URL-specific recorded reason that
+the checked page is generic or unrelated to the paper. A rejected removal pauses
+scheduled dispatch for operator review; use the trace report before changing
+the rule or resuming the queue.
+
 Apply `backend/database/migrations/add_autonomous_paper_curation.sql` before the
 first release that enables the scheduler. Thumbnail generation and the
 citation/reference method linker remain separate jobs and are not dependencies

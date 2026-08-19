@@ -2543,6 +2543,7 @@ class EnrichPaperMutation(BaseModel):
     hf_spaces: list[str] | None = Field(default=None, max_length=50)
     task_removal_reasons: dict[int, str] = Field(default_factory=dict)
     method_removal_reasons: dict[int, str] = Field(default_factory=dict)
+    project_page_removal_reasons: dict[str, str] = Field(default_factory=dict)
 
 
 class EvaluationRemovalRequest(BaseModel):

@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.main import create_app
-from backend.models.api import ApplyMutationRequest, EvaluationCreateRequest
+from backend.models.api import (
+    ApplyMutationRequest,
+    EnrichPaperMutation,
+    EvaluationCreateRequest,
+)
 from backend.services.codex_curation_callback_service import (
     CodexCurationCallbackService,
     CodexCurationEvaluationPaperMismatchError,
@@ -538,6 +542,107 @@ def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
     assert state.pause_condition is None
     assert row.validation_summary == {"post_write_verification": "passed"}
     assert database.commits == 0
+
+
+def test_scheduled_enrichment_allows_evidenced_hf_project_page_removal():
+    from backend.models.database import Paper
+
+    page = SimpleNamespace(url="https://example.github.io/team/", source="hf_api")
+    paper = SimpleNamespace(project_pages=[page])
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def count(self):
+            return 0
+
+        def all(self):
+            return []
+
+        def __iter__(self):
+            return iter(())
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+        def query(self, _model):
+            return Query()
+
+    result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+        SimpleNamespace(
+            kind="enrich-paper",
+            paper_id=42,
+            trigger="hf-daily-cron",
+            trace_status="disabled",
+            url_candidates={"complete": True},
+        ),
+        ApplyMutationRequest(
+            enrich=EnrichPaperMutation(
+                task_ids=[],
+                method_ids=[],
+                project_pages=[],
+                urls_extracted=True,
+                project_page_removal_reasons={
+                    "https://example.github.io/team/": (
+                        "Checked page is a generic lab team page, not a paper project."
+                    )
+                },
+            )
+        ),
+    )
+
+    assert result["removed_hf_api_project_pages"] == ["https://example.github.io/team/"]
+
+
+def test_scheduled_enrichment_rejects_project_page_removal_without_reason():
+    from backend.models.database import Paper
+
+    paper = SimpleNamespace(
+        project_pages=[
+            SimpleNamespace(url="https://example.github.io/team/", source="hf_api")
+        ]
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def count(self):
+            return 0
+
+        def all(self):
+            return []
+
+        def __iter__(self):
+            return iter(())
+
+    class Database:
+        def get(self, model, _key):
+            return paper if model is Paper else None
+
+        def query(self, _model):
+            return Query()
+
+    with pytest.raises(ValueError, match="project-page removal requires a reason"):
+        _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+            SimpleNamespace(
+                kind="enrich-paper",
+                paper_id=42,
+                trigger="hf-daily-cron",
+                trace_status="disabled",
+                url_candidates={"complete": True},
+            ),
+            ApplyMutationRequest(
+                enrich=EnrichPaperMutation(
+                    task_ids=[],
+                    method_ids=[],
+                    project_pages=[],
+                    urls_extracted=True,
+                )
+            ),
+        )
 
 
 def test_scheduled_evaluation_accepts_configured_metric_names():
