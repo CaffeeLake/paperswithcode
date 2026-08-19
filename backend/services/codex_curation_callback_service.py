@@ -658,8 +658,16 @@ class CodexCurationCallbackService:
                     proposal.best_metric,
                 )
             ]
-            if len(matches) != 1 or self._evaluation_changes(matches[0], proposal):
-                raise ValueError("Post-write evaluation verification failed")
+            changes = self._evaluation_changes(matches[0], proposal) if matches else {}
+            if len(matches) != 1 or changes:
+                raise ValueError(
+                    "Post-write evaluation verification failed"
+                    + (
+                        f": {len(matches)} matching rows"
+                        if len(matches) != 1
+                        else f": {sorted(changes)}"
+                    )
+                )
 
         for task_id, dataset_id, best_metric in {
             (item.task_id, item.dataset_id, item.best_metric)
@@ -1074,8 +1082,15 @@ class CodexCurationCallbackService:
         # These legacy update fields have no explicit "set" sentinel in
         # EvaluationService: None means omitted, not clear.  best_rank is also
         # recalculated after writes, so an omitted rank must accept the derived
-        # catalog value during post-write verification.
-        for field in ("methodology", "best_rank", "evaluated_on"):
+        # catalog value during post-write verification. create_evaluation also
+        # copies a paper-native source_url onto external_source_url.
+        for field in (
+            "methodology",
+            "best_rank",
+            "evaluated_on",
+            "source_url",
+            "external_source_url",
+        ):
             if proposed.get(field) is None:
                 proposed[field] = before[field]
         fields = (
