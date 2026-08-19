@@ -19,6 +19,7 @@ from backend.services.codex_curation_callback_service import (
     CodexCurationEvaluationPaperMismatchError,
     CodexCurationMutationClosedError,
     CodexCurationPaperNotFoundError,
+    _requires_scheduled_dispatch_pause,
 )
 
 
@@ -542,6 +543,19 @@ def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
     assert state.pause_condition is None
     assert row.validation_summary == {"post_write_verification": "passed"}
     assert database.commits == 0
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ValueError("rejected proposal"), False),
+        (CodexCurationMutationClosedError("late callback"), False),
+        (CodexCurationPaperNotFoundError("deleted paper"), False),
+        (RuntimeError("unexpected callback failure"), True),
+    ],
+)
+def test_only_unexpected_callback_failures_pause_scheduled_dispatch(error, expected):
+    assert _requires_scheduled_dispatch_pause(error) is expected
 
 
 def test_scheduled_enrichment_allows_evidenced_hf_project_page_removal():

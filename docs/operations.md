@@ -463,8 +463,9 @@ Scheduled enrichment preserves every repository and every manual or
 unknown-source project page. It may remove an importer-written `hf_api` project
 page only after a complete URL search and a URL-specific recorded reason that
 the checked page is generic or unrelated to the paper. A rejected removal pauses
-scheduled dispatch for operator review; use the trace report before changing
-the rule or resuming the queue.
+only that stage for review; it does not halt the daily queue. Unexpected
+callback/runtime faults still pause scheduled dispatch, while the trace report
+preserves the rejected proposal and reason for operator review.
 
 Apply `backend/database/migrations/add_autonomous_paper_curation.sql` before the
 first release that enables the scheduler. Thumbnail generation and the

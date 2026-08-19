@@ -64,6 +64,18 @@ class CodexCurationEnrichmentRequiredError(ValueError):
     """An enrichment job did not receive its mutation payload."""
 
 
+def _requires_scheduled_dispatch_pause(exc: Exception) -> bool:
+    """Separate expected proposal rejection from an unexpected safety fault."""
+    return not isinstance(
+        exc,
+        (
+            ValueError,
+            CodexCurationMutationClosedError,
+            CodexCurationPaperNotFoundError,
+        ),
+    )
+
+
 class CodexCurationCallbackService:
     """Own callback projections and the single-apply mutation transaction."""
 
@@ -466,7 +478,11 @@ class CodexCurationCallbackService:
                 }
                 rejected_row.submitted_at = datetime.now(UTC)
                 should_commit = True
-            if not mutation_closed and getattr(row, "trigger", "admin") != "admin":
+            if (
+                not mutation_closed
+                and getattr(row, "trigger", "admin") != "admin"
+                and _requires_scheduled_dispatch_pause(exc)
+            ):
                 state = self.db.get(PaperCurationSchedulerState, 1)
                 if state is not None:
                     state.paused_at = datetime.now(UTC)
