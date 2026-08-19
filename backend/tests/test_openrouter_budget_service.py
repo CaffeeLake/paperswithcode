@@ -57,7 +57,7 @@ def test_deployed_model_registry_defaults_to_user_funded_huggingface():
     assert settings.chat_model_choices == settings.chat_model_registry
     assert (
         settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "deepseek-ai/DeepSeek-V4-Flash-0731:together"
+        == "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     assert (
         settings.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]

@@ -1103,7 +1103,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "deepseek-ai/DeepSeek-V4-Flash-0731",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:together"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     for legacy_id in (
         "google/gemma-4-31B-it",
@@ -1121,17 +1121,17 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         == "huggingface"
     )
     assert production.chat_effective_pi_prewarm_model == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:together"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     assert staging.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:together"
+        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
     assert staging.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "huggingface"
     )
     for legacy_id in ("openai/gpt-5.6-luna", "openai/gpt-5.6-terra"):
         assert staging.chat_model_routes[legacy_id] == (
-            "deepseek-ai/DeepSeek-V4-Flash-0731:together"
+            "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
         )
 
     openrouter = Settings(
