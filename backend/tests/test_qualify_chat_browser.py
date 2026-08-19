@@ -180,6 +180,30 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
     assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in waited)
 
 
+def test_browser_selects_reasoning_effort(monkeypatch):
+    page = object.__new__(ChromePage)
+    page.timeout = 1
+    evaluations: list[str] = []
+    waited: list[str] = []
+    monkeypatch.setattr(
+        page, "evaluate", lambda expression: evaluations.append(expression) or True
+    )
+    monkeypatch.setattr(
+        page,
+        "wait_for",
+        lambda expression, **_kwargs: waited.append(expression) or True,
+    )
+
+    page.select_reasoning_effort("high")
+
+    assert any('textContent==="High"' in expression for expression in evaluations)
+    assert any(
+        'sessionStorage.setItem("pwc:chat-reasoning-effort","high")' in expression
+        for expression in evaluations
+    )
+    assert any("Reasoning effort:" in expression for expression in waited)
+
+
 def test_browser_accepts_the_only_discovered_model_without_a_select(monkeypatch):
     page = object.__new__(ChromePage)
     page.timeout = 1

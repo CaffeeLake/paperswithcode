@@ -37,6 +37,7 @@ from backend.services.chat_sandbox_service import SandboxSessionManager
 CONFIRMATION = "QUALIFY_STAGING_CHAT_BROWSER"
 ORIGIN = "https://staging.paperswithcode.co"
 CHAT_MODEL_STORAGE_KEY = "pwc:chat-oauth-model"
+CHAT_REASONING_EFFORT_STORAGE_KEY = "pwc:chat-reasoning-effort"
 
 
 def _free_port() -> int:
@@ -222,6 +223,35 @@ class ChromePage(AbstractContextManager):
             f"document.querySelector('select[aria-label=\"Research model\"]').value==={encoded}"
         )
         self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded}")
+
+    def select_reasoning_effort(self, effort: str) -> None:
+        labels = {"low": "Low", "high": "High", "max": "Max"}
+        label = labels[effort]
+        encoded_label = json.dumps(label)
+        storage_key = json.dumps(CHAT_REASONING_EFFORT_STORAGE_KEY)
+        encoded_effort = json.dumps(effort)
+        self.wait_for(
+            "Boolean(document.querySelector('button[aria-label^=\"Reasoning effort:\"]'))"
+        )
+        selected = self.evaluate(
+            "(() => {"
+            "const trigger=document.querySelector('button[aria-label^=\"Reasoning effort:\"]');"
+            "if(!trigger) return false;"
+            "trigger.click();"
+            "const options=[...document.querySelectorAll('[role=\"option\"]')];"
+            f"const option=options.find(node=>node.querySelector('strong')?.textContent==={encoded_label});"
+            "if(!option) return false;"
+            "option.click();"
+            f"sessionStorage.setItem({storage_key},{encoded_effort});"
+            "return true;})()"
+        )
+        if not selected:
+            raise RuntimeError(f"Reasoning effort is unavailable: {effort}")
+        self.wait_for(
+            "document.querySelector('button[aria-label^=\"Reasoning effort:\"]')"
+            f"?.getAttribute('aria-label')===`Reasoning effort: ${{{encoded_label}}}`"
+        )
+        self.wait_for(f"sessionStorage.getItem({storage_key})==={encoded_effort}")
 
     def assert_release(self, expected: str) -> None:
         actual = self.evaluate(
@@ -425,6 +455,9 @@ def main() -> int:
     parser.add_argument("--pilot-pairs", type=int, default=0)
     parser.add_argument("--new-chat-spacing-seconds", type=float, default=30)
     parser.add_argument("--model")
+    parser.add_argument(
+        "--reasoning-effort", choices=("low", "high", "max"), default="low"
+    )
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args()
     if args.confirm != CONFIRMATION:
@@ -457,6 +490,10 @@ def main() -> int:
         raise SystemExit("--model must be present in staging model discovery")
     if available_models[selected_model]["route"] != settings.chat_pi_prewarm_model:
         raise SystemExit("selected model must match the staging Pi prewarm profile")
+    if args.reasoning_effort != settings.chat_pi_prewarm_reasoning_effort:
+        raise SystemExit(
+            "selected reasoning effort must match the staging Pi prewarm profile"
+        )
     token = _encode_legacy_session(
         {
             "sub": args.admin_subject,
@@ -500,6 +537,7 @@ def main() -> int:
                 page.select_model(
                     selected_model, only_available=len(available_models) == 1
                 )
+                page.select_reasoning_effort(args.reasoning_effort)
                 last_new_started = time.monotonic()
                 new = page.send_turn(
                     "Reason briefly, then state one concise reason benchmarks matter."

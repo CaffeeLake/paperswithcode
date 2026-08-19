@@ -666,7 +666,7 @@ def staging_chat_payload_values(*, enabled: bool, candidate: str) -> dict[str, s
 
 
 def staging_chat_alternative_model_values(
-    *, enabled: bool, candidate: str
+    *, enabled: bool, candidate: str, reasoning_effort: str = "low"
 ) -> dict[str, str]:
     """Toggle one reviewed staging model and its compatible prewarm profile."""
 
@@ -676,10 +676,15 @@ def staging_chat_alternative_model_values(
     }
     if candidate not in reviewed:
         raise ValueError("alternative model candidate is not reviewed")
+    if reasoning_effort not in {"low", "high", "max"}:
+        raise ValueError("alternative model reasoning effort is not reviewed")
     values = {
         "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": str(enabled).lower(),
         "PWC_CHAT_PI_PREWARM_MODEL": (
             candidate if enabled else "deepseek/deepseek-v4-flash-0731"
+        ),
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": (
+            reasoning_effort if enabled else "low"
         ),
     }
     if enabled:
@@ -1004,6 +1009,11 @@ def main() -> int:
         choices=("openai/gpt-5.6-luna", "google/gemini-3.7-flash"),
         default="openai/gpt-5.6-luna",
     )
+    parser.add_argument(
+        "--staging-chat-alternative-reasoning-effort",
+        choices=("low", "high", "max"),
+        default="low",
+    )
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-web-search-only", action="store_true")
     parser.add_argument("--staging-github-only", action="store_true")
@@ -1087,6 +1097,7 @@ def main() -> int:
             values = staging_chat_alternative_model_values(
                 enabled=args.staging_chat_alternative_enable_only,
                 candidate=args.staging_chat_alternative_model,
+                reasoning_effort=args.staging_chat_alternative_reasoning_effort,
             )
             label = "alternative model"
         staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)

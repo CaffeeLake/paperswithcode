@@ -2853,16 +2853,32 @@ def test_staging_chat_alternative_model_toggle_is_reviewed_and_reversible():
         "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": "true",
         "PWC_CHAT_ALTERNATIVE_MODEL": "openai/gpt-5.6-luna",
         "PWC_CHAT_PI_PREWARM_MODEL": "openai/gpt-5.6-luna",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
     assert configure_host_env.staging_chat_alternative_model_values(
         enabled=False, candidate="openai/gpt-5.6-luna"
     ) == {
         "PWC_CHAT_ALTERNATIVE_MODEL_ENABLED": "false",
         "PWC_CHAT_PI_PREWARM_MODEL": "deepseek/deepseek-v4-flash-0731",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
+    assert (
+        configure_host_env.staging_chat_alternative_model_values(
+            enabled=True,
+            candidate="openai/gpt-5.6-luna",
+            reasoning_effort="high",
+        )["PWC_CHAT_PI_PREWARM_REASONING_EFFORT"]
+        == "high"
+    )
     with pytest.raises(ValueError, match="not reviewed"):
         configure_host_env.staging_chat_alternative_model_values(
             enabled=True, candidate="unreviewed/model"
+        )
+    with pytest.raises(ValueError, match="reasoning effort"):
+        configure_host_env.staging_chat_alternative_model_values(
+            enabled=True,
+            candidate="openai/gpt-5.6-luna",
+            reasoning_effort="medium",
         )
 
 
