@@ -15,6 +15,9 @@ export default defineConfig(({ mode }) => {
       .trim()
       .toLowerCase(),
   );
+  const mcpAppsHostEnabled = ["1", "true", "yes"].includes(
+    String(process.env.VITE_CHAT_MCP_APPS_HOST_ENABLED ?? env.VITE_CHAT_MCP_APPS_HOST_ENABLED ?? "").trim().toLowerCase(),
+  );
   const nativePdfReaderEnabled = ["1", "true", "yes"].includes(
     String(process.env.VITE_NATIVE_PDF_READER_ENABLED ?? env.VITE_NATIVE_PDF_READER_ENABLED ?? "")
       .trim()
@@ -62,6 +65,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    define: { "import.meta.env.VITE_CHAT_MCP_APPS_HOST_ENABLED": JSON.stringify(mcpAppsHostEnabled ? "true" : "false") },
     build: {
       rollupOptions: {
         output: {

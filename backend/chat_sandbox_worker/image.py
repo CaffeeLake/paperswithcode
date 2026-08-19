@@ -135,6 +135,8 @@ image = (
             "PWC_CHAT_TOOL_RESULT_MAX_BYTES": "24576",
             "PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES": "98304",
             "PWC_CHAT_BASH_TIMEOUT_SECONDS": "30",
+            "PWC_CHAT_EXCALIDRAW_ENABLED": "false",
+            "PWC_CHAT_MCP_APPS_HOST_ENABLED": "false",
             "PWC_CHAT_AGENT_TIMEOUT_SECONDS": "180",
             "PWC_CHAT_SANDBOX_PIDS_MAX": "64",
         }

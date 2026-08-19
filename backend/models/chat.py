@@ -305,8 +305,74 @@ class AnswerDisplayBlock(BaseModel):
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
 
 
+class McpAppInput(BaseModel):
+    """The only reconstructable App input retained in chat history."""
+
+    model_config = ConfigDict(extra="forbid")
+    elements: str = Field(min_length=2, max_length=128 * 1024)
+
+    @field_validator("elements")
+    @classmethod
+    def validate_json(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("App elements must be JSON") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("App elements must be a JSON array")
+        return value
+
+
+class McpAppResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: list[ToolTextContent] = Field(default_factory=list, max_length=1)
+    # Checkpoint IDs are retained only for the owner projection.  Public-share
+    # projection removes them before it leaves the authenticated session.
+    structuredContent: dict[str, str] = Field(default_factory=dict, max_length=4)
+    isError: bool = False
+
+    @field_validator("structuredContent")
+    @classmethod
+    def validate_result(cls, value: dict[str, str]) -> dict[str, str]:
+        if set(value) - {"checkpointId"}:
+            raise ValueError("Unsupported App result field")
+        if any(len(item) > 512 for item in value.values()):
+            raise ValueError("App result field is too large")
+        return value
+
+
+class AppDisplayBlock(BaseModel):
+    """Closed, bounded projection for a remote MCP App instance."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["app"]
+    schema_version: Literal[1] = 1
+    instance_id: str = Field(min_length=1, max_length=64)
+    provider: Literal["excalidraw"]
+    server: Literal["excalidraw"]
+    tool: Literal["create_view"]
+    resource_uri: Literal["ui://excalidraw/mcp-app.html"]
+    resource_version: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    status: Literal["loading", "ready", "error", "unavailable", "incompatible"]
+    input: McpAppInput
+    result: McpAppResult = Field(default_factory=McpAppResult)
+    csp: dict[str, list[str]] = Field(default_factory=dict, max_length=12)
+    permissions: dict[str, bool] = Field(default_factory=dict, max_length=2)
+    height: int = Field(default=525, ge=240, le=720)
+    public_fork: bool = False
+
+    @field_validator("csp")
+    @classmethod
+    def validate_csp(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        if any(len(key) > 64 or len(items) > 16 for key, items in value.items()):
+            raise ValueError("Invalid App CSP")
+        if len(json.dumps(value, ensure_ascii=False).encode()) > 8_192:
+            raise ValueError("App CSP is too large")
+        return value
+
+
 DisplayBlock = Annotated[
-    Union[ReasoningDisplayBlock, ToolDisplayBlock, AnswerDisplayBlock],
+    Union[ReasoningDisplayBlock, ToolDisplayBlock, AppDisplayBlock, AnswerDisplayBlock],
     Field(discriminator="kind"),
 ]
 DISPLAY_BLOCKS_ADAPTER = TypeAdapter(list[DisplayBlock])

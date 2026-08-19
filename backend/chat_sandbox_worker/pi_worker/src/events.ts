@@ -26,6 +26,18 @@ function publicToolName(value: unknown): string {
   return name;
 }
 
+function excalidrawElements(value: unknown): string | undefined {
+  const elements = record(value).elements;
+  const serialized = typeof elements === "string" ? elements : JSON.stringify(elements ?? null);
+  if (Buffer.byteLength(serialized) > 128 * 1024) return undefined;
+  try {
+    if (!Array.isArray(JSON.parse(serialized))) return undefined;
+  } catch {
+    return undefined;
+  }
+  return serialized;
+}
+
 export function reasoningIsVisible(value: string | undefined): boolean {
   return value === "true";
 }
@@ -37,6 +49,7 @@ export class PiEventAdapter {
   private readonly toolIds = new Set<string>();
   private readonly resultIds = new Set<string>();
   private readonly toolStartedAt = new Map<string, number>();
+  private readonly toolNames = new Map<string, string>();
 
   constructor(
     private readonly showReasoning: boolean,
@@ -88,8 +101,26 @@ export class PiEventAdapter {
       if (!id || this.toolIds.has(id)) throw new Error("invalid Pi tool call id");
       const args = record(event.args);
       this.toolIds.add(id);
+      this.toolNames.set(id, String(event.toolName ?? ""));
       this.toolStartedAt.set(id, this.now());
       this.onSemantic?.("tool");
+      if (this.toolNames.get(id) === "create_view") {
+        const elements = excalidrawElements(args);
+        if (!elements) throw new Error("invalid Excalidraw tool input");
+        return [
+          ...this.closeReasoning(),
+          {
+            type: "app_start",
+            id,
+            instance_id: id,
+            provider: "excalidraw",
+            server: "excalidraw",
+            tool: "create_view",
+            resource_uri: "ui://excalidraw/mcp-app.html",
+            input: { elements },
+          },
+        ];
+      }
       return [
         ...this.closeReasoning(),
         {
@@ -108,8 +139,24 @@ export class PiEventAdapter {
       this.resultIds.add(id);
       const startedAt = this.toolStartedAt.get(id);
       this.toolStartedAt.delete(id);
+      const toolName = this.toolNames.get(id);
+      this.toolNames.delete(id);
       const result = record(event.result);
       const content = textContent(result.content ?? event.result);
+      if (toolName === "create_view") {
+        const checkpoint = record(result.structuredContent).checkpointId;
+        return [{
+          type: "app_result",
+          id,
+          status: event.isError ? "error" : "ready",
+          took_ms: startedAt === undefined ? 0 : Math.max(0, Math.round(this.now() - startedAt)),
+          result: {
+            content: [{ type: "text", text: content.slice(0, 8_192), truncated: Buffer.byteLength(content) > 8_192 }],
+            structuredContent: typeof checkpoint === "string" && checkpoint.length <= 512 ? { checkpointId: checkpoint } : {},
+            isError: event.isError === true,
+          },
+        }];
+      }
       return [
         {
           type: "tool_result",

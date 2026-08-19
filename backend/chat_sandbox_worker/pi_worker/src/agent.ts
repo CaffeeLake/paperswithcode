@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { PiEventAdapter, reasoningIsVisible, type PwCEvent } from "./events.js";
 import { createWebMcpExtension } from "./mcp.js";
+import { excalidrawEnabled } from "./mcp_app_registry.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel } from "./provider.js";
 import { loadPromptAsset, renderPrompt } from "./prompt.js";
@@ -51,6 +52,7 @@ export class PiWorker {
     maximumResultBytes: Number(process.env.PWC_CHAT_TOOL_RESULT_MAX_BYTES ?? 24576),
     maximumTurnOutputBytes: Number(process.env.PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES ?? 98304),
     bashTimeoutSeconds: Number(process.env.PWC_CHAT_BASH_TIMEOUT_SECONDS ?? 30),
+    excalidrawEnabled: excalidrawEnabled(),
   });
 
   constructor(private readonly emit: (requestId: string, event: PwCEvent) => void) {}
@@ -61,6 +63,9 @@ export class PiWorker {
   }
 
   private async initializeImmutableProfile(): Promise<void> {
+    // pi-mcp-adapter's viewer is useful locally but would expose an unreachable
+    // Modal loopback URL.  Browser rendering is owned by the React App host.
+    process.env.MCP_UI_VIEWER = "none";
     this.promptAsset = await loadPromptAsset();
     this.policyExtension = pwcExtension(this.policy);
     this.webMcpExtension = createWebMcpExtension();
@@ -226,7 +231,7 @@ export class PiWorker {
       modelRuntime: provider.runtime,
       model: provider.model,
       thinkingLevel: thinkingLevel(run.reasoning_effort),
-      tools: ["read", "bash", "search_web"],
+      tools: ["read", "bash", "search_web", ...(excalidrawEnabled() ? ["read_me", "create_view"] : [])],
       excludeTools: ["edit", "write", "grep", "find", "ls", "ask_question"],
       resourceLoader: loader,
       settingsManager: settings,

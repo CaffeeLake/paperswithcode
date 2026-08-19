@@ -36,6 +36,7 @@ export interface PolicyOptions {
   maximumResultBytes: number;
   maximumTurnOutputBytes: number;
   bashTimeoutSeconds: number;
+  excalidrawEnabled?: boolean;
 }
 
 export class PolicyController {
@@ -44,6 +45,8 @@ export class PolicyController {
   rounds = 0;
   searches = 0;
   webSearches = 0;
+  readMeCalls = 0;
+  createViewCalls = 0;
   outputBytes = 0;
   toolingClosed = false;
   answerProduced = false;
@@ -60,6 +63,8 @@ export class PolicyController {
     this.rounds = 0;
     this.searches = 0;
     this.webSearches = 0;
+    this.readMeCalls = 0;
+    this.createViewCalls = 0;
     this.outputBytes = 0;
     this.toolingClosed = false;
     this.answerProduced = false;
@@ -88,8 +93,21 @@ export class PolicyController {
       this.toolingClosed = true;
       return this.deny(id, ANSWER_NOW);
     }
-    if (!new Set(["bash", "read", "search_web"]).has(name)) {
+    if (!new Set(["bash", "read", "search_web", "read_me", "create_view"]).has(name)) {
       return this.deny(id, "That tool is not available.");
+    }
+    if ((name === "read_me" || name === "create_view") && !this.options.excalidrawEnabled) {
+      return this.deny(id, "Diagram tools are not available.");
+    }
+    if (name === "read_me") {
+      if (this.readMeCalls >= 1) return this.deny(id, "read_me may be called once per turn.");
+      this.readMeCalls += 1;
+    }
+    if (name === "create_view") {
+      const elements = typeof input.elements === "string" ? input.elements : JSON.stringify(input.elements ?? null);
+      if (Buffer.byteLength(elements) > 128 * 1024) return this.deny(id, "Diagram input is too large. Answer in text.");
+      if (this.createViewCalls >= 2) return this.deny(id, "At most two diagrams may be created per turn.");
+      this.createViewCalls += 1;
     }
     if (name === "read") {
       const requested = typeof input.path === "string" ? input.path : "";

@@ -189,6 +189,29 @@ function reduceEvent(
           };
         }),
       };
+    case "app_start":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return { ...visible, blocks: [...(visible.blocks ?? []), {
+            kind: "app", schema_version: 1, instance_id: event.instance_id,
+            provider: event.provider, server: event.server, tool: event.tool,
+            resource_uri: event.resource_uri, status: "loading", input: event.input,
+            result: { content: [], structuredContent: {}, isError: false },
+            csp: {}, permissions: { clipboardWrite: true }, height: 525,
+          }] };
+        }),
+      };
+    case "app_result":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "app" && block.instance_id === event.id,
+          (block) => block.kind === "app" ? { ...block, status: event.status, result: event.result } : block,
+        ),
+      };
     case "tool_result":
       return {
         ...state,

@@ -175,7 +175,9 @@ function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlo
           open: expandFailedTools
             && (block.status === "error" || block.status === "denied" || block.status === "running"),
         }
-      : { ...block, done: true as const });
+      : block.kind === "app"
+        ? block
+        : { ...block, done: true as const });
   return restored.filter((block, index) => {
     const previous = restored[index - 1];
     return !(

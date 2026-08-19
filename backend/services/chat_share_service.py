@@ -55,6 +55,16 @@ def _public_blocks(row: ChatMessageRecord) -> list[dict]:
         value = block.model_dump(mode="json", exclude_defaults=True)
         if value["kind"] == "tool" and value["status"] == "running":
             value["status"] = "error"
+        if value["kind"] == "app":
+            # A share is a browser-local fork.  Do not hand out an owner
+            # checkpoint or an App/session correlation capability.
+            value["instance_id"] = str(uuid.uuid4())
+            value["public_fork"] = True
+            value["result"] = {
+                "content": value.get("result", {}).get("content", []),
+                "structuredContent": {},
+                "isError": value.get("result", {}).get("isError", False),
+            }
         projection.append(value)
     return projection
 

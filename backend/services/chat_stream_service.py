@@ -124,6 +124,7 @@ class ChatTurnProjection:
     blocks: list[dict[str, Any]] = field(default_factory=list)
     reasoning: dict[str, Any] | None = None
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)
+    apps: dict[str, dict[str, Any]] = field(default_factory=dict)
     citations: list[dict[str, Any]] = field(default_factory=list)
     web_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -155,6 +156,10 @@ class ChatTurnProjection:
             self._start_tool(event)
         elif kind == "tool_result":
             self._finish_tool(event)
+        elif kind == "app_start":
+            self._start_app(event)
+        elif kind == "app_result":
+            self._finish_app(event)
         elif kind == "answer_delta":
             self._append_answer(event["text"])
 
@@ -230,6 +235,33 @@ class ChatTurnProjection:
                     "conference": metadata.get("conference"),
                 }
             )
+
+    def _start_app(self, event: dict[str, Any]) -> None:
+        # App blocks own diagram input; the generic tool block is intentionally
+        # omitted so a create_view call never produces a duplicate accordion.
+        app = {
+            "kind": "app",
+            "schema_version": 1,
+            "instance_id": event["instance_id"],
+            "provider": event["provider"],
+            "server": event["server"],
+            "tool": event["tool"],
+            "resource_uri": event["resource_uri"],
+            "status": "loading",
+            "input": event["input"],
+            "result": {"content": [], "structuredContent": {}, "isError": False},
+            "csp": {},
+            "permissions": {"clipboardWrite": True},
+            "height": 525,
+        }
+        self.blocks.append(app)
+        self.apps[event["id"]] = app
+
+    def _finish_app(self, event: dict[str, Any]) -> None:
+        app = self.apps.get(event["id"])
+        if app is not None:
+            app["status"] = event["status"]
+            app["result"] = event["result"]
 
     def _remember_web_sources(self, content: list[dict[str, Any]]) -> None:
         text = "".join(

@@ -8,6 +8,7 @@ import React from "react";
 import { Check, Copy, FileText, Pencil, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
+import { McpAppFrame } from "@/components/chat/McpAppFrame";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
 import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons";
@@ -17,6 +18,7 @@ import { authorsLine, excerpt, venueLine } from "@/components/chat/paperDisplay"
 import { chatApi } from "@/lib/api/chat";
 import type {
   AnswerBlock,
+  AppBlock,
   ChatMessage as ChatMessageType,
   ChatCitation,
   ChatPaperHit,
@@ -266,6 +268,8 @@ const AnswerBlockView: React.FC<{
     {streaming && Boolean(block.text.trim()) && <Caret />}
   </div>
 );
+
+const AppBlockView: React.FC<{ block: AppBlock }> = ({ block }) => <McpAppFrame block={block} />;
 
 interface UserEditorProps {
   id?: string;
@@ -532,6 +536,7 @@ export const AssistantMessage: React.FC<{
             <ToolBlockView key={key} block={b} papers={papers} onToggle={() => onToggleBlock(msg.id, i)} />
           );
         }
+        if (b.kind === "app") return <AppBlockView key={key} block={b} />;
         return (
           <AnswerBlockView
             key={key}

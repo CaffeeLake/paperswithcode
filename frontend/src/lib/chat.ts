@@ -95,6 +95,23 @@ export type ChatEvent =
   | { type: "reasoning_end" }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | {
+      type: "app_start";
+      id: string;
+      instance_id: string;
+      provider: "excalidraw";
+      server: "excalidraw";
+      tool: "create_view";
+      resource_uri: "ui://excalidraw/mcp-app.html";
+      input: { elements: string };
+    }
+  | {
+      type: "app_result";
+      id: string;
+      status: "ready" | "error";
+      took_ms: number;
+      result: McpAppResult;
+    }
+  | {
       type: "tool_result";
       id: string;
       took_ms: number;
@@ -172,6 +189,30 @@ export interface ToolBlock {
   open: boolean;
 }
 
+export interface McpAppResult {
+  content: { type: "text"; text: string; truncated: boolean }[];
+  structuredContent: { checkpointId?: string };
+  isError: boolean;
+}
+
+export interface AppBlock {
+  kind: "app";
+  schema_version: 1;
+  instance_id: string;
+  provider: "excalidraw";
+  server: "excalidraw";
+  tool: "create_view";
+  resource_uri: "ui://excalidraw/mcp-app.html";
+  resource_version?: string | null;
+  status: "loading" | "ready" | "error" | "unavailable" | "incompatible";
+  input: { elements: string };
+  result: McpAppResult;
+  csp: Record<string, string[]>;
+  permissions: { clipboardWrite?: boolean };
+  height: number;
+  public_fork?: boolean;
+}
+
 export interface AnswerBlock {
   kind: "answer";
   text: string;
@@ -179,7 +220,7 @@ export interface AnswerBlock {
   citations?: ChatCitation[];
 }
 
-export type ChatBlock = ReasoningBlock | ToolBlock | AnswerBlock;
+export type ChatBlock = ReasoningBlock | ToolBlock | AppBlock | AnswerBlock;
 
 export interface ChatMessage {
   id: string;

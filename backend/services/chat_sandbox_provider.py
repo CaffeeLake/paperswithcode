@@ -106,6 +106,10 @@ def sandbox_environment(
         "PWC_CHAT_PI_PROVIDER_ADAPTER_CONTRACT": (
             settings.chat_pi_provider_adapter_contract
         ),
+        "PWC_CHAT_EXCALIDRAW_ENABLED": str(settings.chat_excalidraw_enabled).lower(),
+        "PWC_CHAT_MCP_APPS_HOST_ENABLED": str(
+            settings.chat_mcp_apps_host_enabled
+        ).lower(),
     }
 
 

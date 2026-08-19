@@ -34,6 +34,8 @@ class WorkerEventValidator:
         "reasoning_end",
         "tool_call",
         "tool_result",
+        "app_start",
+        "app_result",
         "answer_delta",
         "done",
         "error",
@@ -43,6 +45,7 @@ class WorkerEventValidator:
     def __init__(self):
         self.tools: set[str] = set()
         self.results: set[str] = set()
+        self.apps: set[str] = set()
         self.terminal = False
         self.worker_done = False
 
@@ -67,6 +70,16 @@ class WorkerEventValidator:
             tool_id = str(event.get("id") or "")
             if tool_id not in self.tools or tool_id in self.results:
                 raise ProtocolError("Uncorrelated or duplicate tool result")
+            self.results.add(tool_id)
+        elif kind == "app_start":
+            tool_id = str(event.get("id") or "")
+            if not tool_id or tool_id in self.apps:
+                raise ProtocolError("Duplicate or invalid App start")
+            self.apps.add(tool_id)
+        elif kind == "app_result":
+            tool_id = str(event.get("id") or "")
+            if tool_id not in self.apps or tool_id in self.results:
+                raise ProtocolError("Uncorrelated or duplicate App result")
             self.results.add(tool_id)
         elif kind in {"done", "error", "_mirror_error"}:
             self.terminal = True
