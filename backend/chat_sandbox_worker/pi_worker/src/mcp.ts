@@ -56,7 +56,7 @@ export function createWebMcpExtension(
         hostConfigDiscovery: "off",
         mcpFooterStatus: "off",
         notifyOnStartupConnect: false,
-        outputGuard: { maxBytes: 24_576, maxLines: 2_000, detailsMaxBytes: 16_384 },
+        outputGuard: { maxBytes: 128 * 1024, maxLines: 2_000, detailsMaxBytes: 16_384 },
         sampling: false,
         elicitation: false,
         scriptMode: false,

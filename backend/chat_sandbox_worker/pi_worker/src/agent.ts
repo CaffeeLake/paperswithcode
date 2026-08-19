@@ -333,8 +333,19 @@ export class PiWorker {
           if (kind === "answer") this.policy.observeAnswer();
         },
       );
+      let subscribeFailed = false;
       const unsubscribe = this.session.subscribe((event) => {
-        for (const adapted of adapter.feed(event)) this.emit(run.request_id, adapted);
+        if (subscribeFailed || this.cancelled) return;
+        try {
+          for (const adapted of adapter.feed(event)) this.emit(run.request_id, adapted);
+        } catch {
+          subscribeFailed = true;
+          this.emit(run.request_id, {
+            type: "error",
+            code: "provider_error",
+            message: "The research run failed.",
+          });
+        }
       });
       this.emit(run.request_id, { type: "_sdk_session", session_id: this.boundAgentSession });
       this.emit(run.request_id, { type: "workspace_ready" });
@@ -353,7 +364,7 @@ export class PiWorker {
               source: "extension",
             }),
           disableTools: () => this.session!.setActiveToolsByName([]),
-          canContinue: () => !adapter.failed && !this.cancelled,
+          canContinue: () => !adapter.failed && !this.cancelled && !subscribeFailed,
         });
       } finally {
         unsubscribe();
@@ -373,7 +384,7 @@ export class PiWorker {
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }
-      if (adapter.failed) {
+      if (adapter.failed || subscribeFailed) {
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }

@@ -75,6 +75,25 @@ def test_proxy_rejects_cross_origin(monkeypatch):
     assert response.json()["detail"]["code"] == "csrf_rejected"
 
 
+def test_proxy_allows_same_origin_get_without_origin(monkeypatch):
+    async def ok(_request):
+        from starlette.responses import Response
+
+        return Response(content=b"ok", status_code=200)
+
+    monkeypatch.setattr(chat_router, "forward_excalidraw_mcp", ok)
+    with TestClient(_app(_settings())) as client:
+        response = client.get(
+            PROXY_PATH,
+            headers={
+                "sec-fetch-site": "same-origin",
+                "Referer": "https://testserver/chat",
+                "Accept": "text/event-stream",
+            },
+        )
+    assert response.status_code == 200
+
+
 def test_proxy_strips_cookies_and_forwards_mcp_headers(monkeypatch):
     captured: dict[str, object] = {}
 

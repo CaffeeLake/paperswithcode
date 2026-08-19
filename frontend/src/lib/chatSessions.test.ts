@@ -74,4 +74,58 @@ describe("toUiMessages", () => {
       { kind: "answer", text: "Answer", done: true },
     ]);
   });
+
+  it("fills omitted App block defaults so a reloaded diagram still mounts", () => {
+    const detail: ChatSessionDetail = {
+      id: "session-app",
+      title: "Test",
+      selected_model: "deepseek-ai/DeepSeek-V4-Flash-0731",
+      created_at: "2026-08-19T00:00:00Z",
+      updated_at: "2026-08-19T00:00:00Z",
+      message_count: 1,
+      is_busy: false,
+      web_search_enabled: false,
+      transcript_status: "ready",
+      messages: [{
+        id: "assistant-1",
+        turn_id: "turn-1",
+        sequence: 1,
+        role: "assistant",
+        content: "",
+        revision: 1,
+        status: "complete",
+        display_blocks: [{
+          kind: "app",
+          instance_id: "view-1",
+          provider: "excalidraw",
+          server: "excalidraw",
+          tool: "create_view",
+          resource_uri: "ui://excalidraw/mcp-app.html",
+          status: "loading",
+          input: { elements: "[]" },
+          permissions: { clipboardWrite: true },
+        }],
+        citations: [],
+        followups: [],
+        error_code: null,
+      }],
+    };
+
+    expect(toUiMessages(detail)[0].blocks).toEqual([{
+      kind: "app",
+      instance_id: "view-1",
+      provider: "excalidraw",
+      server: "excalidraw",
+      tool: "create_view",
+      resource_uri: "ui://excalidraw/mcp-app.html",
+      status: "loading",
+      input: { elements: "[]" },
+      permissions: { clipboardWrite: true },
+      schema_version: 1,
+      result: { content: [], structuredContent: {}, isError: false },
+      csp: {},
+      height: 525,
+      public_fork: false,
+    }]);
+  });
 });

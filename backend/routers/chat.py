@@ -234,11 +234,8 @@ def _require_same_origin_csrf(request: Request, settings: Settings) -> None:
     if settings.is_deployed:
         origin = request.headers.get("origin")
         expected = f"https://{request.headers.get('host', '').split(':', 1)[0]}"
-        if origin != expected or request.headers.get("sec-fetch-site") not in {
-            None,
-            "same-origin",
-            "same-site",
-        }:
+        site = request.headers.get("sec-fetch-site")
+        if site not in {None, "same-origin", "same-site"}:
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -246,6 +243,23 @@ def _require_same_origin_csrf(request: Request, settings: Settings) -> None:
                     "message": "Request origin was rejected.",
                 },
             )
+        if origin == expected:
+            return
+        referer = request.headers.get("referer", "")
+        if (
+            request.method == "GET"
+            and origin is None
+            and site in {"same-origin", "same-site"}
+            and (referer == expected or referer.startswith(f"{expected}/"))
+        ):
+            return
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "csrf_rejected",
+                "message": "Request origin was rejected.",
+            },
+        )
 
 
 def _require_recent_auth(request: Request, user: dict, settings: Settings) -> None:

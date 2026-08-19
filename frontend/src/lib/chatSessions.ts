@@ -194,7 +194,15 @@ function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlo
             && (block.status === "error" || block.status === "denied" || block.status === "running"),
         }
       : block.kind === "app"
-        ? block
+        ? {
+            ...block,
+            schema_version: 1,
+            result: block.result ?? { content: [], structuredContent: {}, isError: false },
+            csp: block.csp ?? {},
+            permissions: block.permissions ?? { clipboardWrite: true },
+            height: block.height || 525,
+            public_fork: Boolean(block.public_fork),
+          }
         : { ...block, done: true as const });
   return restored.filter((block, index) => {
     const previous = restored[index - 1];

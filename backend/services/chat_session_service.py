@@ -217,6 +217,16 @@ def _payload_bytes(*values: object) -> int:
     )
 
 
+def _dump_display_blocks(display_blocks: list[dict]) -> list[dict]:
+    dumped: list[dict] = []
+    for block in DISPLAY_BLOCKS_ADAPTER.validate_python(display_blocks):
+        payload = block.model_dump(mode="json", exclude_defaults=True)
+        if payload.get("kind") == "app":
+            payload = block.model_dump(mode="json")
+        dumped.append(payload)
+    return dumped
+
+
 def _message_projection_bytes(message: ChatMessageRecord) -> int:
     if message.role == "user":
         return user_message_projection_bytes(message)
@@ -1503,10 +1513,7 @@ class ChatSessionService:
             raise ChatServiceError(
                 "invalid_finish_reason", 422, "Unsupported completion state"
             )
-        validated_blocks = [
-            block.model_dump(mode="json", exclude_defaults=True)
-            for block in DISPLAY_BLOCKS_ADAPTER.validate_python(display_blocks)
-        ]
+        validated_blocks = _dump_display_blocks(display_blocks)
         validated_citations = [
             CitationSnapshot.model_validate(item).model_dump(mode="json")
             for item in citations[:20]
@@ -1576,10 +1583,7 @@ class ChatSessionService:
             message.status = "interrupted" if interrupted else "error"
             message.error_code = code
             if display_blocks:
-                validated_blocks = [
-                    block.model_dump(mode="json", exclude_defaults=True)
-                    for block in DISPLAY_BLOCKS_ADAPTER.validate_python(display_blocks)
-                ]
+                validated_blocks = _dump_display_blocks(display_blocks)
                 if _payload_bytes(validated_blocks) > 256_000:
                     raise ChatServiceError(
                         "projection_too_large",

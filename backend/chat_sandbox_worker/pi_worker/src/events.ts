@@ -98,15 +98,16 @@ export class PiEventAdapter {
     }
     if (type === "tool_execution_start") {
       const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
-      if (!id || this.toolIds.has(id)) throw new Error("invalid Pi tool call id");
+      if (!id || this.toolIds.has(id)) return [];
       const args = record(event.args);
-      this.toolIds.add(id);
-      this.toolNames.set(id, String(event.toolName ?? ""));
-      this.toolStartedAt.set(id, this.now());
-      this.onSemantic?.("tool");
-      if (this.toolNames.get(id) === "create_view") {
+      const name = String(event.toolName ?? "");
+      if (name === "create_view") {
         const elements = excalidrawElements(args);
-        if (!elements) throw new Error("invalid Excalidraw tool input");
+        if (!elements) return [];
+        this.toolIds.add(id);
+        this.toolNames.set(id, name);
+        this.toolStartedAt.set(id, this.now());
+        this.onSemantic?.("tool");
         return [
           ...this.closeReasoning(),
           {
@@ -121,6 +122,10 @@ export class PiEventAdapter {
           },
         ];
       }
+      this.toolIds.add(id);
+      this.toolNames.set(id, name);
+      this.toolStartedAt.set(id, this.now());
+      this.onSemantic?.("tool");
       return [
         ...this.closeReasoning(),
         {
@@ -133,9 +138,7 @@ export class PiEventAdapter {
     }
     if (type === "tool_execution_end") {
       const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
-      if (!this.toolIds.has(id) || this.resultIds.has(id)) {
-        throw new Error("uncorrelated Pi tool result");
-      }
+      if (!this.toolIds.has(id) || this.resultIds.has(id)) return [];
       this.resultIds.add(id);
       const startedAt = this.toolStartedAt.get(id);
       this.toolStartedAt.delete(id);

@@ -41,7 +41,58 @@ test("maps hidden thinking, text, tools, usage, and correlations", () => {
     [{ type: "answer_delta", text: "Answer" }],
   );
   assert.deepEqual(semantic, ["reasoning", "tool", "answer"]);
-  assert.throws(() => adapter.feed({ type: "tool_execution_end", toolCallId: "missing", result: {}, isError: false }));
+  assert.deepEqual(
+    adapter.feed({ type: "tool_execution_end", toolCallId: "missing", result: {}, isError: false }),
+    [],
+  );
+});
+
+test("maps create_view without crashing on duplicate starts", () => {
+  const adapter = new PiEventAdapter(false);
+  const start = adapter.feed({
+    type: "tool_execution_start",
+    toolCallId: "view-1",
+    toolName: "create_view",
+    args: { elements: [{ id: "rect", type: "rectangle" }] },
+  });
+  assert.equal(start[0]?.type, "app_start");
+  assert.deepEqual(
+    adapter.feed({
+      type: "tool_execution_start",
+      toolCallId: "view-1",
+      toolName: "create_view",
+      args: { elements: [{ id: "rect", type: "rectangle" }] },
+    }),
+    [],
+  );
+  const end = adapter.feed({
+    type: "tool_execution_end",
+    toolCallId: "view-1",
+    result: { content: [{ type: "text", text: "ok" }], structuredContent: { checkpointId: "cp-1" } },
+    isError: false,
+  });
+  assert.equal(end[0]?.type, "app_result");
+  assert.equal(end[0]?.status, "ready");
+});
+
+test("ignores create_view starts until elements are a JSON array", () => {
+  const adapter = new PiEventAdapter(false);
+  assert.deepEqual(
+    adapter.feed({
+      type: "tool_execution_start",
+      toolCallId: "view-1",
+      toolName: "create_view",
+      args: {},
+    }),
+    [],
+  );
+  const start = adapter.feed({
+    type: "tool_execution_start",
+    toolCallId: "view-1",
+    toolName: "create_view",
+    args: { elements: [{ id: "arrow", type: "arrow" }] },
+  });
+  assert.equal(start[0]?.type, "app_start");
 });
 
 test("closes visible reasoning before answer", () => {
