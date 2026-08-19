@@ -8,11 +8,18 @@ const clampHeight = (height: number) => Math.max(240, Math.min(720, height));
 export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const bridge = React.useRef<AppBridge | null>(null);
+  const initialized = React.useRef(false);
+  const blockRef = React.useRef(block);
+  const statusRef = React.useRef(block.status);
+  blockRef.current = block;
+  statusRef.current = block.status;
   const [html, setHtml] = React.useState<string>();
   const [state, setState] = React.useState(block.status);
   const [height, setHeight] = React.useState(clampHeight(block.height));
   const [fullscreen, setFullscreen] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
+  const elements = block.input.elements;
+  const clipboardWrite = Boolean(block.permissions.clipboardWrite);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -23,20 +30,23 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     }
     setState("loading");
     void excalidrawClient().readResource(block.resource_uri).then(({ text }) => {
-      if (!cancelled) { setHtml(text); setState(block.status === "error" ? "error" : "ready"); }
+      if (!cancelled) {
+        setHtml(text);
+        setState(statusRef.current === "error" ? "error" : "ready");
+      }
     }).catch(() => { if (!cancelled) setState("unavailable"); });
-    return () => { cancelled = true; void bridge.current?.teardownResource({}).catch(() => undefined); bridge.current = null; };
-  }, [attempt, block.provider, block.resource_uri, block.status]);
+    return () => { cancelled = true; initialized.current = false; void bridge.current?.teardownResource({}).catch(() => undefined); bridge.current = null; };
+  }, [attempt, block.provider, block.resource_uri]);
 
   React.useEffect(() => {
     if (!html || !frame.current || state !== "ready") return;
     const current = frame.current;
     const host = new AppBridge(null, { name: "Papers with Code", version: "1" }, {
       serverTools: {}, openLinks: {}, logging: {},
-      ...(block.permissions.clipboardWrite ? { clipboard: { write: {} } } : {}),
+      ...(clipboardWrite ? { clipboard: { write: {} } } : {}),
     }, { hostContext: { theme: document.documentElement.dataset.theme === "dark" ? "dark" : "light", displayMode: fullscreen ? "fullscreen" : "inline" } });
     host.oncalltool = async ({ name, arguments: args }) => {
-      if (block.public_fork && name !== "export_to_excalidraw") throw new Error("Shared diagrams cannot mutate owner state");
+      if (blockRef.current.public_fork && name !== "export_to_excalidraw") throw new Error("Shared diagrams cannot mutate owner state");
       return excalidrawClient().callTool(name, (args ?? {}) as Record<string, unknown>) as never;
     };
     host.onopenlink = async ({ url }) => {
@@ -48,13 +58,23 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     };
     host.onsizechange = ({ height: next }) => { if (typeof next === "number") setHeight(clampHeight(next)); };
     host.oninitialized = () => {
-      void host.sendToolInput({ arguments: { elements: JSON.parse(block.input.elements) } });
-      void host.sendToolResult(block.result as never);
+      initialized.current = true;
+      try {
+        void host.sendToolInput({ arguments: { elements: JSON.parse(elements) } });
+        void host.sendToolResult(blockRef.current.result as never);
+      } catch {
+        setState("error");
+      }
     };
     bridge.current = host;
     void host.connect(new PostMessageTransport(current.contentWindow ?? undefined, current.contentWindow!)).catch(() => setState("error"));
-    return () => { void host.teardownResource({}); bridge.current = null; };
-  }, [html, state, fullscreen, block]);
+    return () => { initialized.current = false; void host.teardownResource({}).catch(() => undefined); if (bridge.current === host) bridge.current = null; };
+  }, [html, state, fullscreen, elements, clipboardWrite]);
+
+  React.useEffect(() => {
+    if (state !== "ready" || !initialized.current) return;
+    void bridge.current?.sendToolResult(block.result as never).catch(() => undefined);
+  }, [block.result, state]);
 
   const unavailable = state === "unavailable" || state === "incompatible" || state === "error";
   return <section className={`chat-mcp-app${fullscreen ? " chat-mcp-app-fullscreen" : ""}`} aria-label="Interactive Excalidraw diagram">
@@ -62,6 +82,6 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     <p className="chat-mcp-disclosure">Diagram content is processed by the remote Excalidraw MCP service.</p>
     {state === "loading" && <div className="chat-mcp-loading" role="status">Loading interactive diagram…</div>}
     {unavailable && <div className="chat-mcp-error">Interactive diagram unavailable. The cited text answer is still available.<button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry diagram</button></div>}
-    {html && state === "ready" && <iframe ref={frame} title="Interactive Excalidraw diagram" sandbox="allow-scripts" allow={block.permissions.clipboardWrite ? "clipboard-write" : undefined} srcDoc={html} style={{ height }} />}
+    {html && state === "ready" && <iframe ref={frame} title="Interactive Excalidraw diagram" sandbox="allow-scripts" allow={clipboardWrite ? "clipboard-write" : undefined} srcDoc={html} style={{ height }} />}
   </section>;
 };

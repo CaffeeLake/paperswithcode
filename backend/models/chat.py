@@ -653,6 +653,25 @@ class SessionTitleDoneEvent(_StrictEvent):
     title: str
 
 
+class AppStartEvent(_StrictEvent):
+    type: Literal["app_start"]
+    id: str
+    instance_id: str = Field(min_length=1, max_length=64)
+    provider: Literal["excalidraw"]
+    server: Literal["excalidraw"]
+    tool: Literal["create_view"]
+    resource_uri: Literal["ui://excalidraw/mcp-app.html"]
+    input: McpAppInput
+
+
+class AppResultEvent(_StrictEvent):
+    type: Literal["app_result"]
+    id: str
+    status: Literal["ready", "error"]
+    took_ms: int = Field(ge=0)
+    result: McpAppResult
+
+
 ChatEvent = Annotated[
     Union[
         StreamStartEvent,
@@ -661,6 +680,8 @@ ChatEvent = Annotated[
         ReasoningEndEvent,
         ToolCallEvent,
         ToolResultEvent,
+        AppStartEvent,
+        AppResultEvent,
         SandboxStartEvent,
         SandboxReadyEvent,
         WorkspaceReadyEvent,

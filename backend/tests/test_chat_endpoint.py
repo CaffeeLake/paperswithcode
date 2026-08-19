@@ -803,6 +803,82 @@ def test_sse_event_allows_stopped_done_terminal():
     assert json.loads(frame[6:-2])["finish_reason"] == "stopped"
 
 
+def test_sse_event_accepts_excalidraw_app_frames():
+    start = sse_event(
+        "app_start",
+        id="tool-app-1",
+        instance_id="tool-app-1",
+        provider="excalidraw",
+        server="excalidraw",
+        tool="create_view",
+        resource_uri="ui://excalidraw/mcp-app.html",
+        input={"elements": "[]"},
+    )
+    result = sse_event(
+        "app_result",
+        id="tool-app-1",
+        status="ready",
+        took_ms=42,
+        result={
+            "content": [{"type": "text", "text": "ok", "truncated": False}],
+            "structuredContent": {"checkpointId": "cp-1"},
+            "isError": False,
+        },
+    )
+
+    assert json.loads(start[6:-2]) == {
+        "type": "app_start",
+        "id": "tool-app-1",
+        "instance_id": "tool-app-1",
+        "provider": "excalidraw",
+        "server": "excalidraw",
+        "tool": "create_view",
+        "resource_uri": "ui://excalidraw/mcp-app.html",
+        "input": {"elements": "[]"},
+    }
+    assert json.loads(result[6:-2])["status"] == "ready"
+    assert json.loads(result[6:-2])["result"]["structuredContent"] == {
+        "checkpointId": "cp-1"
+    }
+
+
+def test_chat_projection_keeps_app_blocks_out_of_tool_accordions():
+    projection = ChatTurnProjection()
+    projection.apply(
+        "app_start",
+        {
+            "id": "tool-app-1",
+            "instance_id": "tool-app-1",
+            "provider": "excalidraw",
+            "server": "excalidraw",
+            "tool": "create_view",
+            "resource_uri": "ui://excalidraw/mcp-app.html",
+            "input": {"elements": "[]"},
+        },
+    )
+    projection.apply(
+        "app_result",
+        {
+            "id": "tool-app-1",
+            "status": "ready",
+            "took_ms": 12,
+            "result": {
+                "content": [{"type": "text", "text": "ok", "truncated": False}],
+                "structuredContent": {},
+                "isError": False,
+            },
+        },
+    )
+    projection.apply("answer_delta", {"text": "Here is the schematic."})
+
+    blocks = projection.completed_blocks()
+    DISPLAY_BLOCKS_ADAPTER.validate_python(blocks)
+
+    assert [block["kind"] for block in blocks] == ["app", "answer"]
+    assert blocks[0]["status"] == "ready"
+    assert blocks[0]["tool"] == "create_view"
+
+
 def test_chat_projection_preserves_sse_block_order():
     # Keep an explicit persisted-shape check in releases following Pi image
     # changes so the rollback window contains two qualified readers.

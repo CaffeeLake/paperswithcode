@@ -293,6 +293,8 @@ function reduceEvent(
           )),
         })),
       };
+    default:
+      return state;
   }
 }
 

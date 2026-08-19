@@ -110,4 +110,66 @@ describe("chatLifecycleReducer", () => {
       { kind: "answer", text: "Answer", done: true },
     ]);
   });
+
+  it("projects Excalidraw App events without wiping the in-flight assistant", () => {
+    let state = chatLifecycleReducer(initialChatLifecycle(), {
+      type: "start",
+      messages: streaming(),
+      sessionId: "session-1",
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: {
+        type: "app_start",
+        id: "tool-app-1",
+        instance_id: "tool-app-1",
+        provider: "excalidraw",
+        server: "excalidraw",
+        tool: "create_view",
+        resource_uri: "ui://excalidraw/mcp-app.html",
+        input: { elements: "[]" },
+      },
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: {
+        type: "app_result",
+        id: "tool-app-1",
+        status: "ready",
+        took_ms: 18,
+        result: {
+          content: [{ type: "text", text: "ok", truncated: false }],
+          structuredContent: {},
+          isError: false,
+        },
+      },
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: { type: "answer_delta", text: "Here is the schematic." },
+    });
+
+    expect(state.messages[0].blocks).toEqual([
+      {
+        kind: "app",
+        schema_version: 1,
+        instance_id: "tool-app-1",
+        provider: "excalidraw",
+        server: "excalidraw",
+        tool: "create_view",
+        resource_uri: "ui://excalidraw/mcp-app.html",
+        status: "ready",
+        input: { elements: "[]" },
+        result: {
+          content: [{ type: "text", text: "ok", truncated: false }],
+          structuredContent: {},
+          isError: false,
+        },
+        csp: {},
+        permissions: { clipboardWrite: true },
+        height: 525,
+      },
+      { kind: "answer", text: "Here is the schematic.", done: false },
+    ]);
+  });
 });
