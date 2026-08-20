@@ -64,6 +64,7 @@ export S2_API_KEY=...   # or PWC_SEMANTIC_SCHOLAR_API_KEY
 s2 refs "Attention is All You Need"
 s2 refs 1706.03762 --limit 50 --offset 20
 s2 citations ARXIV:1706.03762 --json
+s2 citations ARXIV:1706.03762 --limit 1000 --sort-by citation-count --top 20
 s2 search "scene graph generation" --limit 100
 s2 search "scene graph generation" --year 2025-2026 --limit 100 --json
 ```
@@ -79,13 +80,17 @@ s2 search "scene graph generation" --year 2025-2026 --limit 100 --json
 | `s2 search QUERY` | Relevance search over the Semantic Scholar graph |
 | `s2 version` | Show the CLI version |
 
-Shared flags: `--limit`, `--offset`, `--json`, `--fields`. `s2 search` also accepts `--year` (`2025` or `2025-2026`). Defaults are `--limit 20`. Search `--limit` maxes at 100; refs/citations max at 1000. There is no `--all`; rerun with `--offset` when stderr prints `# more`.
+Shared flags: `--limit`, `--offset`, `--json`, `--jsonl`, `--fields`, `--sort-by citation-count`, and `--top`. `s2 search` also accepts `--year` (`2025` or `2025-2026`). Defaults are `--limit 20`. Search `--limit` maxes at 100; refs/citations max at 1000. There is no `--all`; rerun with `--offset` when stderr prints `# more`.
 
 Citation requests must keep `offset + limit <= 9999`. Highly cited papers are not fully enumerable through this CLI.
 
 ## Output and scripting
 
-List commands print lossless TSV (`paperId`, `year`, `cites`, `arxiv`, `title`). Add `--json` for the raw Semantic Scholar payload wrapped as:
+List commands print lossless TSV (`paperId`, `year`, `cites`, `arxiv`, `title`). Add `--jsonl` for one unnested Semantic Scholar paper object per line. This shape is consistent across search, references, and citations and is the recommended scripting format.
+
+Use `--sort-by citation-count --top N` to sort and trim the fetched page. The CLI prints the bounded scope on stderr. This is not a global ranking: Semantic Scholar's citations endpoint does not offer global citation-count ordering, and citations past offset 9,999 cannot be enumerated.
+
+Add `--json` for the raw Semantic Scholar payload wrapped as:
 
 ```json
 {
@@ -96,6 +101,10 @@ List commands print lossless TSV (`paperId`, `year`, `cites`, `arxiv`, `title`).
 ```
 
 `paper` is present on `refs` and `citations`. Search JSON includes abstracts in `data` by default.
+
+Raw JSON paper paths are `.data.data[]` for search,
+`.data.data[].citedPaper` for references, and
+`.data.data[].citingPaper` for citations.
 
 Stable exit codes:
 
