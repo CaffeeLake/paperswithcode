@@ -360,17 +360,24 @@ export class PiWorker {
         },
       );
       let subscribeFailed = false;
+      let pendingAdapterError: PwCEvent | undefined;
       const unsubscribe = this.session.subscribe((event) => {
         if (subscribeFailed || this.cancelled) return;
         try {
-          for (const adapted of adapter.feed(event)) this.emit(run.request_id, adapted);
+          for (const adapted of adapter.feed(event)) {
+            // A terminal event must be the final semantic frame before
+            // worker_done. Hold provider/adapter failures until transcript
+            // finalization has selected the single authoritative terminal.
+            if (adapted.type === "error") pendingAdapterError = adapted;
+            else this.emit(run.request_id, adapted);
+          }
         } catch {
           subscribeFailed = true;
-          this.emit(run.request_id, {
+          pendingAdapterError = {
             type: "error",
             code: "provider_error",
             message: "The research run failed.",
-          });
+          };
         }
       });
       this.emit(run.request_id, { type: "_sdk_session", session_id: this.boundAgentSession });
@@ -411,6 +418,11 @@ export class PiWorker {
         return;
       }
       if (adapter.failed || subscribeFailed) {
+        this.emit(run.request_id, pendingAdapterError ?? {
+          type: "error",
+          code: "provider_error",
+          message: "The research run failed.",
+        });
         this.emit(run.request_id, { type: "worker_done", status: "complete" });
         return;
       }

@@ -270,6 +270,10 @@ export class PiEventAdapter {
     if (type === "message_end") {
       const message = record(event.message);
       if (message.role !== "assistant") return [];
+      // Content indexes are scoped to one provider response. Keeping this map
+      // across tool rounds aliases a later call to an earlier call that used
+      // the same index, which can suppress its start, arguments, and result.
+      this.contentToolIds.clear();
       if (message.stopReason === "error" || typeof message.errorMessage === "string") {
         this.terminalFailure = true;
         return [

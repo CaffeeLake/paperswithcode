@@ -221,6 +221,38 @@ test("surfaces terminal provider errors without exposing provider details", () =
   assert.equal(adapter.failed, true);
 });
 
+test("provider content indexes are reusable across tool rounds", () => {
+  const adapter = new PiEventAdapter(false);
+  const start = (id: string) => adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_start",
+      contentIndex: 0,
+      partial: { content: [{ type: "toolCall", id, name: "bash", arguments: {} }] },
+    },
+  });
+
+  assert.equal(start("first")[0]?.type, "tool_call_start");
+  adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: { id: "first", name: "bash", arguments: { command: "one" } },
+    },
+  });
+  adapter.feed({ type: "tool_execution_start", toolCallId: "first", toolName: "bash", args: {} });
+  adapter.feed({ type: "tool_execution_end", toolCallId: "first", result: {}, isError: false });
+  adapter.feed({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", usage: {} } });
+
+  assert.deepEqual(start("second")[0], {
+    type: "tool_call_start",
+    id: "second",
+    name: "Bash",
+    content_index: 0,
+  });
+});
+
 test("reasoning-only tool markup requires a final answer", () => {
   const completion = policy();
   completion.reset(false);
