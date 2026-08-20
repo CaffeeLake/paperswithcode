@@ -79,6 +79,8 @@ def profile_features(
 ) -> dict[str, bool]:
     if environment not in ENVIRONMENTS:
         raise ValueError(f"unsupported environment: {environment}")
+    # Production reader surfaces activate with the protected chat release so
+    # paper-grounded chat cannot ship without its production runtime boundary.
     reader_enabled = environment == "staging" or production_chat_enabled
     return {
         "chat": reader_enabled,
