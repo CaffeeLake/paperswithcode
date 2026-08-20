@@ -781,6 +781,38 @@ class AppResultEvent(_StrictEvent):
     result: McpAppResult
 
 
+class ArtifactStartEvent(_StrictEvent):
+    type: Literal["artifact_start"]
+    publication_id: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    identifier: str = Field(
+        min_length=1, max_length=80, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    )
+    kind: Literal["posterly"]
+    title: str = Field(min_length=1, max_length=300)
+
+
+class ArtifactReadyEvent(ArtifactStartEvent):
+    type: Literal["artifact_ready"]
+    artifact_id: uuid.UUID
+    version_id: uuid.UUID
+    version: int = Field(ge=1)
+    preview_mime: Literal["image/png"]
+    source_language: Literal["html"]
+    gate_status: Literal["passed", "warnings", "failed"]
+    total_bytes: int = Field(ge=0, le=32 * 1024 * 1024)
+
+
+class ArtifactErrorEvent(_StrictEvent):
+    type: Literal["artifact_error"]
+    publication_id: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=500)
+
+
 ChatEvent = Annotated[
     Union[
         StreamStartEvent,
@@ -791,6 +823,9 @@ ChatEvent = Annotated[
         ToolResultEvent,
         AppStartEvent,
         AppResultEvent,
+        ArtifactStartEvent,
+        ArtifactReadyEvent,
+        ArtifactErrorEvent,
         SandboxStartEvent,
         SandboxReadyEvent,
         WorkspaceReadyEvent,

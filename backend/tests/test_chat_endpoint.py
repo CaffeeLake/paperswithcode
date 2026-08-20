@@ -842,6 +842,43 @@ def test_sse_event_accepts_excalidraw_app_frames():
     }
 
 
+def test_sse_event_accepts_posterly_artifact_frames():
+    publication_id = "poster-1"
+    start = sse_event(
+        "artifact_start",
+        publication_id=publication_id,
+        identifier="attention-is-all-you-need",
+        kind="posterly",
+        title="Attention Is All You Need — Research Poster",
+    )
+    ready = sse_event(
+        "artifact_ready",
+        publication_id=publication_id,
+        artifact_id="a9129b6f-b758-4ee7-b8df-6a202404d6c2",
+        version_id="d45670d4-fdf6-415b-92c9-34f8a17f7722",
+        identifier="attention-is-all-you-need",
+        version=1,
+        kind="posterly",
+        title="Attention Is All You Need — Research Poster",
+        preview_mime="image/png",
+        source_language="html",
+        gate_status="failed",
+        total_bytes=22_204,
+    )
+    error = sse_event(
+        "artifact_error",
+        publication_id=publication_id,
+        code="poster_validation_failed",
+        message="Poster validation failed.",
+    )
+
+    assert json.loads(start[6:-2])["type"] == "artifact_start"
+    assert (
+        json.loads(ready[6:-2])["artifact_id"] == "a9129b6f-b758-4ee7-b8df-6a202404d6c2"
+    )
+    assert json.loads(error[6:-2])["code"] == "poster_validation_failed"
+
+
 def test_chat_projection_keeps_app_blocks_out_of_tool_accordions():
     projection = ChatTurnProjection()
     projection.apply(
