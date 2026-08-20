@@ -44,6 +44,17 @@ MODAL_IMAGE_ID = "im-dTCGUSfkR8lbShxOx4mPG8"
 PRODUCTION_MODAL_IMAGE_ID = "im-dCvQBXFglDnt0sBSgKG2qi"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
+# Compatibility descriptor required by newer release tooling. Posterly remains
+# disabled and its implementation is intentionally absent from this release.
+POSTERLY_SOURCE_COMMIT = "b9f42e5578a49a27525a68f85376bb3bb25af86f"
+POSTERLY_SOURCE_URL = (
+    f"https://github.com/Chenruishuo/posterly/tree/{POSTERLY_SOURCE_COMMIT}"
+)
+POSTERLY_LICENSE = "AGPL-3.0-only"
+POSTERLY_PLAYWRIGHT_VERSION = "1.62.0"
+POSTERLY_CHROMIUM_REVISION = "1234"
+POSTERLY_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
+POSTERLY_ENABLED = False
 
 
 def restricted_hf_cli_digest(package_root: Path, wrapper: Path) -> str:
