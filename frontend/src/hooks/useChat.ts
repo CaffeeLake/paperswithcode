@@ -423,6 +423,8 @@ export function useChat(options: UseChatOptions) {
             event.type === "reasoning_start"
             || event.type === "reasoning_delta"
             || event.type === "tool_call"
+            || event.type === "app_start"
+            || event.type === "app_result"
             || event.type === "answer_delta"
             || event.type === "done"
             || event.type === "error"

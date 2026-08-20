@@ -86,6 +86,15 @@ test("ignores create_view starts until elements are a JSON array", () => {
     }),
     [],
   );
+  assert.deepEqual(
+    adapter.feed({
+      type: "tool_execution_start",
+      toolCallId: "view-1",
+      toolName: "create_view",
+      args: { elements: '[{"type":"arrow","label":{"text":"draft"}},]' },
+    }),
+    [],
+  );
   const start = adapter.feed({
     type: "tool_execution_start",
     toolCallId: "view-1",

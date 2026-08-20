@@ -2629,6 +2629,7 @@ def test_prompt_and_manifest_share_six_round_contract():
         "for a visual explanation or visualization."
     )
     assert visual_instruction in prompt
+    assert "fix the JSON and call `create_view` once more" in prompt
     assert prompt.index("## Tool usage") < prompt.index(visual_instruction)
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
     assert "Never output a bare repository slug" in prompt

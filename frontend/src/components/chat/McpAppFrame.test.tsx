@@ -8,6 +8,8 @@ const htmlApi = vi.hoisted(() => ({
   loadExcalidrawAppHtml: vi.fn(),
   resetExcalidrawAppHost: vi.fn(),
   callTool: vi.fn(),
+  sendToolInput: vi.fn(async () => {}),
+  sendToolResult: vi.fn(async () => {}),
 }));
 
 vi.mock("@/components/chat/mcpAppRegistry", () => ({
@@ -27,8 +29,8 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => ({
     oninitialized?: () => void;
     connect = vi.fn(async () => { this.oninitialized?.(); });
     teardownResource = vi.fn(async () => {});
-    sendToolInput = vi.fn(async () => {});
-    sendToolResult = vi.fn(async () => {});
+    sendToolInput = htmlApi.sendToolInput;
+    sendToolResult = htmlApi.sendToolResult;
   },
   PostMessageTransport: class {
     constructor() {}
@@ -58,6 +60,10 @@ describe("McpAppFrame", () => {
     htmlApi.loadExcalidrawAppHtml.mockReset();
     htmlApi.resetExcalidrawAppHost.mockReset();
     htmlApi.callTool.mockReset();
+    htmlApi.sendToolInput.mockReset();
+    htmlApi.sendToolResult.mockReset();
+    htmlApi.sendToolInput.mockResolvedValue(undefined);
+    htmlApi.sendToolResult.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -70,6 +76,23 @@ describe("McpAppFrame", () => {
     await waitFor(() => expect(screen.getByTitle("Interactive Excalidraw diagram")).toBeVisible());
     fireEvent.load(screen.getByTitle("Interactive Excalidraw diagram"));
     expect(screen.queryByRole("button", { name: "Retry diagram" })).not.toBeInTheDocument();
+  });
+
+  it("injects the scene even if the iframe load event already fired", async () => {
+    htmlApi.loadExcalidrawAppHtml.mockResolvedValue("<!DOCTYPE html><html><body>diagram</body></html>");
+    Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+      configurable: true,
+      get() { return window; },
+    });
+    try {
+      render(<McpAppFrame block={block} />);
+      await waitFor(() => expect(htmlApi.sendToolInput).toHaveBeenCalled());
+      expect(htmlApi.sendToolInput.mock.calls[0]?.[0]).toEqual({
+        arguments: { elements: expect.any(Array) },
+      });
+    } finally {
+      delete (HTMLIFrameElement.prototype as { contentWindow?: Window }).contentWindow;
+    }
   });
 
   it("retries by dropping the cached shell and fetching again", async () => {

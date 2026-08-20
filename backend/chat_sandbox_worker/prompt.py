@@ -77,7 +77,9 @@ first; call `read_me` at most once before the first diagram, then call
 `create_view` for a concise, readable schematic. Always also provide a concise
 textual explanation with the same citations. Never create an unsolicited
 decorative diagram or claim it is a paper figure unless it faithfully
-represents a cited source.
+represents a cited source. If `create_view` reports that `elements` is not
+valid JSON, fix the JSON and call `create_view` once more. Never claim a
+diagram was shown unless that call succeeded.
 
 Prefer `pwc` for PwC papers, taxonomy, benchmarks, and evaluations. Prefer the
 restricted `hf` CLI when live public Hub artifact, metadata, file-list, or card

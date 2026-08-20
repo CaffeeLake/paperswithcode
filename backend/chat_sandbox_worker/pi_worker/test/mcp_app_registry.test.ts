@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EMPTY_EGRESS_POLICY_DIGEST,
+  INVALID_EXCALIDRAW_ELEMENTS,
   assessExcalidrawReadiness,
   egressPolicyDigest,
   enabledWorkerMcpProviders,
+  serializeExcalidrawElements,
 } from "../src/mcp_app_registry.js";
 
 test("disabled Excalidraw keeps an empty provider digest", () => {
@@ -64,4 +66,15 @@ test("App-only tools in the model inventory are incompatible", () => {
   });
   assert.equal(snapshot.ready, false);
   assert.equal(snapshot.failure_class, "connected_incompatible");
+});
+
+test("serializeExcalidrawElements accepts arrays and rejects malformed JSON strings", () => {
+  assert.equal(serializeExcalidrawElements([{ type: "rectangle" }]), '[{"type":"rectangle"}]');
+  assert.equal(serializeExcalidrawElements('[{"type":"arrow"}]'), '[{"type":"arrow"}]');
+  assert.equal(
+    serializeExcalidrawElements('[{"type":"arrow","label":{"text":"draft tokens"}}},]'),
+    undefined,
+  );
+  assert.equal(serializeExcalidrawElements({ type: "rectangle" }), undefined);
+  assert.equal(INVALID_EXCALIDRAW_ELEMENTS.includes("Fix the JSON"), true);
 });

@@ -559,7 +559,7 @@ export const AssistantMessage: React.FC<{
             <ToolBlockView key={key} block={b} papers={papers} onToggle={() => onToggleBlock(msg.id, i)} />
           );
         }
-        if (b.kind === "app") return <AppBlockView key={key} block={b} />;
+        if (b.kind === "app") return <AppBlockView key={b.instance_id || key} block={b} />;
         return (
           <AnswerBlockView
             key={key}

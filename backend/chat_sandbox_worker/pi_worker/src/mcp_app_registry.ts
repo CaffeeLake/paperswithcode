@@ -17,6 +17,25 @@ export const EXCALIDRAW_APP_TOOLS = [
 export const MAX_EXCALIDRAW_ELEMENTS_BYTES = 128 * 1024;
 export const MAX_EXCALIDRAW_CONTEXT_BYTES = 8 * 1024;
 export const EMPTY_EGRESS_POLICY_DIGEST = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
+export const INVALID_EXCALIDRAW_ELEMENTS =
+  "create_view.elements must be a JSON array of diagram elements. Fix the JSON and call create_view again.";
+export const EXCALIDRAW_ELEMENTS_TOO_LARGE = "Diagram input is too large. Answer in text.";
+
+export function serializeExcalidrawElements(elements: unknown): string | undefined {
+  const serialized = typeof elements === "string" ? elements : JSON.stringify(elements ?? null);
+  if (Buffer.byteLength(serialized) > MAX_EXCALIDRAW_ELEMENTS_BYTES) return undefined;
+  try {
+    if (!Array.isArray(JSON.parse(serialized))) return undefined;
+  } catch {
+    return undefined;
+  }
+  return serialized;
+}
+
+export function excalidrawElementsTooLarge(elements: unknown): boolean {
+  const serialized = typeof elements === "string" ? elements : JSON.stringify(elements ?? null);
+  return Buffer.byteLength(serialized) > MAX_EXCALIDRAW_ELEMENTS_BYTES;
+}
 
 export interface McpAppProvider {
   id: "excalidraw";

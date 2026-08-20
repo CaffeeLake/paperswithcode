@@ -35,6 +35,32 @@ test("enforces tool, path, search, timeout, and output bounds", () => {
   assert.match(noWrite.authorize("x", "write", {}) ?? "", /not available/iu);
 });
 
+test("rejects invalid create_view JSON without consuming the diagram budget", () => {
+  const value = new PolicyController({
+    maximumCalls: 4,
+    maximumRounds: 4,
+    maximumDirectSearches: 1,
+    maximumWebSearches: 1,
+    maximumResultBytes: 1024,
+    maximumTurnOutputBytes: 4096,
+    bashTimeoutSeconds: 5,
+    excalidrawEnabled: true,
+  });
+  value.reset(false);
+  assert.match(
+    value.authorize("bad", "create_view", {
+      elements: '[{"type":"arrow","label":{"text":"draft tokens"}}},]',
+    }) ?? "",
+    /JSON array/u,
+  );
+  assert.equal(value.createViewCalls, 0);
+  assert.equal(
+    value.authorize("ok", "create_view", { elements: [{ type: "rectangle", id: "n1" }] }),
+    undefined,
+  );
+  assert.equal(value.createViewCalls, 1);
+});
+
 test("requires a visible answer, including after tooling closes", () => {
   const value = policy();
   value.reset(false);

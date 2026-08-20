@@ -1,5 +1,11 @@
 import path from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import {
+  EXCALIDRAW_ELEMENTS_TOO_LARGE,
+  INVALID_EXCALIDRAW_ELEMENTS,
+  excalidrawElementsTooLarge,
+  serializeExcalidrawElements,
+} from "./mcp_app_registry.js";
 
 const ANSWER_NOW =
   "Execution limit reached. Do not call more tools. Answer now from the evidence already gathered.";
@@ -104,8 +110,14 @@ export class PolicyController {
       this.readMeCalls += 1;
     }
     if (name === "create_view") {
-      const elements = typeof input.elements === "string" ? input.elements : JSON.stringify(input.elements ?? null);
-      if (Buffer.byteLength(elements) > 128 * 1024) return this.deny(id, "Diagram input is too large. Answer in text.");
+      if (serializeExcalidrawElements(input.elements) === undefined) {
+        return this.deny(
+          id,
+          excalidrawElementsTooLarge(input.elements)
+            ? EXCALIDRAW_ELEMENTS_TOO_LARGE
+            : INVALID_EXCALIDRAW_ELEMENTS,
+        );
+      }
       if (this.createViewCalls >= 2) return this.deny(id, "At most two diagrams may be created per turn.");
       this.createViewCalls += 1;
     }

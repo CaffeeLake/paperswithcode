@@ -10,6 +10,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { type McpStatusSnapshot } from "pi-mcp-adapter";
+import { createViewResult } from "../src/excalidraw_view_mcp_server.js";
 import { createWebMcpExtension, mcpDirectToolsList } from "../src/mcp.js";
 import { assessExcalidrawReadiness } from "../src/mcp_app_registry.js";
 import { createProvider } from "../src/provider.js";
@@ -195,4 +196,13 @@ test("URL Excalidraw keeps create_view on a local ack server", () => {
     mcpDirectToolsList({ command: "node", args: ["fixture.js"] }),
     ["exa/search_web", "excalidraw/read_me", "excalidraw/create_view"],
   );
+});
+
+test("local create_view acks valid scenes and errors on malformed JSON", () => {
+  const ok = createViewResult([{ type: "rectangle", id: "n1" }]);
+  assert.equal(ok.isError, undefined);
+  assert.match(ok.content[0]?.text ?? "", /Diagram displayed/u);
+  const bad = createViewResult('[{"type":"arrow","label":{"text":"draft tokens"}}},]');
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0]?.text ?? "", /Fix the JSON/u);
 });

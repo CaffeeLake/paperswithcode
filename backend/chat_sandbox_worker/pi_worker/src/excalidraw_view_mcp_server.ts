@@ -3,9 +3,30 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
 
-import { MAX_EXCALIDRAW_ELEMENTS_BYTES } from "./mcp_app_registry.js";
+import {
+  INVALID_EXCALIDRAW_ELEMENTS,
+  MAX_EXCALIDRAW_ELEMENTS_BYTES,
+  serializeExcalidrawElements,
+} from "./mcp_app_registry.js";
 
 const ACK = "Diagram displayed in the chat. Continue with a concise textual explanation.";
+
+export function createViewResult(elements: unknown): {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+  structuredContent?: { checkpointId: string };
+} {
+  if (serializeExcalidrawElements(elements) === undefined) {
+    return {
+      content: [{ type: "text", text: INVALID_EXCALIDRAW_ELEMENTS }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: ACK }],
+    structuredContent: { checkpointId: "local" },
+  };
+}
 
 export function createExcalidrawViewServer(): McpServer {
   const server = new McpServer({ name: "excalidraw_view", version: "1.0.0" });
@@ -14,15 +35,12 @@ export function createExcalidrawViewServer(): McpServer {
     {
       title: "Create Excalidraw view",
       description:
-        "Create an interactive diagram in the chat. The browser renders the figure from the tool arguments; this call only acknowledges success.",
+        "Create an interactive diagram in the chat from a JSON array of Excalidraw elements. Invalid elements JSON is an error; fix the JSON and call create_view again.",
       inputSchema: z.object({
         elements: z.union([z.string().max(MAX_EXCALIDRAW_ELEMENTS_BYTES), z.array(z.unknown())]),
       }),
     },
-    async () => ({
-      content: [{ type: "text" as const, text: ACK }],
-      structuredContent: { checkpointId: "local" },
-    }),
+    async ({ elements }) => createViewResult(elements),
   );
   return server;
 }

@@ -1,3 +1,5 @@
+import { serializeExcalidrawElements } from "./mcp_app_registry.js";
+
 export type PwCEvent = Record<string, unknown> & { type: string };
 
 type UnknownRecord = Record<string, unknown>;
@@ -27,15 +29,7 @@ function publicToolName(value: unknown): string {
 }
 
 function excalidrawElements(value: unknown): string | undefined {
-  const elements = record(value).elements;
-  const serialized = typeof elements === "string" ? elements : JSON.stringify(elements ?? null);
-  if (Buffer.byteLength(serialized) > 128 * 1024) return undefined;
-  try {
-    if (!Array.isArray(JSON.parse(serialized))) return undefined;
-  } catch {
-    return undefined;
-  }
-  return serialized;
+  return serializeExcalidrawElements(record(value).elements);
 }
 
 export function reasoningIsVisible(value: string | undefined): boolean {
