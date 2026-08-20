@@ -1635,7 +1635,7 @@ class ChatStreamOrchestrator:
                     answer,
                     citations,
                     terminal_payload.get("followups", []),
-                    self.projection.blocks,
+                    self.projection.completed_blocks(),
                     terminal_payload.get("finish_reason", "success"),
                 )
             else:
@@ -1687,7 +1687,7 @@ class ChatStreamOrchestrator:
                 answer,
                 citations,
                 event.get("followups", []),
-                self.projection.blocks,
+                self.projection.completed_blocks(),
                 event.get("finish_reason", "success"),
             )
             db.commit()

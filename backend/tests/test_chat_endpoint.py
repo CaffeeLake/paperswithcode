@@ -33,7 +33,7 @@ from backend.models.chat import (
 )
 from backend.routers import chat as chat_router
 from backend.routers.inference_billing import _status as inference_billing_status
-from backend.services import chat_mcp
+from backend.services import chat_mcp, chat_stream_service
 from backend.services.chat_agent_service import (
     SEARCH_TOOL_NAME,
     SDKEventAdapter,
@@ -993,6 +993,7 @@ def test_poster_sanitized_arguments_are_the_only_persisted_tool_projection():
     )
     projection.apply("tool_call_arguments_done", final)
     persisted = json.dumps(projection.completed_blocks())
+    DISPLAY_BLOCKS_ADAPTER.validate_python(projection.completed_blocks())
 
     assert "private paper text" not in persisted
     assert "<inline content redacted>" in persisted
@@ -1012,6 +1013,93 @@ def test_poster_sanitized_arguments_are_the_only_persisted_tool_projection():
     traced = json.dumps(captured)
     assert "private paper text" not in traced
     assert "<inline content redacted>" in traced
+
+
+def test_complete_turn_persists_authoritative_streamed_tool_snapshot(monkeypatch):
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="gpt-5.6-luna@openai",
+        model_route="gpt-5.6-luna@openai",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        is_first_turn=True,
+        agent_harness="pi",
+    )
+    orchestrator = ChatStreamOrchestrator(
+        settings=get_settings().model_copy(update={"environment": "development"}),
+        owner=ChatOwner(hf_user_id="hf-user", hf_username="tester"),
+        admission=admission,
+        prompt="hello",
+        request_id="request-id",
+        title_token=None,
+        is_disconnected=lambda: asyncio.sleep(0, result=False),
+        release_admission=lambda: asyncio.sleep(0),
+    )
+    orchestrator.projection.apply(
+        "tool_call_start",
+        {"id": "tool-1", "name": "Bash", "content_index": 0},
+    )
+    orchestrator.projection.apply(
+        "tool_call_arguments_delta",
+        {
+            "id": "tool-1",
+            "name": "Bash",
+            "delta": '{"command":"pwc',
+            "partial_args": {"command": "pwc"},
+        },
+    )
+    orchestrator.projection.apply(
+        "tool_call_arguments_done",
+        {"id": "tool-1", "name": "Bash", "args": {"command": "pwc version"}},
+    )
+    orchestrator.projection.apply(
+        "tool_result",
+        {
+            "id": "tool-1",
+            "status": "success",
+            "took_ms": 12,
+            "content": [{"type": "text", "text": "ok", "truncated": False}],
+            "metadata": {"exit_code": 0, "output_truncated": False},
+        },
+    )
+    orchestrator.projection.apply("answer_delta", {"text": "Done."})
+
+    captured: dict = {}
+    database = SimpleNamespace(commit=lambda: captured.setdefault("committed", True))
+
+    @contextmanager
+    def session_local():
+        yield database
+
+    class SessionService:
+        def __init__(self, db, settings):
+            assert db is database
+
+        def complete_turn(self, *args):
+            captured["blocks"] = args[5]
+
+    monkeypatch.setattr(
+        chat_stream_service,
+        "db_manager",
+        SimpleNamespace(session_local=session_local),
+    )
+    monkeypatch.setattr(chat_stream_service, "ChatSessionService", SessionService)
+    monkeypatch.setattr(
+        chat_stream_service,
+        "resolve_citation_targets",
+        lambda _db, _text: ([], {}),
+    )
+
+    orchestrator._complete_turn({"followups": [], "finish_reason": "success"})
+
+    DISPLAY_BLOCKS_ADAPTER.validate_python(captured["blocks"])
+    tool = next(block for block in captured["blocks"] if block["kind"] == "tool")
+    assert tool["args"] == {"command": "pwc version"}
+    assert "argument_text" not in tool
+    assert "argument_state" not in tool
+    assert captured["committed"] is True
 
 
 def test_streamed_tool_argument_events_have_strict_public_sse_shapes():
