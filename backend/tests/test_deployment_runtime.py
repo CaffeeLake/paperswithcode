@@ -338,7 +338,7 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_enabled=environment == "staging",
         native_pdf_reader_enabled=environment == "staging",
         paper_reader_chat_enabled=environment == "staging",
-        paper_reader_selection_enabled=False,
+        paper_reader_selection_enabled=environment == "staging",
         chat_public_admission_enabled=environment == "staging",
         chat_sandbox_admission_enabled=environment == "staging",
         chat_default_backend=runtime["default_backend"],

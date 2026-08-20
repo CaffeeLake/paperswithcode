@@ -43,7 +43,7 @@ function mockSelection(range: Range, extra?: Partial<Selection>): Selection {
   } as Selection;
 }
 
-function primaryPointer(type: "pointerdown" | "pointerup") {
+function primaryPointer(type: "pointerdown" | "pointerup" | "pointercancel") {
   const event = new PointerEvent(type, {
     bubbles: true,
     button: 0,
@@ -55,6 +55,7 @@ function primaryPointer(type: "pointerdown" | "pointerup") {
 
 async function flushSelectionCommit() {
   await act(async () => {
+    vi.advanceTimersByTime(20);
     await Promise.resolve();
   });
 }
@@ -222,6 +223,8 @@ describe("usePdfSelection", () => {
 
     vi.spyOn(window, "getSelection").mockReturnValue(mockSelection(full));
     first.span.dispatchEvent(primaryPointer("pointerup"));
+    await act(async () => { await Promise.resolve(); });
+    expect(onSelect).not.toHaveBeenCalled();
     await flushSelectionCommit();
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith({
@@ -272,5 +275,48 @@ describe("usePdfSelection", () => {
     first.span.dispatchEvent(primaryPointer("pointerup"));
     await flushSelectionCommit();
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("reattaches the same passage in a later gesture and ignores pointer cancellation", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const root = document.createElement("div");
+    root.className = "pdf-pages";
+    const first = pageLayer(1, "alpha beta");
+    root.append(first.pageEl);
+    document.body.append(root);
+    const onSelect = vi.fn();
+    const { unmount } = renderHook(() => {
+      const pagesRoot = useRef<HTMLElement | null>(root);
+      usePdfSelection({
+        enabled: true,
+        pagesRoot,
+        routeId: "2608.09119",
+        paperVersion: "v1",
+        onSelect,
+      });
+    });
+    const range = document.createRange();
+    range.selectNodeContents(first.span);
+    vi.spyOn(window, "getSelection").mockReturnValue(mockSelection(range));
+
+    first.span.dispatchEvent(primaryPointer("pointerdown"));
+    first.span.dispatchEvent(primaryPointer("pointerup"));
+    await flushSelectionCommit();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    first.span.dispatchEvent(primaryPointer("pointerdown"));
+    first.span.dispatchEvent(primaryPointer("pointerup"));
+    await flushSelectionCommit();
+    expect(onSelect).toHaveBeenCalledTimes(2);
+
+    first.span.dispatchEvent(primaryPointer("pointerdown"));
+    first.span.dispatchEvent(primaryPointer("pointercancel"));
+    document.dispatchEvent(new Event("selectionchange"));
+    act(() => { vi.advanceTimersByTime(400); });
+    await flushSelectionCommit();
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    unmount();
   });
 });
