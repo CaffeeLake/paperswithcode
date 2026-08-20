@@ -317,13 +317,6 @@ function SubmissionCard({
           <pre>{JSON.stringify(submission.conflict_payload, null, 2)}</pre>
         </div>
       )}
-      {submission.review_evidence && (
-        <details className="submission-diff" open>
-          <summary>Codex review artifact</summary>
-          <pre>{JSON.stringify(submission.review_evidence, null, 2)}</pre>
-        </details>
-      )}
-
       <footer className="submission-actions">
         {isPending ? (
           <>

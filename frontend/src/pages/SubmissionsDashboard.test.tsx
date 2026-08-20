@@ -100,6 +100,29 @@ describe("SubmissionsDashboard", () => {
     expect(screen.queryByText("No pending submissions.")).not.toBeInTheDocument();
   });
 
+  it("does not expose low-level Codex review evidence", async () => {
+    listPendingPaperEdits.mockResolvedValue({
+      count: 1,
+      results: [
+        {
+          ...externalPaperSubmission,
+          review_evidence: {
+            model: "codex",
+            duplicate_checks: ["internal-only detail"],
+          },
+        },
+      ],
+    });
+
+    renderDashboard();
+
+    expect(
+      await screen.findByText("External paper", { selector: ".submission-title" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Codex review artifact")).not.toBeInTheDocument();
+    expect(screen.queryByText(/internal-only detail/)).not.toBeInTheDocument();
+  });
+
   it("labels and filters external paper submissions separately from taxonomy suggestions", async () => {
     const user = userEvent.setup();
     renderDashboard();
