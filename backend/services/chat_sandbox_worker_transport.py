@@ -737,7 +737,13 @@ class WorkerTurnExecution:
             # added in contract 81, so omit its false/default value to keep
             # non-reader production turns compatible during image rotation.
             run["reader_mode"] = True
-        if self.request.agent_harness == "pi":
+        if (
+            self.request.agent_harness == "pi"
+            and self.request.provider_protocol != "anthropic-messages"
+        ):
+            # Contract-90 Pi workers reject unknown frame keys. The default
+            # Anthropic-compatible protocol predates this field, so omit it
+            # while production drains the older immutable worker image.
             run["provider_protocol"] = self.request.provider_protocol
         if self.request.poster_mode:
             run["poster_mode"] = True

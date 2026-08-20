@@ -244,6 +244,42 @@ def test_reader_mode_frame_field_is_sent_only_when_enabled():
     assert _decode_dispatch(enabled._request_frame())[1]["reader_mode"] is True
 
 
+def test_provider_protocol_frame_field_preserves_contract_90_compatibility():
+    transport = _transport()
+    claim = _turn_claim()
+    sandbox = SimpleNamespace(object_id=claim.sandbox_id)
+
+    default_protocol = transport.create_execution(
+        sandbox=sandbox,
+        claim=claim,
+        request=_turn_request(
+            agent_harness="pi",
+            provider_protocol="anthropic-messages",
+        ),
+        mode=WorkerTurnMode.PERSISTENT,
+        process_timeout_seconds=47,
+    )
+    direct_openai = transport.create_execution(
+        sandbox=sandbox,
+        claim=claim,
+        request=_turn_request(
+            agent_harness="pi",
+            provider_protocol="openai-responses",
+        ),
+        mode=WorkerTurnMode.PERSISTENT,
+        process_timeout_seconds=47,
+    )
+
+    assert (
+        "provider_protocol"
+        not in _decode_dispatch(default_protocol._request_frame())[1]
+    )
+    assert (
+        _decode_dispatch(direct_openai._request_frame())[1]["provider_protocol"]
+        == "openai-responses"
+    )
+
+
 async def _wait_until(predicate) -> None:
     for _ in range(20):
         if predicate():
