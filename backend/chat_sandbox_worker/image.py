@@ -27,6 +27,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 WORKER = Path(__file__).resolve().parent
 STANDALONE = REPOSITORY / "standalone_cli"
 RESTRICTED_HF = REPOSITORY / "restricted_hf_cli"
+S2_CLI = REPOSITORY / "s2_cli"
 
 app = modal.App(MODAL_APP_NAME)
 image = (
@@ -85,6 +86,8 @@ image = (
     )
     .add_local_file(WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md", copy=True)
     .add_local_file(WORKER / "HF_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md", copy=True)
+    .add_local_file(WORKER / "S2_CLI_SKILL.md", "/opt/pwc/S2_CLI_SKILL.md", copy=True)
+    .add_local_dir(S2_CLI, "/opt/pwc/s2_cli", copy=True)
     .add_local_dir(
         RESTRICTED_HF / "src" / "restricted_hf_cli",
         "/opt/pwc/restricted_hf_cli/restricted_hf_cli",
@@ -102,6 +105,8 @@ image = (
         "chmod -R a+rX /opt/pwc/restricted_hf_cli",
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
         "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
+        "chmod 0644 /opt/pwc/S2_CLI_SKILL.md",
+        "python -m pip install --no-deps /opt/pwc/s2_cli",
         "chmod 0755 /opt/pwc/restricted-hf && ln -s /opt/pwc/restricted-hf /usr/local/bin/hf",
         "PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'",
         "PYTHONPATH=/opt/pwc python -c \"from pathlib import Path; from backend.chat_sandbox_worker.contract import RESTRICTED_HF_CLI_SHA256, restricted_hf_cli_digest; assert restricted_hf_cli_digest(Path('/opt/pwc/restricted_hf_cli/restricted_hf_cli'), Path('/opt/pwc/restricted-hf')) == RESTRICTED_HF_CLI_SHA256\"",
@@ -112,6 +117,7 @@ image = (
         "pwc paper --help >/dev/null",
         "pwc benchmark --help >/dev/null",
         "pwc benchmark list --help >/dev/null",
+        "S2_API_KEY=sandbox-gateway S2_API_URL=http://127.0.0.1:8765/semantic-scholar/graph/v1 s2 version",
         "runuser -u pwc-chat -- hf --help >/dev/null",
         "runuser -u pwc-chat -- hf collections --help >/dev/null",
         "runuser -u pwc-chat -- hf datasets card --help >/dev/null",
@@ -139,6 +145,8 @@ image = (
             "PWC_CHAT_MCP_APPS_HOST_ENABLED": "false",
             "PWC_CHAT_AGENT_TIMEOUT_SECONDS": "180",
             "PWC_CHAT_SANDBOX_PIDS_MAX": "64",
+            "S2_API_KEY": "sandbox-gateway",
+            "S2_API_URL": "http://127.0.0.1:8765/semantic-scholar/graph/v1",
         }
     )
 )

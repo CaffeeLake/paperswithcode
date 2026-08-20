@@ -464,6 +464,8 @@ def _options(
             "ANTHROPIC_API_KEY": "sandbox-placeholder-not-a-credential",
             "ANTHROPIC_AUTH_TOKEN": "sandbox-placeholder-not-a-credential",
             "PWC_API_URL": "http://127.0.0.1:8765/api/v1",
+            "S2_API_KEY": "sandbox-gateway",
+            "S2_API_URL": "http://127.0.0.1:8765/semantic-scholar/graph/v1",
             "CLAUDE_CONFIG_DIR": "/home/pwc-chat/.claude",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",

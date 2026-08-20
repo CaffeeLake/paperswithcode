@@ -80,6 +80,12 @@ def test_missing_api_key_exits_2(monkeypatch, capsys):
     assert "missing API key" in captured.err
 
 
+def test_client_uses_configured_api_url(monkeypatch):
+    monkeypatch.setenv("S2_API_URL", "http://127.0.0.1:8765/semantic-scholar/")
+    client = Client(api_key="test-key", delay=0)
+    assert client.base_url == "http://127.0.0.1:8765/semantic-scholar"
+
+
 def test_invalid_limit_exits_2(capsys):
     with pytest.raises(SystemExit) as raised:
         main(["search", "transformers", "--limit", "0"])
