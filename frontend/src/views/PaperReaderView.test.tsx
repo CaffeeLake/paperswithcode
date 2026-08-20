@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getAvailability: vi.fn(),
+  showArtifact: false,
 }));
 
 vi.mock("@/hooks/usePapers", () => ({
@@ -60,11 +61,32 @@ vi.mock("@/components/pdf/PdfViewer", () => ({
     })}>Attach selection</button>
   </div>,
 }));
-vi.mock("@/views/ChatView", () => ({
-  ChatExperience: ({ paperSelection }: { paperSelection?: { page: number } }) => (
-    <div>Paper chat{paperSelection ? ` selection page ${paperSelection.page}` : ""}</div>
-  ),
-}));
+vi.mock("@/views/ChatView", async () => {
+  const { PosterArtifact } = await import("@/components/chat/PosterArtifact");
+  return {
+    ChatExperience: ({ paperSelection }: { paperSelection?: { page: number } }) => (
+      <div>Paper chat{paperSelection ? ` selection page ${paperSelection.page}` : ""}
+        {mocks.showArtifact && <PosterArtifact block={{
+          kind: "artifact",
+          schema_version: 1,
+          scope: "owner",
+          publication_id: "reader-poster",
+          artifact_id: "reader-artifact",
+          version_id: "reader-version",
+          identifier: "reader-poster",
+          artifact_kind: "posterly",
+          title: "Reader poster",
+          status: "ready",
+          version: 1,
+          preview_mime: "image/png",
+          source_language: "html",
+          gate_status: "passed",
+          total_bytes: 1024,
+        }} />}
+      </div>
+    ),
+  };
+});
 
 import PaperReaderView, { readerToolbarResources } from "@/views/PaperReaderView";
 import type { Paper } from "@/lib/api/papers.types";
@@ -85,6 +107,7 @@ describe("PaperReaderView", () => {
     sessionStorage.clear();
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
     vi.stubEnv("VITE_PAPER_READER_CHAT_ENABLED", "1");
+    mocks.showArtifact = false;
     mocks.getAvailability.mockResolvedValue({
       status: "available",
       reason: null,
@@ -259,5 +282,31 @@ describe("PaperReaderView", () => {
     expect(document.getElementById("reader-chat-panel")).toHaveClass("is-hidden");
     expect(document.getElementById("reader-chat-panel")).toHaveAttribute("aria-hidden", "true");
     expect(screen.queryByRole("button", { name: "Hide chat" })).not.toBeInTheDocument();
+  });
+
+  it("docks a third far-right poster pane when PDF, chat, and artifact minima fit", async () => {
+    mocks.showArtifact = true;
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1440);
+    renderReader();
+    fireEvent.click(await screen.findByRole("button", { name: /Reader poster/u }));
+
+    expect(await screen.findByRole("complementary", { name: "Reader poster" })).toBeVisible();
+    expect(screen.getByTestId("paper-chat-workspace")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Paper PDF" })).toBeVisible();
+    expect(screen.getByText("Paper chat")).toBeVisible();
+    expect(screen.getByTestId("paper-chat-workspace").closest("[data-artifact-layout]"))
+      .toHaveAttribute("data-artifact-layout", "split");
+  });
+
+  it("uses a full-workspace poster dialog below the three-pane breakpoint without unmounting the PDF", async () => {
+    mocks.showArtifact = true;
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1100);
+    renderReader();
+    fireEvent.click(await screen.findByRole("button", { name: /Reader poster/u }));
+
+    expect(await screen.findByRole("dialog", { name: "Reader poster" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Paper PDF" })).toBeInTheDocument();
+    expect(screen.getByTestId("paper-chat-workspace").closest("[data-artifact-layout]"))
+      .toHaveAttribute("data-artifact-layout", "dialog");
   });
 });

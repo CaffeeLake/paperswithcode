@@ -146,6 +146,49 @@ describe("SharedChatView", () => {
     expect(screen.queryByRole("link", { name: "OpenRouter" })).not.toBeInTheDocument();
   });
 
+  it("opens a public poster beside the transcript without loading private chat history", async () => {
+    window.history.replaceState({}, "", `/share/${shareId}`);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
+    const sharedPoster = {
+      kind: "artifact",
+      schema_version: 1,
+      scope: "public",
+      public_capability: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      identifier: "attention-poster",
+      artifact_kind: "posterly",
+      title: "Attention poster",
+      status: "ready",
+      version: 1,
+      preview_mime: "image/png",
+      source_language: "html",
+      gate_status: "failed",
+      total_bytes: 4096,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...payload,
+        messages: payload.messages.map((message) => message.role === "assistant"
+          ? { ...message, display_blocks: [...message.display_blocks, sharedPoster] }
+          : message),
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    renderView();
+
+    expect(await screen.findByRole("complementary", { name: "Attention poster" })).toBeVisible();
+    expect(screen.getByTestId("shared-conversation-pane").closest("[data-artifact-layout]"))
+      .toHaveAttribute("data-artifact-layout", "split");
+    expect(screen.getByAltText("Full preview of Attention poster")).toHaveAttribute(
+      "src",
+      expect.stringContaining(`/api/v1/chat/shares/${shareId}/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/preview`),
+    );
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/chat/sessions")))
+      .toBe(false);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/chat/artifacts")))
+      .toBe(false);
+  });
+
   it("opens a fresh chat with the prompt as a draft so setup is shown before sending", async () => {
     const user = userEvent.setup();
     sessionStorage.setItem(CHAT_MODEL_KEY, "stale-model");

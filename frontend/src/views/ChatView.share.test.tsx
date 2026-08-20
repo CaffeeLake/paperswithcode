@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi } from "@/lib/api/chat";
+import type { ChatMessage } from "@/lib/chat";
 import {
   CHAT_AUTO_SEND_KEY,
   CHAT_DRAFT_KEY,
@@ -171,6 +172,43 @@ beforeEach(() => {
 });
 
 describe("ChatView inference authorization", () => {
+  it("renders authenticated previous-chat navigation, conversation, and poster as three columns", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1400);
+    (mocks.messages as unknown as ChatMessage[]).splice(0, mocks.messages.length,
+      { id: "user-1", role: "user", text: "Create a poster", revision: 1, status: "complete" },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        blocks: [{
+          kind: "artifact",
+          schema_version: 1,
+          scope: "owner",
+          publication_id: "poster-1",
+          artifact_id: "artifact-1",
+          version_id: "version-1",
+          identifier: "attention-poster",
+          artifact_kind: "posterly",
+          title: "Attention poster",
+          status: "ready",
+          version: 1,
+          preview_mime: "image/png",
+          source_language: "html",
+          gate_status: "passed",
+          total_bytes: 4096,
+        }],
+      },
+    );
+    renderChat();
+
+    const card = await screen.findByRole("button", { name: /Attention poster/u });
+    await userEvent.click(card);
+    expect(screen.getByRole("navigation", { name: "Chat history" })).toBeVisible();
+    expect(screen.getByTestId("active-chat-pane")).toBeVisible();
+    expect(await screen.findByRole("complementary", { name: "Attention poster" })).toBeVisible();
+    expect(screen.getByTestId("active-chat-pane").closest("[data-artifact-layout]"))
+      .toHaveAttribute("data-artifact-layout", "split");
+  });
+
   it("keeps the composer disabled until authentication finishes loading", async () => {
     mocks.messages.length = 0;
     mocks.authLoading = true;

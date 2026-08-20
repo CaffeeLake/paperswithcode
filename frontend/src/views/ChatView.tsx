@@ -10,6 +10,8 @@ import {
 } from "@/components/chat/ChatDialogs";
 import { ChatSessionNavigation } from "@/components/chat/ChatSessionNavigation";
 import { ChatSharing } from "@/components/chat/ChatSharing";
+import { ArtifactWorkspace } from "@/components/chat/ArtifactWorkspace";
+import { ArtifactPanelProvider } from "@/components/chat/useArtifactPanel";
 import { useChatArchive } from "@/components/chat/useChatArchive";
 import { PanelIcon, Spinner } from "@/components/chat/icons";
 import { hfLoginUrl } from "@/components/HfSignInButton";
@@ -81,6 +83,21 @@ export interface ChatExperienceProps {
   onReaderSubmit?: () => void;
   onReaderNewChat?: () => void;
 }
+
+const GeneralArtifactProvider: React.FC<{
+  enabled: boolean;
+  workspaceKey: string;
+  children: React.ReactNode;
+}> = ({ enabled, workspaceKey, children }) => enabled
+  ? <ArtifactPanelProvider workspaceKey={workspaceKey}>{children}</ArtifactPanelProvider>
+  : <>{children}</>;
+
+const GeneralArtifactWorkspace: React.FC<{
+  enabled: boolean;
+  children: React.ReactNode;
+}> = ({ enabled, children }) => enabled
+  ? <ArtifactWorkspace variant="chat">{children}</ArtifactWorkspace>
+  : <>{children}</>;
 
 export const ChatExperience: React.FC<ChatExperienceProps> = ({
   mode = "general",
@@ -610,6 +627,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   };
 
   return (
+    <GeneralArtifactProvider enabled={mode === "general"} workspaceKey={routeSessionId ?? "new-chat"}>
     <div className={`chat-page${mode === "paper" ? " chat-page--reader" : ""}`} style={{ height: mode === "paper" ? "100%" : `calc(100dvh - ${headerHeight}px)` }}>
       {mode === "general" && <ChatSessionNavigation
         sessions={sessions}
@@ -624,7 +642,8 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
         onDelete={(sessionId) => void remove(sessionId)}
       />}
 
-      <section className="chat-main">
+      <GeneralArtifactWorkspace enabled={mode === "general"}>
+      <section className="chat-main" data-testid="active-chat-pane">
         <div className="chat-topbar">
           {mode === "general" && !sidebarOpen && <button type="button" className="icon-btn" onClick={() => setSidebarOpen(true)} title="Open sidebar"><PanelIcon /></button>}
           {mode === "paper" && <button type="button" className="chat-reader-action" onClick={newChat}>New chat</button>}
@@ -703,6 +722,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
           />
         </>}
       </section>
+      </GeneralArtifactWorkspace>
       {chat.capacityRequest && (
         <ChatCapacityDialog
           retryAt={chat.capacityRequest.retryAt}
@@ -723,6 +743,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
         void availabilityQuery.refetch();
       }} />}
     </div>
+    </GeneralArtifactProvider>
   );
 };
 

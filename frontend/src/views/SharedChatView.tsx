@@ -3,8 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 
 import Composer from "@/components/chat/Composer";
+import { ArtifactWorkspace } from "@/components/chat/ArtifactWorkspace";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import { Spinner } from "@/components/chat/icons";
+import { ArtifactPanelProvider } from "@/components/chat/useArtifactPanel";
 import { isStagingEnvironment } from "@/lib/apiUrl";
 import type { ChatMessage, ChatPaperHit } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
@@ -104,12 +106,14 @@ const SharedChatView: React.FC = () => {
   }
 
   return (
+    <ArtifactPanelProvider workspaceKey={`share:${shareId}:${query.data.updated_at}`} autoOpenOnMount>
     <div className="shared-chat-page">
       <div className="shared-chat-heading">
         <h1>Shared conversation</h1>
         {staging && <span className="chat-staging-badge">Staging</span>}
       </div>
-      <div className="shared-chat-content">
+      <ArtifactWorkspace variant="shared">
+      <div className="shared-chat-content" data-testid="shared-conversation-pane">
         <SharedTranscript key={query.data.updated_at} detail={query.data} />
         {query.data.model_label && <div className="shared-chat-attribution">
           <span>Generated with {query.data.model_label}</span>
@@ -135,7 +139,9 @@ const SharedChatView: React.FC = () => {
           <Composer onSend={(draft) => launchFreshChat(draft.text)} placeholder="Ask a new research question…" />
         </section>
       </div>
+      </ArtifactWorkspace>
     </div>
+    </ArtifactPanelProvider>
   );
 };
 

@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PdfViewer } from "@/components/pdf/PdfViewer";
+import { ArtifactWorkspace } from "@/components/chat/ArtifactWorkspace";
+import { ArtifactPanelProvider, useArtifactPanel } from "@/components/chat/useArtifactPanel";
 import type { PdfToolbarResources } from "@/components/pdf/PdfToolbar";
 import { usePaper } from "@/hooks/usePapers";
 import type { Paper } from "@/lib/api/papers.types";
@@ -88,7 +90,7 @@ export function readerToolbarResources(paper: Paper | undefined): PdfToolbarReso
   return resources;
 }
 
-export default function PaperReaderView() {
+function PaperReaderExperience() {
   const { arxivId: rawRouteId } = useParams<{ arxivId: string }>();
   const routeId = normalizePaperRouteId(rawRouteId ?? "").replace(/v\d+$/i, "");
   const query = usePaper(routeId, Boolean(routeId));
@@ -128,7 +130,17 @@ export default function PaperReaderView() {
   const pendingRatio = useRef(ratio);
   const currentPageRef = useRef(storedPage(routeId));
   const paperVersionRef = useRef(paper?.version);
-  const desktopSplit = workspaceWidth > 900 && workspaceWidth >= 840;
+  const artifactPanel = useArtifactPanel();
+  const resetArtifactPanel = artifactPanel.reset;
+  const artifactSessionRef = useRef(`${routeId}:${activeSessionId ?? "new"}`);
+  const desktopSplit = workspaceWidth >= 840;
+
+  useEffect(() => {
+    const next = `${routeId}:${activeSessionId ?? "new"}`;
+    if (artifactSessionRef.current === next) return;
+    artifactSessionRef.current = next;
+    resetArtifactPanel();
+  }, [activeSessionId, resetArtifactPanel, routeId]);
 
   useEffect(() => {
     if (paper?.version && paperVersionRef.current && paper.version !== paperVersionRef.current) {
@@ -315,7 +327,8 @@ export default function PaperReaderView() {
         {paperSelection && mobileTab !== "assistant" && <span className="reader-tab-pending" aria-hidden="true" />}
       </button>
     </div>}
-    <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}${resizeActive ? " is-resizing" : ""}`}>
+    <ArtifactWorkspace variant="reader">
+    <div ref={workspaceRef} className={`reader-workspace${desktopSplit ? " is-desktop" : " is-tabs"}${collapsed ? " is-assistant-collapsed" : ""}${resizeActive ? " is-resizing" : ""}`} data-testid="paper-chat-workspace">
       <section
         ref={paperPaneRef}
         className={`reader-paper-pane${!desktopSplit && mobileTab !== "paper" ? " is-hidden" : ""}`}
@@ -385,5 +398,13 @@ export default function PaperReaderView() {
         onClick={() => setAssistantCollapsed(!collapsed)}
       >{collapsed ? "Open chat" : "Hide chat"}</button>}
     </div>
+    </ArtifactWorkspace>
   </div>;
+}
+
+export default function PaperReaderView() {
+  const { arxivId = "" } = useParams<{ arxivId: string }>();
+  return <ArtifactPanelProvider workspaceKey={`reader:${arxivId}`}>
+    <PaperReaderExperience />
+  </ArtifactPanelProvider>;
 }
