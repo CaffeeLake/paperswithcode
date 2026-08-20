@@ -1102,6 +1102,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert [choice["id"] for choice in staging.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         "moonshotai/Kimi-K3",
+        "openai/gpt-5.6-luna",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
@@ -1112,6 +1113,8 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "moonshotai/Kimi-K3",
         "openai/gpt-oss-120b",
         "deepseek-ai/DeepSeek-V4-Flash",
+        "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-terra",
     ):
         assert (
             production.chat_model_routes[legacy_id]
@@ -1134,10 +1137,13 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "moonshotai/Kimi-K3:baseten"
     )
     assert staging.chat_model_providers["moonshotai/Kimi-K3"] == "huggingface"
-    for legacy_id in ("openai/gpt-5.6-luna", "openai/gpt-5.6-terra"):
-        assert staging.chat_model_routes[legacy_id] == (
-            "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
-        )
+    assert staging.chat_model_routes["openai/gpt-5.6-luna"] == "openai/gpt-5.6-luna"
+    assert staging.chat_model_providers["openai/gpt-5.6-luna"] == "openai"
+    assert staging.chat_route_providers["openai/gpt-5.6-luna"] == "openrouter"
+    assert "openai/gpt-5.6-luna" in staging.chat_openrouter_routes
+    assert staging.chat_model_routes["openai/gpt-5.6-terra"] == (
+        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+    )
 
     openrouter = Settings(
         environment="production",
@@ -1162,16 +1168,18 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         environment="staging",
         chat_openrouter_server_funded_enabled=True,
         chat_alternative_model_enabled=True,
-        chat_alternative_model="openai/gpt-5.6-luna",
+        chat_alternative_model="google/gemini-3.7-flash",
     )
     assert [choice["id"] for choice in comparison.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         "moonshotai/Kimi-K3",
         "openai/gpt-5.6-luna",
+        "google/gemini-3.7-flash",
     ]
-    assert comparison.chat_model_routes["openai/gpt-5.6-luna"] == (
-        "openai/gpt-5.6-luna"
+    assert comparison.chat_model_routes["google/gemini-3.7-flash"] == (
+        "google/gemini-3.7-flash"
     )
+    assert comparison.chat_model_providers["google/gemini-3.7-flash"] == "openrouter"
 
 
 def test_title_and_display_projection_bounds():

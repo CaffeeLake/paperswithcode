@@ -79,20 +79,22 @@ export interface PublicChatMessage {
   error: string | null;
 }
 
+export type ChatModelProvider = "huggingface" | "openrouter" | "openai";
+
 export interface ChatShareDetail {
   share_id: string;
   created_at: string;
   updated_at: string;
   model: string | null;
   model_label: string | null;
-  model_provider: "huggingface" | "openrouter" | null;
+  model_provider: ChatModelProvider | null;
   messages: PublicChatMessage[];
 }
 
 export interface ChatModelChoice {
   id: string;
   label: string;
-  provider: "huggingface" | "openrouter";
+  provider: ChatModelProvider;
   reasoning_efforts?: ReasoningEffort[];
 }
 
@@ -114,6 +116,11 @@ export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
     id: "moonshotai/Kimi-K3",
     label: "Kimi K3",
     provider: "huggingface",
+  },
+  {
+    id: "openai/gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    provider: "openai",
   },
 ];
 // Compatibility export for staging-focused consumers and tests. Deployed UI

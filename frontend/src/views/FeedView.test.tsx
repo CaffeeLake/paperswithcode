@@ -57,7 +57,7 @@ describe("AskAssistant", () => {
       .toBeVisible();
   });
 
-  it("offers DeepSeek and Kimi through Hugging Face on staging", () => {
+  it("offers DeepSeek, Kimi, and GPT-5.6 Luna on staging", () => {
     expect(FALLBACK_CHAT_MODELS).toEqual([
       {
         id: "deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -69,14 +69,24 @@ describe("AskAssistant", () => {
         label: "Kimi K3",
         provider: "huggingface",
       },
+      {
+        id: "openai/gpt-5.6-luna",
+        label: "GPT-5.6 Luna",
+        provider: "openai",
+      },
     ]);
     renderAskAssistant();
 
     const picker = screen.getByLabelText("Research model");
     expect(picker).toHaveValue("deepseek-ai/DeepSeek-V4-Flash-0731");
+    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual([
+      "Inference Providers",
+      "OpenAI",
+    ]);
     expect([...picker.querySelectorAll("option")].map((option) => option.value)).toEqual([
       "deepseek-ai/DeepSeek-V4-Flash-0731",
       "moonshotai/Kimi-K3",
+      "openai/gpt-5.6-luna",
     ]);
     expect(screen.queryByRole("link", { name: "OpenRouter" }))
       .not.toBeInTheDocument();

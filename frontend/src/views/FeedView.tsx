@@ -269,7 +269,7 @@ export const AskAssistant: React.FC = () => {
                 disabled={launching}
               />
             )}
-            {selectedProvider !== "openrouter" && (
+            {selectedProvider === "huggingface" && (
               <span className="ask-home-hint">
                 Via 🤗{" "}
                 <a
@@ -280,6 +280,9 @@ export const AskAssistant: React.FC = () => {
                   Inference Providers
                 </a>
               </span>
+            )}
+            {selectedProvider === "openai" && (
+              <span className="ask-home-hint">Via OpenAI</span>
             )}
           </div>
           <button

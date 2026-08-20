@@ -504,8 +504,10 @@ class ChatSessionService:
         allocation_bucket = (
             int.from_bytes(hashlib.sha256(session_id.bytes).digest()[:4], "big") % 100
         )
-        provider = self.settings.chat_model_providers[model]
-        if agent_harness == "pi" or provider == "openrouter":
+        transport = self.settings.chat_route_providers[
+            self.settings.chat_model_routes[model]
+        ]
+        if agent_harness == "pi" or transport == "openrouter":
             # Trusted cost extraction and per-call reservation live at the
             # private gateway. Funded OpenRouter must never use local_mcp.
             execution_backend = "modal_cli"
@@ -692,7 +694,12 @@ class ChatSessionService:
                 "session_busy", 409, "This chat is generating a response"
             )
         session.selected_model = selected
-        if self.settings.chat_model_providers[selected] == "openrouter":
+        if (
+            self.settings.chat_route_providers[
+                self.settings.chat_model_routes[selected]
+            ]
+            == "openrouter"
+        ):
             if session.execution_backend != "modal_cli":
                 raise ChatServiceError(
                     "openrouter_gateway_required",

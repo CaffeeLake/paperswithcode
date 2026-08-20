@@ -84,6 +84,12 @@ def test_staging_can_switch_back_to_explicitly_enabled_shared_provider():
             "route": "moonshotai/Kimi-K3:baseten",
             "provider": "huggingface",
         },
+        {
+            "id": "openai/gpt-5.6-luna",
+            "label": "GPT-5.6 Luna",
+            "route": "openai/gpt-5.6-luna",
+            "provider": "openai",
+        },
     )
 
 

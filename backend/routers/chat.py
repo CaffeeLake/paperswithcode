@@ -1271,8 +1271,8 @@ async def stream_chat(
                     reasoning_effort=body.reasoning_effort,
                     update_web_search_preference=search_is_available,
                 )
-                provider = settings.chat_model_providers[admission.selected_model]
-                if provider == "huggingface" and not inference_credential:
+                transport = settings.chat_route_providers[admission.model_route]
+                if transport == "huggingface" and not inference_credential:
                     raise ChatServiceError(
                         "hf_inference_billing_required",
                         402,
@@ -1307,7 +1307,7 @@ async def stream_chat(
                 else:
                     db.rollback()
                 raise
-        if provider == "openrouter" and not admission.replay_assistant:
+        if transport == "openrouter" and not admission.replay_assistant:
             try:
                 with db_manager.session_local() as db:
                     openrouter = await _authorize_openrouter(

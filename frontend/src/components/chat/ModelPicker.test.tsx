@@ -7,6 +7,7 @@ import ModelPicker from "@/components/chat/ModelPicker";
 const models = [
   { id: "hf-a", label: "HF Model A", provider: "huggingface" as const },
   { id: "hf-b", label: "HF Model B", provider: "huggingface" as const },
+  { id: "oa-a", label: "OpenAI Model A", provider: "openai" as const },
   { id: "or-a", label: "OpenRouter Model A", provider: "openrouter" as const },
 ];
 
@@ -36,11 +37,14 @@ describe("ModelPicker", () => {
     const groups = screen.getByRole("combobox").querySelectorAll("optgroup");
     expect([...groups].map((group) => group.label)).toEqual([
       "Inference Providers",
+      "OpenAI",
       "OpenRouter",
     ]);
     expect([...groups[0].querySelectorAll("option")].map((option) => option.value))
       .toEqual(["hf-a", "hf-b"]);
     expect([...groups[1].querySelectorAll("option")].map((option) => option.value))
+      .toEqual(["oa-a"]);
+    expect([...groups[2].querySelectorAll("option")].map((option) => option.value))
       .toEqual(["or-a"]);
   });
 

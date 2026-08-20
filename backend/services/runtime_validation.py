@@ -444,6 +444,8 @@ def validate_chat_provider_policy(
         expected_kimi_route = "moonshotai/Kimi-K3:baseten"
         if settings.chat_kimi_route != expected_kimi_route:
             raise RuntimeError("Kimi K3 must use the reviewed Hugging Face route")
+        if settings.chat_luna_route != "openai/gpt-5.6-luna":
+            raise RuntimeError("GPT-5.6 Luna must use the reviewed OpenAI route")
         expected_discovery += (
             {
                 "id": "moonshotai/Kimi-K3",
@@ -451,22 +453,31 @@ def validate_chat_provider_policy(
                 "route": expected_kimi_route,
                 "provider": "huggingface",
             },
+            {
+                "id": "openai/gpt-5.6-luna",
+                "label": "GPT-5.6 Luna",
+                "route": settings.chat_luna_route,
+                "provider": "openai",
+            },
         )
     if settings.chat_alternative_model_enabled:
         if settings.environment != "staging":
             raise RuntimeError("alternative chat models are staging-only")
-        candidate_labels = {
-            "openai/gpt-5.6-luna": "GPT-5.6 Luna",
-            "google/gemini-3.7-flash": "Gemini 3.7 Flash",
-        }
-        expected_discovery += (
-            {
-                "id": settings.chat_alternative_model,
-                "label": candidate_labels[settings.chat_alternative_model],
-                "route": settings.chat_alternative_model,
-                "provider": "openrouter",
-            },
-        )
+        if settings.chat_alternative_model not in {
+            choice["id"] for choice in expected_discovery
+        }:
+            candidate_labels = {
+                "openai/gpt-5.6-luna": "GPT-5.6 Luna",
+                "google/gemini-3.7-flash": "Gemini 3.7 Flash",
+            }
+            expected_discovery += (
+                {
+                    "id": settings.chat_alternative_model,
+                    "label": candidate_labels[settings.chat_alternative_model],
+                    "route": settings.chat_alternative_model,
+                    "provider": "openrouter",
+                },
+            )
     if discovered != expected_discovery:
         raise RuntimeError("chat discovery contains an unreviewed model configuration")
     if settings.chat_default_backend != "modal_cli":

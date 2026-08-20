@@ -585,8 +585,16 @@ class Settings(BaseSettings):
                     "route": self.chat_kimi_route,
                     "provider": "huggingface",
                 },
+                {
+                    "id": "openai/gpt-5.6-luna",
+                    "label": "GPT-5.6 Luna",
+                    "route": self.chat_luna_route,
+                    "provider": "openai",
+                },
             )
         if self.environment != "staging" or not self.chat_alternative_model_enabled:
+            return choices
+        if any(choice["id"] == self.chat_alternative_model for choice in choices):
             return choices
         labels = {
             "openai/gpt-5.6-luna": "GPT-5.6 Luna",
@@ -601,12 +609,18 @@ class Settings(BaseSettings):
             },
         )
 
+    @staticmethod
+    def chat_transport_provider(provider: str) -> str:
+        # OpenAI models keep a distinct picker group but still dispatch through
+        # OpenRouter's Anthropic-compatible messages API.
+        return "openrouter" if provider == "openai" else provider
+
     @property
     def chat_openrouter_routes(self) -> tuple[str, ...]:
         routes = [
             choice["route"]
             for choice in self.chat_model_registry
-            if choice["provider"] == "openrouter"
+            if self.chat_transport_provider(choice["provider"]) == "openrouter"
         ]
         if self.chat_deepseek_v4_flash_openrouter_route not in routes:
             routes.append(self.chat_deepseek_v4_flash_openrouter_route)
@@ -619,7 +633,7 @@ class Settings(BaseSettings):
         return tuple(
             choice
             for choice in self.chat_model_registry
-            if choice["provider"] != "openrouter"
+            if self.chat_transport_provider(choice["provider"]) != "openrouter"
         )
 
     @property
@@ -664,7 +678,8 @@ class Settings(BaseSettings):
     @property
     def chat_route_providers(self) -> dict[str, str]:
         providers = {
-            choice["route"]: choice["provider"] for choice in self.chat_model_registry
+            choice["route"]: self.chat_transport_provider(choice["provider"])
+            for choice in self.chat_model_registry
         }
         # Both routes remain valid across a rolling provider switch. New turns use
         # chat_deepseek_v4_flash_provider while already-issued capabilities keep
@@ -672,6 +687,7 @@ class Settings(BaseSettings):
         providers.setdefault(self.chat_deepseek_v4_flash_route, "huggingface")
         providers.setdefault(self.chat_deepseek_v4_flash_openrouter_route, "openrouter")
         providers.setdefault(self.chat_kimi_route, "huggingface")
+        providers.setdefault(self.chat_luna_route, "openrouter")
         return providers
 
     @property

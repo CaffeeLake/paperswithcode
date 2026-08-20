@@ -3,11 +3,12 @@ import React from "react";
 export interface ModelPickerOption {
   id: string;
   label: string;
-  provider?: "huggingface" | "openrouter";
+  provider?: "huggingface" | "openrouter" | "openai";
 }
 
 const PROVIDER_GROUPS = [
   { provider: "huggingface", label: "Inference Providers" },
+  { provider: "openai", label: "OpenAI" },
   { provider: "openrouter", label: "OpenRouter" },
 ] as const;
 

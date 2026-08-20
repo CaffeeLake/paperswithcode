@@ -222,6 +222,14 @@ def test_chat_provider_policy_rejects_unreviewed_kimi_route(settings_factory):
         runtime_validation.validate_chat_provider_policy(settings)
 
 
+def test_chat_provider_policy_rejects_unreviewed_luna_route(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_luna_route = "openai/gpt-5.6-terra"
+
+    with pytest.raises(RuntimeError, match="reviewed OpenAI route"):
+        runtime_validation.validate_chat_provider_policy(settings)
+
+
 def test_chat_provider_policy_rejects_alternative_model_in_production(
     settings_factory,
 ):

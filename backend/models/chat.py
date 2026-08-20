@@ -487,7 +487,7 @@ class ChatShareDetail(BaseModel):
     updated_at: datetime
     model: str | None = Field(default=None, max_length=255)
     model_label: str | None = Field(default=None, max_length=255)
-    model_provider: Literal["huggingface", "openrouter"] | None = None
+    model_provider: Literal["huggingface", "openrouter", "openai"] | None = None
     messages: list[PublicChatMessage]
 
 
