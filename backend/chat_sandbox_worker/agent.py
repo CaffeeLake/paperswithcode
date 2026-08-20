@@ -51,6 +51,28 @@ from backend.chat_sandbox_worker.tool_policy import (
     bound_tool_output,
 )
 
+PUBLIC_TOOL_RESULT_MAX_BYTES = 24 * 1024
+
+
+def _public_tool_result_event(event: dict[str, Any]) -> dict[str, Any]:
+    output = "".join(
+        str(part.get("text") or "")
+        for part in event.get("content", [])
+        if isinstance(part, dict)
+    )
+    text, truncated = bound_tool_output(output, PUBLIC_TOOL_RESULT_MAX_BYTES)
+    return {
+        **event,
+        "content": [{"type": "text", "text": text, "truncated": truncated}],
+        "metadata": {
+            **(event.get("metadata") or {}),
+            "output_truncated": bool(
+                truncated or (event.get("metadata") or {}).get("output_truncated")
+            ),
+        },
+    }
+
+
 GUIDE = Path("/opt/pwc/PWC_CLI_SKILL.md")
 WORKSPACE = Path("/workspace")
 
@@ -641,12 +663,16 @@ async def _adapt_messages(
                             },
                         }
                         hooks.budget.web_search_failed = True
-                yield {"v": 1, "request_id": request_id, **event}
                 output = "".join(
                     str(part.get("text") or "")
                     for part in event.get("content", [])
                     if isinstance(part, dict)
                 )
+                yield {
+                    "v": 1,
+                    "request_id": request_id,
+                    **_public_tool_result_event(event),
+                }
                 for artifact_event in artifact_events_from_output(output):
                     yield {"v": 1, "request_id": request_id, **artifact_event}
             continue

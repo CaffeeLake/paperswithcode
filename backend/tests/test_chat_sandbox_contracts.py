@@ -1593,6 +1593,23 @@ def test_worker_expands_output_budget_only_for_poster_mode():
     assert poster.budget.maximum_turn_output_bytes == 1024 * 1024
 
 
+def test_worker_keeps_large_tool_evidence_out_of_public_events():
+    event = agent._public_tool_result_event(
+        {
+            "type": "tool_result",
+            "id": "large",
+            "status": "success",
+            "took_ms": 1,
+            "content": [{"type": "text", "text": "x" * (64 * 1024)}],
+            "metadata": {"output_truncated": False},
+        }
+    )
+
+    assert len(event["content"][0]["text"].encode()) <= 24 * 1024
+    assert event["content"][0]["truncated"] is True
+    assert event["metadata"]["output_truncated"] is True
+
+
 def test_gateway_catalog_returns_not_found_for_unknown_task(monkeypatch):
     class DB:
         def commit(self):
@@ -2798,7 +2815,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-UfMNUG7keHBiIBgSQSyemz"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-dCvQBXFglDnt0sBSgKG2qi"
-    assert WORKER_CONTRACT_VERSION == "89"
+    assert WORKER_CONTRACT_VERSION == "90"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

@@ -47,6 +47,25 @@ test("maps hidden thinking, text, tools, usage, and correlations", () => {
   );
 });
 
+test("keeps large model-visible tool evidence out of the public event", () => {
+  const adapter = new PiEventAdapter(false);
+  adapter.feed({ type: "tool_execution_start", toolCallId: "large", toolName: "read", args: {} });
+
+  const [result] = adapter.feed({
+    type: "tool_execution_end",
+    toolCallId: "large",
+    result: { content: [{ type: "text", text: "x".repeat(30_000) }] },
+    isError: false,
+  });
+
+  assert.equal(result?.type, "tool_result");
+  const content = result?.content as Array<{ text: string; truncated: boolean }>;
+  const metadata = result?.metadata as { output_truncated: boolean };
+  assert.equal(content[0]?.text.length, 8_192);
+  assert.equal(content[0]?.truncated, true);
+  assert.equal(metadata.output_truncated, true);
+});
+
 test("maps create_view without crashing on duplicate starts", () => {
   const adapter = new PiEventAdapter(false);
   const start = adapter.feed({

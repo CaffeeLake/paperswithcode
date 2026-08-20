@@ -171,14 +171,16 @@ export class PiEventAdapter {
           },
         }];
       }
+      const publicContent = content.slice(0, 8_192);
+      const publicContentTruncated = publicContent.length < content.length;
       return [
         {
           type: "tool_result",
           id,
           status: event.isError ? "error" : "success",
           took_ms: startedAt === undefined ? 0 : Math.max(0, Math.round(this.now() - startedAt)),
-          content: [{ type: "text", text: content, truncated: false }],
-          metadata: { output_truncated: false },
+          content: [{ type: "text", text: publicContent, truncated: publicContentTruncated }],
+          metadata: { output_truncated: publicContentTruncated },
         },
         ...artifactEvents(content),
       ];
