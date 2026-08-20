@@ -214,6 +214,14 @@ def test_chat_provider_policy_accepts_one_reviewed_staging_candidate(
     runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
+def test_chat_provider_policy_rejects_unreviewed_kimi_route(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_kimi_route = "moonshotai/Kimi-K3:fastest"
+
+    with pytest.raises(RuntimeError, match="reviewed Hugging Face route"):
+        runtime_validation.validate_chat_provider_policy(settings)
+
+
 def test_chat_provider_policy_rejects_alternative_model_in_production(
     settings_factory,
 ):

@@ -110,6 +110,11 @@ export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
     label: "DeepSeek V4 Flash",
     provider: "huggingface",
   },
+  {
+    id: "moonshotai/Kimi-K3",
+    label: "Kimi K3",
+    provider: "huggingface",
+  },
 ];
 // Compatibility export for staging-focused consumers and tests. Deployed UI
 // code must choose the environment-specific list explicitly.

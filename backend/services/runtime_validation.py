@@ -440,6 +440,18 @@ def validate_chat_provider_policy(
             "provider": expected_provider,
         },
     )
+    if settings.environment == "staging":
+        expected_kimi_route = "moonshotai/Kimi-K3:baseten"
+        if settings.chat_kimi_route != expected_kimi_route:
+            raise RuntimeError("Kimi K3 must use the reviewed Hugging Face route")
+        expected_discovery += (
+            {
+                "id": "moonshotai/Kimi-K3",
+                "label": "Kimi K3",
+                "route": expected_kimi_route,
+                "provider": "huggingface",
+            },
+        )
     if settings.chat_alternative_model_enabled:
         if settings.environment != "staging":
             raise RuntimeError("alternative chat models are staging-only")

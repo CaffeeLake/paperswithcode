@@ -78,6 +78,12 @@ def test_staging_can_switch_back_to_explicitly_enabled_shared_provider():
             "route": "deepseek/deepseek-v4-flash-0731",
             "provider": "openrouter",
         },
+        {
+            "id": "moonshotai/Kimi-K3",
+            "label": "Kimi K3",
+            "route": "moonshotai/Kimi-K3:baseten",
+            "provider": "huggingface",
+        },
     )
 
 

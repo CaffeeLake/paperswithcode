@@ -57,15 +57,27 @@ describe("AskAssistant", () => {
       .toBeVisible();
   });
 
-  it("offers only DeepSeek through Hugging Face on staging", () => {
-    expect(FALLBACK_CHAT_MODELS).toHaveLength(1);
-    expect(FALLBACK_CHAT_MODELS).toContainEqual({
-      id: "deepseek-ai/DeepSeek-V4-Flash-0731",
-      label: "DeepSeek V4 Flash",
-      provider: "huggingface",
-    });
+  it("offers DeepSeek and Kimi through Hugging Face on staging", () => {
+    expect(FALLBACK_CHAT_MODELS).toEqual([
+      {
+        id: "deepseek-ai/DeepSeek-V4-Flash-0731",
+        label: "DeepSeek V4 Flash",
+        provider: "huggingface",
+      },
+      {
+        id: "moonshotai/Kimi-K3",
+        label: "Kimi K3",
+        provider: "huggingface",
+      },
+    ]);
     renderAskAssistant();
 
+    const picker = screen.getByLabelText("Research model");
+    expect(picker).toHaveValue("deepseek-ai/DeepSeek-V4-Flash-0731");
+    expect([...picker.querySelectorAll("option")].map((option) => option.value)).toEqual([
+      "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "moonshotai/Kimi-K3",
+    ]);
     expect(screen.queryByRole("link", { name: "OpenRouter" }))
       .not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Inference Providers" }))
@@ -292,7 +304,7 @@ describe("AskAssistant", () => {
 
     const toggle = await screen.findByRole("switch", { name: "Web search" });
     expect(screen.getByLabelText("Research model"))
-      .toHaveTextContent("DeepSeek V4 Flash");
+      .toHaveValue("deepseek-ai/DeepSeek-V4-Flash-0731");
     await user.click(toggle);
     await user.type(
       screen.getByRole("combobox", { name: "Ask the assistant" }),

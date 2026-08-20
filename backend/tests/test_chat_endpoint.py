@@ -1101,6 +1101,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     )
     assert [choice["id"] for choice in staging.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "moonshotai/Kimi-K3",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
@@ -1129,6 +1130,10 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert staging.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "huggingface"
     )
+    assert staging.chat_model_routes["moonshotai/Kimi-K3"] == (
+        "moonshotai/Kimi-K3:baseten"
+    )
+    assert staging.chat_model_providers["moonshotai/Kimi-K3"] == "huggingface"
     for legacy_id in ("openai/gpt-5.6-luna", "openai/gpt-5.6-terra"):
         assert staging.chat_model_routes[legacy_id] == (
             "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
@@ -1161,6 +1166,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     )
     assert [choice["id"] for choice in comparison.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "moonshotai/Kimi-K3",
         "openai/gpt-5.6-luna",
     ]
     assert comparison.chat_model_routes["openai/gpt-5.6-luna"] == (

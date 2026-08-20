@@ -280,7 +280,9 @@ class Settings(BaseSettings):
     # registry. They are never exposed in current model discovery.
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
-    chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
+    # Staging-only Hugging Face Inference Providers route. Pin a live provider;
+    # `:fastest` hops across backends.
+    chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:baseten")
     # Pin a live provider. `:fastest` hops across backends and previously
     # included Hugging Face providers whose mapping was in error.
     chat_deepseek_v4_flash_route: str = Field(
@@ -575,6 +577,15 @@ class Settings(BaseSettings):
                 "provider": deepseek_provider,
             },
         )
+        if self.environment == "staging":
+            choices = choices + (
+                {
+                    "id": "moonshotai/Kimi-K3",
+                    "label": "Kimi K3",
+                    "route": self.chat_kimi_route,
+                    "provider": "huggingface",
+                },
+            )
         if self.environment != "staging" or not self.chat_alternative_model_enabled:
             return choices
         labels = {
@@ -660,6 +671,7 @@ class Settings(BaseSettings):
         # their immutable route.
         providers.setdefault(self.chat_deepseek_v4_flash_route, "huggingface")
         providers.setdefault(self.chat_deepseek_v4_flash_openrouter_route, "openrouter")
+        providers.setdefault(self.chat_kimi_route, "huggingface")
         return providers
 
     @property
