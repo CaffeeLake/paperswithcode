@@ -29,6 +29,7 @@ import { WebPreviewLink } from "@/components/chat/WebPreviewLink";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
 import { parseGitHubRepoUrl } from "@/lib/github";
+import { normalizeChatMath } from "@/components/chat/chatMarkdownMath";
 
 function citationPreviewData(
   routeId: string,
@@ -119,7 +120,9 @@ export const ChatMarkdown: React.FC<{
   citations?: Record<string, ChatCitation>;
   webCitations?: Record<string, ChatCitation>;
 }> = ({ text, streaming, papers, citations, webCitations }) => {
-  const source = streaming ? withholdPartialCitation(text) : text;
+  const source = normalizeChatMath(
+    streaming ? withholdPartialCitation(text) : text,
+  );
 
   return (
     <ReactMarkdown
