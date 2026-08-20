@@ -24,6 +24,7 @@ from backend.chat_sandbox_worker.contract import (
     PI_VERSION,
     POSTERLY_ARTIFACT_BUCKET_ID,
     POSTERLY_CHROMIUM_REVISION,
+    POSTERLY_ENABLED,
     POSTERLY_LICENSE,
     POSTERLY_PLAYWRIGHT_VERSION,
     POSTERLY_SOURCE_COMMIT,
@@ -238,7 +239,7 @@ def chat_runtime(
         "pi_node_version": PI_NODE_VERSION,
         "pi_node_sha256": PI_NODE_SHA256,
         "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
-        "posterly_enabled": True,
+        "posterly_enabled": POSTERLY_ENABLED,
         "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
         "posterly_source_url": POSTERLY_SOURCE_URL,
         "posterly_license": POSTERLY_LICENSE,
@@ -478,7 +479,9 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             "posterly_chromium_revision": POSTERLY_CHROMIUM_REVISION,
             "posterly_artifact_bucket_id": POSTERLY_ARTIFACT_BUCKET_ID,
         }
-        if runtime["posterly_enabled"] is not (profile == "staging"):
+        if runtime["posterly_enabled"] not in {True, False}:
+            raise ValueError("Posterly release activation must be a boolean")
+        if runtime["posterly_enabled"] and profile != "staging":
             raise ValueError("Posterly may be enabled only in staging releases")
         if any(runtime[key] != value for key, value in expected_posterly.items()):
             raise ValueError("Posterly release provenance does not match source pins")
@@ -546,10 +549,23 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
         and candidate_runtime.get("default_agent_harness") == "claude"
         and candidate_runtime.get("new_session_pi_percentage") == 0
     )
+    # Posterly adds only the bounded artifact preparation/publication routes.
+    # Its first gateway-29 release keeps artifact admission off, so no worker
+    # can call those routes before both current and rollback releases accept
+    # contract 29.
+    posterly_zero_assignment_bridge = (
+        active_emits == 28
+        and active_accepts == 27
+        and candidate_emits == 29
+        and candidate_accepts == 28
+        and candidate_database == active_database
+        and candidate_runtime.get("posterly_enabled") is False
+    )
     if (
         not active_accepts <= candidate_emits <= active_emits
         and not hf_catalog_fail_closed_rollback
         and not pi_zero_assignment_bridge
+        and not posterly_zero_assignment_bridge
     ):
         raise ValueError("active release cannot serve candidate workers on rollback")
     if active_database != candidate_database and not pi_zero_assignment_bridge:
