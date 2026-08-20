@@ -27,7 +27,9 @@ SHARE_PAGE_LOCATION = (
 )
 SHARE_API_LOCATION = (
     r'location ~ "^/api/v1/chat/shares/[0-9a-f]{8}-[0-9a-f]{4}-'
-    r'[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"'
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"(/artifacts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r'[0-9a-f]{12}/(preview|download/(png|pdf)))?$"'
 )
 CHAT_STREAM_LOCATION = "location = /api/v1/chat/stream"
 

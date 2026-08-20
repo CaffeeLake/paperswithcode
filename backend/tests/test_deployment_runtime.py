@@ -2446,6 +2446,8 @@ def test_nginx_share_capability_bypasses_only_narrow_public_get_surfaces():
         assert "auth_request" not in page + api
         assert "limit_except GET" in page
         assert "limit_except GET" in api
+        assert "/artifacts/" in SHARE_API_LOCATION
+        assert "download/(png|pdf)" in SHARE_API_LOCATION
         assert 'X-Robots-Tag "noindex, nofollow" always' in page
         assert 'Cache-Control "no-store"' in page
 
