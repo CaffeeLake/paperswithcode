@@ -304,9 +304,42 @@ class Settings(BaseSettings):
     chat_alternative_model: Literal[
         "openai/gpt-5.6-luna", "google/gemini-3.7-flash"
     ] = Field(default="openai/gpt-5.6-luna")
-    # Read-only compatibility inputs for rolling back releases whose staging
-    # registry still exposed the two GPT routes.
+    # The historical Luna route is OpenRouter-backed. Keep it immutable so
+    # existing sessions carrying the old public ID never change providers.
     chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
+    chat_openai_direct_enabled: bool = Field(default=False)
+    chat_openai_luna_route: str = Field(default="gpt-5.6-luna@openai")
+    chat_openai_model: str = Field(default="gpt-5.6-luna", pattern=r"^gpt-5\.6-luna$")
+    chat_openai_service_tier: Literal["default"] = Field(default="default")
+    chat_openai_pricing_verified_at: str = Field(default="2026-08-20")
+    chat_openai_pricing_max_age_days: int = Field(default=30, ge=1, le=90)
+    chat_openai_input_microusd_per_million_tokens: int = Field(default=200_000, ge=1)
+    chat_openai_cached_input_microusd_per_million_tokens: int = Field(
+        default=20_000, ge=1
+    )
+    chat_openai_cache_write_microusd_per_million_tokens: int = Field(
+        default=250_000, ge=1
+    )
+    chat_openai_output_microusd_per_million_tokens: int = Field(default=1_200_000, ge=1)
+    chat_openai_monthly_user_budget_usd: Decimal = Field(
+        default=Decimal("1.00"), gt=0, le=1000
+    )
+    chat_openai_workspace_monthly_budget_usd: Decimal = Field(
+        default=Decimal("200.00"), gt=0, le=10000
+    )
+    chat_openai_daily_budget_usd: Decimal = Field(
+        default=Decimal("10.00"), gt=0, le=1000
+    )
+    chat_openai_rate_limit_window_seconds: int = Field(
+        default=10 * 60, ge=60, le=24 * 60 * 60
+    )
+    chat_openai_user_rate_limit_calls: int = Field(default=30, ge=1, le=1000)
+    chat_openai_global_rate_limit_calls: int = Field(default=80, ge=1, le=10000)
+    chat_openai_user_max_concurrency: int = Field(default=2, ge=1, le=16)
+    chat_openai_global_max_concurrency: int = Field(default=4, ge=1, le=64)
+    chat_openai_reconciliation_stale_minutes: int = Field(default=15, ge=1, le=24 * 60)
+    # Read-only compatibility input for rolling back releases whose staging
+    # registry still exposed the Terra route.
     chat_terra_route: str = Field(default="openai/gpt-5.6-terra")
     chat_openrouter_api_key: str = Field(
         default="",
@@ -626,6 +659,13 @@ class Settings(BaseSettings):
                 "label": "DeepSeek V4 Flash",
                 "route": deepseek_route,
                 "provider": deepseek_provider,
+                "provider_model": deepseek_route,
+                "protocol": "anthropic-messages",
+                "funding_mode": (
+                    "hf_user_billed"
+                    if deepseek_provider == "huggingface"
+                    else "openrouter_funded"
+                ),
             },
         )
         if self.environment == "staging":
@@ -635,15 +675,37 @@ class Settings(BaseSettings):
                     "label": "Kimi K3",
                     "route": self.chat_kimi_route,
                     "provider": "huggingface",
+                    "provider_model": self.chat_kimi_route,
+                    "protocol": "anthropic-messages",
+                    "funding_mode": "hf_user_billed",
                 },
                 {
-                    "id": "openai/gpt-5.6-luna",
+                    "id": "gpt-5.6-luna@openrouter",
                     "label": "GPT-5.6 Luna",
                     "route": self.chat_luna_route,
-                    "provider": "openai",
+                    "provider": "openrouter",
+                    "provider_model": self.chat_luna_route,
+                    "protocol": "anthropic-messages",
+                    "funding_mode": "openrouter_funded",
                 },
             )
+            if self.chat_openai_direct_enabled:
+                choices = choices + (
+                    {
+                        "id": "gpt-5.6-luna@openai",
+                        "label": "GPT-5.6 Luna (Direct)",
+                        "route": self.chat_openai_luna_route,
+                        "provider": "openai",
+                        "provider_model": self.chat_openai_model,
+                        "protocol": "openai-responses",
+                        "funding_mode": "openai_funded",
+                    },
+                )
         if self.environment != "staging" or not self.chat_alternative_model_enabled:
+            return choices
+        # The old comparison flag used the misleading historical Luna ID. Luna
+        # now has an explicit OpenRouter choice, while the old ID remains hidden.
+        if self.chat_alternative_model == "openai/gpt-5.6-luna":
             return choices
         if any(choice["id"] == self.chat_alternative_model for choice in choices):
             return choices
@@ -657,14 +719,15 @@ class Settings(BaseSettings):
                 "label": labels[self.chat_alternative_model],
                 "route": self.chat_alternative_model,
                 "provider": "openrouter",
+                "provider_model": self.chat_alternative_model,
+                "protocol": "anthropic-messages",
+                "funding_mode": "openrouter_funded",
             },
         )
 
     @staticmethod
     def chat_transport_provider(provider: str) -> str:
-        # OpenAI models keep a distinct picker group but still dispatch through
-        # OpenRouter's Anthropic-compatible messages API.
-        return "openrouter" if provider == "openai" else provider
+        return provider
 
     @property
     def chat_openrouter_routes(self) -> tuple[str, ...]:
@@ -706,6 +769,8 @@ class Settings(BaseSettings):
             "openai/gpt-5.6-terra",
         ):
             routes.setdefault(legacy_model, canonical_route)
+        if self.environment == "staging":
+            routes["openai/gpt-5.6-luna"] = self.chat_luna_route
         return routes
 
     @property
@@ -724,7 +789,45 @@ class Settings(BaseSettings):
             "openai/gpt-5.6-terra",
         ):
             providers.setdefault(legacy_model, canonical_provider)
+        if self.environment == "staging":
+            providers["openai/gpt-5.6-luna"] = "openrouter"
         return providers
+
+    @property
+    def chat_model_labels(self) -> dict[str, str]:
+        labels = {choice["id"]: choice["label"] for choice in self.chat_model_registry}
+        if self.environment == "staging":
+            labels["openai/gpt-5.6-luna"] = "GPT-5.6 Luna (Legacy OpenRouter)"
+        return labels
+
+    @property
+    def chat_route_protocols(self) -> dict[str, str]:
+        protocols = {
+            choice["route"]: choice["protocol"] for choice in self.chat_model_registry
+        }
+        protocols.setdefault(self.chat_glm_route, "anthropic-messages")
+        protocols.setdefault(self.chat_gemma_route, "anthropic-messages")
+        return protocols
+
+    @property
+    def chat_route_provider_models(self) -> dict[str, str]:
+        models = {
+            choice["route"]: choice["provider_model"]
+            for choice in self.chat_model_registry
+        }
+        models.setdefault(self.chat_glm_route, self.chat_glm_route)
+        models.setdefault(self.chat_gemma_route, self.chat_gemma_route)
+        return models
+
+    @property
+    def chat_route_funding_modes(self) -> dict[str, str]:
+        modes = {
+            choice["route"]: choice["funding_mode"]
+            for choice in self.chat_model_registry
+        }
+        modes.setdefault(self.chat_glm_route, "openrouter_funded")
+        modes.setdefault(self.chat_gemma_route, "openrouter_funded")
+        return modes
 
     @property
     def chat_route_providers(self) -> dict[str, str]:
@@ -737,6 +840,10 @@ class Settings(BaseSettings):
         # their immutable route.
         providers.setdefault(self.chat_deepseek_v4_flash_route, "huggingface")
         providers.setdefault(self.chat_deepseek_v4_flash_openrouter_route, "openrouter")
+        # Persisted capabilities from the retired comparison registry may still
+        # carry these immutable routes even though they are hidden from discovery.
+        providers.setdefault(self.chat_glm_route, "openrouter")
+        providers.setdefault(self.chat_gemma_route, "openrouter")
         providers.setdefault(self.chat_kimi_route, "huggingface")
         providers.setdefault(self.chat_luna_route, "openrouter")
         return providers
@@ -745,6 +852,8 @@ class Settings(BaseSettings):
     def chat_effective_pi_prewarm_model(self) -> str:
         if self.chat_pi_prewarm_model:
             return self.chat_pi_prewarm_model
+        if self.environment == "staging" and self.chat_openai_direct_enabled:
+            return self.chat_openai_luna_route
         if self.chat_alternative_model_enabled:
             return self.chat_alternative_model
         return self.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]

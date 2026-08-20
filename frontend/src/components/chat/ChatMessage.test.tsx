@@ -689,6 +689,31 @@ describe("AssistantMessage", () => {
     expect(container.querySelectorAll(".chat-caret")).toHaveLength(0);
   });
 
+  it("shows progressive safe arguments while a tool is still running", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [{
+        kind: "tool",
+        schema_version: 2,
+        id: "tool-1",
+        name: "Bash",
+        args: { command: "pwc benchmark" },
+        argumentText: '{"command":"pwc benchmark',
+        argumentState: "streaming",
+        arguments_redacted: true,
+        status: "running",
+        open: true,
+      }],
+    });
+
+    expect(screen.getByText("streaming arguments…")).toBeInTheDocument();
+    expect(screen.getByText("arguments · redacted")).toBeInTheDocument();
+    expect(screen.getAllByText("pwc benchmark").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Bash/u })).not.toBeDisabled();
+  });
+
   it("renders an Excalidraw App placeholder and keeps the textual answer", () => {
     renderAssistant({
       id: "assistant-1",

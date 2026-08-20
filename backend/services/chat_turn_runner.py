@@ -116,6 +116,12 @@ class ModalChatTurnRunner:
             request_id=self.request_id,
             prompt=self.prompt,
             model=self.admission.model_route,
+            provider_protocol=self.manager.settings.chat_route_protocols[
+                self.admission.model_route
+            ],
+            provider_model=self.manager.settings.chat_route_provider_models[
+                self.admission.model_route
+            ],
             resume=str(self.resume_id) if self.resume_id else None,
             capability=self.capability,
             agent_harness=self.admission.agent_harness,

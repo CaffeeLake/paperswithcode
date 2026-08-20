@@ -95,6 +95,29 @@ export type ChatEvent =
   | { type: "reasoning_end" }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | {
+      type: "tool_call_start";
+      id: string;
+      name: string;
+      content_index: number;
+      redacted?: boolean;
+    }
+  | {
+      type: "tool_call_arguments_delta";
+      id: string;
+      name: string;
+      delta: string;
+      partial_args: Record<string, unknown>;
+      snapshot?: boolean;
+      redacted?: boolean;
+    }
+  | {
+      type: "tool_call_arguments_done";
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+      redacted?: boolean;
+    }
+  | {
       type: "app_start";
       id: string;
       instance_id: string;
@@ -217,6 +240,9 @@ export interface ToolBlock {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  argumentText?: string;
+  argumentState?: "streaming" | "done";
+  arguments_redacted?: boolean;
   status: "running" | "done" | "success" | "error" | "denied";
   content?: { type: "text"; text: string; truncated: boolean }[];
   metadata?: { exit_code: number | null; output_truncated: boolean };

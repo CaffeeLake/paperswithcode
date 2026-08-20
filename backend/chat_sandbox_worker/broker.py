@@ -517,9 +517,9 @@ class Handler(BaseHTTPRequestHandler):
             ).encode()
             self._forward("catalog", envelope)
             return
-        if path == "/v1/messages":
+        if path in {"/v1/messages", "/v1/responses"}:
             self._forward(
-                "v1/messages",
+                path.lstrip("/"),
                 body,
                 content_type=self.headers.get("Content-Type", "application/json"),
                 accept=self.headers.get("Accept", "application/json"),

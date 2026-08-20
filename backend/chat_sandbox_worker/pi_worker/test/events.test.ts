@@ -33,7 +33,10 @@ test("maps hidden thinking, text, tools, usage, and correlations", () => {
   );
   assert.deepEqual(
     adapter.feed({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "pwc version" } }),
-    [{ type: "tool_call", id: "t1", name: "Bash", args: { command: "pwc version" } }],
+    [
+      { type: "tool_call_start", id: "t1", name: "Bash", content_index: -1 },
+      { type: "tool_call_arguments_done", id: "t1", name: "Bash", args: { command: "pwc version" } },
+    ],
   );
   assert.equal(adapter.feed({ type: "tool_execution_end", toolCallId: "t1", result: { content: [{ type: "text", text: "ok" }] }, isError: false })[0]?.type, "tool_result");
   assert.deepEqual(
@@ -45,6 +48,48 @@ test("maps hidden thinking, text, tools, usage, and correlations", () => {
     adapter.feed({ type: "tool_execution_end", toolCallId: "missing", result: {}, isError: false }),
     [],
   );
+});
+
+test("correlates interleaved streamed tool arguments by content index", () => {
+  const adapter = new PiEventAdapter(false);
+  const partial = (id: string, name: string, args: Record<string, unknown>) => ({
+    content: [
+      { type: "toolCall", id: "a", name: "bash", arguments: id === "a" ? args : {} },
+      { type: "toolCall", id: "b", name: "read", arguments: id === "b" ? args : {} },
+    ],
+  });
+  assert.deepEqual(adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: partial("a", "bash", {}) },
+  }), [{ type: "tool_call_start", id: "a", name: "Bash", content_index: 0 }]);
+  assert.deepEqual(adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, partial: partial("b", "read", {}) },
+  }), [{ type: "tool_call_start", id: "b", name: "Read", content_index: 1 }]);
+  assert.equal(adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_delta", contentIndex: 1, delta: '{"file_path":"/work',
+      partial: partial("b", "read", { file_path: "/work" }),
+    },
+  })[0]?.id, "b");
+  assert.equal(adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_delta", contentIndex: 0, delta: '{"command":"pwc',
+      partial: partial("a", "bash", { command: "pwc" }),
+    },
+  })[0]?.id, "a");
+  assert.deepEqual(adapter.feed({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_end", contentIndex: 0,
+      toolCall: { id: "a", name: "bash", arguments: { command: "pwc version" } },
+    },
+  }), [{ type: "tool_call_arguments_done", id: "a", name: "Bash", args: { command: "pwc version" } }]);
+  assert.deepEqual(adapter.feed({
+    type: "tool_execution_start", toolCallId: "a", toolName: "bash", args: { command: "pwc version" },
+  }), []);
 });
 
 test("keeps large model-visible tool evidence out of the public event", () => {

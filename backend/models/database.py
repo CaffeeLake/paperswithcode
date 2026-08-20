@@ -3291,7 +3291,7 @@ class ChatTurnCapability(Base):
         ),
         CheckConstraint(
             "provider_mode IS NULL OR provider_mode IN "
-            "('huggingface','openrouter_funded','openrouter_byok')",
+            "('huggingface','openrouter_funded','openrouter_byok','openai_funded')",
             name="chat_turn_capabilities_provider_mode_check",
         ),
         CheckConstraint(
@@ -3533,6 +3533,106 @@ class ChatOpenRouterProviderCall(Base):
             "month_start",
         ),
         Index("idx_chat_openrouter_calls_state_updated", "state", "updated_at"),
+    )
+
+
+class ChatOpenAIMonthlyUsage(Base):
+    """Authoritative server-funded direct-OpenAI usage for one owner/month."""
+
+    __tablename__ = "chat_openai_monthly_usage"
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    month_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    limit_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    spent_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    unknown_cost_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "limit_microusd > 0 AND reserved_microusd >= 0 AND "
+            "spent_microusd >= 0 AND unknown_cost_calls >= 0",
+            name="chat_openai_monthly_usage_nonnegative_check",
+        ),
+    )
+
+
+class ChatOpenAIProviderCall(Base):
+    """Idempotent reservation and trusted Responses API settlement ledger."""
+
+    __tablename__ = "chat_openai_provider_calls"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    call_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    month_start: Mapped[date] = mapped_column(Date, nullable=False)
+    public_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str] = mapped_column(String(16), nullable=False)
+    service_tier: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="default"
+    )
+    request_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    cached_input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    response_id: Mapped[Optional[str]] = mapped_column(String(255))
+    provider_request_id: Mapped[Optional[str]] = mapped_column(String(255))
+    provider_latency_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    provider_ttft_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    outcome: Mapped[Optional[str]] = mapped_column(String(64))
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    settlement_source: Mapped[Optional[str]] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('reserved','dispatched','settled','released','cost_unknown')",
+            name="chat_openai_provider_calls_state_check",
+        ),
+        CheckConstraint(
+            "reasoning_effort IN ('low','high','max')",
+            name="chat_openai_provider_calls_reasoning_effort_check",
+        ),
+        CheckConstraint(
+            "settlement_source IS NULL OR settlement_source IN "
+            "('provider_usage','recovered_provider_usage','reserved_ceiling')",
+            name="chat_openai_provider_calls_settlement_source_check",
+        ),
+        CheckConstraint(
+            "reserved_microusd >= 0 AND "
+            "(actual_microusd IS NULL OR actual_microusd >= 0)",
+            name="chat_openai_provider_calls_nonnegative_check",
+        ),
+        UniqueConstraint("turn_id", "call_sequence", name="uq_chat_openai_turn_call"),
+        Index("idx_chat_openai_calls_owner_month", "owner_id", "month_start"),
+        Index("idx_chat_openai_calls_state_updated", "state", "updated_at"),
+        Index("idx_chat_openai_calls_environment_month", "environment", "month_start"),
     )
 
 

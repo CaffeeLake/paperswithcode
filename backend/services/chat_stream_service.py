@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import posixpath
 import re
 import time
 import uuid
@@ -132,16 +133,27 @@ class ChatTurnProjection:
     web_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def completed_blocks(self) -> list[dict[str, Any]]:
-        return [
-            {**block, "done": True} if block.get("kind") == "answer" else block
-            for block in self.blocks
-            if (block.get("kind") != "tool" or block.get("status") != "running")
-            and (
-                block.get("kind") != "artifact"
-                or block.get("status") in {"ready", "error"}
-            )
-            and block is not self.reasoning
-        ]
+        completed: list[dict[str, Any]] = []
+        for block in self.blocks:
+            if block is self.reasoning:
+                continue
+            if block.get("kind") == "artifact" and block.get("status") not in {
+                "ready",
+                "error",
+            }:
+                continue
+            item = dict(block)
+            if item.get("kind") == "answer":
+                item["done"] = True
+            elif item.get("kind") == "tool":
+                # Persist one bounded authoritative/sanitized snapshot, never
+                # the transient raw JSON fragments used for live rendering.
+                item.pop("argument_text", None)
+                item.pop("argument_state", None)
+                if item.get("status") == "running":
+                    item["status"] = "error"
+            completed.append(item)
+        return completed
 
     def apply(self, kind: str, event: dict[str, Any]) -> None:
         if kind == "reasoning_start":
@@ -161,6 +173,12 @@ class ChatTurnProjection:
                 self.blocks.pop()
         elif kind == "tool_call":
             self._start_tool(event)
+        elif kind == "tool_call_start":
+            self._start_streamed_tool(event)
+        elif kind == "tool_call_arguments_delta":
+            self._stream_tool_arguments(event)
+        elif kind == "tool_call_arguments_done":
+            self._finish_tool_arguments(event)
         elif kind == "tool_result":
             self._finish_tool(event)
         elif kind == "app_start":
@@ -228,6 +246,7 @@ class ChatTurnProjection:
             "id": event["id"],
             "name": event["name"],
             "args": event["args"],
+            "arguments_redacted": bool(event.get("redacted")),
             "status": "done" if legacy_tool else "running",
             "took_ms": 0,
         }
@@ -242,6 +261,50 @@ class ChatTurnProjection:
             )
         self.blocks.append(tool)
         self.tools[event["id"]] = tool
+
+    def _start_streamed_tool(self, event: dict[str, Any]) -> None:
+        tool = {
+            "kind": "tool",
+            "schema_version": 2,
+            "id": event["id"],
+            "name": event["name"],
+            "args": {},
+            "status": "running",
+            "argument_state": "streaming",
+            "argument_text": "",
+            "arguments_redacted": bool(event.get("redacted")),
+            "took_ms": 0,
+            "content": [],
+            "metadata": {"exit_code": None, "output_truncated": False},
+        }
+        self.blocks.append(tool)
+        self.tools[event["id"]] = tool
+
+    def _stream_tool_arguments(self, event: dict[str, Any]) -> None:
+        tool = self.tools.get(event["id"])
+        if tool is None:
+            return
+        if event.get("snapshot"):
+            tool["argument_text"] = event["delta"]
+        else:
+            tool["argument_text"] = (tool.get("argument_text") or "") + event["delta"]
+        tool["args"] = event.get("partial_args") or tool.get("args") or {}
+        tool["arguments_redacted"] = bool(
+            tool.get("arguments_redacted") or event.get("redacted")
+        )
+
+    def _finish_tool_arguments(self, event: dict[str, Any]) -> None:
+        tool = self.tools.get(event["id"])
+        if tool is None:
+            return
+        tool["args"] = event["args"]
+        tool["argument_state"] = "done"
+        tool["argument_text"] = json.dumps(
+            event["args"], ensure_ascii=False, separators=(",", ":")
+        )
+        tool["arguments_redacted"] = bool(
+            tool.get("arguments_redacted") or event.get("redacted")
+        )
 
     def _finish_tool(self, event: dict[str, Any]) -> None:
         tool = self.tools.get(event["id"])
@@ -465,7 +528,30 @@ def _trusted_artifact_ready(
 
 def _public_poster_tool_event(kind: str, event: dict[str, Any]) -> dict[str, Any]:
     if kind == "tool_call":
-        return {**event, "args": {}}
+        args, redacted = _safe_poster_tool_args(
+            str(event.get("name") or ""), event.get("args")
+        )
+        return {**event, "args": args, "redacted": redacted}
+    if kind == "tool_call_start":
+        return {**event, "redacted": False}
+    if kind == "tool_call_arguments_delta":
+        args, redacted = _safe_poster_tool_args(
+            str(event.get("name") or ""), event.get("partial_args")
+        )
+        # Raw JSON fragments can contain a secret before they become parseable.
+        # Poster streams therefore publish a replaceable sanitized snapshot.
+        return {
+            **event,
+            "delta": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+            "partial_args": args,
+            "snapshot": True,
+            "redacted": redacted,
+        }
+    if kind == "tool_call_arguments_done":
+        args, redacted = _safe_poster_tool_args(
+            str(event.get("name") or ""), event.get("args")
+        )
+        return {**event, "args": args, "redacted": redacted}
     if kind == "tool_result":
         return {
             **event,
@@ -480,6 +566,160 @@ def _public_poster_tool_event(kind: str, event: dict[str, Any]) -> dict[str, Any
             ],
         }
     return event
+
+
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|token|secret|password|authorization)\b"
+    r"|\b[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))(\s*[:=]\s*)([^\s;&|]+)"
+)
+_SECRET_FLAG = re.compile(
+    r"(?i)(--?(?:api[-_]?key|token|secret|password|authorization)(?:=|\s+))"
+    r"([^\s;&|]+)"
+)
+_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_DATA_URL = re.compile(r"(?is)data:[^,\s]+,[^\s'\"]+")
+_HEREDOC = re.compile(
+    r"(?ms)(<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\n).*?^\2\s*$"
+)
+_LONG_QUOTED = re.compile(r"(['\"])(?:(?!\1).){160,}\1", re.DOTALL)
+_INLINE_BODY_FLAG = re.compile(
+    r"(?is)(\s(?:-c|--eval|-e|-d|--data|--data-raw)\s+)(['\"]).*?\2"
+)
+
+
+def _bounded_poster_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+        return value, False
+    if not isinstance(value, str):
+        return "<value redacted>", True
+    bounded = value[:500]
+    return bounded, len(bounded) != len(value)
+
+
+def _safe_poster_command(command: str) -> tuple[str, bool]:
+    value = command[:4_000]
+    redacted = len(value) != len(command)
+    executable = value.lstrip().split(maxsplit=1)[0] if value.strip() else ""
+    if executable in {"echo", "printf"}:
+        destination = re.search(
+            r"(?s)(?P<redirect>\s(?:>>?|\|\s*tee(?:\s+-a)?)\s+)"
+            r"(?P<path>(?:/workspace/|\./)?[A-Za-z0-9_./-]+)\s*$",
+            value,
+        )
+        suffix = (
+            f"{destination.group('redirect')}{destination.group('path')}"
+            if destination
+            else ""
+        )
+        return f"{executable} <inline content redacted>{suffix}", True
+    allowed_executables = {
+        "awk",
+        "bash",
+        "cd",
+        "cat",
+        "chromium",
+        "cp",
+        "curl",
+        "find",
+        "git",
+        "grep",
+        "ls",
+        "mkdir",
+        "mv",
+        "node",
+        "npm",
+        "npx",
+        "playwright",
+        "posterly",
+        "pwc",
+        "python",
+        "python3",
+        "sed",
+        "sh",
+        "test",
+        "tee",
+        "uv",
+    }
+    if (
+        executable
+        and executable not in allowed_executables
+        and not executable.startswith(("./", "/workspace/"))
+    ):
+        return "<inline content redacted>", True
+    value, count = _HEREDOC.subn(r"\1<heredoc body redacted>\n\2", value)
+    redacted |= count > 0
+    value, count = _SECRET_ASSIGNMENT.subn(r"\1\2<credential redacted>", value)
+    redacted |= count > 0
+    value, count = _SECRET_FLAG.subn(r"\1<credential redacted>", value)
+    redacted |= count > 0
+    value, count = _BEARER.subn("Bearer <credential redacted>", value)
+    redacted |= count > 0
+    value, count = _DATA_URL.subn("<data URL redacted>", value)
+    redacted |= count > 0
+    value, count = _LONG_QUOTED.subn('"<inline content redacted>"', value)
+    redacted |= count > 0
+    value, count = _INLINE_BODY_FLAG.subn(r"\1\2<inline content redacted>\2", value)
+    redacted |= count > 0
+    if re.search(r"(?is)<!doctype\s+html|<html\b", value):
+        value = re.sub(
+            r"(?is)(<!doctype\s+html|<html\b).*",
+            "<inline HTML redacted>",
+            value,
+        )
+        redacted = True
+    return value, redacted
+
+
+def _safe_workspace_path(value: Any) -> tuple[str, bool]:
+    raw = str(value or "")[:1_000].replace("\\", "/")
+    normalized = posixpath.normpath(raw)
+    if normalized.startswith("/workspace/"):
+        return normalized.removeprefix("/workspace/"), False
+    if normalized == "/workspace":
+        return ".", False
+    if normalized.startswith("../") or normalized == ".." or normalized.startswith("/"):
+        return "<path redacted>", True
+    return normalized, normalized != raw
+
+
+def _safe_poster_tool_args(name: str, raw_args: Any) -> tuple[dict[str, Any], bool]:
+    args = raw_args if isinstance(raw_args, dict) else {}
+    if name == "Bash":
+        command, redacted = _safe_poster_command(str(args.get("command") or ""))
+        safe: dict[str, Any] = {"command": command or "<command pending>"}
+        for key in ("timeout", "description"):
+            if key in args:
+                safe[key], changed = _bounded_poster_value(args[key])
+                redacted |= changed
+        return safe, redacted or bool(set(args) - {"command", "timeout", "description"})
+    if name == "Read":
+        path, redacted = _safe_workspace_path(args.get("file_path") or args.get("path"))
+        safe = {"file_path": path or "<path pending>"}
+        for key in ("offset", "limit"):
+            if key in args:
+                safe[key], changed = _bounded_poster_value(args[key])
+                redacted |= changed
+        return safe, redacted or bool(
+            set(args) - {"file_path", "path", "offset", "limit"}
+        )
+    allowed = {
+        "Grep": {"pattern", "path", "glob", "limit"},
+        "Glob": {"pattern", "path"},
+        "Ls": {"path", "limit"},
+        "pwc": {"query", "paper", "task", "limit"},
+    }.get(name, set())
+    safe = {}
+    redacted = bool(set(args) - allowed)
+    for key in allowed & set(args):
+        if key in {"path", "file_path"}:
+            safe[key], changed = _safe_workspace_path(args[key])
+        else:
+            safe[key], changed = _bounded_poster_value(args[key])
+        redacted |= changed
+    if not safe and args:
+        safe = {"details": "<arguments redacted>"}
+        redacted = True
+    return safe, redacted
 
 
 def _persist_failure(
@@ -1215,7 +1455,13 @@ class ChatStreamOrchestrator:
                     }
                 else:
                     event = trusted
-            if self.admission.poster_mode and kind in {"tool_call", "tool_result"}:
+            if getattr(self.admission, "poster_mode", False) and kind in {
+                "tool_call",
+                "tool_call_start",
+                "tool_call_arguments_delta",
+                "tool_call_arguments_done",
+                "tool_result",
+            }:
                 event = _public_poster_tool_event(kind, event)
 
             elapsed_ms = round((time.perf_counter() - self.started) * 1000)
@@ -1224,6 +1470,7 @@ class ChatStreamOrchestrator:
             if not self.first_application_delta_recorded and kind in {
                 "reasoning_delta",
                 "tool_call",
+                "tool_call_start",
                 "answer_delta",
             }:
                 self.first_application_delta_recorded = True
@@ -1233,6 +1480,7 @@ class ChatStreamOrchestrator:
                     first_semantic_event_class={
                         "reasoning_delta": "reasoning",
                         "tool_call": "tool",
+                        "tool_call_start": "tool",
                         "answer_delta": "answer",
                     }[kind],
                 )
@@ -1240,6 +1488,8 @@ class ChatStreamOrchestrator:
 
             self.projection.apply(kind, event)
             if kind == "tool_call":
+                self.trace.start_tool(event)
+            elif kind == "tool_call_arguments_done":
                 self.trace.start_tool(event)
             elif kind == "tool_result":
                 self.trace.finish_tool(event)

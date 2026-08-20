@@ -214,6 +214,37 @@ def test_chat_provider_policy_accepts_one_reviewed_staging_candidate(
     runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
+def test_direct_openai_requires_staging_and_gateway_key(settings_factory):
+    staging, _release = settings_factory("staging")
+    staging.chat_openai_direct_enabled = True
+    staging.openai_api_key = ""
+    with pytest.raises(RuntimeError, match="requires an OpenAI API key"):
+        runtime_validation.validate_chat_provider_policy(staging)
+
+    production, _release = settings_factory("production")
+    production.chat_openai_direct_enabled = True
+    production.openai_api_key = "test-only"
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_provider_policy(production)
+
+
+def test_direct_openai_requires_exact_low_reasoning_warm_profile(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_openai_direct_enabled = True
+    settings.openai_api_key = "test-only"
+    settings.chat_pi_prewarm_enabled = True
+    settings.chat_default_agent_harness = "pi"
+    settings.chat_pi_prewarm_model = settings.chat_openai_luna_route
+    settings.chat_pi_prewarm_reasoning_effort = "low"
+
+    runtime_validation.validate_chat_provider_policy(settings)
+    runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    settings.chat_pi_prewarm_reasoning_effort = "high"
+    with pytest.raises(RuntimeError, match="one direct-Luna low-reasoning warm blank"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
 def test_chat_provider_policy_rejects_unreviewed_kimi_route(settings_factory):
     settings, _release = settings_factory("staging")
     settings.chat_kimi_route = "moonshotai/Kimi-K3:fastest"

@@ -189,6 +189,59 @@ function reduceEvent(
           };
         }),
       };
+    case "tool_call_start":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return {
+            ...visible,
+            blocks: [...(visible.blocks ?? []), {
+              kind: "tool",
+              schema_version: 2,
+              id: event.id,
+              name: event.name,
+              args: {},
+              argumentText: "",
+              argumentState: "streaming",
+              arguments_redacted: event.redacted,
+              status: "running",
+              open: false,
+            }],
+          };
+        }),
+      };
+    case "tool_call_arguments_delta":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "tool" && block.id === event.id,
+          (block) => block.kind === "tool" ? {
+            ...block,
+            args: event.partial_args,
+            argumentText: event.snapshot
+              ? event.delta
+              : `${block.argumentText ?? ""}${event.delta}`,
+            arguments_redacted: block.arguments_redacted || event.redacted,
+          } : block,
+        ),
+      };
+    case "tool_call_arguments_done":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "tool" && block.id === event.id,
+          (block) => block.kind === "tool" ? {
+            ...block,
+            args: event.args,
+            argumentText: JSON.stringify(event.args),
+            argumentState: "done",
+            arguments_redacted: block.arguments_redacted || event.redacted,
+          } : block,
+        ),
+      };
     case "app_start":
       return {
         ...state,
@@ -329,6 +382,8 @@ function reduceEvent(
           blocks: (message.blocks ?? []).map((block) => (
             block.kind === "reasoning" && block.active
               ? { ...block, active: false, open: false }
+              : block.kind === "tool" && block.status === "running"
+                ? { ...block, status: "error", open: true }
               : block
           )),
         })),
@@ -342,7 +397,9 @@ function stopMessages(messages: ChatMessage[]): ChatMessage[] {
   return patchLast(messages, (message) => {
     if (message.role !== "assistant") return message;
     const blocks = (message.blocks ?? []).flatMap((block): ChatBlock[] => {
-      if (block.kind === "tool" && block.status === "running") return [];
+      if (block.kind === "tool" && block.status === "running") {
+        return [{ ...block, status: "error", open: true }];
+      }
       if (block.kind === "reasoning" && block.active) {
         return block.text ? [{ ...block, active: false, open: false }] : [];
       }

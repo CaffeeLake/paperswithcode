@@ -138,6 +138,9 @@ const SharedChatView: React.FC = () => {
               Inference Providers
             </a>
           </span>}
+          {query.data.model_provider === "openrouter" && <span>
+            Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>
+          </span>}
           {query.data.model_provider === "openai" && <span>Powered by OpenAI</span>}
         </div>}
         <section className="shared-chat-fresh" aria-labelledby="shared-chat-fresh-title">

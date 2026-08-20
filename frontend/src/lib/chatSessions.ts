@@ -99,6 +99,25 @@ export interface ChatModelChoice {
 }
 
 export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
+export const LEGACY_OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
+
+export function providerForChatModel(
+  models: ChatModelChoice[],
+  selectedModel: string,
+): ChatModelProvider {
+  return models.find((model) => model.id === selectedModel)?.provider
+    ?? (selectedModel === LEGACY_OPENROUTER_LUNA_MODEL ? "openrouter" : "huggingface");
+}
+
+export function labelForChatModel(
+  models: Array<Pick<ChatModelChoice, "id" | "label">>,
+  selectedModel: string,
+): string {
+  return models.find((model) => model.id === selectedModel)?.label
+    ?? (selectedModel === LEGACY_OPENROUTER_LUNA_MODEL
+      ? "GPT-5.6 Luna (Legacy OpenRouter)"
+      : `${selectedModel} (unavailable)`);
+}
 export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: DEFAULT_CHAT_MODEL,
@@ -118,8 +137,13 @@ export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
     provider: "huggingface",
   },
   {
-    id: "openai/gpt-5.6-luna",
+    id: "gpt-5.6-luna@openrouter",
     label: "GPT-5.6 Luna",
+    provider: "openrouter",
+  },
+  {
+    id: "gpt-5.6-luna@openai",
+    label: "GPT-5.6 Luna (Direct)",
     provider: "openai",
   },
 ];

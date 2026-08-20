@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { toUiMessages, type ChatSessionDetail } from "@/lib/chatSessions";
+import {
+  labelForChatModel,
+  providerForChatModel,
+  toUiMessages,
+  type ChatSessionDetail,
+} from "@/lib/chatSessions";
+
+describe("legacy model compatibility", () => {
+  it("keeps the hidden historical Luna ID on OpenRouter", () => {
+    expect(providerForChatModel([], "openai/gpt-5.6-luna")).toBe("openrouter");
+    expect(labelForChatModel([], "openai/gpt-5.6-luna"))
+      .toBe("GPT-5.6 Luna (Legacy OpenRouter)");
+  });
+});
 
 describe("toUiMessages", () => {
   it.each([

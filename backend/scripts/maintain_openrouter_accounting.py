@@ -1,4 +1,4 @@
-"""Bounded OpenRouter reconciliation and retention maintenance."""
+"""Bounded chat-provider reconciliation and retention maintenance."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import logging
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
+from backend.services.chat_openai_usage_reconciler import ChatOpenAIUsageReconciler
 from backend.services.openrouter_byok_service import OpenRouterBYOKService
 from backend.services.openrouter_user_budget_service import OpenRouterUserBudgetService
 
@@ -28,11 +29,28 @@ async def run(
             if rotate_credentials
             else 0
         )
+        direct_openai = (
+            ChatOpenAIUsageReconciler(db, settings).run_once(batch_size=batch_size)
+            if settings.chat_openai_direct_enabled
+            else None
+        )
         db.commit()
     return {
         "reconciliation": reconciliation,
         "cleanup": cleanup,
         "rotated_credentials": rotated_credentials,
+        "direct_openai_reconciliation": (
+            {
+                "stale_dispatches_marked_unknown": (
+                    direct_openai.stale_dispatches_marked_unknown
+                ),
+                "unknown_calls_settled_at_ceiling": (
+                    direct_openai.unknown_calls_settled_at_ceiling
+                ),
+            }
+            if direct_openai is not None
+            else None
+        ),
     }
 
 

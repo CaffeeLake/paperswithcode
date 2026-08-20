@@ -68,6 +68,7 @@ const SettingsView: React.FC = () => {
   );
   const huggingFaceEnabled = enabledProviders.has("huggingface");
   const openRouterEnabled = enabledProviders.has("openrouter");
+  const openAIEnabled = enabledProviders.has("openai");
   const billingQuery = useQuery({
     queryKey: ["inference-billing", user?.hf_subject],
     enabled: chatEnabled && Boolean(user) && huggingFaceEnabled,
@@ -385,6 +386,10 @@ const SettingsView: React.FC = () => {
               </div>}
             </div>
           </section>}
+          {openAIEnabled && <div className="settings-note settings-note-flush" role="note">
+            Direct OpenAI usage is provided by Papers With Code. No OpenAI API key or
+            billing account is required from you.
+          </div>}
         </div>}
       </section>}
 

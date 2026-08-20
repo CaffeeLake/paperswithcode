@@ -18,7 +18,7 @@ import {
   type McpReadinessSnapshot,
 } from "./mcp_app_registry.js";
 import { PolicyController, pwcExtension } from "./policy.js";
-import { createProvider, thinkingLevel } from "./provider.js";
+import { createProvider, thinkingLevel, type ProviderProtocol } from "./provider.js";
 import { loadPromptAsset, renderPrompt } from "./prompt.js";
 import { recoverIncompleteResponse, type RecoverySummary } from "./recovery.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
@@ -29,6 +29,7 @@ export interface RunTurn {
   chat_session_id: string;
   prompt: string;
   model: string;
+  provider_protocol?: ProviderProtocol;
   resume: string | null;
   web_search_enabled: boolean;
   reader_mode: boolean;
@@ -50,6 +51,7 @@ export class PiWorker {
   private promptAsset: string | undefined;
   private prewarmedProvider: Awaited<ReturnType<typeof createProvider>> | undefined;
   private prewarmedModel: string | undefined;
+  private prewarmedProtocol: ProviderProtocol | undefined;
   private policyExtension: ReturnType<typeof pwcExtension> | undefined;
   private webMcpExtension: ReturnType<typeof createWebMcpExtension> | undefined;
   private mcpStatus: McpStatusSnapshot | undefined;
@@ -96,8 +98,12 @@ export class PiWorker {
     if (process.env.PWC_CHAT_PI_PREWARM_ENABLED !== "true") return;
     const model = process.env.PWC_CHAT_PI_PREWARM_MODEL;
     if (!model) throw new Error("Pi prewarm model is missing");
-    this.prewarmedProvider = await createProvider(model);
+    const protocol = process.env.PWC_CHAT_PI_PREWARM_PROTOCOL === "openai-responses"
+      ? "openai-responses"
+      : "anthropic-messages";
+    this.prewarmedProvider = await createProvider(model, protocol);
     this.prewarmedModel = model;
+    this.prewarmedProtocol = protocol;
   }
 
   async cancel(requestId: string): Promise<void> {
@@ -200,6 +206,7 @@ export class PiWorker {
     this.policy.reset(run.web_search_enabled, prompt, run.poster_mode);
     const profile = JSON.stringify({
       model: run.model,
+      providerProtocol: run.provider_protocol ?? "anthropic-messages",
       reasoningEffort: run.reasoning_effort,
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
@@ -227,9 +234,12 @@ export class PiWorker {
       return;
     }
     await this.disposeSession();
-    const provider = this.prewarmedModel === run.model && this.prewarmedProvider
+    const protocol = run.provider_protocol ?? "anthropic-messages";
+    const provider = this.prewarmedModel === run.model
+      && this.prewarmedProtocol === protocol
+      && this.prewarmedProvider
       ? this.prewarmedProvider
-      : await createProvider(run.model);
+      : await createProvider(run.model, protocol);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: false },

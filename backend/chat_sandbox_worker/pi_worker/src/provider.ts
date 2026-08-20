@@ -4,7 +4,15 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 export const PROVIDER_ID = "pwc-gateway";
 export const PLACEHOLDER_KEY = "sandbox-placeholder-not-a-credential";
 
-export async function createProvider(modelId: string) {
+export type ProviderProtocol = "anthropic-messages" | "openai-responses";
+
+export async function createProvider(
+  modelId: string,
+  api: ProviderProtocol = "anthropic-messages",
+) {
+  const baseUrl = api === "openai-responses"
+    ? "http://127.0.0.1:8765/v1"
+    : "http://127.0.0.1:8765";
   const credentials = new InMemoryCredentialStore();
   const runtime = await ModelRuntime.create({
     credentials,
@@ -14,16 +22,16 @@ export async function createProvider(modelId: string) {
   });
   runtime.registerProvider(PROVIDER_ID, {
     name: "PwC Gateway",
-    baseUrl: "http://127.0.0.1:8765",
+    baseUrl,
     apiKey: PLACEHOLDER_KEY,
-    api: "anthropic-messages",
+    api,
     authHeader: true,
     models: [
       {
         id: modelId,
         name: modelId,
-        api: "anthropic-messages",
-        baseUrl: "http://127.0.0.1:8765",
+        api,
+        baseUrl,
         reasoning: true,
         thinkingLevelMap: {
           off: null,
@@ -37,11 +45,16 @@ export async function createProvider(modelId: string) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200000,
         maxTokens: 8000,
-        compat: {
-          supportsEagerToolInputStreaming: true,
-          supportsCacheControlOnTools: true,
-          supportsTemperature: false,
-        },
+        compat: api === "anthropic-messages"
+          ? {
+              supportsEagerToolInputStreaming: true,
+              supportsCacheControlOnTools: true,
+              supportsTemperature: false,
+            }
+          : {
+              supportsTemperature: false,
+              sessionAffinityFormat: "openai-nosession",
+            },
       },
     ],
   });

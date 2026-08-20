@@ -68,6 +68,8 @@ class ChatSandboxTurnRequest:
     model: str
     resume: str | None
     capability_token: str = field(repr=False)
+    provider_protocol: str = "anthropic-messages"
+    provider_model: str | None = None
     agent_harness: str = "claude"
     web_search_enabled: bool = False
     reader_mode: bool = False
@@ -299,7 +301,8 @@ class ChatSandboxTurnCoordinator:
                     turn_id=request.turn_id,
                     request_id=request.request_id,
                     prompt=request.prompt,
-                    model=request.model,
+                    model=request.provider_model or request.model,
+                    provider_protocol=request.provider_protocol,
                     resume=request.resume,
                     capability_token=request.capability_token,
                     agent_harness=request.agent_harness,
@@ -377,6 +380,7 @@ class ChatSandboxTurnCoordinator:
                     if not first_semantic_recorded and output.get("type") in {
                         "reasoning_delta",
                         "tool_call",
+                        "tool_call_start",
                         "answer_delta",
                     }:
                         first_semantic_recorded = True
@@ -387,6 +391,7 @@ class ChatSandboxTurnCoordinator:
                             "first_semantic_event_class": {
                                 "reasoning_delta": "reasoning",
                                 "tool_call": "tool",
+                                "tool_call_start": "tool",
                                 "answer_delta": "answer",
                             }[output["type"]],
                         }

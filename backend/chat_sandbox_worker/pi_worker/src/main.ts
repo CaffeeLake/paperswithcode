@@ -18,7 +18,10 @@ function runFrame(value: unknown): RunTurn {
     "v", "type", "request_id", "chat_session_id", "prompt", "model", "resume",
     "web_search_enabled", "reasoning_effort", "fetchable_urls", "hf_username", "agent_harness",
   ]);
-  const optional = new Set(["turn_id", "assignment_token", "worker_generation", "reader_mode", "poster_mode"]);
+  const optional = new Set([
+    "turn_id", "assignment_token", "worker_generation", "reader_mode", "poster_mode",
+    "provider_protocol",
+  ]);
   if (Object.keys(frame).some((key) => !required.has(key) && !optional.has(key))) throw new Error("Invalid Pi run frame keys");
   if ([...required].some((key) => !(key in frame))) throw new Error("Missing Pi run frame key");
   if (
@@ -26,6 +29,8 @@ function runFrame(value: unknown): RunTurn {
     typeof frame.request_id !== "string" || typeof frame.chat_session_id !== "string" ||
     typeof frame.prompt !== "string" || Buffer.byteLength(frame.prompt) > 2 * 1024 * 1024 ||
     typeof frame.model !== "string" ||
+    (frame.provider_protocol !== undefined
+      && !new Set(["anthropic-messages", "openai-responses"]).has(String(frame.provider_protocol))) ||
     (frame.resume !== null && typeof frame.resume !== "string") ||
     typeof frame.web_search_enabled !== "boolean" ||
     (frame.reader_mode !== undefined && typeof frame.reader_mode !== "boolean") ||

@@ -540,6 +540,30 @@ sudo python deploy/configure_host_env.py \
   --staging-openrouter-only
 ```
 
+Direct OpenAI uses a separate staging project credential. Put only
+`OPENAI_API_KEY` in a root-owned mode-`0600` source file; the installer rejects
+the credential if it matches either production OpenAI key. It writes the key
+only to the trusted staging gateway environment, enables the direct route, and
+sets the single blank profile to direct Luna/low without changing production:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /root/protected/staging-openai.env \
+  --staging-openai-direct-only
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+```
+
+Configuration-first rollback preserves the ledger and credential while
+disabling direct dispatch and restoring the historical OpenRouter Luna/low
+profile for the prior staging release:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /root/protected/staging-openai.env \
+  --staging-openai-direct-disable-only
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+```
+
 When the provider-enforced workspace limit changes, retain a protected copy of
 the prior staging environment until two distinct staging releases accept the
 new exact limit. Deploy the first compatible release with the new environment,

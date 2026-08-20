@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from backend.database.connection import db_manager
 from backend.models.database import (
+    ChatOpenAIProviderCall,
     ChatOpenRouterProviderCall,
     ChatSandboxComputeInterval,
     ChatSandboxLease,
@@ -42,6 +43,7 @@ def distribution(values: list[int]) -> dict[str, int] | None:
         "p50": round(statistics.median(values)),
         "p75": percentile(values, 0.75),
         "p90": percentile(values, 0.90),
+        "p95": percentile(values, 0.95),
         "p99": percentile(values, 0.99),
         "max": max(values),
     }
@@ -100,6 +102,17 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
                 db.scalars(
                     select(ChatOpenRouterProviderCall).where(
                         ChatOpenRouterProviderCall.turn_id.in_(turn_ids)
+                    )
+                )
+            )
+            if turn_ids
+            else []
+        )
+        openai_provider_calls = (
+            list(
+                db.scalars(
+                    select(ChatOpenAIProviderCall).where(
+                        ChatOpenAIProviderCall.turn_id.in_(turn_ids)
                     )
                 )
             )
@@ -183,7 +196,8 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             + args.memory_mib / 1024 * MODAL_MEMORY_USD_PER_GIB_SECOND
         )
     )
-    unknown_calls = sum(call.state == "cost_unknown" for call in provider_calls)
+    all_provider_calls = [*provider_calls, *openai_provider_calls]
+    unknown_calls = sum(call.state == "cost_unknown" for call in all_provider_calls)
     reliability = (
         sum(row.terminal_status == "complete" for row in rows) / len(rows)
         if rows
@@ -230,7 +244,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
         "reused_browser": passes(reused_browser, count=50, p50=3000, p90=6000),
         "hit_rate": len(eligible) >= 200 and hit_rate >= 0.95,
         "reliability": bool(rows) and reliability >= args.minimum_reliability,
-        "accounting": bool(provider_calls) and unknown_calls == 0,
+        "accounting": bool(all_provider_calls) and unknown_calls == 0,
         "isolation": isolation_passed,
     }
     return {
@@ -248,7 +262,9 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             "eligible_new": len(eligible),
             "pool_hits": len(pool_hits),
             "reused": len(reused),
-            "provider_calls": len(provider_calls),
+            "provider_calls": len(all_provider_calls),
+            "openrouter_provider_calls": len(provider_calls),
+            "openai_provider_calls": len(openai_provider_calls),
             "pool_starts": len(pool_rows),
         },
         "latency_ms": {
@@ -301,7 +317,7 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             "provider_ttft": distribution(
                 [
                     call.provider_ttft_ms
-                    for call in provider_calls
+                    for call in all_provider_calls
                     if call.provider_ttft_ms
                 ]
             ),
@@ -314,7 +330,9 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             "harness": dict(Counter(row.agent_harness for row in rows)),
             "model": dict(Counter(row.model_route for row in rows)),
             "acquisition": dict(Counter(row.acquisition_outcome for row in rows)),
-            "effort": dict(Counter(call.reasoning_effort for call in provider_calls)),
+            "effort": dict(
+                Counter(call.reasoning_effort for call in all_provider_calls)
+            ),
         },
         "acquisition": {
             "hit_rate": round(hit_rate, 4),
@@ -335,13 +353,42 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
             "terminal_statuses": dict(Counter(row.terminal_status for row in rows)),
         },
         "accounting": {
-            "states": dict(Counter(call.state for call in provider_calls)),
+            "states": dict(Counter(call.state for call in all_provider_calls)),
             "unknown_cost_calls": unknown_calls,
-            "routing": dict(Counter(call.routing_policy for call in provider_calls)),
+            "ledgers": {
+                "openrouter": len(provider_calls),
+                "openai_direct": len(openai_provider_calls),
+            },
+            "routing": dict(
+                Counter(
+                    [call.routing_policy for call in provider_calls]
+                    + ["direct" for _call in openai_provider_calls]
+                )
+            ),
             "providers": dict(
-                Counter(call.upstream_provider or "missing" for call in provider_calls)
+                Counter(
+                    [call.upstream_provider or "missing" for call in provider_calls]
+                    + ["openai" for _call in openai_provider_calls]
+                )
             ),
             "fallbacks": sum(call.fallback_count for call in provider_calls),
+            "openai_direct": {
+                "service_tiers": dict(
+                    Counter(call.service_tier for call in openai_provider_calls)
+                ),
+                "outcomes": dict(
+                    Counter(call.outcome or "missing" for call in openai_provider_calls)
+                ),
+                "error_codes": dict(
+                    Counter(call.error_code or "none" for call in openai_provider_calls)
+                ),
+                "settlement_sources": dict(
+                    Counter(
+                        call.settlement_source or "missing"
+                        for call in openai_provider_calls
+                    )
+                ),
+            },
             "tokens": {
                 name: distribution(
                     [
@@ -357,21 +404,38 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
                     "cache_creation_tokens",
                 )
             },
+            "openai_direct_tokens": {
+                name: distribution(
+                    [
+                        int(value)
+                        for call in openai_provider_calls
+                        if (value := getattr(call, name)) is not None
+                    ]
+                )
+                for name in (
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "cache_write_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                )
+            },
             "request_bytes": distribution(
                 [
                     call.request_bytes
-                    for call in provider_calls
+                    for call in all_provider_calls
                     if call.request_bytes is not None
                 ]
             ),
             "provider_cost_usd": {
                 "actual": round(
-                    sum((call.actual_microusd or 0) for call in provider_calls)
+                    sum((call.actual_microusd or 0) for call in all_provider_calls)
                     / 1_000_000,
                     6,
                 ),
                 "reserved": round(
-                    sum(call.reserved_microusd for call in provider_calls) / 1_000_000,
+                    sum(call.reserved_microusd for call in all_provider_calls)
+                    / 1_000_000,
                     6,
                 ),
             },

@@ -57,6 +57,7 @@ from backend.services.chat_stream_service import (
     sequential_reasoning_events,
 )
 from backend.services.chat_title_service import fallback_title, normalize_title
+from backend.services.chat_tracing_service import ChatTurnTrace
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.utils.auth import require_user
 
@@ -880,7 +881,7 @@ def test_sse_event_accepts_posterly_artifact_frames():
     assert json.loads(error[6:-2])["code"] == "poster_validation_failed"
 
 
-def test_poster_tool_events_hide_arguments_and_private_evidence():
+def test_poster_tool_events_show_safe_arguments_and_hide_private_evidence():
     call = _public_poster_tool_event(
         "tool_call",
         {
@@ -902,7 +903,8 @@ def test_poster_tool_events_hide_arguments_and_private_evidence():
         },
     )
 
-    assert call["args"] == {}
+    assert call["args"] == {"command": "<inline content redacted>"}
+    assert call["redacted"] is True
     assert result["content"] == [
         {
             "type": "text",
@@ -910,6 +912,133 @@ def test_poster_tool_events_hide_arguments_and_private_evidence():
             "truncated": True,
         }
     ]
+
+
+def test_poster_tool_argument_stream_sanitizes_before_public_projection():
+    bash = _public_poster_tool_event(
+        "tool_call_arguments_delta",
+        {
+            "type": "tool_call_arguments_delta",
+            "id": "bash-1",
+            "name": "Bash",
+            "delta": "raw secret must not survive",
+            "partial_args": {
+                "command": (
+                    "pwc poster render --token=secret <<'HTML'\n"
+                    "<html>private paper</html>\nHTML"
+                )
+            },
+        },
+    )
+    read = _public_poster_tool_event(
+        "tool_call_arguments_done",
+        {
+            "type": "tool_call_arguments_done",
+            "id": "read-1",
+            "name": "Read",
+            "args": {"file_path": "/workspace/output/poster.png", "limit": 10},
+        },
+    )
+
+    encoded = json.dumps(bash)
+    assert bash["snapshot"] is True
+    assert bash["redacted"] is True
+    assert "secret" not in encoded
+    assert "private paper" not in encoded
+    assert "<heredoc body redacted>" in encoded
+    assert read["args"] == {"file_path": "output/poster.png", "limit": 10}
+
+    for command, safe_fragment in (
+        (
+            "echo 'short private paper text' > /workspace/input/paper.txt",
+            "/workspace/input/paper.txt",
+        ),
+        (
+            "printf '%s' 'short private text' > ./output/poster.html",
+            "./output/poster.html",
+        ),
+        ("python -c \"print('<html>generated</html>')\"", "python -c"),
+    ):
+        projected = _public_poster_tool_event(
+            "tool_call_arguments_done",
+            {
+                "type": "tool_call_arguments_done",
+                "id": "write-1",
+                "name": "Bash",
+                "args": {"command": command},
+            },
+        )
+        encoded = json.dumps(projected)
+        assert projected["redacted"] is True
+        assert safe_fragment in encoded
+        assert "short private" not in encoded
+        assert "<html>generated</html>" not in encoded
+
+
+def test_poster_sanitized_arguments_are_the_only_persisted_tool_projection():
+    projection = ChatTurnProjection()
+    projection.apply(
+        "tool_call_start",
+        {"id": "tool-1", "name": "Bash", "content_index": 0},
+    )
+    final = _public_poster_tool_event(
+        "tool_call_arguments_done",
+        {
+            "id": "tool-1",
+            "name": "Bash",
+            "args": {
+                "command": "printf '%s' 'private paper text' > /workspace/output/poster.html"
+            },
+        },
+    )
+    projection.apply("tool_call_arguments_done", final)
+    persisted = json.dumps(projection.completed_blocks())
+
+    assert "private paper text" not in persisted
+    assert "<inline content redacted>" in persisted
+    assert "/workspace/output/poster.html" in persisted
+
+    captured: dict = {}
+
+    class Root:
+        def start_observation(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace()
+
+    trace = object.__new__(ChatTurnTrace)
+    trace.tools = {}
+    trace.root = Root()
+    trace.start_tool(final)
+    traced = json.dumps(captured)
+    assert "private paper text" not in traced
+    assert "<inline content redacted>" in traced
+
+
+def test_streamed_tool_argument_events_have_strict_public_sse_shapes():
+    start = json.loads(
+        sse_event("tool_call_start", id="tool-1", name="Bash", content_index=0)[6:-2]
+    )
+    delta = json.loads(
+        sse_event(
+            "tool_call_arguments_delta",
+            id="tool-1",
+            name="Bash",
+            delta='{"command":"pwc',
+            partial_args={"command": "pwc"},
+        )[6:-2]
+    )
+    done = json.loads(
+        sse_event(
+            "tool_call_arguments_done",
+            id="tool-1",
+            name="Bash",
+            args={"command": "pwc version"},
+        )[6:-2]
+    )
+
+    assert start["content_index"] == 0
+    assert delta["partial_args"] == {"command": "pwc"}
+    assert done["args"] == {"command": "pwc version"}
 
 
 def test_chat_projection_keeps_app_blocks_out_of_tool_accordions():
@@ -1172,7 +1301,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert [choice["id"] for choice in staging.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         "moonshotai/Kimi-K3",
-        "openai/gpt-5.6-luna",
+        "gpt-5.6-luna@openrouter",
     ]
     assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
@@ -1207,13 +1336,33 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "moonshotai/Kimi-K3:baseten"
     )
     assert staging.chat_model_providers["moonshotai/Kimi-K3"] == "huggingface"
+    assert staging.chat_model_routes["gpt-5.6-luna@openrouter"] == "openai/gpt-5.6-luna"
+    assert staging.chat_model_providers["gpt-5.6-luna@openrouter"] == "openrouter"
     assert staging.chat_model_routes["openai/gpt-5.6-luna"] == "openai/gpt-5.6-luna"
-    assert staging.chat_model_providers["openai/gpt-5.6-luna"] == "openai"
+    assert staging.chat_model_providers["openai/gpt-5.6-luna"] == "openrouter"
+    assert staging.chat_model_labels["openai/gpt-5.6-luna"] == (
+        "GPT-5.6 Luna (Legacy OpenRouter)"
+    )
     assert staging.chat_route_providers["openai/gpt-5.6-luna"] == "openrouter"
     assert "openai/gpt-5.6-luna" in staging.chat_openrouter_routes
     assert staging.chat_model_routes["openai/gpt-5.6-terra"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
+
+    direct = Settings(environment="staging", chat_openai_direct_enabled=True)
+    assert [choice["id"] for choice in direct.chat_model_choices] == [
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "moonshotai/Kimi-K3",
+        "gpt-5.6-luna@openrouter",
+        "gpt-5.6-luna@openai",
+    ]
+    assert direct.chat_model_routes["gpt-5.6-luna@openai"] == ("gpt-5.6-luna@openai")
+    assert direct.chat_model_providers["gpt-5.6-luna@openai"] == "openai"
+    assert direct.chat_route_providers["gpt-5.6-luna@openai"] == "openai"
+    assert direct.chat_route_protocols["gpt-5.6-luna@openai"] == "openai-responses"
+    assert direct.chat_route_provider_models["gpt-5.6-luna@openai"] == ("gpt-5.6-luna")
+    assert direct.chat_route_funding_modes["gpt-5.6-luna@openai"] == "openai_funded"
+    assert direct.chat_effective_pi_prewarm_model == "gpt-5.6-luna@openai"
 
     openrouter = Settings(
         environment="production",
@@ -1243,7 +1392,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert [choice["id"] for choice in comparison.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         "moonshotai/Kimi-K3",
-        "openai/gpt-5.6-luna",
+        "gpt-5.6-luna@openrouter",
         "google/gemini-3.7-flash",
     ]
     assert comparison.chat_model_routes["google/gemini-3.7-flash"] == (

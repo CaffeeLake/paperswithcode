@@ -83,7 +83,7 @@ describe("chatLifecycleReducer", () => {
     expect(state.messages[0]).toMatchObject({ error: "Failed", errorCode: "provider_error" });
     expect(state.messages[0].blocks).toEqual([
       { kind: "reasoning", text: "Plan", active: false, open: false },
-      expect.objectContaining({ kind: "tool", id: "tool-1", status: "running" }),
+      expect.objectContaining({ kind: "tool", id: "tool-1", status: "error", open: true }),
     ]);
   });
 
@@ -107,7 +107,33 @@ describe("chatLifecycleReducer", () => {
     expect(stopped.messages[0]).toMatchObject({ streaming: false, finishReason: "stopped" });
     expect(stopped.messages[0].blocks).toEqual([
       { kind: "reasoning", text: "Partial", active: false, open: false },
+      expect.objectContaining({ kind: "tool", id: "tool-1", status: "error", open: true }),
       { kind: "answer", text: "Answer", done: true },
+    ]);
+  });
+
+  it("updates parallel streamed tool arguments in place and finalizes authoritatively", () => {
+    let state = chatLifecycleReducer(initialChatLifecycle(), {
+      type: "start", messages: streaming(), sessionId: "session-1",
+    });
+    for (const event of [
+      { type: "tool_call_start", id: "a", name: "Bash", content_index: 0 },
+      { type: "tool_call_start", id: "b", name: "Read", content_index: 1 },
+      { type: "tool_call_arguments_delta", id: "b", name: "Read", delta: '{"file_path":"src', partial_args: { file_path: "src" } },
+      { type: "tool_call_arguments_delta", id: "a", name: "Bash", delta: '{"command":"pwc', partial_args: { command: "pwc" } },
+      { type: "tool_call_arguments_delta", id: "b", name: "Read", delta: '{"file_path":"src/file.py"}', partial_args: { file_path: "src/file.py" }, snapshot: true },
+      { type: "tool_call_arguments_done", id: "a", name: "Bash", args: { command: "pwc version" } },
+    ] as const) {
+      state = chatLifecycleReducer(state, { type: "event", event });
+    }
+    expect(state.messages[0].blocks).toEqual([
+      expect.objectContaining({
+        kind: "tool", id: "a", args: { command: "pwc version" }, argumentState: "done",
+      }),
+      expect.objectContaining({
+        kind: "tool", id: "b", args: { file_path: "src/file.py" },
+        argumentText: '{"file_path":"src/file.py"}', argumentState: "streaming",
+      }),
     ]);
   });
 

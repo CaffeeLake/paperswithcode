@@ -166,6 +166,7 @@ const ToolBlockView: React.FC<{
   onToggle: () => void;
 }> = ({ block, papers, onToggle }) => {
   const running = block.status === "running";
+  const streamingArguments = running && block.argumentState === "streaming";
   const generic = block.schema_version === 2 || Boolean(block.content);
   const failed = block.status === "error" || block.status === "denied";
   const query = typeof block.args.query === "string" ? block.args.query : "";
@@ -175,8 +176,10 @@ const ToolBlockView: React.FC<{
       ? block.args.file_path
       : query;
   const output = block.content?.map((item) => item.text).join("") ?? "";
-  const statusText = running
-    ? "running…"
+  const statusText = streamingArguments
+    ? "streaming arguments…"
+    : running
+      ? "running…"
     : generic
       ? `${block.status} · ${block.took_ms ?? 0} ms`
       : `${block.hits} results · ${block.took_ms} ms`;
@@ -186,8 +189,7 @@ const ToolBlockView: React.FC<{
         type="button"
         className="chat-tool-head"
         onClick={onToggle}
-        disabled={running}
-        aria-expanded={!running ? block.open : undefined}
+        aria-expanded={block.open}
       >
         <span className="chat-tool-head-left">
           {running ? <Spinner /> : <SearchIcon />}
@@ -196,16 +198,20 @@ const ToolBlockView: React.FC<{
         </span>
         <span className="chat-tool-head-right">
           <span className="chat-tool-status">{statusText}</span>
-          {!running && <Chevron open={block.open} />}
+          <Chevron open={block.open} />
         </span>
       </button>
-      {!running && block.open && (
+      {block.open && (
         <div className="chat-tool-body">
           <div className="chat-tool-args">
-            <span className="chat-tool-label">arguments</span>
-            <pre>{JSON.stringify(block.args, null, 2)}</pre>
+            <span className="chat-tool-label">
+              arguments{block.arguments_redacted ? " · redacted" : ""}
+            </span>
+            <pre>{block.argumentState === "streaming" && !block.arguments_redacted
+              ? (block.argumentText || JSON.stringify(block.args, null, 2))
+              : JSON.stringify(block.args, null, 2)}</pre>
           </div>
-          {generic ? (
+          {!running && generic ? (
             <>
               <div className="chat-tool-output-head">
                 <span className="chat-tool-label">result</span>
@@ -222,7 +228,7 @@ const ToolBlockView: React.FC<{
                 <div className="chat-tool-truncated">Output was truncated.</div>
               )}
             </>
-          ) : (
+          ) : !running ? (
             <>
               <div className="chat-tool-label chat-tool-results-label">
                 returned {block.results?.length ?? 0} papers
@@ -252,7 +258,7 @@ const ToolBlockView: React.FC<{
                 ))}
               </ol>
             </>
-          )}
+          ) : null}
         </div>
       )}
     </div>

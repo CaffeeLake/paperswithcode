@@ -71,8 +71,13 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED",
     "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET",
     "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD",
+    "PWC_CHAT_OPENAI_DIRECT_ENABLED",
+    "PWC_OPENAI_API_KEY",
     "PWC_CHAT_PERSISTENT_SANDBOX_LIFETIME_SECONDS",
     "PWC_CHAT_PERSISTENT_WORKER_ENABLED",
+    "PWC_CHAT_PI_PREWARM_ENABLED",
+    "PWC_CHAT_PI_PREWARM_MODEL",
+    "PWC_CHAT_PI_PREWARM_REASONING_EFFORT",
     "PWC_CHAT_PWC_CLI_VERSION",
     "PWC_CHAT_SANDBOX_CPU",
     "PWC_CHAT_SANDBOX_CPU_LIMIT",
@@ -339,6 +344,44 @@ def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
         **staging_openrouter_accounting_values(current),
         "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key]),
         "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
+    }
+
+
+def staging_openai_direct_values(
+    source: dict[str, str], production: dict[str, str]
+) -> dict[str, str]:
+    """Install one isolated staging Responses credential and rollout profile."""
+
+    key = "OPENAI_API_KEY"
+    if key not in source or not decoded_value(source[key]).strip():
+        raise ValueError(f"staging OpenAI source is missing: {key}")
+    credential = decoded_value(source[key]).strip()
+    production_lines = (
+        production.get("PWC_OPENAI_API_KEY"),
+        production.get("OPENAI_API_KEY"),
+    )
+    if any(
+        line and decoded_value(line).strip() == credential for line in production_lines
+    ):
+        raise ValueError("staging OpenAI credential must not reuse production")
+    return {
+        "PWC_OPENAI_API_KEY": credential,
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_MODEL": "gpt-5.6-luna@openai",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+
+
+def staging_openai_direct_disable_values() -> dict[str, str]:
+    """Restore the historical staging OpenRouter Luna prewarm on rollback."""
+
+    return {
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "false",
+        "PWC_CHAT_PI_PREWARM_MODEL": "openai/gpt-5.6-luna",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
     }
 
 
@@ -1003,6 +1046,8 @@ def main() -> int:
     parser.add_argument("--production-langfuse-only", action="store_true")
     parser.add_argument("--staging-title-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
+    parser.add_argument("--staging-openai-direct-only", action="store_true")
+    parser.add_argument("--staging-openai-direct-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
@@ -1078,6 +1123,53 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if args.staging_openai_direct_only or args.staging_openai_direct_disable_only:
+        if args.staging_openai_direct_only and args.staging_openai_direct_disable_only:
+            parser.error("staging direct OpenAI modes are mutually exclusive")
+        selected_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "legacy_env",
+                "confirm",
+                "staging_openai_direct_only",
+                "staging_openai_direct_disable_only",
+                "staging_chat_routing_policy",
+                "staging_chat_preferred_providers",
+                "staging_chat_routing_max_prompt_price",
+                "staging_chat_routing_max_completion_price",
+                "staging_chat_payload_candidate",
+                "staging_chat_alternative_model",
+                "staging_chat_alternative_reasoning_effort",
+                "modal_profile_config",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if selected_modes or args.codex_jobs_namespace or args.modal_profile:
+            parser.error("staging direct OpenAI mode must run alone")
+        if args.staging_openai_direct_only:
+            if (
+                not args.legacy_env.is_file()
+                or args.legacy_env.stat().st_uid != 0
+                or args.legacy_env.stat().st_mode & 0o077
+            ):
+                parser.error("staging OpenAI source must be a protected root-only file")
+            try:
+                values = staging_openai_direct_values(
+                    legacy, read_lines(CONFIG_ROOT / "production.env")
+                )
+            except ValueError as error:
+                parser.error(str(error))
+            label = "installed isolated staging direct OpenAI credential and profile"
+        else:
+            values = staging_openai_direct_disable_values()
+            label = "disabled staging direct OpenAI profile"
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print(label)
+        return 0
     experiment_modes = (
         args.staging_chat_routing_enable_only,
         args.staging_chat_routing_disable_only,

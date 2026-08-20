@@ -430,7 +430,11 @@ class ChatShareService:
             created_at=share.created_at,
             updated_at=share.updated_at,
             model=model,
-            model_label=choice["label"] if choice else model,
+            model_label=(
+                choice["label"]
+                if choice
+                else self.sessions.settings.chat_model_labels.get(model, model)
+            ),
             model_provider=(
                 choice["provider"]
                 if choice

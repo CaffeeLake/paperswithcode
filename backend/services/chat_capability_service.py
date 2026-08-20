@@ -72,6 +72,23 @@ class ChatCapabilityService:
             raise ValueError("Capability reasoning effort is invalid")
         if agent_harness not in {"claude", "pi"}:
             raise ValueError("Capability agent harness is invalid")
+        if provider_mode not in {
+            None,
+            "huggingface",
+            "openrouter_funded",
+            "openrouter_byok",
+            "openai_funded",
+        }:
+            raise ValueError("Capability provider mode is invalid")
+        if provider_mode == "openai_funded" and any(
+            value is not None
+            for value in (
+                provider_token,
+                provider_bill_to,
+                provider_credential_revision,
+            )
+        ):
+            raise ValueError("Direct OpenAI capabilities cannot contain credentials")
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + timedelta(seconds=lifetime_seconds)
         row = ChatTurnCapability(

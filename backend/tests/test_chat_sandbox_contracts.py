@@ -167,6 +167,32 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
     assert request.error is None
 
 
+def test_broker_allows_only_native_responses_path_for_direct_openai(monkeypatch):
+    broker = _import_broker(monkeypatch)
+
+    class Request:
+        path = "/v1/responses"
+        headers = {"Content-Length": "2", "Content-Type": "application/json"}
+        rfile = BytesIO(b"{}")
+        forwarded: list[tuple[str, bytes]] = []
+        error: int | None = None
+
+        def _forward(self, path, body, **_kwargs):
+            self.forwarded.append((path, body))
+
+        def send_error(self, status):
+            self.error = status
+
+    request = Request()
+    broker.Handler.do_POST(request)
+    assert request.forwarded == [("v1/responses", b"{}")]
+    assert request.error is None
+
+    request.path = "/v1/chat/completions"
+    broker.Handler.do_POST(request)
+    assert request.error == 404
+
+
 def test_broker_certificates_outlive_the_persistent_sandbox(monkeypatch, tmp_path):
     broker = _import_broker(monkeypatch)
     ca_path = tmp_path / "pwc-webfetch-ca.pem"
@@ -2554,6 +2580,63 @@ def test_worker_protocol_accepts_complete_turn_after_one_terminal():
     validator.accept({"type": "worker_done", "status": "complete"})
 
 
+def test_worker_protocol_correlates_parallel_argument_streams_and_final_args():
+    validator = WorkerEventValidator()
+    validator.accept(
+        {"type": "tool_call_start", "id": "a", "name": "Bash", "content_index": 0}
+    )
+    validator.accept(
+        {"type": "tool_call_start", "id": "b", "name": "Read", "content_index": 1}
+    )
+    validator.accept(
+        {
+            "type": "tool_call_arguments_delta",
+            "id": "b",
+            "name": "Read",
+            "delta": '{"file_path":"src',
+            "partial_args": {"file_path": "src"},
+        }
+    )
+    validator.accept(
+        {
+            "type": "tool_call_arguments_delta",
+            "id": "a",
+            "name": "Bash",
+            "delta": '{"command":"pwc',
+            "partial_args": {"command": "pwc"},
+        }
+    )
+    validator.accept(
+        {
+            "type": "tool_call_arguments_done",
+            "id": "a",
+            "name": "Bash",
+            "args": {"command": "pwc version"},
+        }
+    )
+    validator.accept(
+        {
+            "type": "tool_call_arguments_done",
+            "id": "b",
+            "name": "Read",
+            "args": {"file_path": "src/file.py"},
+        }
+    )
+    validator.accept({"type": "tool_result", "id": "b"})
+    validator.accept({"type": "tool_result", "id": "a"})
+
+    with pytest.raises(ProtocolError, match="post-terminal"):
+        validator.accept(
+            {
+                "type": "tool_call_arguments_delta",
+                "id": "a",
+                "name": "Bash",
+                "delta": "duplicate",
+                "partial_args": {},
+            }
+        )
+
+
 def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
     prompt = "é" * (MAX_RUN_PROMPT_BYTES // 2)
     frame = {
@@ -2813,9 +2896,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-UfMNUG7keHBiIBgSQSyemz"
+    assert MODAL_IMAGE_ID == "im-YZ5vyjtIUfxYJRu1HOuwqw"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-dCvQBXFglDnt0sBSgKG2qi"
-    assert WORKER_CONTRACT_VERSION == "90"
+    assert WORKER_CONTRACT_VERSION == "91"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

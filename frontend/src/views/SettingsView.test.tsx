@@ -34,7 +34,7 @@ vi.mock("@/lib/preferencesContext", () => ({
   }),
 }));
 
-type Provider = "huggingface" | "openrouter";
+type Provider = "huggingface" | "openrouter" | "openai";
 
 type BillingStatus = {
   connected: boolean;
@@ -181,7 +181,7 @@ describe("SettingsView provider-aware chat billing", () => {
   });
 
   it("shows both cards when both providers are enabled", async () => {
-    mockProviderRequests(["huggingface", "openrouter"]);
+    mockProviderRequests(["huggingface", "openrouter", "openai"]);
 
     renderSettings();
 
@@ -189,6 +189,9 @@ describe("SettingsView provider-aware chat billing", () => {
     expect(await screen.findByRole("heading", { name: "OpenRouter" })).toBeVisible();
     expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
     expect(await screen.findByText("96% left")).toBeVisible();
+    expect(screen.getByText(/Direct OpenAI usage is provided by Papers With Code/i)).toBeVisible();
+    expect(screen.queryByLabelText(/OpenAI API key/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "OpenAI" })).not.toBeInTheDocument();
   });
 
   it("reveals settings atomically after all provider data is ready", async () => {

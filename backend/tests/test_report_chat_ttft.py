@@ -12,6 +12,7 @@ def test_ttft_report_distribution_and_gate_are_explicit():
         "p50": 50,
         "p75": 75,
         "p90": 90,
+        "p95": 95,
         "p99": 99,
         "max": 100,
     }

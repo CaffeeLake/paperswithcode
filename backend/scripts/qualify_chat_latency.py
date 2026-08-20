@@ -25,7 +25,7 @@ CONFIRMATION = "QUALIFY_STAGING_CHAT_LATENCY"
 PROMPT = "Reply with one concise acknowledgement."
 
 
-async def _wait_for_blank(release) -> None:
+async def _wait_for_blank(release, *, model: str, reasoning_effort: str) -> None:
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         with db_manager.session_local() as db:
@@ -39,6 +39,8 @@ async def _wait_for_blank(release) -> None:
                         == release.chat_modal_image_version,
                         ChatSandboxPool.worker_contract_version
                         == release.chat_worker_contract_version,
+                        ChatSandboxPool.model_profile == model,
+                        ChatSandboxPool.reasoning_profile == reasoning_effort,
                     )
                 )
                 or 0
@@ -53,11 +55,16 @@ async def _turn(
     client: object,
     *,
     session_id: str | None = None,
+    model: str,
+    reasoning_effort: str,
 ) -> tuple[str, str]:
     payload = {
         "message": PROMPT,
         "client_message_id": str(uuid.uuid4()),
     }
+    if session_id is None:
+        payload["initial_model"] = model
+        payload["reasoning_effort"] = reasoning_effort
     if session_id is not None:
         payload["session_id"] = session_id
     request_id = None
@@ -79,7 +86,9 @@ async def _turn(
     return request_id, landed_session
 
 
-async def qualify(release_dir: Path, sessions: int) -> dict:
+async def qualify(
+    release_dir: Path, sessions: int, *, model: str, reasoning_effort: str
+) -> dict:
     environment = get_settings()
     release = settings_for_release(release_dir)
     if environment.environment != "staging":
@@ -87,7 +96,7 @@ async def qualify(release_dir: Path, sessions: int) -> dict:
     run_id = uuid.uuid4().hex[:12]
     request_ids: list[str] = []
     for index in range(sessions):
-        await _wait_for_blank(release)
+        await _wait_for_blank(release, model=model, reasoning_effort=reasoning_effort)
         subject = f"latency-gate-{run_id}-{index}"
         auth = _encode_legacy_session({"sub": subject, "username": subject})
         billing = encrypt_token(environment.hf_token, subject, environment)
@@ -98,8 +107,15 @@ async def qualify(release_dir: Path, sessions: int) -> dict:
                 COOKIE_NAME: billing,
             },
         ) as client:
-            first_request, session_id = await _turn(client)
-            followup_request, _ = await _turn(client, session_id=session_id)
+            first_request, session_id = await _turn(
+                client, model=model, reasoning_effort=reasoning_effort
+            )
+            followup_request, _ = await _turn(
+                client,
+                session_id=session_id,
+                model=model,
+                reasoning_effort=reasoning_effort,
+            )
             request_ids.extend([first_request, followup_request])
 
     request_uuids = [uuid.UUID(request_id) for request_id in request_ids]
@@ -125,6 +141,8 @@ async def qualify(release_dir: Path, sessions: int) -> dict:
         report = {
             "run_id": run_id,
             "sessions": sessions,
+            "model": model,
+            "reasoning_effort": reasoning_effort,
             "rows": len(rows),
             "marked": marked,
             "new_pool_hits": sum(
@@ -155,13 +173,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sessions", type=int, default=25)
     parser.add_argument("--release-dir", type=Path, required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--reasoning-effort", choices=("low", "high", "max"), default="low"
+    )
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args()
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     if not 1 <= args.sessions <= 100:
         raise SystemExit("--sessions must be 1-100")
-    print(json.dumps(asyncio.run(qualify(args.release_dir, args.sessions)), indent=2))
+    print(
+        json.dumps(
+            asyncio.run(
+                qualify(
+                    args.release_dir,
+                    args.sessions,
+                    model=args.model,
+                    reasoning_effort=args.reasoning_effort,
+                )
+            ),
+            indent=2,
+        )
+    )
     return 0
 
 

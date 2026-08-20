@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -54,6 +55,22 @@ from backend.services.chat_hf_hub_service import (
     validate_hf_request,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_openai_budget_service import (
+    MAX_REQUEST_BYTES as MAX_OPENAI_REQUEST_BYTES,
+)
+from backend.services.chat_openai_budget_service import (
+    ChatOpenAIBudgetService,
+    OpenAIBudgetError,
+    OpenAIBudgetExhausted,
+    OpenAILimitExceeded,
+    OpenAIRequestBounds,
+    actual_usage_microusd,
+)
+from backend.services.chat_openai_usage_extractor import (
+    ExtractedOpenAIUsage,
+    OpenAIResponsesUsageExtractor,
+    classify_openai_error,
+)
 from backend.services.chat_paper_context_service import ChatPaperContextService
 from backend.services.chat_pi_transcript_service import (
     ChatPiTranscriptService,
@@ -189,7 +206,7 @@ def _output_tokens_allowed(value: int) -> bool:
 
 
 def _provider_turn_limits(row: ChatTurnCapability) -> tuple[int, int]:
-    if "artifact" in row.scopes:
+    if "artifact" in getattr(row, "scopes", ()):
         return MAX_POSTER_PROVIDER_REQUESTS, MAX_POSTER_PROVIDER_TURN_TOKENS
     return MAX_PROVIDER_REQUESTS, MAX_PROVIDER_TURN_TOKENS
 
@@ -458,6 +475,139 @@ def _record_provider_ttft(call_id: uuid.UUID | None, elapsed_ms: int) -> None:
         if call is not None and call.provider_ttft_ms is None:
             call.provider_ttft_ms = elapsed_ms
         timing_db.commit()
+
+
+OPENAI_RESPONSES_FIELDS = {
+    "include",
+    "input",
+    "instructions",
+    "max_output_tokens",
+    "model",
+    "parallel_tool_calls",
+    "prompt_cache_key",
+    "prompt_cache_options",
+    "prompt_cache_retention",
+    "reasoning",
+    "service_tier",
+    "store",
+    "stream",
+    "text",
+    "tool_choice",
+    "tools",
+}
+
+
+def _opaque_openai_identifier(kind: str, value: str, settings: Settings) -> str:
+    digest = hmac.new(
+        settings.jwt_secret.encode(),
+        f"openai:{kind}:{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"pwc_{digest[:48]}"
+
+
+def _trusted_openai_payload(
+    payload: object,
+    row: ChatTurnCapability,
+    settings: Settings,
+) -> tuple[dict[str, Any], int]:
+    if not isinstance(payload, dict) or not set(payload) <= OPENAI_RESPONSES_FIELDS:
+        raise HTTPException(status_code=422, detail="Invalid Responses request")
+    provider_model = settings.chat_openai_model
+    if payload.get("model") != provider_model:
+        raise HTTPException(status_code=403, detail="Capability rejected")
+    maximum_tokens = payload.get("max_output_tokens")
+    if (
+        not isinstance(maximum_tokens, int)
+        or isinstance(maximum_tokens, bool)
+        or not _output_tokens_allowed(maximum_tokens)
+    ):
+        raise HTTPException(status_code=422, detail="max_output_tokens is out of range")
+    include = payload.get("include")
+    if include is not None and (
+        not isinstance(include, list)
+        or any(item != "reasoning.encrypted_content" for item in include)
+    ):
+        raise HTTPException(status_code=422, detail="Unsupported Responses include")
+    reasoning = payload.get("reasoning")
+    if reasoning is not None and not isinstance(reasoning, dict):
+        raise HTTPException(status_code=422, detail="Invalid Responses reasoning")
+    summary = reasoning.get("summary") if isinstance(reasoning, dict) else None
+    if summary not in {None, "auto", "concise", "detailed"}:
+        raise HTTPException(
+            status_code=422, detail="Invalid Responses reasoning summary"
+        )
+    tools = payload.get("tools", [])
+    if not isinstance(tools, list) or any(
+        not isinstance(tool, dict)
+        or tool.get("type") != "function"
+        or not isinstance(tool.get("name"), str)
+        or not 1 <= len(tool["name"]) <= 64
+        or not set(tool) <= {"type", "name", "description", "parameters", "strict"}
+        for tool in tools
+    ):
+        raise HTTPException(status_code=422, detail="Unsupported Responses tool")
+    tool_choice = payload.get("tool_choice")
+    if isinstance(tool_choice, str):
+        if tool_choice not in {"auto", "none", "required"}:
+            raise HTTPException(
+                status_code=422, detail="Unsupported Responses tool choice"
+            )
+    elif tool_choice is not None and (
+        not isinstance(tool_choice, dict)
+        or tool_choice.get("type") != "function"
+        or not isinstance(tool_choice.get("name"), str)
+        or set(tool_choice) != {"type", "name"}
+    ):
+        raise HTTPException(status_code=422, detail="Unsupported Responses tool choice")
+    trusted = dict(payload)
+    trusted.pop("prompt_cache_options", None)
+    trusted.pop("prompt_cache_retention", None)
+    trusted["model"] = provider_model
+    trusted["stream"] = True
+    trusted["store"] = False
+    trusted["service_tier"] = "default"
+    trusted["include"] = ["reasoning.encrypted_content"]
+    trusted["reasoning"] = {"effort": row.reasoning_effort}
+    if summary is not None:
+        trusted["reasoning"]["summary"] = summary
+    trusted["safety_identifier"] = _opaque_openai_identifier(
+        "owner", row.owner_hash, settings
+    )
+    trusted["prompt_cache_key"] = _opaque_openai_identifier(
+        "session", str(row.chat_session_id), settings
+    )
+    return trusted, maximum_tokens
+
+
+def _safe_openai_request_id(value: str | None) -> str | None:
+    if not value or not re.fullmatch(r"[A-Za-z0-9._:-]{1,255}", value):
+        return None
+    return value
+
+
+def _settle_openai_call(
+    settings: Settings,
+    call_id: uuid.UUID,
+    extractor: OpenAIResponsesUsageExtractor,
+    *,
+    provider_request_id: str | None,
+    latency_ms: int,
+    ttft_ms: int | None,
+    error_code: str | None,
+):
+    result = extractor.result()
+    with db_manager.session_local() as accounting_db:
+        ChatOpenAIBudgetService(accounting_db, settings).settle_call(
+            call_id,
+            result,
+            provider_request_id=provider_request_id,
+            latency_ms=latency_ms,
+            ttft_ms=ttft_ms,
+            error_code=error_code,
+        )
+        accounting_db.commit()
+    return replace(result, cost_microusd=actual_usage_microusd(settings, result))
 
 
 def _scope(
@@ -935,6 +1085,295 @@ async def web_fetch(
             "Content-Length": str(len(result.body)),
             "Cache-Control": "no-store",
         },
+    )
+
+
+@app.post("/v1/responses")
+async def responses(
+    request: Request,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Capability-bound, stateless native OpenAI Responses streaming proxy."""
+
+    started = time.perf_counter()
+    if not settings.chat_openai_direct_enabled or not settings.openai_api_key:
+        raise HTTPException(status_code=503, detail="Direct OpenAI is unavailable")
+    try:
+        turn_id = uuid.UUID(x_pwc_turn)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Capability rejected") from None
+    raw = await request.body()
+    if not raw or len(raw) > MAX_OPENAI_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail="Model request is too large")
+    try:
+        untrusted_payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=422, detail="Invalid Responses request"
+        ) from None
+    row = _scope(
+        _bearer(authorization),
+        "model",
+        x_pwc_session,
+        x_pwc_turn,
+        db,
+    )
+    if (
+        row.agent_harness != "pi"
+        or row.provider_mode != "openai_funded"
+        or row.model != settings.chat_openai_luna_route
+    ):
+        raise HTTPException(status_code=403, detail="Capability rejected")
+    payload, maximum_tokens = _trusted_openai_payload(untrusted_payload, row, settings)
+    trusted_raw = json.dumps(payload, separators=(",", ":")).encode()
+    if len(trusted_raw) > MAX_OPENAI_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail="Model request is too large")
+    owner_id = _capability_owner(row, db)
+    capability_id = row.id
+    try:
+        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row)
+        ChatCapabilityService(db).meter_provider(
+            row,
+            request_tokens=max(1, len(trusted_raw) // 4) + maximum_tokens,
+            maximum_requests=maximum_requests,
+            maximum_tokens=maximum_turn_tokens,
+        )
+        call_sequence = row.provider_requests
+        trace_id = db.scalar(
+            select(ChatMessageRecord.langfuse_trace_id)
+            .where(
+                ChatMessageRecord.turn_id == turn_id,
+                ChatMessageRecord.role == "user",
+            )
+            .order_by(ChatMessageRecord.sequence.desc())
+            .limit(1)
+        )
+        db.commit()
+    except CapabilityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=429, detail="Model execution limit reached"
+        ) from None
+
+    call_id = uuid.uuid5(capability_id, f"openai-provider-call:{call_sequence}")
+    try:
+        reservation = ChatOpenAIBudgetService(db, settings).reserve_call(
+            owner_id=owner_id,
+            turn_id=turn_id,
+            call_id=call_id,
+            call_sequence=call_sequence,
+            public_model_id=row.model,
+            provider_model=settings.chat_openai_model,
+            reasoning_effort=row.reasoning_effort,
+            bounds=OpenAIRequestBounds(
+                request_bytes=len(trusted_raw),
+                maximum_output_tokens=maximum_tokens,
+            ),
+        )
+        db.commit()
+    except OpenAIBudgetExhausted:
+        db.rollback()
+        _record_provider_error(capability_id, "openai_budget_exhausted")
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "openai_budget_exhausted",
+                "message": "The Papers With Code direct OpenAI allowance is exhausted.",
+            },
+        ) from None
+    except OpenAILimitExceeded as error:
+        db.rollback()
+        code = f"openai_{error.scope}_limited"
+        _record_provider_error(capability_id, code)
+        headers = None
+        if error.retry_at is not None:
+            headers = {
+                "Retry-After": str(
+                    max(
+                        1,
+                        math.ceil((error.retry_at - datetime.now(UTC)).total_seconds()),
+                    )
+                )
+            }
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": code,
+                "message": "Direct OpenAI usage is temporarily limited.",
+            },
+            headers=headers,
+        ) from None
+    except OpenAIBudgetError:
+        db.rollback()
+        _record_provider_error(capability_id, "openai_unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "openai_unavailable",
+                "message": "Direct OpenAI is unavailable.",
+            },
+        ) from None
+
+    ChatOpenAIBudgetService(db, settings).mark_dispatched(call_id)
+    db.commit()
+    inventory = _offered_tool_inventory(payload)
+    provider_trace = start_provider_request_trace(
+        settings=settings,
+        trace_id=trace_id,
+        turn_id=str(turn_id),
+        call_sequence=call_sequence,
+        model=settings.chat_openai_model,
+        public_model_id=row.model,
+        provider_mode="openai_funded",
+        reasoning_effort=row.reasoning_effort,
+        routing_policy="direct",
+        service_tier="default",
+        accounting_call_id=str(call_id),
+        reserved_microusd=reservation.reserved_microusd,
+        offered_tool_count=inventory["offered_tool_count"],
+        offered_tool_names=inventory["offered_tool_names"],
+        offered_tool_digest=inventory["offered_tool_digest"],
+    )
+    client = httpx.AsyncClient(timeout=180, follow_redirects=False)
+    try:
+        upstream = await client.send(
+            client.build_request(
+                "POST",
+                "https://api.openai.com/v1/responses",
+                content=trusted_raw,
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+            ),
+            stream=True,
+        )
+    except httpx.HTTPError:
+        await client.aclose()
+        with db_manager.session_local() as accounting_db:
+            ChatOpenAIBudgetService(accounting_db, settings).mark_cost_unknown(
+                call_id, error_code="openai_unavailable"
+            )
+            accounting_db.commit()
+        _record_provider_error(capability_id, "openai_unavailable")
+        provider_trace.finish(
+            usage=OpenAIResponsesUsageExtractor().result(),
+            status_code=None,
+            error_code="openai_unavailable",
+            tool_call_returned=False,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "openai_unavailable",
+                "message": "Direct OpenAI is unavailable.",
+            },
+        ) from None
+
+    request_id = _safe_openai_request_id(
+        upstream.headers.get("x-request-id") or upstream.headers.get("request-id")
+    )
+    if upstream.status_code >= 400:
+        error_body = await upstream.aread()
+        await upstream.aclose()
+        await client.aclose()
+        error_code = classify_openai_error(upstream.status_code, error_body)
+        failed_usage = ExtractedOpenAIUsage(
+            service_tier="default",
+            input_tokens=0,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            output_tokens=0,
+            reasoning_tokens=0,
+            outcome="failed",
+            cost_microusd=0,
+        )
+        _record_provider_error(capability_id, error_code)
+        with db_manager.session_local() as accounting_db:
+            ChatOpenAIBudgetService(accounting_db, settings).settle_call(
+                call_id,
+                failed_usage,
+                provider_request_id=request_id,
+                error_code=error_code,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+            )
+            accounting_db.commit()
+        provider_trace.finish(
+            usage=failed_usage,
+            status_code=upstream.status_code,
+            error_code=error_code,
+            tool_call_returned=False,
+        )
+        status_code = 429 if error_code == "openai_rate_limited" else 503
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": error_code, "message": "Direct OpenAI request failed."},
+        )
+
+    extractor = OpenAIResponsesUsageExtractor()
+
+    async def chunks():
+        first_body_byte_ms: int | None = None
+        ttft_ms: int | None = None
+        try:
+            async for chunk in upstream.aiter_bytes():
+                extractor.feed(chunk)
+                elapsed_ms = round((time.perf_counter() - started) * 1000)
+                if first_body_byte_ms is None:
+                    first_body_byte_ms = elapsed_ms
+                    _record_gateway_timing(
+                        settings,
+                        turn_id,
+                        phase="upstream_first_body_byte",
+                        elapsed_ms=first_body_byte_ms,
+                    )
+                if ttft_ms is None and extractor.saw_token_delta:
+                    ttft_ms = elapsed_ms
+                    provider_trace.first_byte(ttft_ms)
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+            elapsed_ms = round((time.perf_counter() - started) * 1000)
+            error_code = (
+                None
+                if extractor.result().outcome == "completed"
+                else "openai_unavailable"
+            )
+            try:
+                trace_usage = _settle_openai_call(
+                    settings,
+                    call_id,
+                    extractor,
+                    provider_request_id=request_id,
+                    latency_ms=elapsed_ms,
+                    ttft_ms=ttft_ms,
+                    error_code=error_code,
+                )
+            except Exception as error:
+                logger.error(
+                    "openai stream settlement failed call=%s error=%s",
+                    call_id,
+                    type(error).__name__,
+                )
+                trace_usage = extractor.result()
+            provider_trace.finish(
+                usage=trace_usage,
+                status_code=upstream.status_code,
+                error_code=error_code,
+                tool_call_returned=extractor.saw_tool_call,
+            )
+
+    _record_gateway_timing(settings, turn_id, received_at=datetime.now(UTC))
+    return StreamingResponse(
+        chunks(),
+        status_code=upstream.status_code,
+        headers={"Content-Type": "text/event-stream", "Cache-Control": "no-store"},
     )
 
 

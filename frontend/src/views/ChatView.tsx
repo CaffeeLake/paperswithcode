@@ -44,6 +44,7 @@ import {
   getChatModels,
   getSession,
   listSessions,
+  providerForChatModel,
   removeSession,
   toUiMessages,
   updateSession,
@@ -141,8 +142,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   const [selectedModel, setSelectedModel] = useState(
     requestedModelRef.current || DEFAULT_CHAT_MODEL,
   );
-  const selectedProvider = models.find((model) => model.id === selectedModel)?.provider
-    ?? "huggingface";
+  const selectedProvider = providerForChatModel(models, selectedModel);
   const openRouterCredentialQuery = useOpenRouterCredential(
     Boolean(user && selectedProvider === "openrouter"),
   );

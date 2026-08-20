@@ -71,26 +71,18 @@ def test_staging_can_switch_back_to_explicitly_enabled_shared_provider():
         chat_deepseek_v4_flash_provider="openrouter",
     )
 
-    assert settings.chat_model_choices == (
-        {
-            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-            "label": "DeepSeek V4 Flash",
-            "route": "deepseek/deepseek-v4-flash-0731",
-            "provider": "openrouter",
-        },
-        {
-            "id": "moonshotai/Kimi-K3",
-            "label": "Kimi K3",
-            "route": "moonshotai/Kimi-K3:baseten",
-            "provider": "huggingface",
-        },
-        {
-            "id": "openai/gpt-5.6-luna",
-            "label": "GPT-5.6 Luna",
-            "route": "openai/gpt-5.6-luna",
-            "provider": "openai",
-        },
-    )
+    assert [
+        (choice["id"], choice["route"], choice["provider"])
+        for choice in settings.chat_model_choices
+    ] == [
+        (
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "deepseek/deepseek-v4-flash-0731",
+            "openrouter",
+        ),
+        ("moonshotai/Kimi-K3", "moonshotai/Kimi-K3:baseten", "huggingface"),
+        ("gpt-5.6-luna@openrouter", "openai/gpt-5.6-luna", "openrouter"),
+    ]
 
 
 def test_development_keeps_model_available_for_explicit_local_testing():

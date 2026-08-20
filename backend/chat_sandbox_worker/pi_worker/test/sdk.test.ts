@@ -9,6 +9,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createProvider } from "../src/provider.js";
 
+test("registers direct OpenAI with the native Responses base path", async () => {
+  const direct = await createProvider("gpt-5.6-luna", "openai-responses");
+  assert.equal(direct.model.api, "openai-responses");
+  assert.equal(direct.model.baseUrl, "http://127.0.0.1:8765/v1");
+  const rollback = await createProvider("deepseek", "anthropic-messages");
+  assert.equal(rollback.model.api, "anthropic-messages");
+  assert.equal(rollback.model.baseUrl, "http://127.0.0.1:8765");
+});
+
 test("direct SDK streams through the pinned Anthropic-compatible provider", async () => {
   let captured: Record<string, unknown> | undefined;
   let authorization = "";

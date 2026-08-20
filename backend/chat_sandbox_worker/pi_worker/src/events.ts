@@ -4,6 +4,7 @@ export type PwCEvent = Record<string, unknown> & { type: string };
 
 type UnknownRecord = Record<string, unknown>;
 const ARTIFACT_PREFIX = "@@PWC_ARTIFACT@@";
+const MAX_TOOL_ARGUMENT_BYTES = 64 * 1024;
 
 function record(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -61,6 +62,9 @@ export class PiEventAdapter {
   private readonly resultIds = new Set<string>();
   private readonly toolStartedAt = new Map<string, number>();
   private readonly toolNames = new Map<string, string>();
+  private readonly contentToolIds = new Map<number, string>();
+  private readonly providerToolIds = new Map<string, string>();
+  private readonly argumentBytes = new Map<string, number>();
 
   constructor(
     private readonly showReasoning: boolean,
@@ -76,6 +80,42 @@ export class PiEventAdapter {
     if (!this.reasoningOpen) return [];
     this.reasoningOpen = false;
     return this.showReasoning ? [{ type: "reasoning_end" }] : [];
+  }
+
+  private streamedTool(update: UnknownRecord): {
+    contentIndex: number;
+    id: string;
+    name: string;
+    args: UnknownRecord;
+  } | undefined {
+    const contentIndex = Number(update.contentIndex);
+    if (!Number.isInteger(contentIndex) || contentIndex < 0) return undefined;
+    const partial = record(update.partial);
+    const content = Array.isArray(partial.content) ? partial.content : [];
+    const block = record(content[contentIndex]);
+    const existing = this.contentToolIds.get(contentIndex);
+    const providerId = typeof block.id === "string" ? block.id : "";
+    const id = existing || providerId || `content:${contentIndex}`;
+    const name = publicToolName(block.name);
+    if (providerId) this.providerToolIds.set(providerId, id);
+    this.contentToolIds.set(contentIndex, id);
+    return { contentIndex, id, name, args: record(block.arguments) };
+  }
+
+  private startStreamedTool(tool: ReturnType<PiEventAdapter["streamedTool"]>): PwCEvent[] {
+    if (!tool || !tool.name || tool.name === "create_view" || this.toolIds.has(tool.id)) return [];
+    this.toolIds.add(tool.id);
+    this.toolNames.set(tool.id, tool.name);
+    this.onSemantic?.("tool");
+    return [
+      ...this.closeReasoning(),
+      {
+        type: "tool_call_start",
+        id: tool.id,
+        name: tool.name,
+        content_index: tool.contentIndex,
+      },
+    ];
   }
 
   feed(rawEvent: unknown): PwCEvent[] {
@@ -105,14 +145,55 @@ export class PiEventAdapter {
         }
         return output;
       }
+      if (update.type === "toolcall_start") {
+        return this.startStreamedTool(this.streamedTool(update));
+      }
+      if (update.type === "toolcall_delta") {
+        const tool = this.streamedTool(update);
+        if (!tool || tool.name === "create_view") return [];
+        const output = this.startStreamedTool(tool);
+        if (!this.toolIds.has(tool.id) || typeof update.delta !== "string" || !update.delta) return output;
+        const bytes = Buffer.byteLength(update.delta);
+        const total = (this.argumentBytes.get(tool.id) ?? 0) + bytes;
+        if (total > MAX_TOOL_ARGUMENT_BYTES) throw new Error("Streamed tool arguments are too large");
+        this.argumentBytes.set(tool.id, total);
+        output.push({
+          type: "tool_call_arguments_delta",
+          id: tool.id,
+          name: tool.name,
+          delta: update.delta,
+          partial_args: tool.args,
+        });
+        return output;
+      }
+      if (update.type === "toolcall_end") {
+        const contentIndex = Number(update.contentIndex);
+        const final = record(update.toolCall);
+        const providerId = typeof final.id === "string" ? final.id : "";
+        const id = this.contentToolIds.get(contentIndex) || providerId || `content:${contentIndex}`;
+        if (providerId) this.providerToolIds.set(providerId, id);
+        const tool = {
+          contentIndex,
+          id,
+          name: publicToolName(final.name),
+          args: record(final.arguments),
+        };
+        if (tool.name === "create_view") return [];
+        const output = this.startStreamedTool(tool);
+        if (!this.toolIds.has(id)) return output;
+        output.push({ type: "tool_call_arguments_done", id, name: tool.name, args: tool.args });
+        return output;
+      }
       return [];
     }
     if (type === "tool_execution_start") {
-      const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
-      if (!id || this.toolIds.has(id)) return [];
+      const providerId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+      const id = this.providerToolIds.get(providerId) || providerId;
+      if (!id) return [];
       const args = record(event.args);
       const name = String(event.toolName ?? "");
       if (name === "create_view") {
+        if (this.toolIds.has(id)) return [];
         const elements = excalidrawElements(args);
         if (!elements) return [];
         this.toolIds.add(id);
@@ -133,22 +214,23 @@ export class PiEventAdapter {
           },
         ];
       }
-      this.toolIds.add(id);
-      this.toolNames.set(id, name);
+      const output: PwCEvent[] = [];
+      if (!this.toolIds.has(id)) {
+        this.toolIds.add(id);
+        this.toolNames.set(id, name);
+        this.onSemantic?.("tool");
+        output.push(
+          ...this.closeReasoning(),
+          { type: "tool_call_start", id, name: publicToolName(name), content_index: -1 },
+          { type: "tool_call_arguments_done", id, name: publicToolName(name), args },
+        );
+      }
       this.toolStartedAt.set(id, this.now());
-      this.onSemantic?.("tool");
-      return [
-        ...this.closeReasoning(),
-        {
-          type: "tool_call",
-          id,
-          name: publicToolName(event.toolName),
-          args,
-        },
-      ];
+      return output;
     }
     if (type === "tool_execution_end") {
-      const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
+      const providerId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+      const id = this.providerToolIds.get(providerId) || providerId;
       if (!this.toolIds.has(id) || this.resultIds.has(id)) return [];
       this.resultIds.add(id);
       const startedAt = this.toolStartedAt.get(id);

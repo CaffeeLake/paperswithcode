@@ -192,7 +192,7 @@ class ChatTurnTrace:
         if kind == "workspace_ready":
             self._finish_model_dispatch()
             return
-        if kind in {"reasoning_delta", "tool_call", "answer_delta"}:
+        if kind in {"reasoning_delta", "tool_call", "tool_call_start", "answer_delta"}:
             self._record_first_worker_delta()
             return
         if kind == "_execution_telemetry":
@@ -462,6 +462,13 @@ class ProviderRequestTrace:
             "http_status": status_code,
             "generation_id": getattr(usage, "generation_id", None),
             "upstream_provider": getattr(usage, "provider", None),
+            "actual_service_tier": getattr(usage, "service_tier", None),
+            "accounting_state": (
+                "reconciled" if isinstance(cost, int) else "cost_unknown"
+            ),
+            "provider_outcome": getattr(usage, "outcome", None),
+            "provider_error_classification": error_code,
+            "tool_call_count": getattr(usage, "tool_call_count", None),
         }
         if tool_call_returned is not None:
             metadata["tool_call_returned"] = tool_call_returned
@@ -507,7 +514,11 @@ def start_provider_request_trace(
     model: str,
     provider_mode: str,
     reasoning_effort: str,
+    public_model_id: str | None = None,
     routing_policy: str = "throughput",
+    service_tier: str | None = None,
+    accounting_call_id: str | None = None,
+    reserved_microusd: int | None = None,
     offered_tool_count: int | None = None,
     offered_tool_names: list[str] | None = None,
     offered_tool_digest: str | None = None,
@@ -528,6 +539,14 @@ def start_provider_request_trace(
             "reasoning_effort": reasoning_effort,
             "routing_policy": routing_policy,
         }
+        if public_model_id is not None:
+            metadata["public_model_id"] = public_model_id
+        if service_tier is not None:
+            metadata["service_tier"] = service_tier
+        if accounting_call_id is not None:
+            metadata["accounting_call_id"] = accounting_call_id
+        if reserved_microusd is not None:
+            metadata["reserved_microusd"] = reserved_microusd
         if offered_tool_count is not None:
             metadata["offered_tool_count"] = offered_tool_count
         if offered_tool_names is not None:

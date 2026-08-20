@@ -423,6 +423,9 @@ export function useChat(options: UseChatOptions) {
             event.type === "reasoning_start"
             || event.type === "reasoning_delta"
             || event.type === "tool_call"
+            || event.type === "tool_call_start"
+            || event.type === "tool_call_arguments_delta"
+            || event.type === "tool_call_arguments_done"
             || event.type === "app_start"
             || event.type === "app_result"
             || event.type === "artifact_start"
@@ -456,7 +459,9 @@ export function useChat(options: UseChatOptions) {
           const projectsToVisibleConversation = projectsActiveStream();
           const presentationProjects = projectsToVisibleConversation
             && !(smooth && document.visibilityState === "hidden");
-          const isDelta = event.type === "reasoning_delta" || event.type === "answer_delta";
+          const isDelta = event.type === "reasoning_delta"
+            || event.type === "answer_delta"
+            || event.type === "tool_call_arguments_delta";
           const isStructural = ![
             "stream_start",
             "sandbox_start",
@@ -467,6 +472,7 @@ export function useChat(options: UseChatOptions) {
             "session_title_done",
             "reasoning_delta",
             "answer_delta",
+            "tool_call_arguments_delta",
           ].includes(event.type);
           if (smooth && isStructural) commitPresentation();
           if (

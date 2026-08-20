@@ -15,6 +15,7 @@ ARTIFACT_EVENT_PREFIX = "@@PWC_ARTIFACT@@"
 MAX_RUN_PROMPT_BYTES = 2 * 1024 * 1024
 MAX_FRAME_BYTES = MAX_RUN_PROMPT_BYTES + 256 * 1024
 MAX_WIRE_FRAME_BYTES = MAX_FRAME_BYTES + len(FRAME_PREFIX.encode()) + 1
+MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
 
 
 class ProtocolError(RuntimeError):
@@ -37,6 +38,9 @@ class WorkerEventValidator:
         "reasoning_delta",
         "reasoning_end",
         "tool_call",
+        "tool_call_start",
+        "tool_call_arguments_delta",
+        "tool_call_arguments_done",
         "tool_result",
         "app_start",
         "app_result",
@@ -52,6 +56,10 @@ class WorkerEventValidator:
     def __init__(self):
         self.tools: set[str] = set()
         self.results: set[str] = set()
+        self.tool_argument_bytes: dict[str, int] = {}
+        self.tool_arguments_done: set[str] = set()
+        self.tool_names: dict[str, str] = {}
+        self.content_tools: dict[int, str] = {}
         self.apps: set[str] = set()
         self.artifacts: dict[str, tuple[str, str]] = {}
         self.artifact_terminal: set[str] = set()
@@ -70,14 +78,68 @@ class WorkerEventValidator:
             raise ProtocolError("Duplicate terminal worker event")
         if self.terminal and kind != "worker_done":
             raise ProtocolError("Worker event followed a terminal event")
-        if kind == "tool_call":
+        if kind in {"tool_call", "tool_call_start"}:
             tool_id = str(event.get("id") or "")
             if not tool_id or tool_id in self.tools:
                 raise ProtocolError("Duplicate or invalid tool call")
+            if kind == "tool_call_start" and (
+                not isinstance(event.get("name"), str)
+                or not event["name"]
+                or not isinstance(event.get("content_index"), int)
+                or int(event["content_index"]) < -1
+            ):
+                raise ProtocolError("Invalid streamed tool call")
             self.tools.add(tool_id)
+            self.tool_names[tool_id] = str(event.get("name") or "")
+            self.tool_argument_bytes[tool_id] = 0
+            if kind == "tool_call_start" and int(event["content_index"]) >= 0:
+                content_index = int(event["content_index"])
+                if content_index in self.content_tools:
+                    raise ProtocolError("Duplicate streamed tool content index")
+                self.content_tools[content_index] = tool_id
+            if kind == "tool_call":
+                self.tool_arguments_done.add(tool_id)
+        elif kind == "tool_call_arguments_delta":
+            tool_id = str(event.get("id") or "")
+            delta = event.get("delta")
+            if (
+                tool_id not in self.tools
+                or tool_id in self.tool_arguments_done
+                or not isinstance(delta, str)
+                or not delta
+                or event.get("name") != self.tool_names[tool_id]
+                or not isinstance(event.get("partial_args"), dict)
+            ):
+                raise ProtocolError("Invalid or post-terminal tool argument delta")
+            total = self.tool_argument_bytes[tool_id] + len(delta.encode())
+            if total > MAX_TOOL_ARGUMENT_BYTES:
+                raise ProtocolError("Streamed tool arguments are too large")
+            if (
+                len(json.dumps(event["partial_args"], ensure_ascii=False).encode())
+                > MAX_TOOL_ARGUMENT_BYTES
+            ):
+                raise ProtocolError("Partial tool arguments are too large")
+            self.tool_argument_bytes[tool_id] = total
+        elif kind == "tool_call_arguments_done":
+            tool_id = str(event.get("id") or "")
+            args = event.get("args")
+            if (
+                tool_id not in self.tools
+                or tool_id in self.tool_arguments_done
+                or event.get("name") != self.tool_names[tool_id]
+                or not isinstance(args, dict)
+                or len(json.dumps(args, ensure_ascii=False).encode())
+                > MAX_TOOL_ARGUMENT_BYTES
+            ):
+                raise ProtocolError("Invalid or duplicate final tool arguments")
+            self.tool_arguments_done.add(tool_id)
         elif kind == "tool_result":
             tool_id = str(event.get("id") or "")
-            if tool_id not in self.tools or tool_id in self.results:
+            if (
+                tool_id not in self.tools
+                or tool_id not in self.tool_arguments_done
+                or tool_id in self.results
+            ):
                 raise ProtocolError("Uncorrelated or duplicate tool result")
             self.results.add(tool_id)
         elif kind == "app_start":

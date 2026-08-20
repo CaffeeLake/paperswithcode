@@ -131,7 +131,7 @@ describe("SharedChatView", () => {
     );
   });
 
-  it("does not advertise OpenRouter on shared conversations", async () => {
+  it("truthfully attributes OpenRouter shared conversations", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(JSON.stringify({ ...payload, model_provider: "openrouter" }), {
         status: 200,
@@ -142,8 +142,10 @@ describe("SharedChatView", () => {
     renderView();
 
     expect(await screen.findByText("Generated with DeepSeek V4 Flash")).toBeVisible();
-    expect(screen.queryByText(/Powered by OpenRouter/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "OpenRouter" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Powered by/i)).toBeVisible();
+    expect(screen.getByRole("link", { name: "OpenRouter" })).toHaveAttribute(
+      "href", "https://openrouter.ai",
+    );
   });
 
   it("opens a public poster beside the transcript without loading private chat history", async () => {

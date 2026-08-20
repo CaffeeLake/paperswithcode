@@ -3927,6 +3927,63 @@ def test_staging_openrouter_credential_gets_a_chat_only_name(
         configure_host_env.staging_openrouter_values({})
 
 
+def test_staging_openai_direct_configuration_is_isolated_and_exact():
+    values = configure_host_env.staging_openai_direct_values(
+        {"OPENAI_API_KEY": "OPENAI_API_KEY=staging-secret"},
+        {"OPENAI_API_KEY": "OPENAI_API_KEY=production-secret"},
+    )
+
+    assert values == {
+        "PWC_OPENAI_API_KEY": "staging-secret",
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_MODEL": "gpt-5.6-luna@openai",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+    with pytest.raises(ValueError, match="must not reuse production"):
+        configure_host_env.staging_openai_direct_values(
+            {"OPENAI_API_KEY": "OPENAI_API_KEY=same-secret"},
+            {"PWC_OPENAI_API_KEY": "PWC_OPENAI_API_KEY=same-secret"},
+        )
+    with pytest.raises(ValueError, match="source is missing"):
+        configure_host_env.staging_openai_direct_values({}, {})
+
+
+def test_staging_openai_direct_rollback_restores_legacy_openrouter_profile():
+    assert configure_host_env.staging_openai_direct_disable_values() == {
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "false",
+        "PWC_CHAT_PI_PREWARM_MODEL": "openai/gpt-5.6-luna",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+    }
+
+
+def test_staging_openai_direct_installer_rejects_unprotected_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "openai.env"
+    source.write_text("OPENAI_API_KEY=staging-secret\n", encoding="utf-8")
+    source.chmod(0o644)
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--staging-openai-direct-only",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        configure_host_env.main()
+
+
 def test_staging_web_search_configuration_is_scoped_and_bounded():
     values = configure_host_env.staging_web_search_values(
         {"EXA_API_KEY": "EXA_API_KEY=server-secret"}

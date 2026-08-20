@@ -36,16 +36,16 @@ describe("ModelPicker", () => {
 
     const groups = screen.getByRole("combobox").querySelectorAll("optgroup");
     expect([...groups].map((group) => group.label)).toEqual([
-      "Inference Providers",
-      "OpenAI",
+      "Hugging Face Inference Providers",
       "OpenRouter",
+      "OpenAI",
     ]);
     expect([...groups[0].querySelectorAll("option")].map((option) => option.value))
       .toEqual(["hf-a", "hf-b"]);
     expect([...groups[1].querySelectorAll("option")].map((option) => option.value))
-      .toEqual(["oa-a"]);
-    expect([...groups[2].querySelectorAll("option")].map((option) => option.value))
       .toEqual(["or-a"]);
+    expect([...groups[2].querySelectorAll("option")].map((option) => option.value))
+      .toEqual(["oa-a"]);
   });
 
   it("sizes the picker from the selected label", () => {

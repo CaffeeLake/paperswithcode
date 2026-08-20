@@ -1,5 +1,7 @@
 import React from "react";
 
+import { labelForChatModel } from "@/lib/chatSessions";
+
 export interface ModelPickerOption {
   id: string;
   label: string;
@@ -7,9 +9,9 @@ export interface ModelPickerOption {
 }
 
 const PROVIDER_GROUPS = [
-  { provider: "huggingface", label: "Inference Providers" },
-  { provider: "openai", label: "OpenAI" },
+  { provider: "huggingface", label: "Hugging Face Inference Providers" },
   { provider: "openrouter", label: "OpenRouter" },
+  { provider: "openai", label: "OpenAI" },
 ] as const;
 
 interface ModelPickerProps {
@@ -25,8 +27,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({
   onModelChange,
   disabled,
 }) => {
-  const selectedLabel = models.find((model) => model.id === selectedModel)?.label
-    ?? `${selectedModel} (unavailable)`;
+  const selectedLabel = labelForChatModel(models, selectedModel);
   const ungroupedModels = models.filter((model) => !model.provider);
 
   if (models.length === 1 && models[0]?.id === selectedModel) {

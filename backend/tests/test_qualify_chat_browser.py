@@ -162,11 +162,11 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
     monkeypatch.setattr(page, "evaluate", evaluate)
     monkeypatch.setattr(page, "wait_for", lambda *_args, **_kwargs: True)
 
-    page.select_model("openai/gpt-5.6-luna")
+    page.select_model("gpt-5.6-luna@openai")
 
-    assert any('select.value="openai/gpt-5.6-luna"' in item for item in evaluations)
+    assert any('select.value="gpt-5.6-luna@openai"' in item for item in evaluations)
     assert any(
-        f'sessionStorage.setItem("{CHAT_MODEL_STORAGE_KEY}","openai/gpt-5.6-luna")'
+        f'sessionStorage.setItem("{CHAT_MODEL_STORAGE_KEY}","gpt-5.6-luna@openai")'
         in item
         for item in evaluations
     )
@@ -176,7 +176,7 @@ def test_browser_selects_an_explicit_discovered_model(monkeypatch):
         "wait_for",
         lambda expression, **_kwargs: waited.append(expression) or True,
     )
-    page.select_model("openai/gpt-5.6-luna")
+    page.select_model("gpt-5.6-luna@openai")
     assert any(CHAT_MODEL_STORAGE_KEY in expression for expression in waited)
 
 

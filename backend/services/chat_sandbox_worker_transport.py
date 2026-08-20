@@ -80,6 +80,7 @@ class WorkerTurnRequest:
     resume: str | None
     capability_token: str = field(repr=False)
     gateway_url: str
+    provider_protocol: str = "anthropic-messages"
     agent_harness: str = "claude"
     web_search_enabled: bool = False
     reader_mode: bool = False
@@ -736,6 +737,8 @@ class WorkerTurnExecution:
             # added in contract 81, so omit its false/default value to keep
             # non-reader production turns compatible during image rotation.
             run["reader_mode"] = True
+        if self.request.agent_harness == "pi":
+            run["provider_protocol"] = self.request.provider_protocol
         if self.request.poster_mode:
             run["poster_mode"] = True
         if self.mode is WorkerTurnMode.PERSISTENT:
@@ -820,6 +823,7 @@ class WorkerTurnExecution:
                     if not first_worker_delta_recorded and event["type"] in {
                         "reasoning_delta",
                         "tool_call",
+                        "tool_call_start",
                         "answer_delta",
                     }:
                         first_worker_delta_recorded = True

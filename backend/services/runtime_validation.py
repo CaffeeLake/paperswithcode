@@ -454,18 +454,40 @@ def validate_chat_provider_policy(
                 "provider": "huggingface",
             },
             {
-                "id": "openai/gpt-5.6-luna",
+                "id": "gpt-5.6-luna@openrouter",
                 "label": "GPT-5.6 Luna",
                 "route": settings.chat_luna_route,
-                "provider": "openai",
+                "provider": "openrouter",
             },
         )
+        if settings.chat_openai_direct_enabled:
+            if not settings.openai_api_key:
+                raise RuntimeError("direct OpenAI chat requires an OpenAI API key")
+            if (
+                settings.chat_openai_luna_route != "gpt-5.6-luna@openai"
+                or settings.chat_openai_model != "gpt-5.6-luna"
+            ):
+                raise RuntimeError(
+                    "direct OpenAI chat must use the reviewed Luna route"
+                )
+            expected_discovery += (
+                {
+                    "id": "gpt-5.6-luna@openai",
+                    "label": "GPT-5.6 Luna (Direct)",
+                    "route": settings.chat_openai_luna_route,
+                    "provider": "openai",
+                },
+            )
+    elif settings.chat_openai_direct_enabled:
+        raise RuntimeError("direct OpenAI chat is staging-only")
     if settings.chat_alternative_model_enabled:
         if settings.environment != "staging":
             raise RuntimeError("alternative chat models are staging-only")
-        if settings.chat_alternative_model not in {
-            choice["id"] for choice in expected_discovery
-        }:
+        if (
+            settings.chat_alternative_model != "openai/gpt-5.6-luna"
+            and settings.chat_alternative_model
+            not in {choice["id"] for choice in expected_discovery}
+        ):
             candidate_labels = {
                 "openai/gpt-5.6-luna": "GPT-5.6 Luna",
                 "google/gemini-3.7-flash": "Gemini 3.7 Flash",
@@ -478,7 +500,16 @@ def validate_chat_provider_policy(
                     "provider": "openrouter",
                 },
             )
-    if discovered != expected_discovery:
+    discovery_projection = tuple(
+        {
+            "id": choice["id"],
+            "label": choice["label"],
+            "route": choice["route"],
+            "provider": choice["provider"],
+        }
+        for choice in discovered
+    )
+    if discovery_projection != expected_discovery:
         raise RuntimeError("chat discovery contains an unreviewed model configuration")
     if settings.chat_default_backend != "modal_cli":
         raise RuntimeError("deployed chat must use the isolated Modal backend")
@@ -550,7 +581,7 @@ def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     if configured_spend != expected_spend:
         if settings.chat_sandbox_provider_mode == "starter_workspace":
             raise RuntimeError(
-                "starter workspace sandbox spend policy requires no environment cap"
+                "sandbox spend policy must be $75/$100/$250 with no environment cap"
             )
         raise RuntimeError("team sandbox spend policy is not reviewed")
     configured_capacity = SandboxCapacityPolicy(
@@ -870,6 +901,19 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             >= settings.chat_persistent_sandbox_lifetime_seconds
         ):
             raise RuntimeError("blank pool rotation window is invalid")
+    if settings.chat_openai_direct_enabled:
+        if (
+            not settings.chat_pi_prewarm_enabled
+            or not settings.chat_blank_pool_enabled
+            or settings.chat_blank_pool_min != 1
+            or settings.chat_blank_pool_max != 1
+            or settings.chat_effective_pi_prewarm_model
+            != settings.chat_openai_luna_route
+            or settings.chat_pi_prewarm_reasoning_effort != "low"
+        ):
+            raise RuntimeError(
+                "direct OpenAI chat requires one direct-Luna low-reasoning warm blank"
+            )
     if settings.chat_pi_prewarm_enabled:
         if not settings.chat_blank_pool_enabled:
             raise RuntimeError("Pi prewarm requires the blank pool")
@@ -881,9 +925,13 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
         if prewarm_model not in settings.chat_route_providers:
             raise RuntimeError("Pi prewarm model is not in the route registry")
         expected_prewarm_model = (
-            settings.chat_alternative_model
-            if settings.chat_alternative_model_enabled
-            else settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
+            settings.chat_openai_luna_route
+            if settings.chat_openai_direct_enabled
+            else (
+                settings.chat_alternative_model
+                if settings.chat_alternative_model_enabled
+                else settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
+            )
         )
         if prewarm_model != expected_prewarm_model:
             raise RuntimeError("Pi prewarm model does not match the qualified model")
