@@ -132,6 +132,7 @@ class ChatTurnTrace:
         self.status = "interrupted"
         self.terminal_code: str | None = None
         self.interruption_reason: str | None = None
+        self.warm_assignment_metadata: dict[str, object] = {}
         self.closed = False
 
     @property
@@ -214,6 +215,13 @@ class ChatTurnTrace:
             self._finish_model_dispatch(event)
         elif phase == "first_worker_delta":
             self._record_first_worker_delta()
+        elif phase == "assignment_fallback":
+            self.warm_assignment_metadata = {
+                "warm_assignment_failure_stage": event.get("failure_stage"),
+                "warm_assignment_failure_class": event.get("failure_class"),
+                "warm_assignment_attempt_kind": event.get("attempt_kind"),
+                "warm_assignment_retry_overhead_ms": event.get("elapsed_ms"),
+            }
 
     def _finish_sandbox_acquisition(self, event: dict[str, Any]) -> None:
         if self.sandbox_acquisition is None:
@@ -341,6 +349,7 @@ class ChatTurnTrace:
             terminal_metadata["terminal_code"] = self.terminal_code
         if self.interruption_reason:
             terminal_metadata["interruption_reason"] = self.interruption_reason
+        terminal_metadata = {**self.warm_assignment_metadata, **terminal_metadata}
         status_message = self.terminal_code or self.interruption_reason or self.status
         self.generation.update(
             output=output,

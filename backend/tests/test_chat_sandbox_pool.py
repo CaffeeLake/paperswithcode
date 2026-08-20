@@ -809,6 +809,13 @@ def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
         if event.get("phase") == "sandbox_acquisition_ms"
     ]
     assert outcomes == ["pool_hit", "pool_miss"]
+    fallback = next(
+        event for event in events if event.get("phase") == "assignment_fallback"
+    )
+    assert fallback["failure_stage"] == "claim_worker"
+    assert fallback["failure_class"] == "LeaseUnavailable"
+    assert fallback["attempt_kind"] == "pool"
+    assert fallback["elapsed_ms"] >= 0
     assert sum(event["type"] == "sandbox_start" for event in events) == 1
     assert sum(event["type"] == "workspace_ready" for event in events) == 1
     assert claim_calls == 2

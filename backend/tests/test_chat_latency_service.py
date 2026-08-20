@@ -197,6 +197,42 @@ def test_failed_pool_assignment_moves_out_of_hit_cohort(db):
     assert row.pool_miss_reason == "unhealthy_blank"
 
 
+def test_warm_fallback_diagnostics_are_bounded_and_content_free(db):
+    session_id = _session(db)
+    request_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, request_id=request_id)
+    service = ChatLatencyService(db)
+
+    assert service.record_phase(
+        str(request_id),
+        "assignment_fallback",
+        41,
+        failure_stage="dispatch_write",
+        failure_class="BrokenPipeError",
+        attempt_kind="pool",
+    )
+    db.refresh(row)
+    assert row.retry_overhead_ms == 41
+    assert row.failure_stage == "dispatch_write"
+    assert row.failure_class == "BrokenPipeError"
+    assert row.attempt_kind == "pool"
+    assert not {
+        "prompt",
+        "capability",
+        "assignment_token",
+        "transcript",
+        "user_content",
+    } & set(ChatTurnLatency.__table__.columns.keys())
+
+    with pytest.raises(ValueError, match="Incomplete warm assignment diagnostics"):
+        service.record_phase(
+            str(uuid.uuid4()),
+            "assignment_fallback",
+            1,
+            failure_stage="agent_stream",
+        )
+
+
 def test_ttft_semantics_and_pool_cohorts_are_content_free(db):
     session_id = _session(db)
     request_id = uuid.uuid4()

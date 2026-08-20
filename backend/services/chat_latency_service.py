@@ -16,6 +16,11 @@ from backend.models.database import (
     ChatSession,
     ChatTurnLatency,
 )
+from backend.services.chat_sandbox_provider import (
+    ATTEMPT_KINDS,
+    sanitized_failure_class,
+    sanitized_failure_stage,
+)
 
 RETENTION_DAYS = 30
 MAX_DURATION_MS = 3_600_000
@@ -55,6 +60,7 @@ PHASE_COLUMNS = {
     "first_worker_delta": "first_worker_delta_ms",
     "first_application_sse_delta": "first_application_sse_delta_ms",
     "first_semantic_event": "first_semantic_event_ms",
+    "assignment_fallback": "retry_overhead_ms",
 }
 ACQUISITION_OUTCOMES = {
     "pending",
@@ -170,6 +176,9 @@ class ChatLatencyService:
         first_semantic_event_class: str | None = None,
         pool_miss_reason: str | None = None,
         session_reuse_cohort: str | None = None,
+        failure_stage: str | None = None,
+        failure_class: str | None = None,
+        attempt_kind: str | None = None,
     ) -> bool:
         column_name = PHASE_COLUMNS.get(phase)
         if column_name is None:
@@ -206,6 +215,19 @@ class ChatLatencyService:
             }:
                 raise ValueError("Unsupported session reuse cohort")
             values["session_reuse_cohort"] = session_reuse_cohort
+        diagnostic_values = (failure_stage, failure_class, attempt_kind)
+        if any(value is not None for value in diagnostic_values):
+            if phase != "assignment_fallback" or any(
+                value is None for value in diagnostic_values
+            ):
+                raise ValueError("Incomplete warm assignment diagnostics")
+            if attempt_kind not in ATTEMPT_KINDS:
+                raise ValueError("Unsupported sandbox attempt kind")
+            values.update(
+                failure_stage=sanitized_failure_stage(failure_stage),
+                failure_class=sanitized_failure_class(failure_class),
+                attempt_kind=attempt_kind,
+            )
         result = self.db.execute(
             update(ChatTurnLatency)
             .where(

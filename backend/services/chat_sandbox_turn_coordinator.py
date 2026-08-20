@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 import uuid
@@ -55,6 +56,7 @@ SpendFactory = Callable[[Session], ChatSandboxSpendService]
 UtcClock = Callable[[], datetime]
 FloatClock = Callable[[], float]
 TokenFactory = Callable[[], str]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,34 @@ class ChatSandboxTurnCoordinator:
             except SandboxError as error:
                 if error.code != "pool_assignment_failed" or retrying_assignment:
                     raise
+                failed_at = error.failure_monotonic
+                retry_overhead_ms = (
+                    0
+                    if failed_at is None
+                    else round(max(0.0, self.perf_counter() - failed_at) * 1000)
+                )
+                logger.warning(
+                    "chat warm assignment fallback request_id=%s turn_id=%s "
+                    "sandbox_id=%s release_id=%s image_version=%s contract=%s "
+                    "failure_stage=%s failure_class=%s retry_overhead_ms=%s",
+                    request.request_id,
+                    request.turn_id,
+                    error.sandbox_id,
+                    self.settings.release_id,
+                    self.settings.chat_modal_image_version,
+                    self.settings.chat_worker_contract_version,
+                    error.failure_stage,
+                    error.failure_class,
+                    retry_overhead_ms,
+                )
+                yield {
+                    "type": "_latency",
+                    "phase": "assignment_fallback",
+                    "elapsed_ms": retry_overhead_ms,
+                    "failure_stage": error.failure_stage,
+                    "failure_class": error.failure_class,
+                    "attempt_kind": error.attempt_kind,
+                }
                 retrying_assignment = True
 
     async def _run_once(
@@ -365,11 +395,7 @@ class ChatSandboxTurnCoordinator:
                     yield output
         except (TimeoutError, ProtocolError, SandboxError) as error:
             if self._retryable_assignment_failure(acquisition, execution):
-                raise SandboxError(
-                    "pool_assignment_failed",
-                    "The secure workspace assignment failed",
-                    uncertain=True,
-                ) from error
+                raise self._assignment_failure(acquisition, error) from error
             if isinstance(error, TimeoutError):
                 raise SandboxError(
                     "sandbox_timeout",
@@ -385,11 +411,7 @@ class ChatSandboxTurnCoordinator:
             raise
         except Exception as error:
             if self._retryable_assignment_failure(acquisition, execution):
-                raise SandboxError(
-                    "pool_assignment_failed",
-                    "The secure workspace assignment failed",
-                    uncertain=True,
-                ) from error
+                raise self._assignment_failure(acquisition, error) from error
             raise
         finally:
             if execution is not None:
@@ -502,12 +524,47 @@ class ChatSandboxTurnCoordinator:
                 raise SandboxError(
                     "sandbox_lost",
                     "Secure workspace is unavailable",
+                    failure_stage="claim_worker",
+                    failure_class=type(error).__name__,
                 ) from error
             except WorkerGenerationUnavailable as error:
                 raise SandboxError(
                     "sandbox_lost",
                     "Secure workspace generation is unavailable",
+                    failure_stage="claim_worker",
+                    failure_class=type(error).__name__,
                 ) from error
+
+    def _assignment_failure(
+        self,
+        acquisition: SandboxAcquisitionOutcome,
+        error: BaseException,
+    ) -> SandboxError:
+        attempt_kind = (
+            "pool"
+            if isinstance(acquisition, PoolAcquired)
+            else "reused"
+            if isinstance(acquisition, LeaseReused)
+            else "direct"
+        )
+        return SandboxError(
+            "pool_assignment_failed",
+            "The secure workspace assignment failed",
+            uncertain=True,
+            failure_stage=(
+                getattr(error, "failure_stage", None)
+                if getattr(error, "failure_stage", None)
+                else "agent_stream"
+            ),
+            failure_class=(
+                getattr(error, "failure_class", None)
+                if getattr(error, "failure_class", None)
+                else type(error).__name__
+            ),
+            attempt_kind=attempt_kind,
+            sandbox_id=str(acquisition.sandbox.object_id),
+            failure_monotonic=self.perf_counter(),
+        )
 
     def _release_worker(
         self,

@@ -12,6 +12,10 @@ Key capabilities:
 - First-class framework catalogue with domains, categories, platforms, canonical papers, repositories, and task recommendations
 - Normalized project pages with updatable API view
 - Comprehensive indexing for search and filtering
+- Chat blank-pool rows carry independent, nullable health-check token hashes
+  and start times. A `blank_ready` row is assignable only while health ownership
+  is null; stale health ownership transitions through verified draining rather
+  than becoming immediately claimable.
 
 ## Entity Relationship Diagram (UML)
 

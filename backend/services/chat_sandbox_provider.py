@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -29,11 +30,63 @@ ImageResolver = Callable[[str], Awaitable[object]]
 WebSocketConnector = Callable[..., Awaitable[object]]
 
 
+FAILURE_STAGES = frozenset(
+    {
+        "claim_worker",
+        "control_open",
+        "queue_registration",
+        "dispatch_write",
+        "agent_stream",
+        "broker_clear",
+        "worker_done_send",
+        "unknown",
+    }
+)
+ATTEMPT_KINDS = frozenset({"pool", "reused", "direct"})
+_FAILURE_CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
+
+
+def sanitized_failure_stage(value: object) -> str:
+    return value if isinstance(value, str) and value in FAILURE_STAGES else "unknown"
+
+
+def sanitized_failure_class(value: object) -> str:
+    return (
+        value
+        if isinstance(value, str) and _FAILURE_CLASS.fullmatch(value)
+        else "UnknownError"
+    )
+
+
 class SandboxError(RuntimeError):
-    def __init__(self, code: str, message: str, *, uncertain: bool = False):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        uncertain: bool = False,
+        failure_stage: str | None = None,
+        failure_class: str | None = None,
+        attempt_kind: str | None = None,
+        sandbox_id: str | None = None,
+        failure_monotonic: float | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.uncertain = uncertain
+        self.failure_stage = (
+            sanitized_failure_stage(failure_stage)
+            if failure_stage is not None
+            else None
+        )
+        self.failure_class = (
+            sanitized_failure_class(failure_class)
+            if failure_class is not None
+            else None
+        )
+        self.attempt_kind = attempt_kind if attempt_kind in ATTEMPT_KINDS else None
+        self.sandbox_id = sandbox_id if isinstance(sandbox_id, str) else None
+        self.failure_monotonic = failure_monotonic
 
 
 class SandboxProvider(Protocol):

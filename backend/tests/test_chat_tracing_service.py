@@ -267,6 +267,36 @@ def test_unfinished_operational_spans_close_as_warnings():
     assert acquisition.fields["level"] == "WARNING"
 
 
+def test_warm_assignment_diagnostics_survive_in_terminal_metadata():
+    root = Observation("root")
+    trace = tracing.ChatTurnTrace(
+        root,
+        prompt="Find papers",
+        model="provider/model",
+        execution_backend="modal_cli",
+    )
+    trace.record_event(
+        "_latency",
+        {
+            "phase": "assignment_fallback",
+            "elapsed_ms": 37,
+            "failure_stage": "dispatch_write",
+            "failure_class": "BrokenPipeError",
+            "attempt_kind": "pool",
+        },
+    )
+    trace.finish("Recovered answer", "success")
+    trace.close()
+
+    assert root.fields["metadata"] == {
+        "warm_assignment_failure_stage": "dispatch_write",
+        "warm_assignment_failure_class": "BrokenPipeError",
+        "warm_assignment_attempt_kind": "pool",
+        "warm_assignment_retry_overhead_ms": 37,
+        "terminal_status": "success",
+    }
+
+
 def test_error_trace_records_sanitized_terminal_code():
     root = Observation("root")
     trace = tracing.ChatTurnTrace(

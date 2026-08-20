@@ -31,7 +31,7 @@ from backend.services.chat_sandbox_pool_repository import (
     PoolCompatibility,
     PoolEvictionRequired,
     PoolHealthCandidate,
-    PoolHealthRefreshOutcome,
+    PoolHealthCheckFinishOutcome,
     PoolLandingOutcome,
     PoolReservationUnavailable,
     PoolStartReservation,
@@ -392,6 +392,238 @@ def test_claim_blank_exactly_claims_row_and_creates_one_ready_lease():
     assert leases[0].modal_sandbox_id == claim.sandbox_id
     assert leases[0].worker_generation == claim.worker_generation
     assert leases[0].state == "ready"
+
+
+def test_health_claim_excludes_blank_from_chat_selection_and_claim():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    session_id = uuid.uuid4()
+    row = _pool(settings)
+    with sessions() as db, db.begin():
+        db.add_all([_session(session_id), row])
+    repository = _repository(settings, tokens=("health-owner", "chat-owner"))
+    with sessions() as db:
+        candidate = repository.list_claim_candidates(
+            db,
+            _compatibility(settings),
+            minimum_expires_at=now + timedelta(minutes=4),
+            limit=1,
+        )[0]
+    with sessions() as db, db.begin():
+        health_claim = repository.claim_health_check(db, candidate, now=now)
+    assert health_claim is not None
+
+    with sessions() as db:
+        assert (
+            repository.list_claim_candidates(
+                db,
+                _compatibility(settings),
+                minimum_expires_at=now + timedelta(minutes=4),
+                limit=1,
+            )
+            == ()
+        )
+    with sessions() as db, db.begin():
+        assert (
+            repository.claim_blank(
+                db,
+                candidate,
+                session_id,
+                _compatibility(settings),
+                minimum_expires_at=now + timedelta(minutes=4),
+                now=now,
+            )
+            is None
+        )
+    with sessions() as db:
+        owned = db.get(ChatSandboxPool, row.id)
+    assert owned.state == "blank_ready"
+    assert owned.health_check_token_hash is not None
+    assert owned.health_check_token_hash != health_claim.health_token
+
+
+def test_stale_health_plan_cannot_claim_a_chat_owned_blank():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    session_id = uuid.uuid4()
+    row = _pool(settings)
+    with sessions() as db, db.begin():
+        db.add_all([_session(session_id), row])
+    repository = _repository(settings, tokens=("chat-owner", "health-owner"))
+    with sessions() as db:
+        candidate = repository.list_claim_candidates(
+            db,
+            _compatibility(settings),
+            minimum_expires_at=now + timedelta(minutes=4),
+            limit=1,
+        )[0]
+    with sessions() as db, db.begin():
+        assert (
+            repository.claim_blank(
+                db,
+                candidate,
+                session_id,
+                _compatibility(settings),
+                minimum_expires_at=now + timedelta(minutes=4),
+                now=now,
+            )
+            is not None
+        )
+    health_candidate = PoolHealthCandidate(
+        pool_id=candidate.pool_id,
+        sandbox_id=candidate.sandbox_id,
+        worker_generation=candidate.worker_generation,
+        claim_generation=candidate.claim_generation,
+        token_hash=candidate.token_hash,
+    )
+    with sessions() as db, db.begin():
+        assert repository.claim_health_check(db, health_candidate, now=now) is None
+
+
+def test_health_finish_is_fenced_and_stale_recovery_drains_once():
+    settings = _settings()
+    sessions = _database()
+    now = datetime.now(UTC)
+    row = _pool(settings)
+    with sessions() as db, db.begin():
+        db.add(row)
+    repository = _repository(
+        settings,
+        tokens=("health-owner", "stale-termination-owner"),
+    )
+    with sessions() as db:
+        blank = repository.list_claim_candidates(
+            db,
+            _compatibility(settings),
+            minimum_expires_at=now + timedelta(minutes=4),
+            limit=1,
+        )[0]
+    candidate = PoolHealthCandidate(
+        pool_id=blank.pool_id,
+        sandbox_id=blank.sandbox_id,
+        worker_generation=blank.worker_generation,
+        claim_generation=blank.claim_generation,
+        token_hash=blank.token_hash,
+    )
+    with sessions() as db, db.begin():
+        claim = repository.claim_health_check(db, candidate, now=now)
+    assert claim is not None
+
+    with sessions() as db, db.begin():
+        successor = db.get(ChatSandboxPool, row.id)
+        successor.worker_generation = "generation-successor"
+    with sessions() as db, db.begin():
+        finish = repository.finish_health_check(
+            db,
+            claim,
+            healthy=True,
+            now=now + timedelta(seconds=1),
+        )
+    assert finish.outcome is PoolHealthCheckFinishOutcome.OWNERSHIP_CHANGED
+    with sessions() as db, db.begin():
+        db.get(ChatSandboxPool, row.id).worker_generation = claim.worker_generation
+
+    with sessions() as db, db.begin():
+        first = repository.reclaim_stale_health_checks(
+            db,
+            cutoff=now + timedelta(seconds=30),
+            now=now + timedelta(seconds=31),
+            limit=10,
+        )
+    with sessions() as db, db.begin():
+        second = repository.reclaim_stale_health_checks(
+            db,
+            cutoff=now + timedelta(seconds=60),
+            now=now + timedelta(seconds=61),
+            limit=10,
+        )
+    assert len(first) == 1
+    assert second == ()
+    with sessions() as db:
+        reclaimed = db.get(ChatSandboxPool, row.id)
+    assert reclaimed.state == "draining"
+    assert reclaimed.health_check_token_hash is None
+    assert reclaimed.failure_code == "health_check_timeout"
+
+
+def test_one_thousand_health_chat_interleavings_never_share_ownership():
+    settings = _settings()
+    sessions = _database()
+    repository = _repository(settings)
+    now = datetime.now(UTC)
+
+    for index in range(1_000):
+        session_id = uuid.uuid4()
+        row = _pool(settings, sandbox_id=f"sb-race-{index}")
+        with sessions() as db, db.begin():
+            db.add_all([_session(session_id), row])
+        with sessions() as db:
+            blank = repository.list_claim_candidates(
+                db,
+                _compatibility(settings),
+                minimum_expires_at=now + timedelta(minutes=4),
+                limit=1,
+            )[0]
+        candidate = PoolHealthCandidate(
+            pool_id=blank.pool_id,
+            sandbox_id=blank.sandbox_id,
+            worker_generation=blank.worker_generation,
+            claim_generation=blank.claim_generation,
+            token_hash=blank.token_hash,
+        )
+
+        if index % 2 == 0:
+            with sessions() as db, db.begin():
+                health_claim = repository.claim_health_check(db, candidate, now=now)
+            assert health_claim is not None
+            with sessions() as db, db.begin():
+                assert (
+                    repository.claim_blank(
+                        db,
+                        blank,
+                        session_id,
+                        _compatibility(settings),
+                        minimum_expires_at=now + timedelta(minutes=4),
+                        now=now,
+                    )
+                    is None
+                )
+            with sessions() as db, db.begin():
+                assert (
+                    repository.finish_health_check(
+                        db,
+                        health_claim,
+                        healthy=True,
+                        now=now,
+                    ).outcome
+                    is PoolHealthCheckFinishOutcome.HEALTHY
+                )
+
+        with sessions() as db, db.begin():
+            chat_claim = repository.claim_blank(
+                db,
+                blank,
+                session_id,
+                _compatibility(settings),
+                minimum_expires_at=now + timedelta(minutes=4),
+                now=now,
+            )
+        assert chat_claim is not None
+        with sessions() as db, db.begin():
+            assert repository.claim_health_check(db, candidate, now=now) is None
+
+    with sessions() as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxPool)
+                .where(ChatSandboxPool.health_check_token_hash.is_not(None))
+            )
+            == 0
+        )
+        assert db.scalar(select(func.count()).select_from(ChatSandboxLease)) == 1_000
 
 
 @pytest.mark.parametrize(
@@ -1159,56 +1391,6 @@ def test_maintenance_plan_claims_blank_without_provider_as_lost():
         persisted = db.get(ChatSandboxPool, row.id)
     assert persisted.state == "draining"
     assert persisted.failure_code == "sandbox_lost"
-
-
-@pytest.mark.parametrize("successor_state", ["draining", "claimed"])
-def test_health_refresh_and_failure_claim_are_fenced_from_successor(
-    successor_state,
-):
-    settings = _settings()
-    sessions = _database()
-    now = datetime.now(UTC)
-    row = _pool(settings)
-    checked_at = now - timedelta(minutes=1)
-    row.last_health_checked_at = checked_at
-    row.blank_billable_seconds = 123
-    row.estimated_blank_cost_usd = 1.25
-    candidate = PoolHealthCandidate(
-        pool_id=row.id,
-        sandbox_id=row.modal_sandbox_id,
-        worker_generation=row.worker_generation,
-        claim_generation=row.claim_generation,
-        token_hash=row.claim_token_hash,
-    )
-    with sessions() as db, db.begin():
-        db.add(row)
-    successor_at = now + timedelta(seconds=10)
-    with sessions() as db, db.begin():
-        successor = db.get(ChatSandboxPool, row.id)
-        successor.state = successor_state
-        successor.claim_token_hash = "successor-token"
-        successor.updated_at = successor_at
-
-    repository = _repository(settings)
-    with sessions() as db, db.begin():
-        refresh = repository.refresh_health(db, candidate, now=now)
-        failure_claim = repository.claim_health_failure(
-            db,
-            candidate,
-            failure_code="sandbox_lost",
-            now=now,
-        )
-
-    assert refresh is PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
-    assert failure_claim is None
-    with sessions() as db:
-        successor = db.get(ChatSandboxPool, row.id)
-    assert successor.state == successor_state
-    assert successor.claim_token_hash == "successor-token"
-    assert successor.last_health_checked_at == checked_at.replace(tzinfo=None)
-    assert successor.updated_at == successor_at.replace(tzinfo=None)
-    assert successor.blank_billable_seconds == 123
-    assert float(successor.estimated_blank_cost_usd) == 1.25
 
 
 def test_terminal_cleanup_is_state_safe_and_bounded():

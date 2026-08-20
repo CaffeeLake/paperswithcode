@@ -2695,6 +2695,12 @@ class ChatSandboxPool(Base):
         Integer, nullable=False, server_default="0"
     )
     claim_token_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    health_check_token_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    health_check_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2749,12 +2755,23 @@ class ChatSandboxPool(Base):
             "memory_request_mib > 0 AND memory_limit_mib >= memory_request_mib",
             name="chat_sandbox_pool_memory_check",
         ),
+        CheckConstraint(
+            "(health_check_token_hash IS NULL) = (health_check_started_at IS NULL)",
+            name="chat_sandbox_pool_health_check_pair_check",
+        ),
         Index(
             "idx_chat_sandbox_pool_claim",
             "state",
             "image_version",
             "worker_contract_version",
             "app_release_id",
+            "expires_at",
+            "ready_at",
+        ),
+        Index(
+            "idx_chat_sandbox_pool_available_health",
+            "state",
+            "health_check_token_hash",
             "expires_at",
             "ready_at",
         ),
@@ -3121,6 +3138,10 @@ class ChatTurnLatency(Base):
     first_semantic_event_ms: Mapped[Optional[int]] = mapped_column(Integer)
     pool_miss_reason: Mapped[Optional[str]] = mapped_column(String(32))
     session_reuse_cohort: Mapped[Optional[str]] = mapped_column(String(32))
+    failure_stage: Mapped[Optional[str]] = mapped_column(String(32))
+    failure_class: Mapped[Optional[str]] = mapped_column(String(128))
+    attempt_kind: Mapped[Optional[str]] = mapped_column(String(16))
+    retry_overhead_ms: Mapped[Optional[int]] = mapped_column(Integer)
     total_ms: Mapped[Optional[int]] = mapped_column(Integer)
 
     browser_stream_start_ms: Mapped[Optional[int]] = mapped_column(Integer)
@@ -3181,6 +3202,14 @@ class ChatTurnLatency(Base):
             "qualification_scenario IS NULL OR qualification_scenario IN "
             "('focused_latency','reliability','clean_cancel','forced_failure')",
             name="chat_turn_latency_qualification_scenario_check",
+        ),
+        CheckConstraint(
+            "attempt_kind IS NULL OR attempt_kind IN ('pool','reused','direct')",
+            name="chat_turn_latency_attempt_kind_check",
+        ),
+        CheckConstraint(
+            "retry_overhead_ms IS NULL OR retry_overhead_ms BETWEEN 0 AND 3600000",
+            name="chat_turn_latency_retry_overhead_check",
         ),
         Index("idx_chat_turn_latency_admitted", "admitted_at", "turn_id"),
         Index("idx_chat_turn_latency_session", "chat_session_id"),

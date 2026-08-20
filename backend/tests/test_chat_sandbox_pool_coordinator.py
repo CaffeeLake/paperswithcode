@@ -148,6 +148,7 @@ class _Provider:
         self.poll_result = None
         self.resolve_error: BaseException | None = None
         self.health_result = True
+        self.health_hook = None
         self.termination_confirmed = True
         self.termination_calls: list[str] = []
         self.termination_hook = None
@@ -191,6 +192,8 @@ class _Provider:
         self.probe.outside_transaction("provider.health")
         assert persistent is True
         assert worker_generation
+        if self.health_hook is not None:
+            await self.health_hook(_sandbox, worker_generation)
         await asyncio.sleep(0)
         return self.health_result
 
@@ -350,6 +353,7 @@ def _pool(
         worker_contract_version=harness.settings.chat_worker_contract_version,
         worker_generation=f"generation-{uuid.uuid4().hex[:8]}",
         app_release_id=release_id or harness.settings.release_id,
+        claim_generation=0,
         created_at=now - timedelta(minutes=2),
         ready_at=now - timedelta(minutes=1) if state != "starting" else None,
         expires_at=now + timedelta(hours=1),
@@ -538,6 +542,144 @@ def test_provider_health_claim_is_release_agnostic_and_outside_transactions():
     assert claimed.state == "claimed"
     assert claimed.app_release_id == "release-previous"
     assert lease.modal_sandbox_id == row.modal_sandbox_id
+
+
+def test_stale_maintenance_plan_cannot_probe_a_promoted_control():
+    harness = _Harness(owner=True)
+    session_id = uuid.uuid4()
+    row = _pool(harness)
+    row.expires_at = harness.clock.utcnow() + timedelta(hours=2)
+    sandbox = SimpleNamespace(object_id=row.modal_sandbox_id)
+    with harness.sessions() as db, db.begin():
+        db.add_all([_session(session_id), row])
+
+    # Simulate a second API process: independent coordinator/repository/provider
+    # state, with only the database shared with maintenance.
+    claim_provider = _Provider(harness.probe)
+    claim_transport = _Transport(claim_provider, harness.probe)
+    claim_repository = ChatSandboxPoolRepository(
+        harness.settings,
+        capacity_locker=lambda _db, *, wait=True: True,
+    )
+    claim_coordinator = ChatSandboxPoolCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=claim_repository,
+        provider=claim_provider,
+        transport=claim_transport,
+        maintenance_owner=lambda: False,
+        lease_eviction=_LeaseEviction(
+            lambda _session_id: asyncio.sleep(
+                0,
+                result=LeaseEvictionOutcome.NOT_IDLE,
+            )
+        ),
+        spend_factory=lambda db: ChatSandboxSpendService(db, harness.settings),
+        utcnow=harness.clock.utcnow,
+        monotonic=harness.clock.monotonic,
+    )
+    control = _control(sandbox)
+    claim_transport.register_blank_control(
+        row.modal_sandbox_id,
+        control,
+        checked_at=harness.clock.monotonic(),
+    )
+
+    planned = harness.coordinator.maintenance._plan_maintenance(harness.clock.utcnow())
+    assert planned is not None
+    _, plan = planned
+    assert len(plan.health_candidates) == 1
+
+    assert asyncio.run(claim_coordinator.claim_blank(session_id)) == (sandbox, 0)
+    assert claim_transport.session_control(session_id) is control
+
+    async def replace_promoted_relay(_sandbox, _worker_generation):
+        pytest.fail("stale maintenance must not perform provider health I/O")
+
+    harness.provider.health_hook = replace_promoted_relay
+    assert (
+        asyncio.run(
+            harness.coordinator.maintenance._refresh_pool_health(plan.health_candidates)
+        )
+        == 0
+    )
+
+    assert "provider.health" not in harness.probe.provider_calls
+    assert claim_transport.session_control(session_id) is control
+
+
+def test_health_owner_blocks_racing_chat_claim_until_probe_settles():
+    harness = _Harness(owner=True)
+    session_id = uuid.uuid4()
+    row = _pool(harness)
+    row.expires_at = harness.clock.utcnow() + timedelta(hours=2)
+    with harness.sessions() as db, db.begin():
+        db.add_all([_session(session_id), row])
+    planned = harness.coordinator.maintenance._plan_maintenance(harness.clock.utcnow())
+    assert planned is not None
+    _, plan = planned
+    health_started = asyncio.Event()
+    release_health = asyncio.Event()
+
+    async def pause_health(_sandbox, _worker_generation):
+        health_started.set()
+        await release_health.wait()
+
+    harness.provider.health_hook = pause_health
+
+    async def run():
+        maintenance = asyncio.create_task(
+            harness.coordinator.maintenance._refresh_pool_health(plan.health_candidates)
+        )
+        await health_started.wait()
+        with harness.sessions() as db:
+            owned = db.get(ChatSandboxPool, row.id)
+            assert owned.health_check_token_hash is not None
+        assert await harness.coordinator.claim_blank(session_id) is None
+        release_health.set()
+        return await maintenance
+
+    assert asyncio.run(run()) == 0
+    with harness.sessions() as db:
+        settled = db.get(ChatSandboxPool, row.id)
+    assert settled.state == "blank_ready"
+    assert settled.health_check_token_hash is None
+
+
+def test_unavailable_health_probe_stays_excluded_until_stale_recovery():
+    harness = _Harness(owner=True)
+    row = _pool(harness)
+    row.expires_at = harness.clock.utcnow() + timedelta(hours=2)
+    with harness.sessions() as db, db.begin():
+        db.add(row)
+    planned = harness.coordinator.maintenance._plan_maintenance(harness.clock.utcnow())
+    assert planned is not None
+    _, plan = planned
+    harness.provider.resolve_error = RuntimeError("provider unavailable")
+
+    assert (
+        asyncio.run(
+            harness.coordinator.maintenance._refresh_pool_health(plan.health_candidates)
+        )
+        == 0
+    )
+    with harness.sessions() as db:
+        unavailable = db.get(ChatSandboxPool, row.id)
+    assert unavailable.state == "blank_ready"
+    assert unavailable.health_check_token_hash is not None
+
+    harness.clock.advance(31)
+    recovered = harness.coordinator.maintenance._plan_maintenance(
+        harness.clock.utcnow()
+    )
+    assert recovered is not None
+    _, recovery_plan = recovered
+    assert len(recovery_plan.termination_claims) == 1
+    with harness.sessions() as db:
+        draining = db.get(ChatSandboxPool, row.id)
+    assert draining.state == "draining"
+    assert draining.health_check_token_hash is None
+    assert draining.failure_code == "health_check_timeout"
 
 
 def test_concurrent_claims_commit_one_exact_claim_and_spend_assignment():
@@ -2496,6 +2638,7 @@ def test_owner_loss_after_health_probe_skips_database_mutation():
         persisted = db.get(ChatSandboxPool, row.id)
     assert persisted.state == "blank_ready"
     assert persisted.claim_token_hash is None
+    assert persisted.health_check_token_hash is not None
 
 
 def test_claimless_orphan_spend_settlement_reacquires_capacity_lock():

@@ -1212,6 +1212,8 @@ class _ChatSchemaDB:
                         ("chat_sandbox_pool", "control_ready_ms"),
                         ("chat_sandbox_pool", "agent_spawn_ms"),
                         ("chat_sandbox_pool", "agent_startup_ready_ms"),
+                        ("chat_sandbox_pool", "health_check_token_hash"),
+                        ("chat_sandbox_pool", "health_check_started_at"),
                     ]
                 )
             if self.include_latency_columns:
@@ -1225,6 +1227,10 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "pool_miss_reason"),
                         ("chat_turn_latency", "session_reuse_cohort"),
                         ("chat_turn_latency", "estimated_active_cost_usd"),
+                        ("chat_turn_latency", "failure_stage"),
+                        ("chat_turn_latency", "failure_class"),
+                        ("chat_turn_latency", "attempt_kind"),
+                        ("chat_turn_latency", "retry_overhead_ms"),
                     ]
                 )
             if self.include_qualification_columns:
@@ -1278,6 +1284,35 @@ def test_chat_schema_production_profile_does_not_require_openrouter_tables():
         db,
         Settings(environment="production", chat_openrouter_server_funded_enabled=False),
     )
+
+
+def test_chat_schema_fails_closed_without_health_ownership_columns():
+    db = _ChatSchemaDB("off")
+    original_execute = db.execute
+
+    def without_health_ownership(statement):
+        result = original_execute(statement)
+        if "information_schema.columns" in str(statement):
+            result._rows = [
+                row
+                for row in result._rows
+                if row
+                not in {
+                    ("chat_sandbox_pool", "health_check_token_hash"),
+                    ("chat_sandbox_pool", "health_check_started_at"),
+                }
+            ]
+        return result
+
+    db.execute = without_health_ownership
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(
+            db,
+            Settings(
+                environment="staging",
+                chat_openrouter_server_funded_enabled=True,
+            ),
+        )
 
 
 def test_chat_schema_requires_qualification_metadata_columns():
@@ -2511,6 +2546,7 @@ def test_common_chat_migrations_support_isolated_production_schema():
         "add_chat_primary_paper.sql",
         "add_chat_title_budget.sql",
         "add_chat_sandbox_egress_policy.sql",
+        "add_chat_warm_assignment_race.sql",
     )
 
     for name in migrations:
@@ -2627,6 +2663,26 @@ def test_production_hf_catalog_migration_is_role_isolated_and_idempotent():
     assert "ADD COLUMN IF NOT EXISTS hf_recursive_list_calls" in migration
     assert "TO paperswithcode_user" in migration
     assert "FROM pwc_staging" in migration
+
+
+def test_warm_assignment_migration_is_guarded_additive_and_role_isolated():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_warm_assignment_race.sql"
+    ).read_text()
+
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
+    assert "ADD COLUMN IF NOT EXISTS health_check_token_hash" in migration
+    assert "ADD COLUMN IF NOT EXISTS health_check_started_at" in migration
+    assert "ADD COLUMN IF NOT EXISTS failure_stage" in migration
+    assert "chat_sandbox_pool_health_check_pair_check" in migration
+    assert (
+        "CREATE INDEX IF NOT EXISTS idx_chat_sandbox_pool_available_health" in migration
+    )
+    assert "OWNER TO pwc_staging_owner" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "REVOKE ALL ON chat_sandbox_pool FROM paperswithcode_user" in migration
+    assert "REVOKE ALL ON chat_sandbox_pool FROM pwc_staging" in migration
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):

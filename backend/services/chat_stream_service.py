@@ -1103,6 +1103,9 @@ class ChatStreamOrchestrator:
                     first_semantic_event_class=event.get("first_semantic_event_class"),
                     pool_miss_reason=event.get("pool_miss_reason"),
                     session_reuse_cohort=event.get("session_reuse_cohort"),
+                    failure_stage=event.get("failure_stage"),
+                    failure_class=event.get("failure_class"),
+                    attempt_kind=event.get("attempt_kind"),
                 )
                 continue
             if kind == "_execution_telemetry":
@@ -1533,6 +1536,9 @@ class ChatStreamOrchestrator:
         first_semantic_event_class: str | None = None,
         pool_miss_reason: str | None = None,
         session_reuse_cohort: str | None = None,
+        failure_stage: str | None = None,
+        failure_class: str | None = None,
+        attempt_kind: str | None = None,
     ) -> None:
         try:
             with db_manager.session_local() as db:
@@ -1545,6 +1551,9 @@ class ChatStreamOrchestrator:
                     first_semantic_event_class=first_semantic_event_class,
                     pool_miss_reason=pool_miss_reason,
                     session_reuse_cohort=session_reuse_cohort,
+                    failure_stage=failure_stage,
+                    failure_class=failure_class,
+                    attempt_kind=attempt_kind,
                 )
                 if (
                     acquisition_outcome == "pool_miss"

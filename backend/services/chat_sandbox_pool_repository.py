@@ -137,14 +137,31 @@ class PoolHealthCandidate:
 
 
 @dataclass(frozen=True)
+class PoolHealthCheckClaim:
+    pool_id: uuid.UUID
+    sandbox_id: str
+    worker_generation: str
+    claim_generation: int
+    claim_token_hash: str | None
+    health_token: str
+
+
+class PoolHealthCheckFinishOutcome(StrEnum):
+    HEALTHY = "healthy"
+    DEAD = "dead"
+    OWNERSHIP_CHANGED = "ownership_changed"
+
+
+@dataclass(frozen=True)
+class PoolHealthCheckFinish:
+    outcome: PoolHealthCheckFinishOutcome
+    termination_claim: PoolTerminationClaim | None = None
+
+
+@dataclass(frozen=True)
 class PoolMaintenancePlan:
     termination_claims: tuple[PoolTerminationClaim, ...]
     health_candidates: tuple[PoolHealthCandidate, ...]
-
-
-class PoolHealthRefreshOutcome(StrEnum):
-    REFRESHED = "refreshed"
-    OWNERSHIP_CHANGED = "ownership_changed"
 
 
 class ProviderPoolDisposition(StrEnum):
@@ -251,6 +268,7 @@ class ChatSandboxPoolRepository:
             )
             .where(
                 ChatSandboxPool.state == "blank_ready",
+                ChatSandboxPool.health_check_token_hash.is_(None),
                 *self._compatibility_conditions(compatibility),
                 ChatSandboxPool.expires_at > minimum_expires_at,
             )
@@ -302,6 +320,7 @@ class ChatSandboxPoolRepository:
             .where(
                 ChatSandboxPool.id == candidate.pool_id,
                 ChatSandboxPool.state == "blank_ready",
+                ChatSandboxPool.health_check_token_hash.is_(None),
                 ChatSandboxPool.modal_sandbox_id == candidate.sandbox_id,
                 ChatSandboxPool.worker_generation == candidate.worker_generation,
                 ChatSandboxPool.claim_generation == candidate.claim_generation,
@@ -610,7 +629,11 @@ class ChatSandboxPoolRepository:
             .where(ChatSandboxPool.id == pool_id)
             .with_for_update()
         ).scalar_one_or_none()
-        if row is None or row.state not in {"starting", "blank_ready", "draining"}:
+        if (
+            row is None
+            or row.state not in {"starting", "blank_ready", "draining"}
+            or row.health_check_token_hash is not None
+        ):
             return None
         if (
             expected_sandbox_id is not None
@@ -738,6 +761,8 @@ class ChatSandboxPoolRepository:
                 or creation_expired
                 or (row.state == "blank_ready" and row.modal_sandbox_id is None)
             )
+            if row.health_check_token_hash is not None:
+                continue
             if should_drain:
                 if len(claims) >= termination_limit:
                     continue
@@ -764,17 +789,17 @@ class ChatSandboxPoolRepository:
                 )
         return PoolMaintenancePlan(tuple(claims), tuple(health_candidates))
 
-    def refresh_health(
+    def claim_health_check(
         self,
         db: Session,
         candidate: PoolHealthCandidate,
         *,
         now: datetime,
-    ) -> PoolHealthRefreshOutcome:
-        """Refresh cost and health only while the exact blank still owns the row."""
+    ) -> PoolHealthCheckClaim | None:
+        """Take expiring, exact ownership before any provider health I/O."""
 
         if not self.capacity_locker(db):
-            return PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
+            return None
         token_condition = (
             ChatSandboxPool.claim_token_hash.is_(None)
             if candidate.token_hash is None
@@ -789,58 +814,130 @@ class ChatSandboxPoolRepository:
                 ChatSandboxPool.worker_generation == candidate.worker_generation,
                 ChatSandboxPool.claim_generation == candidate.claim_generation,
                 token_condition,
+                ChatSandboxPool.health_check_token_hash.is_(None),
+                *self._compatibility_conditions(self.compatibility()),
             )
-            .with_for_update()
+            .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
         if row is None:
-            return PoolHealthRefreshOutcome.OWNERSHIP_CHANGED
-        row.last_health_checked_at = now
+            return None
+        health_token = self.token_factory()
+        row.health_check_token_hash = self._token_hash(health_token)
+        row.health_check_started_at = now
         row.updated_at = now
-        self.finalize_cost(row, now)
-        return PoolHealthRefreshOutcome.REFRESHED
+        return PoolHealthCheckClaim(
+            pool_id=row.id,
+            sandbox_id=candidate.sandbox_id,
+            worker_generation=row.worker_generation,
+            claim_generation=row.claim_generation,
+            claim_token_hash=row.claim_token_hash,
+            health_token=health_token,
+        )
 
-    def claim_health_failure(
+    def health_check_owned(
         self,
         db: Session,
-        candidate: PoolHealthCandidate,
+        claim: PoolHealthCheckClaim,
+    ) -> bool:
+        """Prove the exact health owner immediately before provider I/O."""
+
+        return bool(
+            db.execute(
+                select(ChatSandboxPool.id).where(
+                    *self._health_claim_conditions(claim),
+                )
+            ).scalar_one_or_none()
+        )
+
+    def finish_health_check(
+        self,
+        db: Session,
+        claim: PoolHealthCheckClaim,
         *,
-        failure_code: str,
+        healthy: bool,
         now: datetime,
-    ) -> PoolTerminationClaim | None:
-        """Claim termination only for the exact blank that failed its probe."""
+    ) -> PoolHealthCheckFinish:
+        """Settle only the exact health owner; never mutate a successor."""
 
         if not self.capacity_locker(db):
-            return None
-        token_condition = (
-            ChatSandboxPool.claim_token_hash.is_(None)
-            if candidate.token_hash is None
-            else ChatSandboxPool.claim_token_hash == candidate.token_hash
-        )
+            return PoolHealthCheckFinish(PoolHealthCheckFinishOutcome.OWNERSHIP_CHANGED)
         row = db.execute(
             select(ChatSandboxPool)
-            .where(
-                ChatSandboxPool.id == candidate.pool_id,
-                ChatSandboxPool.state == "blank_ready",
-                ChatSandboxPool.modal_sandbox_id == candidate.sandbox_id,
-                ChatSandboxPool.worker_generation == candidate.worker_generation,
-                ChatSandboxPool.claim_generation == candidate.claim_generation,
-                token_condition,
-            )
+            .where(*self._health_claim_conditions(claim))
             .with_for_update()
         ).scalar_one_or_none()
         if row is None:
-            return None
-        next_token_hash = self._token_hash(self.token_factory())
+            return PoolHealthCheckFinish(PoolHealthCheckFinishOutcome.OWNERSHIP_CHANGED)
+        row.health_check_token_hash = None
+        row.health_check_started_at = None
+        row.updated_at = now
+        if healthy:
+            row.last_health_checked_at = now
+            self.finalize_cost(row, now)
+            return PoolHealthCheckFinish(PoolHealthCheckFinishOutcome.HEALTHY)
+
+        termination_token_hash = self._token_hash(self.token_factory())
         row.state = "draining"
-        row.claim_token_hash = next_token_hash
-        row.failure_code = self._termination_failure(row.failure_code, failure_code)
-        row.updated_at = now
-        return PoolTerminationClaim(
+        row.claim_token_hash = termination_token_hash
+        row.failure_code = self._termination_failure(row.failure_code, "sandbox_lost")
+        termination_claim = PoolTerminationClaim(
             pool_id=row.id,
             sandbox_id=row.modal_sandbox_id,
-            token_hash=next_token_hash,
+            token_hash=termination_token_hash,
             failure_code=row.failure_code,
         )
+        return PoolHealthCheckFinish(
+            PoolHealthCheckFinishOutcome.DEAD,
+            termination_claim,
+        )
+
+    def reclaim_stale_health_checks(
+        self,
+        db: Session,
+        *,
+        cutoff: datetime,
+        now: datetime,
+        limit: int,
+        capacity_locked: bool = False,
+    ) -> tuple[PoolTerminationClaim, ...]:
+        """Fence timed-out probes into verified cleanup exactly once."""
+
+        if not capacity_locked and not self.capacity_locker(db):
+            return ()
+        rows = tuple(
+            db.execute(
+                select(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.state == "blank_ready",
+                    ChatSandboxPool.health_check_token_hash.is_not(None),
+                    ChatSandboxPool.health_check_started_at <= cutoff,
+                )
+                .order_by(ChatSandboxPool.health_check_started_at, ChatSandboxPool.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).scalars()
+        )
+        claims: list[PoolTerminationClaim] = []
+        for row in rows:
+            termination_token_hash = self._token_hash(self.token_factory())
+            row.state = "draining"
+            row.claim_token_hash = termination_token_hash
+            row.health_check_token_hash = None
+            row.health_check_started_at = None
+            row.failure_code = self._termination_failure(
+                row.failure_code,
+                "health_check_timeout",
+            )
+            row.updated_at = now
+            claims.append(
+                PoolTerminationClaim(
+                    pool_id=row.id,
+                    sandbox_id=row.modal_sandbox_id,
+                    token_hash=termination_token_hash,
+                    failure_code=row.failure_code,
+                )
+            )
+        return tuple(claims)
 
     def cleanup_terminal(
         self,
@@ -1061,6 +1158,24 @@ class ChatSandboxPoolRepository:
             ChatSandboxPool.cpu_limit == compatibility.cpu_limit,
             ChatSandboxPool.memory_request_mib == compatibility.memory_request_mib,
             ChatSandboxPool.memory_limit_mib == compatibility.memory_limit_mib,
+        )
+
+    @classmethod
+    def _health_claim_conditions(cls, claim: PoolHealthCheckClaim) -> tuple:
+        claim_token_condition = (
+            ChatSandboxPool.claim_token_hash.is_(None)
+            if claim.claim_token_hash is None
+            else ChatSandboxPool.claim_token_hash == claim.claim_token_hash
+        )
+        return (
+            ChatSandboxPool.id == claim.pool_id,
+            ChatSandboxPool.state == "blank_ready",
+            ChatSandboxPool.modal_sandbox_id == claim.sandbox_id,
+            ChatSandboxPool.worker_generation == claim.worker_generation,
+            ChatSandboxPool.claim_generation == claim.claim_generation,
+            claim_token_condition,
+            ChatSandboxPool.health_check_token_hash
+            == cls._token_hash(claim.health_token),
         )
 
     @staticmethod

@@ -22,7 +22,11 @@ from backend.chat_sandbox_worker.protocol import (
     encode_frame,
 )
 from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
-from backend.services.chat_sandbox_provider import SandboxError
+from backend.services.chat_sandbox_provider import (
+    SandboxError,
+    sanitized_failure_class,
+    sanitized_failure_stage,
+)
 from backend.services.chat_sandbox_state_repository import WorkerClaim
 
 logger = logging.getLogger(__name__)
@@ -333,6 +337,8 @@ class ChatSandboxWorkerTransport:
                     "sandbox_worker_failed",
                     "The persistent worker control stream ended",
                     uncertain=True,
+                    failure_stage="agent_stream",
+                    failure_class="ControlStreamEnded",
                 )
             for queue in list(control.queues.values()):
                 await queue.put(failure)
@@ -637,10 +643,19 @@ class WorkerTurnExecution:
                 )
                 self.control = None
             if self.control is None:
-                self.control = await self.transport.open_persistent_control(
-                    self.sandbox,
-                    self.claim.worker_generation,
-                )
+                try:
+                    self.control = await self.transport.open_persistent_control(
+                        self.sandbox,
+                        self.claim.worker_generation,
+                    )
+                except Exception as error:
+                    raise SandboxError(
+                        "sandbox_worker_failed",
+                        "The persistent worker control could not be opened",
+                        uncertain=True,
+                        failure_stage="control_open",
+                        failure_class=type(error).__name__,
+                    ) from error
                 self.control_connection_opened = True
                 self.transport.register_session_control(
                     self.request.chat_session_id,
@@ -671,15 +686,27 @@ class WorkerTurnExecution:
         if self.mode is WorkerTurnMode.PERSISTENT:
             assert self.control is not None
             if self.request.request_id in self.control.queues:
-                raise ProtocolError("Duplicate persistent request identifier")
+                error = ProtocolError("Duplicate persistent request identifier")
+                error.failure_stage = "queue_registration"
+                error.failure_class = "ProtocolError"
+                raise error
             self.queue = asyncio.Queue()
             self.control.queues[self.request.request_id] = self.queue
 
         if self.running.cancel_requested:
             self.running.done.set()
             return WorkerTurnDispatchOutcome.CANCELLED
-        self.process.stdin.write(self._request_frame())
-        await self.process.stdin.drain.aio()
+        try:
+            self.process.stdin.write(self._request_frame())
+            await self.process.stdin.drain.aio()
+        except Exception as error:
+            raise SandboxError(
+                "sandbox_worker_failed",
+                "The persistent worker request could not be dispatched",
+                uncertain=True,
+                failure_stage="dispatch_write",
+                failure_class=type(error).__name__,
+            ) from error
         return WorkerTurnDispatchOutcome.DISPATCHED
 
     def _request_frame(self) -> bytes:
@@ -808,6 +835,8 @@ class WorkerTurnExecution:
                     "sandbox_worker_failed",
                     "The secure workspace worker ended unexpectedly",
                     uncertain=True,
+                    failure_stage="agent_stream",
+                    failure_class="WorkerStreamEnded",
                 )
         except Exception:
             if self._accept_cancelled_failure():
@@ -831,6 +860,8 @@ class WorkerTurnExecution:
                     "sandbox_worker_failed",
                     "The persistent worker control failed",
                     uncertain=True,
+                    failure_stage=sanitized_failure_stage(item.get("stage")),
+                    failure_class=sanitized_failure_class(item.get("error_class")),
                 )
             yield item
             if item.get("type") == "worker_done":

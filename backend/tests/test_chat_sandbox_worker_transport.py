@@ -1119,6 +1119,63 @@ def test_cancel_requested_during_dispatch_wins_drain_failure_and_cleans_state():
     asyncio.run(exercise())
 
 
+def test_persistent_dispatch_distinguishes_control_open_and_write_failures():
+    async def open_failure():
+        async def fail_open(_sandbox, _worker_generation):
+            raise ConnectionError("private provider detail")
+
+        transport = ChatSandboxWorkerTransport(
+            SimpleNamespace(
+                open_persistent_connection=fail_open,
+                open_turn_process=None,
+            )
+        )
+        request = _turn_request()
+        claim = _turn_claim()
+        execution = transport.create_execution(
+            sandbox=SimpleNamespace(object_id=claim.sandbox_id),
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        with pytest.raises(SandboxError) as raised:
+            await execution.dispatch()
+        assert raised.value.failure_stage == "control_open"
+        assert raised.value.failure_class == "ConnectionError"
+        assert "private provider detail" not in str(raised.value)
+        await execution.close()
+
+    async def write_failure():
+        async def fail_write():
+            raise BrokenPipeError("private frame detail")
+
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(
+            claim.sandbox_id,
+            _OneShotProcess(drain_action=fail_write),
+        )
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        with pytest.raises(SandboxError) as raised:
+            await execution.dispatch()
+        assert raised.value.failure_stage == "dispatch_write"
+        assert raised.value.failure_class == "BrokenPipeError"
+        assert "private frame detail" not in str(raised.value)
+        await execution.close()
+
+    asyncio.run(open_failure())
+    asyncio.run(write_failure())
+
+
 def test_cancel_registered_before_run_frame_returns_cancelled_without_write():
     async def exercise():
         transport = _transport()
@@ -1212,7 +1269,8 @@ def test_persistent_control_failure_maps_to_uncertain_sandbox_error_and_cleans()
                 "v": 1,
                 "type": "_control_failure",
                 "request_id": request.request_id,
-                "stage": "relay_write",
+                "stage": "broker_clear",
+                "error_class": "ConnectionResetError",
             }
         )
 
@@ -1220,6 +1278,8 @@ def test_persistent_control_failure_maps_to_uncertain_sandbox_error_and_cleans()
             _ = [item async for item in execution.events(timeout_seconds=1)]
         assert raised.value.code == "sandbox_worker_failed"
         assert raised.value.uncertain is True
+        assert raised.value.failure_stage == "broker_clear"
+        assert raised.value.failure_class == "ConnectionResetError"
 
         await execution.close()
         assert request.request_id not in control.queues

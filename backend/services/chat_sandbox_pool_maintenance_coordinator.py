@@ -18,6 +18,8 @@ from backend.services.chat_sandbox_pool_creation_coordinator import (
 from backend.services.chat_sandbox_pool_policy import ChatSandboxPoolPolicy
 from backend.services.chat_sandbox_pool_repository import (
     ChatSandboxPoolRepository,
+    PoolHealthCheckClaim,
+    PoolHealthCheckFinishOutcome,
     PoolHealthCandidate,
     PoolMaintenancePlan,
     PoolTerminationClaim,
@@ -40,6 +42,7 @@ POOL_MAINTENANCE_LOCK_NAME = "chat-sandbox-pool-maintenance-v1"
 POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 POOL_MAINTENANCE_BATCH_SIZE = 100
 POOL_TERMINAL_RETENTION_DAYS = 35
+POOL_HEALTH_CLAIM_TIMEOUT_SECONDS = 30
 
 SessionFactory = Callable[[], Session]
 SpendFactory = Callable[[Session], ChatSandboxSpendService]
@@ -469,6 +472,13 @@ class ChatSandboxPoolMaintenanceCoordinator:
                     )
                 except ChatComputeDisabled:
                     budget_blocked = True
+            stale_health_claims = self.repository.reclaim_stale_health_checks(
+                db,
+                cutoff=now - timedelta(seconds=POOL_HEALTH_CLAIM_TIMEOUT_SECONDS),
+                now=now,
+                limit=self.policy.termination_concurrency,
+                capacity_locked=True,
+            )
             plan = self.repository.plan_maintenance(
                 db,
                 now=now,
@@ -482,11 +492,25 @@ class ChatSandboxPoolMaintenanceCoordinator:
                 ),
                 stale_draining_before=now
                 - timedelta(seconds=self.policy.termination_claim_timeout_seconds),
-                termination_limit=self.policy.termination_concurrency,
+                # A reclaimed row is already a complete termination claim and
+                # remains visible as draining in this transaction. Defer other
+                # drains one cycle so planning cannot rotate its token and
+                # issue duplicate provider termination I/O.
+                termination_limit=(
+                    0 if stale_health_claims else self.policy.termination_concurrency
+                ),
                 scan_limit=POOL_MAINTENANCE_BATCH_SIZE,
                 capacity_locked=True,
             )
-        return budget_blocked, plan
+        if stale_health_claims:
+            logger.warning(
+                "chat blank pool stale health claims reclaimed count=%s",
+                len(stale_health_claims),
+            )
+        return budget_blocked, PoolMaintenancePlan(
+            termination_claims=stale_health_claims + plan.termination_claims,
+            health_candidates=plan.health_candidates,
+        )
 
     def _cleanup_terminal_rows(self, now: datetime) -> int:
         if not self.maintenance_owner():
@@ -543,45 +567,78 @@ class ChatSandboxPoolMaintenanceCoordinator:
         for candidate in candidates:
             if not self.maintenance_owner():
                 break
+            claim = self._claim_health_check(candidate)
+            if claim is None:
+                logger.info(
+                    "chat blank pool health claim skipped pool_id=%s reason=ownership_changed",
+                    candidate.pool_id,
+                )
+                continue
+            if not self._health_check_owned(claim):
+                logger.error(
+                    "chat blank pool health invariant violated pool_id=%s sandbox_id=%s",
+                    claim.pool_id,
+                    claim.sandbox_id,
+                )
+                continue
+            logger.info(
+                "chat blank pool provider health attempted pool_id=%s sandbox_id=%s",
+                claim.pool_id,
+                claim.sandbox_id,
+            )
             try:
                 sandbox = await self.pool_sandbox_health(
-                    candidate.sandbox_id,
-                    candidate.worker_generation,
+                    claim.sandbox_id,
+                    claim.worker_generation,
                 )
             except PoolHealthUnavailable:
+                logger.warning(
+                    "chat blank pool health unavailable pool_id=%s sandbox_id=%s",
+                    claim.pool_id,
+                    claim.sandbox_id,
+                )
                 continue
             if not self.maintenance_owner():
                 break
-            if sandbox is None:
-                try:
-                    with self.session_factory() as db, db.begin():
-                        claim = self.repository.claim_health_failure(
-                            db,
-                            candidate,
-                            failure_code="sandbox_lost",
-                            now=self.utcnow(),
-                        )
-                    if claim is not None:
-                        lost += bool(await self.terminate_claimed_pool_row(claim))
-                except Exception as error:
-                    logger.warning(
-                        "chat blank pool lost-worker cleanup failed "
-                        "pool_id=%s error=%s",
-                        candidate.pool_id,
-                        type(error).__name__,
-                    )
-                continue
             try:
                 with self.session_factory() as db, db.begin():
-                    self.repository.refresh_health(
+                    finished = self.repository.finish_health_check(
                         db,
-                        candidate,
+                        claim,
+                        healthy=sandbox is not None,
                         now=self.utcnow(),
                     )
+                if finished.outcome is PoolHealthCheckFinishOutcome.DEAD:
+                    assert finished.termination_claim is not None
+                    lost += bool(
+                        await self.terminate_claimed_pool_row(
+                            finished.termination_claim
+                        )
+                    )
+                logger.info(
+                    "chat blank pool health completed pool_id=%s outcome=%s",
+                    claim.pool_id,
+                    finished.outcome,
+                )
             except Exception as error:
                 logger.warning(
                     "chat blank pool health refresh failed pool_id=%s error=%s",
-                    candidate.pool_id,
+                    claim.pool_id,
                     type(error).__name__,
                 )
         return lost
+
+    def _claim_health_check(
+        self,
+        candidate: PoolHealthCandidate,
+    ) -> PoolHealthCheckClaim | None:
+        with self.session_factory() as db, db.begin():
+            return self.repository.claim_health_check(
+                db,
+                candidate,
+                now=self.utcnow(),
+            )
+
+    def _health_check_owned(self, claim: PoolHealthCheckClaim) -> bool:
+        with self.session_factory() as db:
+            return self.repository.health_check_owned(db, claim)

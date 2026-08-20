@@ -184,8 +184,8 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `add_chat_openrouter_user_budget.sql`, and
    `add_chat_sandbox_spend_cap.sql`, `add_chat_web_search.sql`, and
    `add_chat_hf_catalog.sql`, `add_chat_reasoning_effort.sql`, and
-   `add_chat_ttft_profiles.sql`, and
-   `add_chat_sandbox_egress_policy.sql`, and `add_chat_artifacts.sql` as
+   `add_chat_ttft_profiles.sql`, `add_chat_sandbox_egress_policy.sql`,
+   `add_chat_artifacts.sql`, and `add_chat_warm_assignment_race.sql` as
    PostgreSQL superuser with
    `search_path=staging,public`. The guarded migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and

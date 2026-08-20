@@ -367,6 +367,42 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             ChatTurnLatency.acquisition_outcome == "reused_session",
         )
         active_spend = ChatLatencyService(db).active_spend_status(now=now)
+        warm_assignment_fallbacks = [
+            {
+                "failure_stage": stage,
+                "failure_class": failure_class,
+                "attempt_kind": attempt_kind,
+                "count": int(count),
+                "average_retry_overhead_ms": round(float(average_ms or 0)),
+            }
+            for stage, failure_class, attempt_kind, count, average_ms in db.execute(
+                select(
+                    ChatTurnLatency.failure_stage,
+                    ChatTurnLatency.failure_class,
+                    ChatTurnLatency.attempt_kind,
+                    func.count(),
+                    func.avg(ChatTurnLatency.retry_overhead_ms),
+                )
+                .where(*scope, ChatTurnLatency.failure_stage.is_not(None))
+                .group_by(
+                    ChatTurnLatency.failure_stage,
+                    ChatTurnLatency.failure_class,
+                    ChatTurnLatency.attempt_kind,
+                )
+                .order_by(func.count().desc())
+            ).all()
+        ]
+        health_claimed_blanks = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.state == "blank_ready",
+                    ChatSandboxPool.health_check_token_hash.is_not(None),
+                )
+            )
+            or 0
+        )
         sandbox_spend = ChatSandboxSpendService(db, environment).status(now=now)
         live_pool = list(
             db.execute(
@@ -508,6 +544,7 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             "visible_tool_limits": visible_tool_limits,
         },
         "error_codes": error_codes,
+        "warm_assignment_fallbacks": warm_assignment_fallbacks,
         "latency_ms": {
             "all_new_chat_pre_provider": new_chat_pre_provider,
             "pool_hit_pre_provider": pool_hit_pre_provider,
@@ -537,6 +574,7 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             "live_count": live_count,
             "live_cap": environment.chat_sandbox_total_live_cap,
             "compatible": compatible,
+            "health_check_excluded_blanks": health_claimed_blanks,
         },
         "sample_gates": sample_gates,
         "health_gates": health_gates,
