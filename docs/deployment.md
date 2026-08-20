@@ -197,6 +197,13 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    Modal's isolated, automatically reclaimed ephemeral disk; PID and memory
    ceilings remain hard qualification probes.
 
+Posterly's additive gateway contract uses one zero-assignment bridge release.
+Deploy the first gateway-29 release with `POSTERLY_ENABLED=false`; only after
+that release is both current and the rollback target accepts contract 29 may a
+second exact-SHA release set `POSTERLY_ENABLED=true`. The bridge contains the
+image, schema, storage provenance, and routes, but the launcher keeps artifact
+admission and publication disabled.
+
 Staging web search uses a server-owned Exa key and remains fail-closed unless
 the feature flag, protected credential, monthly circuit, database tables, and
 immutable worker contract are all ready. Install or rotate only the staging
