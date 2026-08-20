@@ -609,6 +609,8 @@ class WorkerTurnExecution:
         self._dispatch_started = False
         self._dispatched = False
         self._closed = False
+        self._public_tool_ids: dict[str, str] = {}
+        self._next_public_tool_id = 1
 
     @property
     def cancel_requested(self) -> bool:
@@ -890,11 +892,29 @@ class WorkerTurnExecution:
         async for _chunk in stream:
             pass
 
-    @staticmethod
-    def _public_event(event: dict) -> dict:
-        return {
+    def _public_event(self, event: dict) -> dict:
+        public = {
             key: value for key, value in event.items() if key not in {"v", "request_id"}
         }
+        if event.get("type") in {
+            "tool_call",
+            "tool_call_start",
+            "tool_call_arguments_delta",
+            "tool_call_arguments_done",
+            "tool_result",
+            "app_start",
+            "app_result",
+        }:
+            provider_id = str(event.get("id") or "")
+            public_id = self._public_tool_ids.get(provider_id)
+            if public_id is None:
+                public_id = f"tool-{self._next_public_tool_id}"
+                self._next_public_tool_id += 1
+                self._public_tool_ids[provider_id] = public_id
+            public["id"] = public_id
+            if event.get("type") == "app_start":
+                public["instance_id"] = public_id
+        return public
 
     async def close(self) -> None:
         if self._closed:

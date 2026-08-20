@@ -103,6 +103,7 @@ from backend.services.chat_sandbox_service import (
     create_isolated_sandbox,
     resolve_modal_image,
 )
+from backend.services.chat_sandbox_worker_transport import WorkerTurnExecution
 from backend.services.chat_session_service import detect_poster_intent
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
@@ -2645,6 +2646,90 @@ def test_worker_protocol_correlates_parallel_argument_streams_and_final_args():
                 "partial_args": {},
             }
         )
+
+
+def test_worker_transport_replaces_provider_tool_ids_before_public_projection():
+    execution = object.__new__(WorkerTurnExecution)
+    execution._public_tool_ids = {}
+    execution._next_public_tool_id = 1
+    provider_id = "call_" + ("provider-metadata" * 8)
+
+    start = execution._public_event(
+        {
+            "v": 1,
+            "request_id": "request-1",
+            "type": "app_start",
+            "id": provider_id,
+            "instance_id": provider_id,
+            "provider": "excalidraw",
+            "server": "excalidraw",
+            "tool": "create_view",
+            "resource_uri": "ui://excalidraw/mcp-app.html",
+            "input": {"elements": "[]"},
+        }
+    )
+    result = execution._public_event(
+        {"type": "app_result", "id": provider_id, "status": "ready"}
+    )
+
+    assert start["id"] == "tool-1"
+    assert start["instance_id"] == "tool-1"
+    assert result["id"] == "tool-1"
+    assert provider_id not in json.dumps(start)
+    assert provider_id not in json.dumps(result)
+    assert b'"instance_id":"tool-1"' in sse_event(
+        start["type"], **{key: value for key, value in start.items() if key != "type"}
+    )
+
+    first_provider_id = "call_first-provider-id"
+    second_provider_id = "call_second-provider-id"
+    streamed = [
+        execution._public_event(
+            {
+                "type": "tool_call_start",
+                "id": first_provider_id,
+                "name": "Bash",
+                "content_index": 0,
+            }
+        ),
+        execution._public_event(
+            {
+                "type": "tool_call_start",
+                "id": second_provider_id,
+                "name": "Read",
+                "content_index": 1,
+            }
+        ),
+        execution._public_event(
+            {
+                "type": "tool_call_arguments_delta",
+                "id": second_provider_id,
+                "name": "Read",
+                "delta": '{"file_path":"/work',
+                "partial_args": {"file_path": "/work"},
+            }
+        ),
+        execution._public_event(
+            {
+                "type": "tool_call_arguments_done",
+                "id": first_provider_id,
+                "name": "Bash",
+                "args": {"command": "pwc version"},
+            }
+        ),
+        execution._public_event(
+            {"type": "tool_result", "id": second_provider_id, "status": "success"}
+        ),
+    ]
+    assert [event["id"] for event in streamed] == [
+        "tool-2",
+        "tool-3",
+        "tool-3",
+        "tool-2",
+        "tool-3",
+    ]
+    assert first_provider_id not in json.dumps(streamed)
+    assert second_provider_id not in json.dumps(streamed)
 
 
 def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
