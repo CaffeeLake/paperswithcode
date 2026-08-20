@@ -83,9 +83,14 @@ def test_browser_navigation_waits_for_the_requested_path(monkeypatch):
         lambda expression, **_kwargs: waited.append(expression) or True,
     )
 
-    page.navigate("/chat")
+    page.navigate("/chat?model=gpt-5.6-luna%40openai")
 
-    assert navigated == [("Page.navigate", {"url": f"{ORIGIN}/chat"})]
+    assert navigated == [
+        (
+            "Page.navigate",
+            {"url": f"{ORIGIN}/chat?model=gpt-5.6-luna%40openai"},
+        )
+    ]
     assert any('location.pathname === "/chat"' in expression for expression in waited)
 
 

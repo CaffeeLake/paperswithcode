@@ -179,7 +179,7 @@ class ChromePage(AbstractContextManager):
 
     def navigate(self, path: str) -> None:
         self.command("Page.navigate", {"url": f"{ORIGIN}{path}"})
-        encoded_path = json.dumps(path)
+        encoded_path = json.dumps(path.partition("?")[0])
         self.wait_for(
             f"location.pathname === {encoded_path} && "
             "document.readyState === 'complete' && "
@@ -541,7 +541,7 @@ def main() -> int:
                 )
                 if remaining > 0:
                     time.sleep(remaining)
-                page.navigate("/chat")
+                page.navigate(f"/chat?model={quote(selected_model)}")
                 page.assert_release(settings.release_id)
                 page.select_model(
                     selected_model, only_available=len(available_models) == 1
