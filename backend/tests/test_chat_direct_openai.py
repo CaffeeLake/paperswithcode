@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import backend.chat_gateway_app as gateway_app
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -45,6 +47,41 @@ def _capability(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_existing_gateway_path_dispatches_explicit_responses_protocol(monkeypatch):
+    sentinel = object()
+    captured = {}
+
+    async def fake_responses(*args):
+        captured["args"] = args
+        return sentinel
+
+    monkeypatch.setattr(gateway_app, "responses", fake_responses)
+    request = SimpleNamespace(headers={"x-pwc-provider-protocol": "openai-responses"})
+    db = object()
+    settings = _settings()
+
+    result = asyncio.run(
+        gateway_app.messages(
+            request,
+            "Bearer capability",
+            "session-id",
+            "turn-id",
+            db,
+            settings,
+        )
+    )
+
+    assert result is sentinel
+    assert captured["args"] == (
+        request,
+        "Bearer capability",
+        "session-id",
+        "turn-id",
+        db,
+        settings,
+    )
 
 
 def test_trusted_responses_payload_overwrites_every_security_boundary_field():

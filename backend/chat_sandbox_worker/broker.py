@@ -280,6 +280,7 @@ class Handler(BaseHTTPRequestHandler):
         *,
         content_type: str = "application/json",
         accept: str = "application/json",
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         active = STATE.begin_request()
         connection = self._connection()
@@ -293,6 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 headers={
                     **_gateway_headers(active=active, content_type=content_type),
                     "Accept": accept,
+                    **(extra_headers or {}),
                 },
             )
             response = connection.getresponse()
@@ -519,10 +521,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in {"/v1/messages", "/v1/responses"}:
             self._forward(
-                path.lstrip("/"),
+                "v1/messages" if path == "/v1/responses" else path.lstrip("/"),
                 body,
                 content_type=self.headers.get("Content-Type", "application/json"),
                 accept=self.headers.get("Accept", "application/json"),
+                extra_headers=(
+                    {"X-PWC-Provider-Protocol": "openai-responses"}
+                    if path == "/v1/responses"
+                    else None
+                ),
             )
             return
         self.send_error(404)

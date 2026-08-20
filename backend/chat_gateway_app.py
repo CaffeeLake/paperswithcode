@@ -1386,6 +1386,15 @@ async def messages(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    if request.headers.get("x-pwc-provider-protocol") == "openai-responses":
+        return await responses(
+            request,
+            authorization,
+            x_pwc_session,
+            x_pwc_turn,
+            db,
+            settings,
+        )
     gateway_started = time.perf_counter()
     received_at = datetime.now(UTC)
     try:

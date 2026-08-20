@@ -174,18 +174,28 @@ def test_broker_allows_only_native_responses_path_for_direct_openai(monkeypatch)
         path = "/v1/responses"
         headers = {"Content-Length": "2", "Content-Type": "application/json"}
         rfile = BytesIO(b"{}")
-        forwarded: list[tuple[str, bytes]] = []
+        forwarded: list[tuple[str, bytes, dict]] = []
         error: int | None = None
 
-        def _forward(self, path, body, **_kwargs):
-            self.forwarded.append((path, body))
+        def _forward(self, path, body, **kwargs):
+            self.forwarded.append((path, body, kwargs))
 
         def send_error(self, status):
             self.error = status
 
     request = Request()
     broker.Handler.do_POST(request)
-    assert request.forwarded == [("v1/responses", b"{}")]
+    assert request.forwarded == [
+        (
+            "v1/messages",
+            b"{}",
+            {
+                "content_type": "application/json",
+                "accept": "application/json",
+                "extra_headers": {"X-PWC-Provider-Protocol": "openai-responses"},
+            },
+        )
+    ]
     assert request.error is None
 
     request.path = "/v1/chat/completions"
