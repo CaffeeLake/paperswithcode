@@ -456,6 +456,7 @@ const PaperDetailView: React.FC = () => {
                 }}
               >
                 <Icon name="pdf" size={12} /> Read paper
+                <span className="nav-new-badge" aria-hidden="true">New</span>
               </Link>
             ) : safePdfUrl ? (
               <a className="action-btn" href={safePdfUrl} target="_blank" rel="noopener noreferrer">
