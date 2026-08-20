@@ -220,26 +220,18 @@ PY
 
 ### 2. Semantic Scholar: citations + keyword coverage
 
-Use the API key from `backend/keys.env`. Search both the task name and task-specific keywords. Include `year` and `citationCount` in the fields. Run one broad search and one recent-year search.
+Use the `s2` CLI (see the `s2-cli` skill). Search both the task name and task-specific keywords. Run one broad search and one recent-year search. Do not curl the Graph API while `s2` is available.
 
 ```bash
-source backend/keys.env
 QUERY="<task name or keywords>"
-curl -sG "https://api.semanticscholar.org/graph/v1/paper/search" \
-  -H "x-api-key: $PWC_SEMANTIC_SCHOLAR_API_KEY" \
-  --data-urlencode "query=$QUERY" \
-  --data-urlencode "limit=100" \
-  --data-urlencode "fields=title,year,citationCount,externalIds,abstract,url,authors" \
+uv run --env-file backend/keys.env --directory s2_cli s2 search "$QUERY" --limit 100 --json \
   > /tmp/s2-<task-slug>.json
 
-curl -sG "https://api.semanticscholar.org/graph/v1/paper/search" \
-  -H "x-api-key: $PWC_SEMANTIC_SCHOLAR_API_KEY" \
-  --data-urlencode "query=$QUERY" \
-  --data-urlencode "year=2025-2026" \
-  --data-urlencode "limit=100" \
-  --data-urlencode "fields=title,year,citationCount,externalIds,abstract,url,authors" \
+uv run --env-file backend/keys.env --directory s2_cli s2 search "$QUERY" --year 2025-2026 --limit 100 --json \
   > /tmp/s2-<task-slug>-recent.json
 ```
+
+Walk citation edges with `s2 refs PAPER` and `s2 citations PAPER` when a paper's bibliography or citing work matters. Quote titles; prefer `ARXIV:` IDs after the first match.
 
 Extract candidate arXiv IDs from `externalIds.ArXiv`. Keep papers that mention the task or close synonyms in title/abstract, especially high-citation classics and 2025/2026 papers.
 
