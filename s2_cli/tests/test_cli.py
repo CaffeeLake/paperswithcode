@@ -154,6 +154,19 @@ def test_search_json(monkeypatch, capsys):
     assert body["data"] == payload
 
 
+def test_search_jsonl_emits_unnested_papers(monkeypatch, capsys):
+    monkeypatch.setenv("S2_API_KEY", "test-key")
+    papers = [
+        {"paperId": "a", "title": "First", "citationCount": 2},
+        {"paperId": "b", "title": "Second", "citationCount": 3},
+    ]
+    monkeypatch.setattr(
+        "s2_cli.cli.Client", lambda: FakeClient({"paper/search": {"data": papers}})
+    )
+    assert main(["search", "test", "--jsonl"]) == 0
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == papers
+
+
 def test_refs_title_match_then_flatten(monkeypatch, capsys):
     monkeypatch.setenv("S2_API_KEY", "test-key")
     client = FakeClient(
@@ -232,6 +245,85 @@ def test_citations_arxiv_skips_title_match(monkeypatch, capsys):
     ]
 
 
+def test_citations_jsonl_flattens_edges(monkeypatch, capsys):
+    monkeypatch.setenv("S2_API_KEY", "test-key")
+    paper = {"paperId": "bert", "title": "BERT", "citationCount": 80000}
+    client = FakeClient(
+        {"paper/ARXIV:1706.03762/citations": {"data": [{"citingPaper": paper}]}}
+    )
+    monkeypatch.setattr("s2_cli.cli.Client", lambda: client)
+    assert main(["citations", "1706.03762", "--jsonl"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == paper
+    assert "# paper:\tARXIV:1706.03762" in captured.err
+
+
+def test_citations_sort_and_top_are_explicitly_page_scoped(monkeypatch, capsys):
+    monkeypatch.setenv("S2_API_KEY", "test-key")
+    papers = [
+        {"paperId": "low", "title": "Low", "citationCount": 2},
+        {"paperId": "high", "title": "High", "citationCount": 100},
+        {"paperId": "unknown", "title": "Unknown", "citationCount": None},
+    ]
+    client = FakeClient(
+        {
+            "paper/ARXIV:1706.03762/citations": {
+                "offset": 40,
+                "next": 43,
+                "data": [{"citingPaper": paper} for paper in papers],
+            }
+        }
+    )
+    monkeypatch.setattr("s2_cli.cli.Client", lambda: client)
+    assert (
+        main(
+            [
+                "citations",
+                "1706.03762",
+                "--limit",
+                "3",
+                "--offset",
+                "40",
+                "--sort-by",
+                "citation-count",
+                "--top",
+                "2",
+                "--jsonl",
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert [json.loads(line)["paperId"] for line in captured.out.splitlines()] == [
+        "high",
+        "low",
+    ]
+    assert "3 results returned at offset 40" in captured.err
+    assert "not a global citation ranking" in captured.err
+    assert "# more: rerun with --offset 43" in captured.err
+
+
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        (["--top", "5"], "--top requires --sort-by citation-count"),
+        (
+            ["--sort-by", "citation-count", "--json"],
+            "--sort-by cannot be combined with raw --json",
+        ),
+        (
+            ["--limit", "5", "--sort-by", "citation-count", "--top", "6"],
+            "--top cannot exceed --limit",
+        ),
+    ],
+)
+def test_invalid_output_flag_combinations_exit_2(arguments, message, capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["citations", "1706.03762", *arguments])
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
+
+
 def test_refs_json_includes_resolved_paper(monkeypatch, capsys):
     monkeypatch.setenv("S2_API_KEY", "test-key")
     payload = {"data": [{"citedPaper": {"paperId": "ref-1", "title": "LSTM"}}]}
@@ -261,7 +353,7 @@ def test_version_does_not_need_a_key(monkeypatch, capsys):
     monkeypatch.delenv("PWC_SEMANTIC_SCHOLAR_API_KEY", raising=False)
     monkeypatch.delenv("S2_API_KEY", raising=False)
     assert main(["version"]) == 0
-    assert capsys.readouterr().out.startswith("s2 0.1.0")
+    assert capsys.readouterr().out.startswith("s2 0.2.0")
 
 
 def test_429_retries_then_succeeds(monkeypatch):

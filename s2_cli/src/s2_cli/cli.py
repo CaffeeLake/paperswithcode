@@ -73,6 +73,11 @@ def _emit_json(payload: Any, paper: ResolvedPaper | None = None) -> int:
     return 0
 
 
+def _emit_jsonl(items: list[dict[str, Any]]) -> None:
+    for item in items:
+        print(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+
+
 def _paper_from_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "paperId": item.get("paperId"),
@@ -125,6 +130,39 @@ def _print_more(payload: dict[str, Any]) -> None:
     print(f"# more: rerun with --offset {nxt}", file=sys.stderr)
 
 
+def _select_items(
+    args: argparse.Namespace, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    selected = items
+    if args.sort_by == "citation-count":
+        selected = sorted(
+            selected,
+            key=lambda item: (
+                item.get("citationCount")
+                if isinstance(item.get("citationCount"), (int, float))
+                else -1
+            ),
+            reverse=True,
+        )
+        print(
+            "# scope: citation-count order applies only to the "
+            f"{len(items)} results returned at offset {args.offset}; "
+            "this is not a global citation ranking",
+            file=sys.stderr,
+        )
+    if args.top is not None:
+        selected = selected[: args.top]
+    return selected
+
+
+def _emit_items(args: argparse.Namespace, items: list[dict[str, Any]]) -> None:
+    selected = _select_items(args, items)
+    if args.jsonl:
+        _emit_jsonl(selected)
+    else:
+        _print_paper_rows(selected)
+
+
 def _edge_items(
     payload: Any, nested_key: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -159,7 +197,7 @@ def search(args: argparse.Namespace, client: Client) -> int:
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
         raise ResponseError("API response did not contain a result list")
     items = [item for item in payload["data"] if isinstance(item, dict)]
-    _print_paper_rows(items)
+    _emit_items(args, items)
     _print_more(payload)
     return 0
 
@@ -191,7 +229,7 @@ def _graph_list(
         return _emit_json(payload, paper)
     _print_header(paper)
     items, body = _edge_items(payload, nested_key)
-    _print_paper_rows(items)
+    _emit_items(args, items)
     _print_more(body)
     return 0
 
@@ -211,9 +249,25 @@ def version(_args: argparse.Namespace, _client: Client) -> int:
     return 0
 
 
-def _json_flag(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
+def _output_flags(parser: argparse.ArgumentParser) -> None:
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--json", action="store_true", help="emit stable versioned JSON"
+    )
+    output.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="emit one unnested Semantic Scholar paper object per line",
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=("citation-count",),
+        help="sort only the fetched page (not a global ranking)",
+    )
+    parser.add_argument(
+        "--top",
+        type=_limit(1000),
+        help="return the first N sorted results; requires --sort-by",
     )
 
 
@@ -242,7 +296,7 @@ def _add_graph_flags(parser: argparse.ArgumentParser) -> None:
         help="pagination offset (default: 0)",
     )
     _fields_flag(parser)
-    _json_flag(parser)
+    _output_flags(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -252,8 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             '  s2 refs "Attention is All You Need"\n'
-            "  s2 citations ARXIV:1706.03762 --limit 50\n"
-            '  s2 search "image dehazing" --year 2025-2026 --limit 100 --json'
+            "  s2 citations ARXIV:1706.03762 --limit 1000 "
+            "--sort-by citation-count --top 20\n"
+            '  s2 search "image dehazing" --year 2025-2026 --limit 100 --jsonl'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -290,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="year or inclusive range, e.g. 2025 or 2025-2026",
     )
     _fields_flag(search_parser)
-    _json_flag(search_parser)
+    _output_flags(search_parser)
     search_parser.set_defaults(handler=search)
 
     refs_parser = commands.add_parser(
@@ -318,9 +373,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.command == "version":
+        return
+    if args.top is not None and args.sort_by is None:
+        parser.error("--top requires --sort-by citation-count")
+    if args.top is not None and args.top > args.limit:
+        parser.error("--top cannot exceed --limit")
+    if args.sort_by and args.json:
+        parser.error("--sort-by cannot be combined with raw --json; use --jsonl")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _validate_args(parser, args)
     try:
         if args.command == "version":
             return version(args, None)  # type: ignore[arg-type]
