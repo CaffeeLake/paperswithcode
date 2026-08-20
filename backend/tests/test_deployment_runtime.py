@@ -1457,6 +1457,9 @@ def test_disabled_production_descriptor_supports_pre_pi_source(tmp_path: Path):
 
 def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
+    (release / "frontend-dist" / "assets" / "pdf.worker.min-abc123.js").write_text(
+        "export {}"
+    )
     sha = "a" * 40
     descriptor = _chat_descriptor_from_source(
         Path(__file__).resolve().parents[2],
@@ -1483,8 +1486,45 @@ def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Pat
     assert validate_local_bundle(release, validated["frontend_features"]) == []
 
 
+def test_v6_production_chat_release_remains_a_valid_rollback_target(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    descriptor = _chat_descriptor_from_source(
+        Path(__file__).resolve().parents[2],
+        "production",
+        chat_enabled=True,
+    )
+    assert descriptor is not None
+    descriptor["modal_image_version"] = "im-test-immutable"
+    manifest = build_manifest(
+        "a" * 40,
+        "production",
+        chat_descriptor=descriptor,
+        production_chat_enabled=True,
+    )
+    previous_features = {
+        "chat": True,
+        "native_pdf_reader": False,
+        "paper_reader_chat": False,
+        "paper_reader_selection": False,
+        "codex_add_evals": True,
+        "codex_enrich_paper": True,
+    }
+    manifest["feature_contract_version"] = 6
+    manifest["backend_features"] = previous_features
+    manifest["frontend_features"] = previous_features
+    (release / "release.json").write_text(json.dumps(manifest))
+    (release / "frontend-dist" / "features.json").write_text(
+        json.dumps(previous_features)
+    )
+
+    assert validate_manifest(release, "production")["feature_contract_version"] == 6
+
+
 def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
+    (release / "frontend-dist" / "assets" / "pdf.worker.min-abc123.js").write_text(
+        "export {}"
+    )
     sha = "a" * 40
     descriptor = _chat_descriptor_from_source(
         Path(__file__).resolve().parents[2],
@@ -1507,6 +1547,9 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     (release / "frontend-dist" / "features.json").write_text(json.dumps(features))
     settings = deployed_settings(tmp_path, release, "production")
     settings.chat_enabled = True
+    settings.native_pdf_reader_enabled = True
+    settings.paper_reader_chat_enabled = True
+    settings.paper_reader_selection_enabled = True
     settings.chat_public_admission_enabled = True
     settings.chat_sandbox_admission_enabled = True
     settings.chat_max_concurrency = 2
@@ -1784,9 +1827,9 @@ def test_production_activation_frontend_flags_are_enabled_together():
         "VITE_CHAT_ENABLED": "1",
         "VITE_CHAT_LIVE": "1",
         "VITE_CHAT_MCP_APPS_HOST_ENABLED": "0",
-        "VITE_NATIVE_PDF_READER_ENABLED": "0",
-        "VITE_PAPER_READER_CHAT_ENABLED": "0",
-        "VITE_PAPER_READER_SELECTION_ENABLED": "0",
+        "VITE_NATIVE_PDF_READER_ENABLED": "1",
+        "VITE_PAPER_READER_CHAT_ENABLED": "1",
+        "VITE_PAPER_READER_SELECTION_ENABLED": "1",
         "VITE_CODEX_ADD_EVALS_ENABLED": "1",
         "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
     }
