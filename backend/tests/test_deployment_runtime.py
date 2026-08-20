@@ -1038,6 +1038,32 @@ def test_posterly_gateway_upgrade_requires_zero_assignment_bridge():
     validate_rolling_compatibility(bridge, armed)
 
 
+def test_direct_openai_gateway_upgrade_requires_zero_assignment_bridge():
+    active = {
+        "chat_runtime": {
+            "enabled": True,
+            "gateway_contract_version": 29,
+            "gateway_compatible_from": 28,
+            "database_contract_version": 2,
+        }
+    }
+    bridge = {
+        "chat_runtime": {
+            "enabled": True,
+            "gateway_contract_version": 30,
+            "gateway_compatible_from": 29,
+            "database_contract_version": 2,
+            "direct_openai_enabled": False,
+        }
+    }
+    validate_rolling_compatibility(active, bridge)
+
+    armed = {"chat_runtime": {**bridge["chat_runtime"], "direct_openai_enabled": True}}
+    with pytest.raises(ValueError, match="rollback"):
+        validate_rolling_compatibility(active, armed)
+    validate_rolling_compatibility(bridge, armed)
+
+
 def test_disabled_pi_gateway_bridge_can_open_only_with_zero_assignment():
     active = {
         "chat_runtime": {

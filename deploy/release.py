@@ -13,6 +13,7 @@ from backend.chat_sandbox_worker.contract import (
     DATABASE_CONTRACT_VERSION,
     DEFAULT_AGENT_HARNESS,
     DEFAULT_BACKEND,
+    DIRECT_OPENAI_ENABLED,
     GATEWAY_COMPATIBLE_FROM,
     GATEWAY_CONTRACT_VERSION,
     MODAL_IMAGE_ID,
@@ -209,6 +210,7 @@ def chat_runtime(
             "pi_node_version": "",
             "pi_node_sha256": "",
             "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
+            "direct_openai_enabled": False,
             "posterly_enabled": False,
             "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
             "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -239,6 +241,7 @@ def chat_runtime(
         "pi_node_version": PI_NODE_VERSION,
         "pi_node_sha256": PI_NODE_SHA256,
         "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
+        "direct_openai_enabled": DIRECT_OPENAI_ENABLED,
         "posterly_enabled": POSTERLY_ENABLED,
         "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
         "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -385,12 +388,14 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "posterly_chromium_revision",
         "posterly_artifact_bucket_id",
     }
+    provider_runtime_keys = posterly_runtime_keys | {"direct_openai_enabled"}
     runtime_keys = frozenset(runtime) if isinstance(runtime, dict) else frozenset()
     if not isinstance(runtime, dict) or runtime_keys not in {
         frozenset(legacy_runtime_keys),
         frozenset(rolling_runtime_keys),
         frozenset(pi_runtime_keys),
         frozenset(posterly_runtime_keys),
+        frozenset(provider_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
@@ -423,7 +428,13 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         if runtime["enabled"] is not True:
             raise ValueError("enabled chat runtime must be active")
     if (
-        set(runtime) in (rolling_runtime_keys, pi_runtime_keys, posterly_runtime_keys)
+        set(runtime)
+        in (
+            rolling_runtime_keys,
+            pi_runtime_keys,
+            posterly_runtime_keys,
+            provider_runtime_keys,
+        )
         and runtime["enabled"]
     ):
         gateway_version = runtime["gateway_contract_version"]
@@ -439,7 +450,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat gateway rolling contract is invalid")
         if not isinstance(database_version, int) or database_version < 1:
             raise ValueError("chat database contract is invalid")
-    if set(runtime) in (pi_runtime_keys, posterly_runtime_keys):
+    if set(runtime) in (pi_runtime_keys, posterly_runtime_keys, provider_runtime_keys):
         supported = runtime["supported_agent_harnesses"]
         if supported not in (["claude"], ["claude", "pi"]):
             raise ValueError("chat runtime harness set is invalid")
@@ -470,7 +481,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
                 raise ValueError("Pi source commit is invalid")
             if len(runtime["pi_node_sha256"]) != 64:
                 raise ValueError("Pi Node digest is invalid")
-    if set(runtime) == posterly_runtime_keys:
+    if set(runtime) in (posterly_runtime_keys, provider_runtime_keys):
         expected_posterly = {
             "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
             "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -485,6 +496,11 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("Posterly may be enabled only in staging releases")
         if any(runtime[key] != value for key, value in expected_posterly.items()):
             raise ValueError("Posterly release provenance does not match source pins")
+    if set(runtime) == provider_runtime_keys:
+        if runtime["direct_openai_enabled"] not in {True, False}:
+            raise ValueError("direct OpenAI release activation must be a boolean")
+        if runtime["direct_openai_enabled"] and profile != "staging":
+            raise ValueError("direct OpenAI may be enabled only in staging releases")
     return _validate_release_files(release_dir, manifest, expected)
 
 
@@ -561,11 +577,22 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
         and candidate_database == active_database
         and candidate_runtime.get("posterly_enabled") is False
     )
+    # Gateway 30 adds only the native Responses route. The first release keeps
+    # direct assignment disabled so its gateway can safely become both current
+    # and the rollback target before a second release enables direct OpenAI.
+    direct_openai_zero_assignment_bridge = (
+        active_emits == 29
+        and candidate_emits == 30
+        and candidate_accepts == 29
+        and candidate_database == active_database
+        and candidate_runtime.get("direct_openai_enabled") is False
+    )
     if (
         not active_accepts <= candidate_emits <= active_emits
         and not hf_catalog_fail_closed_rollback
         and not pi_zero_assignment_bridge
         and not posterly_zero_assignment_bridge
+        and not direct_openai_zero_assignment_bridge
     ):
         raise ValueError("active release cannot serve candidate workers on rollback")
     if active_database != candidate_database and not pi_zero_assignment_bridge:
