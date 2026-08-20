@@ -62,7 +62,8 @@ export class PiEventAdapter {
   private readonly resultIds = new Set<string>();
   private readonly toolStartedAt = new Map<string, number>();
   private readonly toolNames = new Map<string, string>();
-  private readonly contentToolIds = new Map<number, string>();
+  private readonly contentTools = new Map<number, { id: string; publicIndex: number }>();
+  private nextPublicContentIndex = 0;
   private readonly providerToolIds = new Map<string, string>();
   private readonly argumentBytes = new Map<string, number>();
 
@@ -93,13 +94,14 @@ export class PiEventAdapter {
     const partial = record(update.partial);
     const content = Array.isArray(partial.content) ? partial.content : [];
     const block = record(content[contentIndex]);
-    const existing = this.contentToolIds.get(contentIndex);
+    const existing = this.contentTools.get(contentIndex);
     const providerId = typeof block.id === "string" ? block.id : "";
-    const id = existing || providerId || `content:${contentIndex}`;
+    const id = existing?.id || providerId || `content:${contentIndex}`;
+    const publicIndex = existing?.publicIndex ?? this.nextPublicContentIndex++;
     const name = publicToolName(block.name);
     if (providerId) this.providerToolIds.set(providerId, id);
-    this.contentToolIds.set(contentIndex, id);
-    return { contentIndex, id, name, args: record(block.arguments) };
+    this.contentTools.set(contentIndex, { id, publicIndex });
+    return { contentIndex: publicIndex, id, name, args: record(block.arguments) };
   }
 
   private startStreamedTool(tool: ReturnType<PiEventAdapter["streamedTool"]>): PwCEvent[] {
@@ -170,10 +172,12 @@ export class PiEventAdapter {
         const contentIndex = Number(update.contentIndex);
         const final = record(update.toolCall);
         const providerId = typeof final.id === "string" ? final.id : "";
-        const id = this.contentToolIds.get(contentIndex) || providerId || `content:${contentIndex}`;
+        const existing = this.contentTools.get(contentIndex);
+        const id = existing?.id || providerId || `content:${contentIndex}`;
+        const publicIndex = existing?.publicIndex ?? this.nextPublicContentIndex++;
         if (providerId) this.providerToolIds.set(providerId, id);
         const tool = {
-          contentIndex,
+          contentIndex: publicIndex,
           id,
           name: publicToolName(final.name),
           args: record(final.arguments),
@@ -273,7 +277,7 @@ export class PiEventAdapter {
       // Content indexes are scoped to one provider response. Keeping this map
       // across tool rounds aliases a later call to an earlier call that used
       // the same index, which can suppress its start, arguments, and result.
-      this.contentToolIds.clear();
+      this.contentTools.clear();
       if (message.stopReason === "error" || typeof message.errorMessage === "string") {
         this.terminalFailure = true;
         return [

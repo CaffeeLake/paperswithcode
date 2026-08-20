@@ -249,7 +249,7 @@ test("provider content indexes are reusable across tool rounds", () => {
     type: "tool_call_start",
     id: "second",
     name: "Bash",
-    content_index: 0,
+    content_index: 1,
   });
 });
 
