@@ -51,6 +51,10 @@ from backend.services.chat_session_store_gateway import (
     SessionStoreCommand,
     SessionStoreGatewayError,
 )
+from backend.services.chat_semantic_scholar_service import (
+    SemanticScholarGatewayError,
+    fetch_semantic_scholar,
+)
 from backend.services.chat_tracing_service import start_provider_request_trace
 from backend.services.chat_web_fetch_service import (
     ChatWebFetchError,
@@ -470,6 +474,17 @@ def catalog(
             ChatCapabilityService(db).meter_web_search(
                 capability, maximum_searches=settings.chat_web_search_max_calls
             )
+        elif body.operation == "semantic_scholar":
+            operation = (
+                "search"
+                if body.arguments.get("path", "").strip("/") == "paper/search"
+                else body.operation
+            )
+            ChatCapabilityService(db).meter_catalog(
+                capability,
+                operation,
+                maximum_searches=settings.chat_max_direct_search_calls,
+            )
         else:
             ChatCapabilityService(db).meter_catalog(
                 capability,
@@ -504,6 +519,27 @@ def catalog(
                 status_code=503,
                 detail={"code": error.code, "message": str(error)},
             ) from None
+    if body.operation == "semantic_scholar":
+        try:
+            return {
+                "result": fetch_semantic_scholar(
+                    settings,
+                    str(body.arguments["path"]),
+                    dict(body.arguments.get("query") or {}),
+                )
+            }
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except SemanticScholarGatewayError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail="Semantic Scholar request failed",
+            ) from error
+        except (httpx.HTTPError, RuntimeError) as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Semantic Scholar is temporarily unavailable",
+            ) from error
     try:
         result = ChatGatewayService(db, settings).catalog(
             body.operation, body.arguments
