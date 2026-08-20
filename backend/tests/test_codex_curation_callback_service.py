@@ -558,16 +558,16 @@ def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
+    "error",
     [
-        (ValueError("rejected proposal"), False),
-        (CodexCurationMutationClosedError("late callback"), False),
-        (CodexCurationPaperNotFoundError("deleted paper"), False),
-        (RuntimeError("unexpected callback failure"), True),
+        ValueError("rejected proposal"),
+        CodexCurationMutationClosedError("late callback"),
+        CodexCurationPaperNotFoundError("deleted paper"),
+        RuntimeError("unexpected callback failure"),
     ],
 )
-def test_only_unexpected_callback_failures_pause_scheduled_dispatch(error, expected):
-    assert _requires_scheduled_dispatch_pause(error) is expected
+def test_callback_apply_failures_do_not_pause_scheduled_dispatch(error):
+    assert _requires_scheduled_dispatch_pause(error) is False
 
 
 def test_scheduled_enrichment_allows_evidenced_hf_project_page_removal():

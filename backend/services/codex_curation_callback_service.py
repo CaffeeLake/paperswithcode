@@ -64,16 +64,15 @@ class CodexCurationEnrichmentRequiredError(ValueError):
     """An enrichment job did not receive its mutation payload."""
 
 
-def _requires_scheduled_dispatch_pause(exc: Exception) -> bool:
-    """Separate expected proposal rejection from an unexpected safety fault."""
-    return not isinstance(
-        exc,
-        (
-            ValueError,
-            CodexCurationMutationClosedError,
-            CodexCurationPaperNotFoundError,
-        ),
-    )
+def _evaluation_harness_clause(harness: str | None):
+    if harness is None:
+        return Evaluation.harness.is_(None)
+    return Evaluation.harness == harness
+
+
+def _requires_scheduled_dispatch_pause(_exc: Exception) -> bool:
+    """Never halt the daily queue because one paper's apply failed."""
+    return False
 
 
 class CodexCurationCallbackService:
@@ -1024,7 +1023,7 @@ class CodexCurationCallbackService:
                 Evaluation.task_id == item.task_id,
                 Evaluation.dataset_id == item.dataset_id,
                 Evaluation.model_name == item.model_name,
-                Evaluation.harness.is_(item.harness),
+                _evaluation_harness_clause(item.harness),
                 Evaluation.best_metric == item.best_metric,
             )
             .all()
@@ -1120,7 +1119,7 @@ class CodexCurationCallbackService:
                 Evaluation.task_id == item.task_id,
                 Evaluation.dataset_id == item.dataset_id,
                 Evaluation.model_name == item.model_name,
-                Evaluation.harness.is_(item.harness),
+                _evaluation_harness_clause(item.harness),
                 Evaluation.best_metric == item.best_metric,
             )
             if hasattr(query, "with_for_update"):
