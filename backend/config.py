@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
     codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)
     codex_jobs_cli_version: str = Field(default="0.75.0")
-    codex_jobs_model: str = Field(default="gpt-5.6-sol")
+    codex_jobs_model: str = Field(default="gpt-5.6-luna")
     codex_jobs_reasoning_effort: str = Field(default="medium")
     codex_jobs_max_active: int = Field(default=4, ge=1, le=16)
     codex_jobs_max_scheduled_active: int = Field(default=3, ge=0, le=15)

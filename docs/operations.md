@@ -376,7 +376,7 @@ Configuration is fail-closed. Production direct apply requires all of:
 - a private, fully qualified `PWC_CODEX_CURATION_TRACE_HF_BUCKET_ID`;
 - an immutable curator image: either a registry digest or a content-versioned
   public Docker Space plus its exact 40-character Hub revision;
-- pinned model `gpt-5.6-sol`, medium reasoning, and Codex CLI version.
+- pinned model `gpt-5.6-luna`, medium reasoning, and Codex CLI version.
 
 The production image is the public, content-versioned Docker Space
 `hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c`, pinned to Hub revision

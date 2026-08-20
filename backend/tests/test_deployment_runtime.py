@@ -3316,7 +3316,7 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
         "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c"),
         "PWC_CODEX_JOBS_IMAGE_REVISION": ("11e9558b6c77e0989185baa453bc99229b226696"),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
-        "PWC_CODEX_JOBS_MODEL": "gpt-5.6-sol",
+        "PWC_CODEX_JOBS_MODEL": "gpt-5.6-luna",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
         "PWC_CODEX_JOBS_MAX_ACTIVE": "4",
         "PWC_CODEX_JOBS_MAX_SCHEDULED_ACTIVE": "3",
