@@ -31,6 +31,19 @@ from backend.services.three_d_arena_sync_service import (
 )
 
 
+def _public_payload() -> list[dict]:
+    return [
+        {
+            "name": f"Model-{rank}",
+            "rank": str(rank),
+            "score": 1500 - rank,
+            "votes": rank * 10,
+            "open_source": rank % 2 == 0,
+        }
+        for rank in range(1, 16)
+    ]
+
+
 @compiles(BigInteger, "sqlite")
 def _compile_bigint_sqlite(_element, _compiler, **_kw):
     return "INTEGER"
@@ -102,16 +115,7 @@ def _session() -> Session:
 
 
 def test_parse_and_fetch_public_leaderboard_contract():
-    payload = [
-        {
-            "name": f"Model-{rank}",
-            "rank": str(rank),
-            "score": 1500 - rank,
-            "votes": rank * 10,
-            "open_source": rank % 2 == 0,
-        }
-        for rank in range(1, 16)
-    ]
+    payload = _public_payload()
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == ARENA_ENDPOINT
@@ -121,6 +125,55 @@ def test_parse_and_fetch_public_leaderboard_contract():
         entries = fetch_arena_leaderboard(client)
     assert entries[0] == ArenaEntry("Model-1", 1, 1499, 10, False)
     assert entries[-1].rank == 15
+
+
+def test_fetch_retries_429_then_succeeds():
+    payload = _public_payload()
+    calls = {"n": 0}
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "1.5"})
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        entries = fetch_arena_leaderboard(client, sleep=delays.append)
+
+    assert calls["n"] == 2
+    assert delays == [1.5]
+    assert entries[0].name == "Model-1"
+
+
+def test_fetch_does_not_retry_client_errors():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_arena_leaderboard(client, sleep=lambda _delay: None)
+
+    assert calls["n"] == 1
+
+
+def test_fetch_raises_after_retry_budget():
+    calls = {"n": 0}
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_arena_leaderboard(client, sleep=delays.append)
+
+    assert calls["n"] == 4
+    assert delays == [2.0, 4.0, 8.0]
 
 
 def test_parser_rejects_truncated_or_noncontiguous_data():
@@ -238,3 +291,78 @@ def test_current_model_with_missing_paper_does_not_delete_previous_row():
     )
     assert stats.missing_papers == ["Pixal3D:2605.10922"]
     assert session.query(Evaluation).filter_by(model_name="Pixal3D").count() == 1
+
+
+def test_sync_adopts_leftover_row_with_stale_source_url():
+    session = _session()
+    leftover = Evaluation(
+        paper_id=2,
+        task_id=13,
+        dataset_id=1695,
+        model_name="InstantMesh",
+        methodology=f"{MANAGED_METHODOLOGY_PREFIX} old",
+        metrics={METRIC_NAME: 1200},
+        best_metric=METRIC_NAME,
+        external_source_url="https://arxiv.org/abs/2404.07191",
+        source_url="https://arxiv.org/abs/2404.07191",
+        external=True,
+    )
+    session.add(leftover)
+    session.commit()
+
+    stats = ThreeDArenaSyncService(session).sync(
+        [ArenaEntry("InstantMesh", 1, 1267, 20, True)]
+    )
+    rows = session.query(Evaluation).all()
+    assert stats.created == 0
+    assert stats.updated == 1
+    assert stats.deleted == 0
+    assert len(rows) == 1
+    assert rows[0].metrics == {METRIC_NAME: 1267}
+    assert rows[0].external_source_url == ARENA_SOURCE_URL
+    assert rows[0].source_url == ARENA_SOURCE_URL
+
+
+def test_sync_deletes_duplicate_leftover_when_canonical_row_exists():
+    session = _session()
+    session.add_all(
+        [
+            Evaluation(
+                paper_id=2,
+                task_id=13,
+                dataset_id=1695,
+                model_name="InstantMesh",
+                methodology=f"{MANAGED_METHODOLOGY_PREFIX} leftover",
+                metrics={METRIC_NAME: 1265},
+                best_metric=METRIC_NAME,
+                external_source_url="https://arxiv.org/abs/2404.07191",
+                source_url="https://arxiv.org/abs/2404.07191",
+                external=True,
+            ),
+            Evaluation(
+                paper_id=2,
+                task_id=13,
+                dataset_id=1695,
+                model_name="InstantMesh",
+                methodology=f"{MANAGED_METHODOLOGY_PREFIX} canonical",
+                metrics={METRIC_NAME: 1265},
+                best_metric=METRIC_NAME,
+                external_source_url=ARENA_SOURCE_URL,
+                source_url=ARENA_SOURCE_URL,
+                external=True,
+            ),
+        ]
+    )
+    session.commit()
+
+    stats = ThreeDArenaSyncService(session).sync(
+        [ArenaEntry("InstantMesh", 1, 1267, 20, True)]
+    )
+    rows = session.query(Evaluation).all()
+    assert stats.updated == 1
+    assert stats.deleted == 1
+    assert stats.created == 0
+    assert len(rows) == 1
+    assert rows[0].metrics == {METRIC_NAME: 1267}
+    assert rows[0].external_source_url == ARENA_SOURCE_URL
+    assert rows[0].methodology.startswith(MANAGED_METHODOLOGY_PREFIX)

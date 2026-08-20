@@ -143,6 +143,16 @@ def test_parse_and_fetch_public_leaderboard_contract():
     assert entries[-1].company == "Example"
 
 
+def test_parser_accepts_stable_rating_status():
+    rows = [_payload_row(index) for index in range(5)]
+    rows[0]["ratingStatus"] = "stable"
+
+    entries = parse_coarena_leaderboard({"entries": rows})
+
+    assert entries[0].rating_status == "stable"
+    assert entries[1].rating_status == "ranked"
+
+
 def test_parser_rejects_truncated_duplicate_or_unrated_data():
     with pytest.raises(ValueError, match="expected 5-100"):
         parse_coarena_leaderboard({"entries": []})
@@ -155,6 +165,11 @@ def test_parser_rejects_truncated_duplicate_or_unrated_data():
     rows = [_payload_row(index) for index in range(5)]
     rows[-1]["rated"] = False
     with pytest.raises(ValueError, match="unrated"):
+        parse_coarena_leaderboard({"entries": rows})
+
+    rows = [_payload_row(index) for index in range(5)]
+    rows[-1]["ratingStatus"] = "pending"
+    with pytest.raises(ValueError, match="rating status is invalid"):
         parse_coarena_leaderboard({"entries": rows})
 
 

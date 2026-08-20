@@ -28,6 +28,9 @@ METRIC_NAME = "Elo (live, external)"
 MANAGED_METHODOLOGY_PREFIX = "Managed by the Papers with Code CoArena live sync."
 MIN_EXPECTED_ENTRIES = 5
 MAX_EXPECTED_ENTRIES = 100
+# Published CoArena statuses. `stable` is used for long-standing top models
+# such as Fable 5; treating it as invalid aborted the hourly sync.
+VALID_RATING_STATUSES = {"ranked", "provisional", "stable"}
 
 
 @dataclass(frozen=True)
@@ -174,7 +177,7 @@ def parse_coarena_leaderboard(payload: Any) -> list[CoArenaEntry]:
         rating_status = raw.get("ratingStatus")
         if rating_basis not in {"bradley_terry", "online_elo"}:
             raise ValueError(f"CoArena rating basis is invalid for {model_id}")
-        if rating_status not in {"ranked", "provisional"}:
+        if rating_status not in VALID_RATING_STATUSES:
             raise ValueError(f"CoArena rating status is invalid for {model_id}")
 
         elo = _finite_number(raw.get("elo"), field_name="elo", model_id=model_id)

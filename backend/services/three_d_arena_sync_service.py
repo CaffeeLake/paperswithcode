@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +29,10 @@ METRIC_NAME = "Elo (live, external)"
 MANAGED_METHODOLOGY_PREFIX = "Managed by the Papers with Code 3D Arena live sync."
 MIN_EXPECTED_ENTRIES = 15
 MAX_EXPECTED_ENTRIES = 100
+RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+MAX_FETCH_ATTEMPTS = 4
+RETRY_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
+MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 # This deliberately exact manifest is the trust boundary between an upstream model
@@ -136,7 +142,26 @@ def parse_arena_leaderboard(payload: Any) -> list[ArenaEntry]:
     return sorted(entries, key=lambda entry: entry.rank)
 
 
-def fetch_arena_leaderboard(client: httpx.Client | None = None) -> list[ArenaEntry]:
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            delay = None
+        else:
+            if 0 < delay <= MAX_RETRY_AFTER_SECONDS:
+                return delay
+    if attempt < len(RETRY_BACKOFF_SECONDS):
+        return RETRY_BACKOFF_SECONDS[attempt]
+    return RETRY_BACKOFF_SECONDS[-1]
+
+
+def fetch_arena_leaderboard(
+    client: httpx.Client | None = None,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[ArenaEntry]:
     """Fetch the public JSON proxy exposed by the 3D Arena Space."""
     owned_client = client is None
     active_client = client or httpx.Client(
@@ -145,9 +170,20 @@ def fetch_arena_leaderboard(client: httpx.Client | None = None) -> list[ArenaEnt
         headers={"User-Agent": "paperswithcode-3d-arena-sync/1.0"},
     )
     try:
-        response = active_client.get(ARENA_ENDPOINT)
+        response: httpx.Response | None = None
+        for attempt in range(MAX_FETCH_ATTEMPTS):
+            response = active_client.get(ARENA_ENDPOINT)
+            if (
+                response.status_code in RETRYABLE_STATUS_CODES
+                and attempt + 1 < MAX_FETCH_ATTEMPTS
+            ):
+                sleep(_retry_delay(response, attempt))
+                continue
+            response.raise_for_status()
+            return parse_arena_leaderboard(response.json())
+        assert response is not None
         response.raise_for_status()
-        return parse_arena_leaderboard(response.json())
+        raise AssertionError("unreachable")
     finally:
         if owned_client:
             active_client.close()
@@ -211,12 +247,20 @@ class ThreeDArenaSyncService:
                     Evaluation.task_id == task.id,
                     Evaluation.dataset_id == dataset.id,
                     Evaluation.best_metric == METRIC_NAME,
-                    Evaluation.external_source_url == ARENA_SOURCE_URL,
                     Evaluation.methodology.like(f"{MANAGED_METHODOLOGY_PREFIX}%"),
                 )
                 .all()
             )
-            managed_by_name = {row.model_name: row for row in managed_rows}
+            managed_by_name: dict[str, Evaluation] = {}
+            duplicate_rows: list[Evaluation] = []
+            for row in managed_rows:
+                existing = managed_by_name.get(row.model_name)
+                if existing is None:
+                    managed_by_name[row.model_name] = row
+                    continue
+                keep, discard = _preferred_managed_row(existing, row)
+                managed_by_name[row.model_name] = keep
+                duplicate_rows.append(discard)
             upstream_names = {entry.name for entry in entries}
 
             for entry in entries:
@@ -261,7 +305,15 @@ class ThreeDArenaSyncService:
             # A successful, validated upstream response is authoritative for model
             # presence. Rows whose model disappeared are removed, while a current
             # but temporarily unresolved model is protected from deletion.
+            # Duplicate leftovers (same model, stale source URL) are removed so
+            # the canonical Space URL row is the only managed copy.
+            skipped_duplicates = {id(row) for row in duplicate_rows}
+            for row in duplicate_rows:
+                self.db.delete(row)
+                stats.deleted += 1
             for row in managed_rows:
+                if id(row) in skipped_duplicates:
+                    continue
                 if row.model_name not in upstream_names:
                     self.db.delete(row)
                     stats.deleted += 1
@@ -281,3 +333,15 @@ class ThreeDArenaSyncService:
         except Exception:
             self.db.rollback()
             raise
+
+
+def _preferred_managed_row(
+    existing: Evaluation, candidate: Evaluation
+) -> tuple[Evaluation, Evaluation]:
+    """Keep the canonical Space URL row when two managed copies exist."""
+    if (
+        existing.external_source_url != ARENA_SOURCE_URL
+        and candidate.external_source_url == ARENA_SOURCE_URL
+    ):
+        return candidate, existing
+    return existing, candidate
