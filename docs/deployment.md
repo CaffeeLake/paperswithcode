@@ -546,6 +546,11 @@ the credential if it matches either production OpenAI key. It writes the key
 only to the trusted staging gateway environment, enables the direct route, and
 sets the single blank profile to direct Luna/low without changing production:
 
+Gateway contract 30 requires one direct-disabled bridge release first. Deploy
+that bridge with the historical OpenRouter Luna/low profile, then enable the
+protected direct configuration and deploy a second distinct contract-30 release.
+This keeps both the forward drain and automatic rollback paths executable.
+
 ```bash
 sudo python deploy/configure_host_env.py \
   --legacy-env /root/protected/staging-openai.env \
