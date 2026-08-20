@@ -194,6 +194,9 @@ function SubmissionCard({
     : paper?.title || `Paper #${paperId}`;
   const avatarUrl = `https://huggingface.co/${encodeURIComponent(submission.hf_username)}/avatar`;
   const isPending = submission.status === "pending";
+  const showSubmitterVisibleReason =
+    !!submission.user_review_reason &&
+    submission.user_review_reason.trim() !== submission.admin_note?.trim();
 
   const invalidateAfterReview = React.useCallback(
     (reviewed: PendingPaperEdit) => {
@@ -352,7 +355,7 @@ function SubmissionCard({
                 Admin note: <strong>{submission.admin_note}</strong>
               </span>
             )}
-            {submission.user_review_reason && (
+            {showSubmitterVisibleReason && (
               <span>Submitter-visible reason: <strong>{submission.user_review_reason}</strong></span>
             )}
             {submission.applied_payload && (

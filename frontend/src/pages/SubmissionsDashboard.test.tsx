@@ -123,6 +123,48 @@ describe("SubmissionsDashboard", () => {
     expect(screen.queryByText(/internal-only detail/)).not.toBeInTheDocument();
   });
 
+  it("does not repeat a submitter-visible reason that matches the admin note", async () => {
+    listPendingPaperEdits.mockResolvedValue({
+      count: 1,
+      results: [
+        {
+          ...externalPaperSubmission,
+          status: "approved",
+          admin_note: "The submission is valid.",
+          user_review_reason: "The submission is valid.",
+        },
+      ],
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText(/Admin note:/)).toHaveTextContent(
+      "The submission is valid.",
+    );
+    expect(screen.queryByText(/Submitter-visible reason:/)).not.toBeInTheDocument();
+  });
+
+  it("shows a distinct submitter-visible reason", async () => {
+    listPendingPaperEdits.mockResolvedValue({
+      count: 1,
+      results: [
+        {
+          ...externalPaperSubmission,
+          status: "approved",
+          admin_note: "Internal context.",
+          user_review_reason: "Public explanation.",
+        },
+      ],
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText(/Admin note:/)).toHaveTextContent("Internal context.");
+    expect(screen.getByText(/Submitter-visible reason:/)).toHaveTextContent(
+      "Public explanation.",
+    );
+  });
+
   it("labels and filters external paper submissions separately from taxonomy suggestions", async () => {
     const user = userEvent.setup();
     renderDashboard();
