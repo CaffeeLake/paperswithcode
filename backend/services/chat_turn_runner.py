@@ -154,6 +154,17 @@ _manager_settings: Settings | None = None
 _manager: SandboxSessionManager | None = None
 
 
+def _provider_mode_for_route(
+    settings: Settings, owner: ChatOwner, model_route: str
+) -> str:
+    provider = settings.chat_route_providers[model_route]
+    if provider == "openrouter":
+        return owner.openrouter_mode
+    if provider == "openai":
+        return "openai_funded"
+    return "huggingface"
+
+
 def shared_sandbox_manager(settings: Settings) -> SandboxSessionManager:
     """Keep persistent control attachments alive across HTTP turn runners."""
 
@@ -195,9 +206,7 @@ def create_chat_turn_runner(
         )
     with db_manager.session_local() as db:
         provider = settings.chat_route_providers[admission.model_route]
-        provider_mode = (
-            owner.openrouter_mode if provider == "openrouter" else "huggingface"
-        )
+        provider_mode = _provider_mode_for_route(settings, owner, admission.model_route)
         if provider == "openrouter" and provider_mode not in {
             "openrouter_funded",
             "openrouter_byok",
