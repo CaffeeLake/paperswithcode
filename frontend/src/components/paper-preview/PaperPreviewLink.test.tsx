@@ -368,6 +368,58 @@ describe("Markdown and chat policy", () => {
       "src",
       avatar,
     );
+    expect(mockedPreloadImage).toHaveBeenCalledWith(avatar);
+  });
+
+  it("warms a nearby GitHub preview and avatar before hover", async () => {
+    const href = "https://github.com/google-research/vision_transformer";
+    const avatar = "https://avatars.githubusercontent.com/u/43830688?v=4";
+    const mockedFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        description: "Vision Transformer",
+        stars: 14_200,
+        forks: 2_100,
+        language: "Jupyter Notebook",
+        archived: false,
+        avatar_url: avatar,
+      }),
+    });
+    vi.stubGlobal("fetch", mockedFetch);
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(private readonly callback: IntersectionObserverCallback) {}
+        observe(element: Element) {
+          this.callback(
+            [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
+            this as unknown as IntersectionObserver,
+          );
+        }
+        disconnect() {}
+        unobserve() {}
+        takeRecords() { return []; }
+        root = null;
+        rootMargin = "200px";
+        thresholds = [0];
+      },
+    );
+
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[google-research/vision_transformer](${href})`}
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockedPreloadImage).toHaveBeenCalledWith(avatar));
+    expect(screen.queryByText("GitHub repository")).not.toBeInTheDocument();
+
+    await hoverLink("google-research/vision_transformer");
+    expect(await screen.findByText("Vision Transformer")).toBeInTheDocument();
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps deep GitHub links clickable without a repository preview", async () => {

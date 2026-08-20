@@ -12,6 +12,7 @@ import {
   type GitHubRepo,
   type GitHubRepoPreview,
 } from "@/lib/github";
+import { preloadImage } from "@/lib/imagePreloader";
 
 const isCoarsePointer = (): boolean =>
   typeof window.matchMedia === "function" &&
@@ -67,14 +68,37 @@ export const GitHubPreviewLink: React.FC<{
   children: React.ReactNode;
 }> = ({ repo, children }) => {
   const [open, setOpen] = React.useState(false);
+  const [shouldLoad, setShouldLoad] = React.useState(false);
+  const triggerRef = React.useRef<HTMLAnchorElement>(null);
+  const warmPreview = React.useCallback(() => setShouldLoad(true), []);
   const query = useQuery({
     queryKey: ["github-repository-preview", repo.repoId.toLowerCase()],
     queryFn: ({ signal }) => fetchGitHubRepoPreview(repo, signal),
-    enabled: open,
+    enabled: open || shouldLoad,
     staleTime: 30 * 60 * 1000,
     gcTime: 60 * 60 * 1000,
     retry: false,
   });
+
+  React.useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        warmPreview();
+        observer.disconnect();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(trigger);
+    return () => observer.disconnect();
+  }, [warmPreview]);
+
+  React.useEffect(() => {
+    if (query.data?.avatarUrl) void preloadImage(query.data.avatarUrl);
+  }, [query.data?.avatarUrl]);
 
   return (
     <HoverCard
@@ -87,10 +111,13 @@ export const GitHubPreviewLink: React.FC<{
     >
       <HoverCardTrigger asChild>
         <a
+          ref={triggerRef}
           className="chat-github-link"
           href={repo.url}
           target="_blank"
           rel="noopener noreferrer"
+          onPointerEnter={warmPreview}
+          onFocus={warmPreview}
         >
           <Github aria-hidden="true" />
           {children}
