@@ -9,9 +9,13 @@ import {
 
 const ANSWER_NOW =
   "Execution limit reached. Do not call more tools. Answer now from the evidence already gathered.";
-const SEARCH = /(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)/iu;
+const SEARCH = /(?:^|[;&|()\n]\s*)(?:pwc|s2)\s+search(?:\s|$)/iu;
 const ANSI = /(?:\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~])/gu;
-const GUIDES = new Set(["/opt/pwc/PWC_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md"]);
+const GUIDES = new Set([
+  "/opt/pwc/PWC_CLI_SKILL.md",
+  "/opt/pwc/HF_CLI_SKILL.md",
+  "/opt/pwc/S2_CLI_SKILL.md",
+]);
 
 function inside(candidate: string, root: string): boolean {
   const relative = path.relative(root, path.resolve(candidate));

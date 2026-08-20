@@ -18,7 +18,7 @@ WEB_SEARCH_TOOL = "mcp__web__search_web"
 ALLOWED_TOOLS = frozenset({"Bash", "Read", WEB_SEARCH_TOOL})
 _HINT = "\n[output truncated; narrow, filter, or paginate the request and try again]\n"
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
-_SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)
+_SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)(?:pwc|s2)\s+search(?:\s|$)", re.IGNORECASE)
 _URL = re.compile(r'https?://[^\s<>"\\]+', re.IGNORECASE)
 _HARD_FAILURE = re.compile(
     r"(?:\b429\b|execution limit|tool limit reached|search limit reached)",
@@ -161,6 +161,7 @@ class ToolBudget:
         workspace: Path = Path("/workspace"),
         guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
         hf_guide: Path = Path("/opt/pwc/HF_CLI_SKILL.md"),
+        s2_guide: Path = Path("/opt/pwc/S2_CLI_SKILL.md"),
     ) -> Decision:
         if tool_id not in self.round_by_tool_id:
             # Compatibility fallback for callers that do not expose an SDK
@@ -215,7 +216,11 @@ class ToolBudget:
                 if not (
                     _inside(candidate, workspace)
                     or candidate.resolve(strict=False)
-                    in {guide.resolve(strict=False), hf_guide.resolve(strict=False)}
+                    in {
+                        guide.resolve(strict=False),
+                        hf_guide.resolve(strict=False),
+                        s2_guide.resolve(strict=False),
+                    }
                 ):
                     self.denied_calls += 1
                     return Decision(False, _READ_SCOPE_REASON)

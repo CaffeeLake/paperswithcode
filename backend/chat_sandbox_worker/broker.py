@@ -346,6 +346,54 @@ class Handler(BaseHTTPRequestHandler):
             GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
+    def _forward_semantic_scholar(self, body: bytes) -> None:
+        active = STATE.begin_request()
+        connection = self._connection()
+        reusable = False
+        try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/catalog",
+                body=json.dumps(
+                    {
+                        "operation": "semantic_scholar",
+                        "arguments": json.loads(body),
+                    },
+                    separators=(",", ":"),
+                ).encode(),
+                headers={
+                    **_gateway_headers(active=active),
+                    "Accept": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            raw = response.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                self.send_error(502)
+                return
+            if response.status >= 400:
+                self.send_response(response.status)
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            result = json.loads(raw)["result"]
+            output = json.dumps(
+                result, ensure_ascii=False, separators=(",", ":")
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(output)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(output)
+            reusable = _response_reusable(response)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            self.send_error(502)
+        finally:
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
+            STATE.finish_request()
+
     def do_POST(self) -> None:
         length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
         body = self.rfile.read(length)
@@ -423,6 +471,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlsplit(self.path)
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+        semantic_scholar_prefix = "/semantic-scholar/graph/v1/"
+        if parsed.path.startswith(semantic_scholar_prefix):
+            payload = json.dumps(
+                {
+                    "path": parsed.path[len(semantic_scholar_prefix) :],
+                    "query": query,
+                },
+                separators=(",", ":"),
+            ).encode()
+            self._forward_semantic_scholar(payload)
+            return
         operation: str | None = None
         arguments: dict = query
         match = None
