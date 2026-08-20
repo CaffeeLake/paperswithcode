@@ -1471,7 +1471,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
     assert descriptor["worker_contract_version"] == WORKER_CONTRACT_VERSION
-    assert descriptor["direct_openai_enabled"] is False
+    assert descriptor["direct_openai_enabled"] is True
     dormant = _chat_descriptor_from_source(source, "production")
     assert dormant is not None
     assert dormant["enabled"] is False
