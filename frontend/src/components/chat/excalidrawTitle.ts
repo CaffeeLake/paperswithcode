@@ -15,6 +15,22 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+/** Repair model-generated text that escaped a line break twice inside the
+ * JSON-string tool argument. This also fixes already-persisted diagrams. */
+export function withDecodedLineBreaks(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withDecodedLineBreaks);
+  const object = asRecord(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.entries(object).map(([key, child]) => [
+      key,
+      (key === "text" || key === "originalText") && typeof child === "string"
+        ? child.replace(/\\r\\n|\\n|\\r/gu, "\n")
+        : withDecodedLineBreaks(child),
+    ]),
+  );
+}
+
 function isTextElement(element: Record<string, unknown>): boolean {
   return element.type === "text" && typeof (element.text ?? element.originalText) === "string";
 }
@@ -73,7 +89,8 @@ function fitToCamera(element: Record<string, unknown>, camera: Box): Record<stri
 /** Keep the model's camera so the diagram still fills the frame. Only shrink
  * headings that would clip on the left or right of that camera. */
 export function withCenteredTitle(elements: unknown[]): unknown[] {
-  const records = elements.map(asRecord);
+  const decoded = withDecodedLineBreaks(elements) as unknown[];
+  const records = decoded.map(asRecord);
   if (records.some((item) => item === undefined)) return elements;
   const drawn = records as Record<string, unknown>[];
   const camera = cameraFrame(drawn);

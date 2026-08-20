@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { withCenteredTitle } from "./excalidrawTitle";
+import { withCenteredTitle, withDecodedLineBreaks } from "./excalidrawTitle";
+
+describe("withDecodedLineBreaks", () => {
+  it("repairs double-escaped line breaks in labels and standalone text", () => {
+    expect(withDecodedLineBreaks([
+      { type: "rectangle", label: { text: "first\\nsecond" } },
+      { type: "text", text: "third\\r\\nfourth", originalText: "third\\r\\nfourth" },
+    ])).toEqual([
+      { type: "rectangle", label: { text: "first\nsecond" } },
+      { type: "text", text: "third\nfourth", originalText: "third\nfourth" },
+    ]);
+  });
+});
 
 describe("withCenteredTitle", () => {
   it("leaves scenes without text unchanged", () => {
