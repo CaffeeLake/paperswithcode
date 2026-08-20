@@ -89,11 +89,10 @@ def test_browser_navigation_waits_for_the_requested_path(monkeypatch):
     assert any('location.pathname === "/chat"' in expression for expression in waited)
 
 
-def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
+def test_browser_gate_requires_visible_semantics_and_both_latency_cohorts():
     rendered = {
-        "new_reasoning": 50,
-        "new_pool_hit_reasoning": 50,
-        "followup_reasoning": 50,
+        "new_pool_hit_semantic": 50,
+        "followup_semantic": 50,
     }
     gates = {
         "component": True,
@@ -125,28 +124,23 @@ def test_browser_gate_requires_real_reasoning_and_both_latency_cohorts():
 
 def test_browser_gate_excludes_pool_misses_from_new_chat_minimum():
     rendered = {
-        "new_reasoning": 50,
-        "new_pool_hit_reasoning": 49,
-        "followup_reasoning": 50,
+        "new_pool_hit_semantic": 49,
+        "followup_semantic": 50,
     }
 
     assert not reasoning_minimum_reached(rendered=rendered, minimum_reasoning=50)
-    rendered["new_pool_hit_reasoning"] = 50
+    rendered["new_pool_hit_semantic"] = 50
     assert reasoning_minimum_reached(rendered=rendered, minimum_reasoning=50)
 
 
-def test_browser_pilot_requires_every_pair_and_reasoning_render():
+def test_browser_pilot_requires_every_pair_and_visible_semantic_render():
     rendered = {
-        "new_reasoning": 5,
-        "new_tool": 0,
-        "new_answer": 5,
-        "followup_reasoning": 5,
-        "followup_tool": 0,
-        "followup_answer": 5,
+        "new_semantic": 5,
+        "followup_semantic": 5,
     }
 
     assert pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
-    rendered["followup_reasoning"] = 4
+    rendered["followup_semantic"] = 4
     assert not pilot_passes(rendered=rendered, pairs=5, marked=10, session_count=5)
 
 

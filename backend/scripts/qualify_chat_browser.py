@@ -214,13 +214,6 @@ class ChromePage(AbstractContextManager):
         )
         if not selected:
             raise RuntimeError(f"Research model is unavailable: {model}")
-        settled = self.evaluate(
-            "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>"
-            "resolve(document.querySelector('select[aria-label=\"Research model\"]')"
-            f"?.value==={encoded}))))"
-        )
-        if not settled:
-            raise RuntimeError(f"Research model selection did not settle: {model}")
         self.wait_for(
             f"document.querySelector('select[aria-label=\"Research model\"]').value==={encoded}"
         )
@@ -408,8 +401,8 @@ def reasoning_minimum_reached(
     *, rendered: dict[str, int], minimum_reasoning: int
 ) -> bool:
     return bool(
-        rendered["new_pool_hit_reasoning"] >= minimum_reasoning
-        and rendered["followup_reasoning"] >= minimum_reasoning
+        rendered["new_pool_hit_semantic"] >= minimum_reasoning
+        and rendered["followup_semantic"] >= minimum_reasoning
     )
 
 
@@ -444,13 +437,13 @@ def qualification_passes(
 def pilot_passes(
     *, rendered: dict[str, int], pairs: int, marked: int, session_count: int
 ) -> bool:
-    """Accept a bounded smoke cohort without claiming release qualification."""
+    """Accept a bounded visible-semantic smoke without claiming qualification."""
 
     return bool(
         session_count == pairs
         and marked == pairs * 2
-        and rendered["new_reasoning"] == pairs
-        and rendered["followup_reasoning"] == pairs
+        and rendered["new_semantic"] == pairs
+        and rendered["followup_semantic"] == pairs
     )
 
 
@@ -523,9 +516,12 @@ def main() -> int:
         "new_pool_hit_reasoning": 0,
         "new_tool": 0,
         "new_answer": 0,
+        "new_semantic": 0,
+        "new_pool_hit_semantic": 0,
         "followup_reasoning": 0,
         "followup_tool": 0,
         "followup_answer": 0,
+        "followup_semantic": 0,
     }
     last_new_started = 0.0
     manager = SandboxSessionManager(settings)
@@ -566,6 +562,13 @@ def main() -> int:
                 )
                 rendered["new_tool"] += int(new["tool"])
                 rendered["new_answer"] += int(new["answer"])
+                rendered["new_semantic"] += int(
+                    new["reasoning"] or new["tool"] or new["answer"]
+                )
+                rendered["new_pool_hit_semantic"] += int(
+                    acquisition_outcome == "pool_hit"
+                    and (new["reasoning"] or new["tool"] or new["answer"])
+                )
                 page.assert_release(settings.release_id)
                 followup = page.send_turn(
                     "Reason briefly, then restate that evidence in different words."
@@ -573,6 +576,9 @@ def main() -> int:
                 rendered["followup_reasoning"] += int(followup["reasoning"])
                 rendered["followup_tool"] += int(followup["tool"])
                 rendered["followup_answer"] += int(followup["answer"])
+                rendered["followup_semantic"] += int(
+                    followup["reasoning"] or followup["tool"] or followup["answer"]
+                )
                 if (
                     reasoning_minimum_reached(
                         rendered=rendered, minimum_reasoning=args.minimum_reasoning

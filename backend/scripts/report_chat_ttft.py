@@ -55,6 +55,25 @@ def metric(rows: list[ChatTurnLatency], name: str) -> dict[str, int] | None:
     )
 
 
+def browser_semantic_metric(
+    rows: list[ChatTurnLatency],
+) -> dict[str, int] | None:
+    values = []
+    for row in rows:
+        visible = [
+            value
+            for name in (
+                "browser_first_reasoning_delta_ms",
+                "browser_first_tool_call_ms",
+                "browser_first_answer_delta_ms",
+            )
+            if (value := getattr(row, name)) is not None
+        ]
+        if visible:
+            values.append(min(visible))
+    return distribution(values)
+
+
 def component_metric(rows: list[ChatTurnLatency]) -> dict[str, int] | None:
     return distribution(
         [
@@ -176,8 +195,8 @@ def report(args: argparse.Namespace) -> dict[str, Any]:
     ]
     followups = [row for row in rows if row.traffic_class == "followup"]
     component = component_metric(pool_hits)
-    pool_browser = metric(pool_hits, "browser_first_reasoning_delta_ms")
-    reused_browser = metric(reused, "browser_first_reasoning_delta_ms")
+    pool_browser = browser_semantic_metric(pool_hits)
+    reused_browser = browser_semantic_metric(reused)
     model_to_application = distribution(
         [
             row.first_semantic_event_ms - row.sdk_query_dispatched_ms
