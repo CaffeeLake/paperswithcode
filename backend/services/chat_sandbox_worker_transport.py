@@ -79,6 +79,7 @@ class WorkerTurnRequest:
     agent_harness: str = "claude"
     web_search_enabled: bool = False
     reader_mode: bool = False
+    poster_mode: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -708,6 +709,8 @@ class WorkerTurnExecution:
             # added in contract 81, so omit its false/default value to keep
             # non-reader production turns compatible during image rotation.
             run["reader_mode"] = True
+        if self.request.poster_mode:
+            run["poster_mode"] = True
         if self.mode is WorkerTurnMode.PERSISTENT:
             identity = {
                 "assignment_token": self.claim.assignment_token,

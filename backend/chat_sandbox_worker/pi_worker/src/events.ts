@@ -3,6 +3,7 @@ import { serializeExcalidrawElements } from "./mcp_app_registry.js";
 export type PwCEvent = Record<string, unknown> & { type: string };
 
 type UnknownRecord = Record<string, unknown>;
+const ARTIFACT_PREFIX = "@@PWC_ARTIFACT@@";
 
 function record(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -30,6 +31,22 @@ function publicToolName(value: unknown): string {
 
 function excalidrawElements(value: unknown): string | undefined {
   return serializeExcalidrawElements(record(value).elements);
+}
+
+function artifactEvents(content: string): PwCEvent[] {
+  const line = content.split(/\r?\n/u).find((item) => item.startsWith(ARTIFACT_PREFIX));
+  if (!line || Buffer.byteLength(line) > 16_384) return [];
+  try {
+    const ready = record(JSON.parse(line.slice(ARTIFACT_PREFIX.length)));
+    const required = ["publication_id", "artifact_id", "version_id", "identifier", "version", "kind", "title", "preview_mime", "source_language", "gate_status", "total_bytes"];
+    if (Object.keys(ready).length !== required.length || required.some((key) => !(key in ready))) return [];
+    return [
+      { type: "artifact_start", publication_id: ready.publication_id, identifier: ready.identifier, kind: ready.kind, title: ready.title },
+      { type: "artifact_ready", ...ready },
+    ];
+  } catch {
+    return [];
+  }
 }
 
 export function reasoningIsVisible(value: string | undefined): boolean {
@@ -163,6 +180,7 @@ export class PiEventAdapter {
           content: [{ type: "text", text: content, truncated: false }],
           metadata: { output_truncated: false },
         },
+        ...artifactEvents(content),
       ];
     }
     if (type === "message_end") {

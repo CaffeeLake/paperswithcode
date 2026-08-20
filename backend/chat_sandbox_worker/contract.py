@@ -3,11 +3,11 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "86"
+WORKER_CONTRACT_VERSION = "87"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
-GATEWAY_CONTRACT_VERSION = 28
-GATEWAY_COMPATIBLE_FROM = 27
+GATEWAY_CONTRACT_VERSION = 29
+GATEWAY_COMPATIBLE_FROM = 28
 DATABASE_CONTRACT_VERSION = 2
 SDK_VERSION = "0.2.115"
 PI_VERSION = "0.84.1"
@@ -44,6 +44,14 @@ MODAL_IMAGE_ID = "im-iSqGHOkHsdf5Di2OMEJSQd"
 PRODUCTION_MODAL_IMAGE_ID = "im-dCvQBXFglDnt0sBSgKG2qi"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
+POSTERLY_SOURCE_COMMIT = "b9f42e5578a49a27525a68f85376bb3bb25af86f"
+POSTERLY_SOURCE_URL = (
+    f"https://github.com/Chenruishuo/posterly/tree/{POSTERLY_SOURCE_COMMIT}"
+)
+POSTERLY_LICENSE = "AGPL-3.0-only"
+POSTERLY_PLAYWRIGHT_VERSION = "1.62.0"
+POSTERLY_CHROMIUM_REVISION = "1234"
+POSTERLY_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
 
 
 def restricted_hf_cli_digest(package_root: Path, wrapper: Path) -> str:

@@ -171,6 +171,11 @@ def validate(production: str, staging: str) -> list[str]:
             "session-store",
             "web-fetch",
             "v1/messages",
+            *(
+                ("artifact-prepare", "artifact-publish")
+                if environment == "staging"
+                else ()
+            ),
         ):
             location = f"location = /api/internal/chat-gateway/{endpoint}"
             block = location_block(config, location)

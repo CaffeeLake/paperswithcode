@@ -13,10 +13,13 @@ import modal
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     MODAL_APP_NAME,
+    PI_MCP_ADAPTER_VERSION,
     PI_NODE_SHA256,
     PI_NODE_VERSION,
-    PI_MCP_ADAPTER_VERSION,
     PI_VERSION,
+    POSTERLY_CHROMIUM_REVISION,
+    POSTERLY_PLAYWRIGHT_VERSION,
+    POSTERLY_SOURCE_COMMIT,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
     SDK_VERSION,
@@ -42,6 +45,8 @@ image = (
         "curl",
         "xz-utils",
         "ca-certificates",
+        "git",
+        "poppler-utils",
     )
     .run_commands(
         f"curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v{PI_NODE_VERSION}/node-v{PI_NODE_VERSION}-linux-x64.tar.xz",
@@ -53,6 +58,19 @@ image = (
         f"claude-agent-sdk=={SDK_VERSION}",
         "cryptography==48.0.0",
         "websockets==16.0",
+        f"playwright=={POSTERLY_PLAYWRIGHT_VERSION}",
+        "Pillow==11.3.0",
+        "PyMuPDF==1.26.3",
+        "qrcode==8.2",
+    )
+    .run_commands(
+        "git init /opt/posterly && git -C /opt/posterly remote add origin https://github.com/Chenruishuo/posterly.git",
+        f"git -C /opt/posterly fetch --depth 1 origin {POSTERLY_SOURCE_COMMIT} && git -C /opt/posterly checkout --detach FETCH_HEAD",
+        f'test "$(git -C /opt/posterly rev-parse HEAD)" = "{POSTERLY_SOURCE_COMMIT}"',
+        "python -m playwright install --with-deps chromium",
+        f"python -m playwright install --dry-run chromium | grep -F 'chromium-{POSTERLY_CHROMIUM_REVISION}'",
+        "chmod -R a-w,a+rX /opt/posterly",
+        "test -r /opt/posterly/LICENSE && test -r /opt/posterly/NOTICE.md && test -r /opt/posterly/SKILL.md",
     )
     .run_commands(
         "groupadd --system pwc-broker && useradd --system --gid pwc-broker --home-dir /var/empty/pwc-broker pwc-broker",
@@ -87,6 +105,10 @@ image = (
     .add_local_file(WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md", copy=True)
     .add_local_file(WORKER / "HF_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md", copy=True)
     .add_local_file(WORKER / "S2_CLI_SKILL.md", "/opt/pwc/S2_CLI_SKILL.md", copy=True)
+    .add_local_file(WORKER / "artifact_cli.py", "/opt/pwc/artifact_cli.py", copy=True)
+    .add_local_file(
+        WORKER / "POSTERLY_PUBLISH.md", "/opt/pwc/POSTERLY_PUBLISH.md", copy=True
+    )
     .add_local_dir(S2_CLI, "/opt/pwc/s2_cli", copy=True)
     .add_local_dir(
         RESTRICTED_HF / "src" / "restricted_hf_cli",
@@ -106,6 +128,8 @@ image = (
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
         "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
         "chmod 0644 /opt/pwc/S2_CLI_SKILL.md",
+        "chmod 0755 /opt/pwc/artifact_cli.py && ln -s /opt/pwc/artifact_cli.py /usr/local/bin/pwc-artifact",
+        "chmod 0644 /opt/pwc/POSTERLY_PUBLISH.md",
         "python -m pip install --no-deps /opt/pwc/s2_cli",
         "chmod 0755 /opt/pwc/restricted-hf && ln -s /opt/pwc/restricted-hf /usr/local/bin/hf",
         "PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'",
@@ -129,6 +153,8 @@ image = (
         f"runuser -u pwc-chat -- hf version | grep -F '{RESTRICTED_HF_CLI_VERSION}' >/dev/null",
         'test "$(runuser -u pwc-chat -- hf auth --help >/dev/null 2>&1; echo $?)" = 2',
         'test "$(runuser -u pwc-chat -- hf upload owner/repo file >/dev/null 2>&1; echo $?)" = 2',
+        "runuser -u pwc-chat -- test -r /opt/posterly/SKILL.md",
+        "runuser -u pwc-chat -- pwc-artifact --help >/dev/null",
     )
     .env(
         {
@@ -144,6 +170,9 @@ image = (
             "PWC_CHAT_EXCALIDRAW_ENABLED": "false",
             "PWC_CHAT_MCP_APPS_HOST_ENABLED": "false",
             "PWC_CHAT_AGENT_TIMEOUT_SECONDS": "180",
+            "PWC_CHAT_POSTERLY_TIMEOUT_SECONDS": "600",
+            "PWC_CHAT_POSTERLY_MAX_TOOL_ROUNDS": "20",
+            "PWC_CHAT_POSTERLY_MAX_TOOL_CALLS": "40",
             "PWC_CHAT_SANDBOX_PIDS_MAX": "64",
             "S2_API_KEY": "sandbox-gateway",
             "S2_API_URL": "http://127.0.0.1:8765/semantic-scholar/graph/v1",

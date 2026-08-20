@@ -8,9 +8,13 @@ import hmac
 import json
 import logging
 import math
+import os
+import re
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -31,6 +35,11 @@ from backend.models.database import (
     ChatSession,
     ChatTurnCapability,
 )
+from backend.services.chat_artifact_service import (
+    ArtifactError,
+    ChatArtifactService,
+    PosterPaperProvenance,
+)
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -42,18 +51,20 @@ from backend.services.chat_hf_hub_service import (
     validate_hf_request,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_paper_context_service import ChatPaperContextService
 from backend.services.chat_pi_transcript_service import (
     ChatPiTranscriptService,
     PiTranscriptError,
 )
+from backend.services.chat_semantic_scholar_service import (
+    SemanticScholarGatewayError,
+    fetch_semantic_scholar,
+)
+from backend.services.chat_session_service import ChatServiceError
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
     SessionStoreGatewayError,
-)
-from backend.services.chat_semantic_scholar_service import (
-    SemanticScholarGatewayError,
-    fetch_semantic_scholar,
 )
 from backend.services.chat_tracing_service import start_provider_request_trace
 from backend.services.chat_web_fetch_service import (
@@ -155,6 +166,11 @@ class StoreRequest(BaseModel):
 class WebFetchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str = Field(max_length=2000)
+
+
+class ArtifactPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    paper_route_id: str = Field(min_length=1, max_length=200)
 
 
 def _bearer(authorization: Annotated[str, Header()]) -> str:
@@ -724,6 +740,166 @@ def session_store(
     except SessionStoreGatewayError as error:
         db.rollback()
         raise HTTPException(status_code=error.status_code, detail=str(error)) from None
+
+
+@app.post("/artifact-prepare")
+def artifact_prepare(
+    body: ArtifactPrepareRequest,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    token = _bearer(authorization)
+    capability = _scope(token, "artifact", x_pwc_session, x_pwc_turn, db)
+    if not settings.chat_artifacts_enabled or not settings.chat_posterly_enabled:
+        raise HTTPException(status_code=404, detail="Poster generation is disabled")
+    try:
+        paper = ChatPaperContextService(db, settings).prepare_one(body.paper_route_id)
+    except ChatServiceError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": str(error)},
+        ) from None
+    if (
+        paper.source != "arxiv"
+        or not paper.arxiv_id
+        or not paper.paper_version
+        or re.fullmatch(r"v\d+", paper.paper_version) is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "poster_paper_unsupported",
+                "message": "Poster generation currently supports cataloged arXiv papers only.",
+            },
+        )
+    if not paper.content_available:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "poster_paper_unavailable",
+                "message": "Stored paper Markdown is not available yet.",
+            },
+        )
+    if capability.artifact_paper_id not in {None, paper.paper_id}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "poster_paper_conflict",
+                "message": "This poster turn is already bound to a different paper.",
+            },
+        )
+    capability.artifact_paper_id = paper.paper_id
+    db.commit()
+    return {
+        "route_id": paper.route_id,
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "arxiv_id": f"{paper.arxiv_id}{paper.paper_version}",
+        "paper_version": paper.paper_version,
+        "content_sha256": paper.content_sha256,
+        "source_available": False,
+        "paper_markdown": paper.markdown,
+        "content_truncated": paper.content_truncated,
+        "notice": (
+            "Only bounded stored Markdown was available; source fidelity and "
+            "real-figure extraction may be limited."
+        ),
+    }
+
+
+@app.post("/artifact-publish")
+async def artifact_publish(
+    request: Request,
+    publication_id: str,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    token = _bearer(authorization)
+    capability = _scope(token, "artifact", x_pwc_session, x_pwc_turn, db)
+    if capability.artifact_paper_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "poster_paper_required",
+                "message": "Prepare one cataloged arXiv paper before publishing.",
+            },
+        )
+    if request.headers.get("content-type", "").partition(";")[0] != "application/zip":
+        raise HTTPException(status_code=415, detail="Expected a ZIP publication")
+    maximum = settings.chat_artifact_max_version_bytes
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdigit() or not 0 < int(declared) <= maximum:
+        raise HTTPException(status_code=413, detail="Poster publication is too large")
+    descriptor, temporary_name = tempfile.mkstemp(prefix="pwc-artifact-", suffix=".zip")
+    total = 0
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > maximum:
+                    raise HTTPException(
+                        status_code=413, detail="Poster publication is too large"
+                    )
+                output.write(chunk)
+        if total != int(declared):
+            raise HTTPException(status_code=400, detail="Incomplete poster publication")
+        try:
+            prepared = ChatPaperContextService(db, settings).prepare_one(
+                capability.artifact_paper_id
+            )
+            if (
+                prepared.source != "arxiv"
+                or not prepared.arxiv_id
+                or not prepared.paper_version
+            ):
+                raise ArtifactError(
+                    "poster_paper_unsupported",
+                    "Prepared paper is no longer a supported arXiv paper",
+                )
+            version = ChatArtifactService(db, settings).publish_zip(
+                owner_id=_capability_owner(capability, db),
+                session_id=capability.chat_session_id,
+                turn_id=capability.turn_id,
+                publication_id=publication_id,
+                archive=Path(temporary_name),
+                expected_paper=PosterPaperProvenance(
+                    route_id=prepared.route_id,
+                    paper_id=prepared.paper_id,
+                    arxiv_id=f"{prepared.arxiv_id}{prepared.paper_version}",
+                    paper_version=prepared.paper_version,
+                    content_sha256=prepared.content_sha256,
+                    source_available=False,
+                ),
+            )
+            db.commit()
+        except ArtifactError as error:
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail={"code": error.code, "message": str(error)},
+            ) from None
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+    artifact = version.artifact
+    return {
+        "publication_id": publication_id,
+        "artifact_id": str(artifact.id),
+        "version_id": str(version.id),
+        "identifier": artifact.identifier,
+        "version": version.version,
+        "kind": "posterly",
+        "title": artifact.title,
+        "preview_mime": version.preview_mime,
+        "source_language": "html",
+        "gate_status": version.gate_status,
+        "total_bytes": version.byte_count,
+    }
 
 
 @app.post("/web-fetch")

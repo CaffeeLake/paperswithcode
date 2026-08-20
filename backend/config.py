@@ -425,6 +425,51 @@ class Settings(BaseSettings):
     # are registered; either is an immediate fail-closed kill switch.
     chat_excalidraw_enabled: bool = Field(default=False)
     chat_mcp_apps_host_enabled: bool = Field(default=False)
+    # Staging-only Posterly artifact controls. Historical safe PNG cards remain
+    # readable when generation flags are disabled.
+    chat_artifacts_enabled: bool = Field(default=False)
+    chat_posterly_enabled: bool = Field(default=False)
+    chat_artifact_shared_preview_enabled: bool = Field(default=False)
+    chat_artifact_storage_backend: Literal["local", "hf_bucket"] = Field(
+        default="local"
+    )
+    chat_artifact_hf_bucket_id: str = Field(default="", max_length=255)
+    chat_artifact_hf_bucket_prefix: str = Field(
+        default="chat-artifacts", min_length=1, max_length=200
+    )
+    chat_artifact_local_dir: str = Field(
+        default="/var/lib/paperswithcode/chat-artifacts"
+    )
+    chat_artifact_max_files: int = Field(default=100, ge=4, le=100)
+    chat_artifact_max_text_bytes: int = Field(
+        default=2 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024
+    )
+    chat_artifact_max_image_bytes: int = Field(
+        default=8 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024
+    )
+    chat_artifact_max_pdf_bytes: int = Field(
+        default=20 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024
+    )
+    chat_artifact_max_version_bytes: int = Field(
+        default=32 * 1024 * 1024, ge=4096, le=32 * 1024 * 1024
+    )
+    chat_artifact_owner_quota_bytes: int = Field(
+        default=250 * 1024 * 1024, ge=4096, le=250 * 1024 * 1024
+    )
+    chat_artifact_max_versions_per_turn: int = Field(default=4, ge=1, le=4)
+    chat_artifact_max_session_artifacts: int = Field(default=10, ge=1, le=10)
+    chat_artifact_preview_max_pixels: int = Field(
+        default=20_000_000, ge=1_000_000, le=20_000_000
+    )
+    chat_posterly_timeout_seconds: float = Field(default=600, ge=60, le=600)
+    chat_posterly_max_tool_rounds: int = Field(default=20, ge=8, le=20)
+    chat_posterly_max_tool_calls: int = Field(default=40, ge=12, le=40)
+    chat_posterly_source_commit: str = Field(
+        default="b9f42e5578a49a27525a68f85376bb3bb25af86f",
+        pattern=r"^[0-9a-f]{40}$",
+    )
+    chat_posterly_playwright_version: str = Field(default="1.62.0", max_length=32)
+    chat_posterly_chromium_revision: str = Field(default="1234", max_length=16)
     chat_max_tool_calls: int = Field(default=12, ge=1, le=24)
     chat_max_direct_search_calls: int = Field(default=4, ge=1, le=8)
     chat_web_search_enabled: bool = Field(default=False)

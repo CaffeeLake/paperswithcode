@@ -172,4 +172,78 @@ describe("chatLifecycleReducer", () => {
       { kind: "answer", text: "Here is the schematic.", done: false },
     ]);
   });
+
+  it("replaces a generating Posterly block with its immutable ready version", () => {
+    let state = chatLifecycleReducer(initialChatLifecycle(), {
+      type: "start",
+      messages: streaming(),
+      sessionId: "session-1",
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: {
+        type: "artifact_start",
+        publication_id: "poster-1",
+        identifier: "attention-poster",
+        kind: "posterly",
+        title: "Attention poster",
+      },
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: { type: "answer_delta", text: "I created the poster." },
+    });
+    state = chatLifecycleReducer(state, {
+      type: "event",
+      event: {
+        type: "artifact_ready",
+        publication_id: "poster-1",
+        artifact_id: "artifact-1",
+        version_id: "version-1",
+        identifier: "attention-poster",
+        version: 1,
+        kind: "posterly",
+        title: "Attention poster",
+        preview_mime: "image/png",
+        source_language: "html",
+        gate_status: "passed",
+        total_bytes: 4096,
+      },
+    });
+
+    expect(state.messages[0].blocks).toEqual([
+      expect.objectContaining({
+        kind: "artifact",
+        publication_id: "poster-1",
+        artifact_id: "artifact-1",
+        version_id: "version-1",
+        status: "ready",
+        gate_status: "passed",
+      }),
+      { kind: "answer", text: "I created the poster.", done: false },
+    ]);
+  });
+
+  it("keeps a poster publication failure separate from the textual answer", () => {
+    const actions = [
+      { type: "start", messages: streaming(), sessionId: "session-1" },
+      { type: "event", event: {
+        type: "artifact_start", publication_id: "poster-1",
+        identifier: "attention-poster", kind: "posterly", title: "Attention poster",
+      } },
+      { type: "event", event: {
+        type: "artifact_error", publication_id: "poster-1",
+        code: "artifact_invalid", message: "The bundle was unsafe.",
+      } },
+      { type: "event", event: { type: "answer_delta", text: "I could not publish it." } },
+    ] as const;
+    const state = actions.reduce(chatLifecycleReducer, initialChatLifecycle());
+
+    expect(state.messages[0].blocks).toEqual([
+      expect.objectContaining({
+        kind: "artifact", status: "error", error_code: "artifact_invalid",
+      }),
+      { kind: "answer", text: "I could not publish it.", done: false },
+    ]);
+  });
 });

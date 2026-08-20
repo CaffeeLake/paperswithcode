@@ -59,6 +59,7 @@ HF_OPERATIONS = frozenset(
     }
 )
 HF_MAX_RESPONSE_BYTES = 300 * 1024
+ARTIFACT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 
 
 def _load_config() -> dict:
@@ -311,6 +312,42 @@ class Handler(BaseHTTPRequestHandler):
             GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
+    def _forward_upload(self, path: str, length: int) -> None:
+        active = STATE.begin_request()
+        connection = self._connection()
+        reusable = False
+        try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.putrequest("POST", f"{prefix}/{path.lstrip('/')}")
+            for name, value in {
+                **_gateway_headers(active=active, content_type="application/zip"),
+                "Accept": "application/json",
+                "Content-Length": str(length),
+            }.items():
+                connection.putheader(name, value)
+            connection.endheaders()
+            remaining = length
+            while remaining:
+                chunk = self.rfile.read(min(64 * 1024, remaining))
+                if not chunk:
+                    raise ConnectionError("Artifact upload ended early")
+                connection.send(chunk)
+                remaining -= len(chunk)
+            response = connection.getresponse()
+            raw = response.read(64 * 1024)
+            self.send_response(response.status)
+            self.send_header(
+                "Content-Type", response.getheader("Content-Type") or "application/json"
+            )
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+            reusable = _response_reusable(response)
+        finally:
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
+            STATE.finish_request()
+
     def _forward_hf(self, body: bytes) -> None:
         active = STATE.begin_request()
         connection = self._connection()
@@ -395,9 +432,31 @@ class Handler(BaseHTTPRequestHandler):
             STATE.finish_request()
 
     def do_POST(self) -> None:
-        length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
-        body = self.rfile.read(length)
         path = urlsplit(self.path).path
+        try:
+            declared_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400)
+            return
+        if path == "/artifact-publish":
+            if not 0 < declared_length <= ARTIFACT_MAX_UPLOAD_BYTES:
+                self.send_error(413)
+                return
+            publication_id = parse_qs(urlsplit(self.path).query).get(
+                "publication_id", [""]
+            )[0]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", publication_id):
+                self.send_error(422)
+                return
+            self._forward_upload(
+                f"artifact-publish?publication_id={publication_id}", declared_length
+            )
+            return
+        length = min(declared_length, 512 * 1024)
+        body = self.rfile.read(length)
+        if declared_length != length:
+            self.send_error(413)
+            return
         if path == "/hf/v1/query":
             try:
                 payload = json.loads(body)
@@ -439,6 +498,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/session-store":
             self._forward("session-store", body)
+            return
+        if path == "/artifact-prepare":
+            self._forward("artifact-prepare", body)
             return
         if path == "/web-search":
             try:
@@ -533,9 +595,9 @@ class Handler(BaseHTTPRequestHandler):
                 "min_eval_count": query.get("min_eval_count"),
                 "is_open": query.get("is_open"),
                 "order_by": (query.get("ordering") or "name").lstrip("-"),
-                "order_dir": "desc"
-                if (query.get("ordering") or "").startswith("-")
-                else "asc",
+                "order_dir": (
+                    "desc" if (query.get("ordering") or "").startswith("-") else "asc"
+                ),
             }
         elif match := _BENCHMARK_TRENDS.match(parsed.path):
             operation = "benchmark_trending"

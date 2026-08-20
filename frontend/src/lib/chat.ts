@@ -122,6 +122,28 @@ export type ChatEvent =
       hits?: number;
       results?: ChatPaperHit[];
     }
+  | {
+      type: "artifact_start";
+      publication_id: string;
+      identifier: string;
+      kind: "posterly";
+      title: string;
+    }
+  | {
+      type: "artifact_ready";
+      publication_id: string;
+      artifact_id: string;
+      version_id: string;
+      identifier: string;
+      version: number;
+      kind: "posterly";
+      title: string;
+      preview_mime: "image/png";
+      source_language: "html";
+      gate_status: "passed" | "warnings" | "failed";
+      total_bytes: number;
+    }
+  | { type: "artifact_error"; publication_id: string; code: string; message: string }
   | { type: "sandbox_start"; session_id: string }
   | { type: "sandbox_ready"; session_id: string; cold_start_ms: number }
   | { type: "answer_delta"; text: string }
@@ -236,7 +258,29 @@ export interface AnswerBlock {
   citations?: ChatCitation[];
 }
 
-export type ChatBlock = ReasoningBlock | ToolBlock | AppBlock | AnswerBlock;
+export interface ArtifactBlock {
+  kind: "artifact";
+  schema_version: 1;
+  scope: "owner" | "public";
+  publication_id?: string;
+  artifact_id?: string;
+  version_id?: string;
+  public_capability?: string;
+  identifier: string;
+  version?: number;
+  artifact_kind: "posterly";
+  title: string;
+  status: "generating" | "ready" | "error";
+  phase?: "preparing_paper" | "designing_poster" | "checking_poster" | "rendering_poster" | "publishing_poster";
+  preview_mime?: "image/png";
+  source_language?: "html";
+  gate_status?: "passed" | "warnings" | "failed";
+  total_bytes?: number;
+  error_code?: string;
+  error_message?: string;
+}
+
+export type ChatBlock = ReasoningBlock | ToolBlock | AppBlock | ArtifactBlock | AnswerBlock;
 
 export interface ChatMessage {
   id: string;

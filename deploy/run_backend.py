@@ -83,6 +83,17 @@ def configure_release_environment(release: Path) -> dict:
         os.environ["PWC_CHAT_RESTRICTED_HF_CLI_VERSION"] = runtime.get(
             "restricted_hf_cli_version", ""
         )
+        posterly_release = runtime.get("posterly_enabled") is True
+        os.environ["PWC_CHAT_ARTIFACTS_ENABLED"] = str(posterly_release).lower()
+        os.environ["PWC_CHAT_POSTERLY_ENABLED"] = str(posterly_release).lower()
+        os.environ["PWC_CHAT_ARTIFACT_SHARED_PREVIEW_ENABLED"] = str(
+            posterly_release
+        ).lower()
+        if posterly_release:
+            os.environ["PWC_CHAT_ARTIFACT_STORAGE_BACKEND"] = "hf_bucket"
+            os.environ["PWC_CHAT_ARTIFACT_HF_BUCKET_ID"] = runtime[
+                "posterly_artifact_bucket_id"
+            ]
     expected_dist = (release / manifest["frontend_entrypoint"]).parent
     configured_dist = Path(os.environ["PWC_FRONTEND_DIST_DIR"]).resolve()
     if configured_dist != expected_dist.resolve():

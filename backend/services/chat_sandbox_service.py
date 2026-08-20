@@ -170,8 +170,9 @@ class SandboxSessionManager:
         pool_maintenance_owner: Callable[[], bool] | None = None,
         lease_eviction_coordinator: ChatSandboxLeaseEvictionCoordinator | None = None,
         lease_lifecycle_coordinator: ChatSandboxLeaseLifecycleCoordinator | None = None,
-        lease_maintenance_coordinator: ChatSandboxLeaseMaintenanceCoordinator
-        | None = None,
+        lease_maintenance_coordinator: (
+            ChatSandboxLeaseMaintenanceCoordinator | None
+        ) = None,
         spend_alert_dispatcher: ChatSandboxSpendAlertDispatcher | None = None,
         spend_reporter: ProviderSpendReporter | None = None,
         spend_reconciler: ChatSandboxSpendReconciler | None = None,
@@ -575,6 +576,7 @@ class SandboxSessionManager:
         agent_harness: str = "claude",
         web_search_enabled: bool = False,
         reader_mode: bool = False,
+        poster_mode: bool = False,
         reasoning_effort: str = "high",
         fetchable_urls: list[str] | None = None,
         hf_username: str = "unknown",
@@ -590,6 +592,7 @@ class SandboxSessionManager:
             agent_harness=agent_harness,
             web_search_enabled=web_search_enabled,
             reader_mode=reader_mode,
+            poster_mode=poster_mode,
             reasoning_effort=reasoning_effort,
             fetchable_urls=tuple(fetchable_urls or ()),
             hf_username=hf_username,

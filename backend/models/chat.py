@@ -426,8 +426,117 @@ class AppDisplayBlock(BaseModel):
         return value
 
 
+class ArtifactDisplayBlock(BaseModel):
+    """Bounded Posterly descriptor; artifact bytes always live out of band."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["artifact"]
+    schema_version: Literal[1] = 1
+    scope: Literal["owner", "public"] = "owner"
+    publication_id: str | None = Field(default=None, min_length=1, max_length=64)
+    artifact_id: uuid.UUID | None = None
+    version_id: uuid.UUID | None = None
+    public_capability: uuid.UUID | None = None
+    identifier: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=80)
+    version: int | None = Field(default=None, ge=1, le=10_000)
+    artifact_kind: Literal["posterly"] = "posterly"
+    title: str = Field(min_length=1, max_length=300)
+    status: Literal["generating", "ready", "error"]
+    phase: (
+        Literal[
+            "preparing_paper",
+            "designing_poster",
+            "checking_poster",
+            "rendering_poster",
+            "publishing_poster",
+        ]
+        | None
+    ) = None
+    preview_mime: Literal["image/png"] | None = None
+    source_language: Literal["html"] | None = None
+    gate_status: Literal["passed", "warnings", "failed"] | None = None
+    total_bytes: int | None = Field(default=None, ge=0, le=32 * 1024 * 1024)
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    error_message: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_scope_and_status(self) -> "ArtifactDisplayBlock":
+        if self.status == "generating":
+            if self.scope != "owner" or not self.publication_id or self.phase is None:
+                raise ValueError(
+                    "Generating artifacts require owner correlation and phase"
+                )
+            if any(
+                value is not None
+                for value in (
+                    self.artifact_id,
+                    self.version_id,
+                    self.public_capability,
+                    self.version,
+                    self.preview_mime,
+                    self.source_language,
+                    self.gate_status,
+                    self.total_bytes,
+                )
+            ):
+                raise ValueError("Generating artifacts cannot expose ready metadata")
+            return self
+        if self.status == "error":
+            if (
+                self.scope != "owner"
+                or not self.publication_id
+                or not self.error_code
+                or not self.error_message
+                or self.phase is not None
+            ):
+                raise ValueError(
+                    "Failed artifacts require bounded owner error metadata"
+                )
+            if any(
+                value is not None
+                for value in (
+                    self.artifact_id,
+                    self.version_id,
+                    self.public_capability,
+                    self.version,
+                    self.preview_mime,
+                    self.source_language,
+                    self.gate_status,
+                    self.total_bytes,
+                )
+            ):
+                raise ValueError("Failed artifacts cannot expose ready metadata")
+            return self
+        if self.error_code is not None or self.error_message is not None:
+            raise ValueError("Ready artifacts cannot contain failure metadata")
+        if self.phase is not None or self.version is None or self.gate_status is None:
+            raise ValueError("Ready artifacts require version and gate metadata")
+        if self.preview_mime != "image/png" or self.total_bytes is None:
+            raise ValueError("Ready artifacts require a validated PNG and byte count")
+        if self.scope == "owner":
+            if self.artifact_id is None or self.version_id is None:
+                raise ValueError("Owner artifacts require private IDs")
+            if self.public_capability is not None or self.source_language != "html":
+                raise ValueError("Owner artifact metadata is inconsistent")
+        elif (
+            self.public_capability is None
+            or self.artifact_id is not None
+            or self.version_id is not None
+            or self.publication_id is not None
+            or self.source_language is not None
+        ):
+            raise ValueError("Public artifacts require only a public capability")
+        return self
+
+
 DisplayBlock = Annotated[
-    Union[ReasoningDisplayBlock, ToolDisplayBlock, AppDisplayBlock, AnswerDisplayBlock],
+    Union[
+        ReasoningDisplayBlock,
+        ToolDisplayBlock,
+        AppDisplayBlock,
+        ArtifactDisplayBlock,
+        AnswerDisplayBlock,
+    ],
     Field(discriminator="kind"),
 ]
 DISPLAY_BLOCKS_ADAPTER = TypeAdapter(list[DisplayBlock])

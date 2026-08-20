@@ -6,6 +6,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ from backend.chat_execution_policy import bounded_url_seed
 from backend.config import Settings
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, CitationSnapshot
 from backend.models.database import (
+    ChatArtifact,
+    ChatArtifactVersion,
     ChatHarnessAssignmentAudit,
     ChatMessageRecord,
     ChatPiSession,
@@ -26,6 +29,7 @@ from backend.models.database import (
     ChatSDKTranscriptEntry,
     ChatSession,
     ChatShare,
+    ChatSharedArtifact,
 )
 from backend.services.chat_edit_service import (
     INACTIVE_STATUSES,
@@ -102,6 +106,7 @@ class TurnAdmission:
     web_search_enabled: bool = False
     reasoning_effort: str = "high"
     reader_mode: bool = False
+    poster_mode: bool = False
     fetchable_urls: tuple[str, ...] = ()
 
 
@@ -180,6 +185,7 @@ class ChatDeletionReceipt:
     snapshot_id: str | None
     sdk_session_id: uuid.UUID | None
     sdk_project_key: str | None
+    artifact_prefixes: tuple[str, ...] = ()
 
 
 def owner_from_user(
@@ -208,6 +214,14 @@ def _now() -> datetime:
 
 def _normalized(value: str, limit: int) -> str:
     return " ".join(value.split())[:limit]
+
+
+_POSTER_INTENT = re.compile(r"\b(?:poster|posterly)\b", re.IGNORECASE)
+
+
+def detect_poster_intent(text: str) -> bool:
+    """Select artifact budgets only for an explicit current-turn poster request."""
+    return bool(_POSTER_INTENT.search(text))
 
 
 def _payload_bytes(*values: object) -> int:
@@ -796,6 +810,11 @@ class ChatSessionService:
                     web_search_enabled=existing_web_search_enabled,
                     reasoning_effort=existing_reasoning_effort,
                     reader_mode=getattr(session, "primary_paper_id", None) is not None,
+                    poster_mode=(
+                        self.settings.chat_artifacts_enabled
+                        and self.settings.chat_posterly_enabled
+                        and detect_poster_intent(existing.content)
+                    ),
                 ),
             )
         if (
@@ -1066,9 +1085,11 @@ class ChatSessionService:
             agent_boundary = getattr(
                 replacement.prior,
                 "agent_resume_boundary_id",
-                str(replacement.prior.sdk_resume_boundary_id)
-                if replacement.prior.sdk_resume_boundary_id
-                else None,
+                (
+                    str(replacement.prior.sdk_resume_boundary_id)
+                    if replacement.prior.sdk_resume_boundary_id
+                    else None
+                ),
             )
             return _TranscriptResumeBoundary(
                 id=replacement.prior.sdk_resume_boundary_id,
@@ -1170,8 +1191,18 @@ class ChatSessionService:
         if prior is None:
             session.message_count += 1
         session.active_turn_id = plan.replacement.turn_id
+        poster_mode = (
+            self.settings.chat_artifacts_enabled
+            and self.settings.chat_posterly_enabled
+            and detect_poster_intent(text)
+        )
         session.active_turn_expires_at = now + timedelta(
-            seconds=self.settings.chat_timeout_seconds + 30
+            seconds=(
+                self.settings.chat_posterly_timeout_seconds
+                if poster_mode
+                else self.settings.chat_timeout_seconds
+            )
+            + 30
         )
         session.hf_username = owner.hf_username
         if update_web_search_preference:
@@ -1217,14 +1248,15 @@ class ChatSessionService:
         self.db.flush()
         return message
 
-    @staticmethod
     def _turn_admission(
+        self,
         session: ChatSession,
         plan: _TurnCreationPlan,
         fetchable_urls: tuple[str, ...],
         *,
         web_search_enabled: bool,
         reasoning_effort: str,
+        poster_mode: bool,
     ) -> TurnAdmission:
         prior = plan.replacement.prior
         return TurnAdmission(
@@ -1255,6 +1287,7 @@ class ChatSessionService:
             web_search_enabled=web_search_enabled,
             reasoning_effort=reasoning_effort,
             reader_mode=getattr(session, "primary_paper_id", None) is not None,
+            poster_mode=poster_mode,
             fetchable_urls=fetchable_urls,
         )
 
@@ -1436,6 +1469,11 @@ class ChatSessionService:
             fetchable_urls,
             web_search_enabled=web_search_enabled,
             reasoning_effort=effective_reasoning_effort,
+            poster_mode=(
+                self.settings.chat_artifacts_enabled
+                and self.settings.chat_posterly_enabled
+                and detect_poster_intent(text)
+            ),
         )
 
     def bind_sdk_session(
@@ -1706,6 +1744,18 @@ class ChatSessionService:
             snapshot_id=snapshot_id,
             sdk_session_id=session.sdk_session_id,
             sdk_project_key=session.sdk_project_key,
+            artifact_prefixes=tuple(
+                self.db.scalars(
+                    select(ChatArtifactVersion.storage_key)
+                    .join(ChatArtifact)
+                    .where(ChatArtifact.session_id == session.id)
+                    .union(
+                        select(ChatSharedArtifact.storage_key)
+                        .join(ChatShare)
+                        .where(ChatShare.chat_session_id == session.id)
+                    )
+                )
+            ),
         )
         self.db.delete(session)
         return receipt
@@ -1718,6 +1768,9 @@ class ChatSessionService:
                 ChatMessageRecord.session_id == receipt.session_id
             ),
             select(ChatShare.id).where(ChatShare.chat_session_id == receipt.session_id),
+            select(ChatArtifact.id).where(
+                ChatArtifact.session_id == receipt.session_id
+            ),
             select(ChatSandboxLease.chat_session_id).where(
                 ChatSandboxLease.chat_session_id == receipt.session_id
             ),

@@ -27,6 +27,9 @@ class WorkerSettings:
     chat_turn_tool_output_max_bytes: int = 96 * 1024
     chat_bash_timeout_seconds: float = 30
     chat_agent_timeout_seconds: float = 180
+    chat_posterly_timeout_seconds: float = 600
+    chat_posterly_max_tool_rounds: int = 20
+    chat_posterly_max_tool_calls: int = 40
 
     def __post_init__(self) -> None:
         validate_execution_limits(
@@ -57,4 +60,13 @@ class WorkerSettings:
             ),
             chat_bash_timeout_seconds=_number("PWC_CHAT_BASH_TIMEOUT_SECONDS", 30),
             chat_agent_timeout_seconds=_number("PWC_CHAT_AGENT_TIMEOUT_SECONDS", 180),
+            chat_posterly_timeout_seconds=_number(
+                "PWC_CHAT_POSTERLY_TIMEOUT_SECONDS", 600
+            ),
+            chat_posterly_max_tool_rounds=_integer(
+                "PWC_CHAT_POSTERLY_MAX_TOOL_ROUNDS", 20
+            ),
+            chat_posterly_max_tool_calls=_integer(
+                "PWC_CHAT_POSTERLY_MAX_TOOL_CALLS", 40
+            ),
         )

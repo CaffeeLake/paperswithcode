@@ -32,6 +32,7 @@ export interface RunTurn {
   resume: string | null;
   web_search_enabled: boolean;
   reader_mode: boolean;
+  poster_mode: boolean;
   reasoning_effort: "low" | "high" | "max";
   hf_username: string;
 }
@@ -63,6 +64,9 @@ export class PiWorker {
     maximumTurnOutputBytes: Number(process.env.PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES ?? 98304),
     bashTimeoutSeconds: Number(process.env.PWC_CHAT_BASH_TIMEOUT_SECONDS ?? 30),
     excalidrawEnabled: excalidrawEnabled(),
+    posterlyMaximumCalls: Number(process.env.PWC_CHAT_POSTERLY_MAX_TOOL_CALLS ?? 40),
+    posterlyMaximumRounds: Number(process.env.PWC_CHAT_POSTERLY_MAX_TOOL_ROUNDS ?? 20),
+    posterlyTimeoutSeconds: Number(process.env.PWC_CHAT_POSTERLY_TIMEOUT_SECONDS ?? 600),
   });
 
   constructor(private readonly emit: (requestId: string, event: PwCEvent) => void) {}
@@ -188,14 +192,16 @@ export class PiWorker {
       hfUsername: run.hf_username,
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
+      posterlyEnabled: run.poster_mode,
       source: this.promptAsset!,
     });
-    this.policy.reset(run.web_search_enabled, prompt);
+    this.policy.reset(run.web_search_enabled, prompt, run.poster_mode);
     const profile = JSON.stringify({
       model: run.model,
       reasoningEffort: run.reasoning_effort,
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
+      posterMode: run.poster_mode,
       hfUsername: run.hf_username,
     });
     if (!this.mirror) {

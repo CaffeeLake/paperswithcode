@@ -27,19 +27,19 @@ from claude_agent_sdk import (
 )
 from fastapi import HTTPException
 
-from backend.chat_gateway_app import (
-    MAX_PROVIDER_OUTPUT_TOKENS,
-    MAX_PROVIDER_TURN_TOKENS,
-    CatalogRequest,
-    _output_tokens_allowed,
-    catalog,
-)
 from backend.chat_execution_policy import (
     FINALIZER_MAX_TURNS,
     MAX_FETCHABLE_URLS,
     bounded_url_seed,
     effective_tool_rounds,
     validate_url_seed,
+)
+from backend.chat_gateway_app import (
+    MAX_PROVIDER_OUTPUT_TOKENS,
+    MAX_PROVIDER_TURN_TOKENS,
+    CatalogRequest,
+    _output_tokens_allowed,
+    catalog,
 )
 from backend.chat_sandbox_worker import (
     agent,
@@ -63,6 +63,7 @@ from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
     ProtocolError,
     WorkerEventValidator,
+    artifact_events_from_output,
     decode_frame,
     encode_frame,
 )
@@ -98,6 +99,7 @@ from backend.services.chat_sandbox_service import (
     create_isolated_sandbox,
     resolve_modal_image,
 )
+from backend.services.chat_session_service import detect_poster_intent
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
@@ -2519,6 +2521,7 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         "model-a",
         False,
         False,
+        False,
         "high",
         [],
         "unknown",
@@ -2563,6 +2566,83 @@ def test_worker_protocol_rejects_invalid_result_and_terminal_sequences():
         validator.accept({"type": "answer_delta", "text": "late"})
     with pytest.raises(ProtocolError, match="Duplicate terminal"):
         validator.accept({"type": "error"})
+
+
+def test_worker_protocol_correlates_one_poster_publication():
+    ready = {
+        "publication_id": "poster-1",
+        "artifact_id": str(uuid.uuid4()),
+        "version_id": str(uuid.uuid4()),
+        "identifier": "attention-poster",
+        "version": 1,
+        "kind": "posterly",
+        "title": "Attention Is All You Need",
+        "preview_mime": "image/png",
+        "source_language": "html",
+        "gate_status": "warnings",
+        "total_bytes": 1024,
+    }
+    events = artifact_events_from_output(
+        "diagnostic\n@@PWC_ARTIFACT@@" + json.dumps(ready)
+    )
+    assert [event["type"] for event in events] == [
+        "artifact_start",
+        "artifact_ready",
+    ]
+
+    validator = WorkerEventValidator()
+    for event in events:
+        validator.accept(event)
+    with pytest.raises(ProtocolError, match="duplicate artifact terminal"):
+        validator.accept(events[-1])
+    validator.accept({"type": "done"})
+    validator.accept({"type": "worker_done", "status": "complete"})
+
+
+def test_worker_protocol_rejects_unfinished_or_inconsistent_poster():
+    validator = WorkerEventValidator()
+    validator.accept(
+        {
+            "type": "artifact_start",
+            "publication_id": "poster-1",
+            "identifier": "paper-poster",
+            "kind": "posterly",
+            "title": "Paper poster",
+        }
+    )
+    with pytest.raises(ProtocolError, match="unfinished artifact"):
+        validator.accept({"type": "done"})
+    with pytest.raises(ProtocolError, match="Inconsistent artifact terminal"):
+        validator.accept(
+            {
+                "type": "artifact_ready",
+                "publication_id": "poster-1",
+                "artifact_id": str(uuid.uuid4()),
+                "version_id": str(uuid.uuid4()),
+                "identifier": "different-poster",
+                "version": 1,
+                "kind": "posterly",
+                "title": "Paper poster",
+                "preview_mime": "image/png",
+                "source_language": "html",
+                "gate_status": "passed",
+                "total_bytes": 1024,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Make a poster for this paper", True),
+        ("Use Posterly for @Attention Is All You Need", True),
+        ("Summarize the poster section", True),
+        ("Summarize this paper", False),
+        ("What are the posterior probabilities?", False),
+    ],
+)
+def test_poster_intent_is_explicit_and_word_bounded(text: str, expected: bool):
+    assert detect_poster_intent(text) is expected
 
 
 def test_worker_protocol_requires_terminal_before_successful_completion():
@@ -2686,7 +2766,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-iSqGHOkHsdf5Di2OMEJSQd"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-dCvQBXFglDnt0sBSgKG2qi"
-    assert WORKER_CONTRACT_VERSION == "86"
+    assert WORKER_CONTRACT_VERSION == "87"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

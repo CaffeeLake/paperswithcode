@@ -9,6 +9,7 @@ import { Check, Copy, FileText, Pencil, ThumbsDown, ThumbsUp } from "lucide-reac
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { McpAppFrame } from "@/components/chat/McpAppFrame";
+import { PosterArtifact } from "@/components/chat/PosterArtifact";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
 import { PaperSelectionCard } from "@/components/chat/PaperSelectionCard";
@@ -560,6 +561,7 @@ export const AssistantMessage: React.FC<{
           );
         }
         if (b.kind === "app") return <AppBlockView key={b.instance_id || key} block={b} />;
+        if (b.kind === "artifact") return <PosterArtifact key={b.publication_id || b.version_id || key} block={b} />;
         return (
           <AnswerBlockView
             key={key}

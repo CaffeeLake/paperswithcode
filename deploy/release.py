@@ -22,6 +22,12 @@ from backend.chat_sandbox_worker.contract import (
     PI_NODE_VERSION,
     PI_SOURCE_COMMIT,
     PI_VERSION,
+    POSTERLY_ARTIFACT_BUCKET_ID,
+    POSTERLY_CHROMIUM_REVISION,
+    POSTERLY_LICENSE,
+    POSTERLY_PLAYWRIGHT_VERSION,
+    POSTERLY_SOURCE_COMMIT,
+    POSTERLY_SOURCE_URL,
     PRODUCTION_MODAL_IMAGE_ID,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
@@ -202,6 +208,13 @@ def chat_runtime(
             "pi_node_version": "",
             "pi_node_sha256": "",
             "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
+            "posterly_enabled": False,
+            "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
+            "posterly_source_url": POSTERLY_SOURCE_URL,
+            "posterly_license": POSTERLY_LICENSE,
+            "posterly_playwright_version": POSTERLY_PLAYWRIGHT_VERSION,
+            "posterly_chromium_revision": POSTERLY_CHROMIUM_REVISION,
+            "posterly_artifact_bucket_id": POSTERLY_ARTIFACT_BUCKET_ID,
         }
     from backend.chat_sandbox_worker.prompt import sha256
 
@@ -225,6 +238,13 @@ def chat_runtime(
         "pi_node_version": PI_NODE_VERSION,
         "pi_node_sha256": PI_NODE_SHA256,
         "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
+        "posterly_enabled": True,
+        "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
+        "posterly_source_url": POSTERLY_SOURCE_URL,
+        "posterly_license": POSTERLY_LICENSE,
+        "posterly_playwright_version": POSTERLY_PLAYWRIGHT_VERSION,
+        "posterly_chromium_revision": POSTERLY_CHROMIUM_REVISION,
+        "posterly_artifact_bucket_id": POSTERLY_ARTIFACT_BUCKET_ID,
     }
 
 
@@ -355,11 +375,21 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "pi_node_sha256",
         "restricted_hf_cli_version",
     }
+    posterly_runtime_keys = pi_runtime_keys | {
+        "posterly_enabled",
+        "posterly_source_commit",
+        "posterly_source_url",
+        "posterly_license",
+        "posterly_playwright_version",
+        "posterly_chromium_revision",
+        "posterly_artifact_bucket_id",
+    }
     runtime_keys = frozenset(runtime) if isinstance(runtime, dict) else frozenset()
     if not isinstance(runtime, dict) or runtime_keys not in {
         frozenset(legacy_runtime_keys),
         frozenset(rolling_runtime_keys),
         frozenset(pi_runtime_keys),
+        frozenset(posterly_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
@@ -391,7 +421,10 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat runtime system prompt hash is invalid")
         if runtime["enabled"] is not True:
             raise ValueError("enabled chat runtime must be active")
-    if set(runtime) in (rolling_runtime_keys, pi_runtime_keys) and runtime["enabled"]:
+    if (
+        set(runtime) in (rolling_runtime_keys, pi_runtime_keys, posterly_runtime_keys)
+        and runtime["enabled"]
+    ):
         gateway_version = runtime["gateway_contract_version"]
         compatible_from = runtime["gateway_compatible_from"]
         database_version = runtime["database_contract_version"]
@@ -405,7 +438,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat gateway rolling contract is invalid")
         if not isinstance(database_version, int) or database_version < 1:
             raise ValueError("chat database contract is invalid")
-    if set(runtime) == pi_runtime_keys:
+    if set(runtime) in (pi_runtime_keys, posterly_runtime_keys):
         supported = runtime["supported_agent_harnesses"]
         if supported not in (["claude"], ["claude", "pi"]):
             raise ValueError("chat runtime harness set is invalid")
@@ -436,6 +469,19 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
                 raise ValueError("Pi source commit is invalid")
             if len(runtime["pi_node_sha256"]) != 64:
                 raise ValueError("Pi Node digest is invalid")
+    if set(runtime) == posterly_runtime_keys:
+        expected_posterly = {
+            "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
+            "posterly_source_url": POSTERLY_SOURCE_URL,
+            "posterly_license": POSTERLY_LICENSE,
+            "posterly_playwright_version": POSTERLY_PLAYWRIGHT_VERSION,
+            "posterly_chromium_revision": POSTERLY_CHROMIUM_REVISION,
+            "posterly_artifact_bucket_id": POSTERLY_ARTIFACT_BUCKET_ID,
+        }
+        if runtime["posterly_enabled"] is not (profile == "staging"):
+            raise ValueError("Posterly may be enabled only in staging releases")
+        if any(runtime[key] != value for key, value in expected_posterly.items()):
+            raise ValueError("Posterly release provenance does not match source pins")
     return _validate_release_files(release_dir, manifest, expected)
 
 

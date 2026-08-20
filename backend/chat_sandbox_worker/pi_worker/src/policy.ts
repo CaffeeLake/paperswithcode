@@ -15,6 +15,8 @@ const GUIDES = new Set([
   "/opt/pwc/PWC_CLI_SKILL.md",
   "/opt/pwc/HF_CLI_SKILL.md",
   "/opt/pwc/S2_CLI_SKILL.md",
+  "/opt/posterly/SKILL.md",
+  "/opt/pwc/POSTERLY_PUBLISH.md",
 ]);
 
 function inside(candidate: string, root: string): boolean {
@@ -47,6 +49,9 @@ export interface PolicyOptions {
   maximumTurnOutputBytes: number;
   bashTimeoutSeconds: number;
   excalidrawEnabled?: boolean;
+  posterlyMaximumCalls?: number;
+  posterlyMaximumRounds?: number;
+  posterlyTimeoutSeconds?: number;
 }
 
 export class PolicyController {
@@ -62,13 +67,15 @@ export class PolicyController {
   answerProduced = false;
   answerAfterClose = false;
   systemPrompt = "";
+  posterMode = false;
   private active = new Set<string>();
 
   constructor(readonly options: PolicyOptions) {}
 
-  reset(webSearchEnabled: boolean, systemPrompt = this.systemPrompt): void {
+  reset(webSearchEnabled: boolean, systemPrompt = this.systemPrompt, posterMode = false): void {
     this.webSearchEnabled = webSearchEnabled;
     this.systemPrompt = systemPrompt;
+    this.posterMode = posterMode;
     this.calls = 0;
     this.rounds = 0;
     this.searches = 0;
@@ -99,7 +106,9 @@ export class PolicyController {
   authorize(id: string, name: string, input: Record<string, unknown>): string | undefined {
     if (!this.active.size) this.rounds += 1;
     this.active.add(id);
-    if (this.toolingClosed || this.rounds > this.options.maximumRounds || this.calls >= this.options.maximumCalls) {
+    const maximumRounds = this.posterMode ? (this.options.posterlyMaximumRounds ?? 20) : this.options.maximumRounds;
+    const maximumCalls = this.posterMode ? (this.options.posterlyMaximumCalls ?? 40) : this.options.maximumCalls;
+    if (this.toolingClosed || this.rounds > maximumRounds || this.calls >= maximumCalls) {
       this.toolingClosed = true;
       return this.deny(id, ANSWER_NOW);
     }
@@ -136,8 +145,8 @@ export class PolicyController {
       const command = typeof input.command === "string" ? input.command : "";
       if (!command) return this.deny(id, "Invalid Bash command.");
       input.timeout = Math.min(
-        this.options.bashTimeoutSeconds,
-        typeof input.timeout === "number" ? input.timeout : this.options.bashTimeoutSeconds,
+        this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds,
+        typeof input.timeout === "number" ? input.timeout : (this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds),
       );
       if (SEARCH.test(command)) {
         if (this.searches >= this.options.maximumDirectSearches) {

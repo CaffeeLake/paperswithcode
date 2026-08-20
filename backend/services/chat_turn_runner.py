@@ -121,6 +121,7 @@ class ModalChatTurnRunner:
             agent_harness=self.admission.agent_harness,
             web_search_enabled=self.admission.web_search_enabled,
             reader_mode=self.admission.reader_mode,
+            poster_mode=self.admission.poster_mode,
             reasoning_effort=self.admission.reasoning_effort,
             fetchable_urls=list(self.admission.fetchable_urls),
             hf_username=self.hf_username,
@@ -203,6 +204,8 @@ def create_chat_turn_runner(
             scopes.add("web_search")
         if settings.chat_hf_catalog_enabled:
             scopes.add("hf_catalog")
+        if admission.poster_mode:
+            scopes.add("artifact")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,
@@ -210,9 +213,11 @@ def create_chat_turn_runner(
             provider_token=(
                 owner.hf_inference_token
                 if provider == "huggingface"
-                else owner.openrouter_token
-                if provider_mode == "openrouter_byok"
-                else None
+                else (
+                    owner.openrouter_token
+                    if provider_mode == "openrouter_byok"
+                    else None
+                )
             ),
             provider_bill_to=(
                 owner.hf_inference_bill_to if provider == "huggingface" else None
@@ -225,7 +230,14 @@ def create_chat_turn_runner(
             scopes=scopes,
             sdk_session_id=resume_id,
             agent_harness=admission.agent_harness,
-            lifetime_seconds=round(settings.chat_agent_timeout_seconds + 60),
+            lifetime_seconds=round(
+                (
+                    settings.chat_posterly_timeout_seconds
+                    if admission.poster_mode
+                    else settings.chat_agent_timeout_seconds
+                )
+                + 60
+            ),
         )
         db.commit()
     return ModalChatTurnRunner(

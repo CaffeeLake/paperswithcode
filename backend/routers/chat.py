@@ -23,6 +23,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
@@ -47,8 +48,9 @@ from backend.models.chat import (
     UpdateSessionRequest,
     sse_event,
 )
-from backend.models.database import ChatMessageRecord, ChatSession
+from backend.models.database import ChatArtifactVersion, ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
+from backend.services.chat_artifact_service import ArtifactError, ChatArtifactService
 from backend.services.chat_feedback_service import (
     ChatFeedbackService,
     ChatFeedbackUnavailable,
@@ -180,6 +182,21 @@ def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None
         detail={"code": exc.code, "message": str(exc), **exc.details},
         headers=response_headers or None,
     )
+
+
+def _raise_artifact(error: ArtifactError) -> None:
+    status = {
+        "artifact_not_found": 404,
+        "artifact_unauthorized": 403,
+        "artifact_too_large": 413,
+        "poster_storage_quota_exceeded": 429,
+        "artifact_storage_failed": 503,
+        "artifact_corrupt": 503,
+    }.get(error.code, 422)
+    raise HTTPException(
+        status_code=status,
+        detail={"code": error.code, "message": str(error)},
+    ) from error
 
 
 @dataclass(frozen=True)
@@ -928,10 +945,26 @@ def create_or_refresh_share(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        share = ChatShareService(db, settings).create_or_refresh(
-            owner_from_user(user), session_id
-        )
-        db.commit()
+        service = ChatShareService(db, settings)
+        share = service.create_or_refresh(owner_from_user(user), session_id)
+        storage = ChatArtifactService(db, settings).storage
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            for prefix in service.new_storage_prefixes:
+                try:
+                    storage.delete_prefix(prefix)
+                except Exception:
+                    logger.error(
+                        "failed public poster rollback cleanup prefix=%s", prefix
+                    )
+            raise
+        for prefix in service.stale_storage_prefixes:
+            try:
+                storage.delete_prefix(prefix)
+            except Exception:
+                logger.warning("stale public poster cleanup failed share=%s", share.id)
         db.refresh(share)
         return ChatShareSummary(
             share_id=share.id,
@@ -942,6 +975,195 @@ def create_or_refresh_share(
     except ChatServiceError as exc:
         db.rollback()
         _raise(exc)
+
+
+@router.get("/artifacts/storage")
+def get_artifact_storage_status(
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return ChatArtifactService(db, settings).storage_status(
+        owner_from_user(user).hf_user_id
+    )
+
+
+@router.get("/artifacts/{artifact_id}")
+def get_artifact(
+    artifact_id: uuid.UUID,
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        service = ChatArtifactService(db, settings)
+        artifact = service.get_artifact(owner_from_user(user).hf_user_id, artifact_id)
+        versions = list(
+            db.scalars(
+                select(ChatArtifactVersion)
+                .where(
+                    ChatArtifactVersion.artifact_id == artifact.id,
+                    ChatArtifactVersion.state == "ready",
+                )
+                .order_by(ChatArtifactVersion.version)
+            )
+        )
+        return {
+            "artifact_id": artifact.id,
+            "identifier": artifact.identifier,
+            "artifact_kind": artifact.kind,
+            "title": artifact.title,
+            "latest_version": artifact.latest_version,
+            "versions": [
+                {
+                    "version_id": item.id,
+                    "version": item.version,
+                    "gate_status": item.gate_status,
+                    "preview_mime": item.preview_mime,
+                    "total_bytes": item.byte_count,
+                    "created_at": item.created_at,
+                }
+                for item in versions
+            ],
+        }
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/manifest")
+def get_artifact_manifest(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    response.headers["Cache-Control"] = "private, immutable, max-age=3600"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    try:
+        version = ChatArtifactService(db, settings).get_version(
+            owner_from_user(user).hf_user_id, artifact_id, version_id
+        )
+        return version.manifest
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.delete("/artifacts/{artifact_id}/versions/{version_id}", status_code=204)
+def delete_artifact_version(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        ChatArtifactService(db, settings).delete_version(
+            owner_from_user(user).hf_user_id, artifact_id, version_id
+        )
+        db.commit()
+        return Response(status_code=204)
+    except ArtifactError as error:
+        db.rollback()
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/preview")
+def get_artifact_preview(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        service = ChatArtifactService(db, settings)
+        version = service.get_version(
+            owner_from_user(user).hf_user_id, artifact_id, version_id
+        )
+        item = service.read_version_file(
+            owner_from_user(user).hf_user_id,
+            artifact_id,
+            version_id,
+            version.preview_path,
+            role="preview",
+        )
+        return Response(
+            content=item.data,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, immutable, max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'inline; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/source/{path:path}")
+def get_artifact_source(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    path: str,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        item = ChatArtifactService(db, settings).read_version_file(
+            owner_from_user(user).hf_user_id,
+            artifact_id,
+            version_id,
+            path,
+            role="source",
+        )
+        return Response(
+            content=item.data,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Cache-Control": "private, immutable, max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'attachment; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/download/{path:path}")
+def download_artifact_file(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    path: str,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        item = ChatArtifactService(db, settings).read_version_file(
+            owner_from_user(user).hf_user_id,
+            artifact_id,
+            version_id,
+            path,
+            role="download",
+        )
+        return Response(
+            content=item.data,
+            media_type=item.media_type,
+            headers={
+                "Cache-Control": "private, immutable, max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'attachment; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
 
 
 @router.get("/shares/{share_id}", response_model=ChatShareDetail)
@@ -956,6 +1178,83 @@ def get_shared_chat(
         return ChatShareService(db, settings).get_public(share_id)
     except ChatServiceError as exc:
         _raise(exc, {"Cache-Control": "no-store"})
+
+
+def _public_artifact_response(
+    share_id: str,
+    capability_id: str,
+    *,
+    role: Literal["preview", "pdf"],
+    disposition: Literal["inline", "attachment"],
+    db: Session,
+    settings: Settings,
+) -> Response:
+    try:
+        item = ChatShareService(db, settings).read_public_artifact(
+            share_id, capability_id, role=role
+        )
+        return Response(
+            content=item.data,
+            media_type=item.media_type,
+            headers={
+                "Cache-Control": "public, immutable, max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'{disposition}; filename="{item.filename}"',
+            },
+        )
+    except ChatServiceError as exc:
+        _raise(exc, {"Cache-Control": "no-store"})
+
+
+@router.get("/shares/{share_id}/artifacts/{capability_id}/preview")
+def get_shared_artifact_preview(
+    share_id: str,
+    capability_id: str,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    return _public_artifact_response(
+        share_id,
+        capability_id,
+        role="preview",
+        disposition="inline",
+        db=db,
+        settings=settings,
+    )
+
+
+@router.get("/shares/{share_id}/artifacts/{capability_id}/download/png")
+def download_shared_artifact_png(
+    share_id: str,
+    capability_id: str,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    return _public_artifact_response(
+        share_id,
+        capability_id,
+        role="preview",
+        disposition="attachment",
+        db=db,
+        settings=settings,
+    )
+
+
+@router.get("/shares/{share_id}/artifacts/{capability_id}/download/pdf")
+def download_shared_artifact_pdf(
+    share_id: str,
+    capability_id: str,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    return _public_artifact_response(
+        share_id,
+        capability_id,
+        role="pdf",
+        disposition="attachment",
+        db=db,
+        settings=settings,
+    )
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionSummary)
@@ -1031,6 +1330,16 @@ async def delete_session(
                     503,
                     "Chat workspace deletion could not be verified. Retry before relying on removal.",
                 ) from exc
+        artifact_storage = ChatArtifactService(db, settings).storage
+        try:
+            for prefix in receipt.artifact_prefixes:
+                artifact_storage.delete_prefix(prefix)
+        except ArtifactError as exc:
+            raise ChatServiceError(
+                "chat_deletion_unverified",
+                503,
+                "Poster storage deletion could not be verified. Retry before relying on removal.",
+            ) from exc
         db.commit()
         if not service.deletion_complete(receipt):
             raise ChatServiceError(

@@ -215,6 +215,8 @@ function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlo
             height: block.height || 525,
             public_fork: Boolean(block.public_fork),
           }
+        : block.kind === "artifact"
+          ? { ...block }
         : { ...block, done: true as const });
   return restored.filter((block, index) => {
     const previous = restored[index - 1];

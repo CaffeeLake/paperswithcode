@@ -239,6 +239,46 @@ function reduceEvent(
                 },
         ),
       };
+    case "artifact_start":
+      return {
+        ...state,
+        messages: patchLast(state.messages, (message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return { ...visible, blocks: [...(visible.blocks ?? []), {
+            kind: "artifact", schema_version: 1, scope: "owner",
+            publication_id: event.publication_id, identifier: event.identifier,
+            artifact_kind: "posterly", title: event.title, status: "generating",
+            phase: "publishing_poster",
+          }] };
+        }),
+      };
+    case "artifact_ready":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "artifact" && block.publication_id === event.publication_id,
+          (block) => block.kind === "artifact" ? {
+            ...block, artifact_id: event.artifact_id, version_id: event.version_id,
+            identifier: event.identifier, version: event.version, title: event.title,
+            status: "ready", preview_mime: event.preview_mime,
+            source_language: event.source_language, gate_status: event.gate_status,
+            total_bytes: event.total_bytes, phase: undefined,
+          } : block,
+        ),
+      };
+    case "artifact_error":
+      return {
+        ...state,
+        messages: patchBlock(
+          state.messages,
+          (block) => block.kind === "artifact" && block.publication_id === event.publication_id,
+          (block) => block.kind === "artifact" ? {
+            ...block, status: "error", phase: undefined,
+            error_code: event.code, error_message: event.message,
+          } : block,
+        ),
+      };
     case "answer_delta":
       return {
         ...state,

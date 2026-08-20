@@ -9,6 +9,7 @@ export async function renderPrompt(options: {
   hfUsername: string;
   webSearchEnabled: boolean;
   readerMode: boolean;
+  posterlyEnabled?: boolean;
   assetPath?: string;
   source?: string;
 }): Promise<string> {
@@ -19,7 +20,8 @@ export async function renderPrompt(options: {
     .replace(MODEL_SENTINEL, options.model)
     .replace(USER_SENTINEL, options.hfUsername)
     .replace('"web_search_enabled":false', `"web_search_enabled":${String(options.webSearchEnabled)}`)
-    .replace('"reader_mode":false', `"reader_mode":${String(options.readerMode)}`);
+    .replace('"reader_mode":false', `"reader_mode":${String(options.readerMode)}`)
+    .replace('"posterly_enabled":false', `"posterly_enabled":${String(options.posterlyEnabled === true)}`);
 }
 
 export async function loadPromptAsset(assetPath?: string): Promise<string> {

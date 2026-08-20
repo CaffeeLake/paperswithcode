@@ -38,6 +38,7 @@ from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
     MAX_WIRE_FRAME_BYTES,
+    artifact_events_from_output,
     decode_frame,
     encode_frame,
 )
@@ -191,10 +192,19 @@ class WorkerToolHooks:
         prompt: str = "",
         *,
         web_search_enabled: bool = False,
+        poster_mode: bool = False,
     ):
         self.budget = ToolBudget(
-            maximum_calls=settings.chat_max_tool_calls,
-            maximum_rounds=effective_tool_rounds(settings.chat_max_turns),
+            maximum_calls=(
+                settings.chat_posterly_max_tool_calls
+                if poster_mode
+                else settings.chat_max_tool_calls
+            ),
+            maximum_rounds=(
+                settings.chat_posterly_max_tool_rounds
+                if poster_mode
+                else effective_tool_rounds(settings.chat_max_turns)
+            ),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
             maximum_result_bytes=settings.chat_tool_result_max_bytes,
             maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
@@ -202,7 +212,14 @@ class WorkerToolHooks:
             web_search_enabled=web_search_enabled,
         )
         self.budget.observe_urls(prompt)
-        self.bash_timeout_ms = round(settings.chat_bash_timeout_seconds * 1000)
+        self.bash_timeout_ms = round(
+            (
+                settings.chat_posterly_timeout_seconds
+                if poster_mode
+                else settings.chat_bash_timeout_seconds
+            )
+            * 1000
+        )
         self.results: dict[str, dict[str, Any]] = {}
 
     def reset(
@@ -211,10 +228,19 @@ class WorkerToolHooks:
         prompt: str,
         *,
         web_search_enabled: bool = False,
+        poster_mode: bool = False,
     ) -> None:
         self.budget = ToolBudget(
-            maximum_calls=settings.chat_max_tool_calls,
-            maximum_rounds=effective_tool_rounds(settings.chat_max_turns),
+            maximum_calls=(
+                settings.chat_posterly_max_tool_calls
+                if poster_mode
+                else settings.chat_max_tool_calls
+            ),
+            maximum_rounds=(
+                settings.chat_posterly_max_tool_rounds
+                if poster_mode
+                else effective_tool_rounds(settings.chat_max_turns)
+            ),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
             maximum_result_bytes=settings.chat_tool_result_max_bytes,
             maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
@@ -222,6 +248,14 @@ class WorkerToolHooks:
             web_search_enabled=web_search_enabled,
         )
         self.budget.observe_urls(prompt)
+        self.bash_timeout_ms = round(
+            (
+                settings.chat_posterly_timeout_seconds
+                if poster_mode
+                else settings.chat_bash_timeout_seconds
+            )
+            * 1000
+        )
         self.results.clear()
 
     async def pre(self, hook_input: dict, tool_use_id: str | None, _context: Any):
@@ -268,9 +302,11 @@ class WorkerToolHooks:
                 updated["command"] = f"set -eo pipefail\n{command}"
             requested = updated.get("timeout")
             updated["timeout"] = min(
-                int(requested)
-                if isinstance(requested, (int, float))
-                else self.bash_timeout_ms,
+                (
+                    int(requested)
+                    if isinstance(requested, (int, float))
+                    else self.bash_timeout_ms
+                ),
                 self.bash_timeout_ms,
             )
         return {
@@ -343,7 +379,7 @@ class WorkerToolHooks:
 
 def _validate_run_frame(
     frame: dict[str, Any],
-) -> tuple[str, str, str, bool, bool, str, list[str], str]:
+) -> tuple[str, str, str, bool, bool, bool, str, list[str], str]:
     prompt = frame.get("prompt")
     if frame.get("agent_harness", "claude") != "claude":
         raise ValueError("Invalid agent harness")
@@ -363,6 +399,9 @@ def _validate_run_frame(
     reader_mode = frame.get("reader_mode", False)
     if not isinstance(reader_mode, bool):
         raise ValueError("Invalid reader mode")
+    poster_mode = frame.get("poster_mode", False)
+    if not isinstance(poster_mode, bool):
+        raise ValueError("Invalid poster mode")
     reasoning_effort = str(frame.get("reasoning_effort") or "high")
     if reasoning_effort not in {"low", "high", "max"}:
         raise ValueError("Invalid reasoning effort")
@@ -382,6 +421,7 @@ def _validate_run_frame(
         model,
         web_search_enabled,
         reader_mode,
+        poster_mode,
         reasoning_effort,
         fetchable_urls,
         hf_username,
@@ -400,6 +440,7 @@ def _options(
     resume: str | None,
     web_search_enabled: bool = False,
     reader_mode: bool = False,
+    poster_mode: bool = False,
     hf_username: str = "unknown",
     current_date: date | None = None,
     finalizing: bool = False,
@@ -412,6 +453,7 @@ def _options(
         max_web_searches=settings.chat_max_web_search_calls,
         web_search_enabled=web_search_enabled,
         reader_mode=reader_mode,
+        posterly_enabled=poster_mode,
         selected_model=model,
         hf_username=hf_username,
         current_date=current_date,
@@ -584,6 +626,13 @@ async def _adapt_messages(
                         }
                         hooks.budget.web_search_failed = True
                 yield {"v": 1, "request_id": request_id, **event}
+                output = "".join(
+                    str(part.get("text") or "")
+                    for part in event.get("content", [])
+                    if isinstance(part, dict)
+                )
+                for artifact_event in artifact_events_from_output(output):
+                    yield {"v": 1, "request_id": request_id, **artifact_event}
             continue
         adapted = [
             {"v": 1, "request_id": request_id, **event}
@@ -607,11 +656,17 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         model,
         web_search_enabled,
         reader_mode,
+        poster_mode,
         _reasoning_effort,
         fetchable_urls,
         hf_username,
     ) = _validate_run_frame(frame)
-    hooks = WorkerToolHooks(settings, prompt, web_search_enabled=web_search_enabled)
+    hooks = WorkerToolHooks(
+        settings,
+        prompt,
+        web_search_enabled=web_search_enabled,
+        poster_mode=poster_mode,
+    )
     hooks.budget.seed_urls(fetchable_urls)
     hooks.budget.observe_urls(prompt)
     adapter = SDKEventAdapter(
@@ -624,6 +679,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         resume=frame.get("resume"),
         web_search_enabled=web_search_enabled,
         reader_mode=reader_mode,
+        poster_mode=poster_mode,
         hf_username=hf_username,
     )
     yield {
@@ -631,7 +687,11 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         "type": "workspace_ready",
         "request_id": request_id,
     }
-    deadline = time.monotonic() + settings.chat_agent_timeout_seconds
+    deadline = time.monotonic() + (
+        settings.chat_posterly_timeout_seconds
+        if poster_mode
+        else settings.chat_agent_timeout_seconds
+    )
     stream = sdk_query(prompt=prompt, options=options)
     session_id: str | None = None
     limited = False
@@ -833,6 +893,7 @@ class PersistentAgent:
         self.sdk_session_id: str | None = None
         self.web_search_enabled = False
         self.reader_mode = False
+        self.poster_mode = False
         self.hf_username = "unknown"
         self.current_date: date | None = None
         self.finalizing = False
@@ -844,6 +905,7 @@ class PersistentAgent:
         resume: str | None,
         web_search_enabled: bool = False,
         reader_mode: bool = False,
+        poster_mode: bool = False,
         hf_username: str = "unknown",
         current_date: date | None = None,
         finalizing: bool = False,
@@ -862,6 +924,7 @@ class PersistentAgent:
             model != self.model
             or web_search_enabled != self.web_search_enabled
             or reader_mode != self.reader_mode
+            or poster_mode != self.poster_mode
             or hf_username != self.hf_username
             or rendered_date != self.current_date
             or finalizing != self.finalizing
@@ -894,6 +957,7 @@ class PersistentAgent:
         self.resume = resume
         self.web_search_enabled = web_search_enabled
         self.reader_mode = reader_mode
+        self.poster_mode = poster_mode
         self.hf_username = hf_username
         self.current_date = rendered_date
         self.finalizing = finalizing
@@ -905,6 +969,7 @@ class PersistentAgent:
                 resume=resume,
                 web_search_enabled=web_search_enabled,
                 reader_mode=reader_mode,
+                poster_mode=poster_mode,
                 hf_username=hf_username,
                 current_date=rendered_date,
                 finalizing=finalizing,
@@ -924,20 +989,31 @@ class PersistentAgent:
             model,
             web_search_enabled,
             reader_mode,
+            poster_mode,
             _reasoning_effort,
             fetchable_urls,
             hf_username,
         ) = _validate_run_frame(frame)
-        deadline = time.monotonic() + self.settings.chat_agent_timeout_seconds
+        deadline = time.monotonic() + (
+            self.settings.chat_posterly_timeout_seconds
+            if poster_mode
+            else self.settings.chat_agent_timeout_seconds
+        )
         await self.connect(
             model=model,
             resume=frame.get("resume"),
             web_search_enabled=web_search_enabled,
             reader_mode=reader_mode,
+            poster_mode=poster_mode,
             hf_username=hf_username,
         )
         assert self.client is not None
-        self.hooks.reset(self.settings, prompt, web_search_enabled=web_search_enabled)
+        self.hooks.reset(
+            self.settings,
+            prompt,
+            web_search_enabled=web_search_enabled,
+            poster_mode=poster_mode,
+        )
         self.hooks.budget.seed_urls(fetchable_urls)
         self.hooks.budget.observe_urls(prompt)
         adapter = SDKEventAdapter(

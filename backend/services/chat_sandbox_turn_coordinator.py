@@ -69,6 +69,7 @@ class ChatSandboxTurnRequest:
     agent_harness: str = "claude"
     web_search_enabled: bool = False
     reader_mode: bool = False
+    poster_mode: bool = False
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -254,6 +255,11 @@ class ChatSandboxTurnCoordinator:
         execution: WorkerTurnExecution | None = None
         try:
             first_semantic_recorded = False
+            turn_timeout = (
+                self.settings.chat_posterly_timeout_seconds
+                if request.poster_mode
+                else self.settings.chat_agent_timeout_seconds
+            )
             claim = self._claim_worker(request.chat_session_id, sandbox.object_id)
             execution = self.transport.create_execution(
                 sandbox,
@@ -270,6 +276,7 @@ class ChatSandboxTurnCoordinator:
                     gateway_url=self.settings.chat_gateway_url,
                     web_search_enabled=request.web_search_enabled,
                     reader_mode=request.reader_mode,
+                    poster_mode=request.poster_mode,
                     reasoning_effort=request.reasoning_effort,
                     fetchable_urls=request.fetchable_urls,
                     hf_username=request.hf_username,
@@ -279,9 +286,7 @@ class ChatSandboxTurnCoordinator:
                     if self.persistent_enabled
                     else WorkerTurnMode.ONE_SHOT
                 ),
-                process_timeout_seconds=round(
-                    self.settings.chat_agent_timeout_seconds + 15
-                ),
+                process_timeout_seconds=round(turn_timeout + 15),
             )
             dispatch = await execution.dispatch()
             if dispatch is WorkerTurnDispatchOutcome.CANCELLED:
@@ -304,9 +309,7 @@ class ChatSandboxTurnCoordinator:
                 "phase": "capability_install_ms",
                 "elapsed_ms": self._elapsed_ms(turn_started),
             }
-            async for output in execution.events(
-                timeout_seconds=self.settings.chat_agent_timeout_seconds
-            ):
+            async for output in execution.events(timeout_seconds=turn_timeout):
                 if output is WorkerTurnMilestone.AGENT_READY:
                     elapsed_ms = self._elapsed_ms(turn_started)
                     yield {
@@ -451,9 +454,11 @@ class ChatSandboxTurnCoordinator:
             pool_miss_reason=(
                 "incompatible_profile"
                 if prewarm_incompatible
-                else "unhealthy_blank"
-                if forced_pool_miss and request.resume is None
-                else None
+                else (
+                    "unhealthy_blank"
+                    if forced_pool_miss and request.resume is None
+                    else None
+                )
             ),
             budget_prechecked=True,
             allow_pool=bool(

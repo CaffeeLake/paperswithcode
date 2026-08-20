@@ -245,6 +245,13 @@ if present_pi_fields:
         "pi_node_version": contract.PI_NODE_VERSION if enabled else "",
         "pi_node_sha256": contract.PI_NODE_SHA256 if enabled else "",
         "restricted_hf_cli_version": contract.RESTRICTED_HF_CLI_VERSION if enabled else "",
+        "posterly_enabled": enabled and not production,
+        "posterly_source_commit": contract.POSTERLY_SOURCE_COMMIT,
+        "posterly_source_url": contract.POSTERLY_SOURCE_URL,
+        "posterly_license": contract.POSTERLY_LICENSE,
+        "posterly_playwright_version": contract.POSTERLY_PLAYWRIGHT_VERSION,
+        "posterly_chromium_revision": contract.POSTERLY_CHROMIUM_REVISION,
+        "posterly_artifact_bucket_id": contract.POSTERLY_ARTIFACT_BUCKET_ID,
     })
 print(json.dumps(descriptor, sort_keys=True))
 """
@@ -1702,9 +1709,11 @@ def status(_: argparse.Namespace) -> int:
             release = _slot_release(environment, slot)
             slot_item: dict[str, object] = {
                 "release": release.name if release else None,
-                "runtime_id": runtime_id(release)
-                if release and (release / "uv.lock").is_file()
-                else None,
+                "runtime_id": (
+                    runtime_id(release)
+                    if release and (release / "uv.lock").is_file()
+                    else None
+                ),
                 "service": _systemctl_state(_slot_unit(environment, slot)),
                 "socket": _systemctl_state(_slot_unit(environment, slot, "socket")),
             }

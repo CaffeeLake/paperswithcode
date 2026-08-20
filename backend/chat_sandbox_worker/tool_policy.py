@@ -162,6 +162,8 @@ class ToolBudget:
         guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
         hf_guide: Path = Path("/opt/pwc/HF_CLI_SKILL.md"),
         s2_guide: Path = Path("/opt/pwc/S2_CLI_SKILL.md"),
+        posterly_publish_guide: Path = Path("/opt/pwc/POSTERLY_PUBLISH.md"),
+        posterly_root: Path = Path("/opt/posterly"),
     ) -> Decision:
         if tool_id not in self.round_by_tool_id:
             # Compatibility fallback for callers that do not expose an SDK
@@ -220,7 +222,9 @@ class ToolBudget:
                         guide.resolve(strict=False),
                         hf_guide.resolve(strict=False),
                         s2_guide.resolve(strict=False),
+                        posterly_publish_guide.resolve(strict=False),
                     }
+                    or _inside(candidate, posterly_root)
                 ):
                     self.denied_calls += 1
                     return Decision(False, _READ_SCOPE_REASON)

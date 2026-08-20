@@ -2257,6 +2257,9 @@ class ChatSession(Base):
         passive_deletes=True,
         uselist=False,
     )
+    artifacts: Mapped[list["ChatArtifact"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
     sandbox_lease: Mapped[Optional["ChatSandboxLease"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
@@ -2371,6 +2374,9 @@ class ChatMessageRecord(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
+    artifact_versions: Mapped[list["ChatArtifactVersion"]] = relationship(
+        back_populates="message", passive_deletes=True
+    )
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')", name="chat_messages_role_check"
@@ -2433,11 +2439,153 @@ class ChatShare(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="share")
+    shared_artifacts: Mapped[list["ChatSharedArtifact"]] = relationship(
+        back_populates="share", cascade="all, delete-orphan", passive_deletes=True
+    )
     __table_args__ = (
         CheckConstraint(
             "jsonb_typeof(messages) = 'array'",
             name="chat_shares_messages_array_check",
         ),
+    )
+
+
+class ChatArtifact(Base):
+    """Stable Posterly artifact identity within one private chat session."""
+
+    __tablename__ = "chat_artifacts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    identifier: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    latest_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[ChatSession] = relationship(back_populates="artifacts")
+    versions: Mapped[list["ChatArtifactVersion"]] = relationship(
+        back_populates="artifact", cascade="all, delete-orphan", passive_deletes=True
+    )
+    __table_args__ = (
+        CheckConstraint("kind = 'posterly'", name="chat_artifacts_kind_check"),
+        CheckConstraint("latest_version >= 0", name="chat_artifacts_version_check"),
+        UniqueConstraint(
+            "session_id", "identifier", name="uq_chat_artifacts_session_identifier"
+        ),
+        Index("idx_chat_artifacts_session", "session_id", "created_at"),
+    )
+
+
+class ChatArtifactVersion(Base):
+    """One immutable, content-addressed Posterly publication."""
+
+    __tablename__ = "chat_artifact_versions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    message_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    bundle_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_path: Mapped[str] = mapped_column(String(300), nullable=False)
+    preview_mime: Mapped[str] = mapped_column(String(64), nullable=False)
+    gate_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    artifact: Mapped[ChatArtifact] = relationship(back_populates="versions")
+    message: Mapped[Optional[ChatMessageRecord]] = relationship(
+        back_populates="artifact_versions"
+    )
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="chat_artifact_versions_number_check"),
+        CheckConstraint("byte_count >= 0", name="chat_artifact_versions_bytes_check"),
+        CheckConstraint(
+            "gate_status IN ('passed','warnings','failed')",
+            name="chat_artifact_versions_gate_check",
+        ),
+        CheckConstraint(
+            "state IN ('uploading','ready','failed','deleting')",
+            name="chat_artifact_versions_state_check",
+        ),
+        UniqueConstraint(
+            "artifact_id", "version", name="uq_chat_artifact_versions_number"
+        ),
+        UniqueConstraint(
+            "artifact_id", "bundle_digest", name="uq_chat_artifact_versions_digest"
+        ),
+        Index("idx_chat_artifact_versions_turn", "turn_id"),
+        Index("idx_chat_artifact_versions_message", "message_id"),
+    )
+
+
+class ChatSharedArtifact(Base):
+    """Share-scoped immutable PNG/PDF snapshot with an unrelated capability."""
+
+    __tablename__ = "chat_shared_artifacts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    share_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_shares.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    capability_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    source_version_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    identifier: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    canvas: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    gate_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_path: Mapped[str] = mapped_column(String(300), nullable=False)
+    pdf_path: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    share: Mapped[ChatShare] = relationship(back_populates="shared_artifacts")
+    __table_args__ = (
+        CheckConstraint(
+            "gate_status IN ('passed','warnings','failed')",
+            name="chat_shared_artifacts_gate_check",
+        ),
+        CheckConstraint(
+            "gate_status <> 'failed' OR pdf_path IS NULL",
+            name="chat_shared_artifacts_failed_pdf_check",
+        ),
+        UniqueConstraint(
+            "share_id", "identifier", name="uq_chat_shared_artifacts_identifier"
+        ),
+        Index("idx_chat_shared_artifacts_share", "share_id"),
     )
 
 
@@ -3073,6 +3221,7 @@ class ChatTurnCapability(Base):
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     scopes: Mapped[list] = mapped_column(JSONB, nullable=False)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    artifact_paper_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

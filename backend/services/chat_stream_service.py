@@ -21,9 +21,11 @@ from typing import Any
 
 from claude_agent_sdk import fork_session_via_store
 from claude_agent_sdk._internal.session_store import project_key_for_directory
+from sqlalchemy import select
 
 from backend.config import Settings
 from backend.database.connection import db_manager
+from backend.models.database import ChatArtifact, ChatArtifactVersion
 from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_citation_service import (
     cited_route_ids,
@@ -125,6 +127,7 @@ class ChatTurnProjection:
     reasoning: dict[str, Any] | None = None
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     apps: dict[str, dict[str, Any]] = field(default_factory=dict)
+    artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     citations: list[dict[str, Any]] = field(default_factory=list)
     web_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -133,6 +136,10 @@ class ChatTurnProjection:
             {**block, "done": True} if block.get("kind") == "answer" else block
             for block in self.blocks
             if (block.get("kind") != "tool" or block.get("status") != "running")
+            and (
+                block.get("kind") != "artifact"
+                or block.get("status") in {"ready", "error"}
+            )
             and block is not self.reasoning
         ]
 
@@ -160,6 +167,49 @@ class ChatTurnProjection:
             self._start_app(event)
         elif kind == "app_result":
             self._finish_app(event)
+        elif kind == "artifact_start":
+            block = {
+                "kind": "artifact",
+                "schema_version": 1,
+                "scope": "owner",
+                "publication_id": event["publication_id"],
+                "identifier": event["identifier"],
+                "artifact_kind": "posterly",
+                "title": event["title"],
+                "status": "generating",
+                "phase": "publishing_poster",
+            }
+            self.blocks.append(block)
+            self.artifacts[event["publication_id"]] = block
+        elif kind == "artifact_ready":
+            block = self.artifacts.get(event["publication_id"])
+            if block is not None:
+                block.update(
+                    {
+                        "artifact_id": event["artifact_id"],
+                        "version_id": event["version_id"],
+                        "version": event["version"],
+                        "status": "ready",
+                        "preview_mime": "image/png",
+                        "source_language": "html",
+                        "gate_status": event["gate_status"],
+                        "total_bytes": event["total_bytes"],
+                    }
+                )
+                block.pop("phase", None)
+        elif kind == "artifact_error":
+            block = self.artifacts.get(event["publication_id"])
+            if block is not None:
+                block.update(
+                    {
+                        "status": "error",
+                        "error_code": str(event.get("code") or "artifact_failed")[:64],
+                        "error_message": str(
+                            event.get("message") or "Poster publication failed"
+                        )[:500],
+                    }
+                )
+                block.pop("phase", None)
         elif kind == "answer_delta":
             self._append_answer(event["text"])
 
@@ -367,6 +417,50 @@ class ChatTurnProjection:
                     block_citations.append(citations_by_url[url])
             block["citations"] = block_citations
         return answer, self.citations
+
+
+def _trusted_artifact_ready(
+    event: dict[str, Any], admission: TurnAdmission
+) -> dict[str, Any] | None:
+    try:
+        artifact_id = uuid.UUID(str(event["artifact_id"]))
+        version_id = uuid.UUID(str(event["version_id"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    with db_manager.session_local() as db:
+        row = db.scalar(
+            select(ChatArtifactVersion)
+            .join(ChatArtifact)
+            .where(
+                ChatArtifactVersion.id == version_id,
+                ChatArtifactVersion.artifact_id == artifact_id,
+                ChatArtifactVersion.turn_id == admission.turn_id,
+                ChatArtifactVersion.state == "ready",
+                ChatArtifact.session_id == admission.session_id,
+            )
+        )
+        if row is None:
+            return None
+        artifact = row.artifact
+        expected = {
+            "identifier": artifact.identifier,
+            "version": row.version,
+            "kind": "posterly",
+            "title": artifact.title,
+            "preview_mime": "image/png",
+            "source_language": "html",
+            "gate_status": row.gate_status,
+            "total_bytes": row.byte_count,
+        }
+        if any(event.get(key) != value for key, value in expected.items()):
+            return None
+        return {
+            "type": "artifact_ready",
+            "publication_id": str(event["publication_id"]),
+            "artifact_id": str(artifact.id),
+            "version_id": str(row.id),
+            **expected,
+        }
 
 
 def _persist_failure(
@@ -1081,6 +1175,24 @@ class ChatStreamOrchestrator:
                 )
                 self.trace.record_usage(event)
                 continue
+
+            if kind == "artifact_ready":
+                trusted = _trusted_artifact_ready(event, self.admission)
+                if trusted is None:
+                    logger.warning(
+                        "chat artifact receipt rejected request_id=%s turn_id=%s",
+                        self.request_id,
+                        self.admission.turn_id,
+                    )
+                    kind = "artifact_error"
+                    event = {
+                        "type": kind,
+                        "publication_id": str(event.get("publication_id") or ""),
+                        "code": "artifact_receipt_invalid",
+                        "message": "Poster publication could not be verified.",
+                    }
+                else:
+                    event = trusted
 
             elapsed_ms = round((time.perf_counter() - self.started) * 1000)
             if kind == "workspace_ready":
