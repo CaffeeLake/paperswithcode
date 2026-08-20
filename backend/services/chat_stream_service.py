@@ -463,6 +463,25 @@ def _trusted_artifact_ready(
         }
 
 
+def _public_poster_tool_event(kind: str, event: dict[str, Any]) -> dict[str, Any]:
+    if kind == "tool_call":
+        return {**event, "args": {}}
+    if kind == "tool_result":
+        return {
+            **event,
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Poster workflow step completed.",
+                    "truncated": bool(
+                        (event.get("metadata") or {}).get("output_truncated")
+                    ),
+                }
+            ],
+        }
+    return event
+
+
 def _persist_failure(
     owner: ChatOwner,
     settings: Settings,
@@ -1196,6 +1215,8 @@ class ChatStreamOrchestrator:
                     }
                 else:
                     event = trusted
+            if self.admission.poster_mode and kind in {"tool_call", "tool_result"}:
+                event = _public_poster_tool_event(kind, event)
 
             elapsed_ms = round((time.perf_counter() - self.started) * 1000)
             if kind == "workspace_ready":

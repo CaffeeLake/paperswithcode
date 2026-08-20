@@ -53,6 +53,7 @@ from backend.services.chat_session_service import (
 from backend.services.chat_stream_service import (
     ChatStreamOrchestrator,
     ChatTurnProjection,
+    _public_poster_tool_event,
     sequential_reasoning_events,
 )
 from backend.services.chat_title_service import fallback_title, normalize_title
@@ -877,6 +878,38 @@ def test_sse_event_accepts_posterly_artifact_frames():
         json.loads(ready[6:-2])["artifact_id"] == "a9129b6f-b758-4ee7-b8df-6a202404d6c2"
     )
     assert json.loads(error[6:-2])["code"] == "poster_validation_failed"
+
+
+def test_poster_tool_events_hide_arguments_and_private_evidence():
+    call = _public_poster_tool_event(
+        "tool_call",
+        {
+            "type": "tool_call",
+            "id": "poster-step",
+            "name": "Bash",
+            "args": {"command": "private paper text and generated HTML"},
+        },
+    )
+    result = _public_poster_tool_event(
+        "tool_result",
+        {
+            "type": "tool_result",
+            "id": "poster-step",
+            "status": "success",
+            "took_ms": 1,
+            "content": [{"type": "text", "text": "private paper text"}],
+            "metadata": {"exit_code": 0, "output_truncated": True},
+        },
+    )
+
+    assert call["args"] == {}
+    assert result["content"] == [
+        {
+            "type": "text",
+            "text": "Poster workflow step completed.",
+            "truncated": True,
+        }
+    ]
 
 
 def test_chat_projection_keeps_app_blocks_out_of_tool_accordions():
