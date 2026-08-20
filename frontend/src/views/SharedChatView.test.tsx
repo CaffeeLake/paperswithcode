@@ -176,6 +176,8 @@ describe("SharedChatView", () => {
     renderView();
 
     expect(await screen.findByRole("complementary", { name: "Attention poster" })).toBeVisible();
+    expect(document.querySelector(".shared-chat-page"))
+      .toHaveStyle({ height: "calc(100dvh - 60px)" });
     expect(screen.getByTestId("shared-conversation-pane").closest("[data-artifact-layout]"))
       .toHaveAttribute("data-artifact-layout", "split");
     expect(screen.getByAltText("Full preview of Attention poster")).toHaveAttribute(

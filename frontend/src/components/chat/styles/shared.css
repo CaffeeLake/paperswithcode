@@ -1,6 +1,7 @@
 /* Chat shared styles */
-.shared-chat-page { min-height: calc(100dvh - 60px); background: var(--bg); }
+.shared-chat-page { min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 .shared-chat-heading {
+  flex: none;
   border-bottom: 1px solid var(--hairline);
   display: flex;
   align-items: center;

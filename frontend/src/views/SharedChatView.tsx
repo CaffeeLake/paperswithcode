@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -58,6 +58,7 @@ const SharedChatView: React.FC = () => {
   const { shareId = "" } = useParams<{ shareId: string }>();
   const navigate = useNavigate();
   const staging = isStagingEnvironment();
+  const [headerHeight, setHeaderHeight] = useState(60);
   const query = useQuery({
     queryKey: ["shared-chat", shareId],
     queryFn: () => getSharedChat(shareId),
@@ -78,6 +79,16 @@ const SharedChatView: React.FC = () => {
       if (existingRobots) existingRobots.content = previousRobots ?? "";
       else robots.remove();
     };
+  }, []);
+
+  useLayoutEffect(() => {
+    const header = document.querySelector<HTMLElement>(".app-header");
+    if (!header) return;
+    const update = () => setHeaderHeight(header.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => observer.disconnect();
   }, []);
 
   const launchFreshChat = (prompt: string) => {
@@ -107,7 +118,7 @@ const SharedChatView: React.FC = () => {
 
   return (
     <ArtifactPanelProvider workspaceKey={`share:${shareId}:${query.data.updated_at}`} autoOpenOnMount>
-    <div className="shared-chat-page">
+    <div className="shared-chat-page" style={{ height: `calc(100dvh - ${headerHeight}px)` }}>
       <div className="shared-chat-heading">
         <h1>Shared conversation</h1>
         {staging && <span className="chat-staging-badge">Staging</span>}

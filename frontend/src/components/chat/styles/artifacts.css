@@ -34,7 +34,7 @@ button.chat-artifact-card { cursor: pointer; }
 .chat-artifact-workspace { position: relative; min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .chat-artifact-workspace-content { min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .chat-artifact-workspace-chat > .chat-artifact-workspace-content > .chat-main { width: 100%; }
-.chat-artifact-workspace-shared { min-height: calc(100dvh - 112px); }
+.chat-artifact-workspace-shared { min-height: 0; }
 .chat-artifact-workspace-shared > .chat-artifact-workspace-content { overflow: auto; }
 .chat-artifact-workspace-reader { height: 100%; }
 .chat-artifact-workspace-reader > .chat-artifact-workspace-content > .reader-workspace { width: 100%; }
