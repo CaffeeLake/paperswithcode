@@ -35,6 +35,16 @@ test("enforces tool, path, search, timeout, and output bounds", () => {
   assert.match(noWrite.authorize("x", "write", {}) ?? "", /not available/iu);
 });
 
+test("counts s2 search against the shared catalog search limit", () => {
+  const value = policy();
+  value.reset(false);
+  assert.equal(value.authorize("a", "bash", { command: "s2 search transformers" }), undefined);
+  assert.match(
+    value.authorize("b", "bash", { command: "pwc search transformers" }) ?? "",
+    /answer now/iu,
+  );
+});
+
 test("rejects invalid create_view JSON without consuming the diagram budget", () => {
   const value = new PolicyController({
     maximumCalls: 4,

@@ -2069,6 +2069,21 @@ def test_tool_budget_counts_parallel_calls_and_fifth_search_is_denied():
     assert budget.calls == 4
 
 
+def test_tool_budget_counts_s2_search_against_catalog_search_limit():
+    budget = ToolBudget(
+        maximum_calls=2,
+        maximum_direct_searches=1,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+    )
+    assert budget.authorize(
+        "tool-1", "Bash", {"command": "s2 search transformers"}
+    ).allowed
+    assert not budget.authorize(
+        "tool-2", "Bash", {"command": "pwc search transformers"}
+    ).allowed
+
+
 def test_worker_bash_hook_enables_fail_fast_pipeline_handling():
     hooks = agent.WorkerToolHooks(agent.WorkerSettings.from_environment())
 
@@ -2613,11 +2628,14 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "title-based `pwc paper info` lookup can consume a search" in prompt
     assert "If any tool reports a 429" in prompt
     assert "Every Bash command runs with `set -eo pipefail`" in prompt
-    assert "do not place multiple `pwc search` executions" in prompt
+    assert "do not place multiple search executions" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "Every Bash command already starts in /workspace" in prompt
     assert "never prefix a command with `cd /workspace`" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
+    assert "`s2` Semantic Scholar CLI" in prompt
+    assert "`s2 citations" in prompt
+    assert "use `s2 search` as the broader Semantic Scholar fallback" in prompt
     assert "already installed" in prompt
     assert "deepseek-ai/DeepSeek-V4-Flash-0731:baseten" in prompt
     assert "harness is orchestration, not the model" in prompt
@@ -2668,7 +2686,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-dTCGUSfkR8lbShxOx4mPG8"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-dCvQBXFglDnt0sBSgKG2qi"
-    assert WORKER_CONTRACT_VERSION == "85"
+    assert WORKER_CONTRACT_VERSION == "86"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2765,6 +2783,7 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     ).read_text()
 
     assert 'WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md"' in source
+    assert 'WORKER / "S2_CLI_SKILL.md", "/opt/pwc/S2_CLI_SKILL.md"' in source
     assert (
         'BACKEND / "chat_execution_policy.py",\n'
         '        "/opt/pwc/backend/chat_execution_policy.py"'
@@ -2773,6 +2792,7 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     assert '"chmod -R a+rX /opt/pwc/restricted_hf_cli"' in source
     assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
     assert '"runuser -u pwc-chat -- hf --help >/dev/null"' in source
+    assert '"python -m pip install --no-deps /opt/pwc/s2_cli"' in source
     assert "runuser -u pwc-chat -- hf version" in source
     assert (
         "\"PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'\""

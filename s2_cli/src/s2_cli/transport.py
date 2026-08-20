@@ -61,7 +61,7 @@ class Response:
 @dataclass
 class Client:
     api_key: str | None = None
-    base_url: str = DEFAULT_API_URL
+    base_url: str | None = None
     delay: float | None = None
     max_retries: int = DEFAULT_MAX_RETRIES
     _last_request_at: float | None = field(default=None, init=False, repr=False)
@@ -75,7 +75,9 @@ class Client:
             self.delay = (
                 float(configured) if configured is not None else DEFAULT_REQUEST_DELAY
             )
-        self.base_url = self.base_url.rstrip("/")
+        self.base_url = (
+            self.base_url or os.environ.get("S2_API_URL") or DEFAULT_API_URL
+        ).rstrip("/")
 
     def get(
         self, path: str, params: dict[str, object | None] | None = None
