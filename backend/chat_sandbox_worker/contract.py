@@ -6,8 +6,8 @@ from pathlib import Path
 WORKER_CONTRACT_VERSION = "85"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
-GATEWAY_CONTRACT_VERSION = 29
-GATEWAY_COMPATIBLE_FROM = 28
+GATEWAY_CONTRACT_VERSION = 28
+GATEWAY_COMPATIBLE_FROM = 27
 DATABASE_CONTRACT_VERSION = 2
 SDK_VERSION = "0.2.115"
 PI_VERSION = "0.84.1"
