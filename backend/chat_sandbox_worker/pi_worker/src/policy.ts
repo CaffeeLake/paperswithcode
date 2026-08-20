@@ -51,6 +51,8 @@ export interface PolicyOptions {
   excalidrawEnabled?: boolean;
   posterlyMaximumCalls?: number;
   posterlyMaximumRounds?: number;
+  posterlyMaximumResultBytes?: number;
+  posterlyMaximumTurnOutputBytes?: number;
   posterlyTimeoutSeconds?: number;
 }
 
@@ -180,8 +182,14 @@ export class PolicyController {
           )
           .join("")
       : String(content ?? "");
-    const remaining = Math.max(0, this.options.maximumTurnOutputBytes - this.outputBytes);
-    const bounded = clean(raw, Math.min(remaining, this.options.maximumResultBytes));
+    const maximumTurnOutputBytes = this.posterMode
+      ? (this.options.posterlyMaximumTurnOutputBytes ?? 1024 * 1024)
+      : this.options.maximumTurnOutputBytes;
+    const maximumResultBytes = this.posterMode
+      ? (this.options.posterlyMaximumResultBytes ?? 192 * 1024)
+      : this.options.maximumResultBytes;
+    const remaining = Math.max(0, maximumTurnOutputBytes - this.outputBytes);
+    const bounded = clean(raw, Math.min(remaining, maximumResultBytes));
     this.outputBytes += Buffer.byteLength(bounded.text);
     return {
       content: [{ type: "text", text: bounded.text }],

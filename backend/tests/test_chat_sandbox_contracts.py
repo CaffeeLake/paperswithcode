@@ -30,15 +30,19 @@ from fastapi import HTTPException
 from backend.chat_execution_policy import (
     FINALIZER_MAX_TURNS,
     MAX_FETCHABLE_URLS,
+    MAX_POSTER_PROVIDER_REQUESTS,
+    MAX_PROVIDER_REQUESTS,
     bounded_url_seed,
     effective_tool_rounds,
     validate_url_seed,
 )
 from backend.chat_gateway_app import (
+    MAX_POSTER_PROVIDER_TURN_TOKENS,
     MAX_PROVIDER_OUTPUT_TOKENS,
     MAX_PROVIDER_TURN_TOKENS,
     CatalogRequest,
     _output_tokens_allowed,
+    _provider_turn_limits,
     catalog,
 )
 from backend.chat_sandbox_worker import (
@@ -1561,6 +1565,34 @@ def test_gateway_accepts_configured_output_token_limit_and_rejects_larger():
     assert not _output_tokens_allowed(8_001)
 
 
+def test_gateway_expands_model_budget_only_for_artifact_capabilities():
+    ordinary = SimpleNamespace(scopes=["model", "catalog"])
+    artifact = SimpleNamespace(scopes=["model", "catalog", "artifact"])
+
+    assert _provider_turn_limits(ordinary) == (
+        MAX_PROVIDER_REQUESTS,
+        MAX_PROVIDER_TURN_TOKENS,
+    )
+    assert _provider_turn_limits(artifact) == (
+        MAX_POSTER_PROVIDER_REQUESTS,
+        MAX_POSTER_PROVIDER_TURN_TOKENS,
+    )
+    assert MAX_POSTER_PROVIDER_REQUESTS >= 20 + 2
+    assert MAX_POSTER_PROVIDER_TURN_TOKENS > MAX_PROVIDER_TURN_TOKENS
+
+
+def test_worker_expands_output_budget_only_for_poster_mode():
+    settings = agent.WorkerSettings()
+
+    ordinary = agent.WorkerToolHooks(settings)
+    poster = agent.WorkerToolHooks(settings, poster_mode=True)
+
+    assert ordinary.budget.maximum_result_bytes == 24 * 1024
+    assert ordinary.budget.maximum_turn_output_bytes == 96 * 1024
+    assert poster.budget.maximum_result_bytes == 192 * 1024
+    assert poster.budget.maximum_turn_output_bytes == 1024 * 1024
+
+
 def test_gateway_catalog_returns_not_found_for_unknown_task(monkeypatch):
     class DB:
         def commit(self):
@@ -2766,7 +2798,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-UfMNUG7keHBiIBgSQSyemz"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-dCvQBXFglDnt0sBSgKG2qi"
-    assert WORKER_CONTRACT_VERSION == "88"
+    assert WORKER_CONTRACT_VERSION == "89"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

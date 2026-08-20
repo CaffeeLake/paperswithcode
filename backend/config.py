@@ -464,6 +464,12 @@ class Settings(BaseSettings):
     chat_posterly_timeout_seconds: float = Field(default=600, ge=60, le=600)
     chat_posterly_max_tool_rounds: int = Field(default=20, ge=8, le=20)
     chat_posterly_max_tool_calls: int = Field(default=40, ge=12, le=40)
+    chat_posterly_tool_result_max_bytes: int = Field(
+        default=192 * 1024, ge=24 * 1024, le=192 * 1024
+    )
+    chat_posterly_turn_tool_output_max_bytes: int = Field(
+        default=1024 * 1024, ge=96 * 1024, le=1024 * 1024
+    )
     chat_posterly_source_commit: str = Field(
         default="b9f42e5578a49a27525a68f85376bb3bb25af86f",
         pattern=r"^[0-9a-f]{40}$",

@@ -84,3 +84,24 @@ test("requires a visible answer, including after tooling closes", () => {
   value.observeAnswer();
   assert.equal(value.needsFinalAnswer(), false);
 });
+
+test("poster mode uses its separate bounded output budget", () => {
+  const value = new PolicyController({
+    maximumCalls: 3,
+    maximumRounds: 2,
+    maximumDirectSearches: 1,
+    maximumWebSearches: 1,
+    maximumResultBytes: 12,
+    maximumTurnOutputBytes: 20,
+    bashTimeoutSeconds: 5,
+    posterlyMaximumResultBytes: 40,
+    posterlyMaximumTurnOutputBytes: 64,
+  });
+  value.reset(false, "prompt", true);
+
+  assert.equal(value.authorize("poster", "read", { path: "/opt/posterly/SKILL.md" }), undefined);
+  const result = value.finish("poster", "x".repeat(36));
+
+  assert.equal(result.content[0]?.text.length, 36);
+  assert.equal(value.outputBytes, 36);
+});

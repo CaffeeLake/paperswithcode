@@ -148,6 +148,12 @@ def sandbox_environment(
         "PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES": str(
             settings.chat_turn_tool_output_max_bytes
         ),
+        "PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES": str(
+            settings.chat_posterly_tool_result_max_bytes
+        ),
+        "PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES": str(
+            settings.chat_posterly_turn_tool_output_max_bytes
+        ),
         "PWC_CHAT_BASH_TIMEOUT_SECONDS": str(settings.chat_bash_timeout_seconds),
         "PWC_CHAT_AGENT_TIMEOUT_SECONDS": str(settings.chat_agent_timeout_seconds),
         "PWC_CHAT_SANDBOX_PIDS_MAX": str(settings.chat_sandbox_pids_max),

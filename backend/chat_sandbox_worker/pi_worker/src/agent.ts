@@ -66,6 +66,8 @@ export class PiWorker {
     excalidrawEnabled: excalidrawEnabled(),
     posterlyMaximumCalls: Number(process.env.PWC_CHAT_POSTERLY_MAX_TOOL_CALLS ?? 40),
     posterlyMaximumRounds: Number(process.env.PWC_CHAT_POSTERLY_MAX_TOOL_ROUNDS ?? 20),
+    posterlyMaximumResultBytes: Number(process.env.PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES ?? 196608),
+    posterlyMaximumTurnOutputBytes: Number(process.env.PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES ?? 1048576),
     posterlyTimeoutSeconds: Number(process.env.PWC_CHAT_POSTERLY_TIMEOUT_SECONDS ?? 600),
   });
 

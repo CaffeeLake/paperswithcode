@@ -206,8 +206,16 @@ class WorkerToolHooks:
                 else effective_tool_rounds(settings.chat_max_turns)
             ),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
-            maximum_result_bytes=settings.chat_tool_result_max_bytes,
-            maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
+            maximum_result_bytes=(
+                settings.chat_posterly_tool_result_max_bytes
+                if poster_mode
+                else settings.chat_tool_result_max_bytes
+            ),
+            maximum_turn_output_bytes=(
+                settings.chat_posterly_turn_tool_output_max_bytes
+                if poster_mode
+                else settings.chat_turn_tool_output_max_bytes
+            ),
             maximum_web_searches=settings.chat_max_web_search_calls,
             web_search_enabled=web_search_enabled,
         )
@@ -242,8 +250,16 @@ class WorkerToolHooks:
                 else effective_tool_rounds(settings.chat_max_turns)
             ),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
-            maximum_result_bytes=settings.chat_tool_result_max_bytes,
-            maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
+            maximum_result_bytes=(
+                settings.chat_posterly_tool_result_max_bytes
+                if poster_mode
+                else settings.chat_tool_result_max_bytes
+            ),
+            maximum_turn_output_bytes=(
+                settings.chat_posterly_turn_tool_output_max_bytes
+                if poster_mode
+                else settings.chat_turn_tool_output_max_bytes
+            ),
             maximum_web_searches=settings.chat_max_web_search_calls,
             web_search_enabled=web_search_enabled,
         )

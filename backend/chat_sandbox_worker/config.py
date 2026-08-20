@@ -30,6 +30,8 @@ class WorkerSettings:
     chat_posterly_timeout_seconds: float = 600
     chat_posterly_max_tool_rounds: int = 20
     chat_posterly_max_tool_calls: int = 40
+    chat_posterly_tool_result_max_bytes: int = 192 * 1024
+    chat_posterly_turn_tool_output_max_bytes: int = 1024 * 1024
 
     def __post_init__(self) -> None:
         validate_execution_limits(
@@ -68,5 +70,11 @@ class WorkerSettings:
             ),
             chat_posterly_max_tool_calls=_integer(
                 "PWC_CHAT_POSTERLY_MAX_TOOL_CALLS", 40
+            ),
+            chat_posterly_tool_result_max_bytes=_integer(
+                "PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES", 192 * 1024
+            ),
+            chat_posterly_turn_tool_output_max_bytes=_integer(
+                "PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES", 1024 * 1024
             ),
         )

@@ -173,6 +173,8 @@ image = (
             "PWC_CHAT_POSTERLY_TIMEOUT_SECONDS": "600",
             "PWC_CHAT_POSTERLY_MAX_TOOL_ROUNDS": "20",
             "PWC_CHAT_POSTERLY_MAX_TOOL_CALLS": "40",
+            "PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES": "196608",
+            "PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES": "1048576",
             "PWC_CHAT_SANDBOX_PIDS_MAX": "64",
             "S2_API_KEY": "sandbox-gateway",
             "S2_API_URL": "http://127.0.0.1:8765/semantic-scholar/graph/v1",

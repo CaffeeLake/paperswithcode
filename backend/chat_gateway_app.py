@@ -25,7 +25,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
+from backend.chat_execution_policy import (
+    MAX_POSTER_PROVIDER_REQUESTS,
+    MAX_PROVIDER_REQUESTS,
+)
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
@@ -99,6 +102,7 @@ logger = logging.getLogger(__name__)
 hf_telemetry_logger = logging.getLogger("uvicorn.error")
 MAX_PROVIDER_OUTPUT_TOKENS = PROVIDER_OUTPUT_TOKEN_LIMIT
 MAX_PROVIDER_TURN_TOKENS = 512_000
+MAX_POSTER_PROVIDER_TURN_TOKENS = 2_000_000
 
 
 def _hf_latency_bucket(elapsed_seconds: float) -> str:
@@ -182,6 +186,12 @@ def _bearer(authorization: Annotated[str, Header()]) -> str:
 
 def _output_tokens_allowed(value: int) -> bool:
     return 1 <= value <= MAX_PROVIDER_OUTPUT_TOKENS
+
+
+def _provider_turn_limits(row: ChatTurnCapability) -> tuple[int, int]:
+    if "artifact" in row.scopes:
+        return MAX_POSTER_PROVIDER_REQUESTS, MAX_POSTER_PROVIDER_TURN_TOKENS
+    return MAX_PROVIDER_REQUESTS, MAX_PROVIDER_TURN_TOKENS
 
 
 def _user_provider_credential(row, settings: Settings) -> HfInferenceCredential:
@@ -996,11 +1006,12 @@ async def messages(
     capability_id = row.id
     funded_call_id: uuid.UUID | None = None
     try:
+        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row)
         ChatCapabilityService(db).meter_provider(
             row,
             request_tokens=max(1, len(raw) // 4) + maximum_tokens,
-            maximum_requests=MAX_PROVIDER_REQUESTS,
-            maximum_tokens=MAX_PROVIDER_TURN_TOKENS,
+            maximum_requests=maximum_requests,
+            maximum_tokens=maximum_turn_tokens,
         )
         call_sequence = row.provider_requests
         trace_id = (
