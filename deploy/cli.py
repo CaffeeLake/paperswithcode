@@ -257,6 +257,11 @@ if present_pi_fields:
                 else contract.DIRECT_OPENAI_ENABLED
             )
         ),
+        "excalidraw_enabled": (
+            enabled
+            and production
+            and getattr(production_contract, "EXCALIDRAW_ENABLED", False)
+        ),
         "posterly_enabled": enabled and not production and contract.POSTERLY_ENABLED,
         "posterly_source_commit": contract.POSTERLY_SOURCE_COMMIT,
         "posterly_source_url": contract.POSTERLY_SOURCE_URL,
