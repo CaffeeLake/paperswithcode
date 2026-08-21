@@ -1,6 +1,8 @@
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from backend.models.chat import CitationSnapshot
 from backend.chat_sandbox_worker.prompt import TEMPLATE
 from backend.services import chat_citation_service
@@ -399,8 +401,10 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
         {
             "text": (
                 "# A Brand New Paper\n\n"
+                "A Brand New Paper\n-----------------\n\n"
                 "`A Brand New Paper` and "
                 "[A Brand New Paper](https://example.com/existing).\n\n"
+                "[A Brand New Paper][paper-ref]\n\n"
                 "Read A Brand New Paper, then revisit A Brand New Paper."
             )
         },
@@ -410,10 +414,64 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
 
     assert answer == (
         "# A Brand New Paper\n\n"
+        "A Brand New Paper\n-----------------\n\n"
         "`A Brand New Paper` and "
         "[A Brand New Paper](https://example.com/existing).\n\n"
+        "[A Brand New Paper][paper-ref]\n\n"
         "Read [A Brand New Paper](https://arxiv.org/abs/2608.01234), "
         "then revisit A Brand New Paper."
+    )
+
+
+def test_s2_catalog_link_normalization_skips_inline_and_fenced_code(monkeypatch):
+    paper = SimpleNamespace(
+        id="9",
+        arxiv_id="2501.00001",
+        title="Catalogued S2 Paper",
+        source_url=None,
+        url_abs="https://arxiv.org/abs/2501.00001",
+        thumbnail_url=None,
+        authors=[],
+        published=None,
+        conference_name=None,
+        conference=None,
+        citation_count=0,
+    )
+
+    class FakePaperService:
+        def __init__(self, _db):
+            pass
+
+        def get_paper_by_id_or_arxiv(self, route_id):
+            assert route_id == "2501.00001"
+            return paper
+
+    monkeypatch.setattr(chat_citation_service, "PaperService", FakePaperService)
+    url = "https://www.semanticscholar.org/paper/catalogued-id"
+    candidate = chat_citation_service.PaperCitationCandidate(
+        title="Catalogued S2 Paper",
+        arxiv_id="2501.00001",
+        semantic_scholar_id="catalogued-id",
+        semantic_scholar_url=url,
+    )
+    projection = ChatTurnProjection(paper_candidates=[candidate])
+    projection.apply(
+        "answer_delta",
+        {
+            "text": (
+                f"`[Catalogued S2 Paper]({url})`\n\n"
+                f"```md\n[Catalogued S2 Paper]({url})\n```\n\n"
+                f"Read [Catalogued S2 Paper]({url})."
+            )
+        },
+    )
+
+    answer, _citations = projection.finalize(object())
+
+    assert answer == (
+        f"`[Catalogued S2 Paper]({url})`\n\n"
+        f"```md\n[Catalogued S2 Paper]({url})\n```\n\n"
+        "Read [Catalogued S2 Paper](paper:2501.00001)."
     )
 
 
@@ -455,6 +513,42 @@ def test_completed_answer_preserves_authored_s2_link_and_adds_preview(monkeypatc
     assert citations[0]["kind"] == "external_source"
     assert citations[0]["source_type"] == "paper"
     assert citations[0]["authors"] == ["Grace Hopper"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.arxiv.org/abs/2608.01234v2",
+        "https://arxiv.org/pdf/2608.01234v2.pdf",
+        "https://arxiv.org/html/2608.01234v2?ref=chat#section",
+    ],
+)
+def test_authored_arxiv_url_variants_keep_external_paper_preview(monkeypatch, url):
+    class FakePaperService:
+        def __init__(self, _db):
+            pass
+
+        def get_paper_by_id_or_arxiv(self, route_id):
+            raise PaperNotFoundError(route_id)
+
+    monkeypatch.setattr(chat_citation_service, "PaperService", FakePaperService)
+    candidate = chat_citation_service.PaperCitationCandidate(
+        title="A Brand New Paper",
+        arxiv_id="2608.01234",
+        semantic_scholar_id="external-id",
+        semantic_scholar_url="https://www.semanticscholar.org/paper/external-id",
+        excerpt="A concise external abstract.",
+    )
+    projection = ChatTurnProjection(paper_candidates=[candidate])
+    projection.apply("answer_delta", {"text": f"Read [A Brand New Paper]({url})."})
+
+    answer, citations = projection.finalize(object())
+
+    assert answer == f"Read [A Brand New Paper]({url})."
+    assert citations[0]["kind"] == "external_source"
+    assert citations[0]["source_type"] == "paper"
+    assert citations[0]["url"] == url
+    assert citations[0]["arxiv_id"] == "2608.01234"
 
 
 def test_authored_s2_link_upgrades_to_catalog_paper_by_exact_arxiv(monkeypatch):

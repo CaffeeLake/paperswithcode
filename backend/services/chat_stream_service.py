@@ -67,9 +67,50 @@ from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
 from backend.services.openrouter_user_budget_service import OpenRouterUserBudgetService
 from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
+from backend.utils.urls import parse_arxiv_url
 
 logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 15.0
+
+
+def _external_paper_candidate(
+    url: str, candidates: list[PaperCitationCandidate]
+) -> PaperCitationCandidate | None:
+    for candidate in candidates:
+        if candidate.semantic_scholar_url == url:
+            return candidate
+    parsed = parse_arxiv_url(url)
+    if parsed is None:
+        return None
+    arxiv_id, _version = parsed
+    return next(
+        (candidate for candidate in candidates if candidate.arxiv_id == arxiv_id),
+        None,
+    )
+
+
+def _external_paper_snapshot(
+    candidate: PaperCitationCandidate, url: str, position: int
+) -> dict[str, Any]:
+    return {
+        "kind": "external_source",
+        "position": position,
+        "route_id": None,
+        "url": url,
+        "source_type": "paper",
+        "provider": "semantic_scholar",
+        "title": candidate.title,
+        "excerpt": candidate.excerpt,
+        "source_url": candidate.semantic_scholar_url,
+        "thumbnail_url": None,
+        "favicon_url": None,
+        "arxiv_id": candidate.arxiv_id,
+        "semantic_scholar_id": candidate.semantic_scholar_id,
+        "authors": list(candidate.authors),
+        "published": candidate.published,
+        "conference": None,
+        "citation_count": candidate.citation_count,
+    }
 
 
 @dataclass(frozen=True)
@@ -553,37 +594,11 @@ class ChatTurnProjection:
         web_urls = list(
             dict.fromkeys(re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", text))
         )
-        external_papers: dict[str, PaperCitationCandidate] = {}
-        for candidate in all_candidates:
-            if candidate.arxiv_id:
-                external_papers[f"https://arxiv.org/abs/{candidate.arxiv_id}"] = (
-                    candidate
-                )
-            if candidate.semantic_scholar_url:
-                external_papers[candidate.semantic_scholar_url] = candidate
         for url in web_urls:
-            candidate = external_papers.get(url)
+            candidate = _external_paper_candidate(url, all_candidates)
             if candidate is not None and len(self.citations) < 20:
                 self.citations.append(
-                    {
-                        "kind": "external_source",
-                        "position": len(self.citations),
-                        "route_id": None,
-                        "url": url,
-                        "source_type": "paper",
-                        "provider": "semantic_scholar",
-                        "title": candidate.title,
-                        "excerpt": candidate.excerpt,
-                        "source_url": candidate.semantic_scholar_url,
-                        "thumbnail_url": None,
-                        "favicon_url": None,
-                        "arxiv_id": candidate.arxiv_id,
-                        "semantic_scholar_id": candidate.semantic_scholar_id,
-                        "authors": list(candidate.authors),
-                        "published": candidate.published,
-                        "conference": None,
-                        "citation_count": candidate.citation_count,
-                    }
+                    _external_paper_snapshot(candidate, url, len(self.citations))
                 )
                 continue
             source = self.web_sources.get(url)

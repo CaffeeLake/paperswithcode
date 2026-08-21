@@ -30,6 +30,7 @@ _ARXIV_LINK = re.compile(
 _S2_COMMAND = re.compile(r"(?:^|\s)s2\s+(?:search|refs|citations)\b")
 _ARXIV_ID = re.compile(r"^(?P<id>\d{4}\.\d{4,5})(?:v\d+)?$", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]\n]*\]\([^\)\n]*\)")
+_REFERENCE_LINK = re.compile(r"!?\[[^\]\n]+\]\[[^\]\n]*\]")
 _INLINE_CODE = re.compile(r"(?P<fence>`+)[^\n]*?(?P=fence)")
 _HTTPS_URL = re.compile(r"https://[^\s<>]+")
 
@@ -174,7 +175,7 @@ def candidates_from_citation_history(
     return candidates
 
 
-def _markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
+def _code_protected_ranges(text: str) -> list[tuple[int, int]]:
     protected: list[tuple[int, int]] = []
     fence: str | None = None
     offset = 0
@@ -188,10 +189,30 @@ def _markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
         elif marker:
             fence = marker.group(1)
             protected.append((offset, offset + len(line)))
-        elif re.match(r"#{1,6}(?:\s|$)", stripped):
+        offset += len(line)
+    protected.extend(
+        (match.start(), match.end()) for match in _INLINE_CODE.finditer(text)
+    )
+    return protected
+
+
+def _markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
+    protected = _code_protected_ranges(text)
+    lines = text.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        stripped = line.lstrip()
+        if re.match(r"#{1,6}(?:\s|$)", stripped):
             protected.append((offset, offset + len(line)))
         offset += len(line)
-    for pattern in (_MARKDOWN_LINK, _INLINE_CODE, _HTTPS_URL):
+    for index in range(len(lines) - 1):
+        if re.fullmatch(r" {0,3}(?:=+|-+)\s*", lines[index + 1].rstrip("\n\r")):
+            protected.append(
+                (offsets[index], offsets[index + 1] + len(lines[index + 1]))
+            )
+    for pattern in (_MARKDOWN_LINK, _REFERENCE_LINK, _HTTPS_URL):
         protected.extend(
             (match.start(), match.end()) for match in pattern.finditer(text)
         )
@@ -228,15 +249,26 @@ def normalize_s2_catalog_links(
     for candidate in candidates:
         if not candidate.arxiv_id or not candidate.semantic_scholar_url:
             continue
-        target = f"]({candidate.semantic_scholar_url})"
-        if target not in normalized:
+        target = re.compile(rf"\]\({re.escape(candidate.semantic_scholar_url)}\)")
+        if target.search(normalized) is None:
             continue
         try:
             paper = service.get_paper_by_id_or_arxiv(candidate.arxiv_id)
         except PaperNotFoundError:
             continue
         route_id = paper.arxiv_id or str(paper.id)
-        normalized = normalized.replace(target, f"](paper:{route_id})")
+        protected = _code_protected_ranges(normalized)
+        normalized = target.sub(
+            lambda match: (
+                match.group(0)
+                if any(
+                    match.start() < end and match.end() > start
+                    for start, end in protected
+                )
+                else f"](paper:{route_id})"
+            ),
+            normalized,
+        )
     return normalized
 
 
