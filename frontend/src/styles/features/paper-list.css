@@ -656,10 +656,24 @@ a.paper-resource.is-link:focus-visible {
   justify-content: flex-end;
   gap: 4px;
 }
-.paper-date-dialog {
+.paper-date-popover {
   width: min(760px, calc(100vw - 32px));
   max-width: 760px;
   padding: 24px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+.paper-date-popover-header {
+  margin-bottom: 16px;
+}
+.paper-date-popover-header h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 21px;
+}
+.paper-date-popover-header p {
+  margin: 5px 0 0;
+  color: var(--ink-soft);
 }
 .paper-date-navigation {
   display: flex;
@@ -764,7 +778,7 @@ a.paper-resource.is-link:focus-visible {
 }
 @media (max-width: 640px) {
   .paper-date-filter { justify-content: flex-start; }
-  .paper-date-dialog {
+  .paper-date-popover {
     width: calc(100vw - 20px);
     padding: 20px 14px;
   }

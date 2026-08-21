@@ -1,12 +1,6 @@
 import React, { useMemo, useState } from "react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export interface PaperDateRangeValue {
   startDate?: string;
@@ -207,23 +201,32 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
       >
         All Time
       </button>
-      <button
-        type="button"
-        className={`sort-btn sort-btn-time${custom ? " active" : ""}`}
-        aria-label={custom ? "Change date range" : "Select a range"}
-        onClick={openRange}
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) openRange();
+          else setOpen(false);
+        }}
       >
-        {custom && startDate && endDate ? formatRange(startDate, endDate) : "Select a range"}
-      </button>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="paper-date-dialog">
-          <DialogHeader>
-            <DialogTitle>Select a date range</DialogTitle>
-            <DialogDescription>
-              Choose an inclusive start and end publication date.
-            </DialogDescription>
-          </DialogHeader>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={`sort-btn sort-btn-time${custom ? " active" : ""}`}
+            aria-label={custom ? "Change date range" : "Select a range"}
+          >
+            {custom && startDate && endDate ? formatRange(startDate, endDate) : "Select a range"}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="paper-date-popover"
+          role="dialog"
+          aria-label="Select a date range"
+        >
+          <div className="paper-date-popover-header">
+            <h2>Select a date range</h2>
+            <p>Choose an inclusive start and end publication date.</p>
+          </div>
           <div className="paper-date-navigation">
             <button type="button" aria-label="Previous month" onClick={() => setVisibleMonth(addMonths(visibleMonth, -1))}>←</button>
             <button type="button" aria-label="Next month" onClick={() => setVisibleMonth(addMonths(visibleMonth, 1))}>→</button>
@@ -262,8 +265,8 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
               </button>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 };

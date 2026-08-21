@@ -13,6 +13,7 @@ describe("PaperDateFilter", () => {
     await user.click(screen.getByRole("button", { name: "Select a range" }));
 
     const dialog = screen.getByRole("dialog", { name: "Select a date range" });
+    expect(dialog).not.toHaveAttribute("aria-modal", "true");
     expect(within(dialog).getByText("August 2026")).toBeInTheDocument();
     expect(within(dialog).getByText("September 2026")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "2026-08-22" })).toBeDisabled();
