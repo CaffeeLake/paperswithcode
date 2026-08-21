@@ -653,6 +653,7 @@ sudo systemd-run --quiet --wait --pipe --collect \
   --property=EnvironmentFile=/etc/paperswithcode/production.env \
   /srv/paperswithcode/.venv/bin/python \
   -m backend.scripts.qualify_chat_excalidraw_mcp \
+  --release-dir /srv/paperswithcode/environments/production/current \
   --confirm QUALIFY_EXCALIDRAW_MCP
 ```
 

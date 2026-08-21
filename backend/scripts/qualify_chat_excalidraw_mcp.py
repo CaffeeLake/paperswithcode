@@ -13,6 +13,7 @@ import asyncio
 import json
 import time
 import uuid
+from pathlib import Path
 
 from backend.chat_sandbox_worker.mcp_app_registry import (
     WORKER_MCP_PROVIDERS,
@@ -23,6 +24,7 @@ from backend.config import Settings
 from backend.services.chat_runtime_contract import dedicated_gateway_hostname
 from backend.services.chat_sandbox_provider import ModalSandboxProviderAdapter
 from backend.services.chat_sandbox_service import create_isolated_sandbox
+from deploy.release import validate_manifest
 
 CONFIRMATION = "QUALIFY_EXCALIDRAW_MCP"
 EXCALIDRAW = WORKER_MCP_PROVIDERS[0]
@@ -47,6 +49,21 @@ def validate_settings(settings: Settings) -> None:
     domains = sandbox_outbound_domains(settings)
     if domains != [gateway, EXCALIDRAW.hostname]:
         raise RuntimeError("Worker egress must be gateway plus Excalidraw only")
+
+
+def merge_release_identity(settings: Settings, release_dir: Path) -> Settings:
+    """Overlay the exact immutable worker identity selected for qualification."""
+
+    release = release_dir.resolve(strict=True)
+    manifest = validate_manifest(release, settings.environment)
+    runtime = manifest["chat_runtime"]
+    return settings.model_copy(
+        update={
+            "release_id": manifest["release_id"],
+            "chat_modal_image_version": runtime["modal_image_version"],
+            "chat_worker_contract_version": runtime["worker_contract_version"],
+        }
+    )
 
 
 async def _exec(sandbox, *command, timeout: int = 30) -> tuple[int, str, str]:
@@ -307,10 +324,11 @@ async def qualify(settings: Settings) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm", required=True)
+    parser.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.confirm != CONFIRMATION:
         raise SystemExit("Refusing Excalidraw MCP qualification without confirmation")
-    settings = Settings()
+    settings = merge_release_identity(Settings(), args.release_dir)
     report = asyncio.run(qualify(settings))
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report.get("status") == "passed" else 1

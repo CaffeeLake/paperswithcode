@@ -163,3 +163,32 @@ def test_qualify_excalidraw_probe_requires_deployed_environment_and_reviewed_egr
             chat_mcp_apps_host_enabled=True,
         )
     )
+
+
+def test_qualify_excalidraw_uses_selected_release_identity(tmp_path, monkeypatch):
+    from backend.scripts import qualify_chat_excalidraw_mcp as qualify
+
+    release = tmp_path / "release"
+    release.mkdir()
+    monkeypatch.setattr(
+        qualify,
+        "validate_manifest",
+        lambda path, environment: {
+            "release_id": "abc-production",
+            "chat_runtime": {
+                "modal_image_version": "im-reviewed",
+                "worker_contract_version": "94",
+            },
+        },
+    )
+    merged = qualify.merge_release_identity(
+        _settings(
+            environment="production",
+            chat_modal_image_version="im-stale",
+            chat_worker_contract_version="old",
+        ),
+        release,
+    )
+    assert merged.release_id == "abc-production"
+    assert merged.chat_modal_image_version == "im-reviewed"
+    assert merged.chat_worker_contract_version == "94"
