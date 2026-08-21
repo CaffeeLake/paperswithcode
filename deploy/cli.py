@@ -257,7 +257,7 @@ if present_pi_fields:
                 else contract.DIRECT_OPENAI_ENABLED
             )
         ),
-        "excalidraw_enabled": (
+        "production_excalidraw_enabled": (
             enabled
             and production
             and getattr(production_contract, "EXCALIDRAW_ENABLED", False)

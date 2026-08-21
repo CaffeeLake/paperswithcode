@@ -1472,13 +1472,13 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
     assert descriptor["worker_contract_version"] == WORKER_CONTRACT_VERSION
     assert descriptor["direct_openai_enabled"] is True
-    assert descriptor["excalidraw_enabled"] is False
+    assert descriptor["production_excalidraw_enabled"] is False
     dormant = _chat_descriptor_from_source(source, "production")
     assert dormant is not None
     assert dormant["enabled"] is False
     assert dormant["new_chat_modal_percentage"] == 0
     assert dormant["direct_openai_enabled"] is False
-    assert dormant["excalidraw_enabled"] is False
+    assert dormant["production_excalidraw_enabled"] is False
     assert dormant["database_contract_version"] == 1
     assert dormant["system_prompt_sha256"] == descriptor["system_prompt_sha256"]
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
@@ -1489,7 +1489,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert production["default_agent_harness"] == "pi"
     assert production["new_session_pi_percentage"] == 100
     assert production["direct_openai_enabled"] is True
-    assert production["excalidraw_enabled"] is True
+    assert production["production_excalidraw_enabled"] is True
     assert (
         production["new_chat_modal_percentage"]
         == descriptor["new_chat_modal_percentage"]

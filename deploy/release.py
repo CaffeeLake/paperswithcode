@@ -211,6 +211,7 @@ def chat_runtime(
             "pi_node_sha256": "",
             "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
             "direct_openai_enabled": False,
+            "production_excalidraw_enabled": False,
             "posterly_enabled": False,
             "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
             "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -242,6 +243,7 @@ def chat_runtime(
         "pi_node_sha256": PI_NODE_SHA256,
         "restricted_hf_cli_version": RESTRICTED_HF_CLI_VERSION,
         "direct_openai_enabled": DIRECT_OPENAI_ENABLED,
+        "production_excalidraw_enabled": False,
         "posterly_enabled": POSTERLY_ENABLED,
         "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
         "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -389,6 +391,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "posterly_artifact_bucket_id",
     }
     provider_runtime_keys = posterly_runtime_keys | {"direct_openai_enabled"}
+    excalidraw_runtime_keys = provider_runtime_keys | {"production_excalidraw_enabled"}
     runtime_keys = frozenset(runtime) if isinstance(runtime, dict) else frozenset()
     if not isinstance(runtime, dict) or runtime_keys not in {
         frozenset(legacy_runtime_keys),
@@ -396,6 +399,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         frozenset(pi_runtime_keys),
         frozenset(posterly_runtime_keys),
         frozenset(provider_runtime_keys),
+        frozenset(excalidraw_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
@@ -434,6 +438,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             pi_runtime_keys,
             posterly_runtime_keys,
             provider_runtime_keys,
+            excalidraw_runtime_keys,
         )
         and runtime["enabled"]
     ):
@@ -450,7 +455,12 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat gateway rolling contract is invalid")
         if not isinstance(database_version, int) or database_version < 1:
             raise ValueError("chat database contract is invalid")
-    if set(runtime) in (pi_runtime_keys, posterly_runtime_keys, provider_runtime_keys):
+    if set(runtime) in (
+        pi_runtime_keys,
+        posterly_runtime_keys,
+        provider_runtime_keys,
+        excalidraw_runtime_keys,
+    ):
         supported = runtime["supported_agent_harnesses"]
         if supported not in (["claude"], ["claude", "pi"]):
             raise ValueError("chat runtime harness set is invalid")
@@ -481,7 +491,11 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
                 raise ValueError("Pi source commit is invalid")
             if len(runtime["pi_node_sha256"]) != 64:
                 raise ValueError("Pi Node digest is invalid")
-    if set(runtime) in (posterly_runtime_keys, provider_runtime_keys):
+    if set(runtime) in (
+        posterly_runtime_keys,
+        provider_runtime_keys,
+        excalidraw_runtime_keys,
+    ):
         expected_posterly = {
             "posterly_source_commit": POSTERLY_SOURCE_COMMIT,
             "posterly_source_url": POSTERLY_SOURCE_URL,
@@ -496,9 +510,14 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("Posterly may be enabled only in staging releases")
         if any(runtime[key] != value for key, value in expected_posterly.items()):
             raise ValueError("Posterly release provenance does not match source pins")
-    if set(runtime) == provider_runtime_keys:
+    if set(runtime) in (provider_runtime_keys, excalidraw_runtime_keys):
         if runtime["direct_openai_enabled"] not in {True, False}:
             raise ValueError("direct OpenAI release activation must be a boolean")
+    if set(runtime) == excalidraw_runtime_keys:
+        if runtime["production_excalidraw_enabled"] not in {True, False}:
+            raise ValueError("production Excalidraw activation must be a boolean")
+        if runtime["production_excalidraw_enabled"] and profile != "production":
+            raise ValueError("production Excalidraw requires a production release")
     return _validate_release_files(release_dir, manifest, expected)
 
 
