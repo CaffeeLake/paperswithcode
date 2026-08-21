@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -74,6 +75,22 @@ def _optional_boolean(value: Any) -> bool | None:
     return {"true": True, "false": False}.get(str(value).lower())
 
 
+def _paper_date_range(arguments: dict[str, Any]) -> tuple[date | None, date | None]:
+    start_date = (
+        date.fromisoformat(str(arguments["start_date"]))
+        if arguments.get("start_date")
+        else None
+    )
+    end_date = (
+        date.fromisoformat(str(arguments["end_date"]))
+        if arguments.get("end_date")
+        else None
+    )
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise ValueError("start_date must be on or before end_date")
+    return start_date, end_date
+
+
 class ChatGatewayService:
     def __init__(self, db: Session, settings: Settings):
         self.db = db
@@ -84,12 +101,15 @@ class ChatGatewayService:
             raise ValueError("Unsupported catalog operation")
         paper = PaperService(self.db)
         if operation == "search":
+            start_date, end_date = _paper_date_range(arguments)
             return _dump(
                 paper.search_papers_page(
                     str(arguments["query"])[:300],
                     max(1, min(int(arguments.get("page", 1)), 100)),
                     max(1, min(int(arguments.get("limit", 10)), 100)),
                     mode="keyword",
+                    start_date=start_date,
+                    end_date=end_date,
                 )
             )
         if operation == "paper_info":
@@ -116,13 +136,14 @@ class ChatGatewayService:
             )
             return {"markdown": markdown, "truncated": truncated}
         if operation == "paper_list":
+            start_date, end_date = _paper_date_range(arguments)
             return _dump(
                 paper.get_papers(
                     page=max(1, min(int(arguments.get("page", 1)), 100)),
                     page_size=max(1, min(int(arguments.get("page_size", 20)), 100)),
                     search=arguments.get("search"),
-                    published_after=arguments.get("published_after"),
-                    published_before=arguments.get("published_before"),
+                    start_date=start_date,
+                    end_date=end_date,
                     conference=arguments.get("conference"),
                     **{
                         name: arguments[name]
@@ -132,7 +153,6 @@ class ChatGatewayService:
                     latest_only=not _boolean(arguments.get("all_versions")),
                     order_by=arguments.get("order_by", "trending"),
                     order_dir=arguments.get("order_dir", "desc"),
-                    time_window=arguments.get("time", "all_time"),
                     include_resources=_boolean(arguments.get("include_resources")),
                 )
             )

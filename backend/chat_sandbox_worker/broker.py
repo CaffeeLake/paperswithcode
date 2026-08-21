@@ -561,6 +561,8 @@ class Handler(BaseHTTPRequestHandler):
                 "page": query.get("page", 1),
                 "limit": query.get("page_size", 10),
                 "mode": query.get("mode"),
+                "start_date": query.get("start_date"),
+                "end_date": query.get("end_date"),
             }
         elif parsed.path in {"/api/v1/papers", "/api/v1/papers/"}:
             operation = "paper_list"

@@ -1729,6 +1729,8 @@ def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch
     result = ChatGatewayService("db", SimpleNamespace()).catalog(
         "paper_list",
         {
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-21",
             "task": "Vision",
             "method": "Transformer",
             "conference": "CVPR 2026",
@@ -1738,6 +1740,8 @@ def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch
     )
 
     assert result["count"] == 0
+    assert calls[0]["start_date"].isoformat() == "2026-08-01"
+    assert calls[0]["end_date"].isoformat() == "2026-08-21"
     assert {
         name: calls[0][name]
         for name in ("task", "method", "conference", "framework", "organization")
@@ -1748,6 +1752,104 @@ def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch
         "framework": "PyTorch",
         "organization": "Hugging Face",
     }
+
+
+def test_gateway_search_forwards_the_publication_date_range(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def search_papers_page(self, *args, **options):
+            calls.append((args, options))
+            return {"results": []}
+
+    monkeypatch.setattr("backend.services.chat_gateway_service.PaperService", Service)
+
+    ChatGatewayService("db", SimpleNamespace()).catalog(
+        "search",
+        {
+            "query": "date filtering",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-21",
+        },
+    )
+
+    assert calls[0][0] == ("date filtering", 1, 10)
+    assert calls[0][1]["start_date"].isoformat() == "2026-08-01"
+    assert calls[0][1]["end_date"].isoformat() == "2026-08-21"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_operation"),
+    [
+        (
+            "/api/v1/papers/search?q=date+filtering&page=2&page_size=15&start_date=2026-08-01&end_date=2026-08-21",
+            "search",
+        ),
+        (
+            "/api/v1/papers/?start_date=2026-08-01&end_date=2026-08-21",
+            "paper_list",
+        ),
+    ],
+)
+def test_broker_forwards_paper_date_ranges_to_the_catalog(
+    monkeypatch, path, expected_operation
+):
+    broker = _import_broker(monkeypatch)
+
+    class Response:
+        status = 200
+
+        def read(self, _size):
+            return b'{"result":{"count":0,"results":[]}}'
+
+    class Connection:
+        requests: list[tuple[str, str, bytes]] = []
+
+        def request(self, method, request_path, body, headers):
+            del headers
+            self.requests.append((method, request_path, body))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return
+
+    monkeypatch.setattr(broker, "_connection", Connection)
+
+    class Request:
+        wfile = BytesIO()
+        status = None
+
+        def __init__(self):
+            self.path = path
+
+        def _connection(self):
+            return Connection()
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, _name, _value):
+            return
+
+        def end_headers(self):
+            return
+
+        def send_error(self, status):
+            self.status = status
+
+    request = Request()
+    broker.Handler.do_GET(request)
+
+    payload = json.loads(Connection.requests[-1][2])
+    assert request.status == 200
+    assert payload["operation"] == expected_operation
+    assert payload["arguments"]["start_date"] == "2026-08-01"
+    assert payload["arguments"]["end_date"] == "2026-08-21"
 
 
 def test_gateway_exposes_advertised_taxonomy_detail_operations(monkeypatch):
