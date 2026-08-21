@@ -6,13 +6,14 @@ import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useDebounce } from "@/hooks/useDebounce";
-import { PERIODS } from "@/hooks/usePeriodFilter";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useQuery } from "@tanstack/react-query";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import { ApiError } from "@/lib/apiTransport";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 
 type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [
@@ -53,14 +54,7 @@ const PapersListView: React.FC = () => {
     : requestedOrder === "date_published"
       ? "new"
       : "trending";
-  const requestedTime = searchParams.get("time");
-  const period = requestedTime === "today"
-    ? "Today"
-    : requestedTime === "week"
-      ? "This Week"
-      : requestedTime === "month"
-        ? "This Month"
-        : "All Time";
+  const dateRange = readPaperDateRange(searchParams);
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const hasCode = !isRepositoryFeed && searchParams.get("has_code") === "true";
 
@@ -69,17 +63,6 @@ const PapersListView: React.FC = () => {
     if (value) next.set(key, value);
     else next.delete(key);
     setSearchParams(next);
-  };
-
-  const setPeriod = (nextPeriod: (typeof PERIODS)[number]) => {
-    const value = nextPeriod === "Today"
-      ? "today"
-      : nextPeriod === "This Week"
-        ? "week"
-        : nextPeriod === "This Month"
-          ? "month"
-          : undefined;
-    setQueryParam("time", value);
   };
 
   const setSortBy = (nextSort: SortKey) => {
@@ -100,12 +83,9 @@ const PapersListView: React.FC = () => {
     order_by: orderBy,
     order_dir: "desc",
     search: debouncedSearch || undefined,
-    time: requestedTime === "today" || requestedTime === "week" || requestedTime === "month"
-      ? requestedTime
-      : "all_time",
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
     include_resources: true,
-    published_after: searchParams.get("published_after") || undefined,
-    published_before: searchParams.get("published_before") || undefined,
     conference: searchParams.get("conference") || undefined,
     latest_only: searchParams.get("latest_only") !== "false",
     has_code: hasCode,
@@ -205,13 +185,11 @@ const PapersListView: React.FC = () => {
             </div>
           )}
         </div>
-        <div className="period-switch">
-          {PERIODS.map((p) => (
-            <button key={p} className={`period-btn ${period === p ? "active" : ""}`} onClick={() => setPeriod(p)}>
-              {p}
-            </button>
-          ))}
-        </div>
+        <PaperDateFilter
+          startDate={dateRange.startDate}
+          endDate={dateRange.endDate}
+          onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+        />
       </div>
 
       <div className="papers-search-row">

@@ -374,6 +374,8 @@ class OrganizationService:
         include_resources: bool = False,
         has_code: bool = False,
         has_hf_artifacts: bool = False,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
     ) -> Papers:
         try:
             organization = self._get_organization_by_slug(slug)
@@ -408,6 +410,11 @@ class OrganizationService:
                 from backend.services.paper_service import PaperService
 
                 query = PaperService.apply_has_hf_artifacts_filter(query)
+
+            if start_date is not None:
+                query = query.filter(DBPaper.date_published >= start_date)
+            if end_date is not None:
+                query = query.filter(DBPaper.date_published <= end_date)
 
             if order_by == "trending":
                 # Match the home feed: rank by the active trending metric

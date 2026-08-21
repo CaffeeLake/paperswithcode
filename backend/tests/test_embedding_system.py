@@ -193,7 +193,7 @@ def test_search_mode_dispatch_is_explicit(monkeypatch, mode, method_name):
         monkeypatch.setattr(
             service,
             name,
-            lambda query, limit, selected=name: (
+            lambda query, limit, selected=name, **_kwargs: (
                 called.append((selected, query, limit)) or []
             ),
         )
@@ -214,14 +214,14 @@ def test_online_search_modes_fall_back_to_keyword(monkeypatch, method_name):
     service = PaperService(None)._retrieval_service()
     expected = [type("PaperStub", (), {"id": 1})()]
 
-    def unavailable(_query, _limit):
+    def unavailable(_query, _limit, **_kwargs):
         raise QueryEmbeddingUnavailable("endpoint unavailable")
 
     monkeypatch.setattr(service, "_semantic_candidates", unavailable)
     monkeypatch.setattr(
         service,
         "_search_papers_fts",
-        lambda query, limit: expected,
+        lambda query, limit, **_kwargs: expected,
     )
     assert getattr(service, method_name)("retrieval query", 5) == expected
 

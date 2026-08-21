@@ -2,6 +2,7 @@
 Conference service for listing conferences and conference-scoped taxonomy.
 """
 
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import and_, asc, case, desc, func
@@ -322,6 +323,8 @@ class ConferenceService:
         include_resources: bool = False,
         has_code: bool = False,
         has_hf_artifacts: bool = False,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
     ) -> Papers:
         try:
             conference = self._get_conference_by_slug(slug)
@@ -369,6 +372,11 @@ class ConferenceService:
                 from backend.services.paper_service import PaperService
 
                 query = PaperService.apply_has_hf_artifacts_filter(query)
+
+            if start_date is not None:
+                query = query.filter(DBPaper.date_published >= start_date)
+            if end_date is not None:
+                query = query.filter(DBPaper.date_published <= end_date)
 
             if presentation in ("outstanding", "best_paper_finalist"):
                 if presentation == "outstanding":

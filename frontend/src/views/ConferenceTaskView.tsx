@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import MarkdownText from "@/components/MarkdownText";
 import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
@@ -11,6 +12,7 @@ import { useInfiniteConferencePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 
 type OrderBy = "trending" | "date_published" | "citation_count";
 const SORT_OPTIONS: Array<[OrderBy, string]> = [
@@ -32,6 +34,7 @@ const ConferenceTaskView: React.FC = () => {
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const dateRange = readPaperDateRange(searchParams);
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
@@ -97,6 +100,8 @@ const ConferenceTaskView: React.FC = () => {
     include_resources: true,
     has_code: hasCode,
     has_hf_artifacts: hasHfArtifacts,
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
     enabled: !!confSlug,
   });
 
@@ -261,6 +266,11 @@ const ConferenceTaskView: React.FC = () => {
             showDivider={!isAwardListing}
           />
         </div>
+        <PaperDateFilter
+          startDate={dateRange.startDate}
+          endDate={dateRange.endDate}
+          onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+        />
         {!isAwardListing && (
           <div className="results-count">
             {cards.length} loaded in <span>{taskName}</span>

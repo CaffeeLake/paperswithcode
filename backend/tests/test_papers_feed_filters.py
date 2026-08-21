@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from backend.database.connection import get_database_session
 from backend.main import create_app
-from backend.models.api import Paper, Papers
+from backend.models.api import Paper, PaperSearchResults, Papers
 from backend.models.database import (
     Conference as DBConference,
     Framework as DBFramework,
@@ -40,38 +40,20 @@ def client():
 
 
 @pytest.mark.parametrize(
-    ("time_window", "expected"),
+    ("order_by", "start_date", "end_date"),
     [
-        ("today", date(2026, 5, 6)),
-        ("week", date(2026, 5, 4)),
-        ("month", date(2026, 5, 1)),
-        ("all_time", None),
+        ("trending", "2026-05-04", "2026-05-06"),
+        ("date_published", None, "2026-05-06"),
+        ("citation_count", "2026-05-01", None),
+        ("citation_count", None, None),
     ],
 )
-def test_time_window_to_published_after(time_window, expected):
-    assert (
-        PaperService._get_published_after_for_time_window(
-            time_window,
-            today=date(2026, 5, 6),
-        )
-        == expected
-    )
-
-
-@pytest.mark.parametrize(
-    ("order_by", "time_window"),
-    [
-        ("trending", "week"),
-        ("date_published", "today"),
-        ("citation_count", "all_time"),
-        ("citation_count", "month"),
-    ],
-)
-def test_papers_endpoint_accepts_feed_order_and_time(
+def test_papers_endpoint_accepts_feed_order_and_date_range(
     client,
     monkeypatch,
     order_by,
-    time_window,
+    start_date,
+    end_date,
 ):
     captured = {}
 
@@ -81,12 +63,124 @@ def test_papers_endpoint_accepts_feed_order_and_time(
 
     monkeypatch.setattr(PaperService, "get_papers", fake_get_papers)
 
-    response = client.get(f"/api/v1/papers/?order_by={order_by}&time={time_window}")
+    response = client.get(
+        "/api/v1/papers/",
+        params={
+            "order_by": order_by,
+            **({"start_date": start_date} if start_date else {}),
+            **({"end_date": end_date} if end_date else {}),
+        },
+    )
 
     assert response.status_code == 200
     assert captured["order_by"] == order_by
     assert captured["order_dir"] == "desc"
-    assert captured["time_window"] == time_window
+    assert (
+        captured["start_date"].isoformat() == start_date
+        if start_date
+        else captured["start_date"] is None
+    )
+    assert (
+        captured["end_date"].isoformat() == end_date
+        if end_date
+        else captured["end_date"] is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "service_class", "method_name", "result"),
+    [
+        (
+            "/api/v1/papers/",
+            PaperService,
+            "get_papers",
+            Papers(count=0, next_page=None, previous_page=None, results=[]),
+        ),
+        (
+            "/api/v1/papers/search",
+            PaperService,
+            "search_papers_page",
+            PaperSearchResults(next_page=None, previous_page=None, results=[]),
+        ),
+        (
+            "/api/v1/tasks/object-detection/papers",
+            TaskService,
+            "get_task_papers",
+            Papers(count=0, next_page=None, previous_page=None, results=[]),
+        ),
+        (
+            "/api/v1/methods/transformer/papers",
+            MethodService,
+            "get_method_papers",
+            Papers(count=0, next_page=None, previous_page=None, results=[]),
+        ),
+        (
+            "/api/v1/conferences/cvpr-2026/papers",
+            ConferenceService,
+            "get_conference_papers",
+            Papers(count=0, next_page=None, previous_page=None, results=[]),
+        ),
+        (
+            "/api/v1/organizations/nvidia/papers",
+            OrganizationService,
+            "get_organization_papers",
+            Papers(count=0, next_page=None, previous_page=None, results=[]),
+        ),
+    ],
+)
+def test_paper_endpoints_forward_inclusive_date_range(
+    client,
+    monkeypatch,
+    path,
+    service_class,
+    method_name,
+    result,
+):
+    captured = {}
+
+    def fake_feed(self, *args, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(service_class, method_name, fake_feed)
+
+    response = client.get(
+        path,
+        params={
+            "start_date": "2026-05-04",
+            "end_date": "2026-05-06",
+            **({"q": "range"} if path.endswith("/search") else {}),
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["start_date"].isoformat() == "2026-05-04"
+    assert captured["end_date"].isoformat() == "2026-05-06"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/papers/",
+        "/api/v1/papers/search",
+        "/api/v1/tasks/object-detection/papers",
+        "/api/v1/methods/transformer/papers",
+        "/api/v1/conferences/cvpr-2026/papers",
+        "/api/v1/organizations/nvidia/papers",
+    ],
+)
+def test_paper_endpoints_reject_reversed_date_range(client, path):
+    response = client.get(
+        path,
+        params={
+            "start_date": "2026-05-07",
+            "end_date": "2026-05-06",
+            **({"q": "range"} if path.endswith("/search") else {}),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "start_date must be on or before end_date"
 
 
 def test_papers_endpoint_forwards_repository_scope(client, monkeypatch):
@@ -379,7 +473,7 @@ def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch)
         page=2,
         page_size=1,
         search="robot",
-        time_window="month",
+        start_date=date(2026, 5, 1),
         has_hf_artifacts=True,
     )
 
@@ -442,7 +536,7 @@ def test_papers_endpoint_rejects_unknown_order_by(client, monkeypatch):
 
     monkeypatch.setattr(PaperService, "get_papers", fake_get_papers)
 
-    response = client.get("/api/v1/papers/?order_by=title&time=week")
+    response = client.get("/api/v1/papers/?order_by=title")
 
     assert response.status_code == 422
 

@@ -647,3 +647,128 @@ a.paper-resource.is-link:focus-visible {
     gap: 0;
   }
 }
+
+/* Publication date presets and travel-style range picker. */
+.paper-date-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.paper-date-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-width: 760px;
+  padding: 24px;
+}
+.paper-date-navigation {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: -38px;
+  position: relative;
+  z-index: 1;
+}
+.paper-date-navigation button,
+.paper-date-actions button {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--ink);
+  padding: 7px 11px;
+  font: inherit;
+  cursor: pointer;
+}
+.paper-date-calendars {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 36px;
+}
+.paper-date-calendar h3 {
+  margin: 0 0 16px;
+  text-align: center;
+  font-family: var(--serif);
+  font-size: 17px;
+}
+.paper-date-weekdays,
+.paper-date-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.paper-date-weekdays span {
+  padding: 5px 0 9px;
+  color: var(--ink-faint);
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+.paper-date-day {
+  aspect-ratio: 1;
+  min-width: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.paper-date-day:hover:not(:disabled),
+.paper-date-day:focus-visible {
+  background: var(--bg-subtle);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.paper-date-day.in-range {
+  border-radius: 0;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.paper-date-day.selected {
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+.paper-date-day.today:not(.selected) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.paper-date-day:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.paper-date-day.outside {
+  visibility: hidden;
+}
+.paper-date-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+}
+.paper-date-actions > div {
+  display: flex;
+  gap: 8px;
+}
+.paper-date-actions .paper-date-clear {
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+.paper-date-actions .paper-date-apply {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+.paper-date-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+@media (max-width: 640px) {
+  .paper-date-filter { justify-content: flex-start; }
+  .paper-date-dialog {
+    width: calc(100vw - 20px);
+    padding: 20px 14px;
+  }
+  .paper-date-calendars { display: block; }
+  .paper-date-calendar-secondary { display: none; }
+  .paper-date-day { min-width: 36px; }
+}

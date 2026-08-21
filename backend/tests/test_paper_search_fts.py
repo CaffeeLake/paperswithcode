@@ -316,11 +316,56 @@ def test_exact_method_entity_promotes_source_paper_in_every_mode(
 
         service = PaperService(session)._retrieval_service()
         monkeypatch.setattr(
-            service, retrieval_method, lambda _query, _limit: [followup]
+            service, retrieval_method, lambda _query, _limit, **_kwargs: [followup]
         )
 
         results = service.search_papers("AtlasNet", limit=2, mode=mode)
         assert [result.id for result in results] == [str(source.id), str(followup.id)]
+
+
+def test_date_filter_drops_out_of_range_promotion_without_underfilling(
+    session_factory, monkeypatch
+):
+    with session_factory() as session:
+        source = add_paper(
+            session,
+            title="A Foundational Date Filter Architecture",
+            date_published=date(2025, 1, 1),
+        )
+        in_range = [
+            add_paper(
+                session,
+                title=f"RangeNet Follow-up {index}",
+                date_published=date(2026, 7, 10),
+            )
+            for index in range(21)
+        ]
+        session.add(
+            DBMethod(
+                name="RangeNet",
+                slug=f"rangenet-{uuid4().hex}",
+                source_paper_id=source.id,
+            )
+        )
+        session.commit()
+
+        service = PaperService(session)._retrieval_service()
+        monkeypatch.setattr(
+            service,
+            "_search_papers_fts",
+            lambda _query, _limit, **_kwargs: in_range,
+        )
+
+        results = service.search_papers(
+            "RangeNet",
+            limit=21,
+            mode="keyword",
+            start_date=date(2026, 7, 1),
+        )
+
+        assert [result.id for result in results] == [
+            str(paper.id) for paper in in_range
+        ]
 
 
 def test_method_full_name_and_origin_intent_resolve_without_query_rules(
@@ -450,7 +495,9 @@ def test_ambiguous_taxonomy_alias_does_not_force_a_canonical_paper(
 
         service = PaperService(session)._retrieval_service()
         monkeypatch.setattr(
-            service, "_search_papers_fts", lambda _query, _limit: [baseline]
+            service,
+            "_search_papers_fts",
+            lambda _query, _limit, **_kwargs: [baseline],
         )
         results = service.search_papers("Gemini", mode="keyword")
         assert results[0].id == str(baseline.id)
@@ -624,7 +671,7 @@ def test_fuzzy_title_repair_is_shared_by_every_search_mode(
 
         service = PaperService(session)._retrieval_service()
         monkeypatch.setattr(
-            service, retrieval_method, lambda _query, _limit: [baseline]
+            service, retrieval_method, lambda _query, _limit, **_kwargs: [baseline]
         )
         results = service.search_papers("smolva", mode=mode)
         assert results[0].id == str(corrected.id)
@@ -685,6 +732,53 @@ def test_search_endpoint_returns_paginated_summaries(session_factory):
             }
         ],
     }
+
+
+def test_search_endpoint_filters_results_by_inclusive_publication_dates(
+    session_factory,
+):
+    with session_factory() as session:
+        inside = add_paper(
+            session,
+            title="Daterange Search Inside",
+            arxiv_id="2607.00041",
+            date_published=date(2026, 7, 10),
+        )
+        add_paper(
+            session,
+            title="Daterange Search Before",
+            arxiv_id="2607.00042",
+            date_published=date(2026, 7, 9),
+        )
+        add_paper(
+            session,
+            title="Daterange Search After",
+            arxiv_id="2607.00043",
+            date_published=date(2026, 7, 11),
+        )
+        session.commit()
+
+    app = create_app()
+
+    def override_database():
+        with session_factory() as request_session:
+            yield request_session
+
+    app.dependency_overrides[get_database_session] = override_database
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/papers/search",
+            params={
+                "q": "daterange search",
+                "mode": "keyword",
+                "start_date": "2026-07-10",
+                "end_date": "2026-07-10",
+            },
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert [paper["id"] for paper in response.json()["results"]] == [str(inside.id)]
 
 
 def test_search_endpoint_pages_through_all_ranked_results(session_factory):

@@ -315,6 +315,15 @@ class PaperFeedScope(BaseModel):
     )
 
 
+class PaperDateRange(BaseModel):
+    """Inclusive publication-date bounds accepted by paper feed endpoints."""
+
+    model_config = ConfigDict(frozen=True)
+
+    start_date: date | None = None
+    end_date: date | None = None
+
+
 class Papers(BaseModel):
     """
     Object representing a paginated page of papers.

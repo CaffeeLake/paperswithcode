@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import get_settings
 from backend.database.connection import get_database_session
+from backend.routers.paper_date_range import PaperDateRange, get_paper_date_range
 from backend.models.api import (
     Paper,
     Papers,
@@ -295,12 +296,6 @@ def get_papers(
         None, ge=1, le=500, description="Number of papers per page"
     ),
     search: Optional[str] = Query(None, description="Search term for title/abstract"),
-    published_after: Optional[str] = Query(
-        None, description="Filter papers published after this date (YYYY-MM-DD)"
-    ),
-    published_before: Optional[str] = Query(
-        None, description="Filter papers published before this date (YYYY-MM-DD)"
-    ),
     conference: Optional[str] = Query(None, description="Filter by conference"),
     task: Optional[str] = Query(
         None, description="Filter by an exact task name, slug, or ID"
@@ -318,9 +313,6 @@ def get_papers(
         "trending", description="Field to order by"
     ),
     order_dir: Literal["asc", "desc"] = Query("desc", description="Order direction"),
-    time: Literal["today", "week", "month", "all_time"] = Query(
-        "all_time", description="Time window for paper publication dates"
-    ),
     include_resources: bool = Query(
         False, description="Include repositories and project pages"
     ),
@@ -336,6 +328,7 @@ def get_papers(
     repository: Optional[str] = Query(
         None, description="Filter by GitHub owner/name or repository URL"
     ),
+    date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -360,8 +353,8 @@ def get_papers(
             page=page,
             page_size=page_size,
             search=search,
-            published_after=published_after,
-            published_before=published_before,
+            start_date=date_range.start_date,
+            end_date=date_range.end_date,
             conference=conference,
             task=task,
             method=method,
@@ -369,7 +362,6 @@ def get_papers(
             latest_only=latest_only,
             order_by=order_by,
             order_dir=order_dir,
-            time_window=time,
             include_resources=include_resources,
             has_code=has_code,
             has_hf_artifacts=has_hf_artifacts,
@@ -394,6 +386,7 @@ def search_papers(
     mode: Optional[Literal["keyword", "semantic", "hybrid"]] = Query(
         None, description="Override the configured search mode for this request"
     ),
+    date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -407,7 +400,14 @@ def search_papers(
     """
     try:
         service = PaperService(db)
-        return service.search_papers_page(q, page, page_size, mode=mode)
+        return service.search_papers_page(
+            q,
+            page,
+            page_size,
+            mode=mode,
+            start_date=date_range.start_date,
+            end_date=date_range.end_date,
+        )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 

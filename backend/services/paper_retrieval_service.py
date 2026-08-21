@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, List, Optional
 
 from sqlalchemy import case, func, or_, select, text
@@ -90,7 +90,12 @@ class PaperRetrievalService:
         return self._paper_resolver(identifier)
 
     def search_papers(
-        self, query: str, limit: int = 10, mode: str | None = None
+        self,
+        query: str,
+        limit: int = 10,
+        mode: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> List[PaperSummary]:
         """
         Search latest papers using the configured rollout mode.
@@ -113,18 +118,54 @@ class PaperRetrievalService:
             selected_mode = (mode or self.settings.paper_search_mode).lower()
             retrieval_limit = max(20, limit)
             if selected_mode == "keyword":
-                results = self._search_papers_fts(cleaned_query, retrieval_limit)
+                results = self._search_papers_fts(
+                    cleaned_query,
+                    retrieval_limit,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
             elif selected_mode == "semantic":
-                results = self._search_papers_semantic(cleaned_query, retrieval_limit)
+                results = self._search_papers_semantic(
+                    cleaned_query,
+                    retrieval_limit,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
             elif selected_mode == "hybrid":
-                results = self._search_papers_hybrid(cleaned_query, retrieval_limit)
+                results = self._search_papers_hybrid(
+                    cleaned_query,
+                    retrieval_limit,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
             else:
                 raise ValueError(f"Unsupported paper search mode: {selected_mode}")
 
             results = self._promote_canonical_entity_paper(
-                cleaned_query, results, limit
+                cleaned_query,
+                results,
+                limit,
+                start_date=start_date,
+                end_date=end_date,
             )
-            return [self._convert_db_paper_to_summary(db_paper) for db_paper in results]
+            if start_date is not None:
+                results = [
+                    paper
+                    for paper in results
+                    if paper.date_published is not None
+                    and paper.date_published >= start_date
+                ]
+            if end_date is not None:
+                results = [
+                    paper
+                    for paper in results
+                    if paper.date_published is not None
+                    and paper.date_published <= end_date
+                ]
+            return [
+                self._convert_db_paper_to_summary(db_paper)
+                for db_paper in results[:limit]
+            ]
 
         except Exception as e:
             raise DatabaseError(f"Error searching papers: {str(e)}")
@@ -135,10 +176,18 @@ class PaperRetrievalService:
         page: int = 1,
         page_size: int = 10,
         mode: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> PaperSearchResults:
         """Return a stable slice of the relevance ranking with page metadata."""
         end = page * page_size
-        ranked = self.search_papers(query, end + 1, mode=mode)
+        ranked = self.search_papers(
+            query,
+            end + 1,
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
+        )
         start = end - page_size
         return PaperSearchResults(
             next_page=page + 1 if len(ranked) > end else None,
@@ -305,19 +354,51 @@ class PaperRetrievalService:
         match_kind = ("exact", "spacing", "prefix", "typo")[best_quality[0]]
         return matches[0], match_kind
 
-    def _method_source_paper(self, method_row) -> tuple[DBPaper | None, str]:
+    @staticmethod
+    def _paper_in_date_range(
+        paper: DBPaper,
+        start_date: date | None,
+        end_date: date | None,
+    ) -> bool:
+        if start_date is None and end_date is None:
+            return True
+        published = paper.date_published
+        return (
+            published is not None
+            and (start_date is None or published >= start_date)
+            and (end_date is None or published <= end_date)
+        )
+
+    @staticmethod
+    def _filter_query_by_date_range(query, start_date, end_date):
+        if start_date is not None:
+            query = query.filter(DBPaper.date_published >= start_date)
+        if end_date is not None:
+            query = query.filter(DBPaper.date_published <= end_date)
+        return query
+
+    def _method_source_paper(
+        self,
+        method_row,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> tuple[DBPaper | None, str]:
         """Resolve a method's source paper or a citation-ranked fallback."""
         if method_row.source_paper_id is not None:
             source = self.db.get(DBPaper, method_row.source_paper_id)
-            if source is not None and source.is_latest_version:
+            if (
+                source is not None
+                and source.is_latest_version
+                and self._paper_in_date_range(source, start_date, end_date)
+            ):
                 return source, "source_paper"
             if source is not None and source.arxiv_id:
+                latest_query = self.db.query(DBPaper).filter(
+                    DBPaper.arxiv_id == source.arxiv_id,
+                    DBPaper.is_latest_version,
+                )
                 latest = (
-                    self.db.query(DBPaper)
-                    .filter(
-                        DBPaper.arxiv_id == source.arxiv_id,
-                        DBPaper.is_latest_version,
-                    )
+                    self._filter_query_by_date_range(latest_query, start_date, end_date)
                     .order_by(DBPaper.version.desc(), DBPaper.id.desc())
                     .first()
                 )
@@ -327,13 +408,16 @@ class PaperRetrievalService:
         # Citation counts are refreshed from Semantic Scholar. Within the
         # already-resolved method's paper set, they are a useful canonicality
         # prior; oldest publication and stable id resolve missing/equal counts.
-        fallback = (
+        fallback_query = (
             self.db.query(DBPaper)
             .join(PaperMethod, PaperMethod.paper_id == DBPaper.id)
             .filter(
                 PaperMethod.method_id == method_row.id,
                 DBPaper.is_latest_version,
             )
+        )
+        fallback = (
+            self._filter_query_by_date_range(fallback_query, start_date, end_date)
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
                 DBPaper.date_published.asc().nullslast(),
@@ -343,12 +427,21 @@ class PaperRetrievalService:
         )
         return fallback, "semantic_scholar_citations"
 
-    def _method_paper_candidates(self, method_id: int, limit: int) -> list[DBPaper]:
+    def _method_paper_candidates(
+        self,
+        method_id: int,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[DBPaper]:
         """Return popular papers that use a resolved method."""
-        return (
+        query = (
             self.db.query(DBPaper)
             .join(PaperMethod, PaperMethod.paper_id == DBPaper.id)
             .filter(PaperMethod.method_id == method_id, DBPaper.is_latest_version)
+        )
+        return (
+            self._filter_query_by_date_range(query, start_date, end_date)
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
                 DBPaper.date_published.asc().nullslast(),
@@ -359,7 +452,11 @@ class PaperRetrievalService:
         )
 
     def _fuzzy_title_candidates(
-        self, query: str, limit: int
+        self,
+        query: str,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[tuple[DBPaper, float]]:
         """Use trigram KNN to retrieve short incomplete or misspelled titles."""
         normalized = self._normalize_entity_search_text(query)
@@ -381,6 +478,8 @@ class PaperRetrievalService:
                            word_similarity(:query, lower(p.title)) AS similarity
                     FROM papers p
                     WHERE p.is_latest_version
+                      AND (:start_date IS NULL OR p.date_published >= CAST(:start_date AS date))
+                      AND (:end_date IS NULL OR p.date_published <= CAST(:end_date AS date))
                     ORDER BY CAST(:query AS text) <<-> lower(p.title)
                     LIMIT :candidate_limit
                 )
@@ -388,7 +487,12 @@ class PaperRetrievalService:
                 FROM nearest
                 ORDER BY similarity DESC, citation_count DESC NULLS LAST, id
             """),
-                {"query": normalized, "candidate_limit": max(100, limit * 4)},
+                {
+                    "query": normalized,
+                    "candidate_limit": max(100, limit * 4),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
             )
             .mappings()
             .all()
@@ -497,7 +601,12 @@ class PaperRetrievalService:
         )
 
     def _promote_canonical_entity_paper(
-        self, query: str, results: list[DBPaper], limit: int
+        self,
+        query: str,
+        results: list[DBPaper],
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[DBPaper]:
         """Enrich short navigational searches with taxonomy and title signals.
 
@@ -527,10 +636,22 @@ class PaperRetrievalService:
         evidence = None
         method_candidates = []
         if method is not None:
-            canonical, evidence = self._method_source_paper(method)
-            method_candidates = self._method_paper_candidates(method.id, max(20, limit))
+            canonical, evidence = self._method_source_paper(
+                method, start_date=start_date, end_date=end_date
+            )
+            method_candidates = self._method_paper_candidates(
+                method.id,
+                max(20, limit),
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-        fuzzy_candidates = self._fuzzy_title_candidates(query, max(20, limit))
+        fuzzy_candidates = self._fuzzy_title_candidates(
+            query,
+            max(20, limit),
+            start_date=start_date,
+            end_date=end_date,
+        )
         fuzzy_papers = [paper for paper, _score in fuzzy_candidates]
         fuzzy_top = (
             None
@@ -585,7 +706,13 @@ class PaperRetrievalService:
             func.regexp_replace(func.btrim(DBPaper.title), r"\s+", " ", "g")
         )
 
-    def _search_papers_fts(self, query: str, limit: int) -> List[DBPaper]:
+    def _search_papers_fts(
+        self,
+        query: str,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> List[DBPaper]:
         """Weighted PostgreSQL FTS with deterministic identity overrides."""
         normalized_title = " ".join(query.lower().split())
         normalized_arxiv_id = self._normalize_arxiv_search_query(query)
@@ -601,6 +728,12 @@ class PaperRetrievalService:
         # branch remains eligible for the partial GIN index. A paper can occur
         # in both branches; aggregation retains its best identity tier and FTS
         # rank before the SQL-level limit is applied.
+        date_filters = []
+        if start_date is not None:
+            date_filters.append(DBPaper.date_published >= start_date)
+        if end_date is not None:
+            date_filters.append(DBPaper.date_published <= end_date)
+
         identity_candidates = select(
             DBPaper.id.label("paper_id"),
             case((arxiv_match, 0), else_=1).label("identity_tier"),
@@ -608,6 +741,7 @@ class PaperRetrievalService:
         ).where(
             DBPaper.is_latest_version,
             or_(arxiv_match, title_match),
+            *date_filters,
         )
         lexical_candidates = select(
             DBPaper.id.label("paper_id"),
@@ -616,6 +750,7 @@ class PaperRetrievalService:
         ).where(
             DBPaper.is_latest_version,
             DBPaper.search_vector.op("@@")(ts_query),
+            *date_filters,
         )
         normalized_author = func.lower(
             func.regexp_replace(func.btrim(DBAuthor.name), r"\s+", " ", "g")
@@ -633,6 +768,7 @@ class PaperRetrievalService:
             .where(
                 DBPaper.is_latest_version,
                 func.to_tsvector("simple", DBAuthor.name).op("@@")(author_ts_query),
+                *date_filters,
             )
         )
         candidates = identity_candidates.union_all(
@@ -662,10 +798,21 @@ class PaperRetrievalService:
             .all()
         )
 
-    def _search_papers_hybrid(self, query: str, limit: int) -> List[DBPaper]:
+    def _search_papers_hybrid(
+        self,
+        query: str,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> List[DBPaper]:
         """Fuse weighted FTS and pgvector ranks, falling back immediately to FTS."""
         candidate_limit = max(50, limit)
-        lexical = self._search_papers_fts(query, candidate_limit)
+        lexical = self._search_papers_fts(
+            query,
+            candidate_limit,
+            start_date=start_date,
+            end_date=end_date,
+        )
         lexical_candidates = [
             RankedCandidate(int(paper.id), rank)
             for rank, paper in enumerate(lexical, 1)
@@ -674,7 +821,10 @@ class PaperRetrievalService:
         started = datetime.now(timezone.utc)
         try:
             generation, semantic_candidates = self._semantic_candidates(
-                query, candidate_limit
+                query,
+                candidate_limit,
+                start_date=start_date,
+                end_date=end_date,
             )
         except Exception as error:
             fallback_reason = type(error).__name__ + ":" + str(error)[:80]
@@ -712,7 +862,12 @@ class PaperRetrievalService:
                 fused_positions[paper_id],
             ),
         )[:limit]
-        papers = self.db.query(DBPaper).filter(DBPaper.id.in_(ordered_ids)).all()
+        papers_query = self.db.query(DBPaper).filter(DBPaper.id.in_(ordered_ids))
+        if start_date is not None:
+            papers_query = papers_query.filter(DBPaper.date_published >= start_date)
+        if end_date is not None:
+            papers_query = papers_query.filter(DBPaper.date_published <= end_date)
+        papers = papers_query.all()
         by_id = {int(paper.id): paper for paper in papers}
         elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
         search_logger.info(
@@ -730,7 +885,11 @@ class PaperRetrievalService:
         return [by_id[paper_id] for paper_id in ordered_ids if paper_id in by_id]
 
     def _semantic_candidates(
-        self, query: str, limit: int
+        self,
+        query: str,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> tuple[ActiveGeneration, list[RankedCandidate]]:
         if self.settings.query_embedder != "hf_endpoint":
             raise QueryEmbeddingUnavailable("query_embedder_disabled")
@@ -744,36 +903,59 @@ class PaperRetrievalService:
             self.settings.query_embedding_timeout_ms,
             self.settings.query_embedding_max_concurrency,
         )
-        return generation, retrieval.encode_and_search(query, generation, client, limit)
+        return generation, retrieval.encode_and_search(
+            query,
+            generation,
+            client,
+            limit,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-    def _search_papers_semantic(self, query: str, limit: int) -> List[DBPaper]:
+    def _search_papers_semantic(
+        self,
+        query: str,
+        limit: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> List[DBPaper]:
         """Dense query-to-paper retrieval with exact-identity and keyword fallback."""
         fingerprint = hashlib.sha256(query.casefold().encode()).hexdigest()[:16]
         started = datetime.now(timezone.utc)
         try:
-            generation, candidates = self._semantic_candidates(query, max(50, limit))
+            generation, candidates = self._semantic_candidates(
+                query,
+                max(50, limit),
+                start_date=start_date,
+                end_date=end_date,
+            )
         except Exception as error:
             search_logger.info(
                 "paper_search mode=keyword_fallback fingerprint=%s fallback=%s",
                 fingerprint,
                 type(error).__name__ + ":" + str(error)[:80],
             )
-            return self._search_papers_fts(query, limit)
+            return self._search_papers_fts(
+                query,
+                limit,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
         normalized_title = " ".join(query.lower().split())
         normalized_arxiv = self._normalize_arxiv_search_query(query)
-        identity_rows = (
-            self.db.query(DBPaper)
-            .filter(
-                DBPaper.is_latest_version,
-                or_(
-                    self._normalized_title_expression() == normalized_title,
-                    DBPaper.arxiv_id == normalized_arxiv if normalized_arxiv else False,
-                ),
-            )
-            .order_by(DBPaper.id)
-            .all()
+        identity_query = self.db.query(DBPaper).filter(
+            DBPaper.is_latest_version,
+            or_(
+                self._normalized_title_expression() == normalized_title,
+                DBPaper.arxiv_id == normalized_arxiv if normalized_arxiv else False,
+            ),
         )
+        if start_date is not None:
+            identity_query = identity_query.filter(DBPaper.date_published >= start_date)
+        if end_date is not None:
+            identity_query = identity_query.filter(DBPaper.date_published <= end_date)
+        identity_rows = identity_query.order_by(DBPaper.id).all()
         ordered_ids = [int(paper.id) for paper in identity_rows]
         ordered_ids.extend(
             candidate.paper_id
@@ -781,7 +963,12 @@ class PaperRetrievalService:
             if candidate.paper_id not in ordered_ids
         )
         ordered_ids = ordered_ids[:limit]
-        papers = self.db.query(DBPaper).filter(DBPaper.id.in_(ordered_ids)).all()
+        papers_query = self.db.query(DBPaper).filter(DBPaper.id.in_(ordered_ids))
+        if start_date is not None:
+            papers_query = papers_query.filter(DBPaper.date_published >= start_date)
+        if end_date is not None:
+            papers_query = papers_query.filter(DBPaper.date_published <= end_date)
+        papers = papers_query.all()
         by_id = {int(paper.id): paper for paper in papers}
         elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
         search_logger.info(

@@ -6,6 +6,7 @@ import { ArrowRight, Github, Trophy } from "lucide-react";
 import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import MarkdownText from "@/components/MarkdownText";
 import type {
   Area,
@@ -23,6 +24,7 @@ import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 import {
   Accordion,
   AccordionContent,
@@ -120,6 +122,7 @@ const TagBrowseView: React.FC = () => {
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const dateRange = readPaperDateRange(searchParams);
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
@@ -207,6 +210,8 @@ const TagBrowseView: React.FC = () => {
     include_resources: true,
     has_code: hasCode,
     has_hf_artifacts: hasHfArtifacts,
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
     enabled: !!pageQ.data?.task?.id,
   });
 
@@ -637,6 +642,11 @@ const TagBrowseView: React.FC = () => {
                 onHasHfArtifactsChange={setHasHfArtifacts}
               />
             </div>
+            <PaperDateFilter
+              startDate={dateRange.startDate}
+              endDate={dateRange.endDate}
+              onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+            />
             <div className="results-count">
               {cards.length} loaded in <span>{taskName}</span>
             </div>

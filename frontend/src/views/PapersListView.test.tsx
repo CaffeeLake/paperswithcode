@@ -71,14 +71,15 @@ describe("PapersListView repository scopes", () => {
   });
 
   it("forwards URL filters and shows framework resources without the generic sidebar", () => {
-    renderView("/papers?framework=lerobot&search=robot&order_by=citation_count&time=week&has_hf_artifacts=true");
+    renderView("/papers?framework=lerobot&search=robot&order_by=citation_count&start_date=2026-08-17&end_date=2026-08-21&has_hf_artifacts=true");
 
     expect(paperParams).toHaveBeenLastCalledWith(expect.objectContaining({
       framework: "lerobot",
       repository: undefined,
       search: "robot",
       order_by: "citation_count",
-      time: "week",
+      start_date: "2026-08-17",
+      end_date: "2026-08-21",
       has_hf_artifacts: true,
     }));
     expect(screen.getByRole("heading", { name: /Papers implemented by LeRobot/ })).toBeInTheDocument();
@@ -120,7 +121,7 @@ describe("PapersListView repository scopes", () => {
     expect(taskLink.parentElement).toHaveClass("paper-feed-task-tags");
   });
 
-  it("preserves framework scope when sort, time, artifact, and search controls change", async () => {
+  it("preserves framework scope when sort, date, artifact, and search controls change", async () => {
     renderView("/papers?framework=lerobot");
 
     fireEvent.click(screen.getByRole("button", { name: "newest" }));
@@ -136,7 +137,9 @@ describe("PapersListView repository scopes", () => {
     await waitFor(() => {
       const location = screen.getByTestId("location").textContent || "";
       expect(location).toContain("framework=lerobot");
-      expect(location).toContain("time=month");
+      expect(location).toContain("start_date=");
+      expect(location).toContain("end_date=");
+      expect(location).not.toContain("time=");
       expect(location).toContain("has_hf_artifacts=true");
       expect(location).toContain("search=vision");
     });

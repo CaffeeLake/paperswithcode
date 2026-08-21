@@ -5,6 +5,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-qu
 import { MethodChip, PaperCard } from "@/components";
 import { MethodFigure } from "@/components/MethodFigure";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import MethodUsageChart from "@/components/MethodUsageChart";
 import MarkdownText from "@/components/MarkdownText";
 import { catalogApi } from "@/lib/api/catalog";
@@ -16,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { resolveInternalPath } from "@/lib/internalLinks";
 import { safeExternalHref } from "@/lib/safeExternalHref";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 
 type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [
@@ -42,6 +44,7 @@ const MethodDetailView: React.FC = () => {
   const [sortBy, setSortBy] = useState<SortKey>("trending");
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const dateRange = readPaperDateRange(searchParams);
   const setHasCode = (active: boolean) => {
     const params = new URLSearchParams(searchParams);
     if (active) params.set("has_code", "true");
@@ -79,7 +82,15 @@ const MethodDetailView: React.FC = () => {
   const orderBy: "trending" | "citation_count" | "date_published" =
     sortBy === "trending" ? "trending" : sortBy === "cited" ? "citation_count" : "date_published";
   const papersQ = useInfiniteQuery({
-    queryKey: ["method-papers-infinite", methodSlug, orderBy, hasCode, hasHfArtifacts],
+    queryKey: [
+      "method-papers-infinite",
+      methodSlug,
+      orderBy,
+      hasCode,
+      hasHfArtifacts,
+      dateRange.startDate,
+      dateRange.endDate,
+    ],
     queryFn: ({ pageParam = 1 }) =>
       papersApi.forMethod(methodSlug!, {
         page: pageParam as number,
@@ -89,6 +100,8 @@ const MethodDetailView: React.FC = () => {
         include_resources: true,
         has_code: hasCode,
         has_hf_artifacts: hasHfArtifacts,
+        start_date: dateRange.startDate,
+        end_date: dateRange.endDate,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,
@@ -316,6 +329,11 @@ const MethodDetailView: React.FC = () => {
             onHasHfArtifactsChange={setHasHfArtifacts}
           />
         </div>
+        <PaperDateFilter
+          startDate={dateRange.startDate}
+          endDate={dateRange.endDate}
+          onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+        />
         <div className="results-count">{cards.length} papers mentioning {m.name}</div>
       </div>
 

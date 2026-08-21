@@ -147,8 +147,8 @@ curl "http://localhost:8000/api/v1/papers/?page=1&page_size=10"
 - `page`: Page number (default: 1)
 - `page_size`: Papers per page (default: 50, max: 500)
 - `search`: Search term for title/abstract
-- `published_after`: Filter by publication date (YYYY-MM-DD)
-- `published_before`: Filter by publication date (YYYY-MM-DD)
+- `start_date`: Inclusive earliest publication date (YYYY-MM-DD)
+- `end_date`: Inclusive latest publication date (YYYY-MM-DD)
 - `conference`: Filter by conference name
 - `latest_only`: Only include latest versions (default: true)
 - `order_by`: Sort field (default: date_published)

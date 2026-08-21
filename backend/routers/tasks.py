@@ -23,6 +23,7 @@ from backend.models.database import Task as DBTask
 from backend.services.benchmark_trend_service import BenchmarkTrendService
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
+from backend.routers.paper_date_range import PaperDateRange, get_paper_date_range
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
@@ -427,6 +428,7 @@ def get_task_papers(
     has_hf_artifacts: bool = Query(
         False, description="Only include papers with linked Hugging Face artifacts"
     ),
+    date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -453,6 +455,8 @@ def get_task_papers(
             include_resources=include_resources,
             has_code=has_code,
             has_hf_artifacts=has_hf_artifacts,
+            start_date=date_range.start_date,
+            end_date=date_range.end_date,
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -179,7 +179,6 @@ export interface AuthorLink {
 }
 
 export type PaperOrderBy = 'trending' | 'date_published' | 'citation_count';
-export type PaperTimeWindow = 'today' | 'week' | 'month' | 'all_time';
 export type PaperSearchMode = 'keyword' | 'semantic' | 'hybrid';
 
 export interface TrendingMetrics {

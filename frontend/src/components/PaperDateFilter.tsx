@@ -1,0 +1,269 @@
+import React, { useMemo, useState } from "react";
+
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+export interface PaperDateRangeValue {
+  startDate?: string;
+  endDate?: string;
+}
+
+interface CalendarDay {
+  iso: string;
+  day: number;
+  outsideMonth: boolean;
+}
+
+const MONTH_FORMATTER = new Intl.DateTimeFormat("en", {
+  month: "long",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const SHORT_MONTH_FORMATTER = new Intl.DateTimeFormat("en", {
+  month: "short",
+  timeZone: "UTC",
+});
+
+const isoDate = (value: Date) => value.toISOString().slice(0, 10);
+const utcDate = (value: string) => new Date(`${value}T00:00:00Z`);
+const utcToday = () => {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+};
+const addMonths = (value: Date, amount: number) =>
+  new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + amount, 1));
+const monthStart = (value: Date) =>
+  new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
+
+const presetRange = (
+  preset: "week" | "month",
+  currentDate: Date,
+): Required<PaperDateRangeValue> => {
+  const today = new Date(currentDate);
+  const start = new Date(today);
+  if (preset === "week") {
+    const mondayOffset = (today.getUTCDay() + 6) % 7;
+    start.setUTCDate(today.getUTCDate() - mondayOffset);
+  } else {
+    start.setUTCDate(1);
+  }
+  return { startDate: isoDate(start), endDate: isoDate(today) };
+};
+
+const sameRange = (
+  value: PaperDateRangeValue,
+  expected: PaperDateRangeValue,
+) => value.startDate === expected.startDate && value.endDate === expected.endDate;
+
+const formatRange = (startDate: string, endDate: string) => {
+  const start = utcDate(startDate);
+  const end = utcDate(endDate);
+  const startMonth = SHORT_MONTH_FORMATTER.format(start);
+  const endMonth = SHORT_MONTH_FORMATTER.format(end);
+  const startDay = start.getUTCDate();
+  const endDay = end.getUTCDate();
+  const startYear = start.getUTCFullYear();
+  const endYear = end.getUTCFullYear();
+
+  if (startDate === endDate) {
+    return `${startMonth} ${startDay}, ${startYear}`;
+  }
+  if (startYear === endYear && start.getUTCMonth() === end.getUTCMonth()) {
+    return `${startMonth} ${startDay}–${endDay}, ${startYear}`;
+  }
+  if (startYear === endYear) {
+    return `${startMonth} ${startDay}–${endMonth} ${endDay}, ${startYear}`;
+  }
+  return `${startMonth} ${startDay}, ${startYear}–${endMonth} ${endDay}, ${endYear}`;
+};
+
+const calendarDays = (month: Date): CalendarDay[] => {
+  const year = month.getUTCFullYear();
+  const monthIndex = month.getUTCMonth();
+  const first = new Date(Date.UTC(year, monthIndex, 1));
+  const mondayOffset = (first.getUTCDay() + 6) % 7;
+  const gridStart = new Date(first);
+  gridStart.setUTCDate(first.getUTCDate() - mondayOffset);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const value = new Date(gridStart);
+    value.setUTCDate(gridStart.getUTCDate() + index);
+    return {
+      iso: isoDate(value),
+      day: value.getUTCDate(),
+      outsideMonth: value.getUTCMonth() !== monthIndex,
+    };
+  });
+};
+
+const MonthCalendar: React.FC<{
+  month: Date;
+  today: string;
+  startDate?: string;
+  endDate?: string;
+  onSelect: (date: string) => void;
+  secondary?: boolean;
+}> = ({ month, today, startDate, endDate, onSelect, secondary = false }) => {
+  const days = useMemo(() => calendarDays(month), [month]);
+  return (
+    <section className={`paper-date-calendar${secondary ? " paper-date-calendar-secondary" : ""}`}>
+      <h3>{MONTH_FORMATTER.format(month)}</h3>
+      <div className="paper-date-weekdays" aria-hidden="true">
+        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}
+      </div>
+      <div className="paper-date-days">
+        {days.map((date) => {
+          const selected = date.iso === startDate || date.iso === endDate;
+          const inRange = Boolean(startDate && endDate && date.iso > startDate && date.iso < endDate);
+          const disabled = date.outsideMonth || date.iso > today;
+          return (
+            <button
+              type="button"
+              key={date.iso}
+              aria-label={date.iso}
+              aria-selected={selected}
+              disabled={disabled}
+              className={[
+                "paper-date-day",
+                date.outsideMonth ? "outside" : "",
+                selected ? "selected" : "",
+                inRange ? "in-range" : "",
+                date.iso === today ? "today" : "",
+              ].filter(Boolean).join(" ")}
+              onClick={() => onSelect(date.iso)}
+            >
+              {date.day}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+};
+
+export const PaperDateFilter: React.FC<PaperDateRangeValue & {
+  onChange: (value: PaperDateRangeValue) => void;
+  currentDate?: string;
+}> = ({ startDate, endDate, onChange, currentDate }) => {
+  const currentDay = currentDate ? utcDate(currentDate) : utcToday();
+  const [open, setOpen] = useState(false);
+  const [draftStart, setDraftStart] = useState<string>();
+  const [draftEnd, setDraftEnd] = useState<string>();
+  const [visibleMonth, setVisibleMonth] = useState(() => monthStart(currentDay));
+  const current = { startDate, endDate };
+  const week = presetRange("week", currentDay);
+  const month = presetRange("month", currentDay);
+  const today = isoDate(currentDay);
+  const custom = Boolean(startDate && endDate && !sameRange(current, week) && !sameRange(current, month));
+
+  const openRange = () => {
+    setDraftStart(startDate);
+    setDraftEnd(endDate);
+    setVisibleMonth(monthStart(startDate ? utcDate(startDate) : currentDay));
+    setOpen(true);
+  };
+
+  const selectDate = (value: string) => {
+    if (!draftStart || draftEnd) {
+      setDraftStart(value);
+      setDraftEnd(undefined);
+    } else if (value < draftStart) {
+      setDraftStart(value);
+    } else {
+      setDraftEnd(value);
+    }
+  };
+
+  const clear = () => {
+    onChange({});
+    setOpen(false);
+  };
+
+  return (
+    <div className="paper-date-filter" role="group" aria-label="Publication date">
+      <button
+        type="button"
+        className={`sort-btn sort-btn-time${sameRange(current, week) ? " active" : ""}`}
+        onClick={() => onChange(week)}
+      >
+        This Week
+      </button>
+      <button
+        type="button"
+        className={`sort-btn sort-btn-time${sameRange(current, month) ? " active" : ""}`}
+        onClick={() => onChange(month)}
+      >
+        This Month
+      </button>
+      <button
+        type="button"
+        className={`sort-btn sort-btn-time${!startDate && !endDate ? " active" : ""}`}
+        onClick={() => onChange({})}
+      >
+        All Time
+      </button>
+      <button
+        type="button"
+        className={`sort-btn sort-btn-time${custom ? " active" : ""}`}
+        aria-label={custom ? "Change date range" : "Select a range"}
+        onClick={openRange}
+      >
+        {custom && startDate && endDate ? formatRange(startDate, endDate) : "Select a range"}
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="paper-date-dialog">
+          <DialogHeader>
+            <DialogTitle>Select a date range</DialogTitle>
+            <DialogDescription>
+              Choose an inclusive start and end publication date.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="paper-date-navigation">
+            <button type="button" aria-label="Previous month" onClick={() => setVisibleMonth(addMonths(visibleMonth, -1))}>←</button>
+            <button type="button" aria-label="Next month" onClick={() => setVisibleMonth(addMonths(visibleMonth, 1))}>→</button>
+          </div>
+          <div className="paper-date-calendars">
+            <MonthCalendar
+              month={visibleMonth}
+              today={today}
+              startDate={draftStart}
+              endDate={draftEnd}
+              onSelect={selectDate}
+            />
+            <MonthCalendar
+              month={addMonths(visibleMonth, 1)}
+              today={today}
+              startDate={draftStart}
+              endDate={draftEnd}
+              onSelect={selectDate}
+              secondary
+            />
+          </div>
+          <div className="paper-date-actions">
+            <button type="button" className="paper-date-clear" onClick={clear}>Clear range</button>
+            <div>
+              <button type="button" onClick={() => setOpen(false)}>Cancel</button>
+              <button
+                type="button"
+                className="paper-date-apply"
+                disabled={!draftStart || !draftEnd}
+                onClick={() => {
+                  if (draftStart && draftEnd) onChange({ startDate: draftStart, endDate: draftEnd });
+                  setOpen(false);
+                }}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};

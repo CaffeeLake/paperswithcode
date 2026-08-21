@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
 import ReasoningEffortPicker from "@/components/chat/ReasoningEffortPicker";
@@ -25,13 +26,12 @@ import {
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
-import { PERIODS, type Period } from "@/hooks/usePeriodFilter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useQuery } from "@tanstack/react-query";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 
 type OrderBy = "trending" | "date_published" | "citation_count";
-type TimeWindow = "today" | "week" | "month" | "all_time";
 
 const SORT_OPTIONS: Array<[OrderBy, string]> = [
   ["trending", "trending"],
@@ -39,19 +39,6 @@ const SORT_OPTIONS: Array<[OrderBy, string]> = [
   ["citation_count", "most cited"],
 ];
 
-const PERIOD_TO_TIME: Record<Period, TimeWindow> = {
-  Today: "today",
-  "This Week": "week",
-  "This Month": "month",
-  "All Time": "all_time",
-};
-
-const TIME_TO_PERIOD: Record<TimeWindow, Period> = {
-  today: "Today",
-  week: "This Week",
-  month: "This Month",
-  all_time: "All Time",
-};
 
 const PLACEHOLDER_TYPE_MS = 45;
 const PLACEHOLDER_HOLD_MS = 1_800;
@@ -113,13 +100,6 @@ const parseOrderBy = (value: string | null): OrderBy => {
     return value;
   }
   return "trending";
-};
-
-const parseTime = (value: string | null): TimeWindow => {
-  if (value === "today" || value === "week" || value === "month" || value === "all_time") {
-    return value;
-  }
-  return "all_time";
 };
 
 // Inline "ask the assistant" box between the feed title and the paper list.
@@ -314,20 +294,13 @@ export const AskAssistant: React.FC = () => {
 const FeedView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
-  const timeWindow = parseTime(searchParams.get("time"));
+  const dateRange = readPaperDateRange(searchParams);
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
-  const period = TIME_TO_PERIOD[timeWindow];
 
   const setOrderBy = (nextOrderBy: OrderBy) => {
     const next = new URLSearchParams(searchParams);
     next.set("order_by", nextOrderBy);
-    setSearchParams(next);
-  };
-
-  const setTimeWindow = (nextPeriod: Period) => {
-    const next = new URLSearchParams(searchParams);
-    next.set("time", PERIOD_TO_TIME[nextPeriod]);
     setSearchParams(next);
   };
 
@@ -365,7 +338,8 @@ const FeedView: React.FC = () => {
     page_size: 30,
     order_by: orderBy,
     order_dir: "desc",
-    time: timeWindow,
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
     include_resources: true,
     has_code: hasCode,
     has_hf_artifacts: hasHfArtifacts,
@@ -470,17 +444,11 @@ const FeedView: React.FC = () => {
                   onHasHfArtifactsChange={setHasHfArtifacts}
                 />
               </div>
-              <div className="sort-options sort-options-time">
-                {PERIODS.map((p) => (
-                  <button
-                    key={p}
-                    className={`sort-btn sort-btn-time ${period === p ? "active" : ""}`}
-                    onClick={() => setTimeWindow(p)}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
+              <PaperDateFilter
+                startDate={dateRange.startDate}
+                endDate={dateRange.endDate}
+                onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+              />
             </div>
 
             {error && (

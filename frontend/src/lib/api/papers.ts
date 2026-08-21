@@ -7,7 +7,6 @@ import type {
   PaperSearchMode,
   PaperSubmitPayload,
   PaperSubmitResponse,
-  PaperTimeWindow,
   RelatedPaperRecommendation,
   TrendingPaper,
 } from "./papers.types";
@@ -22,9 +21,8 @@ export interface ListPapersParams {
   search?: string;
   order_by?: PaperOrderBy;
   order_dir?: "asc" | "desc";
-  time?: PaperTimeWindow;
-  published_after?: string;
-  published_before?: string;
+  start_date?: string;
+  end_date?: string;
   conference?: string;
   latest_only?: boolean;
   include_resources?: boolean;
@@ -43,6 +41,8 @@ export interface PaperFeedParams {
   include_resources?: boolean;
   has_code?: boolean;
   has_hf_artifacts?: boolean;
+  start_date?: string;
+  end_date?: string;
 }
 
 function query(params?: object): string {
@@ -74,6 +74,7 @@ export class PapersApi {
     pageSize = 10,
     mode?: PaperSearchMode,
     signal?: AbortSignal,
+    dateRange?: { start_date?: string; end_date?: string },
   ): Promise<SearchPage<Paper>> {
     const searchParams = new URLSearchParams({
       q: query,
@@ -81,6 +82,8 @@ export class PapersApi {
       page_size: pageSize.toString(),
     });
     if (mode) searchParams.set("mode", mode);
+    if (dateRange?.start_date) searchParams.set("start_date", dateRange.start_date);
+    if (dateRange?.end_date) searchParams.set("end_date", dateRange.end_date);
     return this.request<SearchPage<Paper>>(
       `/papers/search?${searchParams.toString()}`,
       { signal },

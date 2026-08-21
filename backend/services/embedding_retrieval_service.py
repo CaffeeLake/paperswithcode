@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -91,6 +92,8 @@ class EmbeddingRetrievalService:
         generation: ActiveGeneration,
         *,
         limit: int = 50,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[RankedCandidate]:
         rows = self.db.execute(
             text(
@@ -101,6 +104,8 @@ class EmbeddingRetrievalService:
                 FROM paper_embeddings e
                 JOIN papers p ON p.id=e.paper_id
                 WHERE e.generation_id=:generation_id AND p.is_latest_version
+                  AND (:start_date IS NULL OR p.date_published >= :start_date)
+                  AND (:end_date IS NULL OR p.date_published <= :end_date)
                 ORDER BY e.embedding::halfvec({generation.dimensions}) <=>
                          CAST(:vector AS halfvec({generation.dimensions}))
                 LIMIT :limit
@@ -110,6 +115,8 @@ class EmbeddingRetrievalService:
                 "vector": vector_literal(vector),
                 "generation_id": generation.id,
                 "limit": limit,
+                "start_date": start_date,
+                "end_date": end_date,
             },
         ).all()
         return [
@@ -259,6 +266,9 @@ class EmbeddingRetrievalService:
         generation: ActiveGeneration,
         client: QueryEmbeddingClient,
         limit: int = 50,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[RankedCandidate]:
         contract = QueryEmbeddingContract(
             generation_id=generation.id,
@@ -268,4 +278,10 @@ class EmbeddingRetrievalService:
             instruction_version=generation.query_instruction_version,
         )
         vector = client.encode(query, contract)
-        return self.semantic_search(vector, generation, limit=limit)
+        return self.semantic_search(
+            vector,
+            generation,
+            limit=limit,
+            start_date=start_date,
+            end_date=end_date,
+        )

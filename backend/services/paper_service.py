@@ -84,6 +84,23 @@ class PaperService:
         self.settings = get_settings()
         self._thumbnail_service: Optional[ThumbnailService] = None
 
+    @staticmethod
+    def _get_published_after_for_time_window(
+        time_window: str,
+        today: Optional[date] = None,
+    ) -> Optional[date]:
+        """Retain the internal CLI/gateway preset contract outside the HTTP API."""
+        current_date = today or datetime.now(timezone.utc).date()
+        if time_window == "today":
+            return current_date
+        if time_window == "week":
+            return current_date - timedelta(days=current_date.weekday())
+        if time_window == "month":
+            return current_date.replace(day=1)
+        if time_window == "all_time":
+            return None
+        raise ValueError(f"Unsupported time window: {time_window}")
+
     def _get_thumbnail_service(self) -> ThumbnailService:
         if self._thumbnail_service is None:
             self._thumbnail_service = ThumbnailService()
@@ -223,27 +240,6 @@ class PaperService:
         for kind, url in rows:
             result[fields[kind]].append(url)
         return result
-
-    @staticmethod
-    def _get_published_after_for_time_window(
-        time_window: str,
-        today: Optional[date] = None,
-    ) -> Optional[date]:
-        """
-        Convert public feed time presets into UTC date boundaries.
-        """
-        current_date = today or datetime.now(timezone.utc).date()
-
-        if time_window == "today":
-            return current_date
-        if time_window == "week":
-            return current_date - timedelta(days=current_date.weekday())
-        if time_window == "month":
-            return current_date.replace(day=1)
-        if time_window == "all_time":
-            return None
-
-        raise ValueError(f"Unsupported time window: {time_window}")
 
     def _to_api_paper(
         self,
@@ -512,6 +508,8 @@ class PaperService:
         page: int = 1,
         page_size: int = None,
         search: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
         published_after: Optional[str] = None,
         published_before: Optional[str] = None,
         conference: Optional[str] = None,
@@ -535,8 +533,8 @@ class PaperService:
             page: Page number (1-based)
             page_size: Number of papers per page
             search: Search term for title/abstract
-            published_after: Filter papers published after this date (YYYY-MM-DD)
-            published_before: Filter papers published before this date (YYYY-MM-DD)
+            start_date: Inclusive earliest publication date
+            end_date: Inclusive latest publication date
             conference: Filter by conference
             task: Filter by an exact task name, slug, or ID
             method: Filter by an exact method name, full name, slug, or ID
@@ -544,12 +542,18 @@ class PaperService:
             latest_only: Whether to only include latest versions of papers
             order_by: Field to order by (date_published, citation_count, trending)
             order_dir: Order direction (asc, desc)
-            time_window: Feed time window (today, week, month, all_time)
 
         Returns:
             Paginated Papers response
         """
         try:
+            if start_date is None and published_after:
+                start_date = date.fromisoformat(published_after)
+            if end_date is None and published_before:
+                end_date = date.fromisoformat(published_before)
+            if start_date is None and time_window != "all_time":
+                start_date = self._get_published_after_for_time_window(time_window)
+
             # Set default page size
             if page_size is None:
                 page_size = self.settings.default_page_size
@@ -563,9 +567,6 @@ class PaperService:
             }
             if order_by not in {*allowed_order_columns.keys(), "trending"}:
                 raise ValueError(f"Unsupported order_by: {order_by}")
-
-            if time_window != "all_time":
-                published_after = self._get_published_after_for_time_window(time_window)
 
             applied_filters = {
                 name: value
@@ -632,8 +633,8 @@ class PaperService:
                     page=page,
                     page_size=page_size,
                     search=search,
-                    published_after=published_after,
-                    published_before=published_before,
+                    start_date=start_date,
+                    end_date=end_date,
                     conference=conference,
                     latest_only=latest_only,
                     include_resources=include_resources,
@@ -693,11 +694,11 @@ class PaperService:
                 )
 
             # Apply date filters
-            if published_after:
-                query = query.filter(DBPaper.date_published >= published_after)
+            if start_date:
+                query = query.filter(DBPaper.date_published >= start_date)
 
-            if published_before:
-                query = query.filter(DBPaper.date_published <= published_before)
+            if end_date:
+                query = query.filter(DBPaper.date_published <= end_date)
 
             # Apply conference filter
             if conference:
@@ -1220,8 +1221,8 @@ class PaperService:
         page: int = 1,
         page_size: int = 20,
         search: Optional[str] = None,
-        published_after: Optional[str] = None,
-        published_before: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
         conference: Optional[str] = None,
         latest_only: bool = True,
         include_resources: bool = False,
@@ -1248,8 +1249,8 @@ class PaperService:
             sql_query, query_params = self._build_trending_query(
                 mode=self.settings.trending_ranking_mode,
                 search=search,
-                published_after=published_after,
-                published_before=published_before,
+                published_after=start_date,
+                published_before=end_date,
                 conference=conference,
                 latest_only=latest_only,
                 has_code=has_code,
@@ -1482,9 +1483,20 @@ class PaperService:
         )
 
     def search_papers(
-        self, query: str, limit: int = 10, mode: str | None = None
+        self,
+        query: str,
+        limit: int = 10,
+        mode: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> List[PaperSummary]:
-        return self._retrieval_service().search_papers(query, limit, mode=mode)
+        return self._retrieval_service().search_papers(
+            query,
+            limit,
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def search_papers_page(
         self,
@@ -1492,9 +1504,16 @@ class PaperService:
         page: int = 1,
         page_size: int = 10,
         mode: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> PaperSearchResults:
         return self._retrieval_service().search_papers_page(
-            query, page, page_size, mode=mode
+            query,
+            page,
+            page_size,
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     def get_related_papers(

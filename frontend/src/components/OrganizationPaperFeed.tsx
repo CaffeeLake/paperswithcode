@@ -6,6 +6,7 @@ import { PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
 import { OrganizationContributionGraph } from "@/components/OrganizationContributionGraph";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { PaperDateFilter } from "@/components/PaperDateFilter";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   SearchableSelect,
@@ -17,6 +18,7 @@ import { useInfiniteOrganizationPapers } from "@/hooks/usePapers";
 import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import NotFound from "@/pages/NotFound";
+import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
 
 type OrderBy = "trending" | "date_published" | "citation_count";
 const SORT_OPTIONS: Array<[OrderBy, string]> = [
@@ -38,6 +40,7 @@ export const OrganizationPaperFeed: React.FC<{
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const dateRange = readPaperDateRange(searchParams);
   const organizationQ = useQuery({
     queryKey: ["organization", organizationSlug],
     queryFn: () => catalogApi.getOrganization(organizationSlug),
@@ -57,6 +60,8 @@ export const OrganizationPaperFeed: React.FC<{
     include_resources: true,
     has_code: hasCode,
     has_hf_artifacts: hasHfArtifacts,
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
     enabled: !!organizationSlug,
   });
   const { targetRef, isIntersecting } = useIntersectionObserver({
@@ -299,6 +304,11 @@ export const OrganizationPaperFeed: React.FC<{
             }}
           />
         </div>
+        <PaperDateFilter
+          startDate={dateRange.startDate}
+          endDate={dateRange.endDate}
+          onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
+        />
         <div className="results-count">{totalCount.toLocaleString()} papers</div>
       </div>
 
