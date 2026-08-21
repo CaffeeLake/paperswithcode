@@ -42,7 +42,7 @@ BASE_IMAGE = (
 MODAL_IMAGE_ID = "im-4yMDw7sJydzrACw4FJy6Hk"
 # Production uses a distinct immutable image because Modal image IDs are scoped
 # to their environment.
-PRODUCTION_MODAL_IMAGE_ID = "im-dCvQBXFglDnt0sBSgKG2qi"
+PRODUCTION_MODAL_IMAGE_ID = "im-HsK50oIv04DGi0J8pL5cgp"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
 POSTERLY_SOURCE_COMMIT = "b9f42e5578a49a27525a68f85376bb3bb25af86f"
