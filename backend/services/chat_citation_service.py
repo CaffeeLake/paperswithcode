@@ -31,7 +31,10 @@ _S2_COMMAND = re.compile(r"(?:^|\s)s2\s+(?:search|refs|citations)\b")
 _ARXIV_ID = re.compile(r"^(?P<id>\d{4}\.\d{4,5})(?:v\d+)?$", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]\n]*\]\([^\)\n]*\)")
 _REFERENCE_LINK = re.compile(r"!?\[[^\]\n]+\]\[[^\]\n]*\]")
-_INLINE_CODE = re.compile(r"(?P<fence>`+)[^\n]*?(?P=fence)")
+_INLINE_CODE = re.compile(r"(?P<fence>`+).*?(?P=fence)", re.DOTALL)
+_REFERENCE_DEFINITION = re.compile(
+    r"^ {0,3}\[(?P<label>[^\]\n]+)\]:\s*\S+", re.MULTILINE
+)
 _HTTPS_URL = re.compile(r"https://[^\s<>]+")
 
 
@@ -216,6 +219,15 @@ def _markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
         protected.extend(
             (match.start(), match.end()) for match in pattern.finditer(text)
         )
+    shortcut_labels = {
+        " ".join(match.group("label").split()).casefold()
+        for match in _REFERENCE_DEFINITION.finditer(text)
+    }
+    if shortcut_labels:
+        for match in re.finditer(r"!?\[(?P<label>[^\]\n]+)\]", text):
+            normalized_label = " ".join(match.group("label").split()).casefold()
+            if normalized_label in shortcut_labels:
+                protected.append((match.start(), match.end()))
     return protected
 
 

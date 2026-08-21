@@ -405,6 +405,8 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
                 "`A Brand New Paper` and "
                 "[A Brand New Paper](https://example.com/existing).\n\n"
                 "[A Brand New Paper][paper-ref]\n\n"
+                "[A Brand New Paper]\n\n"
+                "[A Brand New Paper]: https://example.com/reference\n\n"
                 "Read A Brand New Paper, then revisit A Brand New Paper."
             )
         },
@@ -418,6 +420,8 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
         "`A Brand New Paper` and "
         "[A Brand New Paper](https://example.com/existing).\n\n"
         "[A Brand New Paper][paper-ref]\n\n"
+        "[A Brand New Paper]\n\n"
+        "[A Brand New Paper]: https://example.com/reference\n\n"
         "Read [A Brand New Paper](https://arxiv.org/abs/2608.01234), "
         "then revisit A Brand New Paper."
     )
@@ -459,7 +463,7 @@ def test_s2_catalog_link_normalization_skips_inline_and_fenced_code(monkeypatch)
         "answer_delta",
         {
             "text": (
-                f"`[Catalogued S2 Paper]({url})`\n\n"
+                f"`[Catalogued S2 Paper]({url})\ncontinued code span`\n\n"
                 f"```md\n[Catalogued S2 Paper]({url})\n```\n\n"
                 f"Read [Catalogued S2 Paper]({url})."
             )
@@ -469,7 +473,7 @@ def test_s2_catalog_link_normalization_skips_inline_and_fenced_code(monkeypatch)
     answer, _citations = projection.finalize(object())
 
     assert answer == (
-        f"`[Catalogued S2 Paper]({url})`\n\n"
+        f"`[Catalogued S2 Paper]({url})\ncontinued code span`\n\n"
         f"```md\n[Catalogued S2 Paper]({url})\n```\n\n"
         "Read [Catalogued S2 Paper](paper:2501.00001)."
     )

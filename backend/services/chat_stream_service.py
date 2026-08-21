@@ -113,6 +113,59 @@ def _external_paper_snapshot(
     }
 
 
+def _catalog_paper_snapshot(
+    item: dict[str, Any], candidate: PaperCitationCandidate | None
+) -> dict[str, Any]:
+    return {
+        "kind": "catalog_paper",
+        "position": item["position"],
+        "route_id": item["route_id"],
+        "url": None,
+        "source_type": None,
+        "provider": "paperswithcode",
+        "title": item["title"],
+        "excerpt": None,
+        "source_url": item.get("source_url"),
+        "thumbnail_url": item.get("thumbnail_url"),
+        "favicon_url": None,
+        "arxiv_id": item.get("arxiv_id"),
+        "semantic_scholar_id": candidate.semantic_scholar_id if candidate else None,
+        "authors": item.get("authors") or [],
+        "published": item.get("published"),
+        "conference": item.get("conference"),
+        "citation_count": item.get("citation_count"),
+    }
+
+
+def _attach_block_citations(
+    blocks: list[dict[str, Any]], citations: list[dict[str, Any]]
+) -> None:
+    citations_by_id = {
+        item["route_id"]: item
+        for item in citations
+        if item.get("kind") == "catalog_paper" and item.get("route_id")
+    }
+    citations_by_url = {
+        item["url"]: item
+        for item in citations
+        if item.get("kind") == "external_source" and item.get("url")
+    }
+    for block in blocks:
+        if block.get("kind") not in {"reasoning", "answer"}:
+            continue
+        block_citations = [
+            citations_by_id[route_id]
+            for route_id in cited_route_ids(block.get("text", ""))
+            if route_id in citations_by_id
+        ]
+        for url in dict.fromkeys(
+            re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", block.get("text", ""))
+        ):
+            if url in citations_by_url:
+                block_citations.append(citations_by_url[url])
+        block["citations"] = block_citations
+
+
 @dataclass(frozen=True)
 class ChatStreamFrame:
     """One transport-neutral frame for the router to serialize."""
@@ -552,29 +605,7 @@ class ChatTurnProjection:
             self.citations = []
             for item in resolved:
                 candidate = candidate_by_arxiv.get(item.get("arxiv_id"))
-                self.citations.append(
-                    {
-                        "kind": "catalog_paper",
-                        "position": item["position"],
-                        "route_id": item["route_id"],
-                        "url": None,
-                        "source_type": None,
-                        "provider": "paperswithcode",
-                        "title": item["title"],
-                        "excerpt": None,
-                        "source_url": item.get("source_url"),
-                        "thumbnail_url": item.get("thumbnail_url"),
-                        "favicon_url": None,
-                        "arxiv_id": item.get("arxiv_id"),
-                        "semantic_scholar_id": (
-                            candidate.semantic_scholar_id if candidate else None
-                        ),
-                        "authors": item.get("authors") or [],
-                        "published": item.get("published"),
-                        "conference": item.get("conference"),
-                        "citation_count": item.get("citation_count"),
-                    }
-                )
+                self.citations.append(_catalog_paper_snapshot(item, candidate))
         else:
             cited = set(re.findall(r"\]\(paper:([^) \t\n]{1,200})\)", text))
             self.citations = [
@@ -604,30 +635,7 @@ class ChatTurnProjection:
             source = self.web_sources.get(url)
             if source is not None and len(self.citations) < 20:
                 self.citations.append({**source, "position": len(self.citations)})
-        citations_by_id = {
-            item["route_id"]: item
-            for item in self.citations
-            if item.get("kind") == "catalog_paper" and item.get("route_id")
-        }
-        citations_by_url = {
-            item["url"]: item
-            for item in self.citations
-            if item.get("kind") == "external_source" and item.get("url")
-        }
-        for block in self.blocks:
-            if block.get("kind") not in {"reasoning", "answer"}:
-                continue
-            block_citations = [
-                citations_by_id[route_id]
-                for route_id in cited_route_ids(block.get("text", ""))
-                if route_id in citations_by_id
-            ]
-            for url in dict.fromkeys(
-                re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", block.get("text", ""))
-            ):
-                if url in citations_by_url:
-                    block_citations.append(citations_by_url[url])
-            block["citations"] = block_citations
+        _attach_block_citations(self.blocks, self.citations)
         self.citation_metrics = {
             **citation_format_counts(
                 original_answer, all_candidates, set(used_candidates)
