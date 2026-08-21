@@ -541,12 +541,19 @@ export const AssistantMessage: React.FC<{
             : msg.citations ?? [];
         const citations = Object.fromEntries(
           citationSnapshot
-            .filter((citation) => (citation.kind ?? "paper") === "paper" && citation.route_id)
+            .filter((citation) => (
+              citation.kind === "catalog_paper"
+              || citation.kind === "paper"
+              || (!citation.kind && citation.route_id)
+            ) && citation.route_id)
             .map((citation) => [citation.route_id as string, citation]),
         );
         const webCitations = Object.fromEntries(
           citationSnapshot
-            .filter((citation) => citation.kind === "web" && citation.url)
+            .filter((citation) => (
+              citation.kind === "external_source"
+              || citation.kind === "web"
+            ) && citation.url)
             .map((citation) => [citation.url as string, citation]),
         );
         if (b.kind === "reasoning") {

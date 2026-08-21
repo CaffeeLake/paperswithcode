@@ -270,29 +270,52 @@ class ChatPaperHit(BaseModel):
 
 class CitationSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["paper", "web"] = "paper"
+    kind: Literal["catalog_paper", "external_source"] = "catalog_paper"
     position: int = Field(ge=0, le=100)
     route_id: str | None = Field(default=None, max_length=200)
     url: str | None = Field(default=None, max_length=2000)
+    source_type: Literal["paper", "article"] | None = None
+    provider: Literal["paperswithcode", "semantic_scholar", "web"] = "paperswithcode"
     title: str = Field(max_length=500)
     excerpt: str | None = Field(default=None, max_length=4000)
     source_url: str | None = Field(default=None, max_length=2000)
     thumbnail_url: str | None = Field(default=None, max_length=1000)
     favicon_url: str | None = Field(default=None, max_length=1000)
     arxiv_id: str | None = Field(default=None, max_length=50)
+    semantic_scholar_id: str | None = Field(default=None, max_length=100)
     authors: list[AuthorName] = Field(default_factory=list, max_length=50)
     published: str | None = Field(default=None, max_length=32)
     conference: str | None = Field(default=None, max_length=200)
     citation_count: int | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_kind(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        kind = normalized.get("kind")
+        if kind in {None, "paper"} and normalized.get("route_id"):
+            normalized["kind"] = "catalog_paper"
+            normalized.setdefault("provider", "paperswithcode")
+        elif kind == "web":
+            normalized["kind"] = "external_source"
+            normalized.setdefault("source_type", "article")
+            normalized.setdefault("provider", "web")
+        return normalized
+
     @model_validator(mode="after")
     def validate_kind(self) -> "CitationSnapshot":
-        if self.kind == "paper" and not self.route_id:
-            raise ValueError("Paper citations require route_id")
-        if self.kind == "web" and (
+        if self.kind == "catalog_paper" and not self.route_id:
+            raise ValueError("Catalog paper citations require route_id")
+        if self.kind == "external_source" and (
             not self.url or not self.url.startswith("https://") or self.route_id
         ):
-            raise ValueError("Web citations require an HTTPS url and no route_id")
+            raise ValueError(
+                "External source citations require an HTTPS url and no route_id"
+            )
+        if self.kind == "external_source" and self.source_type is None:
+            raise ValueError("External source citations require source_type")
         return self
 
 

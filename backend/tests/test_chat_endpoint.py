@@ -1080,6 +1080,9 @@ def test_complete_turn_persists_authoritative_streamed_tool_snapshot(monkeypatch
         def complete_turn(self, *args):
             captured["blocks"] = args[5]
 
+        def citation_history(self, *_args, **_kwargs):
+            return []
+
     monkeypatch.setattr(
         chat_stream_service,
         "db_manager",
@@ -1320,7 +1323,9 @@ def test_chat_projection_canonicalizes_resolved_paper_aliases(monkeypatch):
     answer, citations = projection.finalize(object())
 
     assert answer == "Read [Paper](paper:2501.00001)."
-    assert citations == [{"kind": "paper", **citation}]
+    assert citations[0]["kind"] == "catalog_paper"
+    assert citations[0]["route_id"] == "2501.00001"
+    assert citations[0]["title"] == "Paper"
     assert projection.blocks[-1]["citations"] == citations
 
 
@@ -1347,7 +1352,9 @@ def test_chat_projection_canonicalizes_arxiv_urls(monkeypatch):
     answer, citations = projection.finalize(object())
 
     assert answer == ("Read [https://arxiv.org/abs/2501.00001](paper:2501.00001).")
-    assert citations == [{"kind": "paper", **citation}]
+    assert citations[0]["kind"] == "catalog_paper"
+    assert citations[0]["route_id"] == "2501.00001"
+    assert citations[0]["title"] == "Paper"
     assert projection.blocks[-1]["citations"] == citations
 
 
@@ -2531,6 +2538,9 @@ def test_chat_endpoint_stream_contract(monkeypatch):
 
         def complete_turn(self, *_args, **_kwargs):
             pass
+
+        def citation_history(self, *_args, **_kwargs):
+            return []
 
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)

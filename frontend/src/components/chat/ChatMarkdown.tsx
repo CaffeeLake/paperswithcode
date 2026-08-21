@@ -26,6 +26,7 @@ import {
 } from "@/components/chat/HuggingFacePreviewLink";
 import { GitHubPreviewLink } from "@/components/chat/GitHubPreviewLink";
 import { WebPreviewLink } from "@/components/chat/WebPreviewLink";
+import { ExternalPaperPreviewLink } from "@/components/chat/ExternalPaperPreviewLink";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
 import { parseGitHubRepoUrl } from "@/lib/github";
@@ -178,6 +179,13 @@ export const ChatMarkdown: React.FC<{
             );
           }
           if (href?.startsWith("https://") && webCitations?.[href]) {
+            if (webCitations[href].source_type === "paper") {
+              return (
+                <ExternalPaperPreviewLink citation={webCitations[href]}>
+                  {children}
+                </ExternalPaperPreviewLink>
+              );
+            }
             return (
               <WebPreviewLink citation={webCitations[href]}>
                 {children}

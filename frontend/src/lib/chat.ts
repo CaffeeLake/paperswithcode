@@ -63,15 +63,18 @@ export interface ChatPaperHit {
 }
 
 export interface ChatCitation {
-  kind?: "paper" | "web";
+  kind?: "catalog_paper" | "external_source" | "paper" | "web";
   route_id: string | null;
   url?: string | null;
+  source_type?: "paper" | "article" | null;
+  provider?: "paperswithcode" | "semantic_scholar" | "web";
   title: string;
   excerpt?: string | null;
   source_url: string | null;
   thumbnail_url?: string | null;
   favicon_url?: string | null;
   arxiv_id?: string | null;
+  semantic_scholar_id?: string | null;
   authors?: string[];
   published?: string | null;
   conference?: string | null;

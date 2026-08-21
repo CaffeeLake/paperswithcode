@@ -29,8 +29,14 @@ from backend.database.connection import db_manager
 from backend.models.database import ChatArtifact, ChatArtifactVersion
 from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_citation_service import (
+    PaperCitationCandidate,
+    candidates_from_citation_history,
+    citation_format_counts,
     cited_route_ids,
+    extract_s2_candidates,
     normalize_paper_links,
+    normalize_s2_catalog_links,
+    repair_exact_paper_titles,
     resolve_citation_targets,
 )
 from backend.services.chat_latency_service import ChatLatencyService
@@ -131,6 +137,8 @@ class ChatTurnProjection:
     artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     citations: list[dict[str, Any]] = field(default_factory=list)
     web_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
+    paper_candidates: list[PaperCitationCandidate] = field(default_factory=list)
+    citation_metrics: dict[str, int | float] = field(default_factory=dict)
 
     def completed_blocks(self) -> list[dict[str, Any]]:
         completed: list[dict[str, Any]] = []
@@ -320,6 +328,11 @@ class ChatTurnProjection:
             )
             if tool.get("name") == "search_web" and event["status"] == "success":
                 self._remember_web_sources(event.get("content") or [])
+            elif tool.get("name") == "Bash" and event["status"] == "success":
+                command = str((tool.get("args") or {}).get("command") or "")
+                self.paper_candidates.extend(
+                    extract_s2_candidates(command, event.get("content") or [])
+                )
         elif tool:
             tool.update(
                 {
@@ -330,6 +343,23 @@ class ChatTurnProjection:
             )
         for result in event.get("results") or []:
             metadata = result.get("metadata", {})
+            self.paper_candidates.append(
+                PaperCitationCandidate(
+                    title=result["title"],
+                    route_id=result["route_id"],
+                    arxiv_id=metadata.get("arxiv_id"),
+                    semantic_scholar_id=None,
+                    semantic_scholar_url=None,
+                    authors=tuple(
+                        author.get("name", "")
+                        for author in metadata.get("authors", [])
+                        if author.get("name")
+                    ),
+                    published=metadata.get("published"),
+                    citation_count=metadata.get("citation_count"),
+                    excerpt=result.get("content"),
+                )
+            )
             self.citations.append(
                 {
                     "position": len(self.citations),
@@ -396,27 +426,60 @@ class ChatTurnProjection:
             if not isinstance(url, str) or not url.startswith("https://"):
                 continue
             self.web_sources[url] = {
-                "kind": "web",
+                "kind": "external_source",
                 "position": 0,
                 "route_id": None,
                 "url": url,
+                "source_type": "article",
+                "provider": "web",
                 "title": str(result.get("title") or "Web source")[:500],
                 "excerpt": str(result.get("excerpt") or "")[:4_000],
                 "source_url": None,
                 "thumbnail_url": result.get("image_url"),
                 "favicon_url": result.get("favicon_url"),
+                "arxiv_id": None,
+                "semantic_scholar_id": None,
                 "authors": [],
                 "published": result.get("published_date"),
                 "conference": None,
+                "citation_count": None,
             }
 
-    def finalize(self, db) -> tuple[str, list[dict[str, Any]]]:
+    def finalize(
+        self, db, *, prior_citations: list[dict[str, Any]] | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
         if not any(block.get("kind") == "answer" for block in self.blocks):
             self.blocks.append({"kind": "answer", "text": "", "done": True})
         else:
             for block in self.blocks:
                 if block.get("kind") == "answer":
                     block["done"] = True
+        all_candidates = [
+            *self.paper_candidates,
+            *candidates_from_citation_history(prior_citations or []),
+        ]
+        original_answer = "".join(
+            block.get("text", "")
+            for block in self.blocks
+            if block.get("kind") == "answer"
+        )
+        used_candidates: dict[str, PaperCitationCandidate] = {}
+        remaining_candidates = all_candidates
+        for block in self.blocks:
+            if block.get("kind") != "answer":
+                continue
+            block["text"] = normalize_s2_catalog_links(
+                block.get("text", ""), remaining_candidates, db
+            )
+            block["text"], used = repair_exact_paper_titles(
+                block.get("text", ""), remaining_candidates, db
+            )
+            used_candidates.update(used)
+            remaining_candidates = [
+                candidate
+                for candidate in remaining_candidates
+                if candidate.title.casefold() not in used_candidates
+            ]
         text = "\n".join(
             block.get("text", "")
             for block in self.blocks
@@ -440,30 +503,101 @@ class ChatTurnProjection:
             if block.get("kind") in {"reasoning", "answer"}
         )
         if resolved:
-            self.citations = [{"kind": "paper", **item} for item in resolved]
+            candidate_by_arxiv = {
+                candidate.arxiv_id: candidate
+                for candidate in all_candidates
+                if candidate.arxiv_id
+            }
+            self.citations = []
+            for item in resolved:
+                candidate = candidate_by_arxiv.get(item.get("arxiv_id"))
+                self.citations.append(
+                    {
+                        "kind": "catalog_paper",
+                        "position": item["position"],
+                        "route_id": item["route_id"],
+                        "url": None,
+                        "source_type": None,
+                        "provider": "paperswithcode",
+                        "title": item["title"],
+                        "excerpt": None,
+                        "source_url": item.get("source_url"),
+                        "thumbnail_url": item.get("thumbnail_url"),
+                        "favicon_url": None,
+                        "arxiv_id": item.get("arxiv_id"),
+                        "semantic_scholar_id": (
+                            candidate.semantic_scholar_id if candidate else None
+                        ),
+                        "authors": item.get("authors") or [],
+                        "published": item.get("published"),
+                        "conference": item.get("conference"),
+                        "citation_count": item.get("citation_count"),
+                    }
+                )
         else:
             cited = set(re.findall(r"\]\(paper:([^) \t\n]{1,200})\)", text))
             self.citations = [
-                {"kind": "paper", **item}
+                {
+                    "kind": "catalog_paper",
+                    "url": None,
+                    "source_type": None,
+                    "provider": "paperswithcode",
+                    "excerpt": None,
+                    "favicon_url": None,
+                    "semantic_scholar_id": None,
+                    **item,
+                }
                 for item in self.citations
                 if item["route_id"] in cited
             ]
         web_urls = list(
             dict.fromkeys(re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", text))
         )
+        external_papers: dict[str, PaperCitationCandidate] = {}
+        for candidate in all_candidates:
+            if candidate.arxiv_id:
+                external_papers[f"https://arxiv.org/abs/{candidate.arxiv_id}"] = (
+                    candidate
+                )
+            if candidate.semantic_scholar_url:
+                external_papers[candidate.semantic_scholar_url] = candidate
         for url in web_urls:
+            candidate = external_papers.get(url)
+            if candidate is not None and len(self.citations) < 20:
+                self.citations.append(
+                    {
+                        "kind": "external_source",
+                        "position": len(self.citations),
+                        "route_id": None,
+                        "url": url,
+                        "source_type": "paper",
+                        "provider": "semantic_scholar",
+                        "title": candidate.title,
+                        "excerpt": candidate.excerpt,
+                        "source_url": candidate.semantic_scholar_url,
+                        "thumbnail_url": None,
+                        "favicon_url": None,
+                        "arxiv_id": candidate.arxiv_id,
+                        "semantic_scholar_id": candidate.semantic_scholar_id,
+                        "authors": list(candidate.authors),
+                        "published": candidate.published,
+                        "conference": None,
+                        "citation_count": candidate.citation_count,
+                    }
+                )
+                continue
             source = self.web_sources.get(url)
             if source is not None and len(self.citations) < 20:
                 self.citations.append({**source, "position": len(self.citations)})
         citations_by_id = {
             item["route_id"]: item
             for item in self.citations
-            if item.get("kind", "paper") == "paper" and item.get("route_id")
+            if item.get("kind") == "catalog_paper" and item.get("route_id")
         }
         citations_by_url = {
             item["url"]: item
             for item in self.citations
-            if item.get("kind") == "web" and item.get("url")
+            if item.get("kind") == "external_source" and item.get("url")
         }
         for block in self.blocks:
             if block.get("kind") not in {"reasoning", "answer"}:
@@ -479,6 +613,19 @@ class ChatTurnProjection:
                 if url in citations_by_url:
                     block_citations.append(citations_by_url[url])
             block["citations"] = block_citations
+        self.citation_metrics = {
+            **citation_format_counts(
+                original_answer, all_candidates, set(used_candidates)
+            ),
+            "catalog_papers": sum(
+                citation.get("kind") == "catalog_paper" for citation in self.citations
+            ),
+            "external_papers": sum(
+                citation.get("kind") == "external_source"
+                and citation.get("source_type") == "paper"
+                for citation in self.citations
+            ),
+        }
         return answer, self.citations
 
 
@@ -1628,7 +1775,7 @@ class ChatStreamOrchestrator:
                     for key, value in terminal.items()
                     if key not in {"v", "type", "request_id"}
                 }
-                answer, citations = self.projection.finalize(db)
+                answer, citations = self._finalize_projection(db, service)
                 service.complete_turn(
                     self.owner,
                     self.admission,
@@ -1680,8 +1827,9 @@ class ChatStreamOrchestrator:
 
     def _complete_turn(self, event: dict[str, Any]) -> None:
         with db_manager.session_local() as db:
-            answer, citations = self.projection.finalize(db)
-            ChatSessionService(db, self.settings).complete_turn(
+            service = ChatSessionService(db, self.settings)
+            answer, citations = self._finalize_projection(db, service)
+            service.complete_turn(
                 self.owner,
                 self.admission,
                 answer,
@@ -1691,6 +1839,34 @@ class ChatStreamOrchestrator:
                 event.get("finish_reason", "success"),
             )
             db.commit()
+
+    def _finalize_projection(
+        self, db, service: ChatSessionService
+    ) -> tuple[str, list[dict[str, Any]]]:
+        history = service.citation_history(
+            self.admission.session_id,
+            before_sequence=getattr(
+                self.admission, "replacement_target_sequence", None
+            ),
+        )
+        finalized = self.projection.finalize(db, prior_citations=history)
+        metrics = self.projection.citation_metrics
+        self.trace.record_citation_metrics(metrics)
+        logger.info(
+            "chat citation format model=%s prompt_hash=%s references=%s "
+            "authored=%s repaired=%s unresolved=%s catalog=%s external=%s "
+            "compliance_rate=%s",
+            self.admission.selected_model,
+            getattr(self.admission, "system_prompt_sha256", "") or "unknown",
+            metrics.get("paper_references", 0),
+            metrics.get("authored_correctly", 0),
+            metrics.get("repaired", 0),
+            metrics.get("unresolved", 0),
+            metrics.get("catalog_papers", 0),
+            metrics.get("external_papers", 0),
+            metrics.get("compliance_rate", 1.0),
+        )
+        return finalized
 
     async def _reconcile_mirror(self) -> None:
         if not self.mirror_recovery:

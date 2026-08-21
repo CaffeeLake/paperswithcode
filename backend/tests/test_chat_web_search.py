@@ -284,18 +284,23 @@ def test_projection_persists_only_exact_authoritative_web_citations(monkeypatch)
 
     assert citations == [
         {
-            "kind": "web",
+            "kind": "external_source",
             "position": 0,
             "route_id": None,
             "url": "https://example.com/release",
+            "source_type": "article",
+            "provider": "web",
             "title": "Official",
             "excerpt": "Evidence",
             "source_url": None,
             "thumbnail_url": "https://cdn.example.com/release.png",
             "favicon_url": "https://example.com/favicon.ico",
+            "arxiv_id": None,
+            "semantic_scholar_id": None,
             "authors": [],
             "published": None,
             "conference": None,
+            "citation_count": None,
         }
     ]
     assert projection.blocks[-1]["citations"] == citations

@@ -439,6 +439,44 @@ class ChatSessionService:
                     )
         return bounded_url_seed(payloads)
 
+    def citation_history(
+        self,
+        session_id: uuid.UUID,
+        *,
+        before_sequence: int | None = None,
+        maximum: int = 100,
+    ) -> list[dict]:
+        """Return bounded, canonical citation evidence from the active lineage."""
+        query = (
+            select(ChatMessageRecord.citations)
+            .where(
+                ChatMessageRecord.session_id == session_id,
+                ChatMessageRecord.role == "assistant",
+                ChatMessageRecord.status.notin_(INACTIVE_STATUSES),
+            )
+            .order_by(ChatMessageRecord.sequence.desc())
+        )
+        if before_sequence is not None:
+            query = query.where(ChatMessageRecord.sequence < before_sequence)
+        history: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for citations in self.db.scalars(query):
+            for value in citations or []:
+                snapshot = CitationSnapshot.model_validate(value).model_dump(
+                    mode="json"
+                )
+                identity = (
+                    snapshot["kind"],
+                    str(snapshot.get("route_id") or snapshot.get("url") or ""),
+                )
+                if not identity[1] or identity in seen:
+                    continue
+                seen.add(identity)
+                history.append(snapshot)
+                if len(history) >= maximum:
+                    return history
+        return history
+
     def record_langfuse_trace_id(
         self, owner: ChatOwner, admission: TurnAdmission, trace_id: str
     ) -> None:

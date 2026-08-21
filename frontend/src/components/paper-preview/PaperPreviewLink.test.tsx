@@ -463,9 +463,11 @@ describe("Markdown and chat policy", () => {
         citations={{}}
         webCitations={{
           [source]: {
-            kind: "web",
+            kind: "external_source",
             route_id: null,
             url: source,
+            source_type: "article",
+            provider: "web",
             title: "Official release",
             source_url: null,
           },
@@ -497,9 +499,11 @@ describe("Markdown and chat policy", () => {
         citations={{}}
         webCitations={{
           [source]: {
-            kind: "web",
+            kind: "external_source",
             route_id: null,
             url: source,
+            source_type: "article",
+            provider: "web",
             title: "Official release",
             excerpt: "A representative release summary.",
             source_url: null,
@@ -522,5 +526,43 @@ describe("Markdown and chat policy", () => {
       "src",
       "https://cdn.example.com/release.png",
     );
+  });
+
+  it("renders an S2 paper as a text-only scholarly preview", async () => {
+    const source = "https://arxiv.org/abs/2608.01234";
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[external paper](${source})`}
+        papers={{}}
+        citations={{}}
+        webCitations={{
+          [source]: {
+            kind: "external_source",
+            route_id: null,
+            url: source,
+            source_type: "paper",
+            provider: "semantic_scholar",
+            title: "A Brand New Paper",
+            excerpt: "A concise external abstract.",
+            source_url: "https://www.semanticscholar.org/paper/s2-id",
+            thumbnail_url: null,
+            arxiv_id: "2608.01234",
+            semantic_scholar_id: "s2-id",
+            authors: ["Ada Lovelace", "Grace Hopper"],
+            published: "2026",
+            citation_count: 3,
+          },
+        }}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "external paper" });
+    expect(link).toHaveClass("chat-external-paper-citation");
+    await hoverLink("external paper");
+    expect(await screen.findByText("Semantic Scholar")).toBeInTheDocument();
+    expect(screen.getByText("A Brand New Paper")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace, Grace Hopper")).toBeInTheDocument();
+    expect(screen.getByText("3 citations")).toBeInTheDocument();
+    expect(document.querySelector(".external-paper-preview-card img")).toBeNull();
   });
 });

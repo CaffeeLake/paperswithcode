@@ -268,6 +268,31 @@ describe("AssistantMessage", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 
+  it("routes external paper snapshots to the scholarly preview renderer", () => {
+    const url = "https://arxiv.org/abs/2608.01234";
+    renderAssistant({
+      id: "assistant-external-paper",
+      role: "assistant",
+      citations: [{
+        kind: "external_source",
+        route_id: null,
+        url,
+        source_type: "paper",
+        provider: "semantic_scholar",
+        title: "A Brand New Paper",
+        source_url: "https://www.semanticscholar.org/paper/s2-id",
+      }],
+      blocks: [{
+        kind: "answer",
+        text: `[A Brand New Paper](${url})`,
+        done: true,
+      }],
+    });
+
+    expect(screen.getByRole("link", { name: "A Brand New Paper" }))
+      .toHaveClass("chat-external-paper-citation");
+  });
+
   it("submits thumbs feedback for a completed answer", async () => {
     const user = userEvent.setup();
     const reportFeedback = vi.spyOn(chatApi, "reportFeedback").mockResolvedValue();

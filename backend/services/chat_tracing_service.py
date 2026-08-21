@@ -171,6 +171,9 @@ class ChatTurnTrace:
             self.cost["total"] = self.cost.get("total", 0.0) + float(cost)
         self.generation.update(metadata={"usage_by_phase": self.usage_by_phase})
 
+    def record_citation_metrics(self, metrics: dict[str, int | float]) -> None:
+        self.generation.update(metadata={"citation_format": metrics})
+
     def record_event(self, kind: str, event: dict[str, Any]) -> None:
         """Advance operational spans from sanitized worker lifecycle events."""
 
@@ -377,6 +380,9 @@ class NullChatTurnTrace:
         del fallback
 
     def record_usage(self, _event: dict[str, Any]) -> None:
+        return
+
+    def record_citation_metrics(self, _metrics: dict[str, int | float]) -> None:
         return
 
     def record_event(self, _kind: str, _event: dict[str, Any]) -> None:
