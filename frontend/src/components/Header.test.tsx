@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Header from "@/components/Header";
 
@@ -18,6 +18,7 @@ vi.mock("@/components/HfSignInButton", () => ({
   default: () => <button type="button">Sign in</button>,
 }));
 
+beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
 describe("Header navigation", () => {
@@ -107,6 +108,26 @@ describe("Header navigation", () => {
       </MemoryRouter>,
     );
 
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("remembers when the CLI announcement is dismissed", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(
+      <MemoryRouter>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Dismiss announcement" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    firstRender.unmount();
+    render(
+      <MemoryRouter>
+        <Header onOpenSearch={vi.fn()} />
+      </MemoryRouter>,
+    );
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });
