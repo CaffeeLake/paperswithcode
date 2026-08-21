@@ -440,6 +440,26 @@ def validate_chat_provider_policy(
             "provider": expected_provider,
         },
     )
+    if settings.chat_openai_direct_enabled:
+        if not settings.openai_api_key:
+            raise RuntimeError("direct OpenAI chat requires an OpenAI API key")
+        if (
+            settings.chat_openai_luna_route != "gpt-5.6-luna@openai"
+            or settings.chat_openai_model != "gpt-5.6-luna"
+        ):
+            raise RuntimeError("direct OpenAI chat must use the reviewed Luna route")
+        direct_choice = {
+            "id": "gpt-5.6-luna@openai",
+            "label": (
+                "GPT-5.6 Luna"
+                if settings.environment == "production"
+                else "GPT-5.6 Luna (Direct)"
+            ),
+            "route": settings.chat_openai_luna_route,
+            "provider": "openai",
+        }
+        if settings.environment == "production":
+            expected_discovery = (direct_choice,) + expected_discovery
     if settings.environment == "staging":
         expected_kimi_route = "moonshotai/Kimi-K3:baseten"
         if settings.chat_kimi_route != expected_kimi_route:
@@ -461,25 +481,7 @@ def validate_chat_provider_policy(
             },
         )
         if settings.chat_openai_direct_enabled:
-            if not settings.openai_api_key:
-                raise RuntimeError("direct OpenAI chat requires an OpenAI API key")
-            if (
-                settings.chat_openai_luna_route != "gpt-5.6-luna@openai"
-                or settings.chat_openai_model != "gpt-5.6-luna"
-            ):
-                raise RuntimeError(
-                    "direct OpenAI chat must use the reviewed Luna route"
-                )
-            expected_discovery += (
-                {
-                    "id": "gpt-5.6-luna@openai",
-                    "label": "GPT-5.6 Luna (Direct)",
-                    "route": settings.chat_openai_luna_route,
-                    "provider": "openai",
-                },
-            )
-    elif settings.chat_openai_direct_enabled:
-        raise RuntimeError("direct OpenAI chat is staging-only")
+            expected_discovery += (direct_choice,)
     if settings.chat_alternative_model_enabled:
         if settings.environment != "staging":
             raise RuntimeError("alternative chat models are staging-only")

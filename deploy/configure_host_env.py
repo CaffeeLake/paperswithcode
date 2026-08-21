@@ -385,6 +385,40 @@ def staging_openai_direct_disable_values() -> dict[str, str]:
     }
 
 
+def production_openai_direct_values(current: dict[str, str]) -> dict[str, str]:
+    """Promote the existing protected production key and Luna warm profile."""
+
+    required = {
+        "PWC_CHAT_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "true",
+    }
+    missing = [
+        key
+        for key, expected in required.items()
+        if _decoded_flag(current, key) != expected
+    ]
+    if missing:
+        raise ValueError(
+            "production direct OpenAI requires admitted chat infrastructure: "
+            + ", ".join(missing)
+        )
+    credential_line = current.get("PWC_OPENAI_API_KEY") or current.get("OPENAI_API_KEY")
+    if not credential_line or not decoded_value(credential_line).strip():
+        raise ValueError("production OpenAI credential is missing")
+    return {
+        "PWC_OPENAI_API_KEY": decoded_value(credential_line).strip(),
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_MODEL": "gpt-5.6-luna@openai",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+
+
 def staging_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "EXA_API_KEY"
     if key not in legacy or not decoded_value(legacy[key]).strip():
@@ -1110,6 +1144,7 @@ def main() -> int:
     parser.add_argument(
         "--production-chat-pi-prewarm-disable-only", action="store_true"
     )
+    parser.add_argument("--production-openai-direct-only", action="store_true")
     parser.add_argument("--modal-profile")
     parser.add_argument(
         "--modal-profile-config",
@@ -1123,6 +1158,43 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if args.production_openai_direct_only:
+        selected_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "legacy_env",
+                "confirm",
+                "production_openai_direct_only",
+                "staging_chat_routing_policy",
+                "staging_chat_preferred_providers",
+                "staging_chat_routing_max_prompt_price",
+                "staging_chat_routing_max_completion_price",
+                "staging_chat_payload_candidate",
+                "staging_chat_alternative_model",
+                "staging_chat_alternative_reasoning_effort",
+                "modal_profile_config",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if selected_modes or args.codex_jobs_namespace or args.modal_profile:
+            parser.error("production direct OpenAI mode must run alone")
+        if args.confirm != "ENABLE_PRODUCTION_OPENAI_DIRECT":
+            parser.error("--confirm must be ENABLE_PRODUCTION_OPENAI_DIRECT")
+        current = read_lines(CONFIG_ROOT / "production.env")
+        try:
+            values = production_openai_direct_values(current)
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "production.env",
+            assign(current, values),
+            "pwc-production",
+        )
+        print("enabled production OpenAI Luna default and one-blank warm profile")
+        return 0
     if args.staging_openai_direct_only or args.staging_openai_direct_disable_only:
         if args.staging_openai_direct_only and args.staging_openai_direct_disable_only:
             parser.error("staging direct OpenAI modes are mutually exclusive")

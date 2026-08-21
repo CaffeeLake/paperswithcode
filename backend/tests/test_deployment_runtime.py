@@ -1481,11 +1481,12 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert dormant["system_prompt_sha256"] == descriptor["system_prompt_sha256"]
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
-    assert production["worker_contract_version"] == "90"
+    assert production["worker_contract_version"] == "94"
     assert production["enabled"] is True
     assert production["database_contract_version"] == 2
     assert production["default_agent_harness"] == "pi"
     assert production["new_session_pi_percentage"] == 100
+    assert production["direct_openai_enabled"] is True
     assert (
         production["new_chat_modal_percentage"]
         == descriptor["new_chat_modal_percentage"]
@@ -2984,6 +2985,42 @@ def test_production_chat_pi_prewarm_rejects_unadmitted_or_alternative_pool():
                 ),
             },
             enabled=True,
+        )
+
+
+def test_production_openai_direct_configuration_reuses_protected_key_exactly():
+    admitted = {
+        "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": (
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED=true"
+        ),
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": (
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true"
+        ),
+        "OPENAI_API_KEY": "OPENAI_API_KEY=test-production-secret",
+    }
+
+    assert configure_host_env.production_openai_direct_values(admitted) == {
+        "PWC_OPENAI_API_KEY": "test-production-secret",
+        "PWC_CHAT_OPENAI_DIRECT_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_MODEL": "gpt-5.6-luna@openai",
+        "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+    with pytest.raises(ValueError, match="credential is missing"):
+        configure_host_env.production_openai_direct_values(
+            {key: value for key, value in admitted.items() if key != "OPENAI_API_KEY"}
+        )
+    with pytest.raises(ValueError, match="admitted chat infrastructure"):
+        configure_host_env.production_openai_direct_values(
+            {
+                **admitted,
+                "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=false",
+            }
         )
 
 

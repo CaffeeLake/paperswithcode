@@ -250,7 +250,7 @@ if present_pi_fields:
         "pi_node_sha256": contract.PI_NODE_SHA256 if enabled else "",
         "restricted_hf_cli_version": contract.RESTRICTED_HF_CLI_VERSION if enabled else "",
         "direct_openai_enabled": (
-            enabled and not production and contract.DIRECT_OPENAI_ENABLED
+            enabled and contract.DIRECT_OPENAI_ENABLED
         ),
         "posterly_enabled": enabled and not production and contract.POSTERLY_ENABLED,
         "posterly_source_commit": contract.POSTERLY_SOURCE_COMMIT,

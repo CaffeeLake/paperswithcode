@@ -214,7 +214,7 @@ def test_chat_provider_policy_accepts_one_reviewed_staging_candidate(
     runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
-def test_direct_openai_requires_staging_and_gateway_key(settings_factory):
+def test_direct_openai_requires_gateway_key_and_accepts_production(settings_factory):
     staging, _release = settings_factory("staging")
     staging.chat_openai_direct_enabled = True
     staging.openai_api_key = ""
@@ -224,8 +224,13 @@ def test_direct_openai_requires_staging_and_gateway_key(settings_factory):
     production, _release = settings_factory("production")
     production.chat_openai_direct_enabled = True
     production.openai_api_key = "test-only"
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_chat_provider_policy(production)
+    production.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+    )
+    production.chat_pi_prewarm_enabled = True
+    production.chat_pi_prewarm_model = production.chat_openai_luna_route
+
+    runtime_validation.validate_chat_provider_policy(production)
 
 
 def test_direct_openai_requires_exact_low_reasoning_warm_profile(settings_factory):

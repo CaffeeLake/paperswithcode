@@ -499,8 +499,6 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
     if set(runtime) == provider_runtime_keys:
         if runtime["direct_openai_enabled"] not in {True, False}:
             raise ValueError("direct OpenAI release activation must be a boolean")
-        if runtime["direct_openai_enabled"] and profile != "staging":
-            raise ValueError("direct OpenAI may be enabled only in staging releases")
     return _validate_release_files(release_dir, manifest, expected)
 
 

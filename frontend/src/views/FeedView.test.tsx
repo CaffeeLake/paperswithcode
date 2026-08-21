@@ -83,7 +83,7 @@ describe("AskAssistant", () => {
     renderAskAssistant();
 
     const picker = screen.getByLabelText("Research model");
-    expect(picker).toHaveValue("deepseek-ai/DeepSeek-V4-Flash-0731");
+    expect(picker).toHaveValue("gpt-5.6-luna@openai");
     expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual([
       "Hugging Face Inference Providers",
       "OpenRouter",
@@ -95,21 +95,24 @@ describe("AskAssistant", () => {
       "gpt-5.6-luna@openrouter",
       "gpt-5.6-luna@openai",
     ]);
-    expect(screen.getByRole("link", { name: "Inference Providers" }))
-      .toBeVisible();
+    expect(screen.getByText("Via OpenAI")).toBeVisible();
   });
 
-  it("shows only a read-only DeepSeek label in the production preview", () => {
+  it("offers OpenAI Luna first and DeepSeek second in production", () => {
     vi.stubEnv("MODE", "production");
     renderAskAssistant();
 
-    expect(screen.getByLabelText("Research model")).toHaveTextContent(
+    const picker = screen.getByRole("combobox", { name: "Research model" });
+    expect(picker).toHaveValue("gpt-5.6-luna@openai");
+    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual([
+      "Hugging Face Inference Providers",
+      "OpenAI",
+    ]);
+    expect([...picker.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
       "DeepSeek V4 Flash",
-    );
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Luna|Terra/)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Inference Providers" }))
-      .toBeVisible();
+      "GPT-5.6 Luna",
+    ]);
+    expect(screen.getByText("Via OpenAI")).toBeVisible();
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {
@@ -319,7 +322,7 @@ describe("AskAssistant", () => {
 
     const toggle = await screen.findByRole("switch", { name: "Web search" });
     expect(screen.getByLabelText("Research model"))
-      .toHaveValue("deepseek-ai/DeepSeek-V4-Flash-0731");
+      .toHaveValue("gpt-5.6-luna@openai");
     await user.click(toggle);
     await user.type(
       screen.getByRole("combobox", { name: "Ask the assistant" }),

@@ -298,7 +298,7 @@ class Settings(BaseSettings):
             "routes remain registered for rolling switches"
         ),
     )
-    # A staging-only, default-off candidate used for bounded model qualification.
+    # A default-off server-funded route enabled only by reviewed environment config.
     # Production discovery and the default model remain unchanged.
     chat_alternative_model_enabled: bool = Field(default=False)
     chat_alternative_model: Literal[
@@ -653,21 +653,33 @@ class Settings(BaseSettings):
             if deepseek_provider == "huggingface"
             else self.chat_deepseek_v4_flash_openrouter_route
         )
-        choices = (
-            {
-                "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-                "label": "DeepSeek V4 Flash",
-                "route": deepseek_route,
-                "provider": deepseek_provider,
-                "provider_model": deepseek_route,
-                "protocol": "anthropic-messages",
-                "funding_mode": (
-                    "hf_user_billed"
-                    if deepseek_provider == "huggingface"
-                    else "openrouter_funded"
-                ),
-            },
-        )
+        deepseek = {
+            "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "label": "DeepSeek V4 Flash",
+            "route": deepseek_route,
+            "provider": deepseek_provider,
+            "provider_model": deepseek_route,
+            "protocol": "anthropic-messages",
+            "funding_mode": (
+                "hf_user_billed"
+                if deepseek_provider == "huggingface"
+                else "openrouter_funded"
+            ),
+        }
+        choices = (deepseek,)
+        if self.environment == "production" and self.chat_openai_direct_enabled:
+            choices = (
+                {
+                    "id": "gpt-5.6-luna@openai",
+                    "label": "GPT-5.6 Luna",
+                    "route": self.chat_openai_luna_route,
+                    "provider": "openai",
+                    "provider_model": self.chat_openai_model,
+                    "protocol": "openai-responses",
+                    "funding_mode": "openai_funded",
+                },
+                deepseek,
+            )
         if self.environment == "staging":
             choices = choices + (
                 {
@@ -852,7 +864,10 @@ class Settings(BaseSettings):
     def chat_effective_pi_prewarm_model(self) -> str:
         if self.chat_pi_prewarm_model:
             return self.chat_pi_prewarm_model
-        if self.environment == "staging" and self.chat_openai_direct_enabled:
+        if (
+            self.environment in {"production", "staging"}
+            and self.chat_openai_direct_enabled
+        ):
             return self.chat_openai_luna_route
         if self.chat_alternative_model_enabled:
             return self.chat_alternative_model

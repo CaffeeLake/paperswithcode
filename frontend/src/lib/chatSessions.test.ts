@@ -13,6 +13,11 @@ describe("legacy model compatibility", () => {
     expect(labelForChatModel([], "openai/gpt-5.6-luna"))
       .toBe("GPT-5.6 Luna (Legacy OpenRouter)");
   });
+
+  it("recognizes production OpenAI Luna without discovery", () => {
+    expect(providerForChatModel([], "gpt-5.6-luna@openai")).toBe("openai");
+    expect(labelForChatModel([], "gpt-5.6-luna@openai")).toBe("GPT-5.6 Luna");
+  });
 });
 
 describe("toUiMessages", () => {

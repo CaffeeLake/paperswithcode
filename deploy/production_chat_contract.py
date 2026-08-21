@@ -1,6 +1,6 @@
 """Production-only chat rollout settings used by the release operator."""
 
 DISABLED_DATABASE_CONTRACT_VERSION = 1
-WORKER_CONTRACT_VERSION = "90"
+WORKER_CONTRACT_VERSION = "94"
 DEFAULT_AGENT_HARNESS = "pi"
 NEW_SESSION_PI_PERCENTAGE = 100

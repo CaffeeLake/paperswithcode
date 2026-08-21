@@ -98,7 +98,8 @@ export interface ChatModelChoice {
   reasoning_efforts?: ReasoningEffort[];
 }
 
-export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
+export const DEFAULT_CHAT_MODEL = "gpt-5.6-luna@openai";
+export const DEEPSEEK_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
 export const LEGACY_OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 
 export function providerForChatModel(
@@ -106,7 +107,11 @@ export function providerForChatModel(
   selectedModel: string,
 ): ChatModelProvider {
   return models.find((model) => model.id === selectedModel)?.provider
-    ?? (selectedModel === LEGACY_OPENROUTER_LUNA_MODEL ? "openrouter" : "huggingface");
+    ?? (selectedModel === LEGACY_OPENROUTER_LUNA_MODEL
+      ? "openrouter"
+      : selectedModel === DEFAULT_CHAT_MODEL
+        ? "openai"
+        : "huggingface");
 }
 
 export function labelForChatModel(
@@ -116,18 +121,25 @@ export function labelForChatModel(
   return models.find((model) => model.id === selectedModel)?.label
     ?? (selectedModel === LEGACY_OPENROUTER_LUNA_MODEL
       ? "GPT-5.6 Luna (Legacy OpenRouter)"
+      : selectedModel === DEFAULT_CHAT_MODEL
+        ? "GPT-5.6 Luna"
       : `${selectedModel} (unavailable)`);
 }
 export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: DEFAULT_CHAT_MODEL,
+    label: "GPT-5.6 Luna",
+    provider: "openai",
+  },
+  {
+    id: DEEPSEEK_CHAT_MODEL,
     label: "DeepSeek V4 Flash",
     provider: "huggingface",
   },
 ];
 export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
-    id: DEFAULT_CHAT_MODEL,
+    id: DEEPSEEK_CHAT_MODEL,
     label: "DeepSeek V4 Flash",
     provider: "huggingface",
   },

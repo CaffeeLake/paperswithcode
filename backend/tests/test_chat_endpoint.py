@@ -1414,6 +1414,19 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert production.chat_effective_pi_prewarm_model == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
+    production_direct = Settings(
+        environment="production", chat_openai_direct_enabled=True
+    )
+    assert [choice["id"] for choice in production_direct.chat_model_choices] == [
+        "gpt-5.6-luna@openai",
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+    ]
+    assert production_direct.chat_model_choices[0]["label"] == "GPT-5.6 Luna"
+    assert production_direct.chat_model_providers["gpt-5.6-luna@openai"] == "openai"
+    assert production_direct.chat_route_protocols["gpt-5.6-luna@openai"] == (
+        "openai-responses"
+    )
+    assert production_direct.chat_effective_pi_prewarm_model == ("gpt-5.6-luna@openai")
     assert staging.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
     )
