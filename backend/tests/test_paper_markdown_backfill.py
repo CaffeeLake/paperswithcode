@@ -246,14 +246,25 @@ def test_budget_exhaustion_is_a_successful_noop(monkeypatch):
 
 def test_measured_profile_paid_dispatch_requires_explicit_gate(monkeypatch):
     job = _scheduler(execute=True, confirm=True, full=False)
+
+    def budget_decision(desired, _jobs):
+        job.budget_desired_jobs = desired
+        job.budget_affordable_jobs = desired
+        return {"affordable_jobs": desired}
+
     monkeypatch.setattr(
         job,
         "_budget_decision",
-        lambda desired, _jobs: {"affordable_jobs": desired},
+        budget_decision,
     )
 
     assert job._launch(_candidates(1)) == []
     assert job.paid_authorization_required is True
+    job.logger.info.assert_called_with(
+        "paper Markdown admission: desired=%s affordable=%s planned_or_launched=0",
+        1,
+        1,
+    )
 
 
 def test_launch_request_uses_the_shared_profile_and_mount_contract():

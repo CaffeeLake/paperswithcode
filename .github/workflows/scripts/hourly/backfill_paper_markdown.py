@@ -708,12 +708,6 @@ class PaperMarkdownBackfillJob(CronJobBase):
             sum(bool(item.get("retry")) for plan in desired_plans for item in plan)
             - sum(bool(item.get("retry")) for plan in plans for item in plan),
         )
-        self.logger.info(
-            "paper Markdown admission: desired=%s affordable=%s launched=%s",
-            self.budget_desired_jobs,
-            self.budget_affordable_jobs,
-            len(plans) if self.should_execute else 0,
-        )
         if self.should_execute and plans and not self.confirm:
             raise ValueError("paid GPU dispatch requires --confirm")
         paid_dispatch_enabled = bool(
@@ -729,6 +723,12 @@ class PaperMarkdownBackfillJob(CronJobBase):
             self.logger.warning(
                 "measured-profile OCR dispatch awaits explicit paid execution "
                 "authorization"
+            )
+            self.logger.info(
+                "paper Markdown admission: desired=%s affordable=%s "
+                "planned_or_launched=0",
+                self.budget_desired_jobs,
+                self.budget_affordable_jobs,
             )
             return []
 
@@ -801,6 +801,12 @@ class PaperMarkdownBackfillJob(CronJobBase):
                     "retried": str(sum(bool(item.get("retry")) for item in entries)),
                 }
             )
+        self.logger.info(
+            "paper Markdown admission: desired=%s affordable=%s planned_or_launched=%s",
+            self.budget_desired_jobs,
+            self.budget_affordable_jobs,
+            len(launched),
+        )
         return launched
 
     def run(self) -> None:
