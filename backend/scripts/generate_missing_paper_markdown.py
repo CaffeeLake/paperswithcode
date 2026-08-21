@@ -540,7 +540,7 @@ def main() -> None:
     parser.add_argument(
         "--soft-deadline-seconds",
         type=int,
-        default=int(os.environ.get("PWC_MARKDOWN_SOFT_DEADLINE_SECONDS", "40500")),
+        required=True,
     )
     args = parser.parse_args()
     if args.soft_deadline_seconds < 0:

@@ -11,6 +11,11 @@ from typing import List, Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.services.paper_markdown_job_profile import (
+    PAPER_MARKDOWN_BACKFILL_JOB_PROFILE,
+    PAPER_MARKDOWN_LIVE_JOB_PROFILE,
+)
+
 
 class Settings(BaseSettings):
     """Application settings."""
@@ -913,14 +918,38 @@ class Settings(BaseSettings):
     )
     paper_markdown_runtime_image: str = Field(default="vllm/vllm-openai:v0.17.0")
     paper_markdown_hardware: Literal["l40sx1"] = Field(default="l40sx1")
-    paper_markdown_incremental_batch_size: int = Field(default=100, ge=1, le=100)
-    paper_markdown_backfill_batch_size: int = Field(default=100, ge=1, le=500)
-    paper_markdown_backfill_concurrency: int = Field(default=4, ge=1, le=16)
+    # These legacy settings remain accepted for deployment compatibility. New
+    # launches use the shared measured profiles as their authoritative contract.
+    paper_markdown_incremental_batch_size: int = Field(
+        default=PAPER_MARKDOWN_LIVE_JOB_PROFILE.max_papers, ge=1, le=100
+    )
+    paper_markdown_backfill_batch_size: int = Field(
+        default=PAPER_MARKDOWN_BACKFILL_JOB_PROFILE.max_papers, ge=1, le=500
+    )
+    paper_markdown_backfill_concurrency: int = Field(
+        default=PAPER_MARKDOWN_BACKFILL_JOB_PROFILE.concurrency, ge=1, le=16
+    )
     paper_markdown_max_pages: int = Field(default=30, ge=1, le=30)
-    paper_markdown_job_timeout: str = Field(default="12h")
-    paper_markdown_soft_deadline_seconds: int = Field(default=40_500, ge=0, le=40_500)
+    paper_markdown_job_timeout: str = Field(
+        default=PAPER_MARKDOWN_LIVE_JOB_PROFILE.hard_timeout
+    )
+    paper_markdown_soft_deadline_seconds: int = Field(
+        default=PAPER_MARKDOWN_LIVE_JOB_PROFILE.soft_deadline_seconds,
+        ge=0,
+        # Accept the prior 11.25-hour environment value during rollout; the
+        # shared profile remains authoritative for all new launches.
+        le=40_500,
+    )
     paper_markdown_incremental_monthly_budget_usd: float = Field(default=100.0, gt=0)
     paper_markdown_backfill_budget_usd: float = Field(default=750.0, gt=0)
+    paper_markdown_paid_dispatch_enabled: bool = Field(
+        default=False,
+        description=(
+            "Permit unattended OCR dispatch with the measured job profile. "
+            "Operator capability probes, canaries, and mount recovery remain "
+            "separately confirmed commands."
+        ),
+    )
     paper_markdown_image_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     paper_markdown_image_max_pixels: int = Field(default=80_000_000, ge=1)
 

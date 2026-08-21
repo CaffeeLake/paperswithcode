@@ -21,6 +21,7 @@ from backend.models.database import Paper
 from backend.services.paper_markdown_budget_service import (
     paper_markdown_budget_snapshot,
 )
+from backend.services.paper_markdown_job_profile import paper_markdown_job_profile
 from scripts.utils.cron_helpers import CronJobBase
 
 ARXIV_ID = re.compile(r"^(?P<base>\d{4}\.\d{4,5})(?:v\d+)?$")
@@ -32,6 +33,15 @@ SCRIPT = (
     / "generate_missing_paper_markdown.py"
 )
 COVERAGE_HISTORY_NAME = "paper_markdown_coverage.jsonl"
+DISPATCH_SCHEMA_VERSION = 1
+MOUNT_PROBE_MAX_AGE = timedelta(hours=2)
+MOUNT_RETRY_DELAY = timedelta(minutes=10)
+PROBE_SCRIPT = (
+    Path(__file__).resolve().parents[4]
+    / "backend"
+    / "scripts"
+    / "probe_paper_markdown_volume.py"
+)
 
 
 def normalize_arxiv_id(value: str | None) -> str | None:
@@ -51,6 +61,31 @@ def job_stage(job: object) -> str:
     status = getattr(job, "status", None)
     stage = getattr(job, "stage", None) or getattr(status, "stage", status)
     return str(getattr(stage, "value", stage) or "").upper()
+
+
+def job_labels(job: object) -> dict[str, str]:
+    labels = getattr(job, "labels", {}) or {}
+    return {str(key): str(value) for key, value in labels.items()}
+
+
+def job_stage_message(job: object) -> str:
+    status = getattr(job, "status", None)
+    return str(getattr(status, "message", "") or "")
+
+
+def is_volume_mount_failure(job: object) -> bool:
+    message = job_stage_message(job).lower()
+    return job_stage(job) in {"ERROR", "CANCELED"} and (
+        "mount" in message or "volume" in message
+    )
+
+
+def utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def status_disposition(
@@ -117,6 +152,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
         confirm: bool,
         max_jobs: int | None,
         batch_size: int | None,
+        probe_volume: bool = False,
+        recover_mount_failures: bool = False,
+        paid_canary: bool = False,
+        retry_only: bool = False,
     ):
         super().__init__("paper_markdown_backfill")
         self.settings = get_settings()
@@ -125,12 +164,26 @@ class PaperMarkdownBackfillJob(CronJobBase):
         self.confirm = confirm
         self.max_jobs = max_jobs
         self.batch_size = batch_size
+        self.probe_volume = probe_volume
+        self.recover_mount_failures = recover_mount_failures
+        self.paid_canary = paid_canary
+        self.retry_only = retry_only
         self.budget_projected_usd: float | None = None
         self.budget_ceiling_usd: float | None = None
         self.budget_desired_jobs = 0
         self.budget_affordable_jobs = 0
+        self.retryable_papers_blocked_by_budget = 0
+        self.paid_authorization_required = False
         self.api = HfApi(token=self.settings.hf_token or None)
         self.filesystem = HfFileSystem(token=self.settings.hf_token or None)
+
+    @property
+    def mode(self) -> str:
+        return "backfill" if self.full else "live"
+
+    @property
+    def profile(self):
+        return paper_markdown_job_profile(self.mode)
 
     def _papers(self) -> list[dict[str, object]]:
         with db_manager.session_local() as db:
@@ -240,12 +293,11 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
 
     def _active_jobs(self, jobs: list[object]) -> list[object]:
-        mode = "backfill" if self.full else "live"
         return [
             job
             for job in jobs
             if job_stage(job) in ACTIVE_STAGES
-            and (getattr(job, "labels", None) or {}).get("mode") == mode
+            and job_labels(job).get("mode") == self.mode
         ]
 
     def _budget_decision(
@@ -258,9 +310,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
         budget = paper_markdown_budget_snapshot(
             jobs,
-            mode="backfill" if self.full else "live",
+            mode=self.mode,
             ceiling_usd=ceiling,
             planned_jobs=desired_jobs,
+            profile=self.profile,
         )
         self.budget_desired_jobs = int(budget["desired_jobs"])
         self.budget_affordable_jobs = int(budget["affordable_jobs"])
@@ -273,29 +326,388 @@ class PaperMarkdownBackfillJob(CronJobBase):
             )
         return budget
 
+    def _bucket_json(self, key: str) -> dict[str, object]:
+        path = f"hf://buckets/{self.settings.paper_markdown_hf_bucket_id}/{key}"
+        try:
+            with self.filesystem.open(path, "rb", block_size=0) as handle:
+                raw = handle.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                return {}
+            payload = json.loads(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, HfHubHTTPError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_bucket_json(self, key: str, payload: dict[str, object]) -> None:
+        self.api.batch_bucket_files(
+            self.settings.paper_markdown_hf_bucket_id,
+            add=[(json.dumps(payload, sort_keys=True, indent=2).encode(), key)],
+            token=self.settings.hf_token or None,
+        )
+
+    @staticmethod
+    def _dispatch_key(run_id: str, shard_id: str) -> str:
+        return f"_jobs/dispatch/{run_id}/{shard_id}.json"
+
+    def _persist_dispatch(
+        self,
+        *,
+        run_id: str,
+        shard_id: str,
+        manifest_key: str,
+        provider_attempts: list[dict[str, object]],
+        requires_operator_ack: bool = False,
+    ) -> None:
+        self._write_bucket_json(
+            self._dispatch_key(run_id, shard_id),
+            {
+                "schema_version": DISPATCH_SCHEMA_VERSION,
+                "logical_run_id": run_id,
+                "logical_shard_id": shard_id,
+                "manifest_key": manifest_key,
+                "mode": self.mode,
+                "profile": self.profile.as_dict(),
+                "provider_attempts": provider_attempts,
+                "requires_operator_ack": requires_operator_ack,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    def _run_ocr_job(
+        self,
+        *,
+        run_id: str,
+        shard_id: str,
+        manifest_key: str,
+        provider_attempt: int,
+        replacement_for: str | None = None,
+    ) -> object:
+        labels = {
+            "app": "pwc-paper-markdown",
+            "mode": self.mode,
+            "run_id": run_id,
+            "shard_id": shard_id,
+            "job_type": "ocr",
+            "profile_id": self.profile.profile_id,
+            "hard_timeout_seconds": str(self.profile.hard_timeout_seconds),
+            "provider_attempt": str(provider_attempt),
+            "retry_number": str(max(0, provider_attempt - 1)),
+        }
+        if replacement_for:
+            labels["replacement_for"] = replacement_for
+        return self.api.run_uv_job(
+            str(SCRIPT),
+            script_args=[
+                "--manifest",
+                f"/content/{manifest_key}",
+                "--content-root",
+                "/content",
+                "--soft-deadline-seconds",
+                str(self.profile.soft_deadline_seconds),
+            ],
+            image=self.settings.paper_markdown_runtime_image,
+            flavor=self.settings.paper_markdown_hardware,
+            timeout=self.profile.hard_timeout,
+            labels=labels,
+            env={
+                "PWC_MARKDOWN_MODEL_ID": self.settings.paper_markdown_model_id,
+                "PWC_MARKDOWN_MODEL_REVISION": (
+                    self.settings.paper_markdown_model_revision
+                ),
+                "PWC_MARKDOWN_MAX_PAGES": str(self.settings.paper_markdown_max_pages),
+                "PWC_SCRIPT_VERSION": os.environ.get("PWC_RELEASE_ID", "development"),
+            },
+            secrets={"HF_TOKEN": self.settings.hf_token},
+            volumes=[
+                Volume(
+                    type="bucket",
+                    source=self.settings.paper_markdown_hf_bucket_id,
+                    mount_path="/content",
+                    read_only=False,
+                )
+            ],
+            namespace=self.settings.paper_markdown_hf_namespace,
+            token=self.settings.hf_token or None,
+        )
+
+    def _launch_volume_probe(self) -> dict[str, object]:
+        remote_jobs = self._remote_jobs()
+        has_slot = len(self._active_jobs(remote_jobs)) < self.profile.concurrency
+        budget = self._budget_decision(1 if has_slot else 0, remote_jobs)
+        if not has_slot:
+            return {
+                "operation": "volume_probe",
+                "execute": self.should_execute,
+                "launched": False,
+                "reason": "no measured-profile concurrency slot is available",
+                "profile": self.profile.as_dict(),
+                "budget": budget,
+            }
+        if not int(budget["affordable_jobs"]):
+            return {
+                "operation": "volume_probe",
+                "execute": self.should_execute,
+                "launched": False,
+                "reason": budget["reason"],
+                "profile": self.profile.as_dict(),
+                "budget": budget,
+            }
+        if not self.should_execute:
+            return {
+                "operation": "volume_probe",
+                "execute": False,
+                "launched": False,
+                "reason": "dry run; paid capability probe not dispatched",
+                "profile": self.profile.as_dict(),
+                "budget": budget,
+            }
+        if not self.confirm:
+            raise ValueError("paid volume capability probe requires --confirm")
+
+        probe_id = f"probe-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        manifest_key = f"_jobs/capabilities/{probe_id}.manifest.json"
+        result_key = f"_jobs/capabilities/{probe_id}.json"
+        self._write_bucket_json(
+            manifest_key,
+            {
+                "schema_version": 1,
+                "probe_id": probe_id,
+                "nonce": uuid.uuid4().hex,
+                "bucket_id": self.settings.paper_markdown_hf_bucket_id,
+                "namespace": self.settings.paper_markdown_hf_namespace,
+                "mount_path": "/content",
+                "read_only": False,
+                "created_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        info = self.api.run_uv_job(
+            str(PROBE_SCRIPT),
+            script_args=[
+                "--manifest",
+                f"/content/{manifest_key}",
+                "--result",
+                f"/content/{result_key}",
+                "--content-root",
+                "/content",
+            ],
+            image=self.settings.paper_markdown_runtime_image,
+            flavor=self.settings.paper_markdown_hardware,
+            timeout=self.profile.hard_timeout,
+            labels={
+                "app": "pwc-paper-markdown",
+                "mode": self.mode,
+                "job_type": "volume_probe",
+                "probe_id": probe_id,
+                "profile_id": self.profile.profile_id,
+                "hard_timeout_seconds": str(self.profile.hard_timeout_seconds),
+            },
+            secrets={"HF_TOKEN": self.settings.hf_token},
+            volumes=[
+                Volume(
+                    type="bucket",
+                    source=self.settings.paper_markdown_hf_bucket_id,
+                    mount_path="/content",
+                    read_only=False,
+                )
+            ],
+            namespace=self.settings.paper_markdown_hf_namespace,
+            token=self.settings.hf_token or None,
+        )
+        return {
+            "operation": "volume_probe",
+            "execute": True,
+            "launched": True,
+            "probe_id": probe_id,
+            "provider_job_id": str(
+                getattr(info, "id", None) or getattr(info, "job_id", "")
+            ),
+            "profile": self.profile.as_dict(),
+            "budget": budget,
+        }
+
+    def _latest_successful_mount_probe(
+        self, remote_jobs: list[object], *, now: datetime
+    ) -> dict[str, object] | None:
+        probes = sorted(
+            (
+                job
+                for job in remote_jobs
+                if job_labels(job).get("job_type") == "volume_probe"
+                and job_stage(job) == "COMPLETED"
+            ),
+            key=lambda job: utc_datetime(getattr(job, "finished_at", None))
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        for job in probes:
+            finished_at = utc_datetime(getattr(job, "finished_at", None))
+            if finished_at is None or now - finished_at > MOUNT_PROBE_MAX_AGE:
+                continue
+            probe_id = job_labels(job).get("probe_id")
+            if not probe_id:
+                continue
+            evidence = self._bucket_json(f"_jobs/capabilities/{probe_id}.json")
+            if (
+                evidence.get("status") == "succeeded"
+                and evidence.get("probe_id") == probe_id
+                and evidence.get("bucket_id")
+                == self.settings.paper_markdown_hf_bucket_id
+                and evidence.get("namespace")
+                == self.settings.paper_markdown_hf_namespace
+                and evidence.get("mount_path") == "/content"
+                and evidence.get("read_only") is False
+            ):
+                return {
+                    "probe_id": probe_id,
+                    "provider_job_id": str(getattr(job, "id", "")),
+                    "finished_at": finished_at.isoformat(),
+                }
+        return None
+
+    def _mount_recovery_candidates(
+        self, remote_jobs: list[object], *, now: datetime
+    ) -> tuple[list[dict[str, object]], int]:
+        logical: dict[tuple[str, str], list[object]] = {}
+        for job in remote_jobs:
+            labels = job_labels(job)
+            if labels.get("job_type", "ocr") != "ocr":
+                continue
+            run_id = labels.get("run_id")
+            shard_id = labels.get("shard_id")
+            if run_id and shard_id:
+                logical.setdefault((run_id, shard_id), []).append(job)
+
+        candidates: list[dict[str, object]] = []
+        acknowledgement_required = 0
+        for (run_id, shard_id), attempts in logical.items():
+            attempts.sort(
+                key=lambda job: int(job_labels(job).get("provider_attempt", "0"))
+            )
+            mount_failures = [job for job in attempts if is_volume_mount_failure(job)]
+            if len(mount_failures) >= 2:
+                acknowledgement_required += 1
+                continue
+            if len(attempts) != 1 or len(mount_failures) != 1:
+                continue
+            failed = mount_failures[0]
+            finished_at = utc_datetime(getattr(failed, "finished_at", None))
+            if finished_at is None or now - finished_at < MOUNT_RETRY_DELAY:
+                continue
+            progress_key = f"_jobs/progress/{run_id}/{shard_id}.json"
+            if self._bucket_json(progress_key):
+                continue
+            manifest_key = f"_jobs/manifests/{run_id}/{shard_id}.jsonl"
+            manifest_path = (
+                f"hf://buckets/{self.settings.paper_markdown_hf_bucket_id}/"
+                f"{manifest_key}"
+            )
+            if not self.filesystem.exists(manifest_path):
+                continue
+            candidates.append(
+                {
+                    "run_id": run_id,
+                    "shard_id": shard_id,
+                    "manifest_key": manifest_key,
+                    "failed_provider_job_id": str(getattr(failed, "id", "")),
+                    "failed_at": finished_at.isoformat(),
+                }
+            )
+        return candidates, acknowledgement_required
+
+    def _recover_mount_failures(self) -> dict[str, object]:
+        now = datetime.now(UTC)
+        remote_jobs = self._remote_jobs()
+        candidates, acknowledgement_required = self._mount_recovery_candidates(
+            remote_jobs, now=now
+        )
+        probe = self._latest_successful_mount_probe(remote_jobs, now=now)
+        available_slots = max(
+            0, self.profile.concurrency - len(self._active_jobs(remote_jobs))
+        )
+        if self.max_jobs is not None:
+            available_slots = min(available_slots, self.max_jobs)
+        desired = min(len(candidates), available_slots)
+        budget = self._budget_decision(desired, remote_jobs)
+        selected = candidates[: int(budget["affordable_jobs"])] if probe else []
+        if self.should_execute and candidates and not probe:
+            raise ValueError(
+                "mount recovery requires a successful same-volume capability probe "
+                "from the last two hours"
+            )
+        if self.should_execute and selected and not self.confirm:
+            raise ValueError("paid mount recovery requires --confirm")
+
+        launched: list[dict[str, object]] = []
+        for candidate in selected:
+            if not self.should_execute:
+                launched.append({**candidate, "dry_run": True})
+                continue
+            info = self._run_ocr_job(
+                run_id=str(candidate["run_id"]),
+                shard_id=str(candidate["shard_id"]),
+                manifest_key=str(candidate["manifest_key"]),
+                provider_attempt=2,
+                replacement_for=str(candidate["failed_provider_job_id"]),
+            )
+            provider_job_id = str(
+                getattr(info, "id", None) or getattr(info, "job_id", "")
+            )
+            self._persist_dispatch(
+                run_id=str(candidate["run_id"]),
+                shard_id=str(candidate["shard_id"]),
+                manifest_key=str(candidate["manifest_key"]),
+                provider_attempts=[
+                    {
+                        "attempt": 1,
+                        "retry_number": 0,
+                        "provider_job_id": candidate["failed_provider_job_id"],
+                        "terminal_cause": "volume_mount",
+                        "finished_at": candidate["failed_at"],
+                    },
+                    {
+                        "attempt": 2,
+                        "retry_number": 1,
+                        "provider_job_id": provider_job_id,
+                        "dispatched_at": datetime.now(UTC).isoformat(),
+                        "capability_probe_id": probe["probe_id"] if probe else None,
+                    },
+                ],
+            )
+            launched.append({**candidate, "provider_job_id": provider_job_id})
+        return {
+            "operation": "mount_recovery",
+            "execute": self.should_execute,
+            "probe": probe,
+            "retryable_logical_shards": len(candidates),
+            "operator_acknowledgement_required": acknowledgement_required,
+            "launched_replacements": len(launched),
+            "replacement_attempts": launched,
+            "profile": self.profile.as_dict(),
+            "budget": budget,
+        }
+
     def _launch(self, candidates: list[dict[str, object]]) -> list[dict[str, str]]:
         remote_jobs = self._remote_jobs()
         active = self._active_jobs(remote_jobs)
-        concurrency = (
-            self.settings.paper_markdown_backfill_concurrency if self.full else 1
-        )
+        concurrency = self.profile.concurrency
         if self.max_jobs is not None:
             concurrency = min(concurrency, self.max_jobs)
         available_slots = max(0, concurrency - len(active))
-        batch_size = (
-            self.settings.paper_markdown_backfill_batch_size
-            if self.full
-            else self.settings.paper_markdown_incremental_batch_size
-        )
+        batch_size = self.profile.max_papers
         if self.batch_size is not None:
-            maximum = 500 if self.full else 100
+            maximum = self.profile.max_papers
             if self.batch_size < 1 or self.batch_size > maximum:
                 raise ValueError(f"batch size must be between 1 and {maximum}")
             batch_size = self.batch_size
-        plans = chunks(candidates, batch_size)[:available_slots]
-        budget = self._budget_decision(len(plans), remote_jobs)
+        desired_plans = chunks(candidates, batch_size)[:available_slots]
+        budget = self._budget_decision(len(desired_plans), remote_jobs)
         affordable = int(budget["affordable_jobs"])
-        plans = plans[:affordable]
+        plans = desired_plans[:affordable]
+        self.retryable_papers_blocked_by_budget = max(
+            0,
+            sum(bool(item.get("retry")) for plan in desired_plans for item in plan)
+            - sum(bool(item.get("retry")) for plan in plans for item in plan),
+        )
         self.logger.info(
             "paper Markdown admission: desired=%s affordable=%s launched=%s",
             self.budget_desired_jobs,
@@ -304,9 +716,27 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
         if self.should_execute and plans and not self.confirm:
             raise ValueError("paid GPU dispatch requires --confirm")
+        paid_dispatch_enabled = bool(
+            getattr(self.settings, "paper_markdown_paid_dispatch_enabled", False)
+        )
+        if (
+            self.should_execute
+            and plans
+            and not paid_dispatch_enabled
+            and not getattr(self, "paid_canary", False)
+        ):
+            self.paid_authorization_required = True
+            self.logger.warning(
+                "measured-profile OCR dispatch awaits explicit paid execution "
+                "authorization"
+            )
+            return []
 
         launched: list[dict[str, str]] = []
-        run_id = f"{'backfill' if self.full else 'live'}-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        run_id = (
+            f"{'backfill' if self.full else 'live'}-"
+            f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        )
         for shard_number, entries in enumerate(plans):
             shard_id = f"{shard_number:05d}"
             manifest_key = f"_jobs/manifests/{run_id}/{shard_id}.jsonl"
@@ -320,6 +750,11 @@ class PaperMarkdownBackfillJob(CronJobBase):
                         "shard_id": shard_id,
                         "papers": str(len(entries)),
                         "mode": "dry_run",
+                        "profile_id": self.profile.profile_id,
+                        "hard_timeout_seconds": str(self.profile.hard_timeout_seconds),
+                        "soft_deadline_seconds": str(
+                            self.profile.soft_deadline_seconds
+                        ),
                         "retried": str(
                             sum(bool(item.get("retry")) for item in entries)
                         ),
@@ -331,48 +766,32 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 add=[(manifest, manifest_key)],
                 token=self.settings.hf_token or None,
             )
-            info = self.api.run_uv_job(
-                str(SCRIPT),
-                script_args=[
-                    "--manifest",
-                    f"/content/{manifest_key}",
-                    "--content-root",
-                    "/content",
-                    "--soft-deadline-seconds",
-                    str(self.settings.paper_markdown_soft_deadline_seconds),
-                ],
-                image=self.settings.paper_markdown_runtime_image,
-                flavor=self.settings.paper_markdown_hardware,
-                timeout=self.settings.paper_markdown_job_timeout,
-                labels={
-                    "app": "pwc-paper-markdown",
-                    "mode": "backfill" if self.full else "live",
-                    "run_id": run_id,
-                    "shard_id": shard_id,
-                },
-                env={
-                    "PWC_MARKDOWN_MODEL_ID": self.settings.paper_markdown_model_id,
-                    "PWC_MARKDOWN_MODEL_REVISION": self.settings.paper_markdown_model_revision,
-                    "PWC_MARKDOWN_MAX_PAGES": str(
-                        self.settings.paper_markdown_max_pages
-                    ),
-                    "PWC_SCRIPT_VERSION": os.environ.get(
-                        "PWC_RELEASE_ID", "development"
-                    ),
-                },
-                secrets={"HF_TOKEN": self.settings.hf_token},
-                volumes=[
-                    Volume(
-                        type="bucket",
-                        source=self.settings.paper_markdown_hf_bucket_id,
-                        mount_path="/content",
-                        read_only=False,
-                    )
-                ],
-                namespace=self.settings.paper_markdown_hf_namespace,
-                token=self.settings.hf_token or None,
+            self._persist_dispatch(
+                run_id=run_id,
+                shard_id=shard_id,
+                manifest_key=manifest_key,
+                provider_attempts=[],
+            )
+            info = self._run_ocr_job(
+                run_id=run_id,
+                shard_id=shard_id,
+                manifest_key=manifest_key,
+                provider_attempt=1,
             )
             job_id = str(getattr(info, "id", None) or getattr(info, "job_id", ""))
+            self._persist_dispatch(
+                run_id=run_id,
+                shard_id=shard_id,
+                manifest_key=manifest_key,
+                provider_attempts=[
+                    {
+                        "attempt": 1,
+                        "retry_number": 0,
+                        "provider_job_id": job_id,
+                        "dispatched_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+            )
             launched.append(
                 {
                     "run_id": run_id,
@@ -387,6 +806,14 @@ class PaperMarkdownBackfillJob(CronJobBase):
     def run(self) -> None:
         if self.should_execute and not self.settings.hf_token:
             raise ValueError("PWC_HF_TOKEN is required")
+        if self.probe_volume:
+            result = self._launch_volume_probe()
+            self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(result))
+            return
+        if self.recover_mount_failures:
+            result = self._recover_mount_failures()
+            self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(result))
+            return
         papers = self._papers()
         paths = [str(item["output_key"]) for item in papers]
         canonical = self._existing_paths(
@@ -406,6 +833,8 @@ class PaperMarkdownBackfillJob(CronJobBase):
             disposition = dispositions.get(status_path)
             if disposition is None or disposition == "retryable_due":
                 candidates.append({**item, "retry": disposition == "retryable_due"})
+        if self.retry_only:
+            candidates = [item for item in candidates if item["retry"]]
         failed_or_completed = len(remaining) - len(candidates)
         canonical_after_upstream = len(canonical) + upstream_available
         coverage = {
@@ -421,10 +850,35 @@ class PaperMarkdownBackfillJob(CronJobBase):
             if papers
             else 100.0,
         }
-        append_coverage_history(coverage)
         launched = self._launch(candidates)
+        retryable_due = sum(
+            disposition == "retryable_due" for disposition in dispositions.values()
+        )
+        retryable_deferred = sum(
+            disposition == "retryable_deferred" for disposition in dispositions.values()
+        )
+        permanent_failures = sum(
+            disposition == "permanent_failure" for disposition in dispositions.values()
+        )
+        attempts_exhausted = sum(
+            disposition == "attempts_exhausted" for disposition in dispositions.values()
+        )
+        coverage.update(
+            {
+                "retryable_due": retryable_due,
+                "retryable_deferred": retryable_deferred,
+                "permanent_failures": permanent_failures,
+                "attempts_exhausted": attempts_exhausted,
+                "retryable_papers_blocked_by_budget": (
+                    self.retryable_papers_blocked_by_budget
+                ),
+                "paid_authorization_required": self.paid_authorization_required,
+                "selected_profile": self.profile.as_dict(),
+            }
+        )
+        append_coverage_history(coverage)
         metrics = {
-            "mode": "backfill" if self.full else "live",
+            "mode": self.mode,
             "execute": self.should_execute,
             "eligible_papers": len(papers),
             "canonical_markdown": len(canonical),
@@ -435,23 +889,16 @@ class PaperMarkdownBackfillJob(CronJobBase):
             "upstream_available": upstream_available,
             "missing_after_upstream": len(remaining),
             "previously_attempted": failed_or_completed,
-            "retryable_due": sum(
-                disposition == "retryable_due" for disposition in dispositions.values()
-            ),
-            "retryable_deferred": sum(
-                disposition == "retryable_deferred"
-                for disposition in dispositions.values()
-            ),
-            "permanent_failures": sum(
-                disposition == "permanent_failure"
-                for disposition in dispositions.values()
-            ),
-            "attempts_exhausted": sum(
-                disposition == "attempts_exhausted"
-                for disposition in dispositions.values()
+            "retryable_due": retryable_due,
+            "retryable_deferred": retryable_deferred,
+            "permanent_failures": permanent_failures,
+            "attempts_exhausted": attempts_exhausted,
+            "retryable_papers_blocked_by_budget": (
+                self.retryable_papers_blocked_by_budget
             ),
             "retried_papers": sum(int(item.get("retried") or 0) for item in launched),
             "ocr_candidates": len(candidates),
+            "retry_only": self.retry_only,
             "jobs_planned_or_launched": len(launched),
             "desired_jobs": self.budget_desired_jobs,
             "affordable_jobs": self.budget_affordable_jobs,
@@ -461,6 +908,11 @@ class PaperMarkdownBackfillJob(CronJobBase):
             ),
             "budget_projected_usd": self.budget_projected_usd,
             "budget_ceiling_usd": self.budget_ceiling_usd,
+            "paid_authorization_required": self.paid_authorization_required,
+            "selected_profile_id": self.profile.profile_id,
+            "hard_timeout_seconds": self.profile.hard_timeout_seconds,
+            "soft_deadline_seconds": self.profile.soft_deadline_seconds,
+            "reservation_per_job_usd": self.profile.reservation_per_job_usd,
             "hf_job_ids": ",".join(
                 item["hf_job_id"] for item in launched if item.get("hf_job_id")
             )
@@ -477,13 +929,37 @@ def main() -> None:
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--max-jobs", type=int)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--probe-volume", action="store_true")
+    parser.add_argument("--recover-mount-failures", action="store_true")
+    parser.add_argument(
+        "--paid-canary",
+        action="store_true",
+        help="authorize one explicitly confirmed measured-profile OCR canary",
+    )
+    parser.add_argument(
+        "--retry-only",
+        action="store_true",
+        help="limit a reconciliation/canary to persisted retryable-due papers",
+    )
     args = parser.parse_args()
+    if args.max_jobs is not None and args.max_jobs < 1:
+        parser.error("--max-jobs must be positive")
+    if args.probe_volume and args.recover_mount_failures:
+        parser.error(
+            "--probe-volume and --recover-mount-failures are mutually exclusive"
+        )
+    if args.paid_canary and (args.probe_volume or args.recover_mount_failures):
+        parser.error("--paid-canary is only for an OCR canary")
     job = PaperMarkdownBackfillJob(
         full=args.full,
         execute=args.execute,
         confirm=args.confirm,
         max_jobs=args.max_jobs,
         batch_size=args.batch_size,
+        probe_volume=args.probe_volume,
+        recover_mount_failures=args.recover_mount_failures,
+        paid_canary=args.paid_canary,
+        retry_only=args.retry_only,
     )
     raise SystemExit(0 if job.execute() else 1)
 

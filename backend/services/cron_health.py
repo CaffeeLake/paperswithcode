@@ -817,14 +817,41 @@ def _paper_markdown_contract(
     _workflow: Dict[str, Any],
 ) -> tuple[str, List[str]]:
     remaining = int(work.get("missing_after_upstream", 0) or 0)
-    if work.get("budget_exhausted") and remaining:
+    blocker = work.get("blocker_classification")
+    budget_blocked = blocker in {"budget", "reliability_and_budget"}
+    reliability_blocked = blocker in {"reliability", "reliability_and_budget"}
+    if work.get("paid_authorization_required") and remaining:
         status = _worse_output(status, "degraded")
-        reasons.append(f"OCR budget is exhausted with {remaining} papers still missing")
+        reasons.append(
+            "measured OCR profile awaits explicit paid execution authorization"
+        )
+    if (work.get("budget_exhausted") or budget_blocked) and remaining:
+        status = _worse_output(status, "degraded")
+        next_admission = work.get("next_admission_at")
+        suffix = f"; next admission {next_admission}" if next_admission else ""
+        reasons.append(
+            (
+                "OCR budget is exhausted and is the only blocker with "
+                f"{remaining} papers still missing{suffix}"
+            )
+            if not reliability_blocked
+            else (
+                "OCR budget is exhausted alongside a reliability blocker with "
+                f"{remaining} papers still missing{suffix}"
+            )
+        )
     if work.get("remote_monitor_available") is False and status == "healthy":
         status = "unknown"
         reasons.append("remote OCR shard evidence is unavailable")
     terminal = int(work.get("terminal_shard_failures", 0) or 0)
-    if terminal:
+    unresolved_mounts = int(work.get("unresolved_mount_failures", 0) or 0)
+    if unresolved_mounts:
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"{unresolved_mounts} logical OCR shard(s) have an unresolved "
+            "volume mount failure"
+        )
+    if terminal and not unresolved_mounts:
         status = _worse_output(status, "broken")
         reasons.append(
             f"{terminal} remote OCR shard(s) had no usable output or a worker failure"
@@ -1859,6 +1886,18 @@ def build_cron_dashboard(
                 metrics["oldest_active_checkpoint_age_minutes"] = int(
                     summary.get("oldest_active_checkpoint_age_minutes", 0) or 0
                 )
+                metrics["unresolved_mount_failures"] = int(
+                    summary.get("unresolved_mount_failures", 0) or 0
+                )
+                metrics["recovered_mount_failures"] = int(
+                    summary.get("recovered_mount_failures", 0) or 0
+                )
+                mode = str(metrics.get("mode") or "live")
+                budget = (remote.get("budgets") or {}).get(mode) or {}
+                metrics["blocker_classification"] = (remote.get("blockers") or {}).get(
+                    mode
+                ) or "none"
+                metrics["next_admission_at"] = budget.get("next_admission_at")
             log_status["work_metrics"] = metrics
         elif job.id == "monitor_chat_operational_alerts":
             metrics = dict(log_status.get("work_metrics") or {})

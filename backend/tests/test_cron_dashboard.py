@@ -715,7 +715,11 @@ def test_paper_markdown_jobs_returns_remote_snapshot(client):
         "namespace": "huggingface",
         "updated_at": "2026-07-28T15:20:00Z",
         "jobs": [{"id": "job-123", "stage": "RUNNING"}],
+        "logical_shards": [{"run_id": "run-1", "shard_id": "00000"}],
         "summary": {"active_jobs": 1},
+        "selected_profiles": {"live": {"profile_id": "live-v1"}},
+        "blockers": {"live": "none"},
+        "retry_dispositions": {"retryable_due": 15},
         "error": None,
     }
     with patch(
@@ -730,6 +734,9 @@ def test_paper_markdown_jobs_returns_remote_snapshot(client):
     assert response.status_code == 200
     assert response.json()["jobs"][0]["id"] == "job-123"
     assert response.json()["summary"]["active_jobs"] == 1
+    assert response.json()["logical_shards"][0]["run_id"] == "run-1"
+    assert response.json()["selected_profiles"]["live"]["profile_id"] == "live-v1"
+    assert response.json()["retry_dispositions"]["retryable_due"] == 15
 
 
 def test_log_success_with_stale_db_is_broken_for_critical_writer():
@@ -1058,6 +1065,22 @@ def test_hf_artifacts_fresh_db_metrics_are_healthy():
             {"interrupted_shards": 1},
             "degraded",
             "partial progress",
+        ),
+        (
+            {
+                "unresolved_mount_failures": 1,
+                "blocker_classification": "reliability",
+            },
+            "broken",
+            "unresolved volume mount failure",
+        ),
+        (
+            {
+                "paid_authorization_required": True,
+                "missing_after_upstream": 15,
+            },
+            "degraded",
+            "awaits explicit paid execution authorization",
         ),
     ],
 )

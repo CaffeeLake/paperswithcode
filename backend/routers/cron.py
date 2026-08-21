@@ -68,8 +68,12 @@ class PaperMarkdownJobsResponse(BaseModel):
     namespace: str
     updated_at: Optional[str] = None
     jobs: List[Dict[str, Any]] = Field(default_factory=list)
+    logical_shards: List[Dict[str, Any]] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
     budgets: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    selected_profiles: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    blockers: Dict[str, str] = Field(default_factory=dict)
+    retry_dispositions: Dict[str, int] = Field(default_factory=dict)
     coverage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     error: Optional[str] = None
 

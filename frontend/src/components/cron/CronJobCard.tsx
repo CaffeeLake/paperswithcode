@@ -25,6 +25,7 @@ import type {
   PaperMarkdownJobsResponse,
   PaperMarkdownBudget,
   PaperMarkdownRemoteJob,
+  PaperMarkdownJobProfile,
 } from "@/lib/api/operations";
 import { formatCronDate } from "@/lib/cronStatus";
 
@@ -50,9 +51,11 @@ const formatUsd = (value: number) => `$${value.toFixed(2)}`;
 function PaperMarkdownBudgetCard({
   title,
   budget,
+  profile,
 }: {
   title: string;
   budget: PaperMarkdownBudget;
+  profile?: PaperMarkdownJobProfile;
 }) {
   const percent = Math.min(100, budget.current_exposure_usd / budget.ceiling_usd * 100);
   const planLabel = budget.affordable_jobs === 0 && budget.desired_jobs > 0
@@ -84,8 +87,14 @@ function PaperMarkdownBudgetCard({
         <div><span className="cron-label">Affordable plan reserves</span><div>{formatUsd(budget.planned_reserved_usd)}</div></div>
         <div><span className="cron-label">Projected exposure</span><div>{formatUsd(budget.projected_usd)}</div></div>
         <div><span className="cron-label">Rate assumption</span><div>{formatUsd(budget.hourly_rate_usd)}/hour · {budget.reservation_hours_per_job}h</div></div>
-        <div><span className="cron-label">Window release</span><div>{budget.next_release_at ? `${formatUsd(budget.next_release_usd)} at ${formatCronDate(budget.next_release_at)}` : "None scheduled"}</div></div>
+        <div><span className="cron-label">Next admission</span><div>{budget.next_admission_at ? formatCronDate(budget.next_admission_at) : budget.affordable_jobs > 0 ? "Now" : "No scheduled admission"}</div></div>
+        <div><span className="cron-label">Unknown terminal reserve</span><div>{formatUsd(budget.unknown_terminal_reservation_usd ?? 0)} · {(budget.unknown_terminal_reservation_count ?? 0).toLocaleString()} jobs</div></div>
       </div>
+      {profile && (
+        <div className="text-xs cron-muted">
+          Profile <strong>{profile.profile_id}</strong> · max {profile.max_papers.toLocaleString()} papers · hard {formatDuration(profile.hard_timeout_seconds)} · soft {formatDuration(profile.soft_deadline_seconds)}
+        </div>
+      )}
       <p className="text-xs cron-muted">
         Projected exposure is an admission-control estimate, not a provider invoice. Each launch reserves the full timeout until actual runtime is known.
       </p>
@@ -226,7 +235,7 @@ function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold">
-            {job.mode ?? "unknown"} · shard {job.shard_id ?? "N/A"}
+            {job.mode ?? "unknown"} · shard {job.shard_id ?? "N/A"} · attempt {job.provider_attempt ?? 1}
           </div>
           <div className="font-mono text-xs cron-muted truncate">{job.id}</div>
         </div>
@@ -344,10 +353,13 @@ function PaperMarkdownJobs({
         <>
           {monitor.budgets.live && monitor.budgets.backfill && (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-3">
-              <PaperMarkdownBudgetCard title="Live paper Markdown GPU budget" budget={monitor.budgets.live} />
-              <PaperMarkdownBudgetCard title="Full backfill GPU budget" budget={monitor.budgets.backfill} />
+              <PaperMarkdownBudgetCard title="Live paper Markdown GPU budget" budget={monitor.budgets.live} profile={monitor.selected_profiles?.live} />
+              <PaperMarkdownBudgetCard title="Full backfill GPU budget" budget={monitor.budgets.backfill} profile={monitor.selected_profiles?.backfill} />
             </div>
           )}
+          <div className={`cron-message mb-3 ${(monitor.summary.unresolved_mount_failures ?? 0) > 0 ? "cron-message--error" : ""}`}>
+            <strong>Logical shard health:</strong> {(monitor.summary.logical_shards ?? 0).toLocaleString()} logical shards / {(monitor.summary.provider_attempts ?? 0).toLocaleString()} provider attempts · {(monitor.summary.recovered_mount_failures ?? 0).toLocaleString()} recovered mount failures · {(monitor.summary.unresolved_mount_failures ?? 0).toLocaleString()} unresolved
+          </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
             {Object.entries(monitor.summary).map(([key, value]) => (
               <div key={key} className="cron-metric-card">

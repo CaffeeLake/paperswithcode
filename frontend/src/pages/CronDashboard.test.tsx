@@ -158,7 +158,34 @@ describe("CronJobCard health axes", () => {
           },
         },
       ],
-      summary: {},
+      summary: {
+        logical_shards: 6,
+        provider_attempts: 7,
+        recovered_mount_failures: 1,
+        unresolved_mount_failures: 0,
+      },
+      selected_profiles: {
+        live: {
+          profile_id: "live-v1",
+          mode: "live",
+          max_papers: 50,
+          concurrency: 1,
+          hard_timeout_seconds: 21600,
+          soft_deadline_seconds: 19800,
+          reservation_hours: 6,
+          reservation_per_job_usd: 10.8,
+        },
+        backfill: {
+          profile_id: "backfill-v1",
+          mode: "backfill",
+          max_papers: 50,
+          concurrency: 4,
+          hard_timeout_seconds: 21600,
+          soft_deadline_seconds: 19800,
+          reservation_hours: 6,
+          reservation_per_job_usd: 10.8,
+        },
+      },
       budgets: {
         live: budget,
         backfill: {
@@ -193,6 +220,9 @@ describe("CronJobCard health axes", () => {
     expect(screen.getByText("3 of 4 planned shards fit")).toBeInTheDocument();
     expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · 0 of 1 planned · projects $86.73");
     expect(screen.getByText("All history · no automatic reset")).toBeInTheDocument();
+    expect(screen.getByText("live-v1").parentElement).toHaveTextContent("max 50 papers · hard 6.0h · soft 5.5h");
+    expect(screen.getByText("Logical shard health:").parentElement).toHaveTextContent("6 logical shards / 7 provider attempts · 1 recovered mount failures · 0 unresolved");
+    expect(screen.getAllByText("Next admission")).toHaveLength(2);
     expect(screen.getAllByText(/not a provider invoice/i)).toHaveLength(2);
     expect(
       screen.getByText(/unresolved image references omitted after final retry/),

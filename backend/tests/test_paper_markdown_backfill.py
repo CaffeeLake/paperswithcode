@@ -4,8 +4,10 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
@@ -37,6 +39,15 @@ WORKER_SPEC = importlib.util.spec_from_file_location(
 assert WORKER_SPEC and WORKER_SPEC.loader
 WORKER = importlib.util.module_from_spec(WORKER_SPEC)
 WORKER_SPEC.loader.exec_module(WORKER)
+PROBE_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "probe_paper_markdown_volume.py"
+)
+PROBE_SPEC = importlib.util.spec_from_file_location(
+    "probe_paper_markdown_volume", PROBE_SCRIPT
+)
+assert PROBE_SPEC and PROBE_SPEC.loader
+PROBE = importlib.util.module_from_spec(PROBE_SPEC)
+PROBE_SPEC.loader.exec_module(PROBE)
 
 
 def test_worker_download_pdf_falls_back_to_existing_arxiv_version(monkeypatch):
@@ -172,6 +183,14 @@ def _scheduler(*, execute: bool, confirm: bool, full: bool = True):
             "paper_markdown_incremental_batch_size": 100,
             "paper_markdown_backfill_batch_size": 100,
             "paper_markdown_hf_bucket_id": "test/paper-markdown",
+            "paper_markdown_hf_namespace": "test-owner",
+            "paper_markdown_runtime_image": "test-image",
+            "paper_markdown_hardware": "l40sx1",
+            "paper_markdown_model_id": "test-model",
+            "paper_markdown_model_revision": "test-revision",
+            "paper_markdown_max_pages": 30,
+            "paper_markdown_paid_dispatch_enabled": False,
+            "hf_token": "test-token",
         },
     )()
     job.full = full
@@ -182,6 +201,12 @@ def _scheduler(*, execute: bool, confirm: bool, full: bool = True):
     job.logger = Mock()
     job.budget_desired_jobs = 0
     job.budget_affordable_jobs = 0
+    job.retryable_papers_blocked_by_budget = 0
+    job.paid_authorization_required = False
+    job.paid_canary = False
+    job.probe_volume = False
+    job.recover_mount_failures = False
+    job.retry_only = False
     job.budget_projected_usd = None
     job.budget_ceiling_usd = None
     job._remote_jobs = list
@@ -219,6 +244,42 @@ def test_budget_exhaustion_is_a_successful_noop(monkeypatch):
     assert job._launch(_candidates(1)) == []
 
 
+def test_measured_profile_paid_dispatch_requires_explicit_gate(monkeypatch):
+    job = _scheduler(execute=True, confirm=True, full=False)
+    monkeypatch.setattr(
+        job,
+        "_budget_decision",
+        lambda desired, _jobs: {"affordable_jobs": desired},
+    )
+
+    assert job._launch(_candidates(1)) == []
+    assert job.paid_authorization_required is True
+
+
+def test_launch_request_uses_the_shared_profile_and_mount_contract():
+    job = _scheduler(execute=True, confirm=True, full=False)
+    job.api = Mock()
+    job.api.run_uv_job.return_value = SimpleNamespace(id="job-1")
+
+    job._run_ocr_job(
+        run_id="live-20260821T120000-12345678",
+        shard_id="00000",
+        manifest_key="_jobs/manifests/live/00000.jsonl",
+        provider_attempt=1,
+    )
+
+    kwargs = job.api.run_uv_job.call_args.kwargs
+    assert kwargs["timeout"] == job.profile.hard_timeout == "7h"
+    assert kwargs["script_args"][-1] == str(job.profile.soft_deadline_seconds)
+    assert kwargs["labels"]["profile_id"] == job.profile.profile_id
+    assert kwargs["labels"]["hard_timeout_seconds"] == str(
+        job.profile.hard_timeout_seconds
+    )
+    assert kwargs["volumes"][0].source == "test/paper-markdown"
+    assert kwargs["volumes"][0].mount_path == "/content"
+    assert kwargs["volumes"][0].read_only is False
+
+
 def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
     monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
     papers = _candidates(2)
@@ -236,7 +297,11 @@ def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
     rows = [json.loads(line) for line in history.read_text().splitlines()]
     assert len(rows) == 2
     assert all(
-        row | {"observed_at": None}
+        row
+        | {
+            "observed_at": None,
+            "selected_profile": None,
+        }
         == {
             "observed_at": None,
             "scope": "full",
@@ -245,10 +310,41 @@ def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
             "copied_from_upstream_count": 0,
             "missing_count": 1,
             "coverage_percentage": 50.0,
+            "retryable_due": 0,
+            "retryable_deferred": 0,
+            "permanent_failures": 0,
+            "attempts_exhausted": 0,
+            "retryable_papers_blocked_by_budget": 0,
+            "paid_authorization_required": False,
+            "selected_profile": None,
         }
         for row in rows
     )
     job._launch.assert_called_with([{**papers[1], "retry": False}])
+
+
+def test_retry_only_canary_selects_only_persisted_retryable_due(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    papers = _candidates(2)
+    job = _scheduler(execute=False, confirm=False)
+    job.retry_only = True
+    job._papers = Mock(return_value=papers)
+    job._existing_paths = Mock(return_value={})
+    job._copy_upstream = Mock(return_value=(papers, 0))
+    job._status_records = Mock(
+        return_value={
+            f"_jobs/status/{papers[1]['arxiv_id']}.json": {
+                "schema_version": 2,
+                "status": "failed",
+                "retryable": True,
+            }
+        }
+    )
+    job._launch = Mock(return_value=[])
+
+    job.run()
+
+    job._launch.assert_called_once_with([{**papers[1], "retry": True}])
 
 
 @pytest.mark.parametrize("affordable", [0, 1, 3, 4])
@@ -262,6 +358,182 @@ def test_scheduler_launches_exact_affordable_prefix(monkeypatch, affordable):
     launched = job._launch(_candidates(400))
     assert len(launched) == affordable
     assert sum(int(item["papers"]) for item in launched) == affordable * 100
+
+
+def _remote_job(
+    job_id: str,
+    *,
+    stage: str,
+    message: str | None,
+    provider_attempt: int = 0,
+    run_id: str = "backfill-20260820T030610-65423592",
+):
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        id=job_id,
+        status=SimpleNamespace(stage=stage, message=message),
+        labels={
+            "app": "pwc-paper-markdown",
+            "mode": "backfill",
+            "run_id": run_id,
+            "shard_id": "00000",
+            "job_type": "ocr",
+            "provider_attempt": str(provider_attempt),
+        },
+        created_at=now - timedelta(hours=1),
+        started_at=None,
+        finished_at=now - timedelta(minutes=30),
+    )
+
+
+def test_prestart_mount_failure_is_retryable_without_paper_attempt(monkeypatch):
+    job = _scheduler(execute=False, confirm=False)
+    failure = _remote_job("failed-0", stage="ERROR", message="Volume mount failed")
+    job.filesystem = SimpleNamespace(exists=lambda _path: True)
+    monkeypatch.setattr(job, "_bucket_json", lambda _key: {})
+
+    candidates, acknowledgement = job._mount_recovery_candidates(
+        [failure], now=datetime.now(UTC)
+    )
+
+    assert acknowledgement == 0
+    assert candidates == [
+        {
+            "run_id": "backfill-20260820T030610-65423592",
+            "shard_id": "00000",
+            "manifest_key": (
+                "_jobs/manifests/backfill-20260820T030610-65423592/00000.jsonl"
+            ),
+            "failed_provider_job_id": "failed-0",
+            "failed_at": failure.finished_at.isoformat(),
+        }
+    ]
+    # Candidate recognition reads only logical dispatch/checkpoint evidence; it
+    # never creates or edits a per-paper status/attempt record.
+
+
+def test_successful_probe_allows_exactly_one_replacement(monkeypatch):
+    job = _scheduler(execute=True, confirm=True)
+    candidate = {
+        "run_id": "backfill-20260820T030610-65423592",
+        "shard_id": "00000",
+        "manifest_key": (
+            "_jobs/manifests/backfill-20260820T030610-65423592/00000.jsonl"
+        ),
+        "failed_provider_job_id": "failed-0",
+        "failed_at": datetime.now(UTC).isoformat(),
+    }
+    job._remote_jobs = Mock(return_value=[])
+    job._mount_recovery_candidates = Mock(return_value=([candidate], 0))
+    job._latest_successful_mount_probe = Mock(
+        return_value={"probe_id": "probe-ok", "provider_job_id": "probe-job"}
+    )
+    job._budget_decision = Mock(return_value={"affordable_jobs": 1})
+    job._run_ocr_job = Mock(return_value=SimpleNamespace(id="replacement-1"))
+    job._persist_dispatch = Mock()
+
+    result = job._recover_mount_failures()
+
+    assert result["launched_replacements"] == 1
+    job._run_ocr_job.assert_called_once_with(
+        run_id=candidate["run_id"],
+        shard_id="00000",
+        manifest_key=candidate["manifest_key"],
+        provider_attempt=2,
+        replacement_for="failed-0",
+    )
+    assert (
+        job._persist_dispatch.call_args.kwargs["provider_attempts"][1][
+            "capability_probe_id"
+        ]
+        == "probe-ok"
+    )
+
+
+def test_two_mount_failures_require_operator_ack_and_late_success_recovers(
+    monkeypatch,
+):
+    job = _scheduler(execute=False, confirm=False)
+    first = _remote_job("failed-0", stage="ERROR", message="Volume mount failed")
+    second = _remote_job(
+        "failed-1",
+        stage="ERROR",
+        message="Volume mount failed",
+        provider_attempt=1,
+    )
+    candidates, acknowledgement = job._mount_recovery_candidates(
+        [first, second], now=datetime.now(UTC)
+    )
+    assert candidates == []
+    assert acknowledgement == 1
+
+    late_success = _remote_job(
+        "late-success",
+        stage="COMPLETED",
+        message=None,
+        provider_attempt=1,
+    )
+    candidates, acknowledgement = job._mount_recovery_candidates(
+        [first, late_success], now=datetime.now(UTC)
+    )
+    assert candidates == []
+    assert acknowledgement == 0
+
+
+def test_mount_recovery_fails_closed_without_recent_probe():
+    job = _scheduler(execute=True, confirm=True)
+    job._remote_jobs = Mock(return_value=[])
+    job._mount_recovery_candidates = Mock(
+        return_value=(
+            [
+                {
+                    "run_id": "backfill-20260820T030610-65423592",
+                    "shard_id": "00000",
+                    "manifest_key": "manifest.jsonl",
+                    "failed_provider_job_id": "failed-0",
+                    "failed_at": datetime.now(UTC).isoformat(),
+                }
+            ],
+            0,
+        )
+    )
+    job._latest_successful_mount_probe = Mock(return_value=None)
+    job._budget_decision = Mock(return_value={"affordable_jobs": 1})
+
+    with pytest.raises(ValueError, match="requires a successful same-volume"):
+        job._recover_mount_failures()
+
+
+def test_volume_probe_reads_writes_verifies_and_cleans_only_temporary_object(
+    tmp_path,
+):
+    content = tmp_path / "content"
+    manifest = content / "_jobs/capabilities/probe-test.manifest.json"
+    result = content / "_jobs/capabilities/probe-test.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "probe_id": "probe-test",
+                "nonce": "a" * 32,
+                "bucket_id": "test/paper-markdown",
+                "namespace": "test-owner",
+                "mount_path": "/content",
+                "read_only": False,
+            }
+        )
+    )
+
+    evidence = PROBE.run_probe(
+        content_root=content, manifest_path=manifest, result_path=result
+    )
+
+    assert evidence["status"] == "succeeded"
+    assert evidence["temporary_object_cleaned"] is True
+    assert manifest.exists()
+    assert result.exists()
+    assert list(manifest.parent.glob("*.probe")) == []
 
 
 def test_retry_disposition_uses_persisted_fields():
@@ -373,6 +645,8 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
             str(content),
             "--stub-root",
             str(stub),
+            "--soft-deadline-seconds",
+            "30",
         ],
         check=True,
     )
@@ -429,6 +703,8 @@ def test_chandra_worker_failure_records_duration(tmp_path):
             str(content),
             "--stub-root",
             str(stub),
+            "--soft-deadline-seconds",
+            "30",
         ],
         check=True,
     )
@@ -473,6 +749,8 @@ def test_chandra_worker_final_attempt_omits_missing_image(tmp_path):
             str(content),
             "--stub-root",
             str(stub),
+            "--soft-deadline-seconds",
+            "30",
         ],
         check=True,
     )
@@ -529,6 +807,8 @@ def test_chandra_worker_omits_missing_image_after_one_retry(tmp_path):
             str(content),
             "--stub-root",
             str(stub),
+            "--soft-deadline-seconds",
+            "30",
         ],
         check=True,
     )
@@ -618,6 +898,11 @@ def test_worker_failure_classification_and_forced_cleanup():
     missing = ValueError("missing_extracted_image:figure.webp")
     assert WORKER.classify_failure(missing, 1) == ("missing_extracted_image", True)
     assert WORKER.classify_failure(missing, 3) == ("missing_extracted_image", False)
+    PdfReadError = type("PdfReadError", (Exception,), {})
+    assert WORKER.classify_failure(PdfReadError("invalid PDF"), 1) == (
+        "PdfReadError",
+        False,
+    )
     assert WORKER.classify_failure(ValueError("immutable_asset_conflict:key"), 1) == (
         "immutable_asset_conflict",
         False,
@@ -690,6 +975,8 @@ def test_worker_startup_failure_writes_failed_checkpoint(tmp_path, monkeypatch):
             str(manifest),
             "--content-root",
             str(content),
+            "--soft-deadline-seconds",
+            "30",
         ],
     )
 

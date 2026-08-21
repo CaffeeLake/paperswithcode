@@ -103,6 +103,8 @@ export interface PaperMarkdownRemoteJob {
   mode?: string | null;
   run_id?: string | null;
   shard_id?: string | null;
+  provider_attempt?: number;
+  profile_id?: string | null;
   hardware?: string | null;
   created_at?: string | null;
   started_at?: string | null;
@@ -113,13 +115,44 @@ export interface PaperMarkdownRemoteJob {
   progress?: PaperMarkdownJobProgress | null;
 }
 
+export interface PaperMarkdownLogicalShard {
+  run_id: string;
+  shard_id: string;
+  mode?: string | null;
+  profile_id?: string | null;
+  provider_attempts: number;
+  provider_job_ids: string[];
+  latest_provider_job_id: string;
+  effective_outcome: string;
+  failure_cause?: string | null;
+  recovered_mount_failure: boolean;
+  unresolved_mount_failure: boolean;
+  requires_operator_ack: boolean;
+  created_at?: string | null;
+}
+
+export interface PaperMarkdownJobProfile {
+  profile_id: string;
+  mode: "live" | "backfill";
+  max_papers: number;
+  concurrency: number;
+  hard_timeout_seconds: number;
+  soft_deadline_seconds: number;
+  reservation_hours: number;
+  reservation_per_job_usd: number;
+}
+
 export interface PaperMarkdownJobsResponse {
   available: boolean;
   namespace: string;
   updated_at?: string | null;
   jobs: PaperMarkdownRemoteJob[];
+  logical_shards?: PaperMarkdownLogicalShard[];
   summary: Record<string, number>;
   budgets: Record<string, PaperMarkdownBudget>;
+  selected_profiles?: Record<string, PaperMarkdownJobProfile>;
+  blockers?: Record<string, "none" | "budget" | "reliability" | "reliability_and_budget">;
+  retry_dispositions?: Record<string, number>;
   coverage?: Record<string, PaperMarkdownCoverage>;
   error?: string | null;
 }
@@ -144,8 +177,11 @@ export interface PaperMarkdownBudget {
   window_started_at: string | null;
   next_release_at: string | null;
   next_release_usd: number;
+  next_admission_at?: string | null;
   spent_usd: number;
   active_reserved_usd: number;
+  unknown_terminal_reservation_count?: number;
+  unknown_terminal_reservation_usd?: number;
   desired_jobs: number;
   affordable_jobs: number;
   planned_jobs: number;
@@ -158,6 +194,7 @@ export interface PaperMarkdownBudget {
   hourly_rate_usd: number;
   reservation_hours_per_job: number;
   reservation_per_job_usd: number;
+  profile?: PaperMarkdownJobProfile;
   relevant_jobs: number;
   reason?: string | null;
 }

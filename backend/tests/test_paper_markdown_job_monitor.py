@@ -135,6 +135,71 @@ def test_complete_checkpoint_is_effective_success_despite_hf_error():
     )
 
 
+def test_logical_shard_recovers_mount_failure_without_erasing_provider_attempt():
+    attempts = [
+        {
+            "id": "replacement",
+            "run_id": "backfill-20260821T100000-11111111",
+            "shard_id": "00000",
+            "mode": "backfill",
+            "profile_id": "backfill-v1",
+            "effective_outcome": "success",
+            "failure_cause": None,
+            "created_at": "2026-08-21T10:05:00Z",
+        },
+        {
+            "id": "original",
+            "run_id": "backfill-20260821T100000-11111111",
+            "shard_id": "00000",
+            "mode": "backfill",
+            "profile_id": "backfill-v1",
+            "effective_outcome": "infrastructure_failure",
+            "failure_cause": "volume_mount",
+            "created_at": "2026-08-21T10:00:00Z",
+        },
+    ]
+
+    logical = monitor._logical_shards(attempts)
+
+    assert len(logical) == 1
+    assert logical[0]["provider_attempts"] == 2
+    assert logical[0]["provider_job_ids"] == ["replacement", "original"]
+    assert logical[0]["effective_outcome"] == "success"
+    assert logical[0]["recovered_mount_failure"] is True
+    assert logical[0]["unresolved_mount_failure"] is False
+
+
+def test_latest_logical_mount_failure_remains_unresolved():
+    logical = monitor._logical_shards(
+        [
+            {
+                "id": "failed-replacement",
+                "run_id": "backfill-20260821T100000-11111111",
+                "shard_id": "00000",
+                "mode": "backfill",
+                "profile_id": "backfill-v1",
+                "effective_outcome": "infrastructure_failure",
+                "failure_cause": "volume_mount",
+                "created_at": "2026-08-21T10:05:00Z",
+            },
+            {
+                "id": "failed-original",
+                "run_id": "backfill-20260821T100000-11111111",
+                "shard_id": "00000",
+                "mode": "backfill",
+                "profile_id": "backfill-v1",
+                "effective_outcome": "infrastructure_failure",
+                "failure_cause": "volume_mount",
+                "created_at": "2026-08-21T10:00:00Z",
+            },
+        ]
+    )
+
+    assert logical[0]["provider_attempts"] == 2
+    assert logical[0]["recovered_mount_failure"] is False
+    assert logical[0]["unresolved_mount_failure"] is True
+
+
 def test_efficiency_metrics_exclude_active_shard_progress(monkeypatch):
     settings = SimpleNamespace(
         hf_token="private-token",
@@ -244,6 +309,10 @@ def test_coverage_history_reports_seven_day_deltas(tmp_path, monkeypatch):
                     "missing_count": 15,
                     "copied_from_upstream_count": 1,
                     "coverage_percentage": 85.71,
+                    "retryable_due": 7,
+                    "retryable_deferred": 3,
+                    "permanent_failures": 2,
+                    "attempts_exhausted": 1,
                 },
             ]
         )
@@ -255,6 +324,12 @@ def test_coverage_history_reports_seven_day_deltas(tmp_path, monkeypatch):
     assert coverage["eligible_delta_7d"] == 5
     assert coverage["canonical_delta_7d"] == 10
     assert coverage["missing_delta_7d"] == -5
+    assert monitor._retry_dispositions({"full": coverage}) == {
+        "retryable_due": 7,
+        "retryable_deferred": 3,
+        "permanent_failures": 2,
+        "attempts_exhausted": 1,
+    }
 
 
 def test_monitor_is_unavailable_without_a_token(monkeypatch):

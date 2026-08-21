@@ -19,6 +19,7 @@ from backend.services.paper_markdown_budget_service import (
     PAPER_MARKDOWN_GPU_HOURLY_RATE_USD,
     paper_markdown_budget_snapshot,
 )
+from backend.services.paper_markdown_job_profile import paper_markdown_job_profile
 
 _RUN_ID = re.compile(r"^(?:backfill|live)-\d{8}T\d{6}-[0-9a-f]{8}$")
 _SHARD_ID = re.compile(r"^\d{5}$")
@@ -92,6 +93,81 @@ def _coverage_history(now: datetime) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _logical_shards(provider_attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse provider retries without discarding their audit history."""
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for attempt in provider_attempts:
+        key = (
+            str(attempt.get("run_id") or attempt["id"]),
+            str(attempt.get("shard_id") or attempt["id"]),
+        )
+        grouped.setdefault(key, []).append(attempt)
+
+    logical: list[dict[str, Any]] = []
+    for (run_id, shard_id), attempts in grouped.items():
+        # Jobs arrive newest first. A complete canonical checkpoint is authoritative
+        # even when an earlier or late provider attempt reports an error.
+        successful = next(
+            (item for item in attempts if item["effective_outcome"] == "success"),
+            None,
+        )
+        current = successful or attempts[0]
+        mount_failures = [
+            item for item in attempts if item.get("failure_cause") == "volume_mount"
+        ]
+        recovered_mount = bool(mount_failures and successful)
+        unresolved_mount = bool(
+            mount_failures
+            and not successful
+            and current.get("failure_cause") == "volume_mount"
+            and current.get("effective_outcome") == "infrastructure_failure"
+        )
+        requires_operator_ack = bool(len(mount_failures) >= 2 and not successful)
+        logical.append(
+            {
+                "run_id": run_id,
+                "shard_id": shard_id,
+                "mode": current.get("mode"),
+                "profile_id": current.get("profile_id"),
+                "provider_attempts": len(attempts),
+                "provider_job_ids": [item["id"] for item in attempts],
+                "latest_provider_job_id": attempts[0]["id"],
+                "representative_provider_job_id": current["id"],
+                "effective_outcome": current["effective_outcome"],
+                "failure_cause": current.get("failure_cause"),
+                "recovered_mount_failure": recovered_mount,
+                "unresolved_mount_failure": unresolved_mount,
+                "requires_operator_ack": requires_operator_ack,
+                "created_at": attempts[0].get("created_at"),
+            }
+        )
+    return logical
+
+
+def _retry_dispositions(coverage: dict[str, dict[str, Any]]) -> dict[str, int]:
+    latest = coverage.get("full") or coverage.get("recent_14_days") or {}
+    return {
+        key: max(0, int(latest.get(key) or 0))
+        for key in (
+            "retryable_due",
+            "retryable_deferred",
+            "permanent_failures",
+            "attempts_exhausted",
+        )
+    }
+
+
+def _blocker(reliability_blocked: bool, budget_blocked: bool) -> str:
+    if reliability_blocked and budget_blocked:
+        return "reliability_and_budget"
+    if reliability_blocked:
+        return "reliability"
+    if budget_blocked:
+        return "budget"
+    return "none"
+
+
 def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -111,6 +187,13 @@ def _hardware(job: object) -> str | None:
     if flavor is None:
         return None
     return str(getattr(flavor, "name", None) or flavor)
+
+
+def _provider_attempt(labels: dict[str, Any]) -> int:
+    try:
+        return max(1, int(labels.get("provider_attempt") or labels.get("attempt") or 1))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _effective_outcome(
@@ -257,7 +340,8 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     history_remote_jobs = [
         job
         for job in remote_jobs
-        if (
+        if (getattr(job, "labels", None) or {}).get("job_type") != "volume_probe"
+        and (
             (created_at := getattr(job, "created_at", None)) is None
             or created_at.astimezone(timezone.utc) >= history_cutoff
             or _stage(job) in {"SCHEDULING", "RUNNING"}
@@ -273,6 +357,15 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         durations = getattr(job, "durations", None)
         progress = _read_progress(filesystem, settings, run_id, shard_id)
         stage = _stage(job)
+        # Replacement attempts share the logical progress path. A provider-confirmed
+        # mount failure never reached that path, so a replacement's checkpoint must
+        # not retroactively turn the failed provider attempt into a success.
+        if (
+            stage in {"ERROR", "CANCELED"}
+            and _failure_cause("infrastructure_failure", stage_message, None)
+            == "volume_mount"
+        ):
+            progress = None
         checkpoint_stale = False
         if progress and progress.get("updated_at"):
             try:
@@ -296,6 +389,8 @@ def _fetch(settings: Settings) -> dict[str, Any]:
                 "mode": labels.get("mode"),
                 "run_id": run_id,
                 "shard_id": shard_id,
+                "provider_attempt": _provider_attempt(labels),
+                "profile_id": labels.get("profile_id") or labels.get("profile"),
                 "hardware": _hardware(job),
                 "created_at": _iso(getattr(job, "created_at", None)),
                 "started_at": _iso(getattr(job, "started_at", None)),
@@ -310,20 +405,40 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         )
 
     jobs = history_jobs[:_MAX_DISPLAY_JOBS]
+    logical_shards = _logical_shards(history_jobs)
     stages: dict[str, int] = {}
     for job in history_jobs:
         stages[job["stage"]] = stages.get(job["stage"], 0) + 1
-    progress_rows = [job["progress"] for job in history_jobs if job["progress"]]
+    history_by_id = {job["id"]: job for job in history_jobs}
+    logical_jobs = [
+        history_by_id[shard["representative_provider_job_id"]]
+        for shard in logical_shards
+    ]
+    progress_rows = [job["progress"] for job in logical_jobs if job["progress"]]
     outcomes: dict[str, int] = {}
     failure_causes: dict[str, int] = {}
-    for job in history_jobs:
-        outcome = job["effective_outcome"]
+    for shard in logical_shards:
+        outcome = shard["effective_outcome"]
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
-        if job.get("failure_cause"):
-            cause = job["failure_cause"]
+        if shard.get("failure_cause"):
+            cause = shard["failure_cause"]
             failure_causes[cause] = failure_causes.get(cause, 0) + 1
-    latest_run_id = next((job.get("run_id") for job in jobs if job.get("run_id")), None)
-    latest_run_jobs = [job for job in jobs if job.get("run_id") == latest_run_id]
+    latest_run_ids: dict[str, str] = {}
+    for shard in logical_shards:
+        mode = shard.get("mode")
+        run_id = shard.get("run_id")
+        if mode in {"live", "backfill"} and run_id:
+            latest_run_ids.setdefault(str(mode), str(run_id))
+    latest_run_shards = [
+        shard
+        for shard in logical_shards
+        if shard.get("run_id") == latest_run_ids.get(str(shard.get("mode")))
+    ]
+    latest_run_jobs = [
+        job
+        for job in jobs
+        if job.get("run_id") == latest_run_ids.get(str(job.get("mode")))
+    ]
     active_checkpoint_ages = []
     for job in latest_run_jobs:
         if job["stage"] not in {
@@ -351,6 +466,8 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     summary = {
         "visible_jobs": len(jobs),
         "history_jobs_7d": len(history_jobs),
+        "provider_attempts": len(history_jobs),
+        "logical_shards": len(logical_shards),
         "active_jobs": sum(
             count
             for stage, count in stages.items()
@@ -365,11 +482,23 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         "omitted_images": sum(row["omitted_images"] for row in progress_rows),
         "latest_run_failed_jobs": sum(
             1
-            for job in latest_run_jobs
-            if job["effective_outcome"] in {"infrastructure_failure", "worker_failure"}
+            for shard in latest_run_shards
+            if shard["effective_outcome"]
+            in {"infrastructure_failure", "worker_failure"}
         ),
         "latest_run_interrupted_jobs": sum(
-            1 for job in latest_run_jobs if job["effective_outcome"] == "interrupted"
+            1
+            for shard in latest_run_shards
+            if shard["effective_outcome"] == "interrupted"
+        ),
+        "unresolved_mount_failures": sum(
+            bool(shard["unresolved_mount_failure"]) for shard in latest_run_shards
+        ),
+        "recovered_mount_failures": sum(
+            bool(shard["recovered_mount_failure"]) for shard in logical_shards
+        ),
+        "mount_failures_requiring_operator_ack": sum(
+            bool(shard["requires_operator_ack"]) for shard in logical_shards
         ),
         "oldest_active_checkpoint_age_minutes": (
             max(active_checkpoint_ages) if active_checkpoint_ages else 0
@@ -403,7 +532,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         1,
         sum(
             1
-            for job in history_jobs
+            for job in logical_jobs
             if job["stage"] in {"COMPLETED", "ERROR", "CANCELED"}
         ),
     )
@@ -418,7 +547,10 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         and job["effective_outcome"] in {"success", "partial", "interrupted"}
     ]
     efficiency_progress = [
-        job["progress"] for job in efficiency_jobs if job.get("progress")
+        job["progress"]
+        for job in logical_jobs
+        if job.get("progress")
+        and job["effective_outcome"] in {"success", "partial", "interrupted"}
     ]
     total_gpu_seconds = sum(
         float(job.get("duration_seconds") or 0) for job in efficiency_jobs
@@ -457,6 +589,8 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     )
     summary["paper_duration_p95_seconds"] = p95_values[-1] if p95_values else 0
     coverage = _coverage_history(snapshot_now)
+    retry_dispositions = _retry_dispositions(coverage)
+    summary.update(retry_dispositions)
     full_missing = int((coverage.get("full") or {}).get("missing_count") or 0)
     summary["estimated_cost_to_clear_backlog_usd"] = round(
         full_missing * summary["estimated_dollars_per_successful_paper"], 2
@@ -474,33 +608,71 @@ def _fetch(settings: Settings) -> dict[str, Any]:
         if (getattr(job, "labels", None) or {}).get("mode") == "backfill"
         and _stage(job) in {"SCHEDULING", "RUNNING", "STARTING", "PENDING", "QUEUED"}
     )
+    budgets = {
+        "live": paper_markdown_budget_snapshot(
+            remote_jobs,
+            mode="live",
+            ceiling_usd=settings.paper_markdown_incremental_monthly_budget_usd,
+            planned_jobs=max(0, 1 - active_live),
+            now=snapshot_now,
+        ),
+        "backfill": paper_markdown_budget_snapshot(
+            remote_jobs,
+            mode="backfill",
+            ceiling_usd=settings.paper_markdown_backfill_budget_usd,
+            planned_jobs=max(
+                0,
+                getattr(settings, "paper_markdown_backfill_concurrency", 4)
+                - active_backfill,
+            ),
+            now=snapshot_now,
+        ),
+    }
+    blockers = {
+        mode: _blocker(
+            any(
+                shard.get("mode") == mode
+                and shard["effective_outcome"]
+                in {"infrastructure_failure", "worker_failure"}
+                for shard in latest_run_shards
+            ),
+            bool(budget["desired_jobs"] and not budget["affordable_jobs"]),
+        )
+        for mode, budget in budgets.items()
+    }
+    summary["retryable_papers_blocked_by_budget"] = (
+        retry_dispositions["retryable_due"]
+        if any(
+            value in {"budget", "reliability_and_budget"} for value in blockers.values()
+        )
+        else 0
+    )
+    paid_dispatch_enabled = bool(
+        getattr(settings, "paper_markdown_paid_dispatch_enabled", False)
+    )
+    summary["paid_dispatch_enabled"] = int(paid_dispatch_enabled)
+    summary["paid_execution_authorization_required"] = int(
+        not paid_dispatch_enabled
+        and any(
+            budget["desired_jobs"] and budget["affordable_jobs"]
+            for budget in budgets.values()
+        )
+    )
     return {
         "available": True,
         "namespace": settings.paper_markdown_hf_namespace,
         "updated_at": _iso(datetime.now(timezone.utc)),
         "jobs": jobs,
+        "logical_shards": logical_shards,
         "summary": summary,
         "coverage": coverage,
-        "budgets": {
-            "live": paper_markdown_budget_snapshot(
-                remote_jobs,
-                mode="live",
-                ceiling_usd=settings.paper_markdown_incremental_monthly_budget_usd,
-                planned_jobs=max(0, 1 - active_live),
-                now=snapshot_now,
-            ),
-            "backfill": paper_markdown_budget_snapshot(
-                remote_jobs,
-                mode="backfill",
-                ceiling_usd=settings.paper_markdown_backfill_budget_usd,
-                planned_jobs=max(
-                    0,
-                    getattr(settings, "paper_markdown_backfill_concurrency", 4)
-                    - active_backfill,
-                ),
-                now=snapshot_now,
-            ),
+        "budgets": budgets,
+        "selected_profiles": {
+            mode: paper_markdown_job_profile(mode).as_dict()
+            for mode in ("live", "backfill")
         },
+        "blockers": blockers,
+        "retry_dispositions": retry_dispositions,
         "error": None,
     }
 
