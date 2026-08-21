@@ -33,6 +33,8 @@ const addMonths = (value: Date, amount: number) =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + amount, 1));
 const monthStart = (value: Date) =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
+const setYear = (value: Date, year: number) =>
+  new Date(Date.UTC(year, value.getUTCMonth(), 1));
 
 const presetRange = (
   preset: "week" | "month",
@@ -101,11 +103,36 @@ const MonthCalendar: React.FC<{
   startDate?: string;
   endDate?: string;
   onSelect: (date: string) => void;
+  yearLabel: string;
+  yearValue: string;
+  onYearChange: (value: string) => void;
   secondary?: boolean;
-}> = ({ month, today, startDate, endDate, onSelect, secondary = false }) => {
+}> = ({
+  month,
+  today,
+  startDate,
+  endDate,
+  onSelect,
+  yearLabel,
+  yearValue,
+  onYearChange,
+  secondary = false,
+}) => {
   const days = useMemo(() => calendarDays(month), [month]);
   return (
     <section className={`paper-date-calendar${secondary ? " paper-date-calendar-secondary" : ""}`}>
+      <label className="paper-date-year">
+        <span>{yearLabel}</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          min="1900"
+          max={today.slice(0, 4)}
+          step="1"
+          value={yearValue}
+          onChange={(event) => onYearChange(event.target.value)}
+        />
+      </label>
       <h3>{MONTH_FORMATTER.format(month)}</h3>
       <div className="paper-date-weekdays" aria-hidden="true">
         {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}
@@ -148,7 +175,10 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
   const [open, setOpen] = useState(false);
   const [draftStart, setDraftStart] = useState<string>();
   const [draftEnd, setDraftEnd] = useState<string>();
-  const [visibleMonth, setVisibleMonth] = useState(() => monthStart(currentDay));
+  const [startVisibleMonth, setStartVisibleMonth] = useState(() => monthStart(currentDay));
+  const [endVisibleMonth, setEndVisibleMonth] = useState(() => addMonths(monthStart(currentDay), 1));
+  const [startYear, setStartYear] = useState(() => String(currentDay.getUTCFullYear()));
+  const [endYear, setEndYear] = useState(() => String(currentDay.getUTCFullYear()));
   const current = { startDate, endDate };
   const week = presetRange("week", currentDay);
   const month = presetRange("month", currentDay);
@@ -158,8 +188,36 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
   const openRange = () => {
     setDraftStart(startDate);
     setDraftEnd(endDate);
-    setVisibleMonth(monthStart(startDate ? utcDate(startDate) : currentDay));
+    const nextStartMonth = monthStart(startDate ? utcDate(startDate) : currentDay);
+    const nextEndMonth = monthStart(endDate ? utcDate(endDate) : addMonths(nextStartMonth, 1));
+    setStartVisibleMonth(nextStartMonth);
+    setEndVisibleMonth(nextEndMonth);
+    setStartYear(String(nextStartMonth.getUTCFullYear()));
+    setEndYear(String(nextEndMonth.getUTCFullYear()));
     setOpen(true);
+  };
+
+  const changeYear = (
+    value: string,
+    setInputYear: (value: string) => void,
+    setMonth: React.Dispatch<React.SetStateAction<Date>>,
+  ) => {
+    setInputYear(value);
+    if (!/^\d{4}$/.test(value)) return;
+
+    const year = Number(value);
+    if (year >= 1900 && year <= currentDay.getUTCFullYear()) {
+      setMonth((visibleMonth) => setYear(visibleMonth, year));
+    }
+  };
+
+  const navigateMonths = (amount: number) => {
+    const nextStartMonth = addMonths(startVisibleMonth, amount);
+    const nextEndMonth = addMonths(endVisibleMonth, amount);
+    setStartVisibleMonth(nextStartMonth);
+    setEndVisibleMonth(nextEndMonth);
+    setStartYear(String(nextStartMonth.getUTCFullYear()));
+    setEndYear(String(nextEndMonth.getUTCFullYear()));
   };
 
   const selectDate = (value: string) => {
@@ -228,23 +286,41 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
             <p>Choose an inclusive start and end publication date.</p>
           </div>
           <div className="paper-date-navigation">
-            <button type="button" aria-label="Previous month" onClick={() => setVisibleMonth(addMonths(visibleMonth, -1))}>←</button>
-            <button type="button" aria-label="Next month" onClick={() => setVisibleMonth(addMonths(visibleMonth, 1))}>→</button>
+            <button
+              type="button"
+              aria-label="Previous month"
+              onClick={() => navigateMonths(-1)}
+            >
+              ←
+            </button>
+            <button
+              type="button"
+              aria-label="Next month"
+              onClick={() => navigateMonths(1)}
+            >
+              →
+            </button>
           </div>
           <div className="paper-date-calendars">
             <MonthCalendar
-              month={visibleMonth}
+              month={startVisibleMonth}
               today={today}
               startDate={draftStart}
               endDate={draftEnd}
               onSelect={selectDate}
+              yearLabel="Start year"
+              yearValue={startYear}
+              onYearChange={(value) => changeYear(value, setStartYear, setStartVisibleMonth)}
             />
             <MonthCalendar
-              month={addMonths(visibleMonth, 1)}
+              month={endVisibleMonth}
               today={today}
               startDate={draftStart}
               endDate={draftEnd}
               onSelect={selectDate}
+              yearLabel="End year"
+              yearValue={endYear}
+              onYearChange={(value) => changeYear(value, setEndYear, setEndVisibleMonth)}
               secondary
             />
           </div>

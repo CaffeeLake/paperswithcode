@@ -16,6 +16,8 @@ describe("PaperDateFilter", () => {
     expect(dialog).not.toHaveAttribute("aria-modal", "true");
     expect(within(dialog).getByText("August 2026")).toBeInTheDocument();
     expect(within(dialog).getByText("September 2026")).toBeInTheDocument();
+    expect(within(dialog).getByRole("spinbutton", { name: "Start year" })).toHaveValue(2026);
+    expect(within(dialog).getByRole("spinbutton", { name: "End year" })).toHaveValue(2026);
     expect(within(dialog).getByRole("button", { name: "2026-08-22" })).toBeDisabled();
 
     await user.click(within(dialog).getByRole("button", { name: "2026-08-03" }));
@@ -26,6 +28,39 @@ describe("PaperDateFilter", () => {
       startDate: "2026-08-03",
       endDate: "2026-08-10",
     });
+  });
+
+  it("jumps each calendar to its entered year", async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+
+    render(<PaperDateFilter currentDate="2026-08-21" onChange={onChange} />);
+    await user.click(screen.getByRole("button", { name: "Select a range" }));
+    const dialog = screen.getByRole("dialog", { name: "Select a date range" });
+    const startYear = within(dialog).getByRole("spinbutton", { name: "Start year" });
+    const endYear = within(dialog).getByRole("spinbutton", { name: "End year" });
+
+    await user.clear(startYear);
+    await user.type(startYear, "2023");
+    await user.clear(endYear);
+    await user.type(endYear, "2024");
+
+    expect(within(dialog).getByText("August 2023")).toBeInTheDocument();
+    expect(within(dialog).getByText("September 2024")).toBeInTheDocument();
+  });
+
+  it("keeps the entered years in sync when navigation crosses a year boundary", async () => {
+    const user = userEvent.setup();
+
+    render(<PaperDateFilter currentDate="2023-01-15" onChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Select a range" }));
+    const dialog = screen.getByRole("dialog", { name: "Select a date range" });
+
+    await user.click(within(dialog).getByRole("button", { name: "Previous month" }));
+
+    expect(within(dialog).getByText("December 2022")).toBeInTheDocument();
+    expect(within(dialog).getByRole("spinbutton", { name: "Start year" })).toHaveValue(2022);
+    expect(within(dialog).getByRole("spinbutton", { name: "End year" })).toHaveValue(2023);
   });
 
   it("supports same-day ranges and resets the start for an earlier second click", async () => {
