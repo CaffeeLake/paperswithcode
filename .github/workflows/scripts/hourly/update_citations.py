@@ -9,9 +9,10 @@ Rate Limits (Semantic Scholar API):
 - Must stay below this threshold to avoid rejected requests
 
 Optimized Strategy:
-- Process at most 1,500 papers per run so the next hourly tick is not skipped
+- Snapshot at most 1,500 papers per run so updates cannot invalidate pagination
 - Use conservative rate limiting with buffer for API variations and retries
 - Prioritize papers that haven't been updated recently
+- Stop at a soft deadline, flush completed results, and defer the remainder
 - Efficient async processing with proper error handling
 - Skip papers updated within the last 30 days (configurable)
 
@@ -78,6 +79,9 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
         # Timeout protection: keep each hourly tick bounded.
         self.max_runtime_seconds = 45 * 60
+        self.soft_runtime_seconds = 40 * 60
+        self.flush_reserve_seconds = 30
+        self.deadline_monotonic = None
         self.shutdown_requested = False
 
         # Register signal handlers for graceful shutdown
@@ -96,6 +100,11 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             "api_calls": 0,
             "api_successes": 0,
             "credential_failures": 0,
+            "papers_selected": 0,
+            "papers_deferred": 0,
+            "deadline_reached": False,
+            "shutdown_requested": False,
+            "elapsed_seconds": 0,
         }
 
         # HTTP client will be created in async context
@@ -127,7 +136,14 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 f"Limited to {papers_to_process} papers for this hourly run"
             )
 
-        # Process papers in streaming chunks to reduce memory usage with timeout protection
+        # The soft deadline leaves time to flush the current batch and emit a
+        # successful summary before both the internal and launcher hard limits.
+        started_monotonic = time.monotonic()
+        self.deadline_monotonic = started_monotonic + self.soft_runtime_seconds
+
+        # Process one stable, bounded selection in chunks. The selected rows
+        # leave the pending set as they are updated, so querying each chunk
+        # with an increasing OFFSET would skip work.
         try:
             asyncio.run(
                 asyncio.wait_for(
@@ -146,6 +162,12 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             self.logger.warning("Job interrupted by user")
             raise
 
+        self.stats["papers_deferred"] = max(
+            0, self.stats["papers_found"] - self.stats["papers_processed"]
+        )
+        self.stats["shutdown_requested"] = self.shutdown_requested
+        self.stats["elapsed_seconds"] = round(time.monotonic() - started_monotonic, 1)
+
         # Log summary
         self.log_summary()
 
@@ -159,7 +181,11 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             raise RuntimeError("Semantic Scholar produced no successful responses")
 
         # Update database statistics (less frequent for hourly jobs)
-        if datetime.now().hour % 6 == 0:  # Only every 6 hours
+        if (
+            datetime.now().hour % 6 == 0
+            and not self.stats["deadline_reached"]
+            and not self.shutdown_requested
+        ):  # Only every 6 hours when the run retained maintenance headroom
             self.vacuum_analyze_table("papers")
 
     def get_papers_count(self) -> int:
@@ -177,37 +203,33 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         )
 
     async def process_papers_in_streaming_chunks(self, total_papers_to_process: int):
-        """Process papers in streaming chunks to reduce memory usage."""
-        total_chunks = (
-            total_papers_to_process + self.chunk_size - 1
-        ) // self.chunk_size
+        """Process a stable bounded selection in memory-efficient chunks."""
+        papers = self.get_papers_chunk(0, total_papers_to_process)
+        self.stats["papers_selected"] = len(papers)
+        if not papers:
+            self.logger.info("No pending papers remained after selection")
+            return
+
+        total_chunks = (len(papers) + self.chunk_size - 1) // self.chunk_size
 
         self.logger.info(
-            f"Processing {total_papers_to_process} papers in {total_chunks} chunks of {self.chunk_size}"
+            f"Processing {len(papers)} selected papers in {total_chunks} "
+            f"chunks of {self.chunk_size}"
         )
 
         start_time = time.time()
 
         for chunk_num in range(total_chunks):
             offset = chunk_num * self.chunk_size
-            limit = min(self.chunk_size, total_papers_to_process - offset)
+            chunk = papers[offset : offset + self.chunk_size]
 
             self.logger.info(
-                f"Processing chunk {chunk_num + 1}/{total_chunks} (offset={offset}, limit={limit})"
+                f"Processing chunk {chunk_num + 1}/{total_chunks} "
+                f"(selected_offset={offset}, size={len(chunk)})"
             )
 
-            # Fetch chunk of papers
             chunk_start = time.time()
-            papers = self.get_papers_chunk(offset, limit)
-
-            if not papers:
-                self.logger.warning(f"No papers found in chunk {chunk_num + 1}")
-                continue
-
-            self.logger.info(f"Fetched {len(papers)} papers in chunk {chunk_num + 1}")
-
-            # Process this chunk with rate limiting
-            await self.process_papers_with_rate_limiting(papers)
+            completed_chunk = await self.process_papers_with_rate_limiting(chunk)
 
             # Log chunk completion and memory efficiency
             chunk_elapsed = time.time() - chunk_start
@@ -226,12 +248,33 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 f"Updated: {self.stats['citations_updated']}"
             )
 
+            if not completed_chunk:
+                self.logger.info(
+                    "Stopping citation refresh cleanly; remaining selected "
+                    "papers stay eligible for the next hourly run"
+                )
+                break
+
             # Small delay between chunks to prevent overwhelming the system
             if chunk_num < total_chunks - 1:
                 await asyncio.sleep(1)
 
-    async def process_papers_with_rate_limiting(self, papers: List[Dict]):
-        """Process papers with optimized rate limiting for hourly execution."""
+    def _can_start_request(self) -> bool:
+        """Return whether another request can finish before the soft deadline."""
+        if self.shutdown_requested:
+            return False
+        if self.deadline_monotonic is None:
+            return True
+        required = (
+            self.request_timeout + self.request_delay + self.flush_reserve_seconds
+        )
+        if self.deadline_monotonic - time.monotonic() > required:
+            return True
+        self.stats["deadline_reached"] = True
+        return False
+
+    async def process_papers_with_rate_limiting(self, papers: List[Dict]) -> bool:
+        """Process papers until the chunk completes or the soft deadline arrives."""
         self.logger.debug(
             f"Processing {len(papers)} papers with {self.request_delay}s delays"
         )
@@ -259,8 +302,12 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
                 # Process each paper in the batch with rate limiting
                 batch_results = []
+                completed_batch = True
 
                 for paper in batch:
+                    if not self._can_start_request():
+                        completed_batch = False
+                        break
                     try:
                         result = await self.process_single_paper(paper)
                         batch_results.append(result)
@@ -280,6 +327,11 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 # Update database with batch results
                 if batch_results:
                     self.update_citations_batch(batch_results)
+
+                if not completed_batch:
+                    return False
+
+        return True
 
     async def process_single_paper(self, paper: Dict) -> Optional[CitationResult]:
         """Process a single paper to update its citation count."""
@@ -459,11 +511,9 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
         # Performance projections
         if self.stats["api_calls"] > 0:
-            # Calculate actual request rate
-            estimated_time = self.stats["api_calls"] * self.request_delay
-            actual_rate = (
-                self.stats["api_calls"] / estimated_time if estimated_time > 0 else 0
-            )
+            # Calculate the observed end-to-end request rate.
+            elapsed = float(self.stats.get("elapsed_seconds") or 0)
+            actual_rate = self.stats["api_calls"] / elapsed if elapsed > 0 else 0
             hourly_projection = self.stats["papers_processed"]
             daily_projection = hourly_projection * 24
 
