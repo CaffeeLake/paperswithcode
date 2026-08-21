@@ -407,6 +407,8 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
                 "[A Brand New Paper][paper-ref]\n\n"
                 "[A Brand New Paper]\n\n"
                 "[A Brand New Paper]: https://example.com/reference\n\n"
+                "~~~~md\n~~~\nA Brand New Paper\n~~~~\n\n"
+                "```md\n```not-a-close\nA Brand New Paper\n```\n\n"
                 "Read A Brand New Paper, then revisit A Brand New Paper."
             )
         },
@@ -422,6 +424,8 @@ def test_exact_title_repair_skips_markdown_exclusion_zones(monkeypatch):
         "[A Brand New Paper][paper-ref]\n\n"
         "[A Brand New Paper]\n\n"
         "[A Brand New Paper]: https://example.com/reference\n\n"
+        "~~~~md\n~~~\nA Brand New Paper\n~~~~\n\n"
+        "```md\n```not-a-close\nA Brand New Paper\n```\n\n"
         "Read [A Brand New Paper](https://arxiv.org/abs/2608.01234), "
         "then revisit A Brand New Paper."
     )

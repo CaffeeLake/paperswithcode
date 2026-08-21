@@ -184,13 +184,18 @@ def _code_protected_ranges(text: str) -> list[tuple[int, int]]:
     offset = 0
     for line in text.splitlines(keepends=True):
         stripped = line.lstrip()
-        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        marker = re.match(r"(?P<delimiter>`{3,}|~{3,})(?P<rest>.*)", stripped)
         if fence is not None:
             protected.append((offset, offset + len(line)))
-            if marker and marker.group(1).startswith(fence[0]):
+            if (
+                marker
+                and marker.group("delimiter")[0] == fence[0]
+                and len(marker.group("delimiter")) >= len(fence)
+                and not marker.group("rest").strip()
+            ):
                 fence = None
         elif marker:
-            fence = marker.group(1)
+            fence = marker.group("delimiter")
             protected.append((offset, offset + len(line)))
         offset += len(line)
     protected.extend(
