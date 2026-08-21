@@ -607,6 +607,55 @@ To retire the preview, use the provisioning command with
 `--staging-openrouter-disable-only`. This leaves the ledger intact for
 reconciliation and keeps Hugging Face-backed chat available.
 
+## Production Excalidraw MCP App
+
+Production bundles the reviewed same-origin MCP App host whenever production
+chat is enabled, but the backend route, worker registration, and sandbox egress
+remain disabled until both protected Excalidraw switches are enabled. The
+official App HTML is accepted in production only when it matches the SHA-256
+pinned in `backend/chat_sandbox_worker/mcp_app_providers.json`; staging retains
+its compatibility-gated drift policy.
+
+Enable the worker and App host together, then deploy the exact compatible
+release so its frontend, backend, and newly compatible blank sandbox pool become
+active atomically:
+
+```bash
+sudo /srv/paperswithcode/.venv/bin/python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-excalidraw-enable-only \
+  --confirm ENABLE_PRODUCTION_EXCALIDRAW
+sudo pwc-deploy production <exact-current-main-sha> --confirm DEPLOY_PRODUCTION
+```
+
+The independent feature rollback disables both switches before refreshing the
+exact active release. This drains the Excalidraw egress profile and causes the
+one-blank pool to refill with a compatible gateway-only sandbox:
+
+```bash
+sudo /srv/paperswithcode/.venv/bin/python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-excalidraw-disable-only \
+  --confirm DISABLE_PRODUCTION_EXCALIDRAW
+sudo pwc-deploy production <exact-active-sha> \
+  --refresh-environment --confirm DEPLOY_PRODUCTION
+```
+
+Run the release-scoped live contract gate as `pwc-production` with the active
+production environment. It records only endpoint status, tool names/digests,
+latency, egress domains, and sanitized failure classes, and always terminates
+its disposable sandbox:
+
+```bash
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=pwc-production --gid=pwc-production \
+  --working-directory=/srv/paperswithcode/environments/production/current \
+  --property=EnvironmentFile=/etc/paperswithcode/production.env \
+  /srv/paperswithcode/.venv/bin/python \
+  -m backend.scripts.qualify_chat_excalidraw_mcp \
+  --confirm QUALIFY_EXCALIDRAW_MCP
+```
+
 ## Release cleanup
 
 Remove releases and runtimes not referenced by either environment's

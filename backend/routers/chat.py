@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.chat_sandbox_worker.mcp_app_registry import WORKER_MCP_PROVIDERS
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
 from backend.models.api import (
@@ -473,7 +474,7 @@ def _require_mcp_apps_host(settings: Settings) -> None:
     if (
         not settings.chat_enabled
         or not settings.chat_mcp_apps_host_enabled
-        or settings.environment != "staging"
+        or settings.environment not in {"staging", "production"}
     ):
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -488,7 +489,14 @@ async def excalidraw_app_html(
     del user
     _require_mcp_apps_host(settings)
     _require_same_origin_csrf(request, settings)
-    html = await fetch_excalidraw_app_html()
+    expected_sha256 = None
+    if settings.environment == "production":
+        expected_sha256 = next(
+            provider.app_html_sha256
+            for provider in WORKER_MCP_PROVIDERS
+            if provider.id == "excalidraw"
+        )
+    html = await fetch_excalidraw_app_html(expected_sha256=expected_sha256)
     return Response(content=html, media_type=APP_HTML_MIME)
 
 
@@ -498,7 +506,7 @@ async def proxy_excalidraw_mcp_app(
     user: dict = Depends(require_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Same-origin App-host proxy. Staging-only; never forwards PwC cookies."""
+    """Same-origin App-host proxy; never forwards PwC cookies."""
     del user
     _require_mcp_apps_host(settings)
     _require_same_origin_csrf(request, settings)

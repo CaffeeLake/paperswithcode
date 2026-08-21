@@ -45,7 +45,7 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
   const [height, setHeight] = React.useState(block.height);
   const [fullscreen, setFullscreen] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
-  const root = React.useRef<HTMLSectionElement>(null);
+  const root = React.useRef<HTMLElement>(null);
   const elements = block.input.elements;
   const clipboardWrite = Boolean(block.permissions.clipboardWrite);
   fullscreenRef.current = fullscreen;

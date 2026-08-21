@@ -8,8 +8,8 @@ const htmlApi = vi.hoisted(() => ({
   loadExcalidrawAppHtml: vi.fn(),
   resetExcalidrawAppHost: vi.fn(),
   callTool: vi.fn(),
-  sendToolInput: vi.fn(async () => {}),
-  sendToolResult: vi.fn(async () => {}),
+  sendToolInput: vi.fn(async (_value: unknown) => {}),
+  sendToolResult: vi.fn(async (_value: unknown) => {}),
 }));
 
 vi.mock("@/components/chat/mcpAppRegistry", () => ({

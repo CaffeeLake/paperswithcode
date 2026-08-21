@@ -13,6 +13,7 @@ browser MCP Streamable HTTP session.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 
@@ -41,7 +42,7 @@ RESPONSE_HEADERS = (
     "mcp-protocol-version",
     "cache-control",
 )
-_APP_HTML_CACHE: str | None = None
+_APP_HTML_CACHE: dict[str, str] = {}
 _APP_HTML_LOCK = asyncio.Lock()
 
 
@@ -68,8 +69,7 @@ def _response_headers(headers: httpx.Headers) -> dict[str, str]:
 
 
 def reset_excalidraw_app_html_cache() -> None:
-    global _APP_HTML_CACHE
-    _APP_HTML_CACHE = None
+    _APP_HTML_CACHE.clear()
 
 
 def mcp_jsonrpc_result(body: bytes) -> dict:
@@ -183,15 +183,18 @@ async def download_excalidraw_app_html() -> str:
         return _extract_app_html(mcp_jsonrpc_result(listed.content))
 
 
-async def fetch_excalidraw_app_html() -> str:
-    global _APP_HTML_CACHE
-    if _APP_HTML_CACHE:
-        return _APP_HTML_CACHE
+async def fetch_excalidraw_app_html(*, expected_sha256: str | None = None) -> str:
+    cache_key = expected_sha256 or "staging-compatible"
+    if cached := _APP_HTML_CACHE.get(cache_key):
+        return cached
     async with _APP_HTML_LOCK:
-        if _APP_HTML_CACHE:
-            return _APP_HTML_CACHE
+        if cached := _APP_HTML_CACHE.get(cache_key):
+            return cached
         try:
             html = await download_excalidraw_app_html()
+            observed_sha256 = hashlib.sha256(html.encode("utf-8")).hexdigest()
+            if expected_sha256 and observed_sha256 != expected_sha256:
+                raise ValueError("unreviewed App HTML digest")
         except (
             httpx.HTTPError,
             ValueError,
@@ -202,7 +205,7 @@ async def fetch_excalidraw_app_html() -> str:
                 "excalidraw mcp html fetch failed class=%s", type(exc).__name__
             )
             raise _unavailable() from None
-        _APP_HTML_CACHE = html
+        _APP_HTML_CACHE[cache_key] = html
         return html
 
 

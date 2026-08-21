@@ -1917,7 +1917,7 @@ def test_production_activation_frontend_flags_are_enabled_together():
         "VITE_AUTH_URL": "",
         "VITE_CHAT_ENABLED": "1",
         "VITE_CHAT_LIVE": "1",
-        "VITE_CHAT_MCP_APPS_HOST_ENABLED": "0",
+        "VITE_CHAT_MCP_APPS_HOST_ENABLED": "1",
         "VITE_NATIVE_PDF_READER_ENABLED": "1",
         "VITE_PAPER_READER_CHAT_ENABLED": "1",
         "VITE_PAPER_READER_SELECTION_ENABLED": "1",
@@ -3037,6 +3037,36 @@ def test_production_openai_direct_configuration_reuses_protected_key_exactly():
                 **admitted,
                 "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=false",
             }
+        )
+
+
+def test_production_excalidraw_toggle_is_narrow_and_requires_admitted_chat():
+    admitted = {
+        "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": (
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED=true"
+        ),
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": (
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true"
+        ),
+    }
+    assert configure_host_env.production_excalidraw_values(admitted, enabled=True) == {
+        "PWC_CHAT_EXCALIDRAW_ENABLED": "true",
+        "PWC_CHAT_MCP_APPS_HOST_ENABLED": "true",
+    }
+    assert configure_host_env.production_excalidraw_values({}, enabled=False) == {
+        "PWC_CHAT_EXCALIDRAW_ENABLED": "false",
+        "PWC_CHAT_MCP_APPS_HOST_ENABLED": "false",
+    }
+    with pytest.raises(ValueError, match="admitted chat infrastructure"):
+        configure_host_env.production_excalidraw_values(
+            {
+                **admitted,
+                "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": (
+                    "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=false"
+                ),
+            },
+            enabled=True,
         )
 
 

@@ -336,9 +336,9 @@ def frontend_feature_environment(
         ),
         "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
         "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
-        # The remote App host is staging-only. Backend registration still has
-        # its independent protected-environment kill switch.
-        "VITE_CHAT_MCP_APPS_HOST_ENABLED": "1" if environment == "staging" else "0",
+        # Bundle the reviewed host in enabled chat releases. Backend and worker
+        # registration retain independent protected-environment kill switches.
+        "VITE_CHAT_MCP_APPS_HOST_ENABLED": "1" if features["chat"] else "0",
         "VITE_NATIVE_PDF_READER_ENABLED": (
             "1" if features["native_pdf_reader"] else "0"
         ),

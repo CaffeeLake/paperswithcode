@@ -880,6 +880,8 @@ def _validate_chat_openrouter_policy(settings: Settings) -> None:
 def _validate_chat_resource_policy(settings: Settings) -> None:
     """Validate sandbox resources and warm-pool lifetime."""
 
+    if settings.chat_excalidraw_enabled != settings.chat_mcp_apps_host_enabled:
+        raise RuntimeError("Excalidraw worker and MCP App host switches must match")
     if (
         settings.chat_sandbox_cpu_limit is not None
         and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu

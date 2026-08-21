@@ -12,7 +12,8 @@
         "save_checkpoint",
         "read_checkpoint"
       ],
-      "resource_uri": "ui://excalidraw/mcp-app.html"
+      "resource_uri": "ui://excalidraw/mcp-app.html",
+      "app_html_sha256": "441650e7bc844a43511b906281d11589e8d24a34a83d657c1d7a56f907c21a63"
     }
   ]
 }

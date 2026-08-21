@@ -94,7 +94,7 @@ describe("toUiMessages", () => {
   });
 
   it("fills omitted App block defaults so a reloaded diagram still mounts", () => {
-    const detail: ChatSessionDetail = {
+    const detail = {
       id: "session-app",
       title: "Test",
       selected_model: "deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -127,7 +127,7 @@ describe("toUiMessages", () => {
         followups: [],
         error_code: null,
       }],
-    };
+    } as unknown as ChatSessionDetail;
 
     expect(toUiMessages(detail)[0].blocks).toEqual([{
       kind: "app",

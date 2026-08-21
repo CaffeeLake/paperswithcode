@@ -454,7 +454,7 @@ class Settings(BaseSettings):
     chat_pwc_cli_version: str = Field(default="", max_length=64)
     chat_worker_contract_version: str = Field(default="", max_length=64)
     chat_system_prompt_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
-    # Staging-only remote MCP App controls. Both must be enabled before tools
+    # Protected remote MCP App controls. Both must be enabled before tools
     # are registered; either is an immediate fail-closed kill switch.
     chat_excalidraw_enabled: bool = Field(default=False)
     chat_mcp_apps_host_enabled: bool = Field(default=False)

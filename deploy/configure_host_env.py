@@ -419,6 +419,34 @@ def production_openai_direct_values(current: dict[str, str]) -> dict[str, str]:
     }
 
 
+def production_excalidraw_values(
+    current: dict[str, str], *, enabled: bool
+) -> dict[str, str]:
+    """Toggle only the reviewed production Excalidraw worker and App host."""
+
+    if enabled:
+        required = {
+            "PWC_CHAT_ENABLED": "true",
+            "PWC_CHAT_PERSISTENT_WORKER_ENABLED": "true",
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "true",
+        }
+        missing = [
+            key
+            for key, expected in required.items()
+            if _decoded_flag(current, key) != expected
+        ]
+        if missing:
+            raise ValueError(
+                "production Excalidraw requires admitted chat infrastructure: "
+                + ", ".join(missing)
+            )
+    value = "true" if enabled else "false"
+    return {
+        "PWC_CHAT_EXCALIDRAW_ENABLED": value,
+        "PWC_CHAT_MCP_APPS_HOST_ENABLED": value,
+    }
+
+
 def staging_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "EXA_API_KEY"
     if key not in legacy or not decoded_value(legacy[key]).strip():
@@ -1145,6 +1173,8 @@ def main() -> int:
         "--production-chat-pi-prewarm-disable-only", action="store_true"
     )
     parser.add_argument("--production-openai-direct-only", action="store_true")
+    parser.add_argument("--production-excalidraw-enable-only", action="store_true")
+    parser.add_argument("--production-excalidraw-disable-only", action="store_true")
     parser.add_argument("--modal-profile")
     parser.add_argument(
         "--modal-profile-config",
@@ -1158,6 +1188,58 @@ def main() -> int:
     legacy = read_lines(args.legacy_env)
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
+    if (
+        args.production_excalidraw_enable_only
+        or args.production_excalidraw_disable_only
+    ):
+        if (
+            args.production_excalidraw_enable_only
+            and args.production_excalidraw_disable_only
+        ):
+            parser.error("production Excalidraw modes are mutually exclusive")
+        selected_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "legacy_env",
+                "confirm",
+                "production_excalidraw_enable_only",
+                "production_excalidraw_disable_only",
+                "staging_chat_routing_policy",
+                "staging_chat_preferred_providers",
+                "staging_chat_routing_max_prompt_price",
+                "staging_chat_routing_max_completion_price",
+                "staging_chat_payload_candidate",
+                "staging_chat_alternative_model",
+                "staging_chat_alternative_reasoning_effort",
+                "modal_profile_config",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if selected_modes or args.codex_jobs_namespace or args.modal_profile:
+            parser.error("production Excalidraw mode must run alone")
+        enabled = args.production_excalidraw_enable_only
+        confirmation = (
+            "ENABLE_PRODUCTION_EXCALIDRAW"
+            if enabled
+            else "DISABLE_PRODUCTION_EXCALIDRAW"
+        )
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        current = read_lines(CONFIG_ROOT / "production.env")
+        try:
+            values = production_excalidraw_values(current, enabled=enabled)
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "production.env",
+            assign(current, values),
+            "pwc-production",
+        )
+        print(f"{'enabled' if enabled else 'disabled'} production Excalidraw")
+        return 0
     if args.production_openai_direct_only:
         selected_modes = [
             value

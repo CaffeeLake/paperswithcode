@@ -447,3 +447,12 @@ def test_deployed_mutation_policy_isolated_from_auth(settings_factory):
     with pytest.raises(RuntimeError) as exc_info:
         runtime_validation.validate_deployed_mutation_policy(settings)
     assert str(exc_info.value) == ("deployed web services must not mutate thumbnails")
+
+
+def test_excalidraw_worker_and_host_kill_switches_must_match(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_excalidraw_enabled = True
+    settings.chat_mcp_apps_host_enabled = False
+
+    with pytest.raises(RuntimeError, match="switches must match"):
+        runtime_validation._validate_chat_resource_policy(settings)

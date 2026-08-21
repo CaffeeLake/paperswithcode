@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable Modal probe for Excalidraw MCP App availability on staging.
+"""Disposable Modal probe for Excalidraw MCP App availability.
 
 This is a feature-availability gate, not a gate for the entire chat release.
 Ordinary staging chat may still deploy if this fails; Excalidraw must remain
@@ -35,10 +35,14 @@ WORKER_TSX = (
 
 
 def validate_settings(settings: Settings) -> None:
-    if settings.environment != "staging":
-        raise RuntimeError("Excalidraw MCP qualification is staging-only")
+    if settings.environment not in {"staging", "production"}:
+        raise RuntimeError(
+            "Excalidraw MCP qualification requires a deployed environment"
+        )
     if not settings.chat_excalidraw_enabled:
         raise RuntimeError("Enable PWC_CHAT_EXCALIDRAW_ENABLED before probing")
+    if not settings.chat_mcp_apps_host_enabled:
+        raise RuntimeError("Enable PWC_CHAT_MCP_APPS_HOST_ENABLED before probing")
     gateway = dedicated_gateway_hostname(settings.chat_gateway_url)
     domains = sandbox_outbound_domains(settings)
     if domains != [gateway, EXCALIDRAW.hostname]:

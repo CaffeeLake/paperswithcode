@@ -132,6 +132,7 @@ def test_enabled_excalidraw_passes_reviewed_hostname_to_modal(monkeypatch):
     settings = _settings(
         chat_persistent_worker_enabled=False,
         chat_excalidraw_enabled=True,
+        chat_mcp_apps_host_enabled=True,
     )
     provider = ModalSandboxProviderAdapter(settings, image_resolver=resolve_image)
     asyncio.run(provider.create(name="chat-test", tags={"service": "pwc-chat"}))

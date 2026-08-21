@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -54,8 +56,8 @@ def test_proxy_hidden_when_host_flag_is_off():
     assert response.status_code == 404
 
 
-def test_proxy_hidden_outside_staging():
-    with TestClient(_app(_settings(environment="production"))) as client:
+def test_proxy_hidden_outside_deployed_environments():
+    with TestClient(_app(_settings(environment="development"))) as client:
         response = client.post(PROXY_PATH, headers=_headers(), content=b"{}")
     assert response.status_code == 404
 
@@ -320,11 +322,41 @@ def test_html_endpoint_returns_cached_app_shell(monkeypatch):
     assert "authorization" not in forwarded
 
 
-def test_html_endpoint_hidden_outside_staging():
+def test_html_endpoint_hidden_outside_deployed_environments():
     chat_mcp_app_proxy.reset_excalidraw_app_html_cache()
-    with TestClient(_app(_settings(environment="production"))) as client:
+    with TestClient(_app(_settings(environment="development"))) as client:
         response = client.get(
             HTML_PATH,
             headers={"Origin": "https://testserver", "sec-fetch-site": "same-origin"},
         )
     assert response.status_code == 404
+
+
+def test_production_html_endpoint_rejects_unreviewed_digest(monkeypatch):
+    chat_mcp_app_proxy.reset_excalidraw_app_html_cache()
+    monkeypatch.setattr(chat_mcp_app_proxy.httpx, "AsyncClient", _FakeHtmlClient)
+    with TestClient(_app(_settings(environment="production"))) as client:
+        response = client.get(
+            HTML_PATH,
+            headers={"Origin": "https://testserver", "sec-fetch-site": "same-origin"},
+        )
+    assert response.status_code == 502
+
+
+def test_production_html_endpoint_accepts_reviewed_digest(monkeypatch):
+    import hashlib
+
+    chat_mcp_app_proxy.reset_excalidraw_app_html_cache()
+    monkeypatch.setattr(chat_mcp_app_proxy.httpx, "AsyncClient", _FakeHtmlClient)
+    reviewed = replace(
+        chat_router.WORKER_MCP_PROVIDERS[0],
+        app_html_sha256=hashlib.sha256(APP_HTML.encode()).hexdigest(),
+    )
+    monkeypatch.setattr(chat_router, "WORKER_MCP_PROVIDERS", (reviewed,))
+    with TestClient(_app(_settings(environment="production"))) as client:
+        response = client.get(
+            HTML_PATH,
+            headers={"Origin": "https://testserver", "sec-fetch-site": "same-origin"},
+        )
+    assert response.status_code == 200
+    assert response.text == APP_HTML

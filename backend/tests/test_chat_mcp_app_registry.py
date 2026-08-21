@@ -38,6 +38,9 @@ def test_checked_in_manifest_matches_python_and_typescript_allowlists():
     assert excalidraw.endpoint == "https://mcp.excalidraw.com/mcp"
     assert excalidraw.hostname == "mcp.excalidraw.com"
     assert excalidraw.model_tools == ("read_me", "create_view")
+    assert excalidraw.app_html_sha256 == (
+        "441650e7bc844a43511b906281d11589e8d24a34a83d657c1d7a56f907c21a63"
+    )
     assert manifest["providers"][0]["endpoint"] == excalidraw.endpoint
     worker = (
         REPOSITORY / "backend/chat_sandbox_worker/pi_worker/src/mcp_app_registry.ts"
@@ -68,7 +71,7 @@ def test_disabled_excalidraw_preserves_gateway_only_egress():
 
 
 def test_enabled_excalidraw_adds_only_reviewed_hostname():
-    settings = _settings(chat_excalidraw_enabled=True)
+    settings = _settings(chat_excalidraw_enabled=True, chat_mcp_apps_host_enabled=True)
     assert sandbox_outbound_domains(settings) == [
         "gateway.example.test",
         "mcp.excalidraw.com",
@@ -81,6 +84,12 @@ def test_enabled_excalidraw_adds_only_reviewed_hostname():
     assert enabled == egress_policy_digest(settings)
 
 
+def test_either_excalidraw_kill_switch_removes_worker_egress():
+    settings = _settings(chat_excalidraw_enabled=True, chat_mcp_apps_host_enabled=False)
+    assert sandbox_outbound_domains(settings) == ["gateway.example.test"]
+    assert enabled_worker_mcp_providers(settings) == ()
+
+
 def test_invalid_registry_endpoints_fail_validation():
     base = {
         "id": "example",
@@ -90,6 +99,7 @@ def test_invalid_registry_endpoints_fail_validation():
         "model_tools": ["read_me"],
         "app_tools": ["save_checkpoint"],
         "resource_uri": "ui://example/app.html",
+        "app_html_sha256": "a" * 64,
     }
     with pytest.raises(ValueError, match="HTTPS"):
         validate_provider_entry({**base, "endpoint": "http://mcp.example.test/mcp"})
@@ -113,24 +123,43 @@ def test_invalid_registry_endpoints_fail_validation():
         validate_provider_entry({**base, "hostname": "*.example.test"})
     with pytest.raises(ValueError, match="must match egress hostname"):
         validate_provider_entry({**base, "hostname": "other.example.test"})
+    with pytest.raises(ValueError, match="App HTML SHA-256"):
+        validate_provider_entry({**base, "app_html_sha256": "not-a-digest"})
 
 
 def test_user_controlled_values_never_enter_domain_list():
-    settings = _settings(chat_excalidraw_enabled=True)
+    settings = _settings(chat_excalidraw_enabled=True, chat_mcp_apps_host_enabled=True)
     domains = sandbox_outbound_domains(settings)
     assert "evil.example" not in domains
     assert set(domains) == {"gateway.example.test", "mcp.excalidraw.com"}
 
 
-def test_qualify_excalidraw_probe_requires_staging_and_reviewed_egress():
+def test_qualify_excalidraw_probe_requires_deployed_environment_and_reviewed_egress():
     from backend.scripts.qualify_chat_excalidraw_mcp import validate_settings
 
-    with pytest.raises(RuntimeError, match="staging-only"):
+    with pytest.raises(RuntimeError, match="deployed environment"):
         validate_settings(
-            _settings(environment="production", chat_excalidraw_enabled=True)
+            _settings(
+                environment="development",
+                chat_excalidraw_enabled=True,
+                chat_mcp_apps_host_enabled=True,
+            )
         )
     with pytest.raises(RuntimeError, match="Enable PWC_CHAT_EXCALIDRAW_ENABLED"):
         validate_settings(
             _settings(environment="staging", chat_excalidraw_enabled=False)
         )
-    validate_settings(_settings(environment="staging", chat_excalidraw_enabled=True))
+    validate_settings(
+        _settings(
+            environment="staging",
+            chat_excalidraw_enabled=True,
+            chat_mcp_apps_host_enabled=True,
+        )
+    )
+    validate_settings(
+        _settings(
+            environment="production",
+            chat_excalidraw_enabled=True,
+            chat_mcp_apps_host_enabled=True,
+        )
+    )
