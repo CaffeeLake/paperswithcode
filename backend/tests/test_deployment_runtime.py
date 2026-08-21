@@ -2666,6 +2666,22 @@ def test_production_openrouter_migration_is_role_isolated_and_idempotent():
     assert "FROM pwc_staging" in migration
 
 
+def test_production_direct_openai_migration_is_role_isolated_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_direct_openai_production.sql"
+    ).read_text()
+
+    assert "SET LOCAL search_path = public" in migration
+    assert "current_schema() <> 'public'" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openai_monthly_usage" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_openai_provider_calls" in migration
+    assert "'openai_funded'" in migration
+    assert "OWNER TO paperswithcode_user" in migration
+    assert "TO paperswithcode_user" in migration
+    assert "FROM pwc_staging" in migration
+
+
 def test_production_web_search_migration_is_role_isolated_and_idempotent():
     repository = Path(__file__).resolve().parents[2]
     migration = (
