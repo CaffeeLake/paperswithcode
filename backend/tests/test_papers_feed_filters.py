@@ -426,6 +426,8 @@ def test_paper_list_combines_exact_taxonomy_filters():
         method="Vision Transformer",
         organization="Qwen",
         conference="CVPR 2026",
+        start_date=date(2026, 5, 1),
+        end_date=date(2026, 5, 31),
         order_by="date_published",
     )
 
@@ -435,6 +437,8 @@ def test_paper_list_combines_exact_taxonomy_filters():
     assert "paper_methods" in filter_sql
     assert "paper_organizations" in filter_sql
     assert "paper_conferences" in filter_sql
+    assert response.applied_filters["start_date"] == "2026-05-01"
+    assert response.applied_filters["end_date"] == "2026-05-31"
 
 
 def test_paper_list_rejects_unknown_exact_taxonomy_filter():

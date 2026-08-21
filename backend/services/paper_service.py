@@ -576,6 +576,10 @@ class PaperService:
                     "conference": conference,
                     "framework": framework,
                     "organization": organization,
+                    "start_date": start_date.isoformat()
+                    if start_date is not None
+                    else None,
+                    "end_date": end_date.isoformat() if end_date is not None else None,
                 }.items()
                 if value is not None
             }
