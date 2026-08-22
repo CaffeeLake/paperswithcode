@@ -132,6 +132,8 @@ def test_rank_recalculation_on_update(db_session):
     assert eval1_v1.best_rank == 2
     assert eval2_v1.best_rank == 1
 
+    service.update_evaluation(int(eval1.id), metrics={"mAP": "65.0"}, best_metric="mAP")
+
     # Verify ranks were recalculated
     eval1_v2 = service.get_evaluation(int(eval1.id))
     eval2_v2 = service.get_evaluation(int(eval2.id))
