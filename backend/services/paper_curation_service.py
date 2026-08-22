@@ -29,7 +29,11 @@ from backend.services.catalog_mutation_service import (
 )
 from backend.services.paper_service import PaperService
 from backend.services.hf_artifact_service import collect_explicit_hf_artifacts
-from backend.utils.exceptions import PaperNotFoundError
+from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+)
 from backend.utils.auth import ensure_fresh_contributor_actor
 
 
@@ -59,6 +63,14 @@ class PaperCurationService:
         self.db = db
         self.paper_service = PaperService(db)
 
+    @staticmethod
+    def _translate_legacy_error(error: Exception) -> None:
+        if type(error) is PaperNotFoundError:
+            raise CatalogNotFoundError(str(error)) from error
+        if type(error) is DatabaseError:
+            raise CatalogPersistenceError(str(error)) from error
+        raise error
+
     def snapshot(
         self,
         paper_id: int,
@@ -71,7 +83,7 @@ class PaperCurationService:
         query = self.db.query(DBPaper).filter(DBPaper.id == paper_id)
         paper = query.with_for_update().first() if lock else query.first()
         if not paper:
-            raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+            raise CatalogNotFoundError(f"Paper with ID {paper_id} not found")
         if section == "tasks":
             rows = (
                 self.db.query(PaperTask.task_id, PaperTask.source)
@@ -331,25 +343,28 @@ class PaperCurationService:
                 paper_id, payload["source_url"], commit=False
             ),
         }
-        CatalogMutationService(self.db).mutate(
-            actor=actor,
-            operation="update",
-            entity_type=f"paper_{section}",
-            entity_id=str(paper_id),
-            request_payload=payload,
-            idempotency_key=idempotency_key,
-            expected_version=expected_version,
-            snapshot=lambda: self.snapshot(
-                paper_id,
-                section,
-                lock=True,
-                related_project_urls=related_project_urls,
-                related_hf_keys=related_hf_keys,
-            ),
-            version_snapshot=lambda: self.snapshot(paper_id, section, lock=False),
-            apply=callbacks[section],
-            request_id=request_id,
-        )
+        try:
+            CatalogMutationService(self.db).mutate(
+                actor=actor,
+                operation="update",
+                entity_type=f"paper_{section}",
+                entity_id=str(paper_id),
+                request_payload=payload,
+                idempotency_key=idempotency_key,
+                expected_version=expected_version,
+                snapshot=lambda: self.snapshot(
+                    paper_id,
+                    section,
+                    lock=True,
+                    related_project_urls=related_project_urls,
+                    related_hf_keys=related_hf_keys,
+                ),
+                version_snapshot=lambda: self.snapshot(paper_id, section, lock=False),
+                apply=callbacks[section],
+                request_id=request_id,
+            )
+        except (PaperNotFoundError, DatabaseError) as error:
+            self._translate_legacy_error(error)
         return self.paper_service.get_paper_by_id(paper_id, include_resources=True)
 
     @staticmethod
@@ -536,7 +551,7 @@ class PaperCurationService:
     def _restore_source_url(self, paper_id: int, value: dict) -> None:
         paper = self.db.get(DBPaper, paper_id)
         if paper is None:
-            raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+            raise CatalogNotFoundError(f"Paper with ID {paper_id} not found")
         paper.source = value.get("source")
         paper.source_url = value.get("source_url")
         self.db.flush()

@@ -26,6 +26,57 @@ def _catalog_client(monkeypatch):
     return TestClient(app)
 
 
+def _evaluation_app(monkeypatch, service):
+    from backend.database.connection import get_database_session
+    from backend.routers import evaluations
+    from backend.utils.auth import evaluation_mutation_context
+
+    app = FastAPI()
+    register_catalog_error_handlers(app)
+    app.include_router(evaluations.router, prefix="/api/v1")
+    app.dependency_overrides[get_database_session] = lambda: None
+    app.dependency_overrides[evaluation_mutation_context] = lambda: {"actor": {}}
+    monkeypatch.setattr(evaluations, "EvaluationCurationService", lambda _db: service)
+    return app
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        (CatalogNotFoundError("Evaluation 1 not found"), 404, "Evaluation 1 not found"),
+        (CatalogPersistenceError("database unavailable"), 500, "database unavailable"),
+        (
+            CatalogConflictError({"code": "stale_catalog_version"}),
+            409,
+            {"code": "stale_catalog_version"},
+        ),
+    ],
+)
+def test_evaluation_delete_route_uses_catalog_error_contract(
+    monkeypatch, error, status, detail
+):
+    class Service:
+        def delete(self, **_kwargs):
+            raise error
+
+    with TestClient(_evaluation_app(monkeypatch, Service())) as client:
+        response = client.delete("/api/v1/evaluations/1")
+
+    assert response.status_code == status
+    assert response.json() == {"detail": detail}
+
+
+def test_evaluation_delete_route_success(monkeypatch):
+    class Service:
+        def delete(self, **_kwargs):
+            return None
+
+    with TestClient(_evaluation_app(monkeypatch, Service())) as client:
+        response = client.delete("/api/v1/evaluations/1")
+
+    assert response.status_code == 204
+
+
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [

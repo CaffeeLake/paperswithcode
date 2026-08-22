@@ -52,6 +52,17 @@ class PaperAssociationService:
         self.db.commit()
         return self._hydrate_paper(paper_id, include_resources=True)
 
+    def _raise_mutation_error(
+        self, operation: str, error: Exception, *, commit: bool
+    ) -> None:
+        if commit:
+            self.db.rollback()
+        if isinstance(
+            error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+        ):
+            raise error
+        raise DatabaseError(f"Error updating paper {operation}: {error}") from error
+
     def update_tasks(
         self, paper_id: int, task_ids: list[int], *, commit: bool = True
     ) -> Paper | DBPaper:
@@ -70,13 +81,7 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(
-                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
-            ):
-                raise
-            raise DatabaseError(f"Error updating paper tasks: {error}")
+            self._raise_mutation_error("tasks", error, commit=commit)
 
     def update_organizations(
         self,
@@ -123,13 +128,7 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(
-                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
-            ):
-                raise
-            raise DatabaseError(f"Error updating paper organizations: {error}")
+            self._raise_mutation_error("organizations", error, commit=commit)
 
     def update_methods(
         self, paper_id: int, method_ids: list[int], *, commit: bool = True
@@ -147,13 +146,7 @@ class PaperAssociationService:
             replace_manual_links(self.db, paper_id=paper_id, method_ids=method_ids)
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(
-                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
-            ):
-                raise
-            raise DatabaseError(f"Error updating paper methods: {error}")
+            self._raise_mutation_error("methods", error, commit=commit)
 
     def update_repositories(
         self,
@@ -220,11 +213,7 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper repositories: {error}")
+            self._raise_mutation_error("repositories", error, commit=commit)
 
     def update_project_pages(
         self,
@@ -270,11 +259,7 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
-                raise
-            raise DatabaseError(f"Error updating paper project pages: {error}")
+            self._raise_mutation_error("project pages", error, commit=commit)
 
     def update_source_url(
         self, paper_id: int, source_url: str, *, commit: bool = True
@@ -314,13 +299,7 @@ class PaperAssociationService:
             paper.source_url = normalized
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(
-                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
-            ):
-                raise
-            raise DatabaseError(f"Error updating paper source URL: {error}")
+            self._raise_mutation_error("source URL", error, commit=commit)
 
     def update_hf_artifacts(
         self,
@@ -353,10 +332,4 @@ class PaperAssociationService:
                 self.db.rollback()
             raise CatalogValidationError(str(error))
         except Exception as error:
-            if commit:
-                self.db.rollback()
-            if isinstance(
-                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
-            ):
-                raise
-            raise DatabaseError(f"Error updating paper HF artifacts: {error}")
+            self._raise_mutation_error("HF artifacts", error, commit=commit)

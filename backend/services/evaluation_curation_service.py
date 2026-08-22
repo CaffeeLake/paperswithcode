@@ -19,6 +19,7 @@ from backend.services.catalog_errors import (
     CatalogPersistenceError,
     CatalogValidationError,
 )
+from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
 EVALUATION_FIELDS = (
@@ -49,6 +50,14 @@ class EvaluationCurationService:
     def __init__(self, db: Session):
         self.db = db
         self.service = EvaluationService(db)
+
+    @staticmethod
+    def _translate_legacy_error(error: Exception) -> None:
+        if type(error) is PaperNotFoundError:
+            raise CatalogNotFoundError(str(error)) from error
+        if type(error) is DatabaseError:
+            raise CatalogPersistenceError(str(error)) from error
+        raise error
 
     def snapshot(self, evaluation_id: int, *, lock: bool = False) -> dict | None:
         query = self.db.query(DBEvaluation).filter(DBEvaluation.id == evaluation_id)
@@ -86,15 +95,18 @@ class EvaluationCurationService:
         def snapshot():
             return self.paper_evaluations(paper_id, lock=True)
 
-        after, event, replayed = CatalogMutationService(self.db).mutate(
-            operation="create",
-            entity_type="evaluation",
-            entity_id=f"paper:{paper_id}",
-            request_payload=payload,
-            snapshot=snapshot,
-            apply=apply,
-            **mutation,
-        )
+        try:
+            after, event, replayed = CatalogMutationService(self.db).mutate(
+                operation="create",
+                entity_type="evaluation",
+                entity_id=f"paper:{paper_id}",
+                request_payload=payload,
+                snapshot=snapshot,
+                apply=apply,
+                **mutation,
+            )
+        except (PaperNotFoundError, DatabaseError) as error:
+            self._translate_legacy_error(error)
         if not created_id:
             before_ids = {int(row["id"]) for row in (event.before_snapshot or [])}
             added = [
@@ -110,29 +122,37 @@ class EvaluationCurationService:
         return self.service.get_evaluation(created_id[0])
 
     def update(self, *, evaluation_id: int, payload: dict, mutation: dict):
-        CatalogMutationService(self.db).mutate(
-            operation="update",
-            entity_type="evaluation",
-            entity_id=str(evaluation_id),
-            request_payload=payload,
-            snapshot=lambda: self.snapshot(evaluation_id, lock=True),
-            apply=lambda: self.service.update_evaluation(
-                evaluation_id=evaluation_id, commit=False, **payload
-            ),
-            **mutation,
-        )
+        try:
+            CatalogMutationService(self.db).mutate(
+                operation="update",
+                entity_type="evaluation",
+                entity_id=str(evaluation_id),
+                request_payload=payload,
+                snapshot=lambda: self.snapshot(evaluation_id, lock=True),
+                apply=lambda: self.service.update_evaluation(
+                    evaluation_id=evaluation_id, commit=False, **payload
+                ),
+                **mutation,
+            )
+        except (PaperNotFoundError, DatabaseError) as error:
+            self._translate_legacy_error(error)
         return self.service.get_evaluation(evaluation_id)
 
     def delete(self, *, evaluation_id: int, mutation: dict) -> None:
-        CatalogMutationService(self.db).mutate(
-            operation="delete",
-            entity_type="evaluation",
-            entity_id=str(evaluation_id),
-            request_payload={},
-            snapshot=lambda: self.snapshot(evaluation_id, lock=True),
-            apply=lambda: self.service.delete_evaluation(evaluation_id, commit=False),
-            **mutation,
-        )
+        try:
+            CatalogMutationService(self.db).mutate(
+                operation="delete",
+                entity_type="evaluation",
+                entity_id=str(evaluation_id),
+                request_payload={},
+                snapshot=lambda: self.snapshot(evaluation_id, lock=True),
+                apply=lambda: self.service.delete_evaluation(
+                    evaluation_id, commit=False
+                ),
+                **mutation,
+            )
+        except (PaperNotFoundError, DatabaseError) as error:
+            self._translate_legacy_error(error)
 
     def rollback(
         self, *, event: CatalogMutationEvent, actor: dict, request_id: str
