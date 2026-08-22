@@ -890,7 +890,6 @@ class EvaluationService:
 
         Raises:
             ValueError: If metrics are not valid for this dataset
-            CatalogNotFoundError: If the evaluation does not exist
             DatabaseError: If database operation fails
         """
         try:
@@ -1027,6 +1026,7 @@ class EvaluationService:
 
         Raises:
             ValueError: If metrics are not valid for this dataset
+            CatalogNotFoundError: If the evaluation does not exist
             DatabaseError: If database operation fails
         """
         try:

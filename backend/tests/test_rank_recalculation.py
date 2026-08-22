@@ -11,10 +11,19 @@ Usage:
 """
 
 import pytest
+import uuid
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from backend.services.evaluation_service import EvaluationService
 from backend.config import get_settings
+from backend.models.database import (
+    Dataset,
+    Metric,
+    Paper,
+    Task,
+    TaskDataset,
+    TaskDatasetMetric,
+)
 
 
 @pytest.fixture(scope="function")
@@ -30,7 +39,33 @@ def db_session():
     session.close()
 
 
-def test_rank_calculation_basic(db_session):
+@pytest.fixture
+def rank_target(db_session):
+    paper = db_session.query(Paper).first()
+    assert paper is not None
+    suffix = uuid.uuid4().hex
+    task = Task(name=f"Rank test {suffix}", slug=f"rank-test-{suffix}")
+    dataset = Dataset(name=f"Rank dataset {suffix}", slug=f"rank-dataset-{suffix}")
+    metric = db_session.query(Metric).filter(Metric.name == "mAP").first()
+    if metric is None:
+        metric = Metric(name="mAP", direction="higher_is_better")
+        db_session.add(metric)
+    db_session.add_all([task, dataset])
+    db_session.flush()
+    db_session.add(TaskDataset(task_id=task.id, dataset_id=dataset.id))
+    db_session.add(
+        TaskDatasetMetric(task_id=task.id, dataset_id=dataset.id, metric_id=metric.id)
+    )
+    db_session.commit()
+    try:
+        yield task.id, dataset.id, paper.id
+    finally:
+        db_session.delete(task)
+        db_session.delete(dataset)
+        db_session.commit()
+
+
+def test_rank_calculation_basic(db_session, rank_target):
     """
     Test basic rank calculation for a simple leaderboard.
     """
@@ -38,9 +73,7 @@ def test_rank_calculation_basic(db_session):
 
     # Create test evaluations (using existing paper, task, dataset IDs)
     # You'll need to adjust these IDs based on your database
-    test_task_id = 1
-    test_dataset_id = 1
-    test_paper_id = 1
+    test_task_id, test_dataset_id, test_paper_id = rank_target
 
     # Create evaluations with different mAP scores
     eval1 = service.create_evaluation(
@@ -97,15 +130,13 @@ def test_rank_calculation_basic(db_session):
     service.delete_evaluation(int(eval3.id))
 
 
-def test_rank_recalculation_on_update(db_session):
+def test_rank_recalculation_on_update(db_session, rank_target):
     """
     Test that ranks are recalculated when an evaluation is updated.
     """
     service = EvaluationService(db_session)
 
-    test_task_id = 1
-    test_dataset_id = 1
-    test_paper_id = 1
+    test_task_id, test_dataset_id, test_paper_id = rank_target
 
     # Create evaluations
     eval1 = service.create_evaluation(
@@ -148,15 +179,13 @@ def test_rank_recalculation_on_update(db_session):
     service.delete_evaluation(int(eval2.id))
 
 
-def test_rank_recalculation_on_delete(db_session):
+def test_rank_recalculation_on_delete(db_session, rank_target):
     """
     Test that ranks are recalculated when an evaluation is deleted.
     """
     service = EvaluationService(db_session)
 
-    test_task_id = 1
-    test_dataset_id = 1
-    test_paper_id = 1
+    test_task_id, test_dataset_id, test_paper_id = rank_target
 
     # Create evaluations
     eval1 = service.create_evaluation(
@@ -212,15 +241,13 @@ def test_rank_recalculation_on_delete(db_session):
     service.delete_evaluation(int(eval3.id))
 
 
-def test_separate_ranking_by_additional_data(db_session):
+def test_separate_ranking_by_additional_data(db_session, rank_target):
     """
     Test that evaluations with/without additional data are ranked separately.
     """
     service = EvaluationService(db_session)
 
-    test_task_id = 1
-    test_dataset_id = 1
-    test_paper_id = 1
+    test_task_id, test_dataset_id, test_paper_id = rank_target
 
     # Create evaluations without additional data
     eval1_no_extra = service.create_evaluation(
@@ -263,6 +290,9 @@ def test_separate_ranking_by_additional_data(db_session):
         best_metric="mAP",
         uses_additional_data=True,
     )
+
+    service.recalculate_ranks(test_task_id, test_dataset_id, uses_additional_data=False)
+    service.recalculate_ranks(test_task_id, test_dataset_id, uses_additional_data=True)
 
     # Verify ranks within each group
     eval1_no_extra_check = service.get_evaluation(int(eval1_no_extra.id))
