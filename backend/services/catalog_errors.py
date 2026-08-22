@@ -14,11 +14,11 @@ class CatalogNotFoundError(CatalogError):
     """Raised when a catalog entity cannot be found."""
 
 
-class CatalogConflictError(CatalogError):
+class CatalogConflictError(CatalogError, ValueError):
     """Raised when a catalog operation conflicts with current state."""
 
 
-class CatalogValidationError(CatalogError):
+class CatalogValidationError(CatalogError, ValueError):
     """Raised when catalog operation input is invalid."""
 
 

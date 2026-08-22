@@ -222,6 +222,8 @@ class RepositoryService:
 
         except ValueError:
             raise PaperNotFoundError(f"Invalid repository ID: {repository_id}")
+        except PaperNotFoundError:
+            raise
         except Exception as e:
             raise DatabaseError(f"Failed to fetch repository: {str(e)}")
 
