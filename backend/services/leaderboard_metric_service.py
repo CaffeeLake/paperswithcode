@@ -7,15 +7,30 @@ these relationships.
 """
 
 from typing import List, Optional, Set, Tuple
-from sqlalchemy.orm import Session
+
 from sqlalchemy import and_
+from sqlalchemy.orm import Session
 
 from backend.models.database import (
     Dataset as DBDataset,
-    Task as DBTask,
+)
+from backend.models.database import (
     Metric as DBMetric,
+)
+from backend.models.database import (
+    Task as DBTask,
+)
+from backend.models.database import (
     TaskDataset,
+)
+from backend.models.database import (
     TaskDatasetMetric as DBTaskDatasetMetric,
+)
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogError,
+    CatalogNotFoundError,
+    CatalogValidationError,
 )
 from backend.utils.exceptions import DatabaseError
 
@@ -25,6 +40,17 @@ class LeaderboardMetricService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def resolve_leaderboard_identifiers(
+        self, task_identifier: str, dataset_identifier: str
+    ) -> tuple[int, int]:
+        """Resolve the numeric-only public identifiers for leaderboard routes."""
+        try:
+            return int(task_identifier), int(dataset_identifier)
+        except ValueError as error:
+            raise CatalogValidationError(
+                "Invalid dataset or task ID. Must be integers."
+            ) from error
 
     def get_allowed_metrics_for_leaderboard(
         self, task_id: int, dataset_id: int
@@ -145,21 +171,21 @@ class LeaderboardMetricService:
             # Check if task exists
             task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
             if not task:
-                raise ValueError(f"Task with ID {task_id} not found")
+                raise CatalogNotFoundError(f"Task with ID {task_id} not found")
 
             # Check if dataset exists
             dataset = (
                 self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
             )
             if not dataset:
-                raise ValueError(f"Dataset with ID {dataset_id} not found")
+                raise CatalogNotFoundError(f"Dataset with ID {dataset_id} not found")
 
             # Check if metric exists
             metric = (
                 self.db.query(DBMetric).filter(DBMetric.name == metric_name).first()
             )
             if not metric:
-                raise ValueError(f"Metric '{metric_name}' not found")
+                raise CatalogNotFoundError(f"Metric '{metric_name}' not found")
 
             # Check if link already exists
             existing_link = (
@@ -175,7 +201,7 @@ class LeaderboardMetricService:
             )
 
             if existing_link:
-                raise ValueError(
+                raise CatalogConflictError(
                     f"Metric '{metric_name}' is already linked to leaderboard (task {task_id}, dataset {dataset_id})"
                 )
 
@@ -196,7 +222,7 @@ class LeaderboardMetricService:
                 "created_at": new_link.created_at,
             }
 
-        except ValueError:
+        except CatalogError:
             raise
         except Exception as e:
             self.db.rollback()
@@ -226,7 +252,7 @@ class LeaderboardMetricService:
                 self.db.query(DBMetric).filter(DBMetric.name == metric_name).first()
             )
             if not metric:
-                raise ValueError(f"Metric '{metric_name}' not found")
+                raise CatalogNotFoundError(f"Metric '{metric_name}' not found")
 
             # Find and delete the link
             link = (
@@ -242,7 +268,7 @@ class LeaderboardMetricService:
             )
 
             if not link:
-                raise ValueError(
+                raise CatalogNotFoundError(
                     f"Metric '{metric_name}' is not linked to leaderboard (task {task_id}, dataset {dataset_id})"
                 )
 
@@ -251,7 +277,7 @@ class LeaderboardMetricService:
 
             return True
 
-        except ValueError:
+        except CatalogError:
             raise
         except Exception as e:
             self.db.rollback()
@@ -279,14 +305,14 @@ class LeaderboardMetricService:
             # Check if task exists
             task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
             if not task:
-                raise ValueError(f"Task with ID {task_id} not found")
+                raise CatalogNotFoundError(f"Task with ID {task_id} not found")
 
             # Check if dataset exists
             dataset = (
                 self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
             )
             if not dataset:
-                raise ValueError(f"Dataset with ID {dataset_id} not found")
+                raise CatalogNotFoundError(f"Dataset with ID {dataset_id} not found")
 
             # Check if all metrics exist
             metrics = (
@@ -296,7 +322,7 @@ class LeaderboardMetricService:
             if len(metrics) != len(metric_names):
                 found_names = {m.name for m in metrics}
                 missing_names = set(metric_names) - found_names
-                raise ValueError(
+                raise CatalogNotFoundError(
                     f"The following metrics were not found: {', '.join(missing_names)}"
                 )
 
@@ -331,7 +357,7 @@ class LeaderboardMetricService:
                 ],
             }
 
-        except ValueError:
+        except CatalogError:
             raise
         except Exception as e:
             self.db.rollback()
@@ -356,14 +382,14 @@ class LeaderboardMetricService:
             # Check if task exists
             task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
             if not task:
-                raise ValueError(f"Task with ID {task_id} not found")
+                raise CatalogNotFoundError(f"Task with ID {task_id} not found")
 
             # Check if dataset exists
             dataset = (
                 self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
             )
             if not dataset:
-                raise ValueError(f"Dataset with ID {dataset_id} not found")
+                raise CatalogNotFoundError(f"Dataset with ID {dataset_id} not found")
 
             task_dataset = (
                 self.db.query(TaskDataset)
@@ -415,7 +441,7 @@ class LeaderboardMetricService:
                 "metrics": metric_list,
             }
 
-        except ValueError:
+        except CatalogError:
             raise
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve leaderboard metrics: {str(e)}")

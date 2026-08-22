@@ -6,33 +6,51 @@ including pagination, filtering, paper associations, and evaluation data.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
-from sqlalchemy.orm import Session, aliased
-from sqlalchemy import func, desc, asc, case, cast, String, or_
+from typing import List, Optional
 
-from backend.models.database import (
-    Dataset as DBDataset,
-    Evaluation as DBEvaluation,
-    Metric as DBMetric,
-    TaskDataset,
-    Task as DBTask,
-    PaperTask,
-    Paper as DBPaper,
-    PaperRepository as DBPaperRepository,
-    Repository as DBRepository,
-)
+from sqlalchemy import String, asc, case, cast, desc, func, or_
+from sqlalchemy.orm import Session, aliased
+
 from backend.models.api import (
     Dataset,
-    Datasets,
     DatasetCreateRequest,
-    DatasetUpdateRequest,
     DatasetLeaderboardSummary,
+    Datasets,
+    DatasetUpdateRequest,
     IntroducingPaper,
     Task,
 )
-from backend.utils.exceptions import DatabaseError
-from backend.utils.slug_utils import slugify
-from backend.utils.task_hierarchy import collect_descendant_task_ids
+from backend.models.database import (
+    Dataset as DBDataset,
+)
+from backend.models.database import (
+    Evaluation as DBEvaluation,
+)
+from backend.models.database import (
+    Metric as DBMetric,
+)
+from backend.models.database import (
+    Paper as DBPaper,
+)
+from backend.models.database import (
+    PaperRepository as DBPaperRepository,
+)
+from backend.models.database import (
+    PaperTask,
+    TaskDataset,
+)
+from backend.models.database import (
+    Repository as DBRepository,
+)
+from backend.models.database import (
+    Task as DBTask,
+)
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogError,
+    CatalogNotFoundError,
+    CatalogValidationError,
+)
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -46,6 +64,9 @@ from backend.services.entity_search import (
     prepare_entity_search,
 )
 from backend.services.metric_value_service import parse_metric_value
+from backend.utils.exceptions import DatabaseError
+from backend.utils.slug_utils import slugify
+from backend.utils.task_hierarchy import collect_descendant_task_ids
 
 # Separator unlikely to collide with real data, used to build the logical
 # leaderboard-row key (see `_leaderboard_row_count`).
@@ -99,6 +120,98 @@ class DatasetService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def resolve_task_id(
+        self, identifier: str, *, case_sensitive_slug: bool
+    ) -> int | None:
+        """Resolve a task ID or slug without changing legacy lookup semantics."""
+        try:
+            return int(identifier)
+        except ValueError:
+            pass
+
+        try:
+            slug_filter = (
+                DBTask.slug == identifier
+                if case_sensitive_slug
+                else func.lower(DBTask.slug) == identifier.lower()
+            )
+            row = self.db.query(DBTask.id).filter(slug_filter).first()
+            return int(row[0]) if row is not None else None
+        except Exception as error:
+            raise DatabaseError(f"Failed to retrieve task by slug: {error!s}")
+
+    def get_dataset_by_identifier(
+        self,
+        identifier: str,
+        *,
+        include_paper: bool = False,
+        task_id: int | None = None,
+        is_open: bool | None = None,
+    ) -> Dataset:
+        """Load one dataset by numeric ID or case-insensitive slug."""
+        try:
+            dataset = self.get_dataset(
+                int(identifier),
+                include_paper=include_paper,
+                task_id=task_id,
+                is_open=is_open,
+            )
+        except ValueError:
+            dataset = self.get_dataset_by_slug(
+                identifier,
+                include_paper=include_paper,
+                task_id=task_id,
+                is_open=is_open,
+            )
+        if dataset is None:
+            raise CatalogNotFoundError(
+                f"Dataset with ID or slug '{identifier}' not found"
+            )
+        return dataset
+
+    def resolve_numeric_dataset_id(self, identifier: str) -> int:
+        """Resolve a numeric-only dataset route identifier."""
+        try:
+            return int(identifier)
+        except ValueError as error:
+            raise CatalogValidationError(
+                "Invalid dataset ID. Must be an integer."
+            ) from error
+
+    def require_numeric_dataset_id(self, identifier: str) -> int:
+        """Resolve an existing numeric dataset identifier for a dataset route."""
+        dataset_id = self.resolve_numeric_dataset_id(identifier)
+        if self.get_dataset(dataset_id) is None:
+            raise CatalogNotFoundError(f"Dataset with ID {identifier} not found")
+        return dataset_id
+
+    def list_task_summaries_by_dataset_identifier(self, identifier: str) -> list[Task]:
+        """List task summaries while preserving numeric-ID and slug behavior."""
+        try:
+            dataset_id = int(identifier)
+        except ValueError:
+            dataset_id = self.resolve_dataset_id_by_slug(identifier)
+            if dataset_id is None:
+                raise CatalogNotFoundError(
+                    f"Dataset with slug '{identifier}' not found"
+                )
+        return self.list_task_summaries(dataset_id)
+
+    def update_dataset_by_identifier(
+        self, identifier: str, request: DatasetUpdateRequest
+    ) -> Dataset:
+        """Update one dataset selected by numeric ID or case-insensitive slug."""
+        try:
+            dataset_id = int(identifier)
+        except ValueError:
+            dataset = self.get_dataset_by_slug(identifier)
+            if dataset is None:
+                raise CatalogNotFoundError(
+                    f"Dataset with slug '{identifier}' not found"
+                )
+            dataset_id = int(dataset.id)
+        return self.update_dataset(dataset_id, request)
 
     def _supports_harness(self, dataset_id: int, task_id: Optional[int] = None) -> bool:
         query = self.db.query(TaskDataset.supports_harness).filter(
@@ -1193,7 +1306,8 @@ class DatasetService:
 
         Raises:
             DatabaseError: If database operation fails
-            ValueError: If task IDs don't exist or slug already exists
+            CatalogConflictError: If the generated slug already exists
+            CatalogNotFoundError: If a requested task does not exist
         """
         try:
             # Generate slug from name
@@ -1204,7 +1318,7 @@ class DatasetService:
                 self.db.query(DBDataset).filter(DBDataset.slug == slug).first()
             )
             if existing_dataset:
-                raise ValueError(f"Dataset with slug '{slug}' already exists")
+                raise CatalogConflictError(f"Dataset with slug '{slug}' already exists")
 
             # Validate that all task IDs exist
             existing_task_ids = set(
@@ -1214,7 +1328,9 @@ class DatasetService:
 
             missing_task_ids = set(request.task_ids) - existing_task_ids
             if missing_task_ids:
-                raise ValueError(f"Task IDs not found: {sorted(missing_task_ids)}")
+                raise CatalogNotFoundError(
+                    f"Task IDs not found: {sorted(missing_task_ids)}"
+                )
 
             # Create the dataset
             db_dataset = DBDataset(
@@ -1256,9 +1372,9 @@ class DatasetService:
             # Return the created dataset using the existing get_dataset method
             return self.get_dataset(db_dataset.id)
 
-        except ValueError as e:
+        except CatalogError:
             self.db.rollback()
-            raise e
+            raise
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to create dataset: {str(e)}")
@@ -1276,7 +1392,7 @@ class DatasetService:
 
         Raises:
             DatabaseError: If database operation fails
-            ValueError: If dataset not found
+            CatalogNotFoundError: If the dataset does not exist
         """
         try:
             # Get the existing dataset
@@ -1284,7 +1400,7 @@ class DatasetService:
                 self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
             )
             if not db_dataset:
-                raise ValueError(f"Dataset with ID {dataset_id} not found")
+                raise CatalogNotFoundError(f"Dataset with ID {dataset_id} not found")
 
             # Update only provided fields
             if request.name is not None:
@@ -1355,9 +1471,9 @@ class DatasetService:
             # Return the updated dataset using the existing get_dataset method
             return self.get_dataset(db_dataset.id)
 
-        except ValueError as e:
+        except CatalogError:
             self.db.rollback()
-            raise e
+            raise
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to update dataset: {str(e)}")
