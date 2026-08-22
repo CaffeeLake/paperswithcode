@@ -5,27 +5,23 @@ Provides endpoints for accessing benchmark dataset data, including filtering by 
 paper associations, and evaluation data.
 """
 
-from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 from typing import Optional
 
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from backend.database.connection import get_database_session
 from backend.models.api import (
     Dataset,
-    Datasets,
     DatasetCreateRequest,
-    DatasetUpdateRequest,
     DatasetMetricAddRequest,
     DatasetMetricSetRequest,
+    Datasets,
+    DatasetUpdateRequest,
 )
 from backend.services.dataset_service import DatasetService
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
-from backend.database.connection import get_database_session
-from backend.utils.exceptions import DatabaseError
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
-import logging
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -95,63 +91,46 @@ def list_datasets(
     - `/api/v1/datasets/?name=COCO` - Filter datasets by name containing "COCO"
     - `/api/v1/datasets/?ordering=-name` - Order by name descending
     """
-    try:
-        # Parse ordering
-        order_dir = "asc"
-        order_by = ordering
-        if ordering and ordering.startswith("-"):
-            order_dir = "desc"
-            order_by = ordering[1:]
+    # Parse ordering
+    order_dir = "asc"
+    order_by = ordering
+    if ordering and ordering.startswith("-"):
+        order_dir = "desc"
+        order_by = ordering[1:]
 
-        # Validate order_by field
-        valid_fields = ["name", "full_name", "created_at", "paper_count"]
-        if order_by not in valid_fields:
-            order_by = "name"
+    # Validate order_by field
+    valid_fields = ["name", "full_name", "created_at", "paper_count"]
+    if order_by not in valid_fields:
+        order_by = "name"
 
-        service = DatasetService(db)
+    service = DatasetService(db)
 
-        # Parse task parameter (could be ID or slug)
-        task_id = None
-        if task:
-            try:
-                task_id = int(task)
-            except ValueError:
-                # If not an integer, treat as slug and look up task ID
-                from backend.models.database import Task as DBTask
+    task_id = service.resolve_task_id(task, case_sensitive_slug=True) if task else None
 
-                task_obj = db.query(DBTask).filter(DBTask.slug == task).first()
-                if task_obj:
-                    task_id = task_obj.id
-
-        # Search still respects task / descendant / min_eval_count filters.
-        if q:
-            return service.search_datasets(
-                query=q,
-                page=page,
-                page_size=page_size,
-                task_id=task_id,
-                include_descendants=include_descendants,
-                min_eval_count=min_eval_count,
-                is_open=is_open,
-            )
-
-        return service.get_datasets(
+    # Search still respects task / descendant / min_eval_count filters.
+    if q:
+        return service.search_datasets(
+            query=q,
             page=page,
             page_size=page_size,
-            name=name,
-            full_name=full_name,
             task_id=task_id,
             include_descendants=include_descendants,
-            order_by=order_by,
-            order_dir=order_dir,
             min_eval_count=min_eval_count,
             is_open=is_open,
         )
 
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return service.get_datasets(
+        page=page,
+        page_size=page_size,
+        name=name,
+        full_name=full_name,
+        task_id=task_id,
+        include_descendants=include_descendants,
+        order_by=order_by,
+        order_dir=order_dir,
+        min_eval_count=min_eval_count,
+        is_open=is_open,
+    )
 
 
 @router.get("/{dataset_id}", response_model=Dataset)
@@ -192,55 +171,11 @@ def get_dataset(
     - `/api/v1/datasets/coco?include_paper=true` - Also embed the introducing paper
     - `/api/v1/datasets/coco?task=object-detection` - Also embed the leaderboard summary
     """
-    try:
-        service = DatasetService(db)
-        task_id = None
-        if task:
-            try:
-                task_id = int(task)
-            except ValueError:
-                from backend.models.database import Task as DBTask
-
-                task_obj = (
-                    db.query(DBTask)
-                    .filter(func.lower(DBTask.slug) == task.lower())
-                    .first()
-                )
-                if task_obj:
-                    task_id = task_obj.id
-
-        # Try to parse as integer ID first
-        try:
-            dataset_id_int = int(dataset_id)
-            dataset = service.get_dataset(
-                dataset_id_int,
-                include_paper=include_paper,
-                task_id=task_id,
-                is_open=is_open,
-            )
-        except ValueError:
-            # Not an integer, treat as slug
-            dataset = service.get_dataset_by_slug(
-                dataset_id,
-                include_paper=include_paper,
-                task_id=task_id,
-                is_open=is_open,
-            )
-
-        if not dataset:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Dataset with ID or slug '{dataset_id}' not found",
-            )
-
-        return dataset
-
-    except HTTPException:
-        raise
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    service = DatasetService(db)
+    task_id = service.resolve_task_id(task, case_sensitive_slug=False) if task else None
+    return service.get_dataset_by_identifier(
+        dataset_id, include_paper=include_paper, task_id=task_id, is_open=is_open
+    )
 
 
 @router.get("/{dataset_id}/tasks/")
@@ -256,30 +191,8 @@ def get_dataset_tasks(
     **Example:**
     - `/api/v1/datasets/6/tasks/` - Get tasks for dataset 6
     """
-    try:
-        # Parse dataset_id (can be ID or slug)
-        dataset_service = DatasetService(db)
-        try:
-            dataset_id_int = int(dataset_id)
-        except ValueError:
-            # Try to resolve slug to ID
-            resolved_dataset_id = dataset_service.resolve_dataset_id_by_slug(dataset_id)
-            if resolved_dataset_id is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Dataset with slug '{dataset_id}' not found",
-                )
-            dataset_id_int = resolved_dataset_id
-
-        tasks = dataset_service.list_task_summaries(dataset_id_int)
-
-        return {"count": len(tasks), "results": tasks}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting tasks for dataset: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    tasks = DatasetService(db).list_task_summaries_by_dataset_identifier(dataset_id)
+    return {"count": len(tasks), "results": tasks}
 
 
 @router.get("/{dataset_id}/evaluations/", response_model=dict)
@@ -311,62 +224,34 @@ def get_dataset_evaluations(
     **Example:**
     - `/api/v1/datasets/123/evaluations/` - Get evaluations for dataset 123
     """
-    try:
-        # Parse dataset_id
-        try:
-            dataset_id_int = int(dataset_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset ID. Must be an integer."
-            )
+    dataset_service = DatasetService(db)
+    dataset_id_int = dataset_service.require_numeric_dataset_id(dataset_id)
 
-        dataset_service = DatasetService(db)
+    # Parse ordering
+    order_dir = "asc"
+    order_by = "created_at"
+    if ordering:
+        if ordering.startswith("-"):
+            order_dir = "desc"
+            order_by = ordering[1:]
+        else:
+            order_by = ordering
 
-        # Check if dataset exists
-        dataset = dataset_service.get_dataset(dataset_id_int)
-        if not dataset:
-            raise HTTPException(
-                status_code=404, detail=f"Dataset with ID {dataset_id} not found"
-            )
+    evaluations_response = dataset_service.get_dataset_evaluations(
+        page=page,
+        page_size=page_size,
+        dataset_id=dataset_id_int,
+        is_open=is_open,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
 
-        # Parse ordering
-        order_dir = "asc"
-        order_by = "created_at"
-        if ordering:
-            if ordering.startswith("-"):
-                order_dir = "desc"
-                order_by = ordering[1:]
-            else:
-                order_dir = "asc"
-                order_by = ordering
-
-        # Use EvaluationService to fetch actual evaluation data
-        from backend.services.evaluation_service import EvaluationService
-
-        evaluation_service = EvaluationService(db)
-        evaluations_response = evaluation_service.get_evaluations(
-            page=page,
-            page_size=page_size,
-            dataset_id=dataset_id_int,
-            is_open=is_open,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-
-        # Return in the expected format
-        return {
-            "count": evaluations_response.count,
-            "next_page": evaluations_response.next_page,
-            "previous_page": evaluations_response.previous_page,
-            "results": [eval.model_dump() for eval in evaluations_response.results],
-        }
-
-    except HTTPException:
-        raise
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return {
+        "count": evaluations_response.count,
+        "next_page": evaluations_response.next_page,
+        "previous_page": evaluations_response.previous_page,
+        "results": [eval.model_dump() for eval in evaluations_response.results],
+    }
 
 
 @router.post(
@@ -412,21 +297,7 @@ def create_dataset(
     - 409: Dataset with the same slug already exists
     - 500: Internal server error
     """
-    try:
-        service = DatasetService(db)
-        return service.create_dataset(request)
-
-    except ValueError as e:
-        if "Task IDs not found" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        elif "already exists" in str(e):
-            raise HTTPException(status_code=409, detail=str(e))
-        else:
-            raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return DatasetService(db).create_dataset(request)
 
 
 @router.put(
@@ -462,35 +333,7 @@ def update_dataset(
     - 404 if dataset not found
     - 500 on server error
     """
-    try:
-        service = DatasetService(db)
-
-        # Try to parse as integer ID first
-        try:
-            dataset_id_int = int(dataset_id)
-        except ValueError:
-            # Not an integer, treat as slug and look up dataset ID
-            dataset = service.get_dataset_by_slug(dataset_id)
-            if not dataset:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Dataset with slug '{dataset_id}' not found",
-                )
-            dataset_id_int = int(dataset.id)
-
-        return service.update_dataset(dataset_id_int, request)
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        if "not found" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        else:
-            raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return DatasetService(db).update_dataset_by_identifier(dataset_id, request)
 
 
 # Leaderboard-Metric Management Endpoints (New: task-dataset-metric triples)
@@ -532,25 +375,11 @@ def get_leaderboard_metrics(
     }
     ```
     """
-    try:
-        # Parse IDs
-        try:
-            dataset_id_int = int(dataset_id)
-            task_id_int = int(task_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset or task ID. Must be integers."
-            )
-
-        service = LeaderboardMetricService(db)
-        return service.get_leaderboard_metrics(task_id_int, dataset_id_int)
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    service = LeaderboardMetricService(db)
+    task_id_int, dataset_id_int = service.resolve_leaderboard_identifiers(
+        task_id, dataset_id
+    )
+    return service.get_leaderboard_metrics(task_id_int, dataset_id_int)
 
 
 @router.post(
@@ -584,30 +413,13 @@ def add_metric_to_leaderboard(
     - 400 if task, dataset, or metric not found
     - 409 if metric is already linked to this leaderboard
     """
-    try:
-        # Parse IDs
-        try:
-            dataset_id_int = int(dataset_id)
-            task_id_int = int(task_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset or task ID. Must be integers."
-            )
-
-        service = LeaderboardMetricService(db)
-        return service.add_metric_to_leaderboard(
-            task_id_int, dataset_id_int, request.metric_name
-        )
-
-    except ValueError as e:
-        if "already linked" in str(e):
-            raise HTTPException(status_code=409, detail=str(e))
-        else:
-            raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    service = LeaderboardMetricService(db)
+    task_id_int, dataset_id_int = service.resolve_leaderboard_identifiers(
+        task_id, dataset_id
+    )
+    return service.add_metric_to_leaderboard(
+        task_id_int, dataset_id_int, request.metric_name
+    )
 
 
 @router.put(
@@ -639,27 +451,13 @@ def set_leaderboard_metrics(
     - Updated leaderboard metrics object
     - 404 if task, dataset, or any metric not found
     """
-    try:
-        # Parse IDs
-        try:
-            dataset_id_int = int(dataset_id)
-            task_id_int = int(task_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset or task ID. Must be integers."
-            )
-
-        service = LeaderboardMetricService(db)
-        return service.set_leaderboard_metrics(
-            task_id_int, dataset_id_int, request.metric_names
-        )
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    service = LeaderboardMetricService(db)
+    task_id_int, dataset_id_int = service.resolve_leaderboard_identifiers(
+        task_id, dataset_id
+    )
+    return service.set_leaderboard_metrics(
+        task_id_int, dataset_id_int, request.metric_names
+    )
 
 
 @router.delete(
@@ -686,23 +484,9 @@ def remove_metric_from_leaderboard(
     - 204 No Content on success
     - 404 if task, dataset, metric, or link not found
     """
-    try:
-        # Parse IDs
-        try:
-            dataset_id_int = int(dataset_id)
-            task_id_int = int(task_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset or task ID. Must be integers."
-            )
-
-        service = LeaderboardMetricService(db)
-        service.remove_metric_from_leaderboard(task_id_int, dataset_id_int, metric_name)
-        return None
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    service = LeaderboardMetricService(db)
+    task_id_int, dataset_id_int = service.resolve_leaderboard_identifiers(
+        task_id, dataset_id
+    )
+    service.remove_metric_from_leaderboard(task_id_int, dataset_id_int, metric_name)
+    return None

@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.database.connection import get_database_session
@@ -16,12 +17,17 @@ from backend.models.database import (
     Area,
     Base,
     Dataset,
+    Metric,
     Paper,
     PaperTask,
     Task,
     TaskDataset,
+    TaskDatasetMetric,
 )
 from backend.services.dataset_service import DatasetService
+from backend.services.evaluation_service import EvaluationService
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
+from backend.utils.exceptions import DatabaseError
 
 
 @compiles(ARRAY, "sqlite")
@@ -68,6 +74,8 @@ def client():
             Dataset(id=11, name="Empty Dataset", slug="empty-dataset"),
         ]
     )
+    db.add(Metric(id=1, name="Accuracy", direction="higher_is_better"))
+    db.add(TaskDatasetMetric(task_id=1, dataset_id=10, metric_id=1))
     db.add_all(
         [
             Task(id=90, name="Parent Task", slug="parent-task", level=0),
@@ -117,6 +125,8 @@ def client():
 
     app = create_app()
     app.dependency_overrides[get_database_session] = _database_override
+    app.dependency_overrides[require_catalog_mutator] = lambda: {"role": "admin"}
+    app.dependency_overrides[require_fresh_catalog_mutator] = lambda: {"role": "admin"}
     with TestClient(app) as test_client:
         yield test_client
 
@@ -240,3 +250,55 @@ def test_legacy_dataset_task_id_contract_remains_a_list_of_ints(client):
 
     assert set(task_ids) == {1, 2}
     assert all(isinstance(task_id, int) for task_id in task_ids)
+
+
+def test_leaderboard_metric_route_preserves_success_validation_and_not_found_contracts(
+    client,
+):
+    success = client.get("/api/v1/datasets/10/tasks/1/metrics")
+    invalid = client.get("/api/v1/datasets/not-an-id/tasks/1/metrics")
+    missing = client.get("/api/v1/datasets/10/tasks/999/metrics")
+
+    assert success.status_code == 200
+    assert success.json()["metrics"][0]["metric_name"] == "Accuracy"
+    assert invalid.status_code == 400
+    assert invalid.json() == {"detail": "Invalid dataset or task ID. Must be integers."}
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "Task with ID 999 not found"}
+
+
+def test_leaderboard_metric_duplicate_preserves_conflict_contract(client):
+    response = client.post(
+        "/api/v1/datasets/10/tasks/1/metrics", json={"metric_name": "Accuracy"}
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Metric 'Accuracy' is already linked to leaderboard (task 1, dataset 10)"
+    }
+
+
+def test_dataset_persistence_error_uses_central_error_translation(client, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise SQLAlchemyError("unavailable")
+
+    monkeypatch.setattr(Session, "query", fail)
+
+    response = client.get("/api/v1/datasets/10")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to retrieve dataset: unavailable"}
+
+
+def test_dataset_evaluation_persistence_error_preserves_detail_only_contract(
+    client, monkeypatch
+):
+    def fail(*_args, **_kwargs):
+        raise DatabaseError("Failed to retrieve evaluations: unavailable")
+
+    monkeypatch.setattr(EvaluationService, "get_evaluations", fail)
+
+    response = client.get("/api/v1/datasets/10/evaluations/")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to retrieve evaluations: unavailable"}
