@@ -19,8 +19,6 @@ from claude_agent_sdk import (
     HookMatcher,
     MirrorErrorMessage,
     ResultMessage,
-    ToolResultBlock,
-    UserMessage,
     create_sdk_mcp_server,
     tool,
 )
@@ -54,9 +52,38 @@ from backend.chat_sandbox_worker.tool_policy import (
 PUBLIC_TOOL_RESULT_MAX_BYTES = 24 * 1024
 
 
-def _sdk_event_policy() -> SDKEventPolicy:
+def _sdk_event_policy(hooks: "WorkerToolHooks") -> SDKEventPolicy:
+    def format_tool_result(block, tool_id: str, _name: str) -> dict[str, Any]:
+        raw_tool_id = block.tool_use_id
+        event = hooks.results.pop(raw_tool_id, None)
+        if event is None:
+            text, truncated = bound_tool_output(
+                _response_text(block.content), hooks.budget.maximum_result_bytes
+            )
+            return {
+                "type": "tool_result",
+                "id": tool_id,
+                "status": "error" if block.is_error else "success",
+                "took_ms": 0,
+                "content": [{"type": "text", "text": text, "truncated": truncated}],
+                "metadata": {
+                    "exit_code": 1 if block.is_error else 0,
+                    "output_truncated": truncated,
+                },
+            }
+        event = {**event, "id": tool_id}
+        if block.is_error and event.get("status") == "success":
+            event = {
+                **event,
+                "status": "error",
+                "metadata": {**(event.get("metadata") or {}), "exit_code": 1},
+            }
+            hooks.budget.web_search_failed = True
+        return event
+
     return SDKEventPolicy(
-        tool_name=lambda name: "search_web" if name == WEB_SEARCH_TOOL else name
+        tool_name=lambda name: "search_web" if name == WEB_SEARCH_TOOL else name,
+        format_tool_result=format_tool_result,
     )
 
 
@@ -628,60 +655,6 @@ async def _adapt_messages(
                 }
         if terminal_events:
             continue
-        if isinstance(message, UserMessage):
-            for block in message.content if isinstance(message.content, list) else []:
-                if not isinstance(block, ToolResultBlock):
-                    continue
-                raw_tool_id = block.tool_use_id
-                tool_id = adapter.tool_result_id(raw_tool_id)
-                event = hooks.results.pop(raw_tool_id, None)
-                if event is None:
-                    text, truncated = bound_tool_output(
-                        _response_text(block.content),
-                        hooks.budget.maximum_result_bytes,
-                    )
-                    event = {
-                        "type": "tool_result",
-                        "id": tool_id,
-                        "status": "error" if block.is_error else "success",
-                        "took_ms": 0,
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": text,
-                                "truncated": truncated,
-                            }
-                        ],
-                        "metadata": {
-                            "exit_code": 1 if block.is_error else 0,
-                            "output_truncated": truncated,
-                        },
-                    }
-                else:
-                    event = {**event, "id": tool_id}
-                    if block.is_error and event.get("status") == "success":
-                        event = {
-                            **event,
-                            "status": "error",
-                            "metadata": {
-                                **(event.get("metadata") or {}),
-                                "exit_code": 1,
-                            },
-                        }
-                        hooks.budget.web_search_failed = True
-                output = "".join(
-                    str(part.get("text") or "")
-                    for part in event.get("content", [])
-                    if isinstance(part, dict)
-                )
-                yield {
-                    "v": 1,
-                    "request_id": request_id,
-                    **_public_tool_result_event(event),
-                }
-                for artifact_event in artifact_events_from_output(output):
-                    yield {"v": 1, "request_id": request_id, **artifact_event}
-            continue
         adapted = [
             {"v": 1, "request_id": request_id, **event}
             for event in adapter.feed(message)
@@ -690,7 +663,18 @@ async def _adapt_messages(
             terminal_events = adapted
             continue
         for event in adapted:
-            yield event
+            if event["type"] != "tool_result":
+                yield event
+                continue
+            raw_event = _public_tool_result_event(event)
+            yield raw_event
+            output = "".join(
+                str(part.get("text") or "")
+                for part in event.get("content", [])
+                if isinstance(part, dict)
+            )
+            for artifact_event in artifact_events_from_output(output):
+                yield {"v": 1, "request_id": request_id, **artifact_event}
     for event in terminal_events:
         yield event
 
@@ -719,7 +703,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     hooks.budget.observe_urls(prompt)
     adapter = SDKEventAdapter(
         show_reasoning=settings.chat_show_reasoning,
-        policy=_sdk_event_policy(),
+        policy=_sdk_event_policy(hooks),
     )
     options = _options(
         settings,
@@ -803,7 +787,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
             finalizer_started = time.monotonic()
             final_adapter = SDKEventAdapter(
                 show_reasoning=settings.chat_show_reasoning,
-                policy=_sdk_event_policy(),
+                policy=_sdk_event_policy(hooks),
             )
             final_limited = False
             final_done: dict[str, Any] | None = None
@@ -1070,7 +1054,7 @@ class PersistentAgent:
         self.hooks.budget.observe_urls(prompt)
         adapter = SDKEventAdapter(
             show_reasoning=self.settings.chat_show_reasoning,
-            policy=_sdk_event_policy(),
+            policy=_sdk_event_policy(self.hooks),
         )
         yield {"v": 1, "type": "workspace_ready", "request_id": request_id}
         await self.client.query(prompt)
@@ -1132,7 +1116,7 @@ class PersistentAgent:
         finalizer_started = time.monotonic()
         final_adapter = SDKEventAdapter(
             show_reasoning=self.settings.chat_show_reasoning,
-            policy=_sdk_event_policy(),
+            policy=_sdk_event_policy(self.hooks),
         )
         final_limited = False
         final_done: dict[str, Any] | None = None

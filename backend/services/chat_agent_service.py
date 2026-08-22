@@ -31,12 +31,7 @@ from backend.chat_execution_policy import (
     effective_tool_rounds,
 )
 from backend.chat_sandbox_worker.prompt import READER_SYSTEM_PROMPT
-from backend.chat_sandbox_worker.sdk_adapter import (
-    SDKEventAdapter as CanonicalSDKEventAdapter,
-)
-from backend.chat_sandbox_worker.sdk_adapter import (
-    SDKEventPolicy,
-)
+from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter, SDKEventPolicy
 from backend.config import Settings
 from backend.services.chat_mcp import create_papers_mcp_server, create_web_mcp_server
 
@@ -259,14 +254,14 @@ def _parse_tool_payload(content: Any) -> dict[str, Any] | None:
     return None
 
 
-def _local_tool_event_policy(maximum_search_calls: int) -> SDKEventPolicy:
+def _local_tool_event_policy(maximum_search_calls: int | None) -> SDKEventPolicy:
     search_calls = 0
 
     def allow_tool_call(_tool_id: str, name: str, _args: dict[str, Any]) -> bool:
         nonlocal search_calls
         if name != "search_papers":
             return True
-        if search_calls >= maximum_search_calls:
+        if maximum_search_calls is not None and search_calls >= maximum_search_calls:
             return False
         search_calls += 1
         return True
@@ -303,30 +298,19 @@ def _local_tool_event_policy(maximum_search_calls: int) -> SDKEventPolicy:
             "results": payload.get("results", []) if payload else [],
         }
 
+    def format_terminal_result(message) -> list[dict[str, Any]]:
+        if "max_turn" in message.subtype:
+            return [{"type": "_execution_limit", "reason": "max_turns"}]
+        if message.is_error:
+            return [{"type": "error", "message": "The chat request failed."}]
+        return [{"type": "done", "followups": [], "finish_reason": "success"}]
+
     return SDKEventPolicy(
         tool_name=_normalize_tool_name,
         allow_tool_call=allow_tool_call,
         format_tool_result=format_tool_result,
+        format_terminal_result=format_terminal_result,
     )
-
-
-class SDKEventAdapter(CanonicalSDKEventAdapter):
-    """In-process compatibility entrypoint over the canonical adapter."""
-
-    def __init__(
-        self,
-        *,
-        show_reasoning: bool,
-        maximum_search_calls: int | None = None,
-        policy: SDKEventPolicy | None = None,
-    ):
-        super().__init__(
-            show_reasoning=show_reasoning,
-            policy=policy
-            or _local_tool_event_policy(
-                maximum_search_calls if maximum_search_calls is not None else 2**31
-            ),
-        )
 
 
 def build_agent_options(
@@ -574,7 +558,10 @@ async def stream_agent_events(
             )
             final_stream = sdk_query(prompt=FINALIZER_PROMPT, options=final_options)
             finalizer_started = time.monotonic()
-            final_adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+            final_adapter = SDKEventAdapter(
+                show_reasoning=settings.chat_show_reasoning,
+                policy=_local_tool_event_policy(None),
+            )
             final_done: dict[str, Any] | None = None
             final_limited = False
             final_error: dict[str, Any] | None = None

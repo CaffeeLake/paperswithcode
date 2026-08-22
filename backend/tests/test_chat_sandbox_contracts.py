@@ -2190,7 +2190,9 @@ def test_worker_adapter_namespaces_reused_provider_tool_ids():
                 messages(),
                 request_id="request-1",
                 hooks=hooks,
-                adapter=agent.SDKEventAdapter(show_reasoning=False),
+                adapter=agent.SDKEventAdapter(
+                    show_reasoning=False, policy=agent._sdk_event_policy(hooks)
+                ),
             )
         ]
 

@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 ToolName = Callable[[str], str]
 ToolAllowed = Callable[[str, str, dict[str, Any]], bool]
 ToolResultFormatter = Callable[[ToolResultBlock, str, str], dict[str, Any] | None]
+TerminalResultFormatter = Callable[[ResultMessage], list[dict[str, Any]]]
 
 
 def _identity(value: str) -> str:
@@ -29,6 +30,21 @@ def _identity(value: str) -> str:
 
 def _allow_all(_tool_id: str, _name: str, _args: dict[str, Any]) -> bool:
     return True
+
+
+def _format_terminal_result(message: ResultMessage) -> list[dict[str, Any]]:
+    limited = "max_turn" in message.subtype
+    if message.is_error and not limited:
+        return [
+            {
+                "type": "error",
+                "code": "gateway_unavailable",
+                "message": "The research run failed.",
+            }
+        ]
+    if limited:
+        return [{"type": "_execution_limit", "reason": "max_turns"}]
+    return [{"type": "done", "followups": [], "finish_reason": "success"}]
 
 
 @dataclass(frozen=True)
@@ -44,6 +60,7 @@ class SDKEventPolicy:
     allow_tool_call: ToolAllowed = _allow_all
     on_tool_batch: Callable[[list[str]], None] | None = None
     format_tool_result: ToolResultFormatter | None = None
+    format_terminal_result: TerminalResultFormatter = _format_terminal_result
     unique_tool_ids: bool = True
 
 
@@ -71,10 +88,9 @@ class SDKEventAdapter:
         self.block_kinds: dict[int, str] = {}
         self.tool_blocks: dict[int, dict[str, Any]] = {}
         self.current_tool_ids: dict[str, str] = {}
-        self.pending_tool_ids: dict[str, list[str]] = {}
+        self.pending_tool_ids: dict[str, list[str | None]] = {}
         self.tool_id_occurrences: dict[str, int] = {}
         self.allocated_tool_ids: set[str] = set()
-        self.suppressed_tool_ids: set[str] = set()
         self.tool_names: dict[str, str] = {}
 
     def _close_reasoning(self) -> list[dict[str, Any]]:
@@ -110,7 +126,7 @@ class SDKEventAdapter:
             value = {}
         name = self.policy.tool_name(str(block.get("name") or ""))
         if not self.policy.allow_tool_call(raw_tool_id, name, value):
-            self.suppressed_tool_ids.add(raw_tool_id)
+            self.pending_tool_ids.setdefault(raw_tool_id, []).append(None)
             return []
         tool_id = self._allocate_tool_id(raw_tool_id)
         self.current_tool_ids[raw_tool_id] = tool_id
@@ -119,8 +135,6 @@ class SDKEventAdapter:
         return [{"type": "tool_call", "id": tool_id, "name": name, "args": value}]
 
     def tool_result_id(self, raw_tool_id: str) -> str | None:
-        if raw_tool_id in self.suppressed_tool_ids:
-            return None
         pending = self.pending_tool_ids.get(raw_tool_id)
         if not pending:
             return raw_tool_id
@@ -299,19 +313,5 @@ class SDKEventAdapter:
                     "provider_requests": message.num_turns,
                 }
             )
-            limited = "max_turn" in message.subtype
-            if message.is_error and not limited:
-                events.append(
-                    {
-                        "type": "error",
-                        "code": "gateway_unavailable",
-                        "message": "The research run failed.",
-                    }
-                )
-            elif limited:
-                events.append({"type": "_execution_limit", "reason": "max_turns"})
-            else:
-                events.append(
-                    {"type": "done", "followups": [], "finish_reason": "success"}
-                )
+            events.extend(self.policy.format_terminal_result(message))
         return events

@@ -38,6 +38,7 @@ from backend.services.chat_agent_service import (
     SEARCH_TOOL_NAME,
     SDKEventAdapter,
     SearchCallLimiter,
+    _local_tool_event_policy,
     build_agent_options,
     stream_agent_events,
 )
@@ -1615,7 +1616,9 @@ def test_search_limiter_latches_failed_web_search():
 
 
 def test_sdk_adapter_streams_reasoning_tool_result_and_answer():
-    adapter = SDKEventAdapter(show_reasoning=True)
+    adapter = SDKEventAdapter(
+        show_reasoning=True, policy=_local_tool_event_policy(None)
+    )
     messages = [
         StreamEvent(
             uuid="1",
@@ -1943,7 +1946,7 @@ def test_sdk_adapter_keeps_provider_failures_distinct(provider_error, code):
 
 
 def test_sdk_adapter_hides_leading_whitespace_and_over_budget_searches():
-    adapter = SDKEventAdapter(show_reasoning=True, maximum_search_calls=2)
+    adapter = SDKEventAdapter(show_reasoning=True, policy=_local_tool_event_policy(2))
     events = []
     for message in [
         AssistantMessage(model="test", content=[TextBlock(text="\n\n")]),
