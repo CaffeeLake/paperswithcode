@@ -10,6 +10,20 @@ JSONDetail = (
 )
 
 
+def translate_legacy_catalog_error(
+    error: Exception,
+    *,
+    not_found_type: type[Exception],
+    persistence_type: type[Exception],
+) -> None:
+    """Translate legacy service errors at a migrated catalog boundary."""
+    if type(error) is not_found_type:
+        raise CatalogNotFoundError(str(error)) from error
+    if type(error) is persistence_type:
+        raise CatalogPersistenceError(str(error)) from error
+    raise error
+
+
 class CatalogError(Exception):
     """Base class for failures from catalog domain operations."""
 

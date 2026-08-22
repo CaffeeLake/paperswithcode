@@ -32,7 +32,7 @@ from backend.services.hf_artifact_service import collect_explicit_hf_artifacts
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.services.catalog_errors import (
     CatalogNotFoundError,
-    CatalogPersistenceError,
+    translate_legacy_catalog_error,
 )
 from backend.utils.auth import ensure_fresh_contributor_actor
 
@@ -62,14 +62,6 @@ class PaperCurationService:
     def __init__(self, db: Session):
         self.db = db
         self.paper_service = PaperService(db)
-
-    @staticmethod
-    def _translate_legacy_error(error: Exception) -> None:
-        if type(error) is PaperNotFoundError:
-            raise CatalogNotFoundError(str(error)) from error
-        if type(error) is DatabaseError:
-            raise CatalogPersistenceError(str(error)) from error
-        raise error
 
     def snapshot(
         self,
@@ -364,8 +356,15 @@ class PaperCurationService:
                 request_id=request_id,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            self._translate_legacy_error(error)
-        return self.paper_service.get_paper_by_id(paper_id, include_resources=True)
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
+        try:
+            return self.paper_service.get_paper_by_id(paper_id, include_resources=True)
+        except (PaperNotFoundError, DatabaseError) as error:
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
 
     @staticmethod
     def _removes_data(section: str, before: Any, payload: dict) -> bool:

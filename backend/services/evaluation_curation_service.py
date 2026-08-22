@@ -18,6 +18,7 @@ from backend.services.catalog_errors import (
     CatalogNotFoundError,
     CatalogPersistenceError,
     CatalogValidationError,
+    translate_legacy_catalog_error,
 )
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -50,14 +51,6 @@ class EvaluationCurationService:
     def __init__(self, db: Session):
         self.db = db
         self.service = EvaluationService(db)
-
-    @staticmethod
-    def _translate_legacy_error(error: Exception) -> None:
-        if type(error) is PaperNotFoundError:
-            raise CatalogNotFoundError(str(error)) from error
-        if type(error) is DatabaseError:
-            raise CatalogPersistenceError(str(error)) from error
-        raise error
 
     def snapshot(self, evaluation_id: int, *, lock: bool = False) -> dict | None:
         query = self.db.query(DBEvaluation).filter(DBEvaluation.id == evaluation_id)
@@ -106,7 +99,9 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            self._translate_legacy_error(error)
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
         if not created_id:
             before_ids = {int(row["id"]) for row in (event.before_snapshot or [])}
             added = [
@@ -119,7 +114,12 @@ class EvaluationCurationService:
                     "Could not resolve idempotent evaluation result"
                 )
             created_id.append(added[0])
-        return self.service.get_evaluation(created_id[0])
+        try:
+            return self.service.get_evaluation(created_id[0])
+        except (PaperNotFoundError, DatabaseError) as error:
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
 
     def update(self, *, evaluation_id: int, payload: dict, mutation: dict):
         try:
@@ -135,8 +135,15 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            self._translate_legacy_error(error)
-        return self.service.get_evaluation(evaluation_id)
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
+        try:
+            return self.service.get_evaluation(evaluation_id)
+        except (PaperNotFoundError, DatabaseError) as error:
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
 
     def delete(self, *, evaluation_id: int, mutation: dict) -> None:
         try:
@@ -152,7 +159,9 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            self._translate_legacy_error(error)
+            translate_legacy_catalog_error(
+                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
+            )
 
     def rollback(
         self, *, event: CatalogMutationEvent, actor: dict, request_id: str
