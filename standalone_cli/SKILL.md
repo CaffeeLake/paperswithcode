@@ -26,10 +26,11 @@ pwc version
 
 Benchmark lists group the top benchmarks under each visible task by research
 area in an interactive terminal. Use `--flat` for the paginated dataset table
-or `--group-by-area` to force Markdown when piping. Grouped rows include the
-benchmark name, full name when distinct, slug, and ID. Task-scoped lists also
-include the slug and ID alongside the best model, paper title, and preferred
-code repository. Use either identifier with
+or `--group-by-area` to force Markdown when piping. Every row places the
+benchmark description and optional Hugging Face dataset URL immediately after
+its name. Grouped rows also include the full name when distinct, slug, and ID.
+Task-scoped lists include the slug and ID alongside the best model, paper title,
+and preferred code repository. Use either identifier with
 `pwc benchmark --name IDENTIFIER` for leaderboard details.
 
 The standalone parser contains no authentication, mutation, ingestion,

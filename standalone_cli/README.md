@@ -17,7 +17,9 @@ compatible versioned API origin; it defaults to
 command tree. In an interactive terminal, benchmark lists render the top
 benchmarks under each visible task, grouped by research area. Use `--flat` for
 the paginated dataset table or `--group-by-area` to force Markdown when piping.
-Each grouped benchmark includes its name, full name when distinct, slug, and ID;
+Each benchmark list row places its description and optional Hugging Face dataset
+URL immediately after its name. Grouped rows also include the full name when
+distinct, slug, and ID;
 inspect it with `pwc benchmark --name IDENTIFIER`. Task-scoped benchmark lists
 also include the benchmark ID and slug alongside the best model, its paper
 title, and the preferred code repository. Either identifier can be passed to

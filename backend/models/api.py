@@ -1425,6 +1425,8 @@ class TrendingBenchmark(BaseModel):
     name: str = Field(..., description="Benchmark name")
     slug: Optional[str] = Field(None, description="Benchmark URL slug")
     full_name: Optional[str] = Field(None, description="Expanded benchmark name")
+    description: Optional[str] = Field(None, description="Benchmark description")
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
     recent_paper_count: int = Field(
         ..., description="Distinct reporting papers in the recent window"
     )
@@ -1554,6 +1556,8 @@ class TaskBenchmarkListItem(BaseModel):
     name: str = Field(..., description="Benchmark name")
     slug: Optional[str] = Field(None, description="Benchmark URL slug")
     full_name: Optional[str] = Field(None, description="Expanded benchmark name")
+    description: Optional[str] = Field(None, description="Benchmark description")
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
     evaluation_count: int = Field(
         ..., description="Logical leaderboard rows for this task and benchmark"
     )

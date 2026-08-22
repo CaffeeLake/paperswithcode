@@ -355,6 +355,8 @@ class AreaService:
                     DBDataset.name,
                     DBDataset.slug,
                     DBDataset.full_name,
+                    DBDataset.description,
+                    DBDataset.hf_url,
                     evaluation_count.label("evaluation_count"),
                 )
                 .join(DBDataset, DBDataset.id == TaskDataset.dataset_id)
@@ -377,6 +379,8 @@ class AreaService:
                 name,
                 slug,
                 full_name,
+                description,
+                hf_url,
                 count,
             ) in benchmark_rows:
                 count = int(count or 0)
@@ -388,6 +392,8 @@ class AreaService:
                         name=name,
                         slug=slug,
                         full_name=full_name,
+                        description=description,
+                        hf_url=hf_url,
                         evaluation_count=count,
                     )
                 )

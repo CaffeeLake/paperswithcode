@@ -401,7 +401,13 @@ def test_grouped_task_benchmarks_are_bounded_and_popular_first(client):
     )
     db.add_all(
         [
-            DBDataset(id=1, name="Popular Set", slug="popular-set"),
+            DBDataset(
+                id=1,
+                name="Popular Set",
+                slug="popular-set",
+                description="Popular benchmark",
+                hf_url="https://huggingface.co/datasets/example/popular-set",
+            ),
             DBDataset(id=2, name="Featured Set", slug="featured-set"),
         ]
     )
@@ -472,6 +478,10 @@ def test_grouped_task_benchmarks_are_bounded_and_popular_first(client):
         (benchmark["slug"], benchmark["evaluation_count"])
         for benchmark in task["benchmarks"]
     ] == [("popular-set", 3), ("featured-set", 1)]
+    assert task["benchmarks"][0]["description"] == "Popular benchmark"
+    assert task["benchmarks"][0]["hf_url"] == (
+        "https://huggingface.co/datasets/example/popular-set"
+    )
 
 
 @pytest.fixture

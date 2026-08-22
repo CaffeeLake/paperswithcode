@@ -173,6 +173,8 @@ class BenchmarkTrendService:
                     name=dataset.name,
                     slug=dataset.slug,
                     full_name=dataset.full_name,
+                    description=dataset.description,
+                    hf_url=dataset.hf_url,
                     recent_paper_count=recent,
                     baseline_paper_count=baseline,
                     all_time_paper_count=int(all_time or 0),

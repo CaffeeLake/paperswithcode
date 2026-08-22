@@ -162,6 +162,8 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
                 "id": "2",
                 "slug": "recent-ocr",
                 "name": "Recent OCR",
+                "description": "Recent OCR benchmark.",
+                "hf_url": "https://huggingface.co/datasets/example/recent-ocr",
                 "recent_paper_count": 4,
                 "all_time_paper_count": 5,
                 "trend_score": 1.3333,
@@ -174,6 +176,8 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
                 "id": "1",
                 "slug": "classic-ocr",
                 "name": "Classic OCR",
+                "description": None,
+                "hf_url": None,
                 "recent_paper_count": 1,
                 "all_time_paper_count": 20,
                 "trend_score": 0.3333,
@@ -201,12 +205,52 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
     assert calls[0][0] == "tasks/OCR/trending-benchmarks"
     assert calls[0][1]["min_recent_papers"] == 0
     assert output.getvalue().splitlines() == [
-        ("id\tslug\tname\trecent_papers\ttrend_score\tbest_model\tpaper_title\tcode"),
         (
-            "2\trecent-ocr\tRecent OCR\t4\t1.3333\tReader 2\tRecent OCR Paper"
-            "\thttps://github.com/example/reader-2"
+            "id\tslug\tname\tdescription\thf_url\trecent_papers\ttrend_score"
+            "\tbest_model\tpaper_title\tcode"
         ),
-        "1\tclassic-ocr\tClassic OCR\t1\t0.3333\tReader 1\tClassic OCR Paper\t",
+        (
+            "2\trecent-ocr\tRecent OCR\tRecent OCR benchmark.\thttps://huggingface.co/"
+            "datasets/example/recent-ocr\t4\t1.3333\tReader 2\tRecent OCR Paper\t"
+            "https://github.com/example/reader-2"
+        ),
+        "1\tclassic-ocr\tClassic OCR\t\t\t1\t0.3333\tReader 1\tClassic OCR Paper\t",
+    ]
+
+
+def test_flat_benchmark_list_places_description_and_hf_url_after_name(monkeypatch):
+    payload = {
+        "count": 1,
+        "results": [
+            {
+                "id": "3",
+                "name": "ExampleBench",
+                "description": "An example benchmark.",
+                "hf_url": "https://huggingface.co/datasets/example/benchmark",
+                "full_name": "Example Benchmark",
+                "paper_count": 7,
+            }
+        ],
+    }
+
+    class Client:
+        def __init__(self):
+            pass
+
+        def get(self, _path, _params):
+            return Response(json.dumps(payload).encode(), {})
+
+    monkeypatch.setattr("pwc_cli.cli.Client", Client)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert main(["benchmark", "list", "--flat"]) == 0
+
+    assert output.getvalue().splitlines() == [
+        "id\tname\tdescription\thf_url\tfull_name\tevals",
+        (
+            "3\tExampleBench\tAn example benchmark.\thttps://huggingface.co/"
+            "datasets/example/benchmark\tExample Benchmark\t7"
+        ),
     ]
 
 
@@ -229,6 +273,8 @@ def test_benchmark_list_groups_top_benchmarks_as_markdown(monkeypatch):
                                 "name": "ImageNet [1K]",
                                 "slug": "imagenet",
                                 "full_name": "ImageNet Large Scale Visual Recognition",
+                                "description": "Image classification benchmark.",
+                                "hf_url": "https://huggingface.co/datasets/imagenet-1k",
                                 "evaluation_count": 1234,
                             }
                         ],
@@ -277,7 +323,8 @@ def test_benchmark_list_groups_top_benchmarks_as_markdown(monkeypatch):
         "\n"
         "## Image Classification (`image-classification`)\n"
         "\n"
-        "- ImageNet [1K] — full name: ImageNet Large Scale Visual Recognition; "
+        "- ImageNet [1K] — description: Image classification benchmark.; HF: "
+        "https://huggingface.co/datasets/imagenet-1k; full name: ImageNet Large Scale Visual Recognition; "
         "slug: `imagenet`; ID: `20`; 1,234 evaluations\n"
     )
 

@@ -205,7 +205,13 @@ def _seed_lm_with_subtasks(db):
 
 def _seed_benchmark_trends(db, today):
     task = DBTask(id=50, name="OCR", slug="ocr-trends", level=0)
-    rising = DBDataset(id=500, name="RisingBench", slug="rising-bench")
+    rising = DBDataset(
+        id=500,
+        name="RisingBench",
+        slug="rising-bench",
+        description="Rising benchmark",
+        hf_url="https://huggingface.co/datasets/example/rising-bench",
+    )
     established = DBDataset(id=501, name="EstablishedBench", slug="established-bench")
     db.add_all([task, rising, established])
     db.add_all(
@@ -290,6 +296,8 @@ def test_trending_benchmarks_default_to_ninety_days(db_session):
     assert rising.rate_change == 8.0
     assert rising.support_weighted_score == pytest.approx(3.8627)
     assert rising.best_model_name == "Model 500"
+    assert rising.description == "Rising benchmark"
+    assert rising.hf_url == "https://huggingface.co/datasets/example/rising-bench"
     assert established.recent_paper_count == 2
     assert established.baseline_paper_count == 5
     assert established.rate_change == 0.8
@@ -412,6 +420,11 @@ def test_trending_benchmarks_endpoint_exposes_default_window(client):
     assert body["results"][0]["best_paper_title"] == "Paper 500"
     assert body["results"][0]["best_paper_route"] == "2607.00500"
     assert body["results"][0]["best_code_url"] is None
+    assert body["results"][0]["description"] == "Rising benchmark"
+    assert (
+        body["results"][0]["hf_url"]
+        == "https://huggingface.co/datasets/example/rising-bench"
+    )
     assert "featured_rank" not in body["results"][0]
     assert len(body["results"][0]["history"]) == 6
 
