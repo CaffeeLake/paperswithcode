@@ -111,9 +111,8 @@ not be after the end date.
   `--group-by-area` forces Markdown and `--flat` forces the dataset table.
   Task, search, pagination, ordering, and open-model filters take precedence
   over `--group-by-area` and select task-scoped flat output.
-  Rows place the benchmark description and optional Hugging Face dataset URL
-  immediately after the benchmark name, followed by the slug and ID (plus the
-  full name when distinct in grouped output); pass the slug or ID to
+  Rows include the benchmark name, slug, and ID (plus the full name when
+  distinct in grouped output); pass the slug or ID to
   `pwc benchmark --name IDENTIFIER` for leaderboard details.
   `[--page 1-100 --page-size 1-100 --search TEXT --task TASK --area NAME_OR_ID
   --benchmarks-per-task 1-10 --group-by-area|--flat
