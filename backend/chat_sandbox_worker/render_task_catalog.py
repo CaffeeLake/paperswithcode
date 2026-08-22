@@ -9,6 +9,11 @@ import sys
 from typing import Any
 
 
+TASK_CONTEXT = {
+    "video-understanding": "includes video question answering and video captioning",
+}
+
+
 def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
     areas = payload.get("results")
     if not isinstance(areas, list):
@@ -44,9 +49,12 @@ def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
         )
         lines.extend(("", f"### {name}", ""))
         for task in catalog_tasks[:maximum_tasks_per_area]:
-            lines.append(
-                f"- `{str(task['slug']).strip()}` — {str(task['name']).strip()}"
-            )
+            slug = str(task["slug"]).strip()
+            task_name = str(task["name"]).strip()
+            context = TASK_CONTEXT.get(slug)
+            if context:
+                task_name = f"{task_name} ({context})"
+            lines.append(f"- `{slug}` — {task_name}")
     return "\n".join(lines) + "\n"
 
 

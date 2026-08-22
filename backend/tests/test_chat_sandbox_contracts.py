@@ -3057,10 +3057,12 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "direct network clients" in prompt
     assert "`command -v <name>` succeeds" in prompt
     visual_instruction = (
-        "When `read_me` and `create_view` are available, use them any time the user asks\n"
-        "for a visual explanation or visualization."
+        "When `read_me` and `create_view` are available, use them any time the "
+        "user asks\nfor a visual explanation or visualization."
     )
     assert visual_instruction in prompt
+    assert "Use Read only in `/workspace`" in prompt
+    assert "HF access is anonymous-only" in prompt
     assert "fix the JSON and call `create_view` once more" in prompt
     assert prompt.index("## Tool usage") < prompt.index(visual_instruction)
     assert "[owner/repo](https://github.com/owner/repo)" in prompt
@@ -3098,7 +3100,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-wW1HKoElLFhYqMUenWC6B4"
+    assert MODAL_IMAGE_ID == "im-rY0SIfyL3yJYbBWhV8zZQ6"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-DEb4S3J4R3ByMoojw9UwNI"
     assert WORKER_CONTRACT_VERSION == "96"
     assert CHAT_SANDBOX_REGION == "eu-west"
@@ -3129,6 +3131,11 @@ def test_task_catalog_is_bounded_and_ranked():
                         "slug": "popular",
                         "paper_count": 999,
                     },
+                    {
+                        "name": "Video Understanding",
+                        "slug": "video-understanding",
+                        "paper_count": 40,
+                    },
                     {"name": "Detection", "slug": "detection", "paper_count": 20},
                     {
                         "name": "Classification",
@@ -3147,10 +3154,14 @@ def test_task_catalog_is_bounded_and_ranked():
         ]
     }
 
-    catalog = render_task_catalog(payload, maximum_tasks_per_area=2)
+    catalog = render_task_catalog(payload, maximum_tasks_per_area=3)
 
     assert catalog.index("### Audio") < catalog.index("### Vision")
     assert catalog.index("`popular`") < catalog.index("`classification`")
+    assert (
+        "`video-understanding` — Video Understanding (includes video question "
+        "answering and video captioning)" in catalog
+    )
     assert "`detection`" not in catalog
     assert "`segmentation`" not in catalog
 
