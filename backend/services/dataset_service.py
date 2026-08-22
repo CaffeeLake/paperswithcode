@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy import String, asc, case, cast, desc, func, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 
 from backend.models.api import (
@@ -49,6 +50,7 @@ from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogError,
     CatalogNotFoundError,
+    CatalogPersistenceError,
     CatalogValidationError,
 )
 from backend.services.entity_search import (
@@ -64,7 +66,6 @@ from backend.services.entity_search import (
     prepare_entity_search,
 )
 from backend.services.metric_value_service import parse_metric_value
-from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
 from backend.utils.task_hierarchy import collect_descendant_task_ids
 
@@ -130,16 +131,18 @@ class DatasetService:
         except ValueError:
             pass
 
+        slug_filter = (
+            DBTask.slug == identifier
+            if case_sensitive_slug
+            else func.lower(DBTask.slug) == identifier.lower()
+        )
         try:
-            slug_filter = (
-                DBTask.slug == identifier
-                if case_sensitive_slug
-                else func.lower(DBTask.slug) == identifier.lower()
-            )
             row = self.db.query(DBTask.id).filter(slug_filter).first()
-            return int(row[0]) if row is not None else None
-        except Exception as error:
-            raise DatabaseError(f"Failed to retrieve task by slug: {error!s}")
+        except SQLAlchemyError as error:
+            raise CatalogPersistenceError(
+                f"Failed to retrieve task by slug: {error!s}"
+            ) from error
+        return int(row[0]) if row is not None else None
 
     def get_dataset_by_identifier(
         self,
@@ -504,7 +507,7 @@ class DatasetService:
             Datasets object with pagination info and results
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         if search is not None:
             return self.search_datasets(
@@ -717,7 +720,7 @@ class DatasetService:
             )
 
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve datasets: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to retrieve datasets: {e!s}")
 
     def _fetch_introducing_paper(
         self, paper_id: Optional[int]
@@ -770,7 +773,7 @@ class DatasetService:
             Dataset object or None if not found
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Query dataset with counts. `paper_count` is the number of logical
@@ -858,7 +861,7 @@ class DatasetService:
             return Dataset(**dataset_dict)
 
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve dataset: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to retrieve dataset: {e!s}")
 
     def get_dataset_by_slug(
         self,
@@ -882,7 +885,7 @@ class DatasetService:
             Dataset object or None if not found
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Query dataset with counts. `paper_count` mirrors the benchmark
@@ -969,7 +972,7 @@ class DatasetService:
             return Dataset(**dataset_dict)
 
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve dataset by slug: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to retrieve dataset by slug: {e!s}")
 
     def resolve_dataset_id_by_slug(self, slug: str) -> int | None:
         """Resolve one dataset slug case-insensitively without hydrating it."""
@@ -981,7 +984,7 @@ class DatasetService:
             )
             return int(row[0]) if row is not None else None
         except Exception as e:  # noqa: BLE001
-            raise DatabaseError(f"Failed to retrieve dataset by slug: {e!s}")
+            raise CatalogPersistenceError(f"Failed to retrieve dataset by slug: {e!s}")
 
     def list_task_summaries(self, dataset_id: int) -> list[Task]:
         """Return task-list projections for one dataset in a grouped query."""
@@ -1017,7 +1020,9 @@ class DatasetService:
                 for task, paper_count in rows
             ]
         except Exception as e:  # noqa: BLE001
-            raise DatabaseError(f"Failed to retrieve tasks for dataset: {e!s}")
+            raise CatalogPersistenceError(
+                f"Failed to retrieve tasks for dataset: {e!s}"
+            )
 
     def get_dataset_tasks(self, dataset_id: int) -> List[int]:
         """
@@ -1030,7 +1035,7 @@ class DatasetService:
             List of unique task IDs
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Get distinct task IDs from task_datasets
@@ -1044,7 +1049,9 @@ class DatasetService:
             return [tid[0] for tid in task_ids]
 
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve tasks for dataset: {str(e)}")
+            raise CatalogPersistenceError(
+                f"Failed to retrieve tasks for dataset: {e!s}"
+            )
 
     def search_datasets(
         self,
@@ -1072,7 +1079,7 @@ class DatasetService:
             Datasets object with pagination info and results
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         terms = prepare_entity_search(query, EntitySearchKind.DATASET)
         if not terms.usable:
@@ -1305,7 +1312,7 @@ class DatasetService:
             Created Dataset object
 
         Raises:
-            DatabaseError: If database operation fails
+            CatalogPersistenceError: If database operation fails
             CatalogConflictError: If the generated slug already exists
             CatalogNotFoundError: If a requested task does not exist
         """
@@ -1377,7 +1384,7 @@ class DatasetService:
             raise
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to create dataset: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to create dataset: {e!s}")
 
     def update_dataset(self, dataset_id: int, request: DatasetUpdateRequest) -> Dataset:
         """
@@ -1391,7 +1398,7 @@ class DatasetService:
             Updated Dataset object
 
         Raises:
-            DatabaseError: If database operation fails
+            CatalogPersistenceError: If database operation fails
             CatalogNotFoundError: If the dataset does not exist
         """
         try:
@@ -1476,4 +1483,4 @@ class DatasetService:
             raise
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to update dataset: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to update dataset: {e!s}")

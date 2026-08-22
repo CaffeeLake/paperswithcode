@@ -30,9 +30,9 @@ from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogError,
     CatalogNotFoundError,
+    CatalogPersistenceError,
     CatalogValidationError,
 )
-from backend.utils.exceptions import DatabaseError
 
 
 class LeaderboardMetricService:
@@ -67,7 +67,7 @@ class LeaderboardMetricService:
             Empty set if no restrictions configured (allows all metrics)
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Query for metric names linked to this task-dataset pair
@@ -84,7 +84,9 @@ class LeaderboardMetricService:
             return {name[0] for name in metric_names}
 
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve allowed metric names: {str(e)}")
+            raise CatalogPersistenceError(
+                f"Failed to retrieve allowed metric names: {e!s}"
+            )
 
     def validate_metrics_for_leaderboard(
         self,
@@ -108,7 +110,7 @@ class LeaderboardMetricService:
             - (False, error_message) if validation fails
 
         Raises:
-            DatabaseError: If database query fails
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Get allowed metrics for this leaderboard
@@ -144,10 +146,10 @@ class LeaderboardMetricService:
 
             return True, None
 
-        except DatabaseError:
+        except CatalogPersistenceError:
             raise
         except Exception as e:
-            raise DatabaseError(f"Failed to validate metrics: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to validate metrics: {e!s}")
 
     def add_metric_to_leaderboard(
         self, task_id: int, dataset_id: int, metric_name: str
@@ -164,8 +166,9 @@ class LeaderboardMetricService:
             Dictionary with task_id, dataset_id, metric_id, metric_name
 
         Raises:
-            ValueError: If task, dataset, or metric not found, or link already exists
-            DatabaseError: If database operation fails
+            CatalogNotFoundError: If the task, dataset, or metric does not exist
+            CatalogConflictError: If the metric is already linked
+            CatalogPersistenceError: If database operation fails
         """
         try:
             # Check if task exists
@@ -226,7 +229,7 @@ class LeaderboardMetricService:
             raise
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to add metric to leaderboard: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to add metric to leaderboard: {e!s}")
 
     def remove_metric_from_leaderboard(
         self, task_id: int, dataset_id: int, metric_name: str
@@ -243,8 +246,8 @@ class LeaderboardMetricService:
             True if removed successfully
 
         Raises:
-            ValueError: If task, dataset, metric, or link not found
-            DatabaseError: If database operation fails
+            CatalogNotFoundError: If the metric or leaderboard link does not exist
+            CatalogPersistenceError: If database operation fails
         """
         try:
             # Check if metric exists
@@ -281,7 +284,9 @@ class LeaderboardMetricService:
             raise
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to remove metric from leaderboard: {str(e)}")
+            raise CatalogPersistenceError(
+                f"Failed to remove metric from leaderboard: {e!s}"
+            )
 
     def set_leaderboard_metrics(
         self, task_id: int, dataset_id: int, metric_names: List[str]
@@ -298,8 +303,8 @@ class LeaderboardMetricService:
             Dictionary with task_id, dataset_id, and list of metrics
 
         Raises:
-            ValueError: If task, dataset not found or any metric not found
-            DatabaseError: If database operation fails
+            CatalogNotFoundError: If the task, dataset, or a metric does not exist
+            CatalogPersistenceError: If database operation fails
         """
         try:
             # Check if task exists
@@ -361,7 +366,7 @@ class LeaderboardMetricService:
             raise
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to set leaderboard metrics: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to set leaderboard metrics: {e!s}")
 
     def get_leaderboard_metrics(self, task_id: int, dataset_id: int) -> dict:
         """
@@ -375,8 +380,8 @@ class LeaderboardMetricService:
             Dictionary with task_id, dataset_id, and list of metrics
 
         Raises:
-            DatabaseError: If database query fails
-            ValueError: If task or dataset not found
+            CatalogNotFoundError: If the task or dataset does not exist
+            CatalogPersistenceError: If database query fails
         """
         try:
             # Check if task exists
@@ -444,4 +449,6 @@ class LeaderboardMetricService:
         except CatalogError:
             raise
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve leaderboard metrics: {str(e)}")
+            raise CatalogPersistenceError(
+                f"Failed to retrieve leaderboard metrics: {e!s}"
+            )

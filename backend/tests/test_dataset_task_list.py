@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.database.connection import get_database_session
@@ -23,7 +24,6 @@ from backend.models.database import (
     TaskDataset,
     TaskDatasetMetric,
 )
-from backend.services.catalog_errors import CatalogPersistenceError
 from backend.services.dataset_service import DatasetService
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 
@@ -278,9 +278,9 @@ def test_leaderboard_metric_duplicate_preserves_conflict_contract(client):
 
 def test_dataset_persistence_error_uses_central_error_translation(client, monkeypatch):
     def fail(*_args, **_kwargs):
-        raise CatalogPersistenceError("Failed to retrieve dataset: unavailable")
+        raise SQLAlchemyError("unavailable")
 
-    monkeypatch.setattr(DatasetService, "get_dataset_by_identifier", fail)
+    monkeypatch.setattr(Session, "query", fail)
 
     response = client.get("/api/v1/datasets/10")
 
