@@ -40,7 +40,11 @@ from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
 from backend.utils.task_slugs import task_slug_candidates
-from backend.services.catalog_errors import CatalogConflictError, CatalogValidationError
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogNotFoundError,
+    CatalogValidationError,
+)
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -845,6 +849,12 @@ class TaskService:
             raise CatalogValidationError("Invalid area ID format") from error
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks for area: {str(e)}")
+
+    def lookup_tasks_by_area(self, area_id: str, **kwargs) -> Tasks:
+        try:
+            return self.get_tasks_by_area(area_id, **kwargs)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
 
     def search_tasks(
         self,

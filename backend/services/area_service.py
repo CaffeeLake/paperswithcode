@@ -31,7 +31,11 @@ from backend.models.api import (
 from backend.services.dataset_service import _leaderboard_row_count
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.services.catalog_errors import CatalogValidationError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+    CatalogValidationError,
+)
 
 
 class AreaService:
@@ -123,6 +127,18 @@ class AreaService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve areas: {str(e)}")
+
+    def list_areas(self, **kwargs) -> Areas:
+        try:
+            return self.get_areas(**kwargs)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def lookup_area(self, area_id: str) -> Area:
+        try:
+            return self.get_area_by_id(area_id)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
 
     def get_area_by_id(self, area_id: str) -> Area:
         """

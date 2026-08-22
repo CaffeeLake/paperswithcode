@@ -33,6 +33,10 @@ from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.slug_utils import slugify
 from backend.services.catalog_errors import CatalogConflictError, CatalogValidationError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+)
 
 
 class ConferenceService:
@@ -61,6 +65,20 @@ class ConferenceService:
         if result is None:
             raise PaperNotFoundError("Image not available")
         return result
+
+    def lookup_conference(self, slug: str) -> Conference:
+        try:
+            return self.get_conference(slug)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+
+    def lookup_conference_papers(self, **kwargs) -> Papers:
+        try:
+            return self.get_conference_papers(**kwargs)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
 
     def _get_conference_by_slug(self, slug: str) -> DBConference:
         conference = (

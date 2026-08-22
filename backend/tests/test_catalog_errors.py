@@ -17,6 +17,15 @@ from backend.services.catalog_errors import (
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
+def _catalog_client(monkeypatch):
+    from backend.database.connection import get_database_session
+    from backend.main import create_app
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = lambda: object()
+    return TestClient(app)
+
+
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [
@@ -67,3 +76,61 @@ def test_unmigrated_catalog_errors_keep_their_legacy_response_contract(error, ex
     response = asyncio.run(app.exception_handlers[type(error)](request, error))
 
     assert (response.status_code, json.loads(response.body)) == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "service", "method", "error", "status"),
+    [
+        (
+            "/api/v1/areas/invalid",
+            "backend.services.area_service.AreaService",
+            "get_area_by_id",
+            CatalogValidationError("Invalid area ID format"),
+            400,
+        ),
+        (
+            "/api/v1/areas/404",
+            "backend.services.area_service.AreaService",
+            "get_area_by_id",
+            PaperNotFoundError("Area with ID 404 not found"),
+            404,
+        ),
+        (
+            "/api/v1/areas/",
+            "backend.services.area_service.AreaService",
+            "get_areas",
+            CatalogPersistenceError("Failed to retrieve areas"),
+            500,
+        ),
+    ],
+)
+def test_taxonomy_endpoint_errors_keep_detail_only_envelopes(
+    monkeypatch, path, service, method, error, status
+):
+    module_name, class_name = service.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[class_name])
+    monkeypatch.setattr(
+        getattr(module, class_name),
+        method,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with _catalog_client(monkeypatch) as client:
+        response = client.get(path)
+
+    assert response.status_code == status
+    assert response.json() == {"detail": str(error)}
+
+
+def test_create_task_requires_catalog_mutator_before_service_is_called(monkeypatch):
+    from backend.services.task_service import TaskService
+
+    monkeypatch.setattr(
+        TaskService,
+        "create_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("called")),
+    )
+    with _catalog_client(monkeypatch) as client:
+        response = client.post("/api/v1/tasks/", json={"name": "Protected task"})
+
+    assert response.status_code in {401, 403}
