@@ -237,11 +237,7 @@ def get_dataset_evaluations(
         else:
             order_by = ordering
 
-    # Use EvaluationService to fetch actual evaluation data
-    from backend.services.evaluation_service import EvaluationService
-
-    evaluation_service = EvaluationService(db)
-    evaluations_response = evaluation_service.get_evaluations(
+    evaluations_response = dataset_service.get_dataset_evaluations(
         page=page,
         page_size=page_size,
         dataset_id=dataset_id_int,

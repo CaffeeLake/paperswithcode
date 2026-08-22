@@ -25,7 +25,9 @@ from backend.models.database import (
     TaskDatasetMetric,
 )
 from backend.services.dataset_service import DatasetService
+from backend.services.evaluation_service import EvaluationService
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
+from backend.utils.exceptions import DatabaseError
 
 
 @compiles(ARRAY, "sqlite")
@@ -286,3 +288,17 @@ def test_dataset_persistence_error_uses_central_error_translation(client, monkey
 
     assert response.status_code == 500
     assert response.json() == {"detail": "Failed to retrieve dataset: unavailable"}
+
+
+def test_dataset_evaluation_persistence_error_preserves_detail_only_contract(
+    client, monkeypatch
+):
+    def fail(*_args, **_kwargs):
+        raise DatabaseError("Failed to retrieve evaluations: unavailable")
+
+    monkeypatch.setattr(EvaluationService, "get_evaluations", fail)
+
+    response = client.get("/api/v1/datasets/10/evaluations/")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to retrieve evaluations: unavailable"}
