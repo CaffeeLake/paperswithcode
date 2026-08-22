@@ -43,7 +43,7 @@ from backend.chat_sandbox_worker.protocol import (
     encode_frame,
 )
 from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
-from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter
+from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter, SDKEventPolicy
 from backend.chat_sandbox_worker.tool_policy import (
     WEB_SEARCH_TOOL,
     ToolBudget,
@@ -52,6 +52,12 @@ from backend.chat_sandbox_worker.tool_policy import (
 )
 
 PUBLIC_TOOL_RESULT_MAX_BYTES = 24 * 1024
+
+
+def _sdk_event_policy() -> SDKEventPolicy:
+    return SDKEventPolicy(
+        tool_name=lambda name: "search_web" if name == WEB_SEARCH_TOOL else name
+    )
 
 
 def _public_tool_result_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -713,6 +719,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     hooks.budget.observe_urls(prompt)
     adapter = SDKEventAdapter(
         show_reasoning=settings.chat_show_reasoning,
+        policy=_sdk_event_policy(),
     )
     options = _options(
         settings,
@@ -794,7 +801,10 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                 ),
             )
             finalizer_started = time.monotonic()
-            final_adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+            final_adapter = SDKEventAdapter(
+                show_reasoning=settings.chat_show_reasoning,
+                policy=_sdk_event_policy(),
+            )
             final_limited = False
             final_done: dict[str, Any] | None = None
             final_failure: dict[str, Any] | None = None
@@ -1060,6 +1070,7 @@ class PersistentAgent:
         self.hooks.budget.observe_urls(prompt)
         adapter = SDKEventAdapter(
             show_reasoning=self.settings.chat_show_reasoning,
+            policy=_sdk_event_policy(),
         )
         yield {"v": 1, "type": "workspace_ready", "request_id": request_id}
         await self.client.query(prompt)
@@ -1120,7 +1131,8 @@ class PersistentAgent:
         await self.client.query(FINALIZER_PROMPT)
         finalizer_started = time.monotonic()
         final_adapter = SDKEventAdapter(
-            show_reasoning=self.settings.chat_show_reasoning
+            show_reasoning=self.settings.chat_show_reasoning,
+            policy=_sdk_event_policy(),
         )
         final_limited = False
         final_done: dict[str, Any] | None = None

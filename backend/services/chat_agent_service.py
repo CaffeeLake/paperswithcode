@@ -14,22 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
-    AssistantMessage,
     ClaudeAgentOptions,
     HookMatcher,
     MirrorErrorMessage,
-    ResultMessage,
-    StreamEvent,
-    TextBlock,
-    ThinkingBlock,
     ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
+)
+from claude_agent_sdk import (
     query as sdk_query,
 )
 
-from backend.config import Settings
-from backend.chat_sandbox_worker.prompt import READER_SYSTEM_PROMPT
 from backend.chat_execution_policy import (
     ANSWER_NOW_REASON,
     FINALIZER_MAX_TURNS,
@@ -37,6 +30,14 @@ from backend.chat_execution_policy import (
     FINALIZER_PROMPT,
     effective_tool_rounds,
 )
+from backend.chat_sandbox_worker.prompt import READER_SYSTEM_PROMPT
+from backend.chat_sandbox_worker.sdk_adapter import (
+    SDKEventAdapter as CanonicalSDKEventAdapter,
+)
+from backend.chat_sandbox_worker.sdk_adapter import (
+    SDKEventPolicy,
+)
+from backend.config import Settings
 from backend.services.chat_mcp import create_papers_mcp_server, create_web_mcp_server
 
 logger = logging.getLogger(__name__)
@@ -258,276 +259,74 @@ def _parse_tool_payload(content: Any) -> dict[str, Any] | None:
     return None
 
 
-class SDKEventAdapter:
-    """Stateful conversion from SDK messages to application event dictionaries."""
+def _local_tool_event_policy(maximum_search_calls: int) -> SDKEventPolicy:
+    search_calls = 0
+
+    def allow_tool_call(_tool_id: str, name: str, _args: dict[str, Any]) -> bool:
+        nonlocal search_calls
+        if name != "search_papers":
+            return True
+        if search_calls >= maximum_search_calls:
+            return False
+        search_calls += 1
+        return True
+
+    def format_tool_result(
+        block: ToolResultBlock, tool_id: str, name: str
+    ) -> dict[str, Any]:
+        if name == "search_web":
+            text = _tool_content_text(block.content)
+            payload = _parse_tool_payload(block.content)
+            return {
+                "type": "tool_result",
+                "id": tool_id,
+                "status": "error" if block.is_error else "success",
+                "took_ms": int(payload.get("took_ms", 0)) if payload else 0,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text[:24_900],
+                        "truncated": len(text) > 24_900,
+                    }
+                ],
+                "metadata": {
+                    "exit_code": 1 if block.is_error else 0,
+                    "output_truncated": len(text) > 24_900,
+                },
+            }
+        payload = _parse_tool_payload(block.content)
+        return {
+            "type": "tool_result",
+            "id": tool_id,
+            "hits": int(payload.get("hits", 0)) if payload else 0,
+            "took_ms": int(payload.get("took_ms", 0)) if payload else 0,
+            "results": payload.get("results", []) if payload else [],
+        }
+
+    return SDKEventPolicy(
+        tool_name=_normalize_tool_name,
+        allow_tool_call=allow_tool_call,
+        format_tool_result=format_tool_result,
+    )
+
+
+class SDKEventAdapter(CanonicalSDKEventAdapter):
+    """In-process compatibility entrypoint over the canonical adapter."""
 
     def __init__(
         self,
         *,
         show_reasoning: bool,
         maximum_search_calls: int | None = None,
-        on_tool_batch=None,
+        policy: SDKEventPolicy | None = None,
     ):
-        self.show_reasoning = show_reasoning
-        self.maximum_search_calls = maximum_search_calls
-        self.reasoning_open = False
-        self.answer_started = False
-        self.saw_text_delta = False
-        self.saw_thinking_delta = False
-        self.terminal = False
-        self.block_kinds: dict[int, str] = {}
-        self.tool_blocks: dict[int, dict[str, Any]] = {}
-        self.emitted_tool_ids: set[str] = set()
-        self.suppressed_tool_ids: set[str] = set()
-        self.search_calls = 0
-        self.tool_names: dict[str, str] = {}
-        self.on_tool_batch = on_tool_batch
-
-    def _close_reasoning(self) -> list[dict[str, Any]]:
-        if not self.reasoning_open:
-            return []
-        self.reasoning_open = False
-        return [{"type": "reasoning_end"}]
-
-    def _emit_tool_call(self, block: dict[str, Any]) -> list[dict[str, Any]]:
-        tool_id = str(block.get("id") or "")
-        if (
-            not tool_id
-            or tool_id in self.emitted_tool_ids
-            or tool_id in self.suppressed_tool_ids
-        ):
-            return []
-        raw_input = block.get("input")
-        if not isinstance(raw_input, dict):
-            fragments = "".join(block.get("fragments", []))
-            try:
-                raw_input = json.loads(fragments) if fragments else {}
-            except json.JSONDecodeError:
-                return []
-        name = _normalize_tool_name(str(block.get("name") or ""))
-        if name == "search_papers":
-            if (
-                self.maximum_search_calls is not None
-                and self.search_calls >= self.maximum_search_calls
-            ):
-                self.suppressed_tool_ids.add(tool_id)
-                return []
-            self.search_calls += 1
-        self.emitted_tool_ids.add(tool_id)
-        self.tool_names[tool_id] = name
-        return [
-            {
-                "type": "tool_call",
-                "id": tool_id,
-                "name": name,
-                "args": raw_input,
-            }
-        ]
-
-    def _feed_stream_event(self, message: StreamEvent) -> list[dict[str, Any]]:
-        raw = message.event
-        event_type = raw.get("type")
-        events: list[dict[str, Any]] = []
-        if event_type == "message_start":
-            events.extend(self._close_reasoning())
-            self.saw_text_delta = False
-            self.saw_thinking_delta = False
-            self.block_kinds.clear()
-            self.tool_blocks.clear()
-        elif event_type == "content_block_start":
-            index = int(raw.get("index", 0))
-            block = raw.get("content_block") or {}
-            kind = block.get("type", "")
-            self.block_kinds[index] = kind
-            if kind == "thinking" and self.show_reasoning:
-                events.extend(self._close_reasoning())
-                self.reasoning_open = True
-                events.append({"type": "reasoning_start"})
-            elif kind == "tool_use":
-                events.extend(self._close_reasoning())
-                self.tool_blocks[index] = {
-                    "id": block.get("id"),
-                    "name": block.get("name"),
-                    "input": block.get("input") if block.get("input") else None,
-                    "fragments": [],
-                }
-            elif kind == "text":
-                events.extend(self._close_reasoning())
-        elif event_type == "content_block_delta":
-            index = int(raw.get("index", 0))
-            delta = raw.get("delta") or {}
-            delta_type = delta.get("type")
-            if delta_type == "thinking_delta" and self.show_reasoning:
-                self.saw_thinking_delta = True
-                if not self.reasoning_open:
-                    self.reasoning_open = True
-                    events.append({"type": "reasoning_start"})
-                text = delta.get("thinking", "")
-                if text:
-                    events.append({"type": "reasoning_delta", "text": text})
-            elif delta_type == "text_delta":
-                events.extend(self._close_reasoning())
-                text = delta.get("text", "")
-                if text and (self.answer_started or text.strip()):
-                    self.answer_started = True
-                    self.saw_text_delta = True
-                    events.append({"type": "answer_delta", "text": text})
-            elif delta_type == "input_json_delta":
-                block = self.tool_blocks.setdefault(
-                    index, {"id": "", "name": "", "input": None, "fragments": []}
-                )
-                block["fragments"].append(delta.get("partial_json", ""))
-        elif event_type == "content_block_stop":
-            index = int(raw.get("index", 0))
-            kind = self.block_kinds.get(index)
-            if kind == "thinking":
-                events.extend(self._close_reasoning())
-            elif kind == "tool_use":
-                events.extend(self._emit_tool_call(self.tool_blocks.get(index, {})))
-        elif event_type == "message_stop":
-            events.extend(self._close_reasoning())
-            if self.on_tool_batch:
-                self.on_tool_batch(
-                    [
-                        str(block.get("id") or "")
-                        for block in self.tool_blocks.values()
-                        if block.get("id")
-                    ]
-                )
-        return events
-
-    def feed(self, message: Any) -> list[dict[str, Any]]:
-        if isinstance(message, StreamEvent):
-            return self._feed_stream_event(message)
-
-        events: list[dict[str, Any]] = []
-        if isinstance(message, AssistantMessage):
-            if message.error:
-                self.terminal = True
-                if message.error == "billing_error":
-                    return [
-                        {
-                            "type": "error",
-                            "code": "hf_inference_billing_exhausted",
-                            "message": (
-                                "Hugging Face could not bill this request. Your included "
-                                "credits may be exhausted; enable or review pay-as-you-go "
-                                "billing in Settings."
-                            ),
-                        }
-                    ]
-                provider_errors = {
-                    "authentication_failed": (
-                        "hf_inference_credential_expired",
-                        "Your Hugging Face Inference Providers authorization is "
-                        "missing or expired. Re-sign in with Hugging Face to continue.",
-                    ),
-                    "rate_limit": (
-                        "provider_rate_limit",
-                        "The selected model is temporarily rate-limited. Try again shortly.",
-                    ),
-                    "server_error": (
-                        "provider_unavailable",
-                        "The model provider is temporarily unavailable. Try again shortly.",
-                    ),
-                    "invalid_request": (
-                        "provider_invalid_request",
-                        "The model provider rejected this request.",
-                    ),
-                }
-                code, text = provider_errors.get(
-                    message.error,
-                    ("provider_error", "The model provider failed."),
-                )
-                return [{"type": "error", "code": code, "message": text}]
-            tool_ids = [
-                block.id for block in message.content if isinstance(block, ToolUseBlock)
-            ]
-            if tool_ids and self.on_tool_batch:
-                self.on_tool_batch(tool_ids)
-            for block in message.content:
-                if isinstance(block, ToolUseBlock):
-                    events.extend(
-                        self._emit_tool_call(
-                            {"id": block.id, "name": block.name, "input": block.input}
-                        )
-                    )
-                elif not self.saw_thinking_delta and isinstance(block, ThinkingBlock):
-                    if self.show_reasoning and block.thinking:
-                        events.extend(self._close_reasoning())
-                        events.extend(
-                            [
-                                {"type": "reasoning_start"},
-                                {"type": "reasoning_delta", "text": block.thinking},
-                                {"type": "reasoning_end"},
-                            ]
-                        )
-                elif not self.saw_text_delta and isinstance(block, TextBlock):
-                    if block.text and (self.answer_started or block.text.strip()):
-                        self.answer_started = True
-                        events.append({"type": "answer_delta", "text": block.text})
-        elif isinstance(message, UserMessage) and isinstance(message.content, list):
-            for block in message.content:
-                if not isinstance(block, ToolResultBlock):
-                    continue
-                if block.tool_use_id in self.suppressed_tool_ids:
-                    continue
-                name = self.tool_names.pop(block.tool_use_id, "")
-                if name == "search_web":
-                    text = _tool_content_text(block.content)
-                    payload = _parse_tool_payload(block.content)
-                    events.append(
-                        {
-                            "type": "tool_result",
-                            "id": block.tool_use_id,
-                            "status": "error" if block.is_error else "success",
-                            "took_ms": int(payload.get("took_ms", 0)) if payload else 0,
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": text[:24_900],
-                                    "truncated": len(text) > 24_900,
-                                }
-                            ],
-                            "metadata": {
-                                "exit_code": 1 if block.is_error else 0,
-                                "output_truncated": len(text) > 24_900,
-                            },
-                        }
-                    )
-                    continue
-                payload = _parse_tool_payload(block.content)
-                events.append(
-                    {
-                        "type": "tool_result",
-                        "id": block.tool_use_id,
-                        "hits": int(payload.get("hits", 0)) if payload else 0,
-                        "took_ms": int(payload.get("took_ms", 0)) if payload else 0,
-                        "results": payload.get("results", []) if payload else [],
-                    }
-                )
-        elif isinstance(message, ResultMessage):
-            events.extend(self._close_reasoning())
-            self.terminal = True
-            events.append(
-                {
-                    "type": "usage",
-                    "usage": message.usage or {},
-                    "model_usage": message.model_usage or {},
-                    "total_cost_usd": message.total_cost_usd,
-                    "provider_requests": message.num_turns,
-                }
-            )
-            if message.is_error and "max_turn" not in message.subtype:
-                events.append({"type": "error", "message": "The chat request failed."})
-            else:
-                if "max_turn" in message.subtype:
-                    events.append({"type": "_execution_limit", "reason": "max_turns"})
-                else:
-                    events.append(
-                        {"type": "done", "followups": [], "finish_reason": "success"}
-                    )
-        return events
+        super().__init__(
+            show_reasoning=show_reasoning,
+            policy=policy
+            or _local_tool_event_policy(
+                maximum_search_calls if maximum_search_calls is not None else 2**31
+            ),
+        )
 
 
 def build_agent_options(
@@ -695,7 +494,7 @@ async def stream_agent_events(
         )
         adapter = SDKEventAdapter(
             show_reasoning=settings.chat_show_reasoning,
-            maximum_search_calls=settings.chat_max_search_calls,
+            policy=_local_tool_event_policy(settings.chat_max_search_calls),
         )
         deadline = time.monotonic() + settings.chat_timeout_seconds
         stream = sdk_query(prompt=prompt, options=options)

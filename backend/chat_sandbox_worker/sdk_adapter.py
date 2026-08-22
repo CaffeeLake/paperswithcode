@@ -1,9 +1,10 @@
-"""Generic SDK message-to-event adapter with no server dependencies."""
+"""Canonical, dependency-light Claude SDK message-to-chat-event adapter."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any
 
 from claude_agent_sdk import (
@@ -12,20 +13,56 @@ from claude_agent_sdk import (
     StreamEvent,
     TextBlock,
     ThinkingBlock,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
 
-from backend.chat_sandbox_worker.tool_policy import WEB_SEARCH_TOOL
+ToolName = Callable[[str], str]
+ToolAllowed = Callable[[str, str, dict[str, Any]], bool]
+ToolResultFormatter = Callable[[ToolResultBlock, str, str], dict[str, Any] | None]
+
+
+def _identity(value: str) -> str:
+    return value
+
+
+def _allow_all(_tool_id: str, _name: str, _args: dict[str, Any]) -> bool:
+    return True
+
+
+@dataclass(frozen=True)
+class SDKEventPolicy:
+    """Deployment-owned tool projection choices for :class:`SDKEventAdapter`.
+
+    Protocol parsing and event ordering remain shared. Each execution backend
+    supplies its own public tool names, call ceiling/suppression decision, and
+    optional result formatter without copying that parser.
+    """
+
+    tool_name: ToolName = _identity
+    allow_tool_call: ToolAllowed = _allow_all
+    on_tool_batch: Callable[[list[str]], None] | None = None
+    format_tool_result: ToolResultFormatter | None = None
+    unique_tool_ids: bool = True
 
 
 class SDKEventAdapter:
+    """Stateful conversion from streamed and complete SDK messages to events."""
+
     def __init__(
         self,
         *,
         show_reasoning: bool,
+        policy: SDKEventPolicy | None = None,
         on_tool_batch: Callable[[list[str]], None] | None = None,
     ):
         self.show_reasoning = show_reasoning
+        self.policy = (
+            replace(policy or SDKEventPolicy(), on_tool_batch=on_tool_batch)
+            if on_tool_batch
+            else policy or SDKEventPolicy()
+        )
         self.reasoning_open = False
         self.answer_started = False
         self.saw_text_delta = False
@@ -37,13 +74,26 @@ class SDKEventAdapter:
         self.pending_tool_ids: dict[str, list[str]] = {}
         self.tool_id_occurrences: dict[str, int] = {}
         self.allocated_tool_ids: set[str] = set()
-        self.on_tool_batch = on_tool_batch
+        self.suppressed_tool_ids: set[str] = set()
+        self.tool_names: dict[str, str] = {}
 
     def _close_reasoning(self) -> list[dict[str, Any]]:
         if not self.reasoning_open:
             return []
         self.reasoning_open = False
         return [{"type": "reasoning_end"}]
+
+    def _allocate_tool_id(self, raw_tool_id: str) -> str:
+        if not self.policy.unique_tool_ids:
+            return raw_tool_id
+        occurrence = self.tool_id_occurrences.get(raw_tool_id, 0) + 1
+        tool_id = raw_tool_id if occurrence == 1 else f"{raw_tool_id}#{occurrence}"
+        while tool_id in self.allocated_tool_ids:
+            occurrence += 1
+            tool_id = f"{raw_tool_id}#{occurrence}"
+        self.tool_id_occurrences[raw_tool_id] = occurrence
+        self.allocated_tool_ids.add(tool_id)
+        return tool_id
 
     def _tool_call(self, block: dict[str, Any]) -> list[dict[str, Any]]:
         raw_tool_id = str(block.get("id") or "")
@@ -58,31 +108,19 @@ class SDKEventAdapter:
                 return []
         elif not isinstance(value, dict):
             value = {}
-        # Some OpenAI-compatible providers number tools per response (Bash:0,
-        # Bash:1), while the chat projection requires IDs unique for the turn.
-        occurrence = self.tool_id_occurrences.get(raw_tool_id, 0) + 1
-        tool_id = raw_tool_id if occurrence == 1 else f"{raw_tool_id}#{occurrence}"
-        while tool_id in self.allocated_tool_ids:
-            occurrence += 1
-            tool_id = f"{raw_tool_id}#{occurrence}"
-        self.tool_id_occurrences[raw_tool_id] = occurrence
-        self.allocated_tool_ids.add(tool_id)
+        name = self.policy.tool_name(str(block.get("name") or ""))
+        if not self.policy.allow_tool_call(raw_tool_id, name, value):
+            self.suppressed_tool_ids.add(raw_tool_id)
+            return []
+        tool_id = self._allocate_tool_id(raw_tool_id)
         self.current_tool_ids[raw_tool_id] = tool_id
         self.pending_tool_ids.setdefault(raw_tool_id, []).append(tool_id)
-        return [
-            {
-                "type": "tool_call",
-                "id": tool_id,
-                "name": (
-                    "search_web"
-                    if str(block.get("name") or "") == WEB_SEARCH_TOOL
-                    else str(block.get("name") or "")
-                ),
-                "args": value,
-            }
-        ]
+        self.tool_names[tool_id] = name
+        return [{"type": "tool_call", "id": tool_id, "name": name, "args": value}]
 
-    def tool_result_id(self, raw_tool_id: str) -> str:
+    def tool_result_id(self, raw_tool_id: str) -> str | None:
+        if raw_tool_id in self.suppressed_tool_ids:
+            return None
         pending = self.pending_tool_ids.get(raw_tool_id)
         if not pending:
             return raw_tool_id
@@ -91,6 +129,23 @@ class SDKEventAdapter:
             self.pending_tool_ids.pop(raw_tool_id, None)
         self.current_tool_ids.pop(raw_tool_id, None)
         return tool_id
+
+    def _tool_result(self, block: ToolResultBlock) -> list[dict[str, Any]]:
+        tool_id = self.tool_result_id(block.tool_use_id)
+        if tool_id is None:
+            return []
+        name = self.tool_names.pop(tool_id, "")
+        if self.policy.format_tool_result:
+            event = self.policy.format_tool_result(block, tool_id, name)
+            return [event] if event is not None else []
+        return [
+            {
+                "type": "tool_result",
+                "id": tool_id,
+                "status": "error" if block.is_error else "success",
+                "content": block.content,
+            }
+        ]
 
     def _stream(self, message: StreamEvent) -> list[dict[str, Any]]:
         raw = message.event
@@ -151,8 +206,8 @@ class SDKEventAdapter:
                 events.extend(self._tool_call(self.tool_blocks.get(index, {})))
         elif kind == "message_stop":
             events.extend(self._close_reasoning())
-            if self.on_tool_batch:
-                self.on_tool_batch(
+            if self.policy.on_tool_batch:
+                self.policy.on_tool_batch(
                     [
                         str(block.get("id") or "")
                         for block in self.tool_blocks.values()
@@ -173,18 +228,13 @@ class SDKEventAdapter:
                         {
                             "type": "error",
                             "code": "hf_inference_billing_exhausted",
-                            "message": (
-                                "Hugging Face could not bill this request. Your included "
-                                "credits may be exhausted; enable or review pay-as-you-go "
-                                "billing in Settings."
-                            ),
+                            "message": "Hugging Face could not bill this request. Your included credits may be exhausted; enable or review pay-as-you-go billing in Settings.",
                         }
                     ]
                 provider_errors = {
                     "authentication_failed": (
                         "hf_inference_credential_expired",
-                        "Your Hugging Face Inference Providers authorization is "
-                        "missing or expired. Re-sign in with Hugging Face to continue.",
+                        "Your Hugging Face Inference Providers authorization is missing or expired. Re-sign in with Hugging Face to continue.",
                     ),
                     "rate_limit": (
                         "provider_rate_limit",
@@ -200,21 +250,14 @@ class SDKEventAdapter:
                     ),
                 }
                 code, text = provider_errors.get(
-                    message.error,
-                    ("provider_error", "The model provider failed."),
+                    message.error, ("provider_error", "The model provider failed.")
                 )
-                return [
-                    {
-                        "type": "error",
-                        "code": code,
-                        "message": text,
-                    }
-                ]
+                return [{"type": "error", "code": code, "message": text}]
             tool_ids = [
                 block.id for block in message.content if isinstance(block, ToolUseBlock)
             ]
-            if tool_ids and self.on_tool_batch:
-                self.on_tool_batch(tool_ids)
+            if tool_ids and self.policy.on_tool_batch:
+                self.policy.on_tool_batch(tool_ids)
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     events.extend(
@@ -232,10 +275,18 @@ class SDKEventAdapter:
                                 {"type": "reasoning_end"},
                             ]
                         )
-                elif isinstance(block, TextBlock) and not self.saw_text_delta:
-                    if block.text and (self.answer_started or block.text.strip()):
-                        self.answer_started = True
-                        events.append({"type": "answer_delta", "text": block.text})
+                elif (
+                    isinstance(block, TextBlock)
+                    and not self.saw_text_delta
+                    and block.text
+                    and (self.answer_started or block.text.strip())
+                ):
+                    self.answer_started = True
+                    events.append({"type": "answer_delta", "text": block.text})
+        elif isinstance(message, UserMessage) and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, ToolResultBlock):
+                    events.extend(self._tool_result(block))
         elif isinstance(message, ResultMessage):
             events.extend(self._close_reasoning())
             self.terminal = True
@@ -257,11 +308,10 @@ class SDKEventAdapter:
                         "message": "The research run failed.",
                     }
                 )
+            elif limited:
+                events.append({"type": "_execution_limit", "reason": "max_turns"})
             else:
-                if limited:
-                    events.append({"type": "_execution_limit", "reason": "max_turns"})
-                else:
-                    events.append(
-                        {"type": "done", "followups": [], "finish_reason": "success"}
-                    )
+                events.append(
+                    {"type": "done", "followups": [], "finish_reason": "success"}
+                )
         return events
