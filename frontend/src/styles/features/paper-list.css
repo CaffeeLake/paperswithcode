@@ -659,12 +659,12 @@ a.paper-resource.is-link:focus-visible {
 .paper-date-popover {
   width: min(760px, calc(100vw - 32px));
   max-width: 760px;
-  padding: 24px;
+  padding: 14px 18px;
   max-height: calc(100vh - 24px);
   overflow-y: auto;
 }
 .paper-date-popover-header {
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 .paper-date-popover-header h2 {
   margin: 0;
@@ -702,7 +702,7 @@ a.paper-resource.is-link:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   color: var(--ink-soft);
   font-size: 13px;
   font-weight: 600;
@@ -721,7 +721,7 @@ a.paper-resource.is-link:focus-visible {
   outline-offset: 1px;
 }
 .paper-date-calendar h3 {
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   text-align: center;
   font-family: var(--serif);
   font-size: 17px;
@@ -732,15 +732,16 @@ a.paper-resource.is-link:focus-visible {
   grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 .paper-date-weekdays span {
-  padding: 5px 0 9px;
+  padding: 3px 0 4px;
   color: var(--ink-faint);
   text-align: center;
   font-size: 11px;
   font-weight: 600;
 }
 .paper-date-day {
-  aspect-ratio: 1;
-  min-width: 32px;
+  width: 28px;
+  height: 28px;
+  justify-self: center;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -779,7 +780,7 @@ a.paper-resource.is-link:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-top: 18px;
+  padding-top: 10px;
   border-top: 1px solid var(--hairline);
 }
 .paper-date-actions > div {
@@ -807,5 +808,5 @@ a.paper-resource.is-link:focus-visible {
   }
   .paper-date-calendars { display: block; }
   .paper-date-calendar-secondary { display: none; }
-  .paper-date-day { min-width: 36px; }
+  .paper-date-day { width: 36px; height: 36px; }
 }
