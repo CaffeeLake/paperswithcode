@@ -19,6 +19,8 @@ from backend.models.api import (
 )
 from backend.services.area_service import AreaService
 from backend.services.task_service import TaskService
+from backend.services.catalog_errors import CatalogNotFoundError
+from backend.utils.exceptions import PaperNotFoundError
 
 router = APIRouter()
 
@@ -171,7 +173,10 @@ def get_area(
 
     Returns information about the research area with ID 1 (e.g., "Vision").
     """
-    return AreaService(db).get_area_by_id(area_id)
+    try:
+        return AreaService(db).get_area_by_id(area_id)
+    except PaperNotFoundError as error:
+        raise CatalogNotFoundError(str(error)) from error
 
 
 @router.get(
@@ -220,6 +225,9 @@ def get_area_tasks(
     - `400 Bad Request`: Invalid area ID format
     - `500 Internal Server Error`: Database or server error
     """
-    return TaskService(db).get_tasks_by_area(
-        area_id=area_id, page=page, page_size=page_size
-    )
+    try:
+        return TaskService(db).get_tasks_by_area(
+            area_id=area_id, page=page, page_size=page_size
+        )
+    except PaperNotFoundError as error:
+        raise CatalogNotFoundError(str(error)) from error

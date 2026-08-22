@@ -17,6 +17,7 @@ from backend.models.api import (
     Papers,
 )
 from backend.services.conference_service import ConferenceService
+from backend.services.catalog_errors import CatalogNotFoundError
 from backend.utils.exceptions import PaperNotFoundError
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
@@ -57,7 +58,10 @@ def get_conference(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
-    return ConferenceService(db).get_conference(slug)
+    try:
+        return ConferenceService(db).get_conference(slug)
+    except PaperNotFoundError as error:
+        raise CatalogNotFoundError(str(error)) from error
 
 
 @router.get(
@@ -94,7 +98,10 @@ def get_conference_areas_with_tasks(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
-    return ConferenceService(db).get_conference_areas_with_tasks(slug)
+    try:
+        return ConferenceService(db).get_conference_areas_with_tasks(slug)
+    except PaperNotFoundError as error:
+        raise CatalogNotFoundError(str(error)) from error
 
 
 @router.get(

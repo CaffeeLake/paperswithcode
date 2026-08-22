@@ -31,6 +31,7 @@ from backend.models.api import (
 from backend.services.dataset_service import _leaderboard_row_count
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.services.catalog_errors import CatalogValidationError
 
 
 class AreaService:
@@ -156,7 +157,7 @@ class AreaService:
         except PaperNotFoundError:
             raise
         except ValueError as error:
-            raise ValueError("Invalid area ID format") from error
+            raise CatalogValidationError("Invalid area ID format") from error
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve area: {str(e)}")
 

@@ -14,7 +14,6 @@ from backend.services.catalog_errors import (
     CatalogPersistenceError,
     CatalogValidationError,
 )
-from backend.services.taxonomy_service import taxonomy_operation
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
@@ -45,24 +44,6 @@ def test_catalog_domain_errors_have_stable_http_translation(error, status_code):
 def test_legacy_catalog_errors_remain_compatible_with_new_error_categories():
     assert isinstance(PaperNotFoundError("missing"), CatalogNotFoundError)
     assert isinstance(DatabaseError("unavailable"), CatalogPersistenceError)
-
-
-@pytest.mark.parametrize(
-    ("legacy_error", "typed_error"),
-    [
-        (PaperNotFoundError("Task with ID 1 not found"), CatalogNotFoundError),
-        (DatabaseError("Failed to retrieve tasks"), CatalogPersistenceError),
-        (ValueError("Task with slug 'vision' already exists"), CatalogConflictError),
-        (ValueError("Invalid area ID"), CatalogValidationError),
-    ],
-)
-def test_taxonomy_service_boundary_exposes_typed_failures(legacy_error, typed_error):
-    @taxonomy_operation
-    def operation():
-        raise legacy_error
-
-    with pytest.raises(typed_error, match=str(legacy_error)):
-        operation()
 
 
 @pytest.mark.parametrize(

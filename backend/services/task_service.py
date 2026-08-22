@@ -69,10 +69,11 @@ class TaskService:
         return None
 
     def get_image(self, identifier: str) -> tuple[bytes, str]:
-        result = load_entity_image(self.db, DBTask, identifier)
-        if result is None:
-            raise PaperNotFoundError("Image not available")
-        return result
+        for candidate in task_slug_candidates(identifier):
+            result = load_entity_image(self.db, DBTask, candidate)
+            if result is not None:
+                return result
+        raise PaperNotFoundError("Image not available")
 
     @staticmethod
     def _deduplicate_task_trending_repositories(query, task_id: int):
@@ -841,7 +842,7 @@ class TaskService:
         except PaperNotFoundError:
             raise
         except ValueError as error:
-            raise ValueError("Invalid area ID format") from error
+            raise CatalogValidationError("Invalid area ID format") from error
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks for area: {str(e)}")
 
