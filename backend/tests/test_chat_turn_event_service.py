@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import json
 
 import pytest
 
@@ -50,7 +51,11 @@ from backend.services.chat_turn_event_service import (
     ],
 )
 def test_legacy_conversion_is_lossless_for_optional_fields(legacy):
-    assert from_legacy_event(legacy).to_legacy() == legacy
+    converted = from_legacy_event(legacy).to_legacy()
+    assert converted == legacy
+    assert json.dumps(converted, separators=(",", ":")) == json.dumps(
+        legacy, separators=(",", ":")
+    )
 
 
 def test_typed_events_are_frozen_and_extras_cannot_replace_type():
@@ -60,6 +65,44 @@ def test_typed_events_are_frozen_and_extras_cannot_replace_type():
     with pytest.raises(TypeError):
         event.usage["input_tokens"] = 3  # type: ignore[index]
     assert event.to_legacy()["type"] == "usage"
+
+
+def test_completion_freezes_input_collections_and_thaws_fresh_output():
+    followups = ["Next"]
+    citations = [{"title": "Original", "authors": ["Ada"]}]
+    event = CompletionEvent(
+        TerminalOutcome.SUCCESS, followups=followups, citations=citations
+    )
+
+    followups.append("Changed")
+    citations[0]["authors"].append("Grace")
+    with pytest.raises(TypeError):
+        event.followups[0] = "Changed"  # type: ignore[index]
+
+    first = event.to_legacy()
+    first["citations"][0]["authors"].append("Mutated output")
+    second = event.to_legacy()
+
+    assert second["followups"] == ["Next"]
+    assert second["citations"] == [{"title": "Original", "authors": ["Ada"]}]
+
+
+def test_legacy_conversion_preserves_serialized_key_order():
+    legacy = {
+        "extra_before": {"safe": True},
+        "followups": ["Next"],
+        "type": "done",
+        "extra_after": [1, 2],
+        "finish_reason": "success",
+        "citations": [{"title": "Paper"}],
+    }
+
+    expected = json.dumps(legacy, ensure_ascii=False, separators=(",", ":"))
+    actual = json.dumps(
+        from_legacy_event(legacy).to_legacy(), ensure_ascii=False, separators=(",", ":")
+    )
+
+    assert actual == expected
 
 
 def test_real_stream_order_allows_done_before_research_producer_finishes():

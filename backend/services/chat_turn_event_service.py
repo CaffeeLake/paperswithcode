@@ -49,15 +49,20 @@ def _extras(event: dict[str, Any], *known: str) -> FrozenExtras:
 
 
 def _legacy(
-    event_type: str, extras: FrozenExtras, **fields: JsonValue | FrozenJson | _Unset
+    event_type: str,
+    extras: FrozenExtras,
+    field_order: tuple[str, ...] = (),
+    **fields: JsonValue | FrozenJson | _Unset,
 ) -> dict[str, Any]:
     if any(key == "type" for key, _value in extras):
         raise ValueError("Legacy extras cannot override an event type")
-    event = {"type": event_type, **{key: _thaw(value) for key, value in extras}}
+    values = {"type": event_type, **{key: _thaw(value) for key, value in extras}}
     for key, value in fields.items():
         if value is not UNSET:
-            event[key] = _thaw(value)
-    return event
+            values[key] = _thaw(value)
+    if field_order:
+        return {key: values[key] for key in field_order if key in values}
+    return values
 
 
 class TerminalOutcome(StrEnum):
@@ -103,35 +108,43 @@ class ArtifactEventType(StrEnum):
 @dataclass(frozen=True)
 class ResearchFinishedEvent:
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy("_research_finished", self.extras)
+        return _legacy("_research_finished", self.extras, self.field_order)
 
 
 @dataclass(frozen=True)
 class TitleEvent:
     title: str | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy("session_title_done", self.extras, title=self.title)
+        return _legacy(
+            "session_title_done", self.extras, self.field_order, title=self.title
+        )
 
 
 @dataclass(frozen=True)
 class TitleFinishedEvent:
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy("_title_finished", self.extras)
+        return _legacy("_title_finished", self.extras, self.field_order)
 
 
 @dataclass(frozen=True)
 class PersistenceEvent:
     session_id: str | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy("_sdk_session", self.extras, session_id=self.session_id)
+        return _legacy(
+            "_sdk_session", self.extras, self.field_order, session_id=self.session_id
+        )
 
 
 @dataclass(frozen=True)
@@ -141,6 +154,7 @@ class MirrorFailureEvent:
     terminal: FrozenJson | _Unset = UNSET
     result_available: bool | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.key is not UNSET:
@@ -163,6 +177,7 @@ class MirrorFailureEvent:
         return _legacy(
             "_mirror_error",
             self.extras,
+            self.field_order,
             key=self.key,
             error=self.error,
             terminal=self.terminal,
@@ -180,11 +195,13 @@ class TelemetryEvent:
     finalizer_attempted: bool | None | _Unset = UNSET
     finalizer_outcome: str | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
         return _legacy(
             "_execution_telemetry",
             self.extras,
+            self.field_order,
             maximum_tool_rounds=self.maximum_tool_rounds,
             maximum_tool_calls=self.maximum_tool_calls,
             tool_rounds_executed=self.tool_rounds_executed,
@@ -203,6 +220,7 @@ class UsageEvent:
     provider_requests: int | None | _Unset = UNSET
     phase: str | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.usage is not UNSET:
@@ -214,6 +232,7 @@ class UsageEvent:
         return _legacy(
             "usage",
             self.extras,
+            self.field_order,
             usage=self.usage,
             model_usage=self.model_usage,
             total_cost_usd=self.total_cost_usd,
@@ -236,11 +255,13 @@ class ArtifactEvent:
     gate_status: str | None | _Unset = UNSET
     total_bytes: int | None | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
         return _legacy(
             self.kind.value,
             self.extras,
+            self.field_order,
             publication_id=self.publication_id,
             identifier=self.identifier,
             title=self.title,
@@ -259,9 +280,16 @@ class CompletionEvent:
     outcome: TerminalOutcome | None = None
     finish_reason_present: bool = True
     raw_finish_reason: str | None | _Unset = UNSET
-    followups: list[str] | None | _Unset = UNSET
-    citations: list[dict[str, Any]] | None | _Unset = UNSET
+    followups: FrozenJson | _Unset = UNSET
+    citations: FrozenJson | _Unset = UNSET
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.followups is not UNSET:
+            object.__setattr__(self, "followups", _freeze(self.followups))
+        if self.citations is not UNSET:
+            object.__setattr__(self, "citations", _freeze(self.citations))
 
     def to_legacy(self) -> dict[str, Any]:
         finish_reason: JsonValue | _Unset = self.raw_finish_reason
@@ -270,6 +298,7 @@ class CompletionEvent:
         return _legacy(
             "done",
             self.extras,
+            self.field_order,
             followups=self.followups,
             citations=self.citations,
             finish_reason=finish_reason,
@@ -282,29 +311,34 @@ class FailureEvent:
     message: str | None | _Unset = UNSET
     interruption: InterruptionReason | None = None
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
         if self.interruption is not None:
             raise ValueError("Interrupted turns have no public error frame")
-        return _legacy("error", self.extras, code=self.code, message=self.message)
+        return _legacy(
+            "error", self.extras, self.field_order, code=self.code, message=self.message
+        )
 
 
 @dataclass(frozen=True)
 class CancellationEvent:
     reason: InterruptionReason = InterruptionReason.WORKER_CANCELLED
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy("_cancelled", self.extras)
+        return _legacy("_cancelled", self.extras, self.field_order)
 
 
 @dataclass(frozen=True)
 class LegacyPassthroughEvent:
     event_type: str
     extras: FrozenExtras = ()
+    field_order: tuple[str, ...] = ()
 
     def to_legacy(self) -> dict[str, Any]:
-        return _legacy(self.event_type, self.extras)
+        return _legacy(self.event_type, self.extras, self.field_order)
 
 
 ChatTurnEvent: TypeAlias = (
@@ -329,22 +363,25 @@ def from_legacy_event(event: dict[str, Any]) -> ChatTurnEvent:
     event_type = event.get("type")
     if not isinstance(event_type, str):
         raise ValueError("Chat-turn event type must be a string")
+    field_order = tuple(event)
 
     def value(key: str) -> JsonValue | _Unset:
         return event[key] if key in event else UNSET
 
     if event_type == "_research_finished":
-        return ResearchFinishedEvent(_extras(event))
+        return ResearchFinishedEvent(_extras(event), field_order)
     if event_type == "session_title_done":
-        return TitleEvent(value("title"), _extras(event, "title"))
+        return TitleEvent(value("title"), _extras(event, "title"), field_order)
     if event_type == "_title_finished":
-        return TitleFinishedEvent(_extras(event))
+        return TitleFinishedEvent(_extras(event), field_order)
     if event_type == "_sdk_session":
-        return PersistenceEvent(value("session_id"), _extras(event, "session_id"))
+        return PersistenceEvent(
+            value("session_id"), _extras(event, "session_id"), field_order
+        )
     if event_type == "_mirror_error":
         known = "key", "error", "terminal", "result_available"
         return MirrorFailureEvent(
-            *(value(key) for key in known), _extras(event, *known)
+            *(value(key) for key in known), _extras(event, *known), field_order
         )
     if event_type == "_execution_telemetry":
         known = (
@@ -356,10 +393,14 @@ def from_legacy_event(event: dict[str, Any]) -> ChatTurnEvent:
             "finalizer_attempted",
             "finalizer_outcome",
         )
-        return TelemetryEvent(*(value(key) for key in known), _extras(event, *known))
+        return TelemetryEvent(
+            *(value(key) for key in known), _extras(event, *known), field_order
+        )
     if event_type == "usage":
         known = "usage", "model_usage", "total_cost_usd", "provider_requests", "phase"
-        return UsageEvent(*(value(key) for key in known), _extras(event, *known))
+        return UsageEvent(
+            *(value(key) for key in known), _extras(event, *known), field_order
+        )
     try:
         artifact_kind = ArtifactEventType(event_type)
     except ValueError:
@@ -378,7 +419,10 @@ def from_legacy_event(event: dict[str, Any]) -> ChatTurnEvent:
             "total_bytes",
         )
         return ArtifactEvent(
-            artifact_kind, *(value(key) for key in known), _extras(event, *known)
+            artifact_kind,
+            *(value(key) for key in known),
+            _extras(event, *known),
+            field_order,
         )
     if event_type == "done":
         raw_reason = value("finish_reason")
@@ -393,14 +437,19 @@ def from_legacy_event(event: dict[str, Any]) -> ChatTurnEvent:
             value("followups"),
             value("citations"),
             _extras(event, "finish_reason", "followups", "citations"),
+            field_order,
         )
     if event_type == "error":
         return FailureEvent(
-            value("code"), value("message"), None, _extras(event, "code", "message")
+            value("code"),
+            value("message"),
+            None,
+            _extras(event, "code", "message"),
+            field_order,
         )
     if event_type == "_cancelled":
-        return CancellationEvent(extras=_extras(event))
-    return LegacyPassthroughEvent(event_type, _extras(event))
+        return CancellationEvent(extras=_extras(event), field_order=field_order)
+    return LegacyPassthroughEvent(event_type, _extras(event), field_order)
 
 
 @dataclass(frozen=True)
