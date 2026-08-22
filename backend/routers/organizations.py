@@ -58,6 +58,18 @@ def get_organizations(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get(
+    "/index/cards",
+    response_model=Organizations,
+    summary="List curated organization cards for the public directory",
+)
+def get_organization_index(db: Session = Depends(get_database_session)):
+    try:
+        return OrganizationService(db).get_organizations(curated_only=True)
+    except DatabaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
 @router.post(
     "/sync",
     response_model=OrganizationSyncResult,

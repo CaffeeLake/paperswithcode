@@ -8,6 +8,7 @@ from typing import Optional
 from sqlalchemy import and_, asc, desc, func
 from sqlalchemy.orm import Session
 
+from backend.database.organizations_setup.organizations import BY_PWC_SLUG
 from backend.models.api import (
     ConferenceTaskSummary,
     Organization,
@@ -103,7 +104,12 @@ class OrganizationService:
             updated_at=db_org.updated_at,
         )
 
-    def get_organizations(self, featured_only: bool = False) -> Organizations:
+    def get_organizations(
+        self,
+        featured_only: bool = False,
+        *,
+        curated_only: bool = False,
+    ) -> Organizations:
         try:
             paper_count_col = func.count(func.distinct(DBPaper.id)).label("paper_count")
             first_year_col = func.min(
@@ -158,7 +164,9 @@ class OrganizationService:
                 )
                 .group_by(DBOrganization.id, OrganizationTrendingHistory.raw_score)
             )
-            if featured_only:
+            if curated_only:
+                rows = rows.filter(DBOrganization.slug.in_(BY_PWC_SLUG))
+            if featured_only or curated_only:
                 rows = rows.filter(DBOrganization.is_featured.is_(True)).order_by(
                     desc(func.coalesce(DBOrganization.trending_score, 0.0)),
                     desc(func.coalesce(OrganizationTrendingHistory.raw_score, 0.0)),

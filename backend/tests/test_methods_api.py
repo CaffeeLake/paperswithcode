@@ -228,6 +228,23 @@ def test_methods_expose_recent_usage_trend_score(client):
     assert trend["comparison_complete"] is True
     assert sum(point["paper_count"] for point in trend["history"]) == 5
 
+    index_response = client.get("/api/v1/methods/index/cards")
+    assert index_response.status_code == 200
+    index_results = index_response.json()["results"]
+    assert [item["name"] for item in index_results[:2]] == [
+        "Rising Method",
+        "Quiet Method",
+    ]
+    assert index_results[0] == {
+        "id": "20",
+        "name": "Rising Method",
+        "slug": "rising-method",
+        "area_id": None,
+        "introduced_year": None,
+        "paper_count": 6,
+        "trend_score": 1.0,
+    }
+
 
 @pytest.fixture
 def method_with_trending_papers():

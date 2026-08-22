@@ -9,13 +9,14 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Optional, List
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, func, desc, asc, or_, case, literal
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.models.database import (
     Method as DBMethod,
     Paper as DBPaper,
     PaperMethod,
 )
-from backend.models.api import Method, Methods
+from backend.models.api import Method, MethodIndex, MethodIndexEntry, Methods
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
@@ -309,6 +310,84 @@ class MethodService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve methods: {str(e)}")
+
+    def get_method_index(
+        self,
+        *,
+        recent_days: int = 90,
+        today: Optional[date] = None,
+    ) -> MethodIndex:
+        """Return only the fields rendered by the public methods directory."""
+        generated_on = today or datetime.now(UTC).date()
+        recent_start = generated_on - timedelta(days=recent_days)
+        paper_counts = (
+            self.db.query(
+                PaperMethod.method_id.label("method_id"),
+                func.count(PaperMethod.paper_id).label("paper_count"),
+            )
+            .group_by(PaperMethod.method_id)
+            .subquery()
+        )
+        recent_counts = (
+            self.db.query(
+                PaperMethod.method_id.label("method_id"),
+                func.count(DBPaper.id).label("recent_paper_count"),
+            )
+            .join(
+                DBPaper,
+                and_(
+                    DBPaper.id == PaperMethod.paper_id,
+                    DBPaper.is_latest_version,
+                ),
+            )
+            .filter(
+                DBPaper.date_published > recent_start,
+                DBPaper.date_published <= generated_on,
+            )
+            .group_by(PaperMethod.method_id)
+            .subquery()
+        )
+        paper_count = func.coalesce(paper_counts.c.paper_count, 0)
+        recent_count = func.coalesce(recent_counts.c.recent_paper_count, 0)
+        try:
+            rows = (
+                self.db.query(
+                    DBMethod.id,
+                    DBMethod.name,
+                    DBMethod.slug,
+                    DBMethod.area_id,
+                    DBMethod.introduced_year,
+                    paper_count.label("paper_count"),
+                    recent_count.label("recent_paper_count"),
+                )
+                .outerjoin(paper_counts, paper_counts.c.method_id == DBMethod.id)
+                .outerjoin(recent_counts, recent_counts.c.method_id == DBMethod.id)
+                .order_by(desc(recent_count), desc(paper_count), asc(DBMethod.name))
+                .all()
+            )
+        except SQLAlchemyError as error:
+            raise DatabaseError(f"Failed to retrieve method index: {error}") from error
+        results = [
+            MethodIndexEntry(
+                id=method_id,
+                name=name,
+                slug=slug,
+                area_id=area_id,
+                introduced_year=introduced_year,
+                paper_count=int(total),
+                trend_score=round(int(recent) * 30.0 / recent_days, 4),
+            )
+            for (
+                method_id,
+                name,
+                slug,
+                area_id,
+                introduced_year,
+                total,
+                recent,
+            ) in rows
+        ]
+        return MethodIndex(count=len(results), results=results)
 
     def get_method_by_id(self, method_id: str) -> Method:
         """

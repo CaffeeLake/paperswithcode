@@ -293,6 +293,21 @@ export interface Method {
   updated_at?: string;
 }
 
+export interface MethodIndexEntry {
+  id: string;
+  name: string;
+  slug?: string;
+  area_id?: string;
+  introduced_year?: number;
+  paper_count: number;
+  trend_score: number;
+}
+
+export interface MethodIndex {
+  count: number;
+  results: MethodIndexEntry[];
+}
+
 export interface MethodTrendPoint {
   start_date: string;
   end_date: string;

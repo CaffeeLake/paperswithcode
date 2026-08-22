@@ -9,6 +9,7 @@ import type {
   Conferences,
   Dataset,
   Method,
+  MethodIndex,
   MethodTrend,
   Organization,
   OrganizationAreasWithTasks,
@@ -132,6 +133,10 @@ export class CatalogApi {
     return this.request<PaginatedResponse<Method>>(endpoint("/methods/", params));
   }
 
+  methodIndex(): Promise<MethodIndex> {
+    return this.request("/methods/index/cards");
+  }
+
   getMethod(id: string): Promise<Method> {
     return this.request(`/methods/${encodeURIComponent(id)}`);
   }
@@ -204,6 +209,10 @@ export class CatalogApi {
 
   organizations(featuredOnly = false): Promise<Organizations> {
     return this.request(`/organizations/${featuredOnly ? "?featured_only=true" : ""}`);
+  }
+
+  organizationIndex(): Promise<Organizations> {
+    return this.request("/organizations/index/cards");
   }
 
   getOrganization(slug: string): Promise<Organization> {

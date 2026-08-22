@@ -41,7 +41,7 @@ const OrganizationsIndexView: React.FC = () => {
   const query = params.get("q") ?? "";
   const organizationsQ = useQuery({
     queryKey: ["organizations", "featured"],
-    queryFn: () => catalogApi.organizations(true),
+    queryFn: () => catalogApi.organizationIndex(),
     staleTime: 10 * 60 * 1000,
   });
 
@@ -88,7 +88,7 @@ const OrganizationsIndexView: React.FC = () => {
             AI <em>Organizations</em>
           </h1>
           <div className="feed-subtitle">
-            Explore papers from 21 leading AI organizations, ranked by sustained
+            Explore papers from leading AI organizations, ranked by sustained
             community momentum over the past 30 days.
           </div>
         </div>

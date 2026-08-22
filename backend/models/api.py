@@ -1229,6 +1229,28 @@ class Methods(BaseModel):
     results: List[Method] = Field(..., description="List of methods on this page")
 
 
+class MethodIndexEntry(BaseModel):
+    """Compact method projection used by the public methods directory."""
+
+    id: str
+    name: str
+    slug: Optional[str] = None
+    area_id: Optional[str] = None
+    introduced_year: Optional[int] = None
+    paper_count: int = 0
+    trend_score: float = 0.0
+
+    @field_validator("id", "area_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, value):
+        return str(value) if value is not None else None
+
+
+class MethodIndex(BaseModel):
+    count: int
+    results: List[MethodIndexEntry]
+
+
 class MethodTrendPoint(BaseModel):
     """One calendar-month bucket of papers mentioning a method."""
 

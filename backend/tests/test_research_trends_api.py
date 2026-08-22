@@ -71,6 +71,16 @@ def test_service_builds_ordered_series_with_separate_start_dates():
     }
 
 
+def test_query_preaggregates_relation_tables_to_avoid_per_paper_lookups():
+    from backend.services.research_trends_service import _MONTHLY_TRENDS_QUERY
+
+    sql = str(_MONTHLY_TRENDS_QUERY)
+    assert "SELECT DISTINCT paper_id" in sql
+    assert "FROM paper_repositories" in sql
+    assert "FROM paper_hf_artifacts" in sql
+    assert "WHERE EXISTS" not in sql
+
+
 def test_service_skips_empty_months():
     db = FakeSession(
         [

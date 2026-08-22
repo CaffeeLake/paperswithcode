@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import KeywordUpdate, Method, Methods, MethodTrend, Papers
+from backend.models.api import (
+    KeywordUpdate,
+    Method,
+    MethodIndex,
+    Methods,
+    MethodTrend,
+    Papers,
+)
 from backend.models.database import Method as DBMethod
 from backend.services.method_service import MethodService
 from backend.services.method_trend_service import MethodTrendService
@@ -124,6 +131,18 @@ def list_methods(
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/index/cards",
+    response_model=MethodIndex,
+    summary="List compact method cards for the public directory",
+)
+def method_index(db: Session = Depends(get_database_session)):
+    try:
+        return MethodService(db).get_method_index()
+    except DatabaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @router.get("/{method_id}", response_model=Method)

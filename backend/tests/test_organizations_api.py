@@ -339,6 +339,31 @@ def test_featured_list_uses_all_associations_and_card_projection(
     assert organization["logo_url"] == (f"/api/v1/organizations/acme/logo/{digest}.png")
 
 
+def test_curated_index_ignores_rows_outside_reviewed_manifest(org_client, monkeypatch):
+    db = TestingSessionLocal()
+    try:
+        db.add(
+            Organization(
+                id=2,
+                name="Imported Lab",
+                slug="imported-lab",
+                is_featured=True,
+                display_order=2,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        "backend.services.organization_service.BY_PWC_SLUG", {"acme": object()}
+    )
+    response = org_client.get("/api/v1/organizations/index/cards")
+
+    assert response.status_code == 200
+    assert [item["slug"] for item in response.json()["results"]] == ["acme"]
+
+
 def test_cached_logo_supports_edge_and_conditional_caching(org_client):
     digest = hashlib.sha256(b"fake-png").hexdigest()
     first = org_client.get(f"/api/v1/organizations/acme/logo/{digest}.png")

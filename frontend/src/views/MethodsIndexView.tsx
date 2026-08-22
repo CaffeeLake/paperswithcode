@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Flame } from "lucide-react";
 
-import type { Method } from "@/lib/api/catalog.types";
+import type { MethodIndexEntry } from "@/lib/api/catalog.types";
 import { catalogApi } from "@/lib/api/catalog";
 import { slugify } from "@/lib/slug";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,27 +22,17 @@ const MethodsIndexView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  // The methods table is small (~hundreds of rows); fetch the whole list in
-  // one request ordered by trend score, then group by area client-side.
-  // Backend aggregates activity via a single GROUP BY, so this is one DB
-  // round-trip rather than the previous N+1 plus page-walking waterfall.
+  // Use the compact directory projection so card rendering does not download
+  // method descriptions, citations, image metadata, or other detail fields.
   const methodsQ = useQuery({
     queryKey: ["methods-all"],
-    queryFn: async () => {
-      const res = await catalogApi.listMethods({
-        page: 1,
-        page_size: 500,
-        ordering: "-trend_score",
-        include_trends: true,
-      });
-      return res.results;
-    },
+    queryFn: async () => (await catalogApi.methodIndex()).results,
     staleTime: 10 * 60 * 1000,
   });
 
   const grouped = useMemo(() => {
     if (!methodsQ.data || !areasQ.data) return null;
-    const byArea: Record<string, Method[]> = {};
+    const byArea: Record<string, MethodIndexEntry[]> = {};
     methodsQ.data.forEach((m) => {
       const key = m.area_id ?? "_unassigned";
       (byArea[key] ||= []).push(m);

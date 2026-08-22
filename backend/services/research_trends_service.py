@@ -15,28 +15,28 @@ HF_SERIES_START = date(2021, 1, 1)
 
 _MONTHLY_TRENDS_QUERY = text(
     """
+    WITH official_code AS (
+        SELECT DISTINCT paper_id
+        FROM paper_repositories
+        WHERE is_official = TRUE
+    ),
+    hf_linked AS (
+        SELECT DISTINCT paper_id
+        FROM paper_hf_artifacts
+    )
     SELECT
         date_trunc('month', p.date_published)::date AS month,
         COUNT(*) AS paper_count,
+        COUNT(official_code.paper_id) AS official_code_count,
         COUNT(*) FILTER (
-            WHERE EXISTS (
-                SELECT 1
-                FROM paper_repositories pr
-                WHERE pr.paper_id = p.id
-                  AND pr.is_official = TRUE
-            )
-        ) AS official_code_count,
-        COUNT(*) FILTER (
-            WHERE EXISTS (
-                SELECT 1
-                FROM paper_hf_artifacts pha
-                WHERE pha.paper_id = p.id
-            )
+            WHERE hf_linked.paper_id IS NOT NULL
             OR COALESCE(cardinality(p.hf_models), 0) > 0
             OR COALESCE(cardinality(p.hf_datasets), 0) > 0
             OR COALESCE(cardinality(p.hf_spaces), 0) > 0
         ) AS hf_artifact_count
     FROM papers p
+    LEFT JOIN official_code ON official_code.paper_id = p.id
+    LEFT JOIN hf_linked ON hf_linked.paper_id = p.id
     WHERE p.is_latest_version
       AND p.source = 'arxiv'
       AND p.date_published >= :start_date
