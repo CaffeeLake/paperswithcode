@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI, Request
@@ -75,6 +76,68 @@ def test_evaluation_delete_route_success(monkeypatch):
         response = client.delete("/api/v1/evaluations/1")
 
     assert response.status_code == 204
+
+
+def _evaluation_payload():
+    now = datetime.now(timezone.utc)
+    return {
+        "id": "1",
+        "paper_id": "1",
+        "task_id": "1",
+        "dataset_id": "1",
+        "metrics": {"mAP": "1"},
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+@pytest.mark.parametrize(
+    "method,path", [("post", "/api/v1/evaluations/"), ("put", "/api/v1/evaluations/1")]
+)
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        (CatalogValidationError("invalid metric"), 400, "invalid metric"),
+        (CatalogNotFoundError("Evaluation 1 not found"), 404, "Evaluation 1 not found"),
+        (
+            CatalogConflictError({"code": "stale_catalog_version"}),
+            409,
+            {"code": "stale_catalog_version"},
+        ),
+        (CatalogPersistenceError("write failed"), 500, "write failed"),
+    ],
+)
+def test_evaluation_post_put_routes_preserve_typed_error_envelopes(
+    monkeypatch, method, path, error, status, detail
+):
+    class Service:
+        def create(self, **_kwargs):
+            raise error
+
+        def update(self, **_kwargs):
+            raise error
+
+    payload = {"paper_id": 1, "task_id": 1, "dataset_id": 1, "metrics": {"mAP": "1"}}
+    with TestClient(_evaluation_app(monkeypatch, Service())) as client:
+        response = getattr(client, method)(path, json=payload)
+    assert response.status_code == status
+    assert response.json() == {"detail": detail}
+
+
+def test_evaluation_post_forwards_payload_and_returns_success(monkeypatch):
+    calls = []
+
+    class Service:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return _evaluation_payload()
+
+    payload = {"paper_id": 1, "task_id": 2, "dataset_id": 3, "metrics": {"mAP": "1"}}
+    with TestClient(_evaluation_app(monkeypatch, Service())) as client:
+        response = client.post("/api/v1/evaluations/", json=payload)
+    assert response.status_code == 201
+    assert response.json()["id"] == "1"
+    assert {key: calls[0]["payload"][key] for key in payload} == payload
 
 
 @pytest.mark.parametrize(
