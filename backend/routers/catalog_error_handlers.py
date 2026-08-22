@@ -14,7 +14,10 @@ from backend.services.catalog_errors import (
 
 def _catalog_error_response(status_code: int) -> ExceptionHandler:
     async def handler(_request: Request, error: Exception) -> JSONResponse:
-        return JSONResponse(status_code=status_code, content={"detail": str(error)})
+        return JSONResponse(
+            status_code=status_code,
+            content={"detail": getattr(error, "detail", str(error))},
+        )
 
     return handler
 

@@ -7,6 +7,7 @@ import pytest
 
 from backend.services import paper_service as paper_service_module
 from backend.services.paper_association_service import PaperAssociationService
+from backend.services.catalog_errors import CatalogValidationError
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -310,10 +311,22 @@ def test_invalid_hf_url_rolls_back_without_error_prefix():
     db = _SequenceSession([paper])
 
     with pytest.raises(
-        DatabaseError,
+        CatalogValidationError,
         match="^Invalid Hugging Face model URL: 'https://example.com/model'$",
     ):
         PaperAssociationService(db, Mock()).update_hf_artifacts(
             1, ["https://example.com/model"], [], []
         )
     assert db.events == ["rollback"]
+
+
+def test_invalid_hf_url_leaves_outer_transaction_ownership_intact():
+    paper = SimpleNamespace(id=1)
+    db = _SequenceSession([paper])
+
+    with pytest.raises(CatalogValidationError):
+        PaperAssociationService(db, Mock()).update_hf_artifacts(
+            1, ["https://example.com/model"], [], [], commit=False
+        )
+
+    assert db.events == []

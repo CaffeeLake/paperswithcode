@@ -9,12 +9,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from fastapi import HTTPException, status
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.config import get_settings
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogValidationError,
+)
 from backend.models.database import (
     CatalogAuditReadProgress,
     CatalogMutationEvent,
@@ -44,7 +47,7 @@ def decode_cursor(value: str) -> tuple[datetime, uuid.UUID]:
         created, event_id = raw.rsplit("|", 1)
         return datetime.fromisoformat(created), uuid.UUID(event_id)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid audit cursor") from exc
+        raise CatalogValidationError("Invalid audit cursor") from exc
 
 
 class CatalogMutationService:
@@ -73,9 +76,9 @@ class CatalogMutationService:
         )
         is_contributor = actor["role"] == "contributor"
         if is_contributor and not idempotency_key:
-            raise HTTPException(status_code=400, detail="Idempotency-Key is required")
+            raise CatalogValidationError("Idempotency-Key is required")
         if is_contributor and not expected_version:
-            raise HTTPException(status_code=400, detail="If-Match is required")
+            raise CatalogValidationError("If-Match is required")
 
         request_hash = canonical_hash(
             {
@@ -93,19 +96,14 @@ class CatalogMutationService:
             )
             if existing:
                 if existing.request_hash != request_hash:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Idempotency key was already used for another request",
+                    raise CatalogConflictError(
+                        "Idempotency key was already used for another request"
                     )
                 event = self.db.get(CatalogMutationEvent, existing.event_id)
                 return existing.result_snapshot, event, True
         if expected_version and expected_version.strip('"') != current_version:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "stale_catalog_version",
-                    "current_version": current_version,
-                },
+            raise CatalogConflictError(
+                {"code": "stale_catalog_version", "current_version": current_version}
             )
 
         try:

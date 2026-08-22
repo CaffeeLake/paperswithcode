@@ -47,7 +47,25 @@ def test_catalog_domain_errors_have_stable_http_translation(error, status_code):
         response = client.get("/catalog-error")
 
     assert response.status_code == status_code
-    assert response.json() == {"detail": str(error)}
+    assert response.json() == {"detail": error.detail}
+
+
+def test_catalog_conflict_preserves_structured_detail():
+    error = CatalogConflictError(
+        {"code": "stale_catalog_version", "current_version": "current"}
+    )
+    app = FastAPI()
+    register_catalog_error_handlers(app)
+
+    @app.get("/catalog-conflict")
+    def catalog_conflict():
+        raise error
+
+    with TestClient(app) as client:
+        response = client.get("/catalog-conflict")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": error.detail}
 
 
 def test_legacy_catalog_errors_remain_compatible_with_new_error_categories():

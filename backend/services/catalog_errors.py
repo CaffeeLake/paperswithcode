@@ -9,6 +9,10 @@ FastAPI while preserving the API's established error payload shape.
 class CatalogError(Exception):
     """Base class for failures from catalog domain operations."""
 
+    def __init__(self, detail: str | dict):
+        self.detail = detail
+        super().__init__(detail)
+
 
 class CatalogNotFoundError(CatalogError):
     """Raised when a catalog entity cannot be found."""

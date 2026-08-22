@@ -309,18 +309,9 @@ def create_evaluation(
     - 400: Invalid metrics for the dataset (see error message for allowed metrics)
     - 500: Internal server error
     """
-    try:
-        return EvaluationCurationService(db).create(
-            payload=request.model_dump(), mutation=mutation
-        )
-
-    except ValueError as e:
-        # Validation error (invalid metrics for dataset)
-        raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return EvaluationCurationService(db).create(
+        payload=request.model_dump(), mutation=mutation
+    )
 
 
 @router.put(
@@ -359,30 +350,17 @@ def update_evaluation(
     - 404: Evaluation not found
     - 500: Internal server error
     """
-    try:
-        return EvaluationCurationService(db).update(
-            evaluation_id=evaluation_id,
-            payload={
-                **request.model_dump(),
-                "harness_set": "harness" in request.model_fields_set,
-                "source_url_set": "source_url" in request.model_fields_set,
-                "num_parameters_set": "num_parameters" in request.model_fields_set,
-                "hf_model_url_set": "hf_model_url" in request.model_fields_set,
-            },
-            mutation=mutation,
-        )
-
-    except ValueError as e:
-        # Validation error (invalid metrics for dataset)
-        raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return EvaluationCurationService(db).update(
+        evaluation_id=evaluation_id,
+        payload={
+            **request.model_dump(),
+            "harness_set": "harness" in request.model_fields_set,
+            "source_url_set": "source_url" in request.model_fields_set,
+            "num_parameters_set": "num_parameters" in request.model_fields_set,
+            "hf_model_url_set": "hf_model_url" in request.model_fields_set,
+        },
+        mutation=mutation,
+    )
 
 
 @router.delete(
@@ -405,20 +383,8 @@ def delete_evaluation(
     **Returns:**
     - 204 No Content on success
     """
-    try:
-        EvaluationCurationService(db).delete(
-            evaluation_id=evaluation_id, mutation=mutation
-        )
-        return None
-
-    except DatabaseError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    EvaluationCurationService(db).delete(evaluation_id=evaluation_id, mutation=mutation)
+    return None
 
 
 @router.post(

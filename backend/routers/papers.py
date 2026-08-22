@@ -1324,25 +1324,17 @@ def update_paper_hf_artifacts(
     Replace explicit Hugging Face model, dataset, and Space URLs linked to a
     paper. URLs are normalized and must match their declared bucket.
     """
-    try:
-        return _curated_paper_update(
-            db,
-            mutation,
-            paper_id,
-            "hf_artifacts",
-            {
-                "hf_models": request.hf_models,
-                "hf_datasets": request.hf_datasets,
-                "hf_spaces": request.hf_spaces,
-            },
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        message = str(e)
-        if "Invalid Hugging Face" in message or "is not a Hugging Face" in message:
-            raise HTTPException(status_code=400, detail=message)
-        raise HTTPException(status_code=500, detail=message)
+    return _curated_paper_update(
+        db,
+        mutation,
+        paper_id,
+        "hf_artifacts",
+        {
+            "hf_models": request.hf_models,
+            "hf_datasets": request.hf_datasets,
+            "hf_spaces": request.hf_spaces,
+        },
+    )
 
 
 @router.put(
@@ -1360,23 +1352,10 @@ def update_paper_source_url(
     Replace the ``source_url`` of an external paper. ArXiv rows are rejected
     because their abstract URL is derived from ``arxiv_id``.
     """
-    try:
-        return _curated_paper_update(
-            db,
-            mutation,
-            paper_id,
-            "source_url",
-            {"source_url": request.source_url},
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        message = str(e)
-        if (
-            "can only be edited on external papers" in message
-            or "must be a non-empty string" in message
-            or "must be at most 2000 characters" in message
-            or "Another external paper already uses" in message
-        ):
-            raise HTTPException(status_code=400, detail=message)
-        raise HTTPException(status_code=500, detail=message)
+    return _curated_paper_update(
+        db,
+        mutation,
+        paper_id,
+        "source_url",
+        {"source_url": request.source_url},
+    )

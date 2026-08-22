@@ -14,7 +14,11 @@ from backend.services.catalog_mutation_service import (
     canonical_hash,
 )
 from backend.services.evaluation_service import EvaluationService
-from backend.utils.exceptions import DatabaseError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+    CatalogValidationError,
+)
 
 
 EVALUATION_FIELDS = (
@@ -56,7 +60,7 @@ class EvaluationCurationService:
     def state(self, evaluation_id: int) -> dict:
         snapshot = self.snapshot(evaluation_id)
         if snapshot is None:
-            raise DatabaseError(f"Evaluation {evaluation_id} not found")
+            raise CatalogNotFoundError(f"Evaluation {evaluation_id} not found")
         return {
             "evaluation_id": evaluation_id,
             "version": canonical_hash(snapshot),
@@ -99,7 +103,9 @@ class EvaluationCurationService:
                 if int(row["id"]) not in before_ids
             ]
             if len(added) != 1:
-                raise DatabaseError("Could not resolve idempotent evaluation result")
+                raise CatalogPersistenceError(
+                    "Could not resolve idempotent evaluation result"
+                )
             created_id.append(added[0])
         return self.service.get_evaluation(created_id[0])
 
@@ -213,7 +219,7 @@ class EvaluationCurationService:
 
     def batch(self, *, paper_id: int, operations: list[dict], mutation: dict) -> dict:
         if mutation["actor"]["role"] == "contributor" and len(operations) > 50:
-            raise ValueError(
+            raise CatalogValidationError(
                 "Contributors may submit at most 50 evaluation operations per batch"
             )
         result_ids: list[int | None] = []
@@ -225,7 +231,7 @@ class EvaluationCurationService:
                 evaluation_id = operation.get("evaluation_id")
                 if kind == "create":
                     if int(payload.get("paper_id", -1)) != paper_id:
-                        raise ValueError(
+                        raise CatalogValidationError(
                             "Every batch operation must target the same paper"
                         )
                     result = self.service.create_evaluation(**payload, commit=False)
@@ -233,7 +239,7 @@ class EvaluationCurationService:
                 else:
                     row = self.db.get(DBEvaluation, evaluation_id)
                     if row is None or int(row.paper_id) != paper_id:
-                        raise DatabaseError(
+                        raise CatalogNotFoundError(
                             f"Evaluation {evaluation_id} is not on paper {paper_id}"
                         )
                     if kind == "update":
@@ -247,7 +253,9 @@ class EvaluationCurationService:
                         self.service.delete_evaluation(evaluation_id, commit=False)
                         result_ids.append(None)
                     else:
-                        raise ValueError(f"Unsupported evaluation operation: {kind}")
+                        raise CatalogValidationError(
+                            f"Unsupported evaluation operation: {kind}"
+                        )
 
         after, event, replayed = CatalogMutationService(self.db).mutate(
             operation="batch",

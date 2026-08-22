@@ -20,6 +20,7 @@ from backend.models.database import Task as DBTask
 from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.services.paper_method_link_service import replace_manual_links
 from backend.services.repository_service import find_repository_by_url
+from backend.services.catalog_errors import CatalogValidationError
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.utils.hf_utils import normalize_hf_artifact_payload
@@ -60,7 +61,7 @@ class PaperAssociationService:
             existing_task_ids = {task.id for task in existing_tasks}
             invalid_task_ids = set(task_ids) - existing_task_ids
             if invalid_task_ids:
-                raise DatabaseError(f"Invalid task IDs: {invalid_task_ids}")
+                raise CatalogValidationError(f"Invalid task IDs: {invalid_task_ids}")
 
             self.db.query(PaperTask).filter(PaperTask.paper_id == paper_id).delete()
             for task_id in task_ids:
@@ -69,8 +70,11 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
+            if commit:
+                self.db.rollback()
+            if isinstance(
+                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+            ):
                 raise
             raise DatabaseError(f"Error updating paper tasks: {error}")
 
@@ -93,7 +97,7 @@ class PaperAssociationService:
             existing_ids = {organization.id for organization in existing_organizations}
             invalid_ids = set(organization_ids) - existing_ids
             if invalid_ids:
-                raise DatabaseError(f"Invalid organization IDs: {invalid_ids}")
+                raise CatalogValidationError(f"Invalid organization IDs: {invalid_ids}")
 
             links = (
                 self.db.query(DBPaperOrganization)
@@ -119,8 +123,11 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
+            if commit:
+                self.db.rollback()
+            if isinstance(
+                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+            ):
                 raise
             raise DatabaseError(f"Error updating paper organizations: {error}")
 
@@ -135,13 +142,16 @@ class PaperAssociationService:
             existing_ids = {method.id for method in existing_methods}
             invalid_ids = set(method_ids) - existing_ids
             if invalid_ids:
-                raise DatabaseError(f"Invalid method IDs: {invalid_ids}")
+                raise CatalogValidationError(f"Invalid method IDs: {invalid_ids}")
 
             replace_manual_links(self.db, paper_id=paper_id, method_ids=method_ids)
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
+            if commit:
+                self.db.rollback()
+            if isinstance(
+                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+            ):
                 raise
             raise DatabaseError(f"Error updating paper methods: {error}")
 
@@ -210,7 +220,8 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             if isinstance(error, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper repositories: {error}")
@@ -259,7 +270,8 @@ class PaperAssociationService:
                 )
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             if isinstance(error, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper project pages: {error}")
@@ -270,13 +282,15 @@ class PaperAssociationService:
         try:
             normalized = (source_url or "").strip()
             if not normalized:
-                raise DatabaseError("source_url must be a non-empty string")
+                raise CatalogValidationError("source_url must be a non-empty string")
             if len(normalized) > 2000:
-                raise DatabaseError("source_url must be at most 2000 characters")
+                raise CatalogValidationError(
+                    "source_url must be at most 2000 characters"
+                )
 
             paper = self._paper(paper_id)
             if paper.source != "external":
-                raise DatabaseError(
+                raise CatalogValidationError(
                     "source_url can only be edited on external papers; "
                     "ArXiv rows derive their URL from arxiv_id"
                 )
@@ -293,15 +307,18 @@ class PaperAssociationService:
                 .first()
             )
             if collision is not None:
-                raise DatabaseError(
+                raise CatalogValidationError(
                     f"Another external paper already uses source_url={normalized!r}"
                 )
 
             paper.source_url = normalized
             return self._finish(paper_id, paper, commit=commit)
         except Exception as error:
-            self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
+            if commit:
+                self.db.rollback()
+            if isinstance(
+                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+            ):
                 raise
             raise DatabaseError(f"Error updating paper source URL: {error}")
 
@@ -332,10 +349,14 @@ class PaperAssociationService:
             paper.hf_artifacts_scanned_at = None
             return self._finish(paper_id, paper, commit=commit)
         except ValueError as error:
-            self.db.rollback()
-            raise DatabaseError(str(error))
+            if commit:
+                self.db.rollback()
+            raise CatalogValidationError(str(error))
         except Exception as error:
-            self.db.rollback()
-            if isinstance(error, (PaperNotFoundError, DatabaseError)):
+            if commit:
+                self.db.rollback()
+            if isinstance(
+                error, (PaperNotFoundError, DatabaseError, CatalogValidationError)
+            ):
                 raise
             raise DatabaseError(f"Error updating paper HF artifacts: {error}")

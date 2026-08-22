@@ -33,6 +33,10 @@ from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
 from backend.services.evaluation_entry_identity import evaluation_display_entry_key
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
 from backend.services.metric_value_service import parse_metric_value
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogValidationError,
+)
 
 _PAPER_REF = re.compile(r"^paper:(\d+)$", re.IGNORECASE)
 _CVF_OPENACCESS_PATH = re.compile(
@@ -894,7 +898,7 @@ class EvaluationService:
                 task_id, dataset_id
             )
             if not is_valid:
-                raise ValueError(error_message)
+                raise CatalogValidationError(error_message)
 
             # Validate metrics against leaderboard's allowed metrics
             metric_service = LeaderboardMetricService(self.db)
@@ -904,13 +908,13 @@ class EvaluationService:
             )
 
             if not is_valid:
-                raise ValueError(error_message)
+                raise CatalogValidationError(error_message)
 
             is_valid, error_message = self._validate_harness_support(
                 task_id, dataset_id, harness
             )
             if not is_valid:
-                raise ValueError(error_message)
+                raise CatalogValidationError(error_message)
 
             canonical_source_url = source_url or external_source_url
             derived_external = self._derive_external(paper_id, canonical_source_url)
@@ -961,13 +965,20 @@ class EvaluationService:
             return self._serialize_evaluation(db_evaluation)
 
         except ValueError:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
+            raise
+        except CatalogNotFoundError:
+            if commit:
+                self.db.rollback()
             raise
         except DatabaseError:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise
         except Exception as e:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise DatabaseError(f"Failed to create evaluation: {str(e)}")
 
     def update_evaluation(
@@ -1025,7 +1036,7 @@ class EvaluationService:
             )
 
             if not db_evaluation:
-                raise DatabaseError(f"Evaluation {evaluation_id} not found")
+                raise CatalogNotFoundError(f"Evaluation {evaluation_id} not found")
 
             # Store old task_id, dataset_id, best_metric, and metrics for rank recalculation
             old_task_id = db_evaluation.task_id
@@ -1053,13 +1064,13 @@ class EvaluationService:
                     target_task_id, target_dataset_id
                 )
                 if not is_valid:
-                    raise ValueError(error_message)
+                    raise CatalogValidationError(error_message)
 
             is_valid, error_message = self._validate_harness_support(
                 target_task_id, target_dataset_id, target_harness
             )
             if not is_valid:
-                raise ValueError(error_message)
+                raise CatalogValidationError(error_message)
 
             # Validate metrics if they are being changed or task/dataset is changing
             if (
@@ -1080,7 +1091,7 @@ class EvaluationService:
                 )
 
                 if not is_valid:
-                    raise ValueError(error_message)
+                    raise CatalogValidationError(error_message)
 
             # Update only provided fields
             if task_id is not None:
@@ -1156,13 +1167,20 @@ class EvaluationService:
             return self._serialize_evaluation(db_evaluation)
 
         except ValueError:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
+            raise
+        except CatalogNotFoundError:
+            if commit:
+                self.db.rollback()
             raise
         except DatabaseError:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise
         except Exception as e:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise DatabaseError(f"Failed to update evaluation: {str(e)}")
 
     def delete_evaluation(self, evaluation_id: int, *, commit: bool = True) -> bool:
@@ -1186,7 +1204,7 @@ class EvaluationService:
             )
 
             if not db_evaluation:
-                raise DatabaseError(f"Evaluation {evaluation_id} not found")
+                raise CatalogNotFoundError(f"Evaluation {evaluation_id} not found")
 
             # Store task_id, dataset_id, best_metric, and metrics before deletion
             task_id = db_evaluation.task_id
@@ -1206,8 +1224,13 @@ class EvaluationService:
 
             return True
 
+        except CatalogNotFoundError:
+            if commit:
+                self.db.rollback()
+            raise
         except Exception as e:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise DatabaseError(f"Failed to delete evaluation: {str(e)}")
 
     def restore_evaluation_snapshot(

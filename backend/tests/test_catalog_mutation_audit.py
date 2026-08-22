@@ -20,6 +20,7 @@ from backend.services.catalog_mutation_service import (
     CatalogMutationService,
     canonical_hash,
 )
+from backend.services.catalog_errors import CatalogConflictError
 
 
 @compiles(JSONB, "sqlite")
@@ -115,15 +116,15 @@ def test_idempotent_retry_returns_one_event_and_key_mismatch_conflicts(db):
     assert second_after == first_after
     assert second_event.id == first_event.id
     assert db.query(CatalogMutationEvent).count() == 1
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(CatalogConflictError) as error:
         mutate(db, request_payload={"value": "different"})
-    assert error.value.status_code == 409
+    assert str(error.value) == "Idempotency key was already used for another request"
 
 
 def test_stale_version_conflicts_before_catalog_or_audit_write(db):
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(CatalogConflictError) as error:
         mutate(db, expected_version="stale")
-    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "stale_catalog_version"
     assert snapshot(db) is None
     assert db.query(CatalogMutationEvent).count() == 0
 
@@ -197,7 +198,7 @@ def test_rollback_refuses_to_overwrite_later_change(db):
     _, original, _ = mutate(db)
     db.execute(items.update().values(value="later"))
     db.commit()
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(CatalogConflictError) as error:
         CatalogMutationService(db).mutate(
             actor=actor("admin"),
             operation="rollback",
@@ -211,7 +212,7 @@ def test_rollback_refuses_to_overwrite_later_change(db):
             request_id="rollback-request",
             rollback_of_event_id=original.id,
         )
-    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "stale_catalog_version"
     assert snapshot(db)["value"] == "later"
     assert db.query(CatalogMutationEvent).count() == 1
 
