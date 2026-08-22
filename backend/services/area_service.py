@@ -134,11 +134,25 @@ class AreaService:
         except DatabaseError as error:
             raise CatalogPersistenceError(str(error)) from error
 
+    def list_areas_with_tasks(self) -> AreasWithTasks:
+        try:
+            return self.get_areas_with_tasks()
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def list_areas_with_task_benchmarks(self, **kwargs) -> AreasWithTaskBenchmarks:
+        try:
+            return self.get_areas_with_task_benchmarks(**kwargs)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
     def lookup_area(self, area_id: str) -> Area:
         try:
             return self.get_area_by_id(area_id)
         except PaperNotFoundError as error:
             raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
 
     def get_area_by_id(self, area_id: str) -> Area:
         """

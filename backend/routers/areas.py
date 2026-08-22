@@ -113,7 +113,7 @@ def get_areas_with_tasks(
     fan-out (`/areas/` plus one `/areas/{id}/tasks` per area). All paper counts
     are aggregated in a single GROUP BY query rather than one count per task.
     """
-    return AreaService(db).get_areas_with_tasks()
+    return AreaService(db).list_areas_with_tasks()
 
 
 @router.get(
@@ -131,7 +131,7 @@ def get_areas_with_task_benchmarks(
     db: Session = Depends(get_database_session),
 ):
     """Return a bounded areas → tasks → top benchmarks taxonomy for CLI use."""
-    return AreaService(db).get_areas_with_task_benchmarks(
+    return AreaService(db).list_areas_with_task_benchmarks(
         benchmarks_per_task=benchmarks_per_task, min_eval_count=min_eval_count
     )
 

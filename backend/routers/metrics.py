@@ -59,7 +59,7 @@ def list_metrics(
     service = MetricService(db)
     service.validate_direction(direction)
 
-    return service.get_metrics(
+    return service.list_metrics(
         page=page,
         page_size=page_size,
         search=q,
@@ -95,7 +95,7 @@ def get_metric_directions(
     **Example:**
     - `/api/v1/metrics/directions` - Get all metric directions
     """
-    return MetricDirections(directions=MetricService(db).get_metric_directions())
+    return MetricDirections(directions=MetricService(db).list_metric_directions())
 
 
 @router.get("/{metric_name}", response_model=Metric)

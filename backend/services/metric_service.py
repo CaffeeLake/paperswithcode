@@ -13,6 +13,7 @@ from backend.models.api import Metric, Metrics
 from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogNotFoundError,
+    CatalogPersistenceError,
     CatalogValidationError,
 )
 from backend.utils.exceptions import DatabaseError
@@ -142,6 +143,18 @@ class MetricService:
         if metric is None:
             raise CatalogNotFoundError(f"Metric '{name}' not found")
         return metric
+
+    def list_metrics(self, **kwargs) -> Metrics:
+        try:
+            return self.get_metrics(**kwargs)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def list_metric_directions(self) -> Dict[str, str]:
+        try:
+            return self.get_metric_directions()
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
 
     @staticmethod
     def validate_direction(direction: Optional[str]) -> None:

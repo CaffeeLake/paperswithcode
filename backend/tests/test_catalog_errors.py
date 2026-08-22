@@ -133,4 +133,5 @@ def test_create_task_requires_catalog_mutator_before_service_is_called(monkeypat
     with _catalog_client(monkeypatch) as client:
         response = client.post("/api/v1/tasks/", json={"name": "Protected task"})
 
-    assert response.status_code in {401, 403}
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
