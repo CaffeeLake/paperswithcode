@@ -31,6 +31,7 @@ from backend.models.api import (
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.config import get_settings
+from backend.services.taxonomy_service import taxonomy_service
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def find_repository_by_url(session: Session, url: str) -> Optional[DBRepository]
     return session.query(DBRepository).filter(DBRepository.url == lookup_url).first()
 
 
+@taxonomy_service
 class RepositoryService:
     """Service for repository operations with many-to-many support."""
 

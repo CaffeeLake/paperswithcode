@@ -23,7 +23,6 @@ from backend.utils.entity_images import (
     IMAGE_MISSING_HEADERS,
     load_entity_image,
 )
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 router = APIRouter(prefix="/conferences", tags=["conferences"])
 
@@ -36,11 +35,7 @@ router = APIRouter(prefix="/conferences", tags=["conferences"])
 def get_conferences(
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = ConferenceService(db)
-        return service.get_conferences()
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ConferenceService(db).get_conferences()
 
 
 @router.get(
@@ -51,11 +46,7 @@ def get_conferences(
 def get_conference_deadlines(
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = ConferenceService(db)
-        return service.get_conference_deadlines()
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ConferenceService(db).get_conference_deadlines()
 
 
 @router.get(
@@ -67,13 +58,7 @@ def get_conference(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = ConferenceService(db)
-        return service.get_conference(slug)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ConferenceService(db).get_conference(slug)
 
 
 @router.get(
@@ -110,13 +95,7 @@ def get_conference_areas_with_tasks(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = ConferenceService(db)
-        return service.get_conference_areas_with_tasks(slug)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ConferenceService(db).get_conference_areas_with_tasks(slug)
 
 
 @router.get(
@@ -156,24 +135,18 @@ def get_conference_papers(
     date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = ConferenceService(db)
-        return service.get_conference_papers(
-            slug=slug,
-            task_slug=task,
-            presentation=presentation,
-            page=page,
-            page_size=page_size,
-            latest_only=latest_only,
-            order_by=order_by,
-            order_dir=order_dir,
-            include_resources=include_resources,
-            has_code=has_code,
-            has_hf_artifacts=has_hf_artifacts,
-            start_date=date_range.start_date,
-            end_date=date_range.end_date,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ConferenceService(db).get_conference_papers(
+        slug=slug,
+        task_slug=task,
+        presentation=presentation,
+        page=page,
+        page_size=page_size,
+        latest_only=latest_only,
+        order_by=order_by,
+        order_dir=order_dir,
+        include_resources=include_resources,
+        has_code=has_code,
+        has_hf_artifacts=has_hf_artifacts,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+    )

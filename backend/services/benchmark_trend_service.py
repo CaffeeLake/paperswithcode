@@ -21,6 +21,7 @@ from backend.models.database import (
 from backend.services.dataset_service import DatasetService
 from backend.utils.exceptions import PaperNotFoundError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
+from backend.services.taxonomy_service import taxonomy_service
 
 _SUPPORT_PRIOR_PAPERS = 2.0
 
@@ -39,6 +40,7 @@ def _support_weighted_score(
     return math.log1p(recent) * smoothed_lift
 
 
+@taxonomy_service
 class BenchmarkTrendService:
     """Rank benchmarks by support-weighted reporting-velocity changes."""
 

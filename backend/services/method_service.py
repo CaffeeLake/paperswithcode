@@ -33,8 +33,10 @@ from backend.services.entity_search import (
     postgres_search_expressions,
     prepare_entity_search,
 )
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class MethodService:
     """Service class for method-related operations."""
 

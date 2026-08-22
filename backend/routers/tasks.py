@@ -503,21 +503,7 @@ def create_task(
     - 409: Task with the same slug already exists
     - 500: Internal server error
     """
-    try:
-        service = TaskService(db)
-        return service.create_task(request)
-
-    except ValueError as e:
-        if "not found" in str(e):
-            raise HTTPException(status_code=400, detail=str(e))
-        elif "already exists" in str(e):
-            raise HTTPException(status_code=409, detail=str(e))
-        else:
-            raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return TaskService(db).create_task(request)
 
 
 @router.post(

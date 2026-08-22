@@ -16,8 +16,10 @@ from backend.services.paper_method_link_service import (
     shift_month,
 )
 from backend.utils.exceptions import PaperNotFoundError
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class MethodTrendService:
     """Calculate complete, coverage-aware monthly method mention histories."""
 

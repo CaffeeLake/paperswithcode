@@ -32,8 +32,10 @@ from backend.services.trending_ranking_service import active_paper_score_compone
 from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.organization_logos import organization_logo_path
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class OrganizationService:
     """Service layer for organization endpoints."""
 
@@ -47,6 +49,13 @@ class OrganizationService:
         if not organization:
             raise PaperNotFoundError(f"Organization with slug '{slug}' not found")
         return organization
+
+    def get_logo(self, slug: str) -> tuple[bytes, str]:
+        """Return stored logo bytes and MIME type for a public logo route."""
+        organization = self._get_organization_by_slug(slug)
+        if organization.logo_data is None or organization.logo_mime_type is None:
+            raise PaperNotFoundError("Logo not available")
+        return organization.logo_data, organization.logo_mime_type
 
     def _organization_to_api(
         self,

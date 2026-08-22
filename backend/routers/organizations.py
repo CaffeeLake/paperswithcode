@@ -21,9 +21,9 @@ from backend.models.api import (
     Papers,
 )
 from backend.services.organization_service import OrganizationService
+from backend.services.catalog_errors import CatalogNotFoundError
 from backend.services.organization_sync_service import OrganizationSyncService
 from backend.services.hf_organization_service import HFOrganizationError
-from backend.models.database import Organization as DBOrganization
 from backend.utils.auth import require_catalog_mutator
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.organization_logos import organization_logo_extension
@@ -138,24 +138,19 @@ def _organization_logo_response(
     extension: str | None = None,
     digest: str | None = None,
 ):
-    organization = (
-        db.query(DBOrganization).filter(DBOrganization.slug == slug).one_or_none()
-    )
-    if (
-        organization is None
-        or organization.logo_mime_type is None
-        or organization.logo_data is None
-    ):
+    try:
+        logo_data, logo_mime_type = OrganizationService(db).get_logo(slug)
+    except CatalogNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Logo not available",
             headers={"Cache-Control": "no-store"},
         )
-    expected_extension = organization_logo_extension(organization.logo_mime_type)
+    expected_extension = organization_logo_extension(logo_mime_type)
     if extension is not None and extension != expected_extension:
         raise HTTPException(status_code=404, detail="Logo format not available")
 
-    actual_digest = hashlib.sha256(organization.logo_data).hexdigest()
+    actual_digest = hashlib.sha256(logo_data).hexdigest()
     if digest is not None and digest != actual_digest:
         raise HTTPException(status_code=404, detail="Logo version not available")
 
@@ -167,8 +162,8 @@ def _organization_logo_response(
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(
-        content=organization.logo_data,
-        media_type=organization.logo_mime_type,
+        content=logo_data,
+        media_type=logo_mime_type,
         headers=headers,
     )
 

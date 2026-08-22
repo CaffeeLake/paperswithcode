@@ -6,7 +6,7 @@ original PapersWithCode API specification.
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, Query, Path
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
@@ -19,7 +19,6 @@ from backend.models.api import (
 )
 from backend.services.area_service import AreaService
 from backend.services.task_service import TaskService
-from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter()
 
@@ -74,39 +73,28 @@ def get_areas(
     GET /api/v1/areas/?q=vision&page=1&page_size=10
     ```
     """
-    try:
-        area_service = AreaService(db)
+    area_service = AreaService(db)
 
-        # Parse ordering
-        order_by = "name"
-        order_dir = "asc"
-        if ordering:
-            if ordering.startswith("-"):
-                order_dir = "desc"
-                order_by = ordering[1:]
-            else:
-                order_by = ordering
-
-        # Use search if q is provided, otherwise use filtering
-        if q:
-            return area_service.search_areas(
-                query=q,
-                page=page,
-                page_size=page_size,
-            )
+    # Parse ordering
+    order_by = "name"
+    order_dir = "asc"
+    if ordering:
+        if ordering.startswith("-"):
+            order_dir = "desc"
+            order_by = ordering[1:]
         else:
-            return area_service.get_areas(
-                page=page,
-                page_size=page_size,
-                name=name,
-                order_by=order_by,
-                order_dir=order_dir,
-            )
+            order_by = ordering
 
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    # Use search if q is provided, otherwise use filtering
+    if q:
+        return area_service.search_areas(query=q, page=page, page_size=page_size)
+    return area_service.get_areas(
+        page=page,
+        page_size=page_size,
+        name=name,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
 
 
 @router.get(
@@ -125,11 +113,7 @@ def get_areas_with_tasks(
     fan-out (`/areas/` plus one `/areas/{id}/tasks` per area). All paper counts
     are aggregated in a single GROUP BY query rather than one count per task.
     """
-    try:
-        area_service = AreaService(db)
-        return area_service.get_areas_with_tasks()
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return AreaService(db).get_areas_with_tasks()
 
 
 @router.get(
@@ -147,14 +131,9 @@ def get_areas_with_task_benchmarks(
     db: Session = Depends(get_database_session),
 ):
     """Return a bounded areas → tasks → top benchmarks taxonomy for CLI use."""
-    try:
-        area_service = AreaService(db)
-        return area_service.get_areas_with_task_benchmarks(
-            benchmarks_per_task=benchmarks_per_task,
-            min_eval_count=min_eval_count,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return AreaService(db).get_areas_with_task_benchmarks(
+        benchmarks_per_task=benchmarks_per_task, min_eval_count=min_eval_count
+    )
 
 
 @router.get(
@@ -192,18 +171,7 @@ def get_area(
 
     Returns information about the research area with ID 1 (e.g., "Vision").
     """
-    try:
-        area_service = AreaService(db)
-        return area_service.get_area_by_id(area_id)
-
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid area ID format")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return AreaService(db).get_area_by_id(area_id)
 
 
 @router.get(
@@ -252,19 +220,6 @@ def get_area_tasks(
     - `400 Bad Request`: Invalid area ID format
     - `500 Internal Server Error`: Database or server error
     """
-    try:
-        task_service = TaskService(db)
-        return task_service.get_tasks_by_area(
-            area_id=area_id,
-            page=page,
-            page_size=page_size,
-        )
-
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid area ID format")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return TaskService(db).get_tasks_by_area(
+        area_id=area_id, page=page, page_size=page_size
+    )

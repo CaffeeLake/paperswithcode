@@ -31,8 +31,10 @@ from backend.models.database import Task as DBTask
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.slug_utils import slugify
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class ConferenceService:
     """Service layer for conference endpoints."""
 

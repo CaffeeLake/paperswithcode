@@ -51,8 +51,10 @@ from backend.services.entity_search import (
     postgres_search_expressions,
     prepare_entity_search,
 )
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class TaskService:
     """Service class for task-related operations."""
 
@@ -832,6 +834,8 @@ class TaskService:
 
         except PaperNotFoundError:
             raise
+        except ValueError as error:
+            raise ValueError("Invalid area ID format") from error
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks for area: {str(e)}")
 

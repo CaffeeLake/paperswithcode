@@ -10,9 +10,12 @@ from sqlalchemy import desc, asc, or_
 
 from backend.models.database import Metric as DBMetric
 from backend.models.api import Metric, Metrics
+from backend.services.catalog_errors import CatalogNotFoundError, CatalogValidationError
 from backend.utils.exceptions import DatabaseError
+from backend.services.taxonomy_service import taxonomy_service
 
 
+@taxonomy_service
 class MetricService:
     """Service class for metric-related operations."""
 
@@ -131,6 +134,19 @@ class MetricService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve metric '{name}': {str(e)}")
+
+    def lookup_metric(self, name: str) -> Metric:
+        metric = self.get_metric_by_name(name)
+        if metric is None:
+            raise CatalogNotFoundError(f"Metric '{name}' not found")
+        return metric
+
+    @staticmethod
+    def validate_direction(direction: Optional[str]) -> None:
+        if direction and direction not in {"higher_is_better", "lower_is_better"}:
+            raise CatalogValidationError(
+                "Invalid direction. Must be 'higher_is_better' or 'lower_is_better'"
+            )
 
     def get_metric_directions(self) -> Dict[str, str]:
         """
