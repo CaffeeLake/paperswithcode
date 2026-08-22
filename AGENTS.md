@@ -114,3 +114,14 @@ and pgvector backend. Data comes from Hugging Face papers and the legacy dumps i
 - Operations: `docs/operations.md`
 - CRON implementation: `.github/workflows/scripts/README.md`
 - Schema: `docs/DATABASE_SCHEMA_UML.md`
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `huggingface/paperswithcode`. See
+`docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
