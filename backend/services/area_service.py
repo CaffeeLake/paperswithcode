@@ -31,10 +31,8 @@ from backend.models.api import (
 from backend.services.dataset_service import _leaderboard_row_count
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.services.taxonomy_service import taxonomy_service
 
 
-@taxonomy_service
 class AreaService:
     """Service class for area-related operations."""
 

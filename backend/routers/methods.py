@@ -26,7 +26,6 @@ from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mu
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
-    load_entity_image,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
@@ -215,14 +214,14 @@ def get_method_image(
     Returns the raw image bytes stored in `methods.image_data`. 404s when the
     method does not exist or has no stored image.
     """
-    result = load_entity_image(db, DBMethod, method_id)
-    if result is None:
+    try:
+        data, mime = MethodService(db).get_image(method_id)
+    except PaperNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Image not available",
             headers=IMAGE_MISSING_HEADERS,
         )
-    data, mime = result
     return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 

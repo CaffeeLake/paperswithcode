@@ -16,12 +16,11 @@ from backend.models.api import (
     Conferences,
     Papers,
 )
-from backend.models.database import Conference as DBConference
 from backend.services.conference_service import ConferenceService
+from backend.utils.exceptions import PaperNotFoundError
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
-    load_entity_image,
 )
 
 router = APIRouter(prefix="/conferences", tags=["conferences"])
@@ -75,14 +74,14 @@ def get_conference_image(
     Returns the raw image bytes stored in `conferences.image_data`. 404s when
     the conference does not exist or has no stored image.
     """
-    result = load_entity_image(db, DBConference, slug)
-    if result is None:
+    try:
+        data, mime = ConferenceService(db).get_image(slug)
+    except PaperNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Image not available",
             headers=IMAGE_MISSING_HEADERS,
         )
-    data, mime = result
     return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 

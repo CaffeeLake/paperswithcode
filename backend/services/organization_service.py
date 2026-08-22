@@ -32,10 +32,8 @@ from backend.services.trending_ranking_service import active_paper_score_compone
 from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.organization_logos import organization_logo_path
-from backend.services.taxonomy_service import taxonomy_service
 
 
-@taxonomy_service
 class OrganizationService:
     """Service layer for organization endpoints."""
 

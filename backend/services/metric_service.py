@@ -10,12 +10,14 @@ from sqlalchemy import desc, asc, or_
 
 from backend.models.database import Metric as DBMetric
 from backend.models.api import Metric, Metrics
-from backend.services.catalog_errors import CatalogNotFoundError, CatalogValidationError
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogNotFoundError,
+    CatalogValidationError,
+)
 from backend.utils.exceptions import DatabaseError
-from backend.services.taxonomy_service import taxonomy_service
 
 
-@taxonomy_service
 class MetricService:
     """Service class for metric-related operations."""
 
@@ -24,7 +26,7 @@ class MetricService:
 
     def create_metric(self, *, commit: bool = True, **fields) -> DBMetric:
         if self.db.query(DBMetric.id).filter(DBMetric.name == fields["name"]).first():
-            raise ValueError(f"Metric '{fields['name']}' already exists")
+            raise CatalogConflictError(f"Metric '{fields['name']}' already exists")
         row = DBMetric(**fields)
         self.db.add(row)
         if commit:

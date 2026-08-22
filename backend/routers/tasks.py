@@ -19,7 +19,6 @@ from backend.models.api import (
     TrendingBenchmarks,
     TrendingTasks,
 )
-from backend.models.database import Task as DBTask
 from backend.services.benchmark_trend_service import BenchmarkTrendService
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
@@ -27,7 +26,6 @@ from backend.routers.paper_date_range import PaperDateRange, get_paper_date_rang
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
-    load_entity_image,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
@@ -296,21 +294,16 @@ def get_task_image(
     task does not exist or has no stored image.
     """
     identifiers = (task_id,) if task_id.isdigit() else task_slug_candidates(task_id)
-    result = next(
-        (
-            image
-            for identifier in identifiers
-            if (image := load_entity_image(db, DBTask, identifier)) is not None
-        ),
-        None,
-    )
-    if result is None:
+    try:
+        data, mime = next(
+            TaskService(db).get_image(identifier) for identifier in identifiers
+        )
+    except PaperNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Image not available",
             headers=IMAGE_MISSING_HEADERS,
         )
-    data, mime = result
     return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 

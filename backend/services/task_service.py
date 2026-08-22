@@ -36,9 +36,11 @@ from backend.models.api import (
     TrendingTasks,
 )
 from backend.utils.entity_images import entity_image_url
+from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
 from backend.utils.task_slugs import task_slug_candidates
+from backend.services.catalog_errors import CatalogConflictError, CatalogValidationError
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -51,10 +53,8 @@ from backend.services.entity_search import (
     postgres_search_expressions,
     prepare_entity_search,
 )
-from backend.services.taxonomy_service import taxonomy_service
 
 
-@taxonomy_service
 class TaskService:
     """Service class for task-related operations."""
 
@@ -67,6 +67,12 @@ class TaskService:
             if task is not None:
                 return task
         return None
+
+    def get_image(self, identifier: str) -> tuple[bytes, str]:
+        result = load_entity_image(self.db, DBTask, identifier)
+        if result is None:
+            raise PaperNotFoundError("Image not available")
+        return result
 
     @staticmethod
     def _deduplicate_task_trending_repositories(query, task_id: int):
@@ -1356,7 +1362,9 @@ class TaskService:
                     self.db.query(DBArea).filter(DBArea.id == request.area_id).first()
                 )
                 if not area:
-                    raise ValueError(f"Area with ID {request.area_id} not found")
+                    raise CatalogValidationError(
+                        f"Area with ID {request.area_id} not found"
+                    )
 
             # Validate parent_id exists if provided and calculate level
             level = 0
@@ -1365,7 +1373,7 @@ class TaskService:
                     self.db.query(DBTask).filter(DBTask.id == request.parent_id).first()
                 )
                 if not parent:
-                    raise ValueError(
+                    raise CatalogValidationError(
                         f"Parent task with ID {request.parent_id} not found"
                     )
                 level = parent.level + 1
@@ -1376,7 +1384,7 @@ class TaskService:
             # Check if slug already exists
             existing_task = self.db.query(DBTask).filter(DBTask.slug == slug).first()
             if existing_task:
-                raise ValueError(f"Task with slug '{slug}' already exists")
+                raise CatalogConflictError(f"Task with slug '{slug}' already exists")
 
             # Create the task
             db_task = DBTask(
@@ -1401,7 +1409,7 @@ class TaskService:
             # Return the created task using the existing get_task_by_id method
             return self.get_task_by_id(str(db_task.id))
 
-        except ValueError as e:
+        except (ValueError, CatalogConflictError, CatalogValidationError) as e:
             self.db.rollback()
             raise e
         except Exception as e:

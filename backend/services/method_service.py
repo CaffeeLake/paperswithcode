@@ -18,9 +18,11 @@ from backend.models.database import (
 )
 from backend.models.api import Method, MethodIndex, MethodIndexEntry, Methods
 from backend.utils.entity_images import entity_image_url
+from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
 from backend.utils.slug_utils import slugify
+from backend.services.catalog_errors import CatalogConflictError
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -33,10 +35,8 @@ from backend.services.entity_search import (
     postgres_search_expressions,
     prepare_entity_search,
 )
-from backend.services.taxonomy_service import taxonomy_service
 
 
-@taxonomy_service
 class MethodService:
     """Service class for method-related operations."""
 
@@ -46,7 +46,7 @@ class MethodService:
     def create_method(self, *, commit: bool = True, **fields) -> DBMethod:
         slug = slugify(fields["name"])
         if self.db.query(DBMethod.id).filter(DBMethod.slug == slug).first():
-            raise ValueError(f"Method with slug '{slug}' already exists")
+            raise CatalogConflictError(f"Method with slug '{slug}' already exists")
         row = DBMethod(slug=slug, **fields)
         self.db.add(row)
         if commit:
@@ -55,6 +55,12 @@ class MethodService:
             self.db.flush()
         self.db.refresh(row)
         return row
+
+    def get_image(self, identifier: str) -> tuple[bytes, str]:
+        result = load_entity_image(self.db, DBMethod, identifier)
+        if result is None:
+            raise PaperNotFoundError("Image not available")
+        return result
 
     @staticmethod
     def _convert_db_method_to_api(

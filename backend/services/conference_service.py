@@ -29,12 +29,12 @@ from backend.models.database import PaperConference
 from backend.models.database import PaperTask
 from backend.models.database import Task as DBTask
 from backend.utils.entity_images import entity_image_url
+from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.slug_utils import slugify
-from backend.services.taxonomy_service import taxonomy_service
+from backend.services.catalog_errors import CatalogConflictError, CatalogValidationError
 
 
-@taxonomy_service
 class ConferenceService:
     """Service layer for conference endpoints."""
 
@@ -44,9 +44,9 @@ class ConferenceService:
     def create_conference(self, *, commit: bool = True, **fields) -> DBConference:
         slug = slugify(fields["name"])
         if len(slug) > 100:
-            raise ValueError("Conference slug would exceed 100 characters")
+            raise CatalogValidationError("Conference slug would exceed 100 characters")
         if self.db.query(DBConference.id).filter(DBConference.slug == slug).first():
-            raise ValueError(f"Conference with slug '{slug}' already exists")
+            raise CatalogConflictError(f"Conference with slug '{slug}' already exists")
         row = DBConference(slug=slug, **fields)
         self.db.add(row)
         if commit:
@@ -55,6 +55,12 @@ class ConferenceService:
             self.db.flush()
         self.db.refresh(row)
         return row
+
+    def get_image(self, slug: str) -> tuple[bytes, str]:
+        result = load_entity_image(self.db, DBConference, slug)
+        if result is None:
+            raise PaperNotFoundError("Image not available")
+        return result
 
     def _get_conference_by_slug(self, slug: str) -> DBConference:
         conference = (
