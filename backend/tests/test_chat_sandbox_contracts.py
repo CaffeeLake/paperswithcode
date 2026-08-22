@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import uuid
@@ -3039,6 +3040,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "title-based `pwc paper info` lookup can consume a search" in prompt
     assert "If any tool reports a 429" in prompt
     assert "Every Bash command runs with `set -eo pipefail`" in prompt
+    assert "global leaderboard as evidence" in prompt
+    assert "`rg`'s no-match status" in prompt
     assert "do not place multiple search executions" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "Every Bash command already starts in /workspace" in prompt
@@ -3095,11 +3098,24 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-4NGYILXHE6Ny4UpQuuPlwS"
+    assert MODAL_IMAGE_ID == "im-wW1HKoElLFhYqMUenWC6B4"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-DEb4S3J4R3ByMoojw9UwNI"
-    assert WORKER_CONTRACT_VERSION == "95"
+    assert WORKER_CONTRACT_VERSION == "96"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
+
+
+@pytest.mark.parametrize(
+    ("command", "returncode"),
+    [
+        ("printf 'unmatched\\n' | { rg -- 'match' || test $? -eq 1; }", 0),
+        ("false | { rg -- 'match' || test $? -eq 1; }", 1),
+    ],
+)
+def test_rg_no_match_guard_preserves_upstream_pipefail_errors(command, returncode):
+    result = subprocess.run(["bash", "-o", "pipefail", "-c", command], check=False)
+
+    assert result.returncode == returncode
 
 
 def test_task_catalog_is_bounded_and_ranked():

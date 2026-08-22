@@ -137,6 +137,11 @@ details matter. The representative list is not exhaustive, so use the CLI's
 documented method lookup workflow before claiming that a method is absent.
 Every Bash command runs with `set -eo pipefail`; handle an expected non-zero
 status explicitly instead of allowing a failed command or pipeline to continue.
+For task or benchmark discovery, never use a global leaderboard as evidence for
+a specific domain. Lists have a maximum page size of 100; paginate when needed,
+and use `| {{{{ rg -i -- 'QUERY' || test $? -eq 1; }}}}` for an informative empty
+`rg` match. This tolerates only `rg`'s no-match status while `pipefail` still
+reports a failed `pwc` command.
 
 Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
 `sed`, or any other line-based truncation. Paper lineage follows the abstract

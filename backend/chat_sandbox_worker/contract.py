@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-WORKER_CONTRACT_VERSION = "95"
+WORKER_CONTRACT_VERSION = "96"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 30
@@ -23,7 +23,7 @@ PI_NODE_SHA256 = "c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16
 SUPPORTED_AGENT_HARNESSES = ("claude", "pi")
 DEFAULT_AGENT_HARNESS = "pi"
 NEW_SESSION_PI_PERCENTAGE = 100
-PWC_CLI_VERSION = "0.1.15"
+PWC_CLI_VERSION = "0.1.16"
 RESTRICTED_HF_CLI_VERSION = "0.1.0"
 RESTRICTED_HF_CLI_SHA256 = (
     "4151cd20e415958e6ef7b3d15a21d1837feb9867ecbea7e079a09dadef56f4bc"
@@ -39,7 +39,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-4NGYILXHE6Ny4UpQuuPlwS"
+MODAL_IMAGE_ID = "im-wW1HKoElLFhYqMUenWC6B4"
 # Production uses a distinct immutable image because Modal image IDs are scoped
 # to their environment.
 PRODUCTION_MODAL_IMAGE_ID = "im-DEb4S3J4R3ByMoojw9UwNI"
