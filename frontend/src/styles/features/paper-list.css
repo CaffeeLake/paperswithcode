@@ -679,8 +679,12 @@ a.paper-resource.is-link:focus-visible {
   display: flex;
   justify-content: space-between;
   margin-bottom: -38px;
+  pointer-events: none;
   position: relative;
   z-index: 1;
+}
+.paper-date-navigation button {
+  pointer-events: auto;
 }
 .paper-date-navigation button,
 .paper-date-actions button {
