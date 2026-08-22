@@ -40,7 +40,7 @@ def active_paper_score_components(
         score = case(
             (
                 Paper.trending_score_updated_at >= cutoff,
-                Paper.trending_score,
+                func.coalesce(Paper.trending_score, missing_score),
             ),
             else_=missing_score,
         )

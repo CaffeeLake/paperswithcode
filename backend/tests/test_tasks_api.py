@@ -761,6 +761,50 @@ def test_task_papers_trending_composite_ranks_by_paper_score(
     assert data["count"] == 4
 
 
+def test_task_papers_trending_composite_puts_fresh_null_scores_last(
+    client, task_with_composite_trending_papers, monkeypatch
+):
+    """A refreshed paper without a score must not outrank scored papers."""
+    db = TestingSessionLocal()
+    db.query(DBPaper).filter(DBPaper.id == 4).update(
+        {DBPaper.trending_score_updated_at: _FRESH}
+    )
+    db.commit()
+    db.close()
+
+    _pin_trending_mode(monkeypatch, "composite")
+
+    # SQLite sorts NULLs last for DESC while production PostgreSQL sorts them
+    # first. Make this endpoint test reproduce the production dialect's NULL
+    # ordering so the regression remains visible in the in-memory test suite.
+    def emulate_postgres_desc_null_ordering(
+        _conn, _cursor, statement, parameters, _context, _executemany
+    ):
+        return statement.replace(" END DESC", " END DESC NULLS FIRST"), parameters
+
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        emulate_postgres_desc_null_ordering,
+        retval=True,
+    )
+    try:
+        response = client.get(
+            "/api/v1/tasks/composite-ranking/papers?order_by=trending&page_size=10"
+        )
+    finally:
+        event.remove(
+            engine,
+            "before_cursor_execute",
+            emulate_postgres_desc_null_ordering,
+        )
+
+    assert response.status_code == 200
+    titles = [paper["title"] for paper in response.json()["results"]]
+    assert titles[:2] == ["Paper 1", "Paper 2"]
+    assert set(titles[2:]) == {"Paper 3", "Paper 4"}
+
+
 @pytest.fixture
 def trending_dataset():
     """Build papers that exercise the trending-domains scoring.
