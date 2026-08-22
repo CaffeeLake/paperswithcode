@@ -95,7 +95,10 @@ describe("AskAssistant", () => {
       "gpt-5.6-luna@openrouter",
       "gpt-5.6-luna@openai",
     ]);
-    expect(screen.getByText("Via OpenAI")).toBeVisible();
+    expect(screen.queryByText(/^Via\b/)).not.toBeInTheDocument();
+
+    fireEvent.change(picker, { target: { value: "deepseek-ai/DeepSeek-V4-Flash-0731" } });
+    expect(screen.queryByText(/^Via\b/)).not.toBeInTheDocument();
   });
 
   it("offers OpenAI Luna first and DeepSeek second in production", () => {
@@ -112,7 +115,7 @@ describe("AskAssistant", () => {
       "DeepSeek V4 Flash",
       "GPT-5.6 Luna",
     ]);
-    expect(screen.getByText("Via OpenAI")).toBeVisible();
+    expect(screen.queryByText(/^Via\b/)).not.toBeInTheDocument();
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {

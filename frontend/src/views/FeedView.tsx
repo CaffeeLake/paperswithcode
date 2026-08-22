@@ -113,7 +113,6 @@ export const AskAssistant: React.FC = () => {
   const question = draft.text;
   const [scrollTop, setScrollTop] = useState(0);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
-  const selectedProvider = models.find((model) => model.id === selectedModel)?.provider;
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [launching, setLaunching] = useState(false);
@@ -248,21 +247,6 @@ export const AskAssistant: React.FC = () => {
                 onChange={setWebSearchEnabled}
                 disabled={launching}
               />
-            )}
-            {selectedProvider === "huggingface" && (
-              <span className="ask-home-hint">
-                Via 🤗{" "}
-                <a
-                  href="https://huggingface.co/docs/inference-providers/en/index"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Inference Providers
-                </a>
-              </span>
-            )}
-            {selectedProvider === "openai" && (
-              <span className="ask-home-hint">Via OpenAI</span>
             )}
           </div>
           <button
