@@ -167,6 +167,24 @@ const MonthCalendar: React.FC<{
   );
 };
 
+const MonthNavigation: React.FC<{
+  calendar: "start" | "end";
+  onPrevious: () => void;
+  onNext: () => void;
+  secondary?: boolean;
+}> = ({ calendar, onPrevious, onNext, secondary = false }) => (
+  <div
+    className={`paper-date-navigation-group${secondary ? " paper-date-navigation-group-secondary" : ""}`}
+  >
+    <button type="button" aria-label={`Previous ${calendar} month`} onClick={onPrevious}>
+      ←
+    </button>
+    <button type="button" aria-label={`Next ${calendar} month`} onClick={onNext}>
+      →
+    </button>
+  </div>
+);
+
 export const PaperDateFilter: React.FC<PaperDateRangeValue & {
   onChange: (value: PaperDateRangeValue) => void;
   currentDate?: string;
@@ -211,13 +229,15 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
     }
   };
 
-  const navigateMonths = (amount: number) => {
-    const nextStartMonth = addMonths(startVisibleMonth, amount);
-    const nextEndMonth = addMonths(endVisibleMonth, amount);
-    setStartVisibleMonth(nextStartMonth);
-    setEndVisibleMonth(nextEndMonth);
-    setStartYear(String(nextStartMonth.getUTCFullYear()));
-    setEndYear(String(nextEndMonth.getUTCFullYear()));
+  const navigateMonth = (
+    visibleMonth: Date,
+    amount: number,
+    setMonth: React.Dispatch<React.SetStateAction<Date>>,
+    setInputYear: (value: string) => void,
+  ) => {
+    const nextMonth = addMonths(visibleMonth, amount);
+    setMonth(nextMonth);
+    setInputYear(String(nextMonth.getUTCFullYear()));
   };
 
   const selectDate = (value: string) => {
@@ -286,20 +306,45 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
             <p>Choose an inclusive start and end publication date.</p>
           </div>
           <div className="paper-date-navigation">
-            <button
-              type="button"
-              aria-label="Previous month"
-              onClick={() => navigateMonths(-1)}
-            >
-              ←
-            </button>
-            <button
-              type="button"
-              aria-label="Next month"
-              onClick={() => navigateMonths(1)}
-            >
-              →
-            </button>
+            <MonthNavigation
+              calendar="start"
+              onPrevious={() =>
+                navigateMonth(
+                  startVisibleMonth,
+                  -1,
+                  setStartVisibleMonth,
+                  setStartYear,
+                )
+              }
+              onNext={() =>
+                navigateMonth(
+                  startVisibleMonth,
+                  1,
+                  setStartVisibleMonth,
+                  setStartYear,
+                )
+              }
+            />
+            <MonthNavigation
+              calendar="end"
+              onPrevious={() =>
+                navigateMonth(
+                  endVisibleMonth,
+                  -1,
+                  setEndVisibleMonth,
+                  setEndYear,
+                )
+              }
+              onNext={() =>
+                navigateMonth(
+                  endVisibleMonth,
+                  1,
+                  setEndVisibleMonth,
+                  setEndYear,
+                )
+              }
+              secondary
+            />
           </div>
           <div className="paper-date-calendars">
             <MonthCalendar

@@ -676,12 +676,17 @@ a.paper-resource.is-link:focus-visible {
   color: var(--ink-soft);
 }
 .paper-date-navigation {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 36px;
   margin-bottom: -38px;
   pointer-events: none;
   position: relative;
   z-index: 1;
+}
+.paper-date-navigation-group {
+  display: flex;
+  justify-content: space-between;
 }
 .paper-date-navigation button {
   pointer-events: auto;
@@ -812,5 +817,7 @@ a.paper-resource.is-link:focus-visible {
   }
   .paper-date-calendars { display: block; }
   .paper-date-calendar-secondary { display: none; }
+  .paper-date-navigation { display: block; }
+  .paper-date-navigation-group-secondary { display: none; }
   .paper-date-day { width: 36px; height: 36px; }
 }

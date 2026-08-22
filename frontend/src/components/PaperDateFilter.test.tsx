@@ -49,18 +49,35 @@ describe("PaperDateFilter", () => {
     expect(within(dialog).getByText("September 2024")).toBeInTheDocument();
   });
 
-  it("keeps the entered years in sync when navigation crosses a year boundary", async () => {
+  it("navigates the start and end calendars independently", async () => {
     const user = userEvent.setup();
 
     render(<PaperDateFilter currentDate="2023-01-15" onChange={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Select a range" }));
     const dialog = screen.getByRole("dialog", { name: "Select a date range" });
 
-    await user.click(within(dialog).getByRole("button", { name: "Previous month" }));
+    await user.click(within(dialog).getByRole("button", { name: "Previous start month" }));
 
     expect(within(dialog).getByText("December 2022")).toBeInTheDocument();
+    expect(within(dialog).getByText("February 2023")).toBeInTheDocument();
     expect(within(dialog).getByRole("spinbutton", { name: "Start year" })).toHaveValue(2022);
     expect(within(dialog).getByRole("spinbutton", { name: "End year" })).toHaveValue(2023);
+
+    await user.click(within(dialog).getByRole("button", { name: "Next start month" }));
+
+    expect(within(dialog).getByText("January 2023")).toBeInTheDocument();
+    expect(within(dialog).getByText("February 2023")).toBeInTheDocument();
+    expect(within(dialog).getByRole("spinbutton", { name: "Start year" })).toHaveValue(2023);
+
+    await user.click(within(dialog).getByRole("button", { name: "Next end month" }));
+
+    expect(within(dialog).getByText("January 2023")).toBeInTheDocument();
+    expect(within(dialog).getByText("March 2023")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Previous end month" }));
+
+    expect(within(dialog).getByText("January 2023")).toBeInTheDocument();
+    expect(within(dialog).getByText("February 2023")).toBeInTheDocument();
   });
 
   it("supports same-day ranges and resets the start for an earlier second click", async () => {
