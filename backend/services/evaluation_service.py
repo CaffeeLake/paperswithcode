@@ -1484,5 +1484,6 @@ class EvaluationService:
             return total_updated
 
         except Exception as e:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise DatabaseError(f"Failed to recalculate ranks: {str(e)}")
