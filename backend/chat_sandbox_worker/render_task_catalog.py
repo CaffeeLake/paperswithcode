@@ -9,11 +9,6 @@ import sys
 from typing import Any
 
 
-TASK_CONTEXT = {
-    "video-understanding": "includes video question answering and video captioning",
-}
-
-
 def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
     areas = payload.get("results")
     if not isinstance(areas, list):
@@ -28,6 +23,14 @@ def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
             "ordered by paper coverage. Task slugs are included for precise CLI "
             "queries; use `pwc --help` to inspect the live command surface."
         ),
+        "",
+        "Note that currently, the tasks are quite broadly defined. To give some examples:",
+        "-  video understanding includes subtasks like video question answering, video summarization and video captioning",
+        "- image segmentation includes subtasks like semantic segmentation, instance segmentation and panoptic segmentation",
+        "- depth estimation includes subtasks like metric depth estimation and relative depth estimation",
+        "- etc.",
+        "",
+        "The goal is to split up those tasks in the future.",
     ]
     for area in sorted(areas, key=lambda item: str(item.get("name") or "").casefold()):
         name = str(area.get("name") or "").strip()
@@ -51,9 +54,6 @@ def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
         for task in catalog_tasks[:maximum_tasks_per_area]:
             slug = str(task["slug"]).strip()
             task_name = str(task["name"]).strip()
-            context = TASK_CONTEXT.get(slug)
-            if context:
-                task_name = f"{task_name} ({context})"
             lines.append(f"- `{slug}` — {task_name}")
     return "\n".join(lines) + "\n"
 

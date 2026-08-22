@@ -3101,7 +3101,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-rY0SIfyL3yJYbBWhV8zZQ6"
-    assert PRODUCTION_MODAL_IMAGE_ID == "im-DEb4S3J4R3ByMoojw9UwNI"
+    assert PRODUCTION_MODAL_IMAGE_ID == "im-cL3txKSvt3INkLJVrUdbfI"
     assert WORKER_CONTRACT_VERSION == "96"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
@@ -3159,8 +3159,7 @@ def test_task_catalog_is_bounded_and_ranked():
     assert catalog.index("### Audio") < catalog.index("### Vision")
     assert catalog.index("`popular`") < catalog.index("`classification`")
     assert (
-        "`video-understanding` — Video Understanding (includes video question "
-        "answering and video captioning)" in catalog
+        "video understanding includes subtasks like video question answering" in catalog
     )
     assert "`detection`" not in catalog
     assert "`segmentation`" not in catalog

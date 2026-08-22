@@ -2,6 +2,14 @@
 
 The public catalog currently uses the areas below. Up to 12 top-level tasks are shown per area, ordered by paper coverage. Task slugs are included for precise CLI queries; use `pwc --help` to inspect the live command surface.
 
+Note that currently, the tasks are quite broadly defined. To give some examples:
+-  video understanding includes subtasks like video question answering, video summarization and video captioning
+- image segmentation includes subtasks like semantic segmentation, instance segmentation and panoptic segmentation
+- depth estimation includes subtasks like metric depth estimation and relative depth estimation
+- etc.
+
+The goal is to split up those tasks in the future.
+
 ### Audio
 
 - `automatic-speech-recognition` — Automatic Speech Recognition
@@ -58,7 +66,7 @@ The public catalog currently uses the areas below. Up to 12 top-level tasks are 
 ### Video
 
 - `video-generation` — Video generation
-- `video-understanding` — Video Understanding (includes video question answering and video captioning)
+- `video-understanding` — Video Understanding
 - `video-classification` — Video classification
 - `video-editing` — Video Editing
 - `video-segmentation` — Video segmentation
