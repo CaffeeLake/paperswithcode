@@ -24,6 +24,7 @@ from backend.services.deployment_lifecycle import (
     deployment_lifecycle,
     operator_socket_allowed,
 )
+from backend.routers.catalog_error_handlers import register_catalog_error_handlers
 from backend.services.runtime_validation import validate_runtime
 from backend.utils.csrf import cookie_request_passes_csrf
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
@@ -316,6 +317,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.environment == "development" else None,
         lifespan=lifespan,
     )
+    register_catalog_error_handlers(app)
     app.add_middleware(DeploymentAccountingMiddleware)
 
     # Add CORS middleware. `allow_origin_regex` is used to permit the Hugging

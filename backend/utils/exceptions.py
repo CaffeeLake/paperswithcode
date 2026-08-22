@@ -2,6 +2,11 @@
 Custom exception classes for the PapersWithCode API.
 """
 
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+)
+
 
 class PapersWithCodeAPIError(Exception):
     """Base exception for PapersWithCode API errors."""
@@ -9,13 +14,13 @@ class PapersWithCodeAPIError(Exception):
     pass
 
 
-class PaperNotFoundError(PapersWithCodeAPIError):
+class PaperNotFoundError(CatalogNotFoundError, PapersWithCodeAPIError):
     """Raised when a paper is not found."""
 
     pass
 
 
-class DatabaseError(PapersWithCodeAPIError):
+class DatabaseError(CatalogPersistenceError, PapersWithCodeAPIError):
     """Raised when a database operation fails."""
 
     pass
