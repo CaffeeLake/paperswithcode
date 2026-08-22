@@ -29,6 +29,10 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+)
 from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.config import get_settings
 
@@ -192,6 +196,20 @@ class RepositoryService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to fetch repositories: {str(e)}")
+
+    def list_repositories(self, **kwargs) -> Repositories:
+        try:
+            return self.get_repositories(**kwargs)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def lookup_repository(self, repository_id: str) -> Repository:
+        try:
+            return self.get_repository_by_id(repository_id)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
 
     def get_repository_by_id(self, repository_id: str) -> Repository:
         """

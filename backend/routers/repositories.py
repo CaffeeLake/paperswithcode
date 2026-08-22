@@ -94,20 +94,16 @@ def get_repositories(
     - Filtering by owner, official status, and star count
     - Sorting options
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repositories(
-            page=page,
-            page_size=page_size,
-            owner=owner,
-            official_only=official_only,
-            min_stars=min_stars,
-            source=source,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return RepositoryService(db).list_repositories(
+        page=page,
+        page_size=page_size,
+        owner=owner,
+        official_only=official_only,
+        min_stars=min_stars,
+        source=source,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
 
 
 @router.get(
@@ -122,13 +118,7 @@ def get_repository_by_id(
     """
     Get a specific repository by its database ID.
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repository_by_id(repository_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return RepositoryService(db).lookup_repository(repository_id)
 
 
 @router.get(
@@ -145,15 +135,15 @@ def get_repositories_by_owner(
     """
     Get all repositories by a specific owner.
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repositories(
+    return (
+        RepositoryService(db)
+        .list_repositories(
             page=1,
             page_size=1000,  # Large limit to get all repos by owner
             owner=owner,
-        ).results
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        )
+        .results
+    )
 
 
 @router.get(
