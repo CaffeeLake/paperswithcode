@@ -647,9 +647,6 @@ const TagBrowseView: React.FC = () => {
               endDate={dateRange.endDate}
               onChange={(value) => setSearchParams(withPaperDateRange(searchParams, value))}
             />
-            <div className="results-count">
-              {cards.length} loaded in <span>{taskName}</span>
-            </div>
           </div>
 
           {papersQ.isLoading ? (
