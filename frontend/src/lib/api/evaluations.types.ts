@@ -44,6 +44,11 @@ export interface Evaluation {
   dataset_slug?: string;
 }
 
+export interface EvaluationParameterCoverage {
+  parameter_coverage_known: number;
+  parameter_coverage_total: number;
+}
+
 
 export interface Metric {
   id: string;

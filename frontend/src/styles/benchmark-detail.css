@@ -314,6 +314,32 @@
   width: 140px;
   white-space: nowrap;
 }
+.bm-table .col-parameters {
+  font-family: var(--mono);
+  font-feature-settings: "tnum";
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-align: right;
+  white-space: nowrap;
+}
+.bm-table thead th.col-parameters { text-align: right; }
+.bm-parameter-coverage,
+.bm-parameter-unavailable {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.bm-parameter-coverage { margin: -8px 0 14px; }
+.bm-empty-filter-action {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
 .bm-table .col-value {
   font-family: var(--mono);
   font-feature-settings: "tnum";

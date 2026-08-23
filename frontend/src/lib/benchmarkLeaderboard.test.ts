@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { Evaluation } from "./api/evaluations.types";
 import {
   computeSeries,
+  formatParameterCount,
   mergeLeaderboardEvaluations,
+  parseParameterFilter,
   parseMetricValue,
 } from "./benchmarkLeaderboard";
 
@@ -47,6 +49,28 @@ describe("benchmark leaderboard model", () => {
     expect(merged[0].metrics).toEqual({ Accuracy: 80, F1: 75 });
     expect(merged[0].sourceEvaluationIds).toEqual(["accuracy", "f1"]);
     expect(merged[0].ranksByMetric).toEqual({ Accuracy: 1, F1: 2 });
+  });
+
+  it("keeps only consistent sibling parameter counts displayable", () => {
+    const merged = mergeLeaderboardEvaluations([
+      evaluation({ id: "one", num_parameters: 1_500_000_000 }),
+      evaluation({ id: "two", metrics: { F1: 80 } }),
+    ]);
+    expect(merged[0].parameterCount).toBe(1_500_000_000);
+
+    const conflicting = mergeLeaderboardEvaluations([
+      evaluation({ id: "one", num_parameters: 1_000_000_000 }),
+      evaluation({ id: "two", metrics: { F1: 80 }, num_parameters: 2_000_000_000 }),
+    ]);
+    expect(conflicting[0].parameterCount).toBeNull();
+    expect(conflicting[0].hasParameterConflict).toBe(true);
+  });
+
+  it("accepts only supported URL bounds and formats up to three significant digits", () => {
+    expect(parseParameterFilter("3000000000")).toBe(3_000_000_000);
+    expect(parseParameterFilter("2000000000")).toBeUndefined();
+    expect(parseParameterFilter("nonsense")).toBeUndefined();
+    expect(formatParameterCount(1_234_567_890)).toBe("1.23B");
   });
 
   it("marks only improving values as SOTA for lower-is-better metrics", () => {

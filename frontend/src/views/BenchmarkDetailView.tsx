@@ -21,8 +21,11 @@ import CopyScreenshotButton from "@/components/benchmark/CopyScreenshotButton";
 import {
   computeSeries,
   evaluationMatchesHighlight,
+  formatParameterCount,
   mergeLeaderboardEvaluations,
+  PARAMETER_FILTERS,
   parseMetricValue,
+  parseParameterFilter,
   storedRankForMetric,
 } from "@/lib/benchmarkLeaderboard";
 import "@/styles/benchmark-detail.css";
@@ -60,7 +63,7 @@ function renderBenchmarkPaperTitle(
 
 const BenchmarkDetailView: React.FC = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   // The "See all" button on PaperDetailView's evaluation card links here
   // with `?task=<slug>` so we can keep that task as the breadcrumb context
   // for benchmarks linked to multiple tasks (e.g. COCO val2017).
@@ -71,6 +74,7 @@ const BenchmarkDetailView: React.FC = () => {
   // collide), so we deep-link by it and silently fall back to the normal
   // benchmark page when the id is missing or no longer present.
   const highlightEvalId = searchParams.get("eval") || undefined;
+  const parameterBound = parseParameterFilter(searchParams.get("max_parameters_exclusive"));
   const { preferences, setHideClosedSourceEvals } = usePreferences();
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
   const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
@@ -167,6 +171,43 @@ const BenchmarkDetailView: React.FC = () => {
     return tasks[0].id;
   }, [datasetTasksQ.data, evalsQ.data, taskSlugFromQuery, highlightEval]);
 
+  // Coverage is calculated by the API after the same task/open-source filters
+  // used by the table, but before applying a size bound. This makes the
+  // availability note truthful even for a currently empty constrained result.
+  const parameterCoverageQ = useQuery({
+    queryKey: [
+      "leaderboard-parameter-coverage",
+      datasetQ.data?.id,
+      currentTaskId,
+      preferences.hide_closed_source_evals,
+    ],
+    queryFn: () => evaluationsApi.list({
+      dataset_id: Number(datasetQ.data!.id),
+      task_id: Number(currentTaskId!),
+      is_open: preferences.hide_closed_source_evals ? true : undefined,
+      page_size: 1,
+      ordering: "best_rank",
+    }),
+    enabled: !!datasetQ.data?.id && !!currentTaskId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const parameterFilteredEvalsQ = useQuery({
+    queryKey: [
+      "leaderboard-parameter-filter",
+      datasetQ.data?.id,
+      currentTaskId,
+      preferences.hide_closed_source_evals,
+      parameterBound,
+    ],
+    queryFn: () => evaluationsApi.byLeaderboard(datasetQ.data!.id, currentTaskId!, {
+      is_open: preferences.hide_closed_source_evals ? true : undefined,
+      max_parameters_exclusive: parameterBound,
+    }),
+    enabled: !!parameterBound && !!datasetQ.data?.id && !!currentTaskId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const benchmarkTrendsQ = useQuery({
     queryKey: [
       "task-benchmark-trends",
@@ -219,6 +260,11 @@ const BenchmarkDetailView: React.FC = () => {
   const mergedTaskEvals = useMemo(
     () => mergeLeaderboardEvaluations(taskEvals),
     [taskEvals],
+  );
+
+  const mergedParameterFilteredEvals = useMemo(
+    () => mergeLeaderboardEvaluations(parameterFilteredEvalsQ.data || []),
+    [parameterFilteredEvalsQ.data],
   );
 
   // Last-resort metric set when this leaderboard has no configured metrics
@@ -361,7 +407,8 @@ const BenchmarkDetailView: React.FC = () => {
   // F1-primary benchmark, for example), we re-rank in-client by the actual
   // value. Rows that don't carry the active metric drop to the end, ordered
   // by their stored rank as a deterministic tie-breaker.
-  const sortedRows = mergedTaskEvals.slice().sort((a, b) => {
+  const tableRows = parameterBound ? mergedParameterFilteredEvals : mergedTaskEvals;
+  const sortedRows = tableRows.slice().sort((a, b) => {
     const va = parseMetricValue(a.metrics?.[activeMetric]);
     const vb = parseMetricValue(b.metrics?.[activeMetric]);
     if (va !== null && vb !== null) {
@@ -372,6 +419,16 @@ const BenchmarkDetailView: React.FC = () => {
     return storedRankForMetric(a, activeMetric) - storedRankForMetric(b, activeMetric);
   });
   const showHarness = Boolean(dataset.supports_harness);
+  const parameterCoverage = parameterCoverageQ.data;
+  const hasParameterMetadata = (parameterCoverage?.parameter_coverage_known || 0) > 0;
+  const setParameterFilter = (bound: number | undefined) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (bound === undefined) next.delete("max_parameters_exclusive");
+      else next.set("max_parameters_exclusive", String(bound));
+      return next;
+    });
+  };
   const highlightedEval = highlightEvalId
     ? sortedRows.find((e) => evaluationMatchesHighlight(e, highlightEvalId)) || null
     : null;
@@ -696,17 +753,47 @@ const BenchmarkDetailView: React.FC = () => {
                 />
                 <span className="bm-closed-toggle-label">Closed-source</span>
               </label>
+              {hasParameterMetadata ? (
+                <label className="bm-view-select">
+                  <span className="bm-view-select-label">Parameters</span>
+                  <select
+                    value={parameterBound === undefined ? "" : String(parameterBound)}
+                    onChange={(e) => setParameterFilter(parseParameterFilter(e.target.value || null))}
+                  >
+                    {PARAMETER_FILTERS.map((filter) => (
+                      <option
+                        key={filter.label}
+                        value={filter.maxParametersExclusive === undefined ? "" : filter.maxParametersExclusive}
+                      >
+                        {filter.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : parameterCoverageQ.isSuccess ? (
+                <span className="bm-parameter-unavailable">Parameter metadata unavailable</span>
+              ) : null}
               <CopyScreenshotButton targetRef={leaderboardCardRef} label="leaderboard" />
             </div>
           </div>
-          {evalsQ.isLoading ? (
+          {hasParameterMetadata && parameterCoverage && (
+            <div className="bm-parameter-coverage">
+              Parameters known for {parameterCoverage.parameter_coverage_known} of {parameterCoverage.parameter_coverage_total} entries
+            </div>
+          )}
+          {evalsQ.isLoading || (parameterBound !== undefined && parameterFilteredEvalsQ.isLoading) ? (
             <div style={{ padding: 16 }}>
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full mb-2" />
               ))}
             </div>
           ) : sortedRows.length === 0 ? (
-            <div className="no-results">No evaluations submitted yet.</div>
+            parameterBound ? (
+              <div className="no-results">
+                No known parameter counts match this filter. {" "}
+                <button type="button" className="bm-empty-filter-action" onClick={() => setParameterFilter(undefined)}>Show all</button>
+              </div>
+            ) : <div className="no-results">No evaluations submitted yet.</div>
           ) : (
             <div className="bm-table-scroll">
             <table className="bm-table">
@@ -715,6 +802,7 @@ const BenchmarkDetailView: React.FC = () => {
                   <th className="col-rank">Rank</th>
                   <th className="col-model">Model</th>
                   {showHarness && <th className="col-harness">Harness</th>}
+                  {hasParameterMetadata && <th className="col-parameters">Parameters</th>}
                   {visibleMetrics.map((m) => {
                     const isActive = m === activeMetric;
                     return (
@@ -790,6 +878,15 @@ const BenchmarkDetailView: React.FC = () => {
                         </td>
                         {showHarness && (
                           <td className="col-harness">{e.harness || "—"}</td>
+                        )}
+                        {hasParameterMetadata && (
+                          <td
+                            className="col-parameters"
+                            title={e.parameterCount === null ? undefined : e.parameterCount.toLocaleString("en-US")}
+                            aria-label={e.parameterCount === null ? "Parameters unknown" : `${e.parameterCount.toLocaleString("en-US")} parameters`}
+                          >
+                            {e.parameterCount === null ? "—" : formatParameterCount(e.parameterCount)}
+                          </td>
                         )}
                         {visibleMetrics.map((m) => {
                           const isActive = m === activeMetric;

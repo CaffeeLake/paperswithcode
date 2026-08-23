@@ -1,4 +1,4 @@
-import type { Evaluation } from "./evaluations.types";
+import type { Evaluation, EvaluationParameterCoverage } from "./evaluations.types";
 import type { PaginatedResponse } from "./shared.types";
 import type { ApiRequest } from "../apiTransport";
 import { paperCuration } from "./curation";
@@ -13,7 +13,9 @@ export interface EvaluationQuery {
   include_descendants?: boolean;
   dataset_id?: number;
   best_metric?: string;
+  is_open?: boolean;
   external?: boolean;
+  max_parameters_exclusive?: number;
   ordering?: string;
 }
 
@@ -39,7 +41,7 @@ export type EvaluationWrite = {
 export class EvaluationsApi {
   constructor(private readonly request: ApiRequest) {}
 
-  list(params: EvaluationQuery = {}): Promise<PaginatedResponse<Evaluation>> {
+  list(params: EvaluationQuery = {}): Promise<PaginatedResponse<Evaluation> & EvaluationParameterCoverage> {
     const query = new URLSearchParams(
       Object.entries(params)
         .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
@@ -64,6 +66,19 @@ export class EvaluationsApi {
       dataset_id: Number(datasetId),
       best_metric: bestMetric,
       ordering: "best_rank",
+    });
+  }
+
+  async byLeaderboard(
+    datasetId: string,
+    taskId: string,
+    options: Pick<EvaluationQuery, "is_open" | "max_parameters_exclusive"> = {},
+  ): Promise<Evaluation[]> {
+    return this.allPages({
+      dataset_id: Number(datasetId),
+      task_id: Number(taskId),
+      ordering: "best_rank",
+      ...options,
     });
   }
 

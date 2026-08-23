@@ -552,6 +552,7 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         is_open: Optional[bool] = None,
         external: Optional[bool] = None,
+        max_parameters_exclusive: Optional[int] = None,
         order_by: str = "created_at",
         order_dir: str = "desc",
     ) -> Evaluations:
@@ -566,6 +567,8 @@ class EvaluationService:
             task_id: Filter by task ID
             dataset_id: Filter by dataset ID
             best_metric: Filter by best metric name (e.g., 'AbsRel', 'delta1')
+            max_parameters_exclusive: Strict upper bound for a displayed
+                leaderboard entry's consistent parameter count.
             order_by: Field to order by (created_at, best_rank, evaluated_on,
                 benchmark_popularity). benchmark_popularity sorts rows by the
                 total number of evaluations on each row's dataset across the
@@ -620,9 +623,6 @@ class EvaluationService:
 
             if external is not None:
                 query = query.filter(DBEvaluation.external == external)
-
-            # Get total count before pagination
-            total_count = query.count()
 
             # Apply ordering
             if order_by == "benchmark_popularity":
@@ -686,9 +686,43 @@ class EvaluationService:
                 else:
                     query = query.order_by(asc(order_field))
 
-            # Apply pagination
-            offset = (page - 1) * page_size
-            results = query.offset(offset).limit(page_size).all()
+            # Parameter metadata belongs to a displayed leaderboard entry, not
+            # to an individual metric row.  Keep sibling rows together by the
+            # same identity used by the frontend table so a constraint never
+            # leaves an entry with only some of its metrics.
+            needs_parameter_metadata = max_parameters_exclusive is not None or (
+                task_id is not None and dataset_id is not None
+            )
+            parameter_entries = (
+                self._parameter_entries(query.all()) if needs_parameter_metadata else []
+            )
+            parameter_coverage_total = len(parameter_entries)
+            parameter_coverage_known = sum(
+                1
+                for _, parameter_count in parameter_entries
+                if parameter_count is not None
+            )
+
+            if max_parameters_exclusive is not None:
+                filtered_entries = [
+                    rows
+                    for rows, parameter_count in parameter_entries
+                    if parameter_count is not None
+                    and parameter_count < max_parameters_exclusive
+                ]
+                total_count = len(filtered_entries)
+                offset = (page - 1) * page_size
+                results = [
+                    row
+                    for rows in filtered_entries[offset : offset + page_size]
+                    for row in rows
+                ]
+            else:
+                # Preserve the established row-level pagination contract for
+                # ordinary evaluation queries.
+                total_count = query.count()
+                offset = (page - 1) * page_size
+                results = query.offset(offset).limit(page_size).all()
 
             # Convert to API models
             evaluation_list = []
@@ -705,10 +739,42 @@ class EvaluationService:
                 next_page=next_page,
                 previous_page=previous_page,
                 results=evaluation_list,
+                parameter_coverage_known=parameter_coverage_known,
+                parameter_coverage_total=parameter_coverage_total,
             )
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve evaluations: {str(e)}")
+
+    @staticmethod
+    def _parameter_entries(
+        evaluations: list[DBEvaluation],
+    ) -> list[tuple[list[DBEvaluation], Optional[int]]]:
+        """Group metric siblings and return their unambiguous parameter count.
+
+        A missing sibling value does not make an otherwise-known entry
+        ambiguous. Multiple distinct non-null values do, and are deliberately
+        excluded from parameter-constrained results.
+        """
+        entries: dict[tuple[int, int, int, str, str], list[DBEvaluation]] = {}
+        for evaluation in evaluations:
+            key = (
+                evaluation.paper_id,
+                evaluation.task_id,
+                evaluation.dataset_id,
+                evaluation.model_name or "",
+                evaluation.harness or "",
+            )
+            entries.setdefault(key, []).append(evaluation)
+
+        grouped: list[tuple[list[DBEvaluation], Optional[int]]] = []
+        for rows in entries.values():
+            counts = {
+                row.num_parameters for row in rows if row.num_parameters is not None
+            }
+            parameter_count = counts.pop() if len(counts) == 1 else None
+            grouped.append((rows, parameter_count))
+        return grouped
 
     def get_evaluation(self, evaluation_id: int) -> Optional[Evaluation]:
         """

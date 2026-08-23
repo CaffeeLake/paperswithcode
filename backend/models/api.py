@@ -2502,6 +2502,17 @@ class Evaluations(BaseModel):
     results: List[Evaluation] = Field(
         ..., description="List of evaluations on this page"
     )
+    parameter_coverage_known: int = Field(
+        0,
+        description=(
+            "Number of displayed leaderboard entries with one consistent, known "
+            "parameter count after the query filters are applied."
+        ),
+    )
+    parameter_coverage_total: int = Field(
+        0,
+        description="Number of displayed leaderboard entries after query filters.",
+    )
 
 
 class EvaluationCreateRequest(BaseModel):

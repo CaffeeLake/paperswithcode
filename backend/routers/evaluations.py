@@ -155,6 +155,14 @@ def list_evaluations(
         None,
         description="Filter by external source attribution status.",
     ),
+    max_parameters_exclusive: Optional[int] = Query(
+        None,
+        gt=0,
+        description=(
+            "Return leaderboard entries with a known, consistent total parameter "
+            "count strictly below this bound."
+        ),
+    ),
     ordering: Optional[str] = Query(
         None,
         description=(
@@ -208,13 +216,10 @@ def list_evaluations(
 
         service = EvaluationService(db)
 
-        # Use search if q parameter is provided
-        if q:
-            return service.search_evaluations(query=q, page=page, page_size=page_size)
-
         return service.get_evaluations(
             page=page,
             page_size=page_size,
+            search=q,
             paper_id=paper_id,
             task_id=task_id,
             include_descendants=include_descendants,
@@ -222,6 +227,7 @@ def list_evaluations(
             best_metric=best_metric,
             is_open=is_open,
             external=external,
+            max_parameters_exclusive=max_parameters_exclusive,
             order_by=order_by,
             order_dir=order_dir,
         )

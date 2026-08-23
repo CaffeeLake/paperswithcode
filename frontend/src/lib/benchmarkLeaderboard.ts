@@ -29,7 +29,35 @@ export type MergedEvaluation = Evaluation & {
   sourceEvaluationIds: string[];
   /** Per-metric stored ranks from the underlying evaluation rows. */
   ranksByMetric: Record<string, number>;
+  /** A parameter count is displayable only when sibling metric rows agree. */
+  parameterCount: number | null;
+  hasParameterConflict: boolean;
 };
+
+export const PARAMETER_FILTERS = [
+  { label: "All", maxParametersExclusive: undefined },
+  { label: "<1B", maxParametersExclusive: 1_000_000_000 },
+  { label: "<3B", maxParametersExclusive: 3_000_000_000 },
+  { label: "<6B", maxParametersExclusive: 6_000_000_000 },
+  { label: "<12B", maxParametersExclusive: 12_000_000_000 },
+  { label: "<32B", maxParametersExclusive: 32_000_000_000 },
+  { label: "<128B", maxParametersExclusive: 128_000_000_000 },
+  { label: "<500B", maxParametersExclusive: 500_000_000_000 },
+] as const;
+
+export function parseParameterFilter(value: string | null): number | undefined {
+  const parsed = value === null ? undefined : Number(value);
+  return PARAMETER_FILTERS.some((filter) => filter.maxParametersExclusive === parsed)
+    ? parsed
+    : undefined;
+}
+
+export function formatParameterCount(count: number): string {
+  return new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumSignificantDigits: 3,
+  }).format(count);
+}
 
 function leaderboardRowKey(e: Evaluation): string {
   return [
@@ -59,6 +87,8 @@ export function mergeLeaderboardEvaluations(evals: Evaluation[]): MergedEvaluati
         sourceEvaluationIds: [e.id],
         ranksByMetric:
           e.best_metric && e.best_rank != null ? { [e.best_metric]: e.best_rank } : {},
+        parameterCount: e.num_parameters ?? null,
+        hasParameterConflict: false,
       });
       continue;
     }
@@ -67,6 +97,14 @@ export function mergeLeaderboardEvaluations(evals: Evaluation[]): MergedEvaluati
     existing.sourceEvaluationIds.push(e.id);
     if (e.best_metric && e.best_rank != null) {
       existing.ranksByMetric[e.best_metric] = e.best_rank;
+    }
+    if (e.num_parameters != null && !existing.hasParameterConflict) {
+      if (existing.parameterCount === null) {
+        existing.parameterCount = e.num_parameters;
+      } else if (existing.parameterCount !== e.num_parameters) {
+        existing.parameterCount = null;
+        existing.hasParameterConflict = true;
+      }
     }
   }
 

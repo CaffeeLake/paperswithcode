@@ -705,6 +705,86 @@ def test_dataset_evaluations_default_to_best_rank_order(client):
     assert rows[0]["model_name"] == "GPT-y"
 
 
+def test_parameter_bound_filters_complete_consistent_leaderboard_entries(client):
+    """Parameter filtering is strict and never splits metric siblings."""
+    db = TestingSessionLocal()
+    _seed_lm_with_subtasks(db)
+    db.add_all(
+        [
+            DBEvaluation(
+                id=20,
+                paper_id=1,
+                task_id=2,
+                dataset_id=1,
+                model_name="Boundary model",
+                metrics={"Accuracy": "91"},
+                best_metric="Accuracy",
+                num_parameters=1_000_000_000,
+            ),
+            DBEvaluation(
+                id=21,
+                paper_id=1,
+                task_id=2,
+                dataset_id=1,
+                model_name="Small multi-metric model",
+                harness="native",
+                metrics={"Accuracy": "92"},
+                best_metric="Accuracy",
+                num_parameters=999_999_999,
+            ),
+            DBEvaluation(
+                id=22,
+                paper_id=1,
+                task_id=2,
+                dataset_id=1,
+                model_name="Small multi-metric model",
+                harness="native",
+                metrics={"F1": "93"},
+                best_metric="F1",
+            ),
+            DBEvaluation(
+                id=23,
+                paper_id=2,
+                task_id=2,
+                dataset_id=1,
+                model_name="Conflicting model",
+                metrics={"Accuracy": "80"},
+                best_metric="Accuracy",
+                num_parameters=10,
+            ),
+            DBEvaluation(
+                id=24,
+                paper_id=2,
+                task_id=2,
+                dataset_id=1,
+                model_name="Conflicting model",
+                metrics={"F1": "80"},
+                best_metric="F1",
+                num_parameters=20,
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/api/v1/evaluations/?task_id=2&dataset_id=1&max_parameters_exclusive=1000000000&page_size=50"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert {row["id"] for row in payload["results"]} == {"21", "22"}
+    assert payload["parameter_coverage_known"] == 2
+    assert payload["parameter_coverage_total"] == 5
+
+
+def test_parameter_bound_requires_a_positive_integer(client):
+    response = client.get("/api/v1/evaluations/?max_parameters_exclusive=0")
+
+    assert response.status_code == 422
+
+
 def test_recalculate_ranks_is_scoped_to_child_task(db_session):
     """Rank recalculation runs per (child_task_id, dataset_id, best_metric)
     so two subtasks sharing nothing don't pollute each other's ordering."""
