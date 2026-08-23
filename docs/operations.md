@@ -349,6 +349,25 @@ Each `proposed_payload` matches the underlying admin mutation endpoint:
 | Cron logs filling disk | Verify `systemd-tmpfiles` policy; production CRON logs are bounded to 30 days. Use `pwc-status` to include disk usage in the audit. |
 
 _Last updated: 7 November 2025_
+## One-time evaluation Hugging Face metadata backfill
+
+Existing evaluation metadata can be reviewed with the bounded, fill-only command
+below. It defaults to dry-run, never derives counts from model names, and only
+uses a matched repository's `safetensors.total` value. Review the JSON report
+(including conflicts and unavailable repositories), then rerun with its exact
+`proposal_hash` to apply. This command is not scheduled: the daily paper-
+curation workflow remains responsible for metadata on newly imported
+evaluations.
+
+```bash
+uv run --env-file backend/keys.env python \
+  backend/database/evaluations_setup/backfill_hf_evaluation_metadata.py
+
+uv run --env-file backend/keys.env python \
+  backend/database/evaluations_setup/backfill_hf_evaluation_metadata.py \
+  --apply --proposal-hash <reviewed-proposal-hash>
+```
+
 ## Autonomous HF daily-paper curation
 
 The daily reconciler runs at `02:27 UTC` through the installed immutable-release
