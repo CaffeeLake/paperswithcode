@@ -453,6 +453,108 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         dashboard_group="leaderboard_sync",
     ),
     CronJobDefinition(
+        id="sync_mmteb_overall",
+        display_name="Sync MMTEB v2 Overall",
+        category="hourly",
+        schedule="7 * * * * (hourly)",
+        script_path="hourly/sync_mmteb.py",
+        log_name="sync_mmteb_overall",
+        process_patterns=("scripts.hourly.sync_mmteb overall",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_mmteb_overall.lock"
+        ),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN tasks t ON t.id = e.task_id
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE t.slug = 'embedding-models'
+              AND d.slug = 'mmteb-v2'
+              AND e.best_metric = 'MMTEB Score'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code MMTEB v2 live sync.%'
+        """,
+        workflow_file="cron-sync-mmteb-overall.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
+        id="sync_mmteb_retrieval",
+        display_name="Sync MMTEB v2 Retrieval",
+        category="hourly",
+        schedule="22 * * * * (hourly)",
+        script_path="hourly/sync_mmteb.py",
+        log_name="sync_mmteb_retrieval",
+        process_patterns=("scripts.hourly.sync_mmteb retrieval",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_mmteb_retrieval.lock"
+        ),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN tasks t ON t.id = e.task_id
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE t.slug = 'retrieval'
+              AND d.slug = 'mmteb-v2'
+              AND e.best_metric = 'Retrieval'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code MMTEB v2 live sync.%'
+        """,
+        workflow_file="cron-sync-mmteb-retrieval.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
+        id="sync_mmteb_reranking",
+        display_name="Sync MMTEB v2 Reranking",
+        category="hourly",
+        schedule="37 * * * * (hourly)",
+        script_path="hourly/sync_mmteb.py",
+        log_name="sync_mmteb_reranking",
+        process_patterns=("scripts.hourly.sync_mmteb reranking",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_mmteb_reranking.lock"
+        ),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN tasks t ON t.id = e.task_id
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE t.slug = 'text-reranking'
+              AND d.slug = 'mmteb-v2'
+              AND e.best_metric = 'Rerank'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code MMTEB v2 live sync.%'
+        """,
+        workflow_file="cron-sync-mmteb-reranking.yml",
+        workflow_jobs=("run",),
+        dashboard_group="leaderboard_sync",
+    ),
+    CronJobDefinition(
         id="sync_deepswe",
         display_name="Sync DeepSWE Leaderboard",
         category="hourly",
@@ -1053,6 +1155,9 @@ _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "sync_3d_arena": ((SchedulePolicy.fixed(60, offset_minutes=5),), 20),
     "sync_tabarena": ((SchedulePolicy.fixed(60, offset_minutes=55),), 20),
     "sync_open_asr": ((SchedulePolicy.fixed(60, offset_minutes=15),), 20),
+    "sync_mmteb_overall": ((SchedulePolicy.fixed(60, offset_minutes=7),), 20),
+    "sync_mmteb_retrieval": ((SchedulePolicy.fixed(60, offset_minutes=22),), 20),
+    "sync_mmteb_reranking": ((SchedulePolicy.fixed(60, offset_minutes=37),), 20),
     "sync_deepswe": ((SchedulePolicy.fixed(60, offset_minutes=25),), 20),
     "sync_artificial_analysis": ((SchedulePolicy.fixed(60, offset_minutes=35),), 20),
     "sync_programbench": ((SchedulePolicy.fixed(60, offset_minutes=40),), 20),

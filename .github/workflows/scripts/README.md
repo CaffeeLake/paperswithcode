@@ -19,6 +19,9 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-sync-3d-arena.yml` | `5 * * * *` | `pwc-cron sync_3d_arena` | `.github/workflows/scripts/hourly/sync_3d_arena.py` |
 | `cron-sync-tabarena.yml` | `55 * * * *` | `pwc-cron sync_tabarena` | `.github/workflows/scripts/hourly/sync_tabarena.py` |
 | `cron-sync-open-asr.yml` | `15 * * * *` | `pwc-cron sync_open_asr` | `.github/workflows/scripts/hourly/sync_open_asr.py` |
+| `cron-sync-mmteb-overall.yml` | `7 * * * *` | `pwc-cron sync_mmteb_overall` | `.github/workflows/scripts/hourly/sync_mmteb.py overall` |
+| `cron-sync-mmteb-retrieval.yml` | `22 * * * *` | `pwc-cron sync_mmteb_retrieval` | `.github/workflows/scripts/hourly/sync_mmteb.py retrieval` |
+| `cron-sync-mmteb-reranking.yml` | `37 * * * *` | `pwc-cron sync_mmteb_reranking` | `.github/workflows/scripts/hourly/sync_mmteb.py reranking` |
 | `cron-sync-deepswe.yml` | `25 * * * *` | `pwc-cron sync_deepswe` | `.github/workflows/scripts/hourly/sync_deepswe.py` |
 | `cron-sync-artificial-analysis.yml` | `35 * * * *` | `pwc-cron sync_artificial_analysis` | `.github/workflows/scripts/hourly/sync_artificial_analysis.py` |
 | `cron-sync-programbench.yml` | `40 * * * *` | `pwc-cron sync_programbench` | `.github/workflows/scripts/hourly/sync_programbench.py` |
@@ -127,6 +130,13 @@ pages for papers that still have `urls_extracted = false`.
 papers that are not yet in the database, and auto-tags tasks/methods using
 keyword matching. It also links curated organization payloads for both new and
 already-existing papers.
+
+The three MMTEB v2 jobs consume the official MTEB leaderboard API's precomputed
+`meanTask`, Retrieval, and Reranking aggregates. They synchronize only models
+whose API citation resolves unambiguously to a latest-version local arXiv paper;
+rows without a paper, with a missing local paper, or with unresolved multiple
+citations are skipped. Every lane owns only rows carrying its managed
+methodology prefix, so manual evaluation rows remain untouched.
 
 `sync_hf_organizations.py` runs daily as an append-only reconciliation backstop
 for the strict 21-organization manifest. It validates HF organization pages,

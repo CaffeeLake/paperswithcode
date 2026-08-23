@@ -200,6 +200,9 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert "sync_3d_arena" in job_ids
     assert "sync_tabarena" in job_ids
     assert "sync_open_asr" in job_ids
+    assert "sync_mmteb_overall" in job_ids
+    assert "sync_mmteb_retrieval" in job_ids
+    assert "sync_mmteb_reranking" in job_ids
     assert "sync_deepswe" in job_ids
     assert "sync_artificial_analysis" in job_ids
     assert "sync_programbench" in job_ids
@@ -235,6 +238,9 @@ def test_registry_classifies_only_recurring_leaderboard_syncs():
         "sync_3d_arena",
         "sync_tabarena",
         "sync_open_asr",
+        "sync_mmteb_overall",
+        "sync_mmteb_retrieval",
+        "sync_mmteb_reranking",
         "sync_deepswe",
         "sync_artificial_analysis",
         "sync_programbench",
