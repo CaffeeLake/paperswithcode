@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Render bounded public task taxonomy JSON as prompt-ready Markdown."""
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from typing import Any
 def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
     areas = payload.get("results")
     if not isinstance(areas, list):
-        raise ValueError("taxonomy response must contain a results list")
+        raise TypeError("taxonomy response must contain a results list")
 
     lines = [
         "## Available research areas and representative tasks",
@@ -55,6 +54,41 @@ def render(payload: dict[str, Any], *, maximum_tasks_per_area: int = 12) -> str:
             slug = str(task["slug"]).strip()
             task_name = str(task["name"]).strip()
             lines.append(f"- `{slug}` — {task_name}")
+
+    all_tasks = payload.get("all_tasks")
+    if all_tasks is not None:
+        if not isinstance(all_tasks, list):
+            raise TypeError("complete task taxonomy must be a list")
+        lookup_tasks = [
+            task
+            for task in all_tasks
+            if isinstance(task, dict)
+            and str(task.get("name") or "").strip()
+            and str(task.get("slug") or "").strip()
+        ]
+        lookup_tasks.sort(
+            key=lambda task: (
+                str(task.get("name") or "").casefold(),
+                str(task.get("slug") or "").casefold(),
+            )
+        )
+        lines.extend(
+            (
+                "",
+                "## Complete task lookup index",
+                "",
+                (
+                    "This compact index contains every current task and subtask. "
+                    "Treat names and slugs as taxonomy clues, then use `pwc task` "
+                    "and `pwc benchmark list --task TASK` to verify the live catalog."
+                ),
+                "",
+            )
+        )
+        for task in lookup_tasks:
+            lines.append(
+                f"- `{str(task['slug']).strip()}` — {str(task['name']).strip()}"
+            )
     return "\n".join(lines) + "\n"
 
 

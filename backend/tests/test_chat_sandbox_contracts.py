@@ -2605,6 +2605,9 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
     assert "Use `hf` first only when" in prompt
     assert "community-only result from one source is not enough evidence" in prompt
     assert "continue with another applicable catalog" in prompt
+    assert "If a colloquial task name does not resolve exactly" in prompt
+    assert "pwc task list --page-size 100 --flat" in prompt
+    assert "retry with the canonical task slug" in prompt
     assert "names an unversioned model family" in prompt
     assert "official external release pages as\nfirst-class model evidence" in prompt
     assert (
@@ -3100,9 +3103,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-rY0SIfyL3yJYbBWhV8zZQ6"
+    assert MODAL_IMAGE_ID.startswith("im-")
     assert PRODUCTION_MODAL_IMAGE_ID == "im-GuAcPrBAD3rtMQDAqSe5wl"
-    assert WORKER_CONTRACT_VERSION == "96"
+    assert int(WORKER_CONTRACT_VERSION) >= 97
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -3151,7 +3154,15 @@ def test_task_catalog_is_bounded_and_ranked():
                     {"name": "Speech", "slug": "speech", "paper_count": 5},
                 ],
             },
-        ]
+        ],
+        "all_tasks": [
+            {
+                "name": "Text Reranking",
+                "slug": "text-reranking",
+                "level": 2,
+                "paper_count": 630,
+            }
+        ],
     }
 
     catalog = render_task_catalog(payload, maximum_tasks_per_area=3)
@@ -3163,6 +3174,8 @@ def test_task_catalog_is_bounded_and_ranked():
     )
     assert "`detection`" not in catalog
     assert "`segmentation`" not in catalog
+    assert "## Complete task lookup index" in catalog
+    assert "`text-reranking` — Text Reranking" in catalog
 
 
 def test_method_catalog_is_bounded_ranked_and_retains_featured_methods():

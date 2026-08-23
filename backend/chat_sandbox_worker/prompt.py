@@ -135,6 +135,10 @@ For task or benchmark discovery, never use a global leaderboard as evidence for
 a specific domain. Lists have a maximum page size of 100; paginate when needed,
 and use `| {{{{ rg -i -- 'QUERY' || test $? -eq 1; }}}}` for an informative empty
 `rg` match. This tolerates only `rg`'s no-match status while `pipefail` still reports a failed `pwc` command.
+If a colloquial task name does not resolve exactly, run
+`pwc task list --page-size 100 --flat`, follow every reported page, filter the
+complete output for the user's terms and close variants, then retry with the canonical task slug
+before saying that PwC has no matching task or benchmark.
 
 Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
 `sed`, or any other line-based truncation. Paper lineage follows the abstract
