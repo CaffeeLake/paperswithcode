@@ -11,6 +11,12 @@ from urllib.parse import urlsplit
 
 from huggingface_hub.errors import HfHubHTTPError
 
+from backend.services.evaluation_entry_identity import (
+    EvaluationDisplayEntryKey,
+    evaluation_display_entry_key,
+    serialize_evaluation_display_entry_key,
+)
+
 _REPO_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _SEPARATOR = re.compile(r"[\s_.-]+")
 
@@ -87,7 +93,10 @@ def _safetensors_total(model_info: Any) -> int | None:
 class EvaluationRow:
     id: int
     paper_id: int
+    task_id: int
+    dataset_id: int
     model_name: str | None
+    harness: str | None
     hf_model_url: str | None
     num_parameters: int | None
 
@@ -124,11 +133,18 @@ class EvaluationMetadataBackfill:
     ) -> BackfillPlan:
         rows = list(rows)
         result = BackfillPlan()
-        groups: dict[tuple[int, str], list[EvaluationRow]] = defaultdict(list)
+        groups: dict[EvaluationDisplayEntryKey, list[EvaluationRow]] = defaultdict(list)
         for row in rows:
-            key = normalized_model_variant(row.model_name)
-            if key:
-                groups[(row.paper_id, key)].append(row)
+            if row.model_name:
+                groups[
+                    evaluation_display_entry_key(
+                        row.paper_id,
+                        row.task_id,
+                        row.dataset_id,
+                        row.model_name,
+                        row.harness,
+                    )
+                ].append(row)
             else:
                 result.unchanged_rows.append(row.id)
 
@@ -149,9 +165,11 @@ class EvaluationMetadataBackfill:
                 result.unavailable_repositories.append(repo_id)
             return repo_metadata[cache_key]
 
-        for (paper_id, model_key), siblings in groups.items():
+        for entry_key, siblings in groups.items():
+            paper_id, _task_id, _dataset_id, model_name, _harness = entry_key
             sibling_ids = [row.id for row in siblings]
-            group_id = f"{paper_id}:{model_key}"
+            model_key = normalized_model_variant(model_name)
+            group_id = serialize_evaluation_display_entry_key(entry_key)
             result.sibling_groups[group_id] = sibling_ids
             urls_by_repo: dict[str, str] = {}
             for row in siblings:

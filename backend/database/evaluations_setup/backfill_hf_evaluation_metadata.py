@@ -66,6 +66,9 @@ def _build_plan(session, *, max_lookups: int):
                 model_name=evaluation.model_name,
                 hf_model_url=evaluation.hf_model_url,
                 num_parameters=evaluation.num_parameters,
+                task_id=evaluation.task_id,
+                dataset_id=evaluation.dataset_id,
+                harness=evaluation.harness,
             )
         )
         paper_hf_models[evaluation.paper_id] = hf_models or []

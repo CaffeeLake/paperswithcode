@@ -30,6 +30,7 @@ from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
 from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
+from backend.services.evaluation_entry_identity import evaluation_display_entry_key
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
 from backend.services.metric_value_service import parse_metric_value
 
@@ -773,12 +774,12 @@ class EvaluationService:
         """
         entries: dict[tuple[int, int, int, str, str], list[DBEvaluation]] = {}
         for evaluation in evaluations:
-            key = (
+            key = evaluation_display_entry_key(
                 evaluation.paper_id,
                 evaluation.task_id,
                 evaluation.dataset_id,
-                evaluation.model_name or "",
-                evaluation.harness or "",
+                evaluation.model_name,
+                evaluation.harness,
             )
             entries.setdefault(key, []).append(evaluation)
 
