@@ -689,36 +689,30 @@ class EvaluationService:
             # Parameter metadata belongs to a displayed leaderboard entry, not
             # to an individual metric row. Calculate coverage in SQL so the
             # ordinary, paginated leaderboard endpoint remains bounded.
-            needs_parameter_metadata = max_parameters_exclusive is not None or (
-                task_id is not None and dataset_id is not None
-            )
             parameter_coverage_total = 0
             parameter_coverage_known = 0
-            if needs_parameter_metadata:
-                parameter_counts = func.count(
-                    func.distinct(DBEvaluation.num_parameters)
+            parameter_counts = func.count(func.distinct(DBEvaluation.num_parameters))
+            parameter_groups = (
+                query.order_by(None)
+                .with_entities(
+                    DBEvaluation.paper_id,
+                    DBEvaluation.task_id,
+                    DBEvaluation.dataset_id,
+                    func.coalesce(DBEvaluation.model_name, ""),
+                    func.coalesce(DBEvaluation.harness, ""),
                 )
-                parameter_groups = (
-                    query.order_by(None)
-                    .with_entities(
-                        DBEvaluation.paper_id,
-                        DBEvaluation.task_id,
-                        DBEvaluation.dataset_id,
-                        func.coalesce(DBEvaluation.model_name, ""),
-                        func.coalesce(DBEvaluation.harness, ""),
-                    )
-                    .group_by(
-                        DBEvaluation.paper_id,
-                        DBEvaluation.task_id,
-                        DBEvaluation.dataset_id,
-                        func.coalesce(DBEvaluation.model_name, ""),
-                        func.coalesce(DBEvaluation.harness, ""),
-                    )
+                .group_by(
+                    DBEvaluation.paper_id,
+                    DBEvaluation.task_id,
+                    DBEvaluation.dataset_id,
+                    func.coalesce(DBEvaluation.model_name, ""),
+                    func.coalesce(DBEvaluation.harness, ""),
                 )
-                parameter_coverage_total = parameter_groups.count()
-                parameter_coverage_known = parameter_groups.having(
-                    parameter_counts == 1
-                ).count()
+            )
+            parameter_coverage_total = parameter_groups.count()
+            parameter_coverage_known = parameter_groups.having(
+                parameter_counts == 1
+            ).count()
 
             if max_parameters_exclusive is not None:
                 # Keep sibling metric rows together by the same identity used
