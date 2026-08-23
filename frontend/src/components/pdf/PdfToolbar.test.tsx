@@ -46,6 +46,10 @@ describe("PdfToolbar", () => {
     });
     expect(screen.getByRole("link", { name: "Example Paper — open paper page" }))
       .toHaveAttribute("href", "/paper/2501.00001");
+    const backLink = screen.getByRole("link", { name: "Back" });
+    const titleLink = screen.getByRole("link", { name: "Example Paper — open paper page" });
+    expect(backLink).toHaveAttribute("href", "/paper/2501.00001");
+    expect(backLink.compareDocumentPosition(titleLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open official GitHub repository" }))
       .toHaveAttribute("href", "https://github.com/example/paper");
     expect(screen.queryByText("example/paper")).not.toBeInTheDocument();

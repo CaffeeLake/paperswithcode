@@ -73,6 +73,9 @@ export function PdfToolbar({
   };
   return <div ref={toolbarRef} className="pdf-toolbar" aria-label="PDF controls">
     <div className="pdf-toolbar-paper">
+      <Link className="pdf-toolbar-back" to={paperHref} aria-label="Back">
+        ← Back
+      </Link>
       <Link className="pdf-toolbar-title" to={paperHref} title={paperTitle} aria-label={`${paperTitle} — open paper page`}>
         {paperTitle}
       </Link>
