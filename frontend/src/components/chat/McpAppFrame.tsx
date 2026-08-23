@@ -126,6 +126,7 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     const current = frame.current;
     if (!current) return undefined;
     let host: AppBridge | null = null;
+    const sceneDeliveryTimers: number[] = [];
     const cancelReady = whenIframeReady(current, () => {
       if (!current.contentWindow) return;
       host = new AppBridge(null, { name: "Papers with Code", version: "1" }, {
@@ -148,10 +149,20 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
         initialized.current = true;
         try {
           const parsed = JSON.parse(elements) as unknown;
-          void host!.sendToolInput({
+          const input = {
             arguments: { elements: Array.isArray(parsed) ? withCenteredTitle(parsed) : parsed },
-          });
-          void host!.sendToolResult(blockRef.current.result as never);
+          };
+          // The App sends `initialized` before React commits the view that
+          // installs its one-shot tool-input listener. Replaying the
+          // idempotent saved scene over this short window makes delivery
+          // reliable without assuming an arbitrary React scheduling point.
+          for (const delay of [0, 50, 200, 750]) {
+            sceneDeliveryTimers.push(window.setTimeout(() => {
+              if (bridge.current !== host) return;
+              void host!.sendToolInput(input);
+            }, delay));
+          }
+          void host.sendToolResult(blockRef.current.result as never);
         } catch {
           setState("error");
         }
@@ -161,6 +172,7 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
     });
     return () => {
       cancelReady();
+      sceneDeliveryTimers.forEach((timer) => window.clearTimeout(timer));
       initialized.current = false;
       void host?.teardownResource({}).catch(() => undefined);
       if (bridge.current === host) bridge.current = null;
