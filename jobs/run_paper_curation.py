@@ -178,6 +178,11 @@ def _prompt(context: dict) -> str:
         )
         if scheduled:
             rules.append(
+                "Scheduled mode is additive only: preserve every existing task, method, repository, and project page. "
+                "Do not propose removals, even when a link or tag appears automated or incorrect; report cleanup candidates in the audit instead."
+            )
+        if scheduled:
+            rules.append(
                 "This is scheduled mode: do not request, generate, upload, or wait for thumbnail work."
             )
     rules.append(

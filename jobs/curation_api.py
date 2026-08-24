@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import gzip
 import json
 import os
@@ -75,6 +76,46 @@ def _trace_payload(proposal: dict) -> dict:
     }
 
 
+def make_scheduled_enrichment_additive(proposal: dict, context: dict) -> dict:
+    """Preserve existing enrichment links for scheduled curation jobs."""
+
+    if os.environ.get("PWC_CURATION_TRIGGER", "admin") == "admin":
+        return proposal
+    enrich = proposal.get("enrich")
+    paper = context.get("paper") or {}
+    if not isinstance(enrich, dict):
+        return proposal
+
+    normalized = copy.deepcopy(proposal)
+    enrich = normalized["enrich"]
+    for key, context_key in (("task_ids", "tasks"), ("method_ids", "methods")):
+        if enrich.get(key) is not None:
+            enrich[key] = list(
+                dict.fromkeys(
+                    [item["id"] for item in paper.get(context_key) or []] + enrich[key]
+                )
+            )
+    for key in ("repositories", "project_pages"):
+        if enrich.get(key) is not None:
+            links = {
+                item["url"]: {
+                    "url": item["url"],
+                    "is_official": item.get("is_official", True),
+                }
+                for item in paper.get(key) or []
+            }
+            for item in enrich[key]:
+                links.setdefault(item["url"], item)
+            enrich[key] = list(links.values())
+    for key in (
+        "task_removal_reasons",
+        "method_removal_reasons",
+        "project_page_removal_reasons",
+    ):
+        enrich.pop(key, None)
+    return normalized
+
+
 def store_trace_with_retry(path: str, payload: dict) -> dict:
     last_error: Exception | None = None
     for attempt in range(5):
@@ -127,6 +168,7 @@ def main() -> None:
     else:
         with open(args.json_file, encoding="utf-8") as handle:
             proposal = json.load(handle)
+        proposal = make_scheduled_enrichment_additive(proposal, request_json("context"))
         store_trace_with_retry("trace/preapply", _trace_payload(proposal))
         request("apply", "POST", proposal, timeout=300)
 

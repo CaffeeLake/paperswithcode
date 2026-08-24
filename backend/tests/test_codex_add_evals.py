@@ -280,6 +280,12 @@ def test_remote_runner_preserves_scoped_callback_token_for_agent_commands():
     assert 'os.environ.pop("OPENAI_API_KEY", None)' in runner
 
 
+def test_scheduled_enrichment_prompt_is_additive_only():
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+
+    assert "Scheduled mode is additive only" in runner
+
+
 def test_remote_add_evals_requires_configured_leaderboard_search():
     skill = Path(".agents/skills/remote-paper-curation/SKILL.md").read_text(
         encoding="utf-8"

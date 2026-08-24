@@ -25,6 +25,47 @@ os.environ.setdefault("PWC_GIT_SHA", "a" * 40)
 from jobs import curation_api, run_paper_curation
 
 
+def test_scheduled_enrichment_proposals_preserve_existing_relations(monkeypatch):
+    monkeypatch.setenv("PWC_CURATION_TRIGGER", "hf-daily-cron")
+    proposal = {
+        "enrich": {
+            "task_ids": [2],
+            "method_ids": [4],
+            "repositories": [
+                {"url": "https://github.com/existing/project", "is_official": True},
+                {"url": "https://github.com/new/project"},
+            ],
+            "project_pages": [{"url": "https://new.example"}],
+            "task_removal_reasons": {1: "incorrect"},
+        }
+    }
+    context = {
+        "paper": {
+            "tasks": [{"id": 1}],
+            "methods": [{"id": 3}],
+            "repositories": [
+                {"url": "https://github.com/existing/project", "is_official": False}
+            ],
+            "project_pages": [{"url": "https://existing.example", "is_official": True}],
+        }
+    }
+
+    result = curation_api.make_scheduled_enrichment_additive(proposal, context)
+
+    assert result["enrich"]["task_ids"] == [1, 2]
+    assert result["enrich"]["method_ids"] == [3, 4]
+    assert result["enrich"]["repositories"] == [
+        {"url": "https://github.com/existing/project", "is_official": False},
+        {"url": "https://github.com/new/project"},
+    ]
+    assert result["enrich"]["project_pages"] == [
+        {"url": "https://existing.example", "is_official": True},
+        {"url": "https://new.example"},
+    ]
+    assert "task_removal_reasons" not in result["enrich"]
+    assert proposal["enrich"]["task_ids"] == [2]
+
+
 def _queue_row(**overrides):
     values = {
         "id": uuid.UUID("00000000-0000-0000-0000-000000000042"),
