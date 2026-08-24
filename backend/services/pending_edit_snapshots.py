@@ -77,6 +77,10 @@ class PendingEditSnapshotService:
         result_type: str | None = None,
         result_id: str | None = None,
     ) -> Any:
+        if edit_type.startswith("new_"):
+            if result_type is None or result_id is None:
+                return {}
+            return self.created_entity(result_type, int(result_id))
         if paper_id is not None:
             if edit_type == "evaluations":
                 return EvaluationCurationService(self.db).paper_evaluations(paper_id)

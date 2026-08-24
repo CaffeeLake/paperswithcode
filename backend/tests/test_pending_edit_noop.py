@@ -833,6 +833,34 @@ def test_benchmark_metric_method_and_conference_approvals_use_canonical_tables(
     assert db_session.get(DBConference, int(conference.result_entity_id)) is not None
 
 
+def test_benchmark_approval_with_source_paper_records_created_snapshot(
+    db_session, paper_fixture
+):
+    submission = PendingEditService(db_session).submit(
+        paper_id=1,
+        hf_username="benchmark-user",
+        edit_type="new_benchmark",
+        proposed_payload={
+            "name": "Paper-Scoped Benchmark",
+            "description": "A benchmark proposed from its source paper.",
+            "task_ids": [1],
+        },
+    )
+
+    reviewed = PendingEditService(db_session).approve(
+        edit_id=submission.id, reviewer_username="admin"
+    )
+
+    assert reviewed.status == "approved"
+    assert db_session.get(DBDataset, int(reviewed.result_entity_id)) is not None
+    event = db_session.get(CatalogMutationEvent, reviewed.catalog_event_id)
+    assert event is not None
+    assert event.entity_type == "submission_created_dataset"
+    assert event.entity_id == reviewed.result_entity_id
+    assert event.after_snapshot["entity"]["id"] == int(reviewed.result_entity_id)
+    assert event.after_snapshot["task_ids"] == [1]
+
+
 def test_created_entity_rollback_is_append_only(db_session):
     service = PendingEditService(db_session)
     row = service.submit(

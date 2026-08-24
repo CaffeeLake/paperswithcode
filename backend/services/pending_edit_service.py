@@ -444,7 +444,10 @@ class PendingEditService:
         before: Any,
         after: Any,
     ) -> CatalogMutationEvent:
-        if row.paper_id is not None:
+        if row.edit_type.startswith("new_"):
+            entity_type = f"submission_created_{row.result_entity_type}"
+            entity_id = row.result_entity_id
+        elif row.paper_id is not None:
             entity_type = (
                 "evaluation"
                 if row.edit_type == "evaluations"
