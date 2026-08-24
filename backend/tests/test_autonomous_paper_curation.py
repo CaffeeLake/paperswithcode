@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import json
+import urllib.error
 import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -169,6 +170,134 @@ def test_preflight_uses_discovered_project_candidate_for_conditional_html(
         and "project_page_html" in item["source_layers"]
         for item in result["candidates"]
     )
+
+
+def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV, "hf-test")
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+    fetched = []
+
+    def fetch(url: str, _limit: int):
+        fetched.append(url)
+        if "/api/papers/" in url:
+            return b"{}", url
+        if url.endswith(".md"):
+            raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+        raise AssertionError("OCR Markdown must avoid the PDF fallback")
+
+    def fetch_ocr_markdown(arxiv_id: str, _limit: int, *, token: str):
+        assert arxiv_id == "2608.00042"
+        assert token == "hf-test"
+        return (
+            b"Code: https://github.com/example/project\n"
+            b"Project: https://example.github.io/project\n",
+            "https://signed.example/markdown",
+        )
+
+    result = url_preflight.extract_candidates(
+        _context(project_page=False),
+        fetch=fetch,
+        fetch_ocr_markdown=fetch_ocr_markdown,
+    )
+
+    assert result["complete"] is True
+    assert {source["source"] for source in result["sources"]} == {
+        "hf_api",
+        "ocr_markdown",
+    }
+    assert not result["errors"]
+    assert not any("/pdf/" in url for url in fetched)
+
+
+def test_fetch_ocr_markdown_uses_authenticated_bucket_download(monkeypatch):
+    captured = {}
+
+    class Response:
+        headers = {"Content-Length": "2"}
+
+        def geturl(self):
+            return "https://signed.example/markdown"
+
+        def read(self, _size):
+            return b"#\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def open(request, *, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "build_opener",
+        lambda *_handlers: type("Opener", (), {"open": staticmethod(open)})(),
+    )
+
+    body, final_url = url_preflight._fetch_ocr_markdown(
+        "2608.00042v3", 10, token="hf-test"
+    )
+
+    assert body == b"#\n"
+    assert final_url == (
+        "https://huggingface.co/buckets/huggingface/pwc-papers-content/resolve/"
+        "2608%2F2608.00042.md"
+    )
+    assert captured == {
+        "url": "https://huggingface.co/buckets/huggingface/pwc-papers-content/resolve/2608%2F2608.00042.md",
+        "authorization": "Bearer hf-test",
+        "timeout": url_preflight.TIMEOUT_SECONDS,
+    }
+
+
+def test_ocr_bucket_redirect_strips_authorization_for_cdn_request():
+    request = url_preflight.urllib.request.Request(
+        "https://huggingface.co/buckets/huggingface/pwc-papers-content/resolve/file",
+        headers={"Authorization": "Bearer hf-test"},
+    )
+
+    redirected = url_preflight._BucketRedirectHandler().redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://cdn.example/signed-file",
+    )
+
+    assert redirected is not None
+    assert redirected.full_url == "https://cdn.example/signed-file"
+    assert redirected.get_header("Authorization") is None
+
+
+def test_ocr_bucket_redirect_strips_authorization_for_scheme_downgrade():
+    request = url_preflight.urllib.request.Request(
+        "https://huggingface.co/buckets/huggingface/pwc-papers-content/resolve/file",
+        headers={"Authorization": "Bearer hf-test"},
+    )
+
+    redirected = url_preflight._BucketRedirectHandler().redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "http://huggingface.co/buckets/huggingface/pwc-papers-content/resolve/file",
+    )
+
+    assert redirected is not None
+    assert redirected.get_header("Authorization") is None
 
 
 def test_trace_redaction_removes_planted_credentials():
@@ -690,6 +819,7 @@ def test_hf_dispatch_retries_with_bounded_exponential_backoff(monkeypatch):
             "codex_jobs_namespace": "example",
             "codex_jobs_openai_api_key": "test-openai",
             "github_token": "test-github",
+            "hf_token": "test-hf",
         }
     )
 
@@ -704,6 +834,9 @@ def test_hf_dispatch_retries_with_bounded_exponential_backoff(monkeypatch):
     assert len(calls) == 3
     assert sleeps == [1, 2]
     assert all("GITHUB_TOKEN" not in call["secrets"] for call in calls)
+    assert all(
+        call["secrets"]["PWC_PAPER_MARKDOWN_HF_TOKEN"] == "test-hf" for call in calls
+    )
     assert all(call["image"] == "example/image:sha" for call in calls)
 
 

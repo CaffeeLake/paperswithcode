@@ -666,6 +666,7 @@ class CodexPaperJobService:
                 secrets={
                     "PWC_CURATION_JOB_TOKEN": callback_token,
                     "OPENAI_API_KEY": settings.codex_jobs_openai_api_key,
+                    "PWC_PAPER_MARKDOWN_HF_TOKEN": settings.hf_token,
                 },
                 flavor="cpu-basic",
                 timeout=f"{2100 if row.kind == 'add-evals' else 1500}s",

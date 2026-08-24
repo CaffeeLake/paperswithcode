@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import urllib.error
 import urllib.parse
@@ -22,6 +23,31 @@ MAX_TEXT_BYTES = 2_000_000
 MAX_PDF_BYTES = 20_000_000
 TIMEOUT_SECONDS = 20
 TEMPLATE_REPOSITORIES = {"academicpages/academicpages.github.io", "alshedivat/al-folio"}
+OCR_MARKDOWN_BUCKET_ID = "huggingface/pwc-papers-content"
+OCR_MARKDOWN_TOKEN_ENV = "PWC_PAPER_MARKDOWN_HF_TOKEN"
+
+
+class _BucketRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Strip bucket credentials before following a cross-origin redirect."""
+
+    def redirect_request(self, request, _response, code, message, headers, newurl):
+        redirected = super().redirect_request(
+            request, _response, code, message, headers, newurl
+        )
+        if redirected is None:
+            return None
+        source = urllib.parse.urlsplit(request.full_url)
+        destination = urllib.parse.urlsplit(redirected.full_url)
+        if (
+            source.scheme == destination.scheme
+            and source.hostname == destination.hostname
+            and source.port == destination.port
+        ):
+            return redirected
+        return urllib.request.Request(
+            redirected.full_url,
+            headers={"User-Agent": "PapersWithCode-Curation/1.0"},
+        )
 
 
 class _Links(HTMLParser):
@@ -49,6 +75,38 @@ def _fetch(url: str, limit: int) -> tuple[bytes, str]:
         if len(body) > limit:
             raise ValueError(f"response exceeds {limit} bytes")
         return body, final_url
+
+
+def _fetch_ocr_markdown(
+    arxiv_id: str,
+    limit: int,
+    *,
+    token: str,
+    bucket_id: str = OCR_MARKDOWN_BUCKET_ID,
+) -> tuple[bytes, str]:
+    """Read canonical OCR Markdown from the private Papers with Code bucket."""
+
+    base_arxiv_id = re.sub(r"v\d+$", "", arxiv_id.strip())
+    path = urllib.parse.quote(f"{base_arxiv_id[:4]}/{base_arxiv_id}.md", safe="")
+    bucket = urllib.parse.quote(bucket_id, safe="/")
+    url = f"https://huggingface.co/buckets/{bucket}/resolve/{path}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "PapersWithCode-Curation/1.0",
+        },
+    )
+    opener = urllib.request.build_opener(_BucketRedirectHandler())
+    with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
+        content_length = int(response.headers.get("Content-Length") or 0)
+        if content_length > limit:
+            raise ValueError(f"response exceeds {limit} bytes")
+        body = response.read(limit + 1)
+        if len(body) > limit:
+            raise ValueError(f"response exceeds {limit} bytes")
+        # Do not persist the signed CDN URL after redirecting from the bucket.
+        return body, url
 
 
 def normalize_candidate(raw: str, base_url: str | None = None) -> str | None:
@@ -93,7 +151,12 @@ def _matches(text: str) -> Iterable[str]:
         yield from re.findall(pattern, text)
 
 
-def extract_candidates(context: dict, *, fetch=_fetch) -> dict:
+def extract_candidates(
+    context: dict,
+    *,
+    fetch=_fetch,
+    fetch_ocr_markdown=_fetch_ocr_markdown,
+) -> dict:
     paper = context["paper"]
     arxiv_id = paper.get("arxiv_id")
     extracted_at = datetime.now(UTC).isoformat()
@@ -197,7 +260,32 @@ def extract_candidates(context: dict, *, fetch=_fetch) -> dict:
         except Exception as exc:
             errors.append({"source": "hf_markdown", "error": type(exc).__name__})
         check_liveness()
+    ocr_markdown_available = False
     if arxiv_id and not (has_live("github") and has_live("project_page")):
+        token = os.environ.get(OCR_MARKDOWN_TOKEN_ENV)
+        if token:
+            try:
+                markdown, final_url = fetch_ocr_markdown(
+                    arxiv_id, MAX_TEXT_BYTES, token=token
+                )
+                fetched(
+                    "ocr_markdown",
+                    f"hf://buckets/{OCR_MARKDOWN_BUCKET_ID}",
+                    markdown,
+                    final_url,
+                )
+                for raw in _matches(markdown.decode("utf-8", "replace")):
+                    add(raw, "ocr_markdown")
+                errors = [item for item in errors if item["source"] != "hf_markdown"]
+                ocr_markdown_available = True
+            except Exception as exc:
+                errors.append({"source": "ocr_markdown", "error": type(exc).__name__})
+            check_liveness()
+    if (
+        arxiv_id
+        and not ocr_markdown_available
+        and not (has_live("github") and has_live("project_page"))
+    ):
         try:
             url = f"https://arxiv.org/pdf/{arxiv_id}"
             pdf, final_url = fetch(url, MAX_PDF_BYTES)
