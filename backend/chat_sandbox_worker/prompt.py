@@ -13,6 +13,9 @@ _CURRENT_DATE_PLACEHOLDER = "{current_date}"
 _SELECTED_MODEL_PLACEHOLDER = "__PWC_SELECTED_MODEL__"
 _HF_USERNAME_PLACEHOLDER = "__PWC_HF_USERNAME__"
 _AGENT_HARNESS_PLACEHOLDER = "__PWC_AGENT_HARNESS__"
+_TASK_CATALOG_PLACEHOLDER = "__PWC_LIVE_TASK_CATALOG__"
+TASK_CATALOG_START = "<!-- PWC_TASK_CATALOG_START -->"
+TASK_CATALOG_END = "<!-- PWC_TASK_CATALOG_END -->"
 
 READER_SYSTEM_PROMPT = """
 ## Paper reader mode (reader-v1)
@@ -140,6 +143,13 @@ If a colloquial task name does not resolve exactly, run
 complete output for the user's terms and close variants, then retry with the canonical task slug
 before saying that PwC has no matching task or benchmark.
 
+For any request asking for the best, top, leading, or SOTA models for a task,
+first resolve it with `pwc task --name TASK`, then run
+`pwc benchmark list --task TASK` and inspect the highest-priority usable
+leaderboard with `pwc benchmark --name BENCHMARK`. Do not start with `pwc search`
+or substitute a paper/model popularity search when a task-scoped leaderboard is
+available.
+
 Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
 `sed`, or any other line-based truncation. Paper lineage follows the abstract
 and can otherwise be cut from the result. Use complete output, or use `--json`
@@ -249,6 +259,7 @@ def render(
     hf_guide_path: Path | None = None,
     s2_guide_path: Path | None = None,
     catalog_path: Path | None = None,
+    task_catalog_text: str | None = None,
     method_catalog_path: Path | None = None,
     current_date: date | None = None,
     selected_model: str = "unknown",
@@ -267,7 +278,11 @@ def render(
     guide_text = guide.read_text(encoding="utf-8")
     hf_guide_text = hf_guide.read_text(encoding="utf-8")
     s2_guide_text = s2_guide.read_text(encoding="utf-8")
-    catalog_text = catalog.read_text(encoding="utf-8")
+    catalog_text = (
+        task_catalog_text
+        if task_catalog_text is not None
+        else catalog.read_text(encoding="utf-8")
+    )
     method_catalog_text = method_catalog.read_text(encoding="utf-8")
     rendered_date = current_date or datetime.now(UTC).date()
     return (
@@ -279,7 +294,7 @@ def render(
             retrieval_turns=min(2, effective_tool_rounds(max_turns)),
             planned_searches=min(2, max_searches),
         )
-        + f"\n\n{catalog_text}"
+        + f"\n\n{TASK_CATALOG_START}\n{catalog_text.rstrip()}\n{TASK_CATALOG_END}"
         + f"\n\n{method_catalog_text}"
         + f"\n\n# pwc CLI skill\n\n{guide_text}"
         + f"\n\n# s2 CLI skill\n\n{s2_guide_text}"
@@ -307,6 +322,7 @@ def sha256(**kwargs) -> str:
         hf_username=_HF_USERNAME_PLACEHOLDER,
         agent_harness=_AGENT_HARNESS_PLACEHOLDER,
         reader_mode=False,
+        task_catalog_text=_TASK_CATALOG_PLACEHOLDER,
         **kwargs,
     )
     parameterized = (

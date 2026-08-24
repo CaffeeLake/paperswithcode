@@ -18,9 +18,6 @@ jobs:
     timeout-minutes: 45
     env:
       DESTINATION: backend/chat_sandbox_worker/TASK_CATALOG.md
-      CONTRACT: backend/chat_sandbox_worker/contract.py
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,83 +47,17 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit catalog worker source
+      - name: Commit and push catalog fallback snapshot
         if: steps.sync.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          uv run --no-project --python 3.12 --env-file backend/keys.env \
-            python -m backend.chat_sandbox_worker.update_worker_contract \
-            --bump-version
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$DESTINATION" "$CONTRACT"
+          git add "$DESTINATION"
           git commit -m "Sync chat task catalog"
-
-      - name: Publish immutable catalog worker image
-        if: steps.sync.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          publish_output="$(
-            uv run --no-project --python 3.12 --with 'modal==1.5.1' \
-              --env-file backend/keys.env \
-              python backend/chat_sandbox_worker/publish_image.py
-          )"
-          printf '%s\n' "$publish_output"
-          image_id="$(printf '%s\n' "$publish_output" | grep -Eo 'im-[A-Za-z0-9]+' | tail -1)"
-          [[ "$image_id" =~ ^im-[A-Za-z0-9]+$ ]]
-          uv run --no-project --python 3.12 --env-file backend/keys.env \
-            python -m backend.chat_sandbox_worker.update_worker_contract \
-            --set-image-id "$image_id"
-
-      - name: Commit and push exact catalog worker release
-        id: release
-        if: steps.sync.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add "$CONTRACT"
-          git commit -m "Pin synced task catalog worker image"
-          worker_tree_before="$(git ls-files -s backend/chat_sandbox_worker | sha256sum | cut -d' ' -f1)"
+          catalog_before="$(git hash-object "$DESTINATION")"
           git pull --rebase origin main
-          worker_tree_after="$(git ls-files -s backend/chat_sandbox_worker | sha256sum | cut -d' ' -f1)"
-          test "$worker_tree_before" = "$worker_tree_after"
+          catalog_after="$(git hash-object "$DESTINATION")"
+          test "$catalog_before" = "$catalog_after"
           git push origin HEAD:main
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Load SSH key into agent
-        if: steps.sync.outputs.changed == 'true'
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-
-      - name: Add VPS to known_hosts
-        if: steps.sync.outputs.changed == 'true'
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "$VPS_HOST" ] || [[ "$VPS_HOST" == *"://"* || "$VPS_HOST" == *"@"* || "$VPS_HOST" == *"/"* || "$VPS_HOST" =~ [[:space:]] ]]; then
-            echo "VPS_HOST must be a bare hostname or IP address."
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          timeout 10 bash -c "cat < /dev/null > /dev/tcp/$VPS_HOST/22"
-          ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Deploy exact task catalog release to staging
-        if: steps.sync.outputs.changed == 'true'
-        env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          RELEASE_SHA: ${{ steps.release.outputs.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
-            "sudo /usr/local/sbin/pwc-deploy staging '$RELEASE_SHA'"

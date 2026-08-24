@@ -7,6 +7,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from backend.chat_sandbox_worker.live_task_catalog import fetch_live_task_catalog
+from backend.chat_sandbox_worker.prompt import (
+    render as render_system_prompt,
+)
+from backend.chat_sandbox_worker.prompt import (
+    sha256 as system_prompt_sha256,
+)
 from backend.chat_sandbox_worker.update_worker_contract import (
     bump_version,
     set_image_id,
@@ -118,7 +125,78 @@ def test_worker_contract_update_is_bounded_to_staging_fields(tmp_path: Path):
     assert 'PRODUCTION_MODAL_IMAGE_ID = "im-production"' in updated
 
 
-def test_task_catalog_sync_workflow_is_scheduled_and_deploys_staging():
+def test_live_task_catalog_replaces_the_baked_snapshot(tmp_path: Path):
+    pages = {
+        1: {
+            "count": 2,
+            "next_page": 2,
+            "previous_page": None,
+            "results": [
+                {"name": "Image Classification", "slug": "image-classification"}
+            ],
+        },
+        2: {
+            "count": 2,
+            "next_page": None,
+            "previous_page": 1,
+            "results": [{"name": "Text Reranking", "slug": "text-reranking"}],
+        },
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            page = 2 if "page=2" in self.path else 1
+            body = json.dumps(pages[page]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        catalog = fetch_live_task_catalog(
+            f"http://127.0.0.1:{server.server_port}/api/v1"
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+
+    baked = tmp_path / "TASK_CATALOG.md"
+    baked.write_text("baked catalog without the new task\n")
+    prompt = render_system_prompt(catalog_path=baked, task_catalog_text=catalog)
+
+    assert "baked catalog without the new task" not in prompt
+    assert "`text-reranking` — Text Reranking" in prompt
+    assert prompt.count("PWC_TASK_CATALOG_START") == 1
+    assert prompt.count("PWC_TASK_CATALOG_END") == 1
+
+
+def test_system_prompt_requires_task_scoped_benchmark_lookup():
+    prompt = render_system_prompt()
+
+    assert "pwc task --name TASK" in prompt
+    assert "pwc benchmark list --task TASK" in prompt
+    assert "Do not start with `pwc search`" in prompt
+
+
+def test_prompt_contract_hash_parameterizes_the_live_catalog(tmp_path: Path):
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first task catalog\n")
+    second.write_text("second task catalog\n")
+
+    assert system_prompt_sha256(catalog_path=first) == system_prompt_sha256(
+        catalog_path=second
+    )
+
+
+def test_task_catalog_sync_workflow_refreshes_the_fallback_without_image_churn():
     workflow = (
         REPOSITORY_ROOT / ".github/workflows/sync-chat-task-catalog.yml"
     ).read_text()
@@ -128,6 +206,7 @@ def test_task_catalog_sync_workflow_is_scheduled_and_deploys_staging():
     assert "permissions:\n  contents: write" in workflow
     assert "uv run --no-project --python 3.12 --env-file backend/keys.env" in workflow
     assert "python -m backend.chat_sandbox_worker.sync_task_catalog" in workflow
-    assert "python backend/chat_sandbox_worker/publish_image.py" in workflow
-    assert 'git add "$DESTINATION" "$CONTRACT"' in workflow
-    assert "sudo /usr/local/sbin/pwc-deploy staging '$RELEASE_SHA'" in workflow
+    assert 'git add "$DESTINATION"' in workflow
+    assert "git push origin HEAD:main" in workflow
+    assert "publish_image.py" not in workflow
+    assert "pwc-deploy" not in workflow

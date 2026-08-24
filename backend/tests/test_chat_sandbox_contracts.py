@@ -1067,11 +1067,19 @@ def test_persistent_agent_reconnects_when_turn_metadata_changes(monkeypatch):
             hf_username="user-b",
             current_date=date(2026, 8, 11),
         )
+        await worker.connect(
+            model="model-a",
+            resume=None,
+            web_search_enabled=True,
+            hf_username="user-b",
+            current_date=date(2026, 8, 11),
+            task_catalog_text="## Complete live task lookup index\n\n- `new` — New",
+        )
         await worker.close()
 
     asyncio.run(run())
 
-    assert len(created) == 4
+    assert len(created) == 5
     metadata = [
         client.options.system_prompt.rsplit("# Turn metadata", 1)[1]
         for client in created
@@ -1080,6 +1088,7 @@ def test_persistent_agent_reconnects_when_turn_metadata_changes(monkeypatch):
     assert '"web_search_enabled":true' in metadata[1]
     assert '"hf_username":"user-b"' in metadata[2]
     assert '"current_date_utc":"2026-08-11"' in metadata[3]
+    assert "`new` — New" in created[4].options.system_prompt
 
 
 def test_adapter_waits_for_late_mirror_before_terminal():

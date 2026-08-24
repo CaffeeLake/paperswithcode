@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -19,7 +19,7 @@ import {
 } from "./mcp_app_registry.js";
 import { PolicyController, pwcExtension } from "./policy.js";
 import { createProvider, thinkingLevel, type ProviderProtocol } from "./provider.js";
-import { loadPromptAsset, renderPrompt } from "./prompt.js";
+import { fetchLiveTaskCatalog, loadPromptAsset, renderPrompt } from "./prompt.js";
 import { recoverIncompleteResponse, type RecoverySummary } from "./recovery.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
 import { shouldResetSession } from "./session.js";
@@ -195,12 +195,19 @@ export class PiWorker {
     const phaseStarted = performance.now();
     const state = await this.sessionManager(run);
     this.emit(run.request_id, { type: "_latency", phase: "session_bind_restore", elapsed_ms: Math.round(performance.now() - phaseStarted) });
+    let taskCatalog: string | undefined;
+    try {
+      taskCatalog = await fetchLiveTaskCatalog();
+    } catch (error) {
+      process.stderr.write(`Live task catalog unavailable; using baked fallback: ${error instanceof Error ? error.message : "unknown error"}\n`);
+    }
     const prompt = await renderPrompt({
       model: run.model,
       hfUsername: run.hf_username,
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
       posterlyEnabled: run.poster_mode,
+      ...(taskCatalog === undefined ? {} : { taskCatalog }),
       source: this.promptAsset!,
     });
     this.policy.reset(run.web_search_enabled, prompt, run.poster_mode);
@@ -212,6 +219,9 @@ export class PiWorker {
       readerMode: run.reader_mode,
       posterMode: run.poster_mode,
       hfUsername: run.hf_username,
+      taskCatalogDigest: taskCatalog === undefined
+        ? "baked-fallback"
+        : createHash("sha256").update(taskCatalog).digest("hex"),
     });
     if (!this.mirror) {
       // The remote count includes the session header; getEntries() contains

@@ -32,6 +32,7 @@ from backend.chat_execution_policy import (
     validate_url_seed,
 )
 from backend.chat_sandbox_worker.config import WorkerSettings
+from backend.chat_sandbox_worker.live_task_catalog import fetch_live_task_catalog
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
@@ -50,6 +51,17 @@ from backend.chat_sandbox_worker.tool_policy import (
 )
 
 PUBLIC_TOOL_RESULT_MAX_BYTES = 24 * 1024
+
+
+async def _current_task_catalog() -> str | None:
+    try:
+        return await asyncio.to_thread(fetch_live_task_catalog)
+    except (OSError, TypeError, ValueError) as error:
+        print(
+            f"Live task catalog unavailable; using baked fallback: {error}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _sdk_event_policy(hooks: "WorkerToolHooks") -> SDKEventPolicy:
@@ -515,6 +527,7 @@ def _options(
     hf_username: str = "unknown",
     current_date: date | None = None,
     finalizing: bool = False,
+    task_catalog_text: str | None = None,
 ) -> ClaudeAgentOptions:
     prompt_text = render_system_prompt(
         max_turns=settings.chat_max_turns,
@@ -528,6 +541,7 @@ def _options(
         selected_model=model,
         hf_username=hf_username,
         current_date=current_date,
+        task_catalog_text=task_catalog_text,
     )
     web_tools = [] if finalizing else [WEB_SEARCH_TOOL]
     web_servers = {} if finalizing else {"web": _create_web_mcp_server(hooks)}
@@ -705,6 +719,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         show_reasoning=settings.chat_show_reasoning,
         policy=_sdk_event_policy(hooks),
     )
+    task_catalog_text = await _current_task_catalog()
     options = _options(
         settings,
         hooks,
@@ -714,6 +729,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         reader_mode=reader_mode,
         poster_mode=poster_mode,
         hf_username=hf_username,
+        task_catalog_text=task_catalog_text,
     )
     yield {
         "v": 1,
@@ -782,6 +798,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                     web_search_enabled=False,
                     hf_username=hf_username,
                     finalizing=True,
+                    task_catalog_text=task_catalog_text,
                 ),
             )
             finalizer_started = time.monotonic()
@@ -933,6 +950,7 @@ class PersistentAgent:
         self.hf_username = "unknown"
         self.current_date: date | None = None
         self.finalizing = False
+        self.task_catalog_text: str | None = None
 
     async def connect(
         self,
@@ -945,6 +963,7 @@ class PersistentAgent:
         hf_username: str = "unknown",
         current_date: date | None = None,
         finalizing: bool = False,
+        task_catalog_text: str | None = None,
     ) -> None:
         rendered_date = current_date or datetime.now(UTC).date()
         if (
@@ -964,6 +983,7 @@ class PersistentAgent:
             or hf_username != self.hf_username
             or rendered_date != self.current_date
             or finalizing != self.finalizing
+            or task_catalog_text != self.task_catalog_text
         ):
             resume = self.sdk_session_id or resume
             await self.client.disconnect()
@@ -997,6 +1017,7 @@ class PersistentAgent:
         self.hf_username = hf_username
         self.current_date = rendered_date
         self.finalizing = finalizing
+        self.task_catalog_text = task_catalog_text
         self.client = ClaudeSDKClient(
             _options(
                 self.settings,
@@ -1009,6 +1030,7 @@ class PersistentAgent:
                 hf_username=hf_username,
                 current_date=rendered_date,
                 finalizing=finalizing,
+                task_catalog_text=task_catalog_text,
             )
         )
         await self.client.connect(prompt=None)
@@ -1035,6 +1057,7 @@ class PersistentAgent:
             if poster_mode
             else self.settings.chat_agent_timeout_seconds
         )
+        task_catalog_text = await _current_task_catalog()
         await self.connect(
             model=model,
             resume=frame.get("resume"),
@@ -1042,6 +1065,7 @@ class PersistentAgent:
             reader_mode=reader_mode,
             poster_mode=poster_mode,
             hf_username=hf_username,
+            task_catalog_text=task_catalog_text,
         )
         assert self.client is not None
         self.hooks.reset(
@@ -1110,6 +1134,7 @@ class PersistentAgent:
             web_search_enabled=False,
             hf_username=hf_username,
             finalizing=True,
+            task_catalog_text=task_catalog_text,
         )
         assert self.client is not None
         await self.client.query(FINALIZER_PROMPT)

@@ -20,3 +20,25 @@ test("renders the trusted reader-mode metadata independently of paper evidence",
   assert.match(prompt, /"reader_mode":true/);
   assert.doesNotMatch(prompt, /"reader_mode":false/);
 });
+
+test("replaces the baked task catalog with the live catalog", async () => {
+  const source = [
+    "before",
+    "<!-- PWC_TASK_CATALOG_START -->",
+    "stale task catalog",
+    "<!-- PWC_TASK_CATALOG_END -->",
+    "after",
+  ].join("\n");
+
+  const prompt = await renderPrompt({
+    model: "model-a",
+    hfUsername: "reviewer",
+    webSearchEnabled: false,
+    readerMode: false,
+    taskCatalog: "## Complete live task lookup index\n\n- `text-reranking` — Text Reranking",
+    source,
+  });
+
+  assert.doesNotMatch(prompt, /stale task catalog/);
+  assert.match(prompt, /`text-reranking` — Text Reranking/);
+});

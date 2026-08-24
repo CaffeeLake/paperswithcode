@@ -257,16 +257,16 @@ After a skill sync, publish a new immutable Modal image, commit its
 `MODAL_IMAGE_ID`, and deploy that exact commit to staging; an application deploy
 cannot alter an already-published worker image.
 
-`sync-chat-task-catalog.yml` refreshes `TASK_CATALOG.md` from the production
-taxonomy API every 15 minutes and on manual dispatch. The generated prompt
-snapshot keeps the bounded area overview and adds a compact, complete index of
-every task and subtask, so newly added specialized tasks are not omitted. It
-increments the worker contract, publishes a new immutable staging Modal image,
-commits the generated catalog and emitted image ID to `main`, and deploys that
-exact commit to staging. The production image and production deployment remain
-untouched. The prompt also requires the agent to resolve unmatched colloquial
-task names against every page of the live task list before concluding that a
-task is absent.
+`sync-chat-task-catalog.yml` refreshes the checked-in fallback
+`TASK_CATALOG.md` from the production taxonomy API every 15 minutes and on
+manual dispatch. At runtime, both worker harnesses fetch every page of the task
+taxonomy through the trusted capability-backed catalog gateway and replace the
+baked prompt section before each turn. Persistent sessions are recreated when
+that live catalog changes. The fallback therefore stays useful during a
+catalog-gateway failure without making prompt freshness depend on a Modal image
+publication or application deployment. The prompt also requires task-scoped
+SOTA questions to resolve the canonical task and its ranked benchmarks before
+using broad paper or model search.
 
 Chat sandboxes are pinned to Modal's `eu-west` compute region so the persistent
 worker stays near the dedicated gateway and PostgreSQL host. A region change is

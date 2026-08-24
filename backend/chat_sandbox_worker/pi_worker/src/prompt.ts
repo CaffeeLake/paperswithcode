@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 const DATE_SENTINEL = "2000-01-01";
 const MODEL_SENTINEL = "__PWC_SELECTED_MODEL__";
 const USER_SENTINEL = "__PWC_HF_USERNAME__";
+const TASK_CATALOG_START = "<!-- PWC_TASK_CATALOG_START -->";
+const TASK_CATALOG_END = "<!-- PWC_TASK_CATALOG_END -->";
 
 export async function renderPrompt(options: {
   model: string;
@@ -10,12 +12,16 @@ export async function renderPrompt(options: {
   webSearchEnabled: boolean;
   readerMode: boolean;
   posterlyEnabled?: boolean;
+  taskCatalog?: string;
   assetPath?: string;
   source?: string;
 }): Promise<string> {
   const source = options.source ?? await loadPromptAsset(options.assetPath);
   const date = new Date().toISOString().slice(0, 10);
-  return source
+  const catalogSource = options.taskCatalog === undefined
+    ? source
+    : replaceTaskCatalog(source, options.taskCatalog);
+  return catalogSource
     .replace(DATE_SENTINEL, date)
     .replace(MODEL_SENTINEL, options.model)
     .replace(USER_SENTINEL, options.hfUsername)
@@ -24,6 +30,55 @@ export async function renderPrompt(options: {
     .replace('"posterly_enabled":false', `"posterly_enabled":${String(options.posterlyEnabled === true)}`);
 }
 
+export function replaceTaskCatalog(source: string, taskCatalog: string): string {
+  const start = source.indexOf(TASK_CATALOG_START);
+  const end = source.indexOf(TASK_CATALOG_END);
+  if (start < 0 || end < start || source.indexOf(TASK_CATALOG_START, start + 1) >= 0) {
+    throw new Error("Task catalog prompt markers are invalid");
+  }
+  const contentStart = start + TASK_CATALOG_START.length;
+  return `${source.slice(0, contentStart)}\n${taskCatalog.trim()}\n${source.slice(end)}`;
+}
+
 export async function loadPromptAsset(assetPath?: string): Promise<string> {
   return readFile(assetPath ?? "/opt/pwc/pi-system-prompt.txt", "utf8");
+}
+
+export async function fetchLiveTaskCatalog(
+  apiUrl = process.env.PWC_API_URL ?? "http://127.0.0.1:8765/api/v1",
+): Promise<string> {
+  const tasks = new Map<string, string>();
+  const signal = AbortSignal.timeout(3_000);
+  for (let page = 1; page <= 10; page += 1) {
+    const url = new URL(`${apiUrl.replace(/\/$/, "")}/tasks/`);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("page_size", "100");
+    url.searchParams.set("ordering", "name");
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Task catalog request failed: ${response.status}`);
+    const payload = await response.json() as { results?: unknown; next_page?: unknown };
+    if (!Array.isArray(payload.results)) throw new Error("Task catalog response is invalid");
+    for (const value of payload.results) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const task = value as Record<string, unknown>;
+      const name = typeof task.name === "string" ? task.name.trim() : "";
+      const slug = typeof task.slug === "string" ? task.slug.trim() : "";
+      if (name && slug && name.length <= 200 && slug.length <= 200) tasks.set(slug, name);
+    }
+    if (payload.next_page === null) break;
+    if (payload.next_page !== page + 1) throw new Error("Task catalog pagination is invalid");
+    if (page === 10) throw new Error("Task catalog exceeded the page limit");
+  }
+  const rows = [...tasks.entries()].sort((left, right) =>
+    left[1].localeCompare(right[1], "en", { sensitivity: "base" }) || left[0].localeCompare(right[0]),
+  );
+  if (rows.length === 0) throw new Error("Live task catalog is empty");
+  return [
+    "## Complete live task lookup index",
+    "",
+    "This index was refreshed from the trusted PwC catalog for the current turn and supersedes the baked fallback snapshot. Treat names and slugs as taxonomy clues, then use `pwc task --name TASK` and `pwc benchmark list --task TASK` to verify task and leaderboard details.",
+    "",
+    ...rows.map(([slug, name]) => `- \`${slug}\` — ${name}`),
+    "",
+  ].join("\n");
 }
