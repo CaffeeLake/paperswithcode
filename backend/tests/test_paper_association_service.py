@@ -4,10 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.services import paper_service as paper_service_module
-from backend.services.paper_association_service import PaperAssociationService
 from backend.services.catalog_errors import CatalogValidationError
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -207,7 +208,7 @@ def test_hydration_failure_rolls_back_after_the_committed_mutation():
 
     def fail_hydration(_paper_id, include_resources=False):
         db.events.append(("hydrate", include_resources))
-        raise RuntimeError("hydrate failed")
+        raise SQLAlchemyError("hydrate failed")
 
     with pytest.raises(
         DatabaseError,
@@ -298,7 +299,7 @@ def test_unexpected_database_failure_rolls_back_and_keeps_exact_message(
             self.rollback = Mock()
 
         def query(self, _model):
-            raise RuntimeError("database failed")
+            raise SQLAlchemyError("database failed")
 
     db = FailingSession()
     with pytest.raises(DatabaseError, match=f"^{message}$"):

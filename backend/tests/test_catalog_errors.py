@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, Request
@@ -38,6 +39,38 @@ def _evaluation_app(monkeypatch, service):
     app.dependency_overrides[get_database_session] = lambda: None
     app.dependency_overrides[evaluation_mutation_context] = lambda: {"actor": {}}
     monkeypatch.setattr(evaluations, "EvaluationCurationService", lambda _db: service)
+    return app
+
+
+def _evaluation_curation_app(monkeypatch, evaluation_service):
+    """Exercise the real curation boundary without a database dependency."""
+    from backend.database.connection import get_database_session
+    from backend.main import create_app
+    from backend.services import evaluation_curation_service
+    from backend.utils.auth import evaluation_mutation_context
+
+    class MutationService:
+        def __init__(self, _db):
+            pass
+
+        def mutate(self, *, apply, **_kwargs):
+            apply()
+            return [], SimpleNamespace(before_snapshot=[]), False
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = lambda: None
+    app.dependency_overrides[evaluation_mutation_context] = lambda: {
+        "actor": {"role": "admin", "hf_subject": "route-test"},
+        "idempotency_key": None,
+        "expected_version": None,
+        "request_id": "route-test",
+    }
+    monkeypatch.setattr(
+        evaluation_curation_service, "EvaluationService", lambda _db: evaluation_service
+    )
+    monkeypatch.setattr(
+        evaluation_curation_service, "CatalogMutationService", MutationService
+    )
     return app
 
 
@@ -79,7 +112,7 @@ def test_evaluation_delete_route_success(monkeypatch):
 
 
 def _evaluation_payload():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "id": "1",
         "paper_id": "1",
@@ -138,6 +171,116 @@ def test_evaluation_post_forwards_payload_and_returns_success(monkeypatch):
     assert response.status_code == 201
     assert response.json()["id"] == "1"
     assert {key: calls[0]["payload"][key] for key in payload} == payload
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "legacy_error", "status"),
+    [
+        (
+            "post",
+            "/api/v1/evaluations/",
+            PaperNotFoundError("Paper with ID 1 not found"),
+            404,
+        ),
+        (
+            "post",
+            "/api/v1/evaluations/",
+            DatabaseError("evaluation write failed"),
+            500,
+        ),
+        (
+            "put",
+            "/api/v1/evaluations/1",
+            PaperNotFoundError("Paper with ID 1 not found"),
+            404,
+        ),
+        (
+            "put",
+            "/api/v1/evaluations/1",
+            DatabaseError("evaluation write failed"),
+            500,
+        ),
+    ],
+)
+def test_evaluation_post_put_translate_legacy_service_errors_at_route_boundary(
+    monkeypatch, method, path, legacy_error, status
+):
+    class LegacyEvaluationService:
+        def create_evaluation(self, **_kwargs):
+            raise legacy_error
+
+        def update_evaluation(self, *_args, **_kwargs):
+            raise legacy_error
+
+    payload = {"paper_id": 1, "task_id": 2, "dataset_id": 3, "metrics": {"mAP": "1"}}
+    with TestClient(
+        _evaluation_curation_app(monkeypatch, LegacyEvaluationService())
+    ) as client:
+        response = getattr(client, method)(path, json=payload)
+
+    assert response.status_code == status
+    assert response.json() == {"detail": str(legacy_error)}
+
+
+def test_evaluation_put_forwards_payload_and_returns_success(monkeypatch):
+    calls = []
+
+    class EvaluationService:
+        def update_evaluation(self, evaluation_id, **kwargs):
+            calls.append((evaluation_id, kwargs))
+
+        def get_evaluation(self, evaluation_id):
+            assert evaluation_id == 1
+            return _evaluation_payload()
+
+    payload = {"model_name": "Updated model", "metrics": {"mAP": "2"}}
+    with TestClient(
+        _evaluation_curation_app(monkeypatch, EvaluationService())
+    ) as client:
+        response = client.put("/api/v1/evaluations/1", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "1"
+    evaluation_id, forwarded = calls[0]
+    assert evaluation_id == 1
+    assert forwarded["commit"] is False
+    assert forwarded["model_name"] == "Updated model"
+    assert forwarded["metrics"] == {"mAP": "2"}
+    assert forwarded["harness_set"] is False
+
+
+@pytest.mark.parametrize(
+    "method,path", [("post", "/api/v1/evaluations/"), ("put", "/api/v1/evaluations/1")]
+)
+@pytest.mark.parametrize(
+    "legacy_error",
+    [
+        PaperNotFoundError("Evaluation 1 not found"),
+        DatabaseError("evaluation hydration failed"),
+    ],
+)
+def test_evaluation_post_put_translate_legacy_hydration_errors_at_route_boundary(
+    monkeypatch, method, path, legacy_error
+):
+    class LegacyHydrationService:
+        def create_evaluation(self, **_kwargs):
+            return SimpleNamespace(id=1)
+
+        def update_evaluation(self, *_args, **_kwargs):
+            return None
+
+        def get_evaluation(self, _evaluation_id):
+            raise legacy_error
+
+    payload = {"paper_id": 1, "task_id": 2, "dataset_id": 3, "metrics": {"mAP": "1"}}
+    with TestClient(
+        _evaluation_curation_app(monkeypatch, LegacyHydrationService())
+    ) as client:
+        response = getattr(client, method)(path, json=payload)
+
+    expected_status = 404 if isinstance(legacy_error, PaperNotFoundError) else 500
+    assert response.status_code == expected_status
+    assert response.json() == {"detail": str(legacy_error)}
 
 
 @pytest.mark.parametrize(

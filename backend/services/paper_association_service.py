@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.models.api import Paper
@@ -17,10 +18,10 @@ from backend.models.database import PaperRepository, PaperTask
 from backend.models.database import ProjectPage as DBProjectPage
 from backend.models.database import Repository as DBRepository
 from backend.models.database import Task as DBTask
+from backend.services.catalog_errors import CatalogValidationError
 from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.services.paper_method_link_service import replace_manual_links
 from backend.services.repository_service import find_repository_by_url
-from backend.services.catalog_errors import CatalogValidationError
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.utils.hf_utils import normalize_hf_artifact_payload
@@ -80,7 +81,9 @@ class PaperAssociationService:
                     PaperTask(paper_id=paper_id, task_id=task_id, source="manual")
                 )
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("tasks", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("tasks", error, commit=commit)
 
     def update_organizations(
@@ -127,7 +130,9 @@ class PaperAssociationService:
                     )
                 )
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("organizations", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("organizations", error, commit=commit)
 
     def update_methods(
@@ -145,7 +150,9 @@ class PaperAssociationService:
 
             replace_manual_links(self.db, paper_id=paper_id, method_ids=method_ids)
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("methods", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("methods", error, commit=commit)
 
     def update_repositories(
@@ -212,7 +219,9 @@ class PaperAssociationService:
                     )
                 )
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("repositories", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("repositories", error, commit=commit)
 
     def update_project_pages(
@@ -258,7 +267,9 @@ class PaperAssociationService:
                     )
                 )
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("project pages", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("project pages", error, commit=commit)
 
     def update_source_url(
@@ -298,7 +309,9 @@ class PaperAssociationService:
 
             paper.source_url = normalized
             return self._finish(paper_id, paper, commit=commit)
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("source URL", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("source URL", error, commit=commit)
 
     def update_hf_artifacts(
@@ -331,5 +344,7 @@ class PaperAssociationService:
             if commit:
                 self.db.rollback()
             raise CatalogValidationError(str(error))
-        except Exception as error:
+        except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
+            self._raise_mutation_error("HF artifacts", error, commit=commit)
+        except SQLAlchemyError as error:
             self._raise_mutation_error("HF artifacts", error, commit=commit)
