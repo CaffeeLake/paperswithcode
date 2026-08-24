@@ -113,7 +113,12 @@ def normalize_candidate(raw: str, base_url: str | None = None) -> str | None:
     raw = raw.strip().rstrip(".,;:!?)]}'\"")
     if base_url:
         raw = urllib.parse.urljoin(base_url, raw)
-    parsed = urllib.parse.urlsplit(raw)
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        # Markdown link syntax can leave a second URL attached to the first.
+        # Ignore that malformed candidate without discarding the whole source.
+        return None
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return None
     host = parsed.hostname.lower()

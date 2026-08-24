@@ -90,6 +90,15 @@ def test_url_patterns_are_the_authoritative_design_patterns():
     )
 
 
+def test_normalize_candidate_ignores_malformed_markdown_link_url():
+    assert (
+        url_preflight.normalize_candidate(
+            "https://odensenlp.github.io](https://odensenlp.github.io"
+        )
+        is None
+    )
+
+
 def test_preflight_reuses_complete_importer_links_without_refetching_layers(
     monkeypatch,
 ):
