@@ -18,7 +18,7 @@ from backend.services.catalog_errors import (
     CatalogNotFoundError,
     CatalogPersistenceError,
     CatalogValidationError,
-    translate_legacy_catalog_error,
+    raise_catalog_error,
 )
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -99,9 +99,7 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            translate_legacy_catalog_error(
-                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
-            )
+            raise_catalog_error(error)
         if not created_id:
             before_ids = {int(row["id"]) for row in (event.before_snapshot or [])}
             added = [
@@ -117,9 +115,7 @@ class EvaluationCurationService:
         try:
             return self.service.get_evaluation(created_id[0])
         except (PaperNotFoundError, DatabaseError) as error:
-            translate_legacy_catalog_error(
-                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
-            )
+            raise_catalog_error(error)
 
     def update(self, *, evaluation_id: int, payload: dict, mutation: dict):
         try:
@@ -135,15 +131,11 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            translate_legacy_catalog_error(
-                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
-            )
+            raise_catalog_error(error)
         try:
             return self.service.get_evaluation(evaluation_id)
         except (PaperNotFoundError, DatabaseError) as error:
-            translate_legacy_catalog_error(
-                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
-            )
+            raise_catalog_error(error)
 
     def delete(self, *, evaluation_id: int, mutation: dict) -> None:
         try:
@@ -159,9 +151,7 @@ class EvaluationCurationService:
                 **mutation,
             )
         except (PaperNotFoundError, DatabaseError) as error:
-            translate_legacy_catalog_error(
-                error, not_found_type=PaperNotFoundError, persistence_type=DatabaseError
-            )
+            raise_catalog_error(error)
 
     def rollback(
         self, *, event: CatalogMutationEvent, actor: dict, request_id: str

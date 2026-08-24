@@ -37,6 +37,17 @@ class CatalogPersistenceError(CatalogError):
     """Raised when catalog persistence cannot complete."""
 
 
+def raise_catalog_error(error: Exception) -> None:
+    """Normalize a legacy catalog failure to the shared typed hierarchy."""
+    from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+
+    if isinstance(error, PaperNotFoundError):
+        raise CatalogNotFoundError(str(error)) from error
+    if isinstance(error, DatabaseError):
+        raise CatalogPersistenceError(str(error)) from error
+    raise error
+
+
 def catalog_operation(operation):
     """Expose a domain operation with typed catalog failures.
 
@@ -51,9 +62,7 @@ def catalog_operation(operation):
 
         try:
             return operation(*args, **kwargs)
-        except PaperNotFoundError as error:
-            raise CatalogNotFoundError(str(error)) from error
-        except DatabaseError as error:
-            raise CatalogPersistenceError(str(error)) from error
+        except (PaperNotFoundError, DatabaseError) as error:
+            raise_catalog_error(error)
 
     return wrapped
