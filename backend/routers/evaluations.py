@@ -192,52 +192,20 @@ def list_evaluations(
     - `/api/v1/evaluations/?paper_id=123&ordering=-benchmark_popularity` -
       Paper page rows grouped by most popular benchmark first
     """
-    try:
-        # Parse ordering
-        ordering_value = ordering
-        if ordering_value is None:
-            ordering_value = "best_rank" if dataset_id is not None else "-created_at"
-
-        order_dir = "asc"
-        order_by = ordering_value
-        if ordering_value.startswith("-"):
-            order_dir = "desc"
-            order_by = ordering_value[1:]
-
-        # Validate order_by field
-        valid_fields = [
-            "created_at",
-            "best_rank",
-            "evaluated_on",
-            "benchmark_popularity",
-        ]
-        if order_by not in valid_fields:
-            order_by = "created_at"
-
-        service = EvaluationService(db)
-
-        return service.get_evaluations(
-            page=page,
-            page_size=page_size,
-            search=q,
-            paper_id=paper_id,
-            task_id=task_id,
-            include_descendants=include_descendants,
-            dataset_id=dataset_id,
-            best_metric=best_metric,
-            is_open=is_open,
-            external=external,
-            max_parameters_exclusive=max_parameters_exclusive,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return EvaluationService(db).list_catalog_evaluations(
+        page=page,
+        page_size=page_size,
+        search=q,
+        paper_id=paper_id,
+        task_id=task_id,
+        include_descendants=include_descendants,
+        dataset_id=dataset_id,
+        best_metric=best_metric,
+        is_open=is_open,
+        external=external,
+        max_parameters_exclusive=max_parameters_exclusive,
+        ordering=ordering,
+    )
 
 
 @router.get("/{evaluation_id}", response_model=Evaluation)
@@ -251,23 +219,7 @@ def get_evaluation(
     **Example:**
     - `/api/v1/evaluations/1` - Get evaluation with ID 1
     """
-    try:
-        service = EvaluationService(db)
-        evaluation = service.get_evaluation(evaluation_id)
-
-        if not evaluation:
-            raise HTTPException(
-                status_code=404, detail=f"Evaluation {evaluation_id} not found"
-            )
-
-        return evaluation
-
-    except HTTPException:
-        raise
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    return EvaluationService(db).get_catalog_evaluation(evaluation_id)
 
 
 @router.post(

@@ -31,6 +31,10 @@ class PaperHydrator(Protocol):
     def __call__(self, paper_id: int, include_resources: bool = False) -> Paper: ...
 
 
+class PaperAssociationHydrationError(Exception):
+    """Expected failure from the injected paper hydration collaborator."""
+
+
 class PaperAssociationService:
     """Own association replacement, provenance, normalization, and transactions."""
 
@@ -51,7 +55,14 @@ class PaperAssociationService:
             self.db.flush()
             return paper
         self.db.commit()
-        return self._hydrate_paper(paper_id, include_resources=True)
+        return self._hydrate(paper_id)
+
+    def _hydrate(self, paper_id: int) -> Paper:
+        """Call the injected hydrator with its explicit failure contract."""
+        try:
+            return self._hydrate_paper(paper_id, include_resources=True)
+        except RuntimeError as error:
+            raise PaperAssociationHydrationError(str(error)) from error
 
     def _raise_mutation_error(
         self, operation: str, error: Exception, *, commit: bool
@@ -83,7 +94,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("tasks", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("tasks", error, commit=commit)
 
     def update_organizations(
@@ -132,7 +143,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("organizations", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("organizations", error, commit=commit)
 
     def update_methods(
@@ -152,7 +163,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("methods", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("methods", error, commit=commit)
 
     def update_repositories(
@@ -221,7 +232,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("repositories", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("repositories", error, commit=commit)
 
     def update_project_pages(
@@ -269,7 +280,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("project pages", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("project pages", error, commit=commit)
 
     def update_source_url(
@@ -291,7 +302,7 @@ class PaperAssociationService:
                     "ArXiv rows derive their URL from arxiv_id"
                 )
             if normalized == paper.source_url:
-                return self._hydrate_paper(paper_id, include_resources=True)
+                return self._hydrate(paper_id)
 
             collision = (
                 self.db.query(DBPaper.id)
@@ -311,7 +322,7 @@ class PaperAssociationService:
             return self._finish(paper_id, paper, commit=commit)
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("source URL", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("source URL", error, commit=commit)
 
     def update_hf_artifacts(
@@ -346,5 +357,5 @@ class PaperAssociationService:
             raise CatalogValidationError(str(error))
         except (PaperNotFoundError, DatabaseError, CatalogValidationError) as error:
             self._raise_mutation_error("HF artifacts", error, commit=commit)
-        except SQLAlchemyError as error:
+        except (SQLAlchemyError, PaperAssociationHydrationError) as error:
             self._raise_mutation_error("HF artifacts", error, commit=commit)

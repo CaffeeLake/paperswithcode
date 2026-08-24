@@ -35,6 +35,7 @@ from backend.services.leaderboard_metric_service import LeaderboardMetricService
 from backend.services.metric_value_service import parse_metric_value
 from backend.services.catalog_errors import (
     CatalogNotFoundError,
+    CatalogPersistenceError,
     CatalogValidationError,
 )
 
@@ -823,6 +824,39 @@ class EvaluationService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve evaluation: {str(e)}")
+
+    def list_catalog_evaluations(
+        self, *, ordering: Optional[str], **filters
+    ) -> Evaluations:
+        """Return evaluations using the typed HTTP read contract."""
+        ordering_value = ordering or (
+            "best_rank" if filters.get("dataset_id") is not None else "-created_at"
+        )
+        order_dir = "desc" if ordering_value.startswith("-") else "asc"
+        order_by = ordering_value.removeprefix("-")
+        if order_by not in {
+            "created_at",
+            "best_rank",
+            "evaluated_on",
+            "benchmark_popularity",
+        }:
+            order_by = "created_at"
+        try:
+            return self.get_evaluations(
+                order_by=order_by, order_dir=order_dir, **filters
+            )
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def get_catalog_evaluation(self, evaluation_id: int) -> Evaluation:
+        """Return one evaluation or a typed not-found/persistence failure."""
+        try:
+            evaluation = self.get_evaluation(evaluation_id)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+        if evaluation is None:
+            raise CatalogNotFoundError(f"Evaluation {evaluation_id} not found")
+        return evaluation
 
     def search_evaluations(
         self, query: str, page: int = 1, page_size: int = 50

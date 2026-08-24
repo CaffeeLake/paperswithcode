@@ -202,13 +202,14 @@ def test_unchanged_source_url_hydrates_without_commit_even_when_commit_is_false(
     hydrate.assert_called_once_with(1, include_resources=True)
 
 
-def test_hydration_failure_rolls_back_after_the_committed_mutation():
+@pytest.mark.parametrize("error_type", [RuntimeError, SQLAlchemyError])
+def test_hydration_failure_rolls_back_after_the_committed_mutation(error_type):
     paper = SimpleNamespace(id=1, source="external", source_url="https://old.example")
     db = _SequenceSession([paper, None])
 
     def fail_hydration(_paper_id, include_resources=False):
         db.events.append(("hydrate", include_resources))
-        raise SQLAlchemyError("hydrate failed")
+        raise error_type("hydrate failed")
 
     with pytest.raises(
         DatabaseError,
@@ -218,6 +219,26 @@ def test_hydration_failure_rolls_back_after_the_committed_mutation():
             1, "https://new.example/paper"
         )
     assert db.events == ["commit", ("hydrate", True), "rollback"]
+
+
+def test_unchanged_source_hydration_failure_uses_the_same_error_boundary():
+    paper = SimpleNamespace(
+        id=1, source="external", source_url="https://example.com/paper"
+    )
+    db = _SequenceSession([paper])
+
+    def fail_hydration(_paper_id, include_resources=False):
+        raise RuntimeError("hydrate failed")
+
+    with pytest.raises(
+        DatabaseError,
+        match="^Error updating paper source URL: hydrate failed$",
+    ):
+        PaperAssociationService(db, fail_hydration).update_source_url(
+            1, "https://example.com/paper", commit=False
+        )
+
+    assert db.events == []
 
 
 ASSOCIATION_CALLS = [
