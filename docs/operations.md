@@ -370,8 +370,9 @@ uv run --env-file backend/keys.env python \
 
 ## Autonomous HF daily-paper curation
 
-The daily reconciler runs at `02:27 UTC` through the installed immutable-release
-launcher:
+The reconciler runs hourly at minute `27` through the installed immutable-release
+launcher. Besides discovering new daily-paper cohorts, each pass requeues papers
+whose canonical Markdown has appeared since an earlier curation attempt:
 
 ```bash
 sudo pwc-cron enqueue_hf_daily_paper_curation --dry-run

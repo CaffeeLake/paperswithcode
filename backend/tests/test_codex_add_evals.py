@@ -235,7 +235,7 @@ def test_awaiting_markdown_is_not_counted_as_a_curation_failure():
     row = SimpleNamespace(
         trigger="hf-daily-cron",
         status="failed",
-        error="Awaiting paper Markdown extraction: 2608.00042",
+        error="[awaiting_markdown] Awaiting paper Markdown extraction: 2608.00042",
     )
 
     class Query:

@@ -665,7 +665,7 @@ def main() -> None:
     result_key = f"_jobs/results/{run_id}/{shard_id}.jsonl"
     progress_key = f"_jobs/progress/{run_id}/{shard_id}.json"
 
-    def sync(keys: list[str]) -> None:
+    def upload_checkpoint(keys: list[str]) -> None:
         if store:
             store.upload(keys)
 
@@ -696,7 +696,7 @@ def main() -> None:
             indent=2,
         ).encode(),
     )
-    sync([progress_key])
+    upload_checkpoint([progress_key])
     try:
         if not args.stub_root:
             server = start_vllm()
@@ -715,7 +715,7 @@ def main() -> None:
                 indent=2,
             ).encode(),
         )
-        sync([progress_key])
+        upload_checkpoint([progress_key])
         for entry in entries:
             if entry["arxiv_id"] in completed:
                 continue
@@ -812,7 +812,7 @@ def main() -> None:
                     str(key) for key in result.get("asset_keys") or []
                 )
                 published_keys.append(str(entry["output_key"]))
-            sync(published_keys)
+            upload_checkpoint(published_keys)
     except Exception as error:
         fatal_error = str(error)[:1000]
         raise
@@ -843,7 +843,7 @@ def main() -> None:
                 indent=2,
             ).encode(),
         )
-        sync([progress_key])
+        upload_checkpoint([progress_key])
         if temporary is not None:
             temporary.cleanup()
 

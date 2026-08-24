@@ -33,6 +33,7 @@ from backend.models.database import (
 )
 from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
 from backend.utils.urls import get_paper_route_identifier
+from jobs.curation_failure_codes import AWAITING_MARKDOWN, parse_failure_code
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ CURATOR_BOOTSTRAP_PATHS = (
     ".agents/skills/enrich-paper/SKILL.md",
     ".agents/skills/remote-paper-curation/SKILL.md",
     "jobs/curation_api.py",
+    "jobs/curation_failure_codes.py",
     "jobs/schemas/curation_proposal.schema.json",
     "jobs/url_preflight.py",
 )
@@ -121,6 +123,16 @@ def _now() -> datetime:
 
 def _is_callback_validation_rejection(row: PaperCurationJob) -> bool:
     return (getattr(row, "validation_summary", None) or {}).get("status") == "rejected"
+
+
+def _is_source_evidence_failure(error: str | None) -> bool:
+    if parse_failure_code(error) == AWAITING_MARKDOWN:
+        return True
+    lowered = (error or "").lower()
+    return any(
+        value in lowered
+        for value in ("source evidence", "insufficient evidence", "unavailable source")
+    )
 
 
 def _curator_skill_digest(kind: JobKind) -> str:
@@ -1066,15 +1078,7 @@ class CodexPaperJobService:
         state = db.get(PaperCurationSchedulerState, 1)
         if state is None:
             return
-        source_failure = any(
-            value in (row.error or "").lower()
-            for value in (
-                "source evidence",
-                "insufficient evidence",
-                "unavailable source",
-                "awaiting paper markdown",
-            )
-        )
+        source_failure = _is_source_evidence_failure(row.error)
         if row.status == "failed" and not source_failure:
             state.consecutive_apply_failures += 1
         elif row.status == "completed":
@@ -1102,16 +1106,7 @@ class CodexPaperJobService:
         counted_failures = [
             item
             for item in recent
-            if item.status == "failed"
-            and not any(
-                value in (item.error or "").lower()
-                for value in (
-                    "source evidence",
-                    "insufficient evidence",
-                    "unavailable source",
-                    "awaiting paper markdown",
-                )
-            )
+            if item.status == "failed" and not _is_source_evidence_failure(item.error)
         ]
         if len(recent) == 25 and len(counted_failures) / 25 > 0.20:
             condition = "terminal_failure_rate"
@@ -1165,7 +1160,7 @@ class CodexPaperJobService:
             workflow.finished_at = _now()
             self._release_canary_backlog(db, workflow.policy_version, settings)
         elif row.status == "failed":
-            if (row.error or "").startswith("Awaiting paper Markdown extraction:"):
+            if parse_failure_code(row.error) == AWAITING_MARKDOWN:
                 workflow.status = "deferred"
                 workflow.deferred_reason = "awaiting_markdown"
                 workflow.error = None

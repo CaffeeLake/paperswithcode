@@ -608,21 +608,27 @@ def test_mountless_recovery_does_not_require_a_volume_probe():
     assert result["storage_transport"] == "bucket_api"
 
 
-def test_full_reconciliation_recovers_mount_failure_before_scanning_catalog():
+def test_full_reconciliation_recovers_mount_failure_and_fills_remaining_slots():
     job = _scheduler(execute=True, confirm=True)
     job._recover_mount_failures = Mock(
         return_value={
             "operation": "mount_recovery",
             "storage_transport": "bucket_api",
             "launched_replacements": 1,
+            "replacement_attempts": [{"provider_job_id": "replacement-1"}],
         }
     )
-    job._papers = Mock(side_effect=AssertionError("catalog scan must wait"))
+    job._papers = Mock(return_value=[])
+    job._existing_paths = Mock(return_value=set())
+    job._copy_upstream = Mock(return_value=([], 0))
+    job._status_records = Mock(return_value={})
+    job._launch = Mock(return_value=[])
 
     job.run()
 
     job._recover_mount_failures.assert_called_once_with()
-    job._papers.assert_not_called()
+    job._papers.assert_called_once_with()
+    job._launch.assert_called_once_with([], additional_active_job_ids={"replacement-1"})
 
 
 def test_hourly_workflow_refills_recent_and_full_markdown_lanes():

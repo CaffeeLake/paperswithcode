@@ -678,13 +678,23 @@ class PaperMarkdownBackfillJob(CronJobBase):
             "budget": budget,
         }
 
-    def _launch(self, candidates: list[dict[str, object]]) -> list[dict[str, str]]:
+    def _launch(
+        self,
+        candidates: list[dict[str, object]],
+        *,
+        additional_active_job_ids: set[str] | None = None,
+    ) -> list[dict[str, str]]:
         remote_jobs = self._remote_jobs()
         active = self._active_jobs(remote_jobs)
         concurrency = self.profile.concurrency
         if self.max_jobs is not None:
             concurrency = min(concurrency, self.max_jobs)
-        available_slots = max(0, concurrency - len(active))
+        visible_ids = {
+            str(getattr(job, "id", None) or getattr(job, "job_id", ""))
+            for job in active
+        }
+        unlisted_active = len((additional_active_job_ids or set()) - visible_ids)
+        available_slots = max(0, concurrency - len(active) - unlisted_active)
         batch_size = self.profile.max_papers
         if self.batch_size is not None:
             maximum = self.profile.max_papers
@@ -813,11 +823,14 @@ class PaperMarkdownBackfillJob(CronJobBase):
             result = self._recover_mount_failures()
             self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(result))
             return
+        additional_active_job_ids: set[str] = set()
         if self.full and self.should_execute:
             recovery = self._recover_mount_failures()
-            if int(recovery["launched_replacements"]):
-                self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(recovery))
-                return
+            additional_active_job_ids = {
+                str(attempt["provider_job_id"])
+                for attempt in recovery.get("replacement_attempts", [])
+                if attempt.get("provider_job_id")
+            }
         papers = self._papers()
         paths = [str(item["output_key"]) for item in papers]
         canonical = self._existing_paths(
@@ -854,7 +867,12 @@ class PaperMarkdownBackfillJob(CronJobBase):
             if papers
             else 100.0,
         }
-        launched = self._launch(candidates)
+        if additional_active_job_ids:
+            launched = self._launch(
+                candidates, additional_active_job_ids=additional_active_job_ids
+            )
+        else:
+            launched = self._launch(candidates)
         retryable_due = sum(
             disposition == "retryable_due" for disposition in dispositions.values()
         )

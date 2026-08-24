@@ -100,7 +100,7 @@ def test_normalize_candidate_ignores_malformed_markdown_link_url():
     )
 
 
-def test_preflight_reuses_complete_importer_links_without_refetching_layers(
+def test_preflight_reuses_complete_importer_links_but_verifies_markdown(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -109,19 +109,23 @@ def test_preflight_reuses_complete_importer_links_without_refetching_layers(
         lambda *_args, **_kwargs: _HeadResponse(),
     )
 
-    def unexpected_fetch(*_args):
-        raise AssertionError(
-            "complete stored HF metadata must skip HF Markdown and PDF"
-        )
+    fetched = []
 
-    result = url_preflight.extract_candidates(_context(), fetch=unexpected_fetch)
+    def fetch(url, _limit):
+        fetched.append(url)
+        assert url.endswith(".md")
+        return b"# Paper\n", url
+
+    result = url_preflight.extract_candidates(_context(), fetch=fetch)
 
     assert result["complete"] is True
+    assert result["markdown_available"] is True
+    assert fetched == ["https://huggingface.co/papers/2608.00042.md"]
     assert {item["kind"] for item in result["candidates"]} == {"github", "project_page"}
     assert all("hf_api" in item["source_layers"][0] for item in result["candidates"])
 
 
-def test_preflight_fetches_only_missing_metadata_layer_when_hf_detail_completes_it(
+def test_preflight_still_requires_markdown_when_hf_detail_completes_links(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -133,19 +137,23 @@ def test_preflight_fetches_only_missing_metadata_layer_when_hf_detail_completes_
 
     def fetch(url: str, _limit: int):
         fetched.append(url)
-        assert "/api/papers/" in url
-        return json.dumps(
-            {
-                "githubRepo": "https://github.com/example/project",
-                "projectPage": "https://example.github.io/project",
-            }
-        ).encode(), url
+        if "/api/papers/" in url:
+            return json.dumps(
+                {
+                    "githubRepo": "https://github.com/example/project",
+                    "projectPage": "https://example.github.io/project",
+                }
+            ).encode(), url
+        assert url.endswith(".md")
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
 
     result = url_preflight.extract_candidates(_context(project_page=False), fetch=fetch)
 
-    assert result["complete"] is True
-    assert result["awaiting_markdown"] is False
-    assert fetched == ["https://huggingface.co/api/papers/2608.00042"]
+    assert result["awaiting_markdown"] is True
+    assert fetched == [
+        "https://huggingface.co/api/papers/2608.00042",
+        "https://huggingface.co/papers/2608.00042.md",
+    ]
     assert result["sources"][0]["sha256"]
 
 
@@ -389,8 +397,12 @@ def test_hourly_reconciliation_requeues_markdown_ready_papers():
 def test_canary_gate_excludes_durable_deferred_overflow():
     completed = SimpleNamespace(status="completed", deferred_reason=None)
     deferred = SimpleNamespace(status="deferred", deferred_reason="canary_cap")
+    awaiting = SimpleNamespace(status="deferred", deferred_reason="awaiting_markdown")
 
-    assert _dispatched_canary_workflows([completed, deferred]) == [completed]
+    assert _dispatched_canary_workflows([completed, deferred, awaiting]) == [
+        completed,
+        awaiting,
+    ]
 
 
 def test_scheduled_job_retry_uses_the_shared_durable_queue():
@@ -443,7 +455,7 @@ def test_missing_markdown_defers_workflow_without_immediate_retry():
     row = SimpleNamespace(
         parent_workflow_id=workflow_id,
         status="failed",
-        error="Awaiting paper Markdown extraction: 2608.00042",
+        error="[awaiting_markdown] Awaiting paper Markdown extraction: 2608.00042",
         kind="enrich-paper",
     )
 
@@ -533,6 +545,68 @@ def test_markdown_reconciliation_requeues_only_ready_deferred_workflow():
     assert ready.deferred_reason is None
     assert ready.error is None
     assert jobs.enqueued[0]["kind"] == "enrich-paper"
+
+
+def test_markdown_reconciliation_rotates_unavailable_workflows():
+    unavailable = SimpleNamespace(
+        id=uuid.uuid4(),
+        paper_id=41,
+        cohort_date=date(2026, 8, 23),
+        policy_version="daily-v1",
+        status="deferred",
+        deferred_reason="awaiting_markdown",
+        error=None,
+        enrich_satisfied_by_job_id=None,
+        cohort_order=0,
+        created_at=datetime(2026, 8, 23, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 23, tzinfo=UTC),
+    )
+    ready = SimpleNamespace(
+        **{
+            **vars(unavailable),
+            "id": uuid.uuid4(),
+            "paper_id": 42,
+            "cohort_order": 1,
+        }
+    )
+    papers = {
+        41: SimpleNamespace(id=41, source="arxiv", arxiv_id="2608.00041"),
+        42: SimpleNamespace(
+            id=42, source="arxiv", arxiv_id="2608.00042", title="Ready paper"
+        ),
+    }
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _limit):
+            return self
+
+        def all(self):
+            return [unavailable, ready]
+
+    class Database:
+        def query(self, _model):
+            return Query()
+
+        def get(self, _model, key):
+            return papers[key]
+
+    jobs = SimpleNamespace(enqueue=lambda *_args, **_kwargs: None)
+    service = HFDailyCurationService(
+        Database(),
+        SimpleNamespace(),
+        job_service=jobs,
+        markdown_available=lambda paper, _settings: paper.id == 42,
+    )
+
+    checked_at = datetime.now(UTC)
+    assert service.release_awaiting_markdown(1) == 1
+    assert unavailable.updated_at >= checked_at
 
 
 def test_callback_validation_rejection_is_not_classified_as_transient():

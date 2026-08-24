@@ -3,7 +3,6 @@ name: Cron - Paper Markdown Backfill
 on:
   schedule:
     - cron: "17 * * * *"
-    - cron: "43 2 * * *"
   workflow_dispatch:
     inputs:
       full:

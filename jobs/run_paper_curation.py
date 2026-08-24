@@ -34,6 +34,7 @@ BOOTSTRAP_PATHS = {
     ".agents/skills/enrich-paper/SKILL.md",
     ".agents/skills/remote-paper-curation/SKILL.md",
     "jobs/curation_api.py",
+    "jobs/curation_failure_codes.py",
     "jobs/schemas/curation_proposal.schema.json",
     "jobs/url_preflight.py",
 }
@@ -220,9 +221,18 @@ def main() -> int:
             )
             preflight = json.loads(URL_CANDIDATES.read_text(encoding="utf-8"))
             if preflight.get("awaiting_markdown"):
+                sys.path.insert(0, str(WORKTREE))
+                from jobs.curation_failure_codes import (  # noqa: PLC0415
+                    AWAITING_MARKDOWN,
+                    format_failure,
+                )
+
                 raise SourceEvidenceIncomplete(
-                    "Awaiting paper Markdown extraction: "
-                    + str(context["paper"].get("arxiv_id") or "unknown")
+                    format_failure(
+                        AWAITING_MARKDOWN,
+                        "Awaiting paper Markdown extraction: "
+                        + str(context["paper"].get("arxiv_id") or "unknown"),
+                    )
                 )
             if not preflight.get("complete"):
                 failed_sources = sorted(

@@ -44,7 +44,11 @@ def _dispatched_canary_workflows(
     workflows: list[PaperCurationWorkflow],
 ) -> list[PaperCurationWorkflow]:
     """Exclude durable deferred overflow from the initial canary gate."""
-    return [workflow for workflow in workflows if workflow.deferred_reason is None]
+    return [
+        workflow
+        for workflow in workflows
+        if workflow.deferred_reason not in {"canary_cap", "queue_cap"}
+    ]
 
 
 def fetch_hf_daily_cohort(cohort_date: date) -> list[str]:
@@ -102,6 +106,7 @@ class HFDailyCurationService:
                 PaperCurationWorkflow.deferred_reason == "awaiting_markdown",
             )
             .order_by(
+                PaperCurationWorkflow.updated_at,
                 PaperCurationWorkflow.cohort_date,
                 PaperCurationWorkflow.cohort_order,
                 PaperCurationWorkflow.created_at,
@@ -119,6 +124,9 @@ class HFDailyCurationService:
                 workflow.error = "Paper was deleted while awaiting Markdown"
                 continue
             if not self.markdown_available(paper, self.settings):
+                # Rotate checked-but-unavailable rows behind the rest of the
+                # bounded scan so a large backlog cannot starve ready papers.
+                workflow.updated_at = datetime.now(UTC)
                 continue
             self.job_service.enqueue(
                 self.db,
@@ -345,18 +353,7 @@ class HFDailyCurationService:
             .count()
         )
         capacity = max(0, self.settings.codex_curation_queue_depth - queue_count)
-        if state.canary_released:
-            canary_capacity = capacity
-        elif existing_canary:
-            # Never grow the first canary cohort on a later reconciliation.
-            canary_capacity = 0
-        else:
-            canary_capacity = self.settings.codex_curation_canary_limit
-        create_capacity = min(
-            capacity,
-            canary_capacity,
-            paper_limit or self.settings.codex_curation_reconcile_limit,
-        )
+        reconcile_limit = paper_limit or self.settings.codex_curation_reconcile_limit
         summary = {
             "discovered": len(discovered),
             "created": 0,
@@ -367,9 +364,25 @@ class HFDailyCurationService:
             "released_markdown_ready": 0,
         }
 
-        markdown_ready = self.release_awaiting_markdown(create_capacity)
-        create_capacity -= markdown_ready
+        # Awaiting workflows already belong to the canary. Releasing one uses
+        # queue capacity, but must not be blocked by the new-canary gate.
+        markdown_ready = self.release_awaiting_markdown(min(capacity, reconcile_limit))
+        capacity -= markdown_ready
+        reconcile_limit -= markdown_ready
         summary["released_markdown_ready"] = markdown_ready
+
+        if state.canary_released:
+            canary_capacity = capacity
+        elif existing_canary:
+            # Never grow the first canary cohort on a later reconciliation.
+            canary_capacity = 0
+        else:
+            canary_capacity = self.settings.codex_curation_canary_limit
+        create_capacity = min(
+            capacity,
+            canary_capacity,
+            reconcile_limit,
+        )
 
         deferred = deferred_workflows_for_release(self.db, create_capacity)
         for workflow in deferred:

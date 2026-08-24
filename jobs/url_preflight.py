@@ -257,7 +257,7 @@ def extract_candidates(
         except Exception as exc:
             errors.append({"source": "hf_api", "error": type(exc).__name__})
         check_liveness()
-    if arxiv_id and not (has_live("github") and has_live("project_page")):
+    if arxiv_id:
         markdown_attempted = True
         try:
             url = f"https://huggingface.co/papers/{arxiv_id}.md"
@@ -270,7 +270,7 @@ def extract_candidates(
             errors.append({"source": "hf_markdown", "error": type(exc).__name__})
         check_liveness()
     ocr_markdown_available = False
-    if arxiv_id and not (has_live("github") and has_live("project_page")):
+    if arxiv_id and not hf_markdown_available:
         token = os.environ.get(OCR_MARKDOWN_TOKEN_ENV)
         if token:
             try:
