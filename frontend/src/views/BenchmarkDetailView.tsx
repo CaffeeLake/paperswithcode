@@ -332,16 +332,22 @@ const BenchmarkDetailView: React.FC = () => {
     return orderedMetrics.slice(0, MAX_METRIC_COLUMNS);
   }, [orderedMetrics, activeMetric]);
 
+  const displayedLeaderboardEvals = parameterBound !== undefined
+    ? mergedParameterFilteredEvals
+    : mergedTaskEvals;
   const { points: chartPoints, sota, sotaModel } = useMemo(
-    () => computeSeries(mergedTaskEvals, activeMetric, arrow),
-    [mergedTaskEvals, activeMetric, arrow],
+    () => computeSeries(displayedLeaderboardEvals, activeMetric, arrow),
+    [displayedLeaderboardEvals, activeMetric, arrow],
   );
   // Dataset detail embeds a tiny, HTTP-cacheable summary when the URL supplies
   // task context. Render it immediately while the full leaderboard loads, then
   // reconcile with the client-computed result once all dependencies resolve.
-  const initialSummary = datasetQ.data?.leaderboard_summary;
+  const initialSummary = parameterBound === undefined
+    ? datasetQ.data?.leaderboard_summary
+    : undefined;
   const isFullSummaryReady =
     evalsQ.isSuccess &&
+    (parameterBound === undefined || parameterFilteredEvalsQ.isSuccess) &&
     datasetTasksQ.isSuccess &&
     directionsQ.isSuccess &&
     (!currentTaskId || leaderboardMetricsQ.isSuccess);
@@ -350,7 +356,10 @@ const BenchmarkDetailView: React.FC = () => {
   const displayedSotaModel = isFullSummaryReady
     ? sotaModel
     : initialSummary?.model_name;
-  const isSummaryLoading = !isFullSummaryReady && !initialSummary;
+  const isSummaryLoading =
+    !isFullSummaryReady &&
+    !initialSummary &&
+    !(parameterBound !== undefined && parameterFilteredEvalsQ.isError);
 
   // Bring the highlighted leaderboard row into view once the evaluations
   // query resolves. Guarded by a ref so subsequent metric switches don't
@@ -407,7 +416,7 @@ const BenchmarkDetailView: React.FC = () => {
   // F1-primary benchmark, for example), we re-rank in-client by the actual
   // value. Rows that don't carry the active metric drop to the end, ordered
   // by their stored rank as a deterministic tie-breaker.
-  const tableRows = parameterBound ? mergedParameterFilteredEvals : mergedTaskEvals;
+  const tableRows = displayedLeaderboardEvals;
   const sortedRows = tableRows.slice().sort((a, b) => {
     const va = parseMetricValue(a.metrics?.[activeMetric]);
     const vb = parseMetricValue(b.metrics?.[activeMetric]);
@@ -421,6 +430,10 @@ const BenchmarkDetailView: React.FC = () => {
   const showHarness = Boolean(dataset.supports_harness);
   const parameterCoverage = parameterCoverageQ.data;
   const hasParameterMetadata = (parameterCoverage?.parameter_coverage_known || 0) > 0;
+  const parameterFilterHasMatches = (bound: number | undefined) =>
+    bound === undefined || mergedTaskEvals.some(
+      (evaluation) => evaluation.parameterCount !== null && evaluation.parameterCount < bound,
+    );
   const setParameterFilter = (bound: number | undefined) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -616,7 +629,7 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
-        {chartPoints.filter((p) => p.isSota).length >= 2 && (
+        {chartPoints.length > 0 && (
           <div className="bm-card" ref={chartCardRef}>
             <div className="bm-card-screenshot-header" aria-hidden="true">
               <div className="bm-card-screenshot-title">
@@ -666,7 +679,7 @@ const BenchmarkDetailView: React.FC = () => {
             </div>
             <div className="bm-chart-foot">
               <span className="legend-dot"></span>
-              All models over time · highlighted dots track the running best · hover for the model · click to open the paper
+              {parameterBound === undefined ? "All models" : "Filtered models"} over time · highlighted dots track the running best · hover for the model · click to open the paper
             </div>
           </div>
         )}
@@ -753,32 +766,36 @@ const BenchmarkDetailView: React.FC = () => {
                 />
                 <span className="bm-closed-toggle-label">Closed-source</span>
               </label>
-              {hasParameterMetadata ? (
-                <label className="bm-view-select">
-                  <span className="bm-view-select-label">Parameters</span>
-                  <select
-                    value={parameterBound === undefined ? "" : String(parameterBound)}
-                    onChange={(e) => setParameterFilter(parseParameterFilter(e.target.value || null))}
-                  >
-                    {PARAMETER_FILTERS.map((filter) => (
-                      <option
-                        key={filter.label}
-                        value={filter.maxParametersExclusive === undefined ? "" : filter.maxParametersExclusive}
-                      >
-                        {filter.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : parameterCoverageQ.isSuccess ? (
+              {!hasParameterMetadata && parameterCoverageQ.isSuccess ? (
                 <span className="bm-parameter-unavailable">Parameter metadata unavailable</span>
               ) : null}
               <CopyScreenshotButton targetRef={leaderboardCardRef} label="leaderboard" />
             </div>
           </div>
           {hasParameterMetadata && parameterCoverage && (
-            <div className="bm-parameter-coverage">
-              Parameters known for {parameterCoverage.parameter_coverage_known} of {parameterCoverage.parameter_coverage_total} entries
+            <div className="bm-parameter-filter-bar">
+              <span className="bm-parameter-filter-label">Parameters Size</span>
+              <div className="bm-parameter-filter-options" role="group" aria-label="Filter leaderboard by parameter size">
+                {PARAMETER_FILTERS.map((filter) => {
+                  const selected = parameterBound === filter.maxParametersExclusive;
+                  const disabled = !selected && !parameterFilterHasMatches(filter.maxParametersExclusive);
+                  return (
+                    <button
+                      key={filter.label}
+                      type="button"
+                      className={`bm-parameter-filter-option${selected ? " is-active" : ""}`}
+                      aria-pressed={selected}
+                      disabled={disabled}
+                      onClick={() => setParameterFilter(filter.maxParametersExclusive)}
+                    >
+                      {filter.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="bm-parameter-coverage">
+                Parameters known for {parameterCoverage.parameter_coverage_known} of {parameterCoverage.parameter_coverage_total} entries
+              </span>
             </div>
           )}
           {evalsQ.isLoading || (parameterBound !== undefined && parameterFilteredEvalsQ.isLoading) ? (
@@ -786,6 +803,17 @@ const BenchmarkDetailView: React.FC = () => {
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full mb-2" />
               ))}
+            </div>
+          ) : parameterBound !== undefined && parameterFilteredEvalsQ.isError ? (
+            <div className="no-results" role="alert">
+              Failed to filter evaluations by parameter size. {" "}
+              <button
+                type="button"
+                className="bm-empty-filter-action"
+                onClick={() => void parameterFilteredEvalsQ.refetch()}
+              >
+                Try again
+              </button>
             </div>
           ) : sortedRows.length === 0 ? (
             parameterBound ? (
