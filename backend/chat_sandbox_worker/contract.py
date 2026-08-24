@@ -39,11 +39,11 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-hYENlpbQgwkjlLj7yLg1oB"
+MODAL_IMAGE_ID = "im-rpwzdguzlPum3vVU7t2bWT"
 # Production uses a distinct immutable image because Modal image IDs are scoped
 # to their environment. It must be published by the restricted production
 # service identity.
-PRODUCTION_MODAL_IMAGE_ID = "im-GuAcPrBAD3rtMQDAqSe5wl"
+PRODUCTION_MODAL_IMAGE_ID = "im-8hwhQZQYi1qBr81MokK7qI"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
 POSTERLY_SOURCE_COMMIT = "b9f42e5578a49a27525a68f85376bb3bb25af86f"
