@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
+from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -33,6 +36,7 @@ from backend.utils.hf_daily_papers import fetch_hf_daily_papers
 from backend.utils.urls import get_paper_route_identifier
 
 FetchCohort = Callable[[date], list[str]]
+MarkdownAvailable = Callable[[Paper, Settings], bool]
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +57,24 @@ def fetch_hf_daily_cohort(cohort_date: date) -> list[str]:
     ]
 
 
+def paper_markdown_available(paper: Paper, settings: Settings) -> bool:
+    """Check the canonical bucket key without downloading paper content."""
+    arxiv_id = re.sub(r"v\d+$", "", paper.arxiv_id or "")
+    if not arxiv_id or not settings.hf_token:
+        return False
+    key = f"{arxiv_id[:4]}/{arxiv_id}.md"
+    try:
+        return bool(
+            HfApi(token=settings.hf_token).get_bucket_paths_info(
+                settings.paper_markdown_hf_bucket_id,
+                [key],
+                token=settings.hf_token,
+            )
+        )
+    except HfHubHTTPError:
+        return False
+
+
 class HFDailyCurationService:
     def __init__(
         self,
@@ -61,11 +83,68 @@ class HFDailyCurationService:
         *,
         fetch_cohort: FetchCohort = fetch_hf_daily_cohort,
         job_service: CodexPaperJobService = codex_paper_job_service,
+        markdown_available: MarkdownAvailable = paper_markdown_available,
     ) -> None:
         self.db = db
         self.settings = settings
         self.fetch_cohort = fetch_cohort
         self.job_service = job_service
+        self.markdown_available = markdown_available
+
+    def release_awaiting_markdown(self, capacity: int) -> int:
+        """Requeue deferred enrichment only after canonical Markdown exists."""
+        if capacity <= 0:
+            return 0
+        workflows = (
+            self.db.query(PaperCurationWorkflow)
+            .filter(
+                PaperCurationWorkflow.status == "deferred",
+                PaperCurationWorkflow.deferred_reason == "awaiting_markdown",
+            )
+            .order_by(
+                PaperCurationWorkflow.cohort_date,
+                PaperCurationWorkflow.cohort_order,
+                PaperCurationWorkflow.created_at,
+            )
+            .limit(max(100, capacity * 10))
+            .all()
+        )
+        released = 0
+        for workflow in workflows:
+            if released >= capacity:
+                break
+            paper = self.db.get(Paper, workflow.paper_id)
+            if paper is None:
+                workflow.status = "failed"
+                workflow.error = "Paper was deleted while awaiting Markdown"
+                continue
+            if not self.markdown_available(paper, self.settings):
+                continue
+            self.job_service.enqueue(
+                self.db,
+                kind="add-evals"
+                if workflow.enrich_satisfied_by_job_id
+                else "enrich-paper",
+                paper_id=paper.id,
+                paper_route=get_paper_route_identifier(
+                    paper.source, paper.arxiv_id, paper.id
+                ),
+                paper_title=paper.title,
+                requested_by="hf-daily-cron-markdown-ready",
+                settings=self.settings,
+                trigger="hf-daily-cron",
+                parent_workflow_id=workflow.id,
+                cohort_date=workflow.cohort_date,
+                policy_version=workflow.policy_version,
+                priority=50,
+                dispatch=False,
+                commit=False,
+            )
+            workflow.status = "queued"
+            workflow.deferred_reason = None
+            workflow.error = None
+            released += 1
+        return released
 
     def _state(self) -> PaperCurationSchedulerState:
         state = self.db.get(PaperCurationSchedulerState, 1)
@@ -285,7 +364,12 @@ class HFDailyCurationService:
             "deferred": 0,
             "missing_imports": [],
             "already_satisfied": 0,
+            "released_markdown_ready": 0,
         }
+
+        markdown_ready = self.release_awaiting_markdown(create_capacity)
+        create_capacity -= markdown_ready
+        summary["released_markdown_ready"] = markdown_ready
 
         deferred = deferred_workflows_for_release(self.db, create_capacity)
         for workflow in deferred:

@@ -172,6 +172,8 @@ export interface PaperMarkdownCoverage {
 
 export interface PaperMarkdownBudget {
   mode: "live" | "backfill";
+  cost_policy?: "metered" | "unmetered_hf";
+  budget_enforced?: boolean;
   window: "rolling_30_days" | "all_history";
   window_days: number | null;
   window_started_at: string | null;

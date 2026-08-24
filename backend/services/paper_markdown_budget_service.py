@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from backend.services.paper_markdown_job_profile import (
     PAPER_MARKDOWN_GPU_HOURLY_RATE_USD as _GPU_HOURLY_RATE_DECIMAL,
@@ -121,6 +121,7 @@ def paper_markdown_budget_snapshot(
     planned_jobs: int = 0,
     now: datetime | None = None,
     profile: PaperMarkdownJobProfile | None = None,
+    cost_policy: Literal["metered", "unmetered_hf"] = "metered",
 ) -> dict[str, Any]:
     """Return the same fail-closed accounting used to admit paid GPU work."""
     if mode not in {"live", "backfill"}:
@@ -196,12 +197,30 @@ def paper_markdown_budget_snapshot(
         ceiling_usd=ceiling_usd,
         reservation_per_job_usd=reservation_per_job,
     )
+    if cost_policy == "unmetered_hf":
+        decision = PaperMarkdownBudgetDecision(
+            desired_jobs=planned_jobs,
+            affordable_jobs=planned_jobs,
+            current_exposure_usd=current_exposure,
+            reservation_per_job_usd=reservation_per_job,
+            planned_reservation_usd=round(planned_jobs * reservation_per_job, 2),
+            projected_exposure_usd=round(
+                current_exposure + planned_jobs * reservation_per_job, 2
+            ),
+            ceiling_usd=ceiling_usd,
+            headroom_usd=max(0.0, ceiling_usd - current_exposure),
+            reason=None,
+        )
     next_release_at, next_release_usd = releases[0] if releases else (None, 0.0)
     next_admission_at = None
     current = Decimal(str(current_exposure)).quantize(_CENT)
     ceiling = Decimal(str(ceiling_usd)).quantize(_CENT)
     needed_reservation = Decimal(str(reservation_per_job)).quantize(_CENT)
-    if mode == "live" and current + needed_reservation > ceiling:
+    if (
+        cost_policy == "metered"
+        and mode == "live"
+        and current + needed_reservation > ceiling
+    ):
         cumulative_release = Decimal("0")
         for release_at, release_usd in releases:
             cumulative_release += Decimal(str(release_usd)).quantize(_CENT)
@@ -210,6 +229,8 @@ def paper_markdown_budget_snapshot(
                 break
     return {
         "mode": mode,
+        "cost_policy": cost_policy,
+        "budget_enforced": cost_policy == "metered",
         "window": "rolling_30_days" if mode == "live" else "all_history",
         "window_days": PAPER_MARKDOWN_LIVE_WINDOW_DAYS if mode == "live" else None,
         "window_started_at": _iso(cutoff) if mode == "live" else None,

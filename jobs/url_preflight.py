@@ -241,6 +241,8 @@ def extract_candidates(
     check_liveness()
 
     project_pages: list[str] = []
+    markdown_attempted = False
+    hf_markdown_available = False
     if arxiv_id and not (has_live("github") and has_live("project_page")):
         try:
             url = f"https://huggingface.co/api/papers/{arxiv_id}"
@@ -256,9 +258,11 @@ def extract_candidates(
             errors.append({"source": "hf_api", "error": type(exc).__name__})
         check_liveness()
     if arxiv_id and not (has_live("github") and has_live("project_page")):
+        markdown_attempted = True
         try:
             url = f"https://huggingface.co/papers/{arxiv_id}.md"
             markdown, final_url = fetch(url, MAX_TEXT_BYTES)
+            hf_markdown_available = True
             fetched("hf_markdown", url, markdown, final_url)
             for raw in _matches(markdown.decode("utf-8", "replace")):
                 add(raw, "hf_markdown")
@@ -345,6 +349,9 @@ def extract_candidates(
         "schema_version": "url-candidates.v1",
         "paper_id": paper["id"],
         "complete": not errors,
+        "markdown_available": hf_markdown_available or ocr_markdown_available,
+        "awaiting_markdown": markdown_attempted
+        and not (hf_markdown_available or ocr_markdown_available),
         "candidates": list(candidates.values())[:50],
         "sources": sources[:20],
         "errors": errors[:20],

@@ -57,8 +57,11 @@ function PaperMarkdownBudgetCard({
   budget: PaperMarkdownBudget;
   profile?: PaperMarkdownJobProfile;
 }) {
+  const unmetered = budget.cost_policy === "unmetered_hf" || budget.budget_enforced === false;
   const percent = Math.min(100, budget.current_exposure_usd / budget.ceiling_usd * 100);
-  const planLabel = budget.affordable_jobs === 0 && budget.desired_jobs > 0
+  const planLabel = unmetered
+    ? "Unmetered HF"
+    : budget.affordable_jobs === 0 && budget.desired_jobs > 0
     ? "No shard fits"
     : budget.affordable_jobs < budget.desired_jobs
       ? `${budget.affordable_jobs} of ${budget.desired_jobs} planned shards fit`
@@ -76,18 +79,20 @@ function PaperMarkdownBudgetCard({
           {planLabel}
         </Badge>
       </div>
-      <div role="progressbar" aria-label={`${title} current budget exposure`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} className="h-2 rounded bg-muted">
-        <div className="h-2 rounded bg-primary" style={{ width: `${percent}%` }} />
-      </div>
+      {!unmetered && (
+        <div role="progressbar" aria-label={`${title} current budget exposure`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} className="h-2 rounded bg-muted">
+          <div className="h-2 rounded bg-primary" style={{ width: `${percent}%` }} />
+        </div>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
         <div><span className="cron-label">Completed-job estimate</span><div>{formatUsd(budget.spent_usd)}</div></div>
         <div><span className="cron-label">Active reservations</span><div>{formatUsd(budget.active_reserved_usd)}</div></div>
         <div><span className="cron-label">Current exposure</span><div>{formatUsd(budget.current_exposure_usd)}</div></div>
-        <div><span className="cron-label">Cap / headroom</span><div>{formatUsd(budget.ceiling_usd)} / {formatUsd(budget.headroom_usd)}</div></div>
+        <div><span className="cron-label">Admission policy</span><div>{unmetered ? "HF-owned · no monetary gate" : `${formatUsd(budget.ceiling_usd)} cap · ${formatUsd(budget.headroom_usd)} headroom`}</div></div>
         <div><span className="cron-label">Affordable plan reserves</span><div>{formatUsd(budget.planned_reserved_usd)}</div></div>
         <div><span className="cron-label">Projected exposure</span><div>{formatUsd(budget.projected_usd)}</div></div>
         <div><span className="cron-label">Rate assumption</span><div>{formatUsd(budget.hourly_rate_usd)}/hour · {budget.reservation_hours_per_job}h</div></div>
-        <div><span className="cron-label">Next admission</span><div>{budget.next_admission_at ? formatCronDate(budget.next_admission_at) : budget.affordable_jobs > 0 ? "Now" : "No scheduled admission"}</div></div>
+        <div><span className="cron-label">Next admission</span><div>{unmetered ? "Now, subject to capacity" : budget.next_admission_at ? formatCronDate(budget.next_admission_at) : budget.affordable_jobs > 0 ? "Now" : "No scheduled admission"}</div></div>
         <div><span className="cron-label">Unknown terminal reserve</span><div>{formatUsd(budget.unknown_terminal_reservation_usd ?? 0)} · {(budget.unknown_terminal_reservation_count ?? 0).toLocaleString()} jobs</div></div>
       </div>
       {profile && (
@@ -96,7 +101,9 @@ function PaperMarkdownBudgetCard({
         </div>
       )}
       <p className="text-xs cron-muted">
-        Projected exposure is an admission-control estimate, not a provider invoice. Each launch reserves the full timeout until actual runtime is known.
+        {unmetered
+          ? "HF owns this workload, so monetary admission is disabled; concurrency and timeout limits still apply. Runtime cost remains an operational estimate."
+          : "Projected exposure is an admission-control estimate, not a provider invoice. Each launch reserves the full timeout until actual runtime is known."}
       </p>
     </div>
   );
@@ -353,8 +360,8 @@ function PaperMarkdownJobs({
         <>
           {monitor.budgets.live && monitor.budgets.backfill && (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-3">
-              <PaperMarkdownBudgetCard title="Live paper Markdown GPU budget" budget={monitor.budgets.live} profile={monitor.selected_profiles?.live} />
-              <PaperMarkdownBudgetCard title="Full backfill GPU budget" budget={monitor.budgets.backfill} profile={monitor.selected_profiles?.backfill} />
+              <PaperMarkdownBudgetCard title="Live paper Markdown GPU policy" budget={monitor.budgets.live} profile={monitor.selected_profiles?.live} />
+              <PaperMarkdownBudgetCard title="Full backfill GPU policy" budget={monitor.budgets.backfill} profile={monitor.selected_profiles?.backfill} />
             </div>
           )}
           <div className={`cron-message mb-3 ${(monitor.summary.unresolved_mount_failures ?? 0) > 0 ? "cron-message--error" : ""}`}>
@@ -422,6 +429,7 @@ export function CronJobCard({
   const hasDbMetrics = Boolean(job.db_metrics && Object.keys(job.db_metrics).length);
   const hasRemoteJobs = job.job_name === "paper_markdown_backfill";
   const livePaperMarkdownBudget = hasRemoteJobs ? paperMarkdownJobs?.budgets.live : undefined;
+  const livePaperMarkdownUnmetered = livePaperMarkdownBudget?.cost_policy === "unmetered_hf" || livePaperMarkdownBudget?.budget_enforced === false;
   const hasDetails = true;
 
   return (
@@ -454,7 +462,7 @@ export function CronJobCard({
               {job.diagnostics && <div className="cron-message cron-message--warning">{job.diagnostics}</div>}
               {livePaperMarkdownBudget && (
                 <div className={`cron-message ${livePaperMarkdownBudget.can_launch_planned ? "" : "cron-message--error"}`}>
-                  <strong>Live GPU budget:</strong> {formatUsd(livePaperMarkdownBudget.current_exposure_usd)} current / {formatUsd(livePaperMarkdownBudget.ceiling_usd)} cap · {livePaperMarkdownBudget.affordable_jobs} of {livePaperMarkdownBudget.desired_jobs} planned · projects {formatUsd(livePaperMarkdownBudget.projected_usd)} · rolling 30 days
+                  <strong>Live GPU policy:</strong> {livePaperMarkdownUnmetered ? "unmetered on HF" : `${formatUsd(livePaperMarkdownBudget.current_exposure_usd)} current / ${formatUsd(livePaperMarkdownBudget.ceiling_usd)} cap`} · {livePaperMarkdownBudget.affordable_jobs} of {livePaperMarkdownBudget.desired_jobs} planned{livePaperMarkdownUnmetered ? "" : ` · projects ${formatUsd(livePaperMarkdownBudget.projected_usd)} · rolling 30 days`}
                 </div>
               )}
             </div>

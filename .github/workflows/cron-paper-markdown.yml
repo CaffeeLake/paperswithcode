@@ -59,15 +59,18 @@ jobs:
             echo "paper_markdown_backfill is not activated in the production CRON allowlist"
             exit 0
           fi
-          REMOTE_COMMAND='sudo /usr/local/sbin/pwc-cron paper_markdown_backfill'
-          if [ "$SCHEDULE" = "43 2 * * *" ] || [ "$INPUT_FULL" = "true" ]; then
-            REMOTE_COMMAND="$REMOTE_COMMAND --full"
-          fi
-          if [ "$SCHEDULE" = "43 2 * * *" ] && [ "$BACKFILL_PAUSED" = "true" ]; then
-            echo "Scheduled full backfill dispatch is paused; running reconciliation dry."
-          elif [ "$INPUT_DRY_RUN" != "true" ]; then
+          REMOTE_COMMAND="sudo /usr/local/sbin/pwc-cron paper_markdown_backfill"
+          BACKFILL_COMMAND="$REMOTE_COMMAND --full"
+          if [ "$INPUT_DRY_RUN" != "true" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --execute --confirm"
+            if [ "$BACKFILL_PAUSED" != "true" ]; then
+              BACKFILL_COMMAND="$BACKFILL_COMMAND --execute --confirm"
+            fi
           fi
-          ssh -o StrictHostKeyChecking=yes \
-              "${VPS_USER}@${VPS_HOST}" \
-              "$REMOTE_COMMAND"
+          ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" "$REMOTE_COMMAND"
+          if [ -n "$SCHEDULE" ] || [ "$INPUT_FULL" = "true" ]; then
+            if [ "$BACKFILL_PAUSED" = "true" ]; then
+              echo "Scheduled full backfill dispatch is paused; running reconciliation dry."
+            fi
+            ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" "$BACKFILL_COMMAND"
+          fi

@@ -167,6 +167,71 @@ def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
     ]
 
 
+def test_bucket_worker_downloads_manifest_and_uploads_outputs_without_mount(
+    tmp_path, monkeypatch
+):
+    manifest_key = "_jobs/manifests/backfill-20260824T120000-12345678/00000.jsonl"
+    entry = {
+        "arxiv_id": "2608.00001",
+        "version": "v1",
+        "title": "Bucket transport",
+        "output_key": "2608/2608.00001.md",
+    }
+    remote = {manifest_key: (json.dumps(entry) + "\n").encode()}
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "2608.00001.md").write_text("A" * 180)
+
+    class FileSystem:
+        def __init__(self, *, token):
+            assert token == "secret"
+
+        def open(self, path, _mode, *, block_size=0):
+            assert block_size == 0
+            key = path.split("/test/paper-markdown/", 1)[1]
+            return BytesIO(remote[key])
+
+    class Api:
+        def __init__(self, *, token):
+            assert token == "secret"
+
+        def get_bucket_paths_info(self, _bucket, paths, **_kwargs):
+            return [SimpleNamespace(path=path) for path in paths if path in remote]
+
+        def batch_bucket_files(self, _bucket, *, add, **_kwargs):
+            for body, key in add:
+                remote[key] = body
+
+    monkeypatch.setattr(WORKER, "HfFileSystem", FileSystem)
+    monkeypatch.setattr(WORKER, "HfApi", Api)
+    monkeypatch.setenv("HF_TOKEN", "secret")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(WORKER_SCRIPT),
+            "--bucket-id",
+            "test/paper-markdown",
+            "--manifest-key",
+            manifest_key,
+            "--stub-root",
+            str(stub),
+            "--soft-deadline-seconds",
+            "60",
+        ],
+    )
+
+    WORKER.main()
+
+    assert remote[entry["output_key"]].startswith(b"Title: Bucket transport")
+    status = json.loads(remote["_jobs/status/2608.00001.json"])
+    assert status["status"] == "succeeded"
+    progress = json.loads(
+        remote["_jobs/progress/backfill-20260824T120000-12345678/00000.json"]
+    )
+    assert progress["status"] == "completed"
+
+
 def test_arxiv_identity_and_markdown_key():
     assert MODULE.normalize_arxiv_id("2607.24653v2") == "2607.24653"
     assert MODULE.markdown_key("2607.24653") == "2607/2607.24653.md"
@@ -190,6 +255,7 @@ def _scheduler(*, execute: bool, confirm: bool, full: bool = True):
             "paper_markdown_model_revision": "test-revision",
             "paper_markdown_max_pages": 30,
             "paper_markdown_paid_dispatch_enabled": False,
+            "paper_markdown_cost_policy": "metered",
             "hf_token": "test-token",
         },
     )()
@@ -267,7 +333,7 @@ def test_measured_profile_paid_dispatch_requires_explicit_gate(monkeypatch):
     )
 
 
-def test_launch_request_uses_the_shared_profile_and_mount_contract():
+def test_launch_request_uses_the_shared_profile_and_bucket_api_contract():
     job = _scheduler(execute=True, confirm=True, full=False)
     job.api = Mock()
     job.api.run_uv_job.return_value = SimpleNamespace(id="job-1")
@@ -286,9 +352,33 @@ def test_launch_request_uses_the_shared_profile_and_mount_contract():
     assert kwargs["labels"]["hard_timeout_seconds"] == str(
         job.profile.hard_timeout_seconds
     )
-    assert kwargs["volumes"][0].source == "test/paper-markdown"
-    assert kwargs["volumes"][0].mount_path == "/content"
-    assert kwargs["volumes"][0].read_only is False
+    assert kwargs["volumes"] == []
+    assert kwargs["script_args"][:4] == [
+        "--bucket-id",
+        "test/paper-markdown",
+        "--manifest-key",
+        "_jobs/manifests/live/00000.jsonl",
+    ]
+
+
+def test_unmetered_hf_dispatch_does_not_require_paid_gate(monkeypatch):
+    job = _scheduler(execute=True, confirm=True, full=False)
+    job.settings.paper_markdown_cost_policy = "unmetered_hf"
+    job.api = Mock()
+    job._persist_dispatch = Mock()
+    job._run_ocr_job = Mock(return_value=SimpleNamespace(id="job-1"))
+
+    def budget_decision(desired, _jobs):
+        job.budget_desired_jobs = desired
+        job.budget_affordable_jobs = desired
+        return {"affordable_jobs": desired}
+
+    monkeypatch.setattr(job, "_budget_decision", budget_decision)
+
+    launched = job._launch(_candidates(1))
+
+    assert len(launched) == 1
+    assert job.paid_authorization_required is False
 
 
 def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
@@ -491,7 +581,7 @@ def test_two_mount_failures_require_operator_ack_and_late_success_recovers(
     assert acknowledgement == 0
 
 
-def test_mount_recovery_fails_closed_without_recent_probe():
+def test_mountless_recovery_does_not_require_a_volume_probe():
     job = _scheduler(execute=True, confirm=True)
     job._remote_jobs = Mock(return_value=[])
     job._mount_recovery_candidates = Mock(
@@ -508,11 +598,49 @@ def test_mount_recovery_fails_closed_without_recent_probe():
             0,
         )
     )
-    job._latest_successful_mount_probe = Mock(return_value=None)
     job._budget_decision = Mock(return_value={"affordable_jobs": 1})
+    job._run_ocr_job = Mock(return_value=SimpleNamespace(id="replacement-1"))
+    job._persist_dispatch = Mock()
 
-    with pytest.raises(ValueError, match="requires a successful same-volume"):
-        job._recover_mount_failures()
+    result = job._recover_mount_failures()
+
+    assert result["launched_replacements"] == 1
+    assert result["storage_transport"] == "bucket_api"
+
+
+def test_full_reconciliation_recovers_mount_failure_before_scanning_catalog():
+    job = _scheduler(execute=True, confirm=True)
+    job._recover_mount_failures = Mock(
+        return_value={
+            "operation": "mount_recovery",
+            "storage_transport": "bucket_api",
+            "launched_replacements": 1,
+        }
+    )
+    job._papers = Mock(side_effect=AssertionError("catalog scan must wait"))
+
+    job.run()
+
+    job._recover_mount_failures.assert_called_once_with()
+    job._papers.assert_not_called()
+
+
+def test_hourly_workflow_refills_recent_and_full_markdown_lanes():
+    workflow = (WORKFLOWS / "cron-paper-markdown.yml").read_text()
+
+    assert (
+        'REMOTE_COMMAND="sudo /usr/local/sbin/pwc-cron paper_markdown_backfill"'
+        in workflow
+    )
+    assert 'BACKFILL_COMMAND="$REMOTE_COMMAND --full"' in workflow
+    assert (
+        'ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" "$REMOTE_COMMAND"'
+        in workflow
+    )
+    assert (
+        'ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" "$BACKFILL_COMMAND"'
+        in workflow
+    )
 
 
 def test_volume_probe_reads_writes_verifies_and_cleans_only_temporary_object(

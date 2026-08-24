@@ -942,6 +942,13 @@ class Settings(BaseSettings):
     )
     paper_markdown_incremental_monthly_budget_usd: float = Field(default=100.0, gt=0)
     paper_markdown_backfill_budget_usd: float = Field(default=750.0, gt=0)
+    paper_markdown_cost_policy: Literal["metered", "unmetered_hf"] = Field(
+        default="unmetered_hf",
+        description=(
+            "Use unmetered_hf for Hugging Face-owned Jobs that are not billed; "
+            "concurrency and timeout limits remain enforced."
+        ),
+    )
     paper_markdown_paid_dispatch_enabled: bool = Field(
         default=False,
         description=(

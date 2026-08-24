@@ -179,7 +179,8 @@ def deferred_workflows_for_release(
     if limit <= 0:
         return []
     query = db.query(PaperCurationWorkflow).filter(
-        PaperCurationWorkflow.status == "deferred"
+        PaperCurationWorkflow.status == "deferred",
+        PaperCurationWorkflow.deferred_reason.in_({"canary_cap", "queue_cap"}),
     )
     if policy_version is not None:
         query = query.filter(PaperCurationWorkflow.policy_version == policy_version)
@@ -1071,6 +1072,7 @@ class CodexPaperJobService:
                 "source evidence",
                 "insufficient evidence",
                 "unavailable source",
+                "awaiting paper markdown",
             )
         )
         if row.status == "failed" and not source_failure:
@@ -1107,6 +1109,7 @@ class CodexPaperJobService:
                     "source evidence",
                     "insufficient evidence",
                     "unavailable source",
+                    "awaiting paper markdown",
                 )
             )
         ]
@@ -1162,6 +1165,13 @@ class CodexPaperJobService:
             workflow.finished_at = _now()
             self._release_canary_backlog(db, workflow.policy_version, settings)
         elif row.status == "failed":
+            if (row.error or "").startswith("Awaiting paper Markdown extraction:"):
+                workflow.status = "deferred"
+                workflow.deferred_reason = "awaiting_markdown"
+                workflow.error = None
+                workflow.finished_at = None
+                db.commit()
+                return
             if (
                 row.retry_of_id is None
                 and not _is_callback_validation_rejection(row)

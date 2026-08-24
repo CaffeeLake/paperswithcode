@@ -114,6 +114,8 @@ describe("CronJobCard health axes", () => {
   it("explains paper Markdown spend, reservations, and rolling window", () => {
     const budget = {
       mode: "live" as const,
+      cost_policy: "unmetered_hf" as const,
+      budget_enforced: false,
       window: "rolling_30_days" as const,
       window_days: 30,
       window_started_at: "2026-07-18T12:00:00Z",
@@ -122,14 +124,14 @@ describe("CronJobCard health axes", () => {
       spent_usd: 86.73,
       active_reserved_usd: 0,
       desired_jobs: 1,
-      affordable_jobs: 0,
-      planned_jobs: 0,
-      planned_reserved_usd: 0,
+      affordable_jobs: 1,
+      planned_jobs: 1,
+      planned_reserved_usd: 12.6,
       current_exposure_usd: 86.73,
-      projected_usd: 86.73,
+      projected_usd: 99.33,
       ceiling_usd: 100,
       headroom_usd: 13.27,
-      can_launch_planned: false,
+      can_launch_planned: true,
       hourly_rate_usd: 1.8,
       reservation_hours_per_job: 12,
       reservation_per_job_usd: 21.6,
@@ -197,10 +199,10 @@ describe("CronJobCard health axes", () => {
           next_release_usd: 0,
           ceiling_usd: 750,
           desired_jobs: 4,
-          affordable_jobs: 3,
-          planned_jobs: 3,
-          planned_reserved_usd: 64.8,
-          projected_usd: 151.53,
+          affordable_jobs: 4,
+          planned_jobs: 4,
+          planned_reserved_usd: 50.4,
+          projected_usd: 137.13,
           can_launch_planned: true,
         },
       },
@@ -216,14 +218,13 @@ describe("CronJobCard health axes", () => {
     );
 
     expect(screen.getByText("Rolling 30-day window")).toBeInTheDocument();
-    expect(screen.getByText("No shard fits")).toBeInTheDocument();
-    expect(screen.getByText("3 of 4 planned shards fit")).toBeInTheDocument();
-    expect(screen.getByText("Live GPU budget:").parentElement).toHaveTextContent("$86.73 current / $100.00 cap · 0 of 1 planned · projects $86.73");
+    expect(screen.getAllByText("Unmetered HF")).toHaveLength(2);
+    expect(screen.getByText("Live GPU policy:").parentElement).toHaveTextContent("unmetered on HF · 1 of 1 planned");
     expect(screen.getByText("All history · no automatic reset")).toBeInTheDocument();
     expect(screen.getByText("live-v1").parentElement).toHaveTextContent("max 50 papers · hard 6.0h · soft 5.5h");
     expect(screen.getByText("Logical shard health:").parentElement).toHaveTextContent("6 logical shards / 7 provider attempts · 1 recovered mount failures · 0 unresolved");
     expect(screen.getAllByText("Next admission")).toHaveLength(2);
-    expect(screen.getAllByText(/not a provider invoice/i)).toHaveLength(2);
+    expect(screen.getAllByText(/monetary admission is disabled/i)).toHaveLength(2);
     expect(
       screen.getByText(/unresolved image references omitted after final retry/),
     ).toHaveTextContent("2 unresolved image references omitted after final retry");

@@ -21,6 +21,7 @@ from backend.models.database import (
     Dataset,
     Metric,
     Paper,
+    PaperCurationWorkflow,
     Task,
     TaskDataset,
 )
@@ -143,6 +144,7 @@ def test_preflight_fetches_only_missing_metadata_layer_when_hf_detail_completes_
     result = url_preflight.extract_candidates(_context(project_page=False), fetch=fetch)
 
     assert result["complete"] is True
+    assert result["awaiting_markdown"] is False
     assert fetched == ["https://huggingface.co/api/papers/2608.00042"]
     assert result["sources"][0]["sha256"]
 
@@ -222,6 +224,30 @@ def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
     }
     assert not result["errors"]
     assert not any("/pdf/" in url for url in fetched)
+
+
+def test_preflight_marks_missing_public_and_ocr_markdown_as_awaiting(monkeypatch):
+    monkeypatch.setenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV, "hf-test")
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+
+    def unavailable(url: str, _limit: int):
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+
+    def unavailable_ocr(*_args, **_kwargs):
+        raise urllib.error.HTTPError("bucket", 404, "not found", {}, None)
+
+    result = url_preflight.extract_candidates(
+        _context(project_page=False),
+        fetch=unavailable,
+        fetch_ocr_markdown=unavailable_ocr,
+    )
+
+    assert result["awaiting_markdown"] is True
+    assert result["markdown_available"] is False
 
 
 def test_fetch_ocr_markdown_uses_authenticated_bucket_download(monkeypatch):
@@ -352,11 +378,11 @@ def test_trace_json_keeps_gap_reasoning_first_with_deterministic_nested_keys():
     assert '"assessment":{"confidence":"high","why":"reusable"}' in encoded
 
 
-def test_daily_schedule_avoids_the_organization_sync_minute():
+def test_hourly_reconciliation_requeues_markdown_ready_papers():
     workflow = Path(
         ".github/workflows/cron-enqueue-hf-daily-paper-curation.yml"
     ).read_text()
-    assert 'cron: "27 2 * * *"' in workflow
+    assert 'cron: "27 * * * *"' in workflow
     assert 'cron: "20 2 * * *"' not in workflow
 
 
@@ -403,6 +429,110 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
     ).retry_scheduled_job(job_id)
 
     assert result == serialized
+
+
+def test_missing_markdown_defers_workflow_without_immediate_retry():
+    workflow_id = uuid.uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        status="running",
+        deferred_reason=None,
+        error="old",
+        finished_at=datetime.now(UTC),
+    )
+    row = SimpleNamespace(
+        parent_workflow_id=workflow_id,
+        status="failed",
+        error="Awaiting paper Markdown extraction: 2608.00042",
+        kind="enrich-paper",
+    )
+
+    class Database:
+        def get(self, model, key):
+            assert model is PaperCurationWorkflow
+            return workflow if key == workflow_id else None
+
+        def commit(self):
+            return None
+
+    service = CodexPaperJobService()
+    service.enqueue = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("awaiting Markdown must not retry immediately")
+    )
+
+    service._advance_workflow(Database(), row, SimpleNamespace())
+
+    assert workflow.status == "deferred"
+    assert workflow.deferred_reason == "awaiting_markdown"
+    assert workflow.error is None
+    assert workflow.finished_at is None
+
+
+def test_markdown_reconciliation_requeues_only_ready_deferred_workflow():
+    ready = SimpleNamespace(
+        id=uuid.uuid4(),
+        paper_id=42,
+        cohort_date=date(2026, 8, 24),
+        policy_version="daily-v1",
+        status="deferred",
+        deferred_reason="awaiting_markdown",
+        error="old",
+        enrich_satisfied_by_job_id=None,
+        evals_satisfied_by_job_id=None,
+        cohort_order=0,
+        created_at=datetime.now(UTC),
+    )
+    paper = SimpleNamespace(
+        id=42,
+        source="arxiv",
+        arxiv_id="2608.00042",
+        title="Ready paper",
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _limit):
+            return self
+
+        def all(self):
+            return [ready]
+
+    class Database:
+        def query(self, model):
+            assert model is PaperCurationWorkflow
+            return Query()
+
+        def get(self, model, key):
+            assert model is Paper
+            return paper if key == 42 else None
+
+    class Jobs:
+        def __init__(self):
+            self.enqueued = []
+
+        def enqueue(self, *_args, **kwargs):
+            self.enqueued.append(kwargs)
+
+    jobs = Jobs()
+    service = HFDailyCurationService(
+        Database(),
+        SimpleNamespace(),
+        job_service=jobs,
+        markdown_available=lambda _paper, _settings: True,
+    )
+
+    released = service.release_awaiting_markdown(1)
+
+    assert released == 1
+    assert ready.status == "queued"
+    assert ready.deferred_reason is None
+    assert ready.error is None
+    assert jobs.enqueued[0]["kind"] == "enrich-paper"
 
 
 def test_callback_validation_rejection_is_not_classified_as_transient():

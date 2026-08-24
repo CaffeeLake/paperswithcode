@@ -314,6 +314,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
             ceiling_usd=ceiling,
             planned_jobs=desired_jobs,
             profile=self.profile,
+            cost_policy=self.settings.paper_markdown_cost_policy,
         )
         self.budget_desired_jobs = int(budget["desired_jobs"])
         self.budget_affordable_jobs = int(budget["affordable_jobs"])
@@ -398,10 +399,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
         return self.api.run_uv_job(
             str(SCRIPT),
             script_args=[
-                "--manifest",
-                f"/content/{manifest_key}",
-                "--content-root",
-                "/content",
+                "--bucket-id",
+                self.settings.paper_markdown_hf_bucket_id,
+                "--manifest-key",
+                manifest_key,
                 "--soft-deadline-seconds",
                 str(self.profile.soft_deadline_seconds),
             ],
@@ -418,14 +419,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 "PWC_SCRIPT_VERSION": os.environ.get("PWC_RELEASE_ID", "development"),
             },
             secrets={"HF_TOKEN": self.settings.hf_token},
-            volumes=[
-                Volume(
-                    type="bucket",
-                    source=self.settings.paper_markdown_hf_bucket_id,
-                    mount_path="/content",
-                    read_only=False,
-                )
-            ],
+            volumes=[],
             namespace=self.settings.paper_markdown_hf_namespace,
             token=self.settings.hf_token or None,
         )
@@ -572,6 +566,8 @@ class PaperMarkdownBackfillJob(CronJobBase):
             labels = job_labels(job)
             if labels.get("job_type", "ocr") != "ocr":
                 continue
+            if labels.get("mode") != self.mode:
+                continue
             run_id = labels.get("run_id")
             shard_id = labels.get("shard_id")
             if run_id and shard_id:
@@ -628,12 +624,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
             available_slots = min(available_slots, self.max_jobs)
         desired = min(len(candidates), available_slots)
         budget = self._budget_decision(desired, remote_jobs)
-        selected = candidates[: int(budget["affordable_jobs"])] if probe else []
-        if self.should_execute and candidates and not probe:
-            raise ValueError(
-                "mount recovery requires a successful same-volume capability probe "
-                "from the last two hours"
-            )
+        selected = candidates[: int(budget["affordable_jobs"])]
         if self.should_execute and selected and not self.confirm:
             raise ValueError("paid mount recovery requires --confirm")
 
@@ -676,6 +667,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
             launched.append({**candidate, "provider_job_id": provider_job_id})
         return {
             "operation": "mount_recovery",
+            "storage_transport": "bucket_api",
             "execute": self.should_execute,
             "probe": probe,
             "retryable_logical_shards": len(candidates),
@@ -716,6 +708,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
         if (
             self.should_execute
             and plans
+            and self.settings.paper_markdown_cost_policy == "metered"
             and not paid_dispatch_enabled
             and not getattr(self, "paid_canary", False)
         ):
@@ -820,6 +813,11 @@ class PaperMarkdownBackfillJob(CronJobBase):
             result = self._recover_mount_failures()
             self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(result))
             return
+        if self.full and self.should_execute:
+            recovery = self._recover_mount_failures()
+            if int(recovery["launched_replacements"]):
+                self.logger.info("PAPER_MARKDOWN_SUMMARY %s", json.dumps(recovery))
+                return
         papers = self._papers()
         paths = [str(item["output_key"]) for item in papers]
         canonical = self._existing_paths(

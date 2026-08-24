@@ -224,6 +224,49 @@ def test_acknowledged_failures_are_outside_the_new_rate_window():
     assert state.consecutive_apply_failures == 0
 
 
+def test_awaiting_markdown_is_not_counted_as_a_curation_failure():
+    state = SimpleNamespace(
+        acknowledged_at=None,
+        consecutive_apply_failures=2,
+        paused_at=None,
+        pause_condition=None,
+        pause_reason=None,
+    )
+    row = SimpleNamespace(
+        trigger="hf-daily-cron",
+        status="failed",
+        error="Awaiting paper Markdown extraction: 2608.00042",
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def all(self):
+            return [row]
+
+    class Database:
+        def get(self, *_args):
+            return state
+
+        def query(self, *_args):
+            return Query()
+
+        def commit(self):
+            return None
+
+    CodexPaperJobService()._evaluate_scheduled_health(Database(), row)
+
+    assert state.consecutive_apply_failures == 2
+    assert state.paused_at is None
+
+
 def test_unstarted_job_rebinds_to_the_active_bootstrap_release(monkeypatch):
     from backend.services import codex_add_evals_service
 

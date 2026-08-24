@@ -219,6 +219,11 @@ def main() -> int:
                 check=True,
             )
             preflight = json.loads(URL_CANDIDATES.read_text(encoding="utf-8"))
+            if preflight.get("awaiting_markdown"):
+                raise SourceEvidenceIncomplete(
+                    "Awaiting paper Markdown extraction: "
+                    + str(context["paper"].get("arxiv_id") or "unknown")
+                )
             if not preflight.get("complete"):
                 failed_sources = sorted(
                     {

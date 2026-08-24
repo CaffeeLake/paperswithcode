@@ -33,6 +33,7 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
         paper_markdown_hf_bucket_id="huggingface/pwc-papers-content",
         paper_markdown_incremental_monthly_budget_usd=100.0,
         paper_markdown_backfill_budget_usd=750.0,
+        paper_markdown_cost_policy="unmetered_hf",
     )
     progress = {
         "status": "running",
@@ -97,10 +98,13 @@ def test_monitor_combines_hf_stage_with_compact_shard_progress(monkeypatch):
     assert result["summary"]["extracted_images"] == 87
     assert result["summary"]["omitted_images"] == 2
     assert result["budgets"]["live"]["ceiling_usd"] == 100.0
+    assert result["budgets"]["live"]["cost_policy"] == "unmetered_hf"
+    assert result["budgets"]["live"]["budget_enforced"] is False
     assert result["budgets"]["backfill"]["ceiling_usd"] == 750.0
     assert result["budgets"]["backfill"]["active_reserved_usd"] == 21.6
     assert result["budgets"]["backfill"]["desired_jobs"] == 3
     assert result["budgets"]["backfill"]["affordable_jobs"] == 3
+    assert result["summary"]["paid_execution_authorization_required"] == 0
     assert result["jobs"][0]["stage"] == "RUNNING"
     assert result["jobs"][0]["effective_outcome"] == "active"
     assert result["jobs"][0]["progress"]["failed_papers"] == 3
@@ -330,6 +334,35 @@ def test_coverage_history_reports_seven_day_deltas(tmp_path, monkeypatch):
         "permanent_failures": 2,
         "attempts_exhausted": 1,
     }
+
+
+def test_coverage_history_uses_the_configured_production_log_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("PWC_CRON_LOG_DIR", raising=False)
+    (tmp_path / "paper_markdown_coverage.jsonl").write_text(
+        json.dumps(
+            {
+                "observed_at": "2026-08-24T10:00:00Z",
+                "scope": "recent_14_days",
+                "eligible_papers": 507,
+                "canonical_markdown_count": 507,
+                "missing_count": 0,
+                "copied_from_upstream_count": 0,
+                "coverage_percentage": 100,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        monitor,
+        "get_settings",
+        lambda: SimpleNamespace(cron_log_dir=str(tmp_path)),
+    )
+
+    coverage = monitor._coverage_history(datetime(2026, 8, 24, 10, tzinfo=timezone.utc))
+
+    assert coverage["recent_14_days"]["canonical_markdown_count"] == 507
 
 
 def test_monitor_is_unavailable_without_a_token(monkeypatch):

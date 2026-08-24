@@ -39,10 +39,14 @@ _CACHE: tuple[float, dict[str, Any]] | None = None
 
 
 def _coverage_history(now: datetime) -> dict[str, dict[str, Any]]:
-    path = (
-        Path(os.environ.get("PWC_CRON_LOG_DIR", ".github/workflows/scripts/logs"))
-        / "paper_markdown_coverage.jsonl"
-    )
+    configured_log_dir = os.environ.get("PWC_CRON_LOG_DIR")
+    if not configured_log_dir:
+        configured_log_dir = getattr(
+            get_settings(),
+            "cron_log_dir",
+            ".github/workflows/scripts/logs",
+        )
+    path = Path(configured_log_dir) / "paper_markdown_coverage.jsonl"
     if not path.exists():
         return {}
     with path.open("rb") as handle:
@@ -615,6 +619,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
             ceiling_usd=settings.paper_markdown_incremental_monthly_budget_usd,
             planned_jobs=max(0, 1 - active_live),
             now=snapshot_now,
+            cost_policy=getattr(settings, "paper_markdown_cost_policy", "metered"),
         ),
         "backfill": paper_markdown_budget_snapshot(
             remote_jobs,
@@ -626,6 +631,7 @@ def _fetch(settings: Settings) -> dict[str, Any]:
                 - active_backfill,
             ),
             now=snapshot_now,
+            cost_policy=getattr(settings, "paper_markdown_cost_policy", "metered"),
         ),
     }
     blockers = {
@@ -652,7 +658,8 @@ def _fetch(settings: Settings) -> dict[str, Any]:
     )
     summary["paid_dispatch_enabled"] = int(paid_dispatch_enabled)
     summary["paid_execution_authorization_required"] = int(
-        not paid_dispatch_enabled
+        getattr(settings, "paper_markdown_cost_policy", "metered") == "metered"
+        and not paid_dispatch_enabled
         and any(
             budget["desired_jobs"] and budget["affordable_jobs"]
             for budget in budgets.values()

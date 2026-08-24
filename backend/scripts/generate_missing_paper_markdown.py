@@ -2,6 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #   "chandra-ocr==0.2.0",
+#   "huggingface-hub>=0.34.0",
 #   "httpx>=0.28.1",
 #   "pillow>=11.0.0",
 #   "pypdf>=5.0.0",
@@ -10,8 +11,9 @@
 # ///
 """Generate missing paper Markdown with Chandra OCR 2 on an HF Job.
 
-The content bucket is mounted at ``/content``. A manifest is immutable, each
-paper is checkpointed independently, and canonical Markdown is written last.
+The worker mirrors bounded state through the authenticated Bucket API. A
+manifest is immutable, each paper is checkpointed independently, and canonical
+Markdown is uploaded with its verified assets and status record.
 """
 
 from __future__ import annotations
@@ -24,12 +26,14 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
 import httpx
+from huggingface_hub import HfApi, HfFileSystem
 from PIL import Image
 
 MODEL_ID = os.environ.get("PWC_MARKDOWN_MODEL_ID", "datalab-to/chandra-ocr-2")
@@ -56,6 +60,79 @@ VLLM_SHUTDOWN_TIMEOUT_SECONDS = int(
     os.environ.get("PWC_MARKDOWN_VLLM_SHUTDOWN_TIMEOUT_SECONDS", "60")
 )
 _TERMINATION_REQUESTED = False
+
+
+class BucketContentStore:
+    """Mirror bounded worker state through the Bucket API without a volume."""
+
+    def __init__(self, bucket_id: str, token: str, content_root: Path) -> None:
+        self.bucket_id = bucket_id
+        self.token = token
+        self.content_root = content_root
+        self.api = HfApi(token=token)
+        self.filesystem = HfFileSystem(token=token)
+
+    def _remote_path(self, key: str) -> str:
+        return f"hf://buckets/{self.bucket_id}/{key}"
+
+    def existing(self, keys: list[str]) -> set[str]:
+        if not keys:
+            return set()
+        return {
+            str(item.path)
+            for item in self.api.get_bucket_paths_info(
+                self.bucket_id, keys, token=self.token
+            )
+        }
+
+    def read(self, key: str) -> bytes:
+        with self.filesystem.open(self._remote_path(key), "rb", block_size=0) as handle:
+            return handle.read()
+
+    def download(self, key: str) -> None:
+        atomic_write(self.content_root / key, self.read(key))
+
+    def prepare(self, manifest_key: str, entries: list[dict[str, object]]) -> None:
+        run_id = Path(manifest_key).parent.name
+        shard_id = Path(manifest_key).stem
+        result_key = f"_jobs/results/{run_id}/{shard_id}.jsonl"
+        progress_key = f"_jobs/progress/{run_id}/{shard_id}.json"
+        status_keys = [f"_jobs/status/{entry['arxiv_id']}.json" for entry in entries]
+        output_keys = [str(entry["output_key"]) for entry in entries]
+        existing = self.existing([result_key, progress_key, *status_keys, *output_keys])
+        for key in existing:
+            if key in output_keys:
+                # process() only needs existence to preserve a canonical object.
+                atomic_write(self.content_root / key, b"")
+            else:
+                self.download(key)
+        asset_keys: list[str] = []
+        for status_key in status_keys:
+            path = self.content_root / status_key
+            if not path.exists():
+                continue
+            try:
+                status = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            asset_keys.extend(str(key) for key in status.get("asset_keys") or [])
+        for key in self.existing(asset_keys):
+            self.download(key)
+
+    def upload(self, keys: list[str]) -> None:
+        unique = list(dict.fromkeys(keys))
+        immutable = [key for key in unique if not key.startswith("_jobs/")]
+        for key in self.existing(immutable):
+            local = (self.content_root / key).read_bytes()
+            if self.read(key) != local:
+                raise ValueError(f"immutable_asset_conflict:{key}")
+        additions = [
+            ((self.content_root / key).read_bytes(), key)
+            for key in unique
+            if (self.content_root / key).is_file()
+        ]
+        if additions:
+            self.api.batch_bucket_files(self.bucket_id, add=additions, token=self.token)
 
 
 def request_termination(_signum: int, _frame: object) -> None:
@@ -533,7 +610,9 @@ def percentile_duration(results: list[dict], percentile: float) -> float | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--bucket-id")
+    parser.add_argument("--manifest-key")
     parser.add_argument("--content-root", type=Path, default=Path("/content"))
     parser.add_argument("--stub-root", type=Path)
     parser.add_argument("--stub-delay-seconds", type=float, default=0)
@@ -545,6 +624,27 @@ def main() -> None:
     args = parser.parse_args()
     if args.soft_deadline_seconds < 0:
         parser.error("--soft-deadline-seconds must not be negative")
+    bucket_mode = bool(args.bucket_id or args.manifest_key)
+    if bucket_mode != bool(args.bucket_id and args.manifest_key):
+        parser.error("--bucket-id and --manifest-key must be provided together")
+    if bucket_mode == bool(args.manifest):
+        parser.error("provide either --manifest or Bucket API arguments")
+
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    store: BucketContentStore | None = None
+    if bucket_mode:
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            parser.error("HF_TOKEN is required for Bucket API transport")
+        temporary = tempfile.TemporaryDirectory(prefix="pwc-paper-markdown-")
+        content_root = Path(temporary.name) / "content"
+        manifest = content_root / str(args.manifest_key)
+        store = BucketContentStore(str(args.bucket_id), token, content_root)
+        store.download(str(args.manifest_key))
+    else:
+        content_root = args.content_root
+        manifest = args.manifest
+    assert manifest is not None
 
     global _TERMINATION_REQUESTED
     _TERMINATION_REQUESTED = False
@@ -553,15 +653,22 @@ def main() -> None:
 
     entries = [
         json.loads(line)
-        for line in args.manifest.read_text(encoding="utf-8").splitlines()
+        for line in manifest.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    run_id = args.manifest.parent.name
-    shard_id = args.manifest.stem
-    result_path = args.content_root / "_jobs" / "results" / run_id / f"{shard_id}.jsonl"
-    progress_path = (
-        args.content_root / "_jobs" / "progress" / run_id / f"{shard_id}.json"
-    )
+    if store:
+        store.prepare(str(args.manifest_key), entries)
+    run_id = manifest.parent.name
+    shard_id = manifest.stem
+    result_path = content_root / "_jobs" / "results" / run_id / f"{shard_id}.jsonl"
+    progress_path = content_root / "_jobs" / "progress" / run_id / f"{shard_id}.json"
+    result_key = f"_jobs/results/{run_id}/{shard_id}.jsonl"
+    progress_key = f"_jobs/progress/{run_id}/{shard_id}.json"
+
+    def sync(keys: list[str]) -> None:
+        if store:
+            store.upload(keys)
+
     completed: dict[str, dict] = {}
     if result_path.exists():
         completed = {
@@ -589,6 +696,7 @@ def main() -> None:
             indent=2,
         ).encode(),
     )
+    sync([progress_key])
     try:
         if not args.stub_root:
             server = start_vllm()
@@ -607,12 +715,13 @@ def main() -> None:
                 indent=2,
             ).encode(),
         )
+        sync([progress_key])
         for entry in entries:
             if entry["arxiv_id"] in completed:
                 continue
             if _TERMINATION_REQUESTED or time.monotonic() >= deadline:
                 break
-            prior = _prior_status(args.content_root, str(entry["arxiv_id"]))
+            prior = _prior_status(content_root, str(entry["arxiv_id"]))
             attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
             allow_missing_images = should_omit_missing_images(prior, attempt_count)
             attempted_at = datetime.now(UTC)
@@ -638,7 +747,7 @@ def main() -> None:
                         entry,
                         body,
                         assets,
-                        args.content_root,
+                        content_root,
                         allow_missing_images=allow_missing_images,
                     )
                     result["duration_seconds"] = round(time.monotonic() - started, 3)
@@ -647,7 +756,7 @@ def main() -> None:
                 else:
                     result = process(
                         entry,
-                        args.content_root,
+                        content_root,
                         result_path.parent,
                         allow_missing_images=allow_missing_images,
                     )
@@ -670,8 +779,9 @@ def main() -> None:
                 attempted_at=attempted_at,
             )
             results.append(result)
+            status_key = f"_jobs/status/{entry['arxiv_id']}.json"
             atomic_write(
-                args.content_root / "_jobs" / "status" / f"{entry['arxiv_id']}.json",
+                content_root / status_key,
                 json.dumps(result, sort_keys=True, indent=2).encode(),
             )
             atomic_write(
@@ -696,6 +806,13 @@ def main() -> None:
                     indent=2,
                 ).encode(),
             )
+            published_keys = [status_key, result_key, progress_key]
+            if result.get("status") == "succeeded":
+                published_keys.extend(
+                    str(key) for key in result.get("asset_keys") or []
+                )
+                published_keys.append(str(entry["output_key"]))
+            sync(published_keys)
     except Exception as error:
         fatal_error = str(error)[:1000]
         raise
@@ -726,6 +843,9 @@ def main() -> None:
                 indent=2,
             ).encode(),
         )
+        sync([progress_key])
+        if temporary is not None:
+            temporary.cleanup()
 
 
 if __name__ == "__main__":

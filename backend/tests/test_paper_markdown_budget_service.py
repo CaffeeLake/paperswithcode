@@ -234,3 +234,29 @@ def test_next_admission_uses_cumulative_live_releases():
         jobs[:1], mode="live", ceiling_usd=100, planned_jobs=0, now=now
     )
     assert available["next_admission_at"] is None
+
+
+def test_unmetered_hf_policy_admits_every_requested_shard():
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    historical = _job(
+        mode="backfill",
+        created_at=now,
+        stage="COMPLETED",
+        started_at=now,
+        finished_at=now,
+    )
+
+    budget = paper_markdown_budget_snapshot(
+        [historical],
+        mode="backfill",
+        ceiling_usd=1,
+        planned_jobs=4,
+        now=now,
+        cost_policy="unmetered_hf",
+    )
+
+    assert budget["cost_policy"] == "unmetered_hf"
+    assert budget["desired_jobs"] == 4
+    assert budget["affordable_jobs"] == 4
+    assert budget["budget_enforced"] is False
+    assert budget["next_admission_at"] is None
