@@ -3492,6 +3492,61 @@ def test_production_codex_only_updates_app_and_cron_environments(
         )
 
 
+def test_production_codex_image_only_updates_no_other_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "incomplete-production.env"
+    source.write_text("APP_ONLY=source\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text(
+        "APP_ONLY=keep\nPWC_CODEX_JOBS_IMAGE=old-image\n",
+        encoding="utf-8",
+    )
+    (config_root / "production-cron.env").write_text(
+        "CRON_ONLY=keep\nPWC_CODEX_JOBS_IMAGE_REVISION=old-revision\n",
+        encoding="utf-8",
+    )
+    writes = []
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: writes.append((path, lines, group)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-codex-image-only",
+            "--confirm",
+            "UPDATE_PRODUCTION_CODEX_IMAGE",
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert [(path.name, group) for path, _, group in writes] == [
+        ("production.env", "pwc-production"),
+        ("production-cron.env", "pwc-cron"),
+    ]
+    app_lines = writes[0][1]
+    cron_lines = writes[1][1]
+    assert configure_host_env.decoded_value(app_lines["APP_ONLY"]) == "keep"
+    assert configure_host_env.decoded_value(cron_lines["CRON_ONLY"]) == "keep"
+    for lines in (app_lines, cron_lines):
+        assert configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE"]) == (
+            "hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6"
+        )
+        assert (
+            configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE_REVISION"])
+            == "1d85149040996dbb4ea0805f4c034a80ad214bdf"
+        )
+
+
 def test_historical_semantic_scholar_key_is_cron_only_and_preserved():
     secondary = "PWC_SEMANTIC_SCHOLAR_API_KEY_2"
     legacy = {

@@ -1081,8 +1081,7 @@ def production_codex_values(
         "PWC_CODEX_JOBS_NAMESPACE": namespace,
         "PWC_CODEX_JOBS_OPENAI_API_KEY": decoded_value(legacy["OPENAI_API_KEY"]),
         "PWC_CODEX_JOBS_TOKEN": decoded_value(legacy["PWC_HF_TOKEN"]),
-        "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6"),
-        "PWC_CODEX_JOBS_IMAGE_REVISION": ("1d85149040996dbb4ea0805f4c034a80ad214bdf"),
+        **production_codex_image_values(),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
         "PWC_CODEX_JOBS_MODEL": "gpt-5.6-luna",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
@@ -1098,11 +1097,19 @@ def production_codex_values(
     }
 
 
+def production_codex_image_values() -> dict[str, str]:
+    return {
+        "PWC_CODEX_JOBS_IMAGE": "hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6",
+        "PWC_CODEX_JOBS_IMAGE_REVISION": "1d85149040996dbb4ea0805f4c034a80ad214bdf",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--legacy-env", type=Path, required=True)
     parser.add_argument("--codex-jobs-namespace")
     parser.add_argument("--production-codex-only", action="store_true")
+    parser.add_argument("--production-codex-image-only", action="store_true")
     parser.add_argument("--staging-codex-too", action="store_true")
     parser.add_argument("--staging-langfuse-only", action="store_true")
     parser.add_argument("--production-langfuse-only", action="store_true")
@@ -1186,6 +1193,35 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.production_codex_image_only:
+        selected_modes = [
+            value
+            for key, value in vars(args).items()
+            if key != "production_codex_image_only"
+            and isinstance(value, bool)
+            and value
+        ]
+        if selected_modes or args.codex_jobs_namespace or args.modal_profile:
+            parser.error("production Codex image mode must run alone")
+        if args.confirm != "UPDATE_PRODUCTION_CODEX_IMAGE":
+            parser.error("--confirm must be UPDATE_PRODUCTION_CODEX_IMAGE")
+        values = production_codex_image_values()
+        targets = (
+            (CONFIG_ROOT / "production.env", "pwc-production"),
+            (CONFIG_ROOT / "production-cron.env", "pwc-cron"),
+        )
+        missing = [str(path) for path, _group in targets if not path.is_file()]
+        if missing:
+            parser.error(
+                "production Codex image targets are missing: " + ", ".join(missing)
+            )
+        updates = [
+            (path, assign(read_lines(path), values), group) for path, group in targets
+        ]
+        for path, lines, group in updates:
+            write_env(path, lines, group)
+        print("updated production and CRON Codex image pin")
+        return 0
     if args.modal_profile and not args.production_chat_seal_only:
         parser.error("--modal-profile requires --production-chat-seal-only")
     if (

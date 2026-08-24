@@ -408,6 +408,22 @@ run a standalone Jobs capability probe, then update both
 `PWC_CODEX_JOBS_IMAGE` and `PWC_CODEX_JOBS_IMAGE_REVISION`. A mutable registry
 tag such as `latest` is never valid for scheduled production dispatch.
 
+After publishing and probing the replacement Space, install only its image pin
+without rewriting the protected Codex credentials:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/production.env \
+  --production-codex-image-only \
+  --confirm UPDATE_PRODUCTION_CODEX_IMAGE
+
+sudo pwc-deploy production <exact-main-sha> --confirm DEPLOY_PRODUCTION
+```
+
+Use the exact new source SHA that records the image pin. If that SHA is already
+the active release, apply the protected environment through the same qualified
+path with `--refresh-environment` instead.
+
 The current image probe is recorded at
 `https://huggingface.co/jobs/nielsr/6a8c62317c5c7dd3792375ee`; its command
 checks the Codex version, PyPDF2 version, full runner SHA-256, exact model, and
