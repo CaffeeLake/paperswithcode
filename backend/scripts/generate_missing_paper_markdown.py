@@ -86,7 +86,7 @@ class BucketContentStore:
         }
 
     def read(self, key: str) -> bytes:
-        with self.filesystem.open(self._remote_path(key), "rb", block_size=0) as handle:
+        with self.filesystem.open(self._remote_path(key), "rb") as handle:
             return handle.read()
 
     def download(self, key: str) -> None:

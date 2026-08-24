@@ -186,8 +186,7 @@ def test_bucket_worker_downloads_manifest_and_uploads_outputs_without_mount(
         def __init__(self, *, token):
             assert token == "secret"
 
-        def open(self, path, _mode, *, block_size=0):
-            assert block_size == 0
+        def open(self, path, _mode):
             key = path.split("/test/paper-markdown/", 1)[1]
             return BytesIO(remote[key])
 
