@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -33,7 +33,7 @@ function evaluation(overrides: Partial<Evaluation> = {}): Evaluation {
   };
 }
 
-function setup(known = 2) {
+function setup() {
   vi.spyOn(catalogApi, "getDatasetBySlug").mockResolvedValue({
     id: "dataset-1",
     name: "Test benchmark",
@@ -53,14 +53,7 @@ function setup(known = 2) {
     evaluation({ id: "first", model_name: "First", num_parameters: 1_234_567_890 }),
     evaluation({ id: "second", paper_id: "paper-2", model_name: "Second", num_parameters: 2_000_000_000 }),
   ]);
-  vi.spyOn(evaluationsApi, "list").mockResolvedValue({
-    count: 2,
-    next_page: null,
-    previous_page: null,
-    results: [],
-    parameter_coverage_known: known,
-    parameter_coverage_total: 2,
-  });
+  vi.spyOn(evaluationsApi, "list");
   return vi.spyOn(evaluationsApi, "byLeaderboard").mockResolvedValue([]);
 }
 
@@ -104,9 +97,8 @@ describe("BenchmarkDetailView parameter filters", () => {
       num_parameters: 5_000_000_000,
       paper_published_date: "2025-03-15",
     });
-    const filtered = setup(3);
+    const filtered = setup();
     vi.mocked(evaluationsApi.byDataset).mockResolvedValue([smallOne, smallTwo, largeBest]);
-    filtered.mockResolvedValue([smallOne, smallTwo]);
 
     renderView("/datasets/test-benchmark?max_parameters_exclusive=1000000000");
 
@@ -115,12 +107,16 @@ describe("BenchmarkDetailView parameter filters", () => {
     expect(screen.getByRole("link", { name: /Small One: 80/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Small Two: 90/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Large Best: 99/ })).not.toBeInTheDocument();
+    expect(filtered).not.toHaveBeenCalled();
+    expect(evaluationsApi.list).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 
     expect(await screen.findByText("Large Best", { selector: ".best-name" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Large Best: 99/ })).toBeInTheDocument();
     expect(await screen.findByTestId("location")).toHaveTextContent("");
+    expect(filtered).not.toHaveBeenCalled();
+    expect(evaluationsApi.list).not.toHaveBeenCalled();
   });
 
   it("keeps the chart visible when a parameter filter leaves one model", async () => {
@@ -132,23 +128,49 @@ describe("BenchmarkDetailView parameter filters", () => {
       paper_published_date: "2025-02-15",
     });
     const filtered = setup();
-    filtered.mockResolvedValue([onlyMatch]);
+    vi.mocked(evaluationsApi.byDataset).mockResolvedValue([
+      onlyMatch,
+      evaluation({ id: "large", paper_id: "paper-2", num_parameters: 2_000_000_000 }),
+    ]);
 
     renderView("/datasets/test-benchmark?max_parameters_exclusive=1000000000");
 
     expect(await screen.findByText("Only Match", { selector: ".best-name" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Only Match: 88/ })).toBeInTheDocument();
+    expect(filtered).not.toHaveBeenCalled();
   });
 
-  it("loads a URL-selected bound through the API, reports coverage, reranks ties, and clears an empty filter", async () => {
+  it("keeps a filtered deep link blank until its task context is resolved", async () => {
+    setup();
+    let resolveTasks!: (tasks: Array<{ id: string; name: string; slug: string; level: number }>) => void;
+    vi.mocked(catalogApi.datasetTasks).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveTasks = resolve; }),
+    );
+    vi.mocked(evaluationsApi.byDataset).mockResolvedValue([
+      evaluation({ id: "other-task", task_id: "task-2", model_name: "Wrong task", num_parameters: 500_000_000 }),
+      evaluation({ id: "right-task", model_name: "Right task", num_parameters: 800_000_000 }),
+    ]);
+
+    renderView("/datasets/test-benchmark?max_parameters_exclusive=1000000000");
+
+    expect(await screen.findByLabelText("Loading benchmark summary")).toBeInTheDocument();
+    expect(screen.queryByText("Wrong task")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOTA progression")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveTasks([{ id: "task-1", name: "Test task", slug: "test-task", level: 0 }]);
+    });
+
+    expect(await screen.findByText("Right task", { selector: ".best-name" })).toBeInTheDocument();
+    expect(screen.queryByText("Wrong task")).not.toBeInTheDocument();
+  });
+
+  it("filters locally, reports local coverage, reranks ties, and clears an empty filter", async () => {
     const filtered = setup();
     renderView("/datasets/test-benchmark?max_parameters_exclusive=1000000000");
 
     expect(await screen.findByText("Parameters known for 2 of 2 entries")).toBeInTheDocument();
-    expect(filtered).toHaveBeenCalledWith("dataset-1", "task-1", {
-      is_open: undefined,
-      max_parameters_exclusive: 1_000_000_000,
-    });
+    expect(filtered).not.toHaveBeenCalled();
     expect(await screen.findByText(/No known parameter counts match this filter/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show all" }));
     expect(await screen.findByTestId("location")).toHaveTextContent("");
@@ -156,21 +178,11 @@ describe("BenchmarkDetailView parameter filters", () => {
     expect(screen.getAllByText("1", { selector: ".col-rank" })).toHaveLength(2);
   });
 
-  it("reports a filtered leaderboard request failure instead of an empty result", async () => {
-    const filtered = setup();
-    filtered.mockRejectedValue(new Error("network unavailable"));
-
-    renderView("/datasets/test-benchmark?max_parameters_exclusive=1000000000");
-
-    expect(await screen.findByText("Failed to filter evaluations by parameter size.")).toBeInTheDocument();
-    expect(screen.queryByText(/No known parameter counts match this filter/)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Loading benchmark summary")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(filtered).toHaveBeenCalledTimes(2);
-  });
-
   it("hides controls when no displayed entry has known parameter metadata", async () => {
-    setup(0);
+    setup();
+    vi.mocked(evaluationsApi.byDataset).mockResolvedValue([
+      evaluation({ id: "unknown", num_parameters: null }),
+    ]);
     renderView();
 
     expect(await screen.findByText("Parameter metadata unavailable")).toBeInTheDocument();

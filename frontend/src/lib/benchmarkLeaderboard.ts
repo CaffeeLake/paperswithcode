@@ -111,6 +111,21 @@ export function mergeLeaderboardEvaluations(evals: Evaluation[]): MergedEvaluati
   return Array.from(groups.values());
 }
 
+/**
+ * Apply the parameter-size control to already merged display entries. Unknown
+ * and conflicting counts remain visible under All, but cannot be compared
+ * against a numeric size ceiling.
+ */
+export function filterLeaderboardByParameterCount(
+  entries: MergedEvaluation[],
+  maxParametersExclusive: number | undefined,
+): MergedEvaluation[] {
+  if (maxParametersExclusive === undefined) return entries;
+  return entries.filter(
+    (entry) => entry.parameterCount !== null && entry.parameterCount < maxParametersExclusive,
+  );
+}
+
 export function evaluationMatchesHighlight(e: MergedEvaluation, highlightEvalId?: string): boolean {
   if (!highlightEvalId) return false;
   return e.id === highlightEvalId || e.sourceEvaluationIds.includes(highlightEvalId);

@@ -4,6 +4,7 @@ import type { Evaluation } from "./api/evaluations.types";
 import {
   computeSeries,
   formatParameterCount,
+  filterLeaderboardByParameterCount,
   mergeLeaderboardEvaluations,
   parseParameterFilter,
   parseMetricValue,
@@ -71,6 +72,20 @@ describe("benchmark leaderboard model", () => {
     expect(parseParameterFilter("2000000000")).toBeUndefined();
     expect(parseParameterFilter("nonsense")).toBeUndefined();
     expect(formatParameterCount(1_234_567_890)).toBe("1.23B");
+  });
+
+  it("filters only known, consistent parameter counts using a strict bound", () => {
+    const merged = mergeLeaderboardEvaluations([
+      evaluation({ id: "small", num_parameters: 999_999_999 }),
+      evaluation({ id: "at-bound", paper_id: "paper-2", num_parameters: 1_000_000_000 }),
+      evaluation({ id: "unknown", paper_id: "paper-3" }),
+      evaluation({ id: "conflict", paper_id: "paper-4", num_parameters: 500_000_000 }),
+      evaluation({ id: "conflict-sibling", paper_id: "paper-4", metrics: { F1: 80 }, num_parameters: 600_000_000 }),
+    ]);
+
+    expect(filterLeaderboardByParameterCount(merged, undefined)).toEqual(merged);
+    expect(filterLeaderboardByParameterCount(merged, 1_000_000_000).map((entry) => entry.id))
+      .toEqual(["small"]);
   });
 
   it("marks only improving values as SOTA for lower-is-better metrics", () => {

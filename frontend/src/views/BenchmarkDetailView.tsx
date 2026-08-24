@@ -21,6 +21,7 @@ import CopyScreenshotButton from "@/components/benchmark/CopyScreenshotButton";
 import {
   computeSeries,
   evaluationMatchesHighlight,
+  filterLeaderboardByParameterCount,
   formatParameterCount,
   mergeLeaderboardEvaluations,
   PARAMETER_FILTERS,
@@ -171,43 +172,6 @@ const BenchmarkDetailView: React.FC = () => {
     return tasks[0].id;
   }, [datasetTasksQ.data, evalsQ.data, taskSlugFromQuery, highlightEval]);
 
-  // Coverage is calculated by the API after the same task/open-source filters
-  // used by the table, but before applying a size bound. This makes the
-  // availability note truthful even for a currently empty constrained result.
-  const parameterCoverageQ = useQuery({
-    queryKey: [
-      "leaderboard-parameter-coverage",
-      datasetQ.data?.id,
-      currentTaskId,
-      preferences.hide_closed_source_evals,
-    ],
-    queryFn: () => evaluationsApi.list({
-      dataset_id: Number(datasetQ.data!.id),
-      task_id: Number(currentTaskId!),
-      is_open: preferences.hide_closed_source_evals ? true : undefined,
-      page_size: 1,
-      ordering: "best_rank",
-    }),
-    enabled: !!datasetQ.data?.id && !!currentTaskId,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const parameterFilteredEvalsQ = useQuery({
-    queryKey: [
-      "leaderboard-parameter-filter",
-      datasetQ.data?.id,
-      currentTaskId,
-      preferences.hide_closed_source_evals,
-      parameterBound,
-    ],
-    queryFn: () => evaluationsApi.byLeaderboard(datasetQ.data!.id, currentTaskId!, {
-      is_open: preferences.hide_closed_source_evals ? true : undefined,
-      max_parameters_exclusive: parameterBound,
-    }),
-    enabled: !!parameterBound && !!datasetQ.data?.id && !!currentTaskId,
-    staleTime: 5 * 60 * 1000,
-  });
-
   const benchmarkTrendsQ = useQuery({
     queryKey: [
       "task-benchmark-trends",
@@ -262,9 +226,9 @@ const BenchmarkDetailView: React.FC = () => {
     [taskEvals],
   );
 
-  const mergedParameterFilteredEvals = useMemo(
-    () => mergeLeaderboardEvaluations(parameterFilteredEvalsQ.data || []),
-    [parameterFilteredEvalsQ.data],
+  const displayedLeaderboardEvals = useMemo(
+    () => filterLeaderboardByParameterCount(mergedTaskEvals, parameterBound),
+    [mergedTaskEvals, parameterBound],
   );
 
   // Last-resort metric set when this leaderboard has no configured metrics
@@ -332,9 +296,6 @@ const BenchmarkDetailView: React.FC = () => {
     return orderedMetrics.slice(0, MAX_METRIC_COLUMNS);
   }, [orderedMetrics, activeMetric]);
 
-  const displayedLeaderboardEvals = parameterBound !== undefined
-    ? mergedParameterFilteredEvals
-    : mergedTaskEvals;
   const { points: chartPoints, sota, sotaModel } = useMemo(
     () => computeSeries(displayedLeaderboardEvals, activeMetric, arrow),
     [displayedLeaderboardEvals, activeMetric, arrow],
@@ -347,7 +308,6 @@ const BenchmarkDetailView: React.FC = () => {
     : undefined;
   const isFullSummaryReady =
     evalsQ.isSuccess &&
-    (parameterBound === undefined || parameterFilteredEvalsQ.isSuccess) &&
     datasetTasksQ.isSuccess &&
     directionsQ.isSuccess &&
     (!currentTaskId || leaderboardMetricsQ.isSuccess);
@@ -358,8 +318,9 @@ const BenchmarkDetailView: React.FC = () => {
     : initialSummary?.model_name;
   const isSummaryLoading =
     !isFullSummaryReady &&
-    !initialSummary &&
-    !(parameterBound !== undefined && parameterFilteredEvalsQ.isError);
+    !initialSummary;
+  const isInitialFilteredViewLoading =
+    parameterBound !== undefined && !isFullSummaryReady;
 
   // Bring the highlighted leaderboard row into view once the evaluations
   // query resolves. Guarded by a ref so subsequent metric switches don't
@@ -428,12 +389,13 @@ const BenchmarkDetailView: React.FC = () => {
     return storedRankForMetric(a, activeMetric) - storedRankForMetric(b, activeMetric);
   });
   const showHarness = Boolean(dataset.supports_harness);
-  const parameterCoverage = parameterCoverageQ.data;
-  const hasParameterMetadata = (parameterCoverage?.parameter_coverage_known || 0) > 0;
+  const parameterCoverage = {
+    parameter_coverage_known: mergedTaskEvals.filter((entry) => entry.parameterCount !== null).length,
+    parameter_coverage_total: mergedTaskEvals.length,
+  };
+  const hasParameterMetadata = parameterCoverage.parameter_coverage_known > 0;
   const parameterFilterHasMatches = (bound: number | undefined) =>
-    bound === undefined || mergedTaskEvals.some(
-      (evaluation) => evaluation.parameterCount !== null && evaluation.parameterCount < bound,
-    );
+    filterLeaderboardByParameterCount(mergedTaskEvals, bound).length > 0;
   const setParameterFilter = (bound: number | undefined) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -629,7 +591,7 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
-        {chartPoints.length > 0 && (
+        {!isInitialFilteredViewLoading && chartPoints.length > 0 && (
           <div className="bm-card" ref={chartCardRef}>
             <div className="bm-card-screenshot-header" aria-hidden="true">
               <div className="bm-card-screenshot-title">
@@ -766,13 +728,13 @@ const BenchmarkDetailView: React.FC = () => {
                 />
                 <span className="bm-closed-toggle-label">Closed-source</span>
               </label>
-              {!hasParameterMetadata && parameterCoverageQ.isSuccess ? (
+              {!isInitialFilteredViewLoading && !hasParameterMetadata && evalsQ.isSuccess ? (
                 <span className="bm-parameter-unavailable">Parameter metadata unavailable</span>
               ) : null}
               <CopyScreenshotButton targetRef={leaderboardCardRef} label="leaderboard" />
             </div>
           </div>
-          {hasParameterMetadata && parameterCoverage && (
+          {!isInitialFilteredViewLoading && hasParameterMetadata && (
             <div className="bm-parameter-filter-bar">
               <span className="bm-parameter-filter-label">Parameters Size</span>
               <div className="bm-parameter-filter-options" role="group" aria-label="Filter leaderboard by parameter size">
@@ -798,22 +760,11 @@ const BenchmarkDetailView: React.FC = () => {
               </span>
             </div>
           )}
-          {evalsQ.isLoading || (parameterBound !== undefined && parameterFilteredEvalsQ.isLoading) ? (
+          {evalsQ.isLoading || isInitialFilteredViewLoading ? (
             <div style={{ padding: 16 }}>
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full mb-2" />
               ))}
-            </div>
-          ) : parameterBound !== undefined && parameterFilteredEvalsQ.isError ? (
-            <div className="no-results" role="alert">
-              Failed to filter evaluations by parameter size. {" "}
-              <button
-                type="button"
-                className="bm-empty-filter-action"
-                onClick={() => void parameterFilteredEvalsQ.refetch()}
-              >
-                Try again
-              </button>
             </div>
           ) : sortedRows.length === 0 ? (
             parameterBound ? (
