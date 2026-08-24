@@ -5,23 +5,12 @@ translate that detail centrally, keeping catalog services independent of
 FastAPI while preserving the API's established error payload shape.
 """
 
+from functools import wraps
+
+
 JSONDetail = (
     str | int | float | bool | None | list["JSONDetail"] | dict[str, "JSONDetail"]
 )
-
-
-def translate_legacy_catalog_error(
-    error: Exception,
-    *,
-    not_found_type: type[Exception],
-    persistence_type: type[Exception],
-) -> None:
-    """Translate legacy service errors at a migrated catalog boundary."""
-    if type(error) is not_found_type:
-        raise CatalogNotFoundError(str(error)) from error
-    if type(error) is persistence_type:
-        raise CatalogPersistenceError(str(error)) from error
-    raise error
 
 
 class CatalogError(Exception):
@@ -48,12 +37,23 @@ class CatalogPersistenceError(CatalogError):
     """Raised when catalog persistence cannot complete."""
 
 
-def raise_as_catalog_error(error: Exception) -> None:
-    """Re-raise legacy catalog failures as their public typed equivalents."""
-    from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+def catalog_operation(operation):
+    """Expose a domain operation with typed catalog failures.
 
-    if isinstance(error, PaperNotFoundError):
-        raise CatalogNotFoundError(str(error)) from error
-    if isinstance(error, DatabaseError):
-        raise CatalogPersistenceError(str(error)) from error
-    raise error
+    Modern ``CatalogError`` subclasses pass through unchanged. Legacy
+    ``PaperNotFoundError`` and ``DatabaseError`` are compatibility subclasses
+    that are normalized to the base not-found and persistence categories.
+    """
+
+    @wraps(operation)
+    def wrapped(*args, **kwargs):
+        from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+
+        try:
+            return operation(*args, **kwargs)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    return wrapped

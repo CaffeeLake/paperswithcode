@@ -31,10 +31,7 @@ from backend.services.sitemap_service import eligible_paper_filter
 from backend.services.trending_ranking_service import active_paper_score_components
 from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
-from backend.services.catalog_errors import (
-    CatalogNotFoundError,
-    CatalogPersistenceError,
-)
+from backend.services.catalog_errors import catalog_operation
 from backend.utils.organization_logos import organization_logo_path
 
 
@@ -43,31 +40,6 @@ class OrganizationService:
 
     def __init__(self, db: Session):
         self.db = db
-
-    def _http_operation(self, operation, *args, **kwargs):
-        try:
-            return operation(*args, **kwargs)
-        except PaperNotFoundError as error:
-            raise CatalogNotFoundError(str(error)) from error
-        except DatabaseError as error:
-            raise CatalogPersistenceError(str(error)) from error
-
-    def list_organizations(self, **kwargs) -> Organizations:
-        return self._http_operation(self.get_organizations, **kwargs)
-
-    def lookup_organization(self, slug: str) -> Organization:
-        return self._http_operation(self.get_organization, slug)
-
-    def get_organization_contributions_for_http(
-        self, slug: str
-    ) -> OrganizationContributions:
-        return self._http_operation(self.get_organization_contributions, slug)
-
-    def get_organization_areas_for_http(self, slug: str) -> OrganizationAreasWithTasks:
-        return self._http_operation(self.get_organization_areas_with_tasks, slug)
-
-    def list_organization_papers(self, **kwargs) -> Papers:
-        return self._http_operation(self.get_organization_papers, **kwargs)
 
     def _get_organization_by_slug(self, slug: str) -> DBOrganization:
         organization = (
@@ -140,6 +112,7 @@ class OrganizationService:
             updated_at=db_org.updated_at,
         )
 
+    @catalog_operation
     def get_organizations(
         self,
         featured_only: bool = False,
@@ -260,6 +233,7 @@ class OrganizationService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organizations: {str(e)}")
 
+    @catalog_operation
     def get_organization(self, slug: str) -> Organization:
         try:
             organization = self._get_organization_by_slug(slug)
@@ -273,6 +247,7 @@ class OrganizationService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organization: {str(e)}")
 
+    @catalog_operation
     def get_organization_contributions(self, slug: str) -> OrganizationContributions:
         """Return daily eligible-paper counts for the trailing 365 days."""
         try:
@@ -317,6 +292,7 @@ class OrganizationService:
                 f"Failed to retrieve organization contributions: {str(e)}"
             )
 
+    @catalog_operation
     def get_organization_areas_with_tasks(
         self, slug: str
     ) -> OrganizationAreasWithTasks:
@@ -406,6 +382,7 @@ class OrganizationService:
                 f"Failed to retrieve organization areas with tasks: {str(e)}"
             )
 
+    @catalog_operation
     def get_organization_papers(
         self,
         slug: str,

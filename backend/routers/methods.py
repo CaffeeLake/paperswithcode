@@ -99,13 +99,13 @@ def list_methods(
 
     service = MethodService(db)
     if q:
-        return service.search_methods_for_http(
+        return service.search_methods(
             query=q,
             page=page,
             page_size=page_size,
             include_trends=include_trends,
         )
-    return service.list_methods(
+    return service.get_methods(
         page=page,
         page_size=page_size,
         name=name,
@@ -125,7 +125,7 @@ def list_methods(
     summary="List compact method cards for the public directory",
 )
 def method_index(db: Session = Depends(get_database_session)):
-    return MethodService(db).get_method_index_for_http()
+    return MethodService(db).get_method_index()
 
 
 @router.get("/{method_id}", response_model=Method)
@@ -145,7 +145,7 @@ def get_method(
     - `/api/v1/methods/vision-transformer` - Get method by slug
     - `/api/v1/methods/GPT-2` - Get method by name (legacy support)
     """
-    return MethodService(db).lookup_method(method_id)
+    return MethodService(db).get_method(method_id)
 
 
 @router.get("/{method_id}/trend", response_model=MethodTrend)
@@ -234,7 +234,7 @@ def get_method_papers(
     - `/api/v1/methods/Transformer/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/methods/BERT/papers?include_resources=true` - Include GitHub repos
     """
-    return MethodService(db).list_method_papers(
+    return MethodService(db).get_method_papers(
         method_id=method_id,
         page=page,
         page_size=page_size,
@@ -276,7 +276,7 @@ def add_method_keywords(
     }
     ```
     """
-    return MethodService(db).add_method_keywords(method_id, keyword_update.keywords)
+    return MethodService(db).add_keywords(method_id, keyword_update.keywords)
 
 
 @router.delete(
@@ -306,7 +306,7 @@ def remove_method_keywords(
     }
     ```
     """
-    return MethodService(db).remove_method_keywords(method_id, keyword_update.keywords)
+    return MethodService(db).remove_keywords(method_id, keyword_update.keywords)
 
 
 @router.put(
@@ -336,4 +336,4 @@ def replace_method_keywords(
     }
     ```
     """
-    return MethodService(db).replace_method_keywords(method_id, keyword_update.keywords)
+    return MethodService(db).replace_keywords(method_id, keyword_update.keywords)

@@ -25,7 +25,7 @@ from backend.utils.slug_utils import slugify
 from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogNotFoundError,
-    raise_as_catalog_error,
+    catalog_operation,
 )
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
@@ -47,38 +47,12 @@ class MethodService:
     def __init__(self, db: Session):
         self.db = db
 
-    def _http_operation(self, operation, *args, **kwargs):
-        try:
-            return operation(*args, **kwargs)
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_as_catalog_error(error)
-
-    def list_methods(self, **kwargs) -> Methods:
-        return self._http_operation(self.get_methods, **kwargs)
-
-    def search_methods_for_http(self, **kwargs) -> Methods:
-        return self._http_operation(self.search_methods, **kwargs)
-
-    def get_method_index_for_http(self) -> MethodIndex:
-        return self._http_operation(self.get_method_index)
-
-    def lookup_method(self, identifier: str) -> Method:
+    @catalog_operation
+    def get_method(self, identifier: str) -> Method:
         operation = (
             self.get_method_by_id if identifier.isdigit() else self.get_method_by_name
         )
-        return self._http_operation(operation, identifier)
-
-    def list_method_papers(self, **kwargs):
-        return self._http_operation(self.get_method_papers, **kwargs)
-
-    def add_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
-        return self._http_operation(self.add_keywords, identifier, keywords)
-
-    def remove_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
-        return self._http_operation(self.remove_keywords, identifier, keywords)
-
-    def replace_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
-        return self._http_operation(self.replace_keywords, identifier, keywords)
+        return operation(identifier)
 
     def create_method(self, *, commit: bool = True, **fields) -> DBMethod:
         slug = slugify(fields["name"])
@@ -162,6 +136,7 @@ class MethodService:
             updated_at=db_method.updated_at,
         )
 
+    @catalog_operation
     def get_methods(
         self,
         page: int = 1,
@@ -358,6 +333,7 @@ class MethodService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve methods: {str(e)}")
 
+    @catalog_operation
     def get_method_index(
         self,
         *,
@@ -594,6 +570,7 @@ class MethodService:
                 f"Failed to retrieve methods for paper {paper_id}: {str(e)}"
             )
 
+    @catalog_operation
     def search_methods(
         self,
         query: str,
@@ -770,6 +747,7 @@ class MethodService:
             for method_id in method_ids
         }
 
+    @catalog_operation
     def get_method_papers(
         self,
         method_id: str,
@@ -915,6 +893,7 @@ class MethodService:
         except Exception as e:
             raise DatabaseError(f"Failed to get papers for method: {str(e)}")
 
+    @catalog_operation
     def add_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Add keywords to a method (appends to existing keywords).
@@ -980,6 +959,7 @@ class MethodService:
             self.db.rollback()
             raise DatabaseError(f"Failed to add keywords to method: {str(e)}")
 
+    @catalog_operation
     def remove_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Remove specific keywords from a method.
@@ -1047,6 +1027,7 @@ class MethodService:
             self.db.rollback()
             raise DatabaseError(f"Failed to remove keywords from method: {str(e)}")
 
+    @catalog_operation
     def replace_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Replace all keywords for a method.

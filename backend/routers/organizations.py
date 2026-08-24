@@ -50,7 +50,7 @@ def get_organizations(
     ),
     db: Session = Depends(get_database_session),
 ):
-    return OrganizationService(db).list_organizations(featured_only=featured_only)
+    return OrganizationService(db).get_organizations(featured_only=featured_only)
 
 
 @router.get(
@@ -59,7 +59,7 @@ def get_organizations(
     summary="List curated organization cards for the public directory",
 )
 def get_organization_index(db: Session = Depends(get_database_session)):
-    return OrganizationService(db).list_organizations(curated_only=True)
+    return OrganizationService(db).get_organizations(curated_only=True)
 
 
 @router.post(
@@ -95,7 +95,7 @@ def get_organization(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    return OrganizationService(db).lookup_organization(slug)
+    return OrganizationService(db).get_organization(slug)
 
 
 @router.get(
@@ -107,7 +107,7 @@ def get_organization_contributions(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    return OrganizationService(db).get_organization_contributions_for_http(slug)
+    return OrganizationService(db).get_organization_contributions(slug)
 
 
 def _organization_logo_response(
@@ -199,7 +199,7 @@ def get_organization_areas_with_tasks(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    return OrganizationService(db).get_organization_areas_for_http(slug)
+    return OrganizationService(db).get_organization_areas_with_tasks(slug)
 
 
 @router.get(
@@ -232,7 +232,7 @@ def get_organization_papers(
     date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
-    return OrganizationService(db).list_organization_papers(
+    return OrganizationService(db).get_organization_papers(
         slug=slug,
         task_slug=task,
         page=page,

@@ -73,8 +73,8 @@ def list_tasks(
 
     service = TaskService(db)
     if q:
-        return service.search_tasks_for_http(query=q, page=page, page_size=page_size)
-    return service.list_tasks(
+        return service.search_tasks(query=q, page=page, page_size=page_size)
+    return service.get_tasks(
         page=page,
         page_size=page_size,
         name=name,
@@ -138,7 +138,7 @@ def get_trending_tasks(
     - `/api/v1/tasks/trending` - default 30d vs preceding 180d, top 8
     - `/api/v1/tasks/trending?limit=12&level=0` - top-level domains only
     """
-    return TaskService(db).list_trending_tasks(
+    return TaskService(db).get_trending_tasks(
         limit=limit,
         recent_days=recent_days,
         baseline_days=baseline_days,
@@ -162,7 +162,7 @@ def get_top_tasks(
     This endpoint is intentionally small and cache-friendly. It avoids the
     pagination count work done by the general `/tasks/` listing.
     """
-    return TaskService(db).list_top_tasks(limit=limit)
+    return TaskService(db).get_top_tasks(limit=limit)
 
 
 @router.get("/{task_id}/trending-benchmarks", response_model=TrendingBenchmarks)
@@ -236,7 +236,7 @@ def get_task(
     - `/api/v1/tasks/1` - Get task with ID 1
     - `/api/v1/tasks/computer-use-agents` - Get task by slug
     """
-    return TaskService(db).lookup_task(task_id)
+    return TaskService(db).get_task(task_id)
 
 
 @router.get("/{task_id}/image")
@@ -286,7 +286,7 @@ def get_task_page(
     - `/api/v1/tasks/language-modeling/page`
     - `/api/v1/tasks/5/page`
     """
-    return TaskService(db).get_task_page_for_http(task_id, is_open=is_open)
+    return TaskService(db).get_task_page(task_id, is_open=is_open)
 
 
 @router.get("/{task_id}/children", response_model=Tasks)
@@ -307,7 +307,7 @@ def get_task_children(
     **Example:**
     - `/api/v1/tasks/5/children` - Get all subtasks of task 5
     """
-    return TaskService(db).list_task_children(task_id, page=page, page_size=page_size)
+    return TaskService(db).get_task_children(task_id, page=page, page_size=page_size)
 
 
 @router.get("/{task_id}/parents", response_model=list[Task])
@@ -324,7 +324,7 @@ def get_task_parents(
     **Example:**
     - `/api/v1/tasks/10/parents` - Get parent hierarchy of task 10
     """
-    return TaskService(db).list_task_parents(task_id)
+    return TaskService(db).get_task_parents(task_id)
 
 
 @router.get("/{task_id}/papers", response_model=Papers)
@@ -368,7 +368,7 @@ def get_task_papers(
     - `/api/v1/tasks/object-detection/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/tasks/object-detection/papers?order_by=title&order_dir=asc` - Papers A-Z
     """
-    return TaskService(db).list_task_papers(
+    return TaskService(db).get_task_papers(
         task_id=task_id,
         page=page,
         page_size=page_size,
@@ -452,7 +452,7 @@ def add_task_keywords(
     }
     ```
     """
-    return TaskService(db).add_task_keywords(task_id, keyword_update.keywords)
+    return TaskService(db).add_keywords(task_id, keyword_update.keywords)
 
 
 @router.delete(
@@ -482,7 +482,7 @@ def remove_task_keywords(
     }
     ```
     """
-    return TaskService(db).remove_task_keywords(task_id, keyword_update.keywords)
+    return TaskService(db).remove_keywords(task_id, keyword_update.keywords)
 
 
 @router.put(
@@ -512,4 +512,4 @@ def replace_task_keywords(
     }
     ```
     """
-    return TaskService(db).replace_task_keywords(task_id, keyword_update.keywords)
+    return TaskService(db).replace_keywords(task_id, keyword_update.keywords)

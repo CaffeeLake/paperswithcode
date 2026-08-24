@@ -16,6 +16,17 @@ from backend.services.catalog_errors import (
     CatalogPersistenceError,
     CatalogValidationError,
 )
+from backend.models.api import (
+    Method,
+    Methods,
+    Organizations,
+    ProjectPage,
+    ProjectPages,
+    Repositories,
+    Task,
+    Tasks,
+)
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
@@ -330,6 +341,19 @@ def test_legacy_catalog_errors_remain_compatible_with_new_error_categories():
     assert isinstance(DatabaseError("unavailable"), CatalogPersistenceError)
 
 
+def test_catalog_operation_normalizes_legacy_failures():
+    from backend.services.catalog_errors import catalog_operation
+
+    @catalog_operation
+    def operation():
+        raise PaperNotFoundError("legacy missing")
+
+    with pytest.raises(CatalogNotFoundError, match="legacy missing") as error:
+        operation()
+
+    assert type(error.value) is CatalogNotFoundError
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -427,7 +451,7 @@ def test_taxonomy_endpoint_errors_keep_detail_only_envelopes(
         ),
     ],
 )
-def test_migrated_taxonomy_lookups_translate_legacy_service_failures(
+def test_migrated_taxonomy_lookups_keep_typed_not_found_contracts(
     monkeypatch, path, service, method
 ):
     module_name, class_name = service.rsplit(".", 1)
@@ -436,7 +460,7 @@ def test_migrated_taxonomy_lookups_translate_legacy_service_failures(
         getattr(module, class_name),
         method,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            PaperNotFoundError("entity not found")
+            CatalogNotFoundError("entity not found")
         ),
     )
 
@@ -460,3 +484,283 @@ def test_create_task_requires_catalog_mutator_before_service_is_called(monkeypat
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Unauthorized"}
+
+
+@pytest.mark.parametrize(
+    ("path", "service", "method", "payload"),
+    [
+        (
+            "/api/v1/tasks/",
+            "backend.services.task_service.TaskService",
+            "get_tasks",
+            Tasks(count=0, results=[]),
+        ),
+        (
+            "/api/v1/methods/",
+            "backend.services.method_service.MethodService",
+            "get_methods",
+            Methods(count=0, results=[]),
+        ),
+        (
+            "/api/v1/organizations/",
+            "backend.services.organization_service.OrganizationService",
+            "get_organizations",
+            Organizations(count=0, results=[]),
+        ),
+        (
+            "/api/v1/repositories/",
+            "backend.services.repository_service.RepositoryService",
+            "get_repositories",
+            Repositories(count=0, results=[]),
+        ),
+        (
+            "/api/v1/project-pages/",
+            "backend.services.project_page_service.ProjectPageService",
+            "get_project_pages",
+            ProjectPages(count=0, results=[]),
+        ),
+    ],
+)
+def test_migrated_taxonomy_lists_keep_success_payloads(
+    monkeypatch, path, service, method, payload
+):
+    module_name, class_name = service.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[class_name])
+    monkeypatch.setattr(
+        getattr(module, class_name), method, lambda *_args, **_kwargs: payload
+    )
+
+    with _catalog_client(monkeypatch) as client:
+        response = client.get(path)
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "verb", "body"),
+    [
+        ("/api/v1/tasks/missing/keywords", "post", {"keywords": ["x"]}),
+        ("/api/v1/tasks/missing/keywords", "put", {"keywords": ["x"]}),
+        ("/api/v1/methods/missing/keywords", "post", {"keywords": ["x"]}),
+        ("/api/v1/methods/missing/keywords", "put", {"keywords": ["x"]}),
+        ("/api/v1/project-pages/", "post", {"url": "https://example.com"}),
+        ("/api/v1/project-pages/1", "put", {"url": "https://example.com"}),
+        ("/api/v1/project-pages/1", "delete", None),
+    ],
+)
+def test_migrated_taxonomy_mutations_remain_authorized(monkeypatch, path, verb, body):
+    with _catalog_client(monkeypatch) as client:
+        response = (
+            getattr(client, verb)(path, json=body)
+            if body is not None
+            else getattr(client, verb)(path)
+        )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("path", "method", "body", "service", "operation", "error", "status"),
+    [
+        (
+            "/api/v1/tasks/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.task_service.TaskService",
+            "add_keywords",
+            CatalogValidationError("invalid"),
+            400,
+        ),
+        (
+            "/api/v1/tasks/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.task_service.TaskService",
+            "add_keywords",
+            CatalogNotFoundError("missing"),
+            404,
+        ),
+        (
+            "/api/v1/tasks/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.task_service.TaskService",
+            "add_keywords",
+            CatalogConflictError("conflict"),
+            409,
+        ),
+        (
+            "/api/v1/methods/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.method_service.MethodService",
+            "add_keywords",
+            CatalogValidationError("invalid"),
+            400,
+        ),
+        (
+            "/api/v1/methods/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.method_service.MethodService",
+            "add_keywords",
+            CatalogNotFoundError("missing"),
+            404,
+        ),
+        (
+            "/api/v1/methods/missing/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.method_service.MethodService",
+            "add_keywords",
+            CatalogConflictError("conflict"),
+            409,
+        ),
+        (
+            "/api/v1/project-pages/",
+            "post",
+            {"url": "https://example.com"},
+            "backend.services.project_page_service.ProjectPageService",
+            "create_project_page",
+            CatalogValidationError("invalid"),
+            400,
+        ),
+        (
+            "/api/v1/project-pages/404",
+            "put",
+            {"url": "https://example.com"},
+            "backend.services.project_page_service.ProjectPageService",
+            "update_project_page",
+            CatalogNotFoundError("missing"),
+            404,
+        ),
+        (
+            "/api/v1/project-pages/",
+            "post",
+            {"url": "https://example.com"},
+            "backend.services.project_page_service.ProjectPageService",
+            "create_project_page",
+            CatalogConflictError("conflict"),
+            409,
+        ),
+    ],
+)
+def test_migrated_taxonomy_mutations_keep_typed_error_contracts(
+    monkeypatch, path, method, body, service, operation, error, status
+):
+    from backend.database.connection import get_database_session
+    from backend.main import create_app
+
+    module_name, class_name = service.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[class_name])
+    monkeypatch.setattr(
+        getattr(module, class_name),
+        operation,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    app = create_app()
+    app.dependency_overrides[get_database_session] = lambda: object()
+    app.dependency_overrides[require_catalog_mutator] = lambda: {"sub": "test"}
+
+    with TestClient(app) as client:
+        response = getattr(client, method)(path, json=body)
+
+    assert response.status_code == status
+    assert response.json() == {"detail": str(error)}
+
+
+@pytest.mark.parametrize(
+    ("path", "verb", "body", "service", "operation", "result", "status"),
+    [
+        (
+            "/api/v1/tasks/task/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.task_service.TaskService",
+            "add_keywords",
+            Task(id="1", name="Task"),
+            200,
+        ),
+        (
+            "/api/v1/tasks/task/keywords",
+            "put",
+            {"keywords": ["x"]},
+            "backend.services.task_service.TaskService",
+            "replace_keywords",
+            Task(id="1", name="Task"),
+            200,
+        ),
+        (
+            "/api/v1/methods/method/keywords",
+            "post",
+            {"keywords": ["x"]},
+            "backend.services.method_service.MethodService",
+            "add_keywords",
+            Method(id="1", name="Method"),
+            200,
+        ),
+        (
+            "/api/v1/methods/method/keywords",
+            "put",
+            {"keywords": ["x"]},
+            "backend.services.method_service.MethodService",
+            "replace_keywords",
+            Method(id="1", name="Method"),
+            200,
+        ),
+        (
+            "/api/v1/project-pages/",
+            "post",
+            {"url": "https://example.com"},
+            "backend.services.project_page_service.ProjectPageService",
+            "create_project_page",
+            ProjectPage(id="1", url="https://example.com"),
+            201,
+        ),
+        (
+            "/api/v1/project-pages/1",
+            "put",
+            {"url": "https://example.com"},
+            "backend.services.project_page_service.ProjectPageService",
+            "update_project_page",
+            ProjectPage(id="1", url="https://example.com"),
+            200,
+        ),
+        (
+            "/api/v1/project-pages/1",
+            "delete",
+            None,
+            "backend.services.project_page_service.ProjectPageService",
+            "delete_project_page",
+            None,
+            204,
+        ),
+    ],
+)
+def test_migrated_taxonomy_mutations_keep_authorized_success_contracts(
+    monkeypatch, path, verb, body, service, operation, result, status
+):
+    from backend.database.connection import get_database_session
+    from backend.main import create_app
+
+    module_name, class_name = service.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[class_name])
+    monkeypatch.setattr(
+        getattr(module, class_name), operation, lambda *_args, **_kwargs: result
+    )
+    app = create_app()
+    app.dependency_overrides[get_database_session] = lambda: object()
+    app.dependency_overrides[require_catalog_mutator] = lambda: {"sub": "test"}
+    app.dependency_overrides[require_fresh_catalog_mutator] = lambda: {"sub": "test"}
+
+    with TestClient(app) as client:
+        response = (
+            getattr(client, verb)(path, json=body)
+            if body is not None
+            else getattr(client, verb)(path)
+        )
+
+    assert response.status_code == status
+    if result is not None:
+        assert response.json()["id"] == "1"

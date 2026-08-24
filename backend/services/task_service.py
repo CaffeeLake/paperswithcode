@@ -45,7 +45,7 @@ from backend.services.catalog_errors import (
     CatalogNotFoundError,
     CatalogPersistenceError,
     CatalogValidationError,
-    raise_as_catalog_error,
+    catalog_operation,
 )
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
@@ -67,50 +67,12 @@ class TaskService:
     def __init__(self, db: Session):
         self.db = db
 
-    def _http_operation(self, operation, *args, **kwargs):
-        try:
-            return operation(*args, **kwargs)
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_as_catalog_error(error)
-
-    def list_tasks(self, **kwargs) -> Tasks:
-        return self._http_operation(self.get_tasks, **kwargs)
-
-    def search_tasks_for_http(self, **kwargs) -> Tasks:
-        return self._http_operation(self.search_tasks, **kwargs)
-
-    def list_trending_tasks(self, **kwargs) -> TrendingTasks:
-        return self._http_operation(self.get_trending_tasks, **kwargs)
-
-    def list_top_tasks(self, **kwargs) -> List[Task]:
-        return self._http_operation(self.get_top_tasks, **kwargs)
-
-    def lookup_task(self, identifier: str) -> Task:
+    @catalog_operation
+    def get_task(self, identifier: str) -> Task:
         operation = (
             self.get_task_by_id if identifier.isdigit() else self.get_task_by_slug
         )
-        return self._http_operation(operation, identifier)
-
-    def get_task_page_for_http(self, identifier: str, **kwargs) -> TaskPage:
-        return self._http_operation(self.get_task_page, identifier, **kwargs)
-
-    def list_task_children(self, identifier: str, **kwargs) -> Tasks:
-        return self._http_operation(self.get_task_children, identifier, **kwargs)
-
-    def list_task_parents(self, identifier: str) -> List[Task]:
-        return self._http_operation(self.get_task_parents, identifier)
-
-    def list_task_papers(self, **kwargs):
-        return self._http_operation(self.get_task_papers, **kwargs)
-
-    def add_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
-        return self._http_operation(self.add_keywords, identifier, keywords)
-
-    def remove_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
-        return self._http_operation(self.remove_keywords, identifier, keywords)
-
-    def replace_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
-        return self._http_operation(self.replace_keywords, identifier, keywords)
+        return operation(identifier)
 
     def _get_db_task_by_slug(self, slug: str) -> Optional[DBTask]:
         for candidate in task_slug_candidates(slug):
@@ -209,6 +171,7 @@ class TaskService:
             updated_at=db_task.updated_at,
         )
 
+    @catalog_operation
     def get_top_tasks(self, limit: int = 8) -> List[Task]:
         """
         Return the most common tasks for the homepage sidebar.
@@ -236,6 +199,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve top tasks: {str(e)}")
 
+    @catalog_operation
     def get_tasks(
         self,
         page: int = 1,
@@ -391,6 +355,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks: {str(e)}")
 
+    @catalog_operation
     def get_trending_tasks(
         self,
         limit: int = 8,
@@ -612,6 +577,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve task: {str(e)}")
 
+    @catalog_operation
     def get_task_children(
         self,
         task_id: str,
@@ -654,6 +620,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve child tasks: {str(e)}")
 
+    @catalog_operation
     def get_task_parents(self, task_id: str) -> List[Task]:
         """
         Get all parent tasks of a specific task (entire hierarchy up to root).
@@ -781,6 +748,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve recommended frameworks: {str(e)}")
 
+    @catalog_operation
     def get_task_page(
         self,
         task_id: str,
@@ -855,6 +823,7 @@ class TaskService:
             subtask_benchmarks=subtask_benchmarks,
         )
 
+    @catalog_operation
     def get_tasks_by_area(
         self,
         area_id: str,
@@ -897,12 +866,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks for area: {str(e)}")
 
-    def lookup_tasks_by_area(self, area_id: str, **kwargs) -> Tasks:
-        try:
-            return self.get_tasks_by_area(area_id, **kwargs)
-        except PaperNotFoundError as error:
-            raise CatalogNotFoundError(str(error)) from error
-
+    @catalog_operation
     def search_tasks(
         self,
         query: str,
@@ -1127,6 +1091,7 @@ class TaskService:
             result[task_id] = (trend_score, all_time.get(task_id, 0))
         return result
 
+    @catalog_operation
     def get_task_papers(
         self,
         task_id: str,
@@ -1256,6 +1221,7 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to get papers for task: {str(e)}")
 
+    @catalog_operation
     def add_keywords(self, task_id: str, keywords: List[str]) -> Task:
         """
         Add keywords to a task (appends to existing keywords).
@@ -1307,6 +1273,7 @@ class TaskService:
             self.db.rollback()
             raise DatabaseError(f"Failed to add keywords to task: {str(e)}")
 
+    @catalog_operation
     def remove_keywords(self, task_id: str, keywords: List[str]) -> Task:
         """
         Remove specific keywords from a task.
@@ -1358,6 +1325,7 @@ class TaskService:
             self.db.rollback()
             raise DatabaseError(f"Failed to remove keywords from task: {str(e)}")
 
+    @catalog_operation
     def replace_keywords(self, task_id: str, keywords: List[str]) -> Task:
         """
         Replace all keywords for a task.
@@ -1399,6 +1367,7 @@ class TaskService:
             self.db.rollback()
             raise DatabaseError(f"Failed to replace keywords for task: {str(e)}")
 
+    @catalog_operation
     def create_task(self, request: TaskCreateRequest, *, commit: bool = True) -> Task:
         """
         Create a new task.

@@ -93,7 +93,7 @@ def get_repositories(
     - Filtering by owner, official status, and star count
     - Sorting options
     """
-    return RepositoryService(db).list_repositories(
+    return RepositoryService(db).get_repositories(
         page=page,
         page_size=page_size,
         owner=owner,
@@ -117,7 +117,7 @@ def get_repository_by_id(
     """
     Get a specific repository by its database ID.
     """
-    return RepositoryService(db).lookup_repository(repository_id)
+    return RepositoryService(db).get_repository_by_id(repository_id)
 
 
 @router.get(
@@ -136,7 +136,7 @@ def get_repositories_by_owner(
     """
     return (
         RepositoryService(db)
-        .list_repositories(
+        .get_repositories(
             page=1,
             page_size=1000,  # Large limit to get all repos by owner
             owner=owner,
@@ -158,9 +158,7 @@ def get_repositories_by_owner_and_name(
     """
     Get repositories by owner and name.
     """
-    return RepositoryService(db).get_repositories_by_owner_and_name_for_http(
-        owner, name
-    )
+    return RepositoryService(db).get_repositories_by_owner_and_name(owner, name)
 
 
 @router.get(
@@ -220,7 +218,7 @@ def get_repository_star_history(
 
     **Note:** Snapshots are ordered chronologically (oldest first).
     """
-    return RepositoryService(db).get_repository_star_history_for_http(
+    return RepositoryService(db).get_repository_star_history(
         repository_id=repository_id,
         limit=limit,
         since=since,
@@ -259,7 +257,7 @@ def get_project_pages(
     - Filtering by official status
     - Sorting options
     """
-    return ProjectPageService(db).list_project_pages(
+    return ProjectPageService(db).get_project_pages(
         page=page,
         page_size=page_size,
         official_only=official_only,
@@ -281,7 +279,7 @@ def get_project_page_by_id(
     """
     Get a specific project page by its database ID.
     """
-    return ProjectPageService(db).lookup_project_page(page_id)
+    return ProjectPageService(db).get_project_page_by_id(page_id)
 
 
 @router.post(
@@ -314,7 +312,7 @@ def create_project_page(
     - 400: Invalid request or URL already exists
     - 500: Internal server error
     """
-    return ProjectPageService(db).create_project_page_for_http(request)
+    return ProjectPageService(db).create_project_page(request)
 
 
 @router.put(
@@ -348,7 +346,7 @@ def update_project_page(
     - 404: Project page not found
     - 500: Internal server error
     """
-    return ProjectPageService(db).update_project_page_for_http(page_id, request)
+    return ProjectPageService(db).update_project_page(page_id, request)
 
 
 @router.delete(
@@ -374,7 +372,7 @@ def delete_project_page(
     - 404: Project page not found
     - 500: Internal server error
     """
-    ProjectPageService(db).delete_project_page_for_http(page_id)
+    ProjectPageService(db).delete_project_page(page_id)
     return None
 
 
@@ -393,7 +391,7 @@ def get_repositories_for_paper(
     """
     Get all repositories associated with a specific paper.
     """
-    return RepositoryService(db).list_repositories_for_paper(paper_id)
+    return RepositoryService(db).get_repositories_for_paper(paper_id)
 
 
 @router.get(
@@ -408,7 +406,7 @@ def get_project_pages_for_paper(
     """
     Get all project pages associated with a specific paper.
     """
-    return ProjectPageService(db).list_project_pages_for_paper(paper_id)
+    return ProjectPageService(db).get_project_pages_for_paper(paper_id)
 
 
 @router.get(
@@ -426,7 +424,7 @@ def get_project_page_with_papers(
     This endpoint provides detailed information about which papers are associated
     with a project page, including relationship metadata like official status.
     """
-    return ProjectPageService(db).get_project_page_with_papers_for_http(page_id)
+    return ProjectPageService(db).get_project_page_with_papers(page_id)
 
 
 @router.get(
@@ -447,6 +445,6 @@ def get_paper_project_page_relationships(
     This endpoint provides access to the junction table data, including
     relationship metadata like official status and source information.
     """
-    return ProjectPageService(db).list_paper_project_page_relationships(
+    return ProjectPageService(db).get_paper_project_page_relationships(
         paper_id=paper_id, project_page_id=project_page_id
     )

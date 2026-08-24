@@ -220,4 +220,4 @@ def get_area_tasks(
     - `400 Bad Request`: Invalid area ID format
     - `500 Internal Server Error`: Database or server error
     """
-    return TaskService(db).lookup_tasks_by_area(area_id, page=page, page_size=page_size)
+    return TaskService(db).get_tasks_by_area(area_id, page=page, page_size=page_size)
