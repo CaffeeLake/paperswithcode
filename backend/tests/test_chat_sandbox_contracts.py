@@ -61,6 +61,7 @@ from backend.chat_sandbox_worker.contract import (
     MODAL_APP_NAME,
     MODAL_IMAGE_ID,
     PRODUCTION_MODAL_IMAGE_ID,
+    PWC_CLI_VERSION,
     WORKER_CONTRACT_VERSION,
 )
 from backend.chat_sandbox_worker.prompt import render, sha256
@@ -3258,6 +3259,18 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     ) in source
     assert '"chown pwc-broker:pwc-broker /var/empty/pwc-broker"' in source
     assert '"websockets==16.0"' in source
+
+
+def test_chat_worker_exposes_parameter_filtered_benchmarks():
+    skill = Path(agent.__file__).with_name("PWC_CLI_SKILL.md").read_text()
+    image_source = (
+        Path(__file__).resolve().parents[1] / "chat_sandbox_worker" / "image.py"
+    ).read_text()
+
+    assert PWC_CLI_VERSION == "0.1.17"
+    assert "--max-parameters SIZE" in skill
+    assert "at or below an inclusive parameter" in skill
+    assert "pwc benchmark --help | grep -F -- '--max-parameters'" in image_source
 
 
 def test_control_websocket_requires_verified_worker_generation(monkeypatch):

@@ -140,6 +140,7 @@ image = (
         "pwc --help >/dev/null",
         "pwc paper --help >/dev/null",
         "pwc benchmark --help >/dev/null",
+        "pwc benchmark --help | grep -F -- '--max-parameters' >/dev/null",
         "pwc benchmark list --help >/dev/null",
         "S2_API_KEY=sandbox-gateway S2_API_URL=http://127.0.0.1:8765/semantic-scholar/graph/v1 s2 version",
         "runuser -u pwc-chat -- hf --help >/dev/null",
