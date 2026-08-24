@@ -16,7 +16,30 @@ Write concise, evidence-backed GitHub issue replies after Papers With Code catal
 - Do not expose internal database details, credentials, deployment mechanics, or debugging history in a public reply.
 - Write one tailored reply per issue. Avoid boilerplate batches that ignore the author's actual message.
 
-## 1. Resolve the issue and the result
+## 1. Audit the requested scope before replying in bulk
+
+For a named issue, proceed directly to resolution. For a batch, or when the
+user says “all”, “outstanding”, or “check all issues”, establish the complete
+set before replying:
+
+1. Search both `is:open` and `is:closed` issues. A closed issue can still
+   accept a comment; never change its state just to reply.
+2. Paginate through every result. Do not treat the first search page, a
+   relevance-ranked result, or a comment-count filter as complete coverage.
+3. For each issue, fetch the latest comment. It needs a reply only if that
+   comment is from an author or maintainer and no equivalent NielsRogge reply
+   follows it. Exclude bot-only comments and ordinary acknowledgements that
+   would create a thank-you loop.
+4. Report the resolved target count before posting. Keep a separate list of
+   issues that request catalog changes; acknowledge those only after resolving
+   the catalog state, rather than claiming a correction is live.
+
+For the recurring verification campaign, search the exact title and author,
+for example `is:issue is:open author:NielsRogge "Verify evals on Papers with
+Code"`, then repeat with `is:closed`. Prefer a paginated GraphQL search that
+returns each issue’s last comment, or explicitly paginate the REST search.
+
+## 2. Resolve the issue and the result
 
 1. Read the issue body and all current comments. Identify the repository, issue number, author name or handle, requested correction, and any claims that need acknowledgment.
 2. Inspect the current Papers With Code paper and evaluation records. Record the paper identifier, evaluation ID, dataset slug, task slug, model, metric, value, and current rank for every row discussed.
@@ -25,7 +48,7 @@ Write concise, evidence-backed GitHub issue replies after Papers With Code catal
 
 Use the connected GitHub integration first for issue metadata, comments, and posting. Use `gh` only when the integration cannot perform the required operation. Do not blindly retry an uncertain posting failure; fetch the issue comments first to determine whether the comment was created.
 
-## 2. Link directly to highlighted evaluation rows
+## 3. Link directly to highlighted evaluation rows
 
 When an evaluation ID is known, link to its highlighted leaderboard row rather than to a generic benchmark or paper page:
 
@@ -41,7 +64,7 @@ https://paperswithcode.co/benchmark/imagenet-256x256?task=image-generation&eval=
 
 The query order should be `task` followed by `eval`. Use a descriptive Markdown label such as the benchmark and model name. If several rows matter, link each relevant row directly. A paper-page link may supplement these links, but must not replace an evaluation-specific link when the evaluation ID is available.
 
-## 3. Invite authors to copy top-three badges
+## 4. Invite authors to copy top-three badges
 
 Check the current live rank of the paper's evaluations. A badge is eligible only when `1 <= best_rank <= 3` on the current leaderboard.
 
@@ -59,7 +82,7 @@ When the user asks to provide the badge Markdown itself, use the live, evaluatio
 
 Prefer the paper page's **Copy PwC badge** output when available, because it already applies the current badge format.
 
-## 4. Compose the reply
+## 5. Compose the reply
 
 Use the issue author's preferred name when it is clear; otherwise address their GitHub handle or omit the greeting. Keep the reply friendly, specific, and brief. Write in the first person when reporting work performed for the catalog.
 
@@ -86,7 +109,7 @@ Adapt the middle paragraph to the facts:
 
 Avoid vague phrases such as "fixed everything". Do not mention an evaluation ID as prose unless it helps disambiguate the result; normally it should appear only inside the direct URL.
 
-## 5. Post safely
+## 6. Post safely
 
 Before mutating GitHub, state the exact `owner/repository#issue` target in a concise progress update.
 
@@ -98,7 +121,7 @@ gh issue comment ISSUE_NUMBER --repo OWNER/REPOSITORY --body-file PATH
 
 For multiple issues, prepare and post separate bodies. A closed issue may accept a comment; do not change its state merely to reply.
 
-## 6. Verify and report
+## 7. Verify and report
 
 After posting:
 
