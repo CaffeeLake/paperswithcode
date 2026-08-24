@@ -399,8 +399,8 @@ Configuration is fail-closed. Production direct apply requires all of:
 - pinned model `gpt-5.6-luna`, medium reasoning, and Codex CLI version.
 
 The production image is the public, content-versioned Docker Space
-`hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c`, pinned to Hub revision
-`11e9558b6c77e0989185baa453bc99229b226696`. The dispatcher reads the Space
+`hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6`, pinned to Hub revision
+`1d85149040996dbb4ea0805f4c034a80ad214bdf`. The dispatcher reads the Space
 revision before every launch and pauses daily dispatch if it differs. Never
 update a versioned curator Space in place: publish a new Space whose suffix is
 the first 12 characters of the runner SHA-256, record its exact Hub revision,
@@ -409,7 +409,7 @@ run a standalone Jobs capability probe, then update both
 tag such as `latest` is never valid for scheduled production dispatch.
 
 The current image probe is recorded at
-`https://huggingface.co/jobs/nielsr/6a84724ecd3824960fcbeaf6`; its command
+`https://huggingface.co/jobs/nielsr/6a8c62317c5c7dd3792375ee`; its command
 checks the Codex version, PyPDF2 version, full runner SHA-256, exact model, and
 scoped callback-token inheritance. The public Space avoids Docker Hub and does
 not require personal GitHub Packages access.

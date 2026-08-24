@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
 import uuid
 import sys
@@ -17,6 +19,7 @@ from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.services.codex_add_evals_service import (
+    CURATOR_BOOTSTRAP_PATHS,
     CodexPaperJob,
     CodexPaperJobCounts,
     CodexPaperJobsResponse,
@@ -83,14 +86,39 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "hf.co/spaces/nielsr/pwc-codex-curator-75115282c29c"
+        "hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6"
     )
     assert settings.codex_jobs_image_revision == (
-        "11e9558b6c77e0989185baa453bc99229b226696"
+        "1d85149040996dbb4ea0805f4c034a80ad214bdf"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
     assert "npm install" not in CURATOR_COMMAND
+
+
+def test_curator_space_name_and_dockerfile_pin_current_runner():
+    runner_digest = hashlib.sha256(
+        Path("jobs/run_paper_curation.py").read_bytes()
+    ).hexdigest()
+    settings = get_settings()
+
+    assert settings.codex_jobs_image.endswith(f"-{runner_digest[:12]}")
+    for dockerfile in (
+        "jobs/Dockerfile.codex-curator",
+        "jobs/Dockerfile.codex-curator-space",
+    ):
+        assert f'"{runner_digest}"' in Path(dockerfile).read_text(encoding="utf-8")
+
+
+def test_curator_bootstrap_allowlist_matches_service_bundle(monkeypatch):
+    monkeypatch.setenv("PWC_CURATION_API_URL", "https://paperswithcode.co/api/v1")
+    monkeypatch.setenv("PWC_CURATION_JOB_ID", str(uuid.uuid4()))
+    monkeypatch.setenv("PWC_CURATION_JOB_TOKEN", "test-token")
+    monkeypatch.setenv("PWC_CURATION_KIND", "add-evals")
+    monkeypatch.setenv("PWC_GIT_SHA", "a" * 40)
+    run_paper_curation = importlib.import_module("jobs.run_paper_curation")
+
+    assert run_paper_curation.BOOTSTRAP_PATHS == set(CURATOR_BOOTSTRAP_PATHS)
 
 
 def test_launch_error_keeps_hub_validation_message():
