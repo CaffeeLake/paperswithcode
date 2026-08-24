@@ -1,5 +1,5 @@
--- Add text reranking as a retrieval subtask and reuse the existing MTEB v2
--- benchmark row. The MTEB leaderboard's Rerank column is the task metric.
+-- Add text reranking as a top-level Language task and reuse the existing MTEB
+-- v2 benchmark row. The MTEB leaderboard's Rerank column is the task metric.
 
 BEGIN;
 
@@ -12,9 +12,9 @@ VALUES (
     'text-reranking',
     'Text reranking orders a candidate set of passages, documents, or records by relevance to a query, usually after an initial retrieval stage. Rerankers commonly score query-document pairs with cross-encoders or late-interaction models to improve the final ranking in [Retrieval](/tasks/retrieval), semantic search, question answering, and retrieval-augmented generation systems.',
     'text reranking, text re-ranking, reranking, re-ranking, neural reranking, neural re-ranking, document reranking, passage reranking, query-document reranking, query document reranking, cross-encoder reranking, cross encoder reranking, learning to rerank, ranker, reranker',
-    (SELECT area_id FROM tasks WHERE slug = 'retrieval' LIMIT 1),
-    (SELECT level + 1 FROM tasks WHERE slug = 'retrieval' LIMIT 1),
-    (SELECT id FROM tasks WHERE slug = 'retrieval' LIMIT 1),
+    (SELECT id FROM areas WHERE name = 'Language' LIMIT 1),
+    0,
+    NULL,
     TRUE,
     NULL,
     'Papers With Code',
