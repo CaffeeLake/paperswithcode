@@ -44,6 +44,7 @@ The goal is to split up those tasks in the future.
 - `question-answering` — Question Answering
 - `summarization` — Summarization
 - `machine-translation` — Machine Translation
+- `text-reranking` — Text Reranking
 - `named-entity-recognition` — Named Entity Recognition
 - `text-classification` — Text classification
 - `text-to-sql` — Text-to-SQL
@@ -108,6 +109,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `3D-tracking` — 3D Tracking
 - `3d-understanding` — 3D understanding
 - `agents` — Agents
+- `ai-weather-forecasting` — AI Weather Forecasting
 - `anomaly-detection` — Anomaly Detection
 - `atari-games` — Atari Games
 - `audio-classification` — Audio Classification
@@ -184,6 +186,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `part-of-speech-tagging` — Part-of-Speech Tagging
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
+- `pseudo-labelling` — Pseudo Labelling
 - `question-answering` — Question Answering
 - `reasoning` — Reasoning
 - `recommendation-systems` — Recommendation Systems
