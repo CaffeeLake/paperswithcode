@@ -15,7 +15,7 @@ from backend.services.paper_method_link_service import (
     month_start,
     shift_month,
 )
-from backend.utils.exceptions import PaperNotFoundError
+from backend.services.catalog_errors import CatalogNotFoundError
 
 
 class MethodTrendService:
@@ -264,7 +264,7 @@ class MethodTrendService:
                 .first()
             )
         if method is None:
-            raise PaperNotFoundError(
+            raise CatalogNotFoundError(
                 f"Method with ID, slug, or name '{method_id}' not found"
             )
         return method

@@ -27,6 +27,11 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
+    CatalogPersistenceError,
+    CatalogValidationError,
+)
 from backend.config import get_settings
 
 
@@ -37,6 +42,45 @@ class ProjectPageService:
         """Initialize the service with a database session."""
         self.db = db
         self.settings = get_settings()
+
+    def _http_operation(self, operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+        except ValueError as error:
+            raise CatalogValidationError(str(error)) from error
+
+    def list_project_pages(self, **kwargs):
+        return self._http_operation(self.get_project_pages, **kwargs)
+
+    def lookup_project_page(self, page_id: str):
+        return self._http_operation(self.get_project_page_by_id, page_id)
+
+    def create_project_page_for_http(self, request):
+        try:
+            return self.create_project_page(request)
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+        except ValueError as error:
+            raise CatalogValidationError(str(error)) from error
+
+    def update_project_page_for_http(self, page_id: str, request):
+        return self._http_operation(self.update_project_page, page_id, request)
+
+    def delete_project_page_for_http(self, page_id: str):
+        return self._http_operation(self.delete_project_page, page_id)
+
+    def list_project_pages_for_paper(self, paper_id: str):
+        return self._http_operation(self.get_project_pages_for_paper, paper_id)
+
+    def get_project_page_with_papers_for_http(self, page_id: str):
+        return self._http_operation(self.get_project_page_with_papers, page_id)
+
+    def list_paper_project_page_relationships(self, **kwargs):
+        return self._http_operation(self.get_paper_project_page_relationships, **kwargs)
 
     def get_project_pages(
         self,
@@ -294,12 +338,16 @@ class ProjectPageService:
             url=db_project_page.url,
             is_official=db_project_page.is_official,
             source=db_project_page.source,
-            created_at=db_project_page.created_at.date()
-            if db_project_page.created_at
-            else None,
-            updated_at=db_project_page.updated_at.date()
-            if db_project_page.updated_at
-            else None,
+            created_at=(
+                db_project_page.created_at.date()
+                if db_project_page.created_at
+                else None
+            ),
+            updated_at=(
+                db_project_page.updated_at.date()
+                if db_project_page.updated_at
+                else None
+            ),
         )
 
     def _db_paper_project_page_to_api(

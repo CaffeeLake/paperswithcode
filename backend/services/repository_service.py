@@ -211,6 +211,23 @@ class RepositoryService:
         except DatabaseError as error:
             raise CatalogPersistenceError(str(error)) from error
 
+    def _for_http(self, operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except PaperNotFoundError as error:
+            raise CatalogNotFoundError(str(error)) from error
+        except DatabaseError as error:
+            raise CatalogPersistenceError(str(error)) from error
+
+    def get_repositories_by_owner_and_name_for_http(self, owner: str, name: str):
+        return self._for_http(self.get_repositories_by_owner_and_name, owner, name)
+
+    def get_repository_star_history_for_http(self, **kwargs):
+        return self._for_http(self.get_repository_star_history, **kwargs)
+
+    def list_repositories_for_paper(self, paper_id: str):
+        return self._for_http(self.get_repositories_for_paper, paper_id)
+
     def get_repository_by_id(self, repository_id: str) -> Repository:
         """
         Get a specific repository by ID.
@@ -570,16 +587,18 @@ class RepositoryService:
             num_stars=db_repository.num_stars,
             is_official=False,  # Default to False since is_official is now in junction table
             source=db_repository.source,
-            trending_score=float(db_repository.trending_score)
-            if db_repository.trending_score is not None
-            else None,
+            trending_score=(
+                float(db_repository.trending_score)
+                if db_repository.trending_score is not None
+                else None
+            ),
             trending_score_updated_at=db_repository.trending_score_updated_at,
-            created_at=db_repository.created_at.date()
-            if db_repository.created_at
-            else None,
-            updated_at=db_repository.updated_at.date()
-            if db_repository.updated_at
-            else None,
+            created_at=(
+                db_repository.created_at.date() if db_repository.created_at else None
+            ),
+            updated_at=(
+                db_repository.updated_at.date() if db_repository.updated_at else None
+            ),
         )
 
     def get_next_repository_group_for_stars_update(

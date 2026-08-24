@@ -25,7 +25,6 @@ from backend.services.catalog_errors import CatalogNotFoundError
 from backend.services.organization_sync_service import OrganizationSyncService
 from backend.services.hf_organization_service import HFOrganizationError
 from backend.utils.auth import require_catalog_mutator
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.organization_logos import organization_logo_extension
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -51,11 +50,7 @@ def get_organizations(
     ),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = OrganizationService(db)
-        return service.get_organizations(featured_only=featured_only)
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return OrganizationService(db).list_organizations(featured_only=featured_only)
 
 
 @router.get(
@@ -64,10 +59,7 @@ def get_organizations(
     summary="List curated organization cards for the public directory",
 )
 def get_organization_index(db: Session = Depends(get_database_session)):
-    try:
-        return OrganizationService(db).get_organizations(curated_only=True)
-    except DatabaseError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    return OrganizationService(db).list_organizations(curated_only=True)
 
 
 @router.post(
@@ -88,8 +80,6 @@ async def sync_organization(
             skip_missing_papers=payload.skip_missing_papers,
         )
         return stats.to_dict()
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (HFOrganizationError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
@@ -105,13 +95,7 @@ def get_organization(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = OrganizationService(db)
-        return service.get_organization(slug)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return OrganizationService(db).lookup_organization(slug)
 
 
 @router.get(
@@ -123,12 +107,7 @@ def get_organization_contributions(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        return OrganizationService(db).get_organization_contributions(slug)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return OrganizationService(db).get_organization_contributions_for_http(slug)
 
 
 def _organization_logo_response(
@@ -220,13 +199,7 @@ def get_organization_areas_with_tasks(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = OrganizationService(db)
-        return service.get_organization_areas_with_tasks(slug)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return OrganizationService(db).get_organization_areas_for_http(slug)
 
 
 @router.get(
@@ -259,23 +232,17 @@ def get_organization_papers(
     date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
 ):
-    try:
-        service = OrganizationService(db)
-        return service.get_organization_papers(
-            slug=slug,
-            task_slug=task,
-            page=page,
-            page_size=page_size,
-            latest_only=latest_only,
-            order_by=order_by,
-            order_dir=order_dir,
-            include_resources=include_resources,
-            has_code=has_code,
-            has_hf_artifacts=has_hf_artifacts,
-            start_date=date_range.start_date,
-            end_date=date_range.end_date,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return OrganizationService(db).list_organization_papers(
+        slug=slug,
+        task_slug=task,
+        page=page,
+        page_size=page_size,
+        latest_only=latest_only,
+        order_by=order_by,
+        order_dir=order_dir,
+        include_resources=include_resources,
+        has_code=has_code,
+        has_hf_artifacts=has_hf_artifacts,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+    )

@@ -24,3 +24,14 @@ class CatalogValidationError(CatalogError, ValueError):
 
 class CatalogPersistenceError(CatalogError):
     """Raised when catalog persistence cannot complete."""
+
+
+def raise_as_catalog_error(error: Exception) -> None:
+    """Re-raise legacy catalog failures as their public typed equivalents."""
+    from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+
+    if isinstance(error, PaperNotFoundError):
+        raise CatalogNotFoundError(str(error)) from error
+    if isinstance(error, DatabaseError):
+        raise CatalogPersistenceError(str(error)) from error
+    raise error

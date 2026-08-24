@@ -43,7 +43,9 @@ from backend.utils.task_slugs import task_slug_candidates
 from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogNotFoundError,
+    CatalogPersistenceError,
     CatalogValidationError,
+    raise_as_catalog_error,
 )
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
@@ -65,6 +67,51 @@ class TaskService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _http_operation(self, operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except (PaperNotFoundError, DatabaseError) as error:
+            raise_as_catalog_error(error)
+
+    def list_tasks(self, **kwargs) -> Tasks:
+        return self._http_operation(self.get_tasks, **kwargs)
+
+    def search_tasks_for_http(self, **kwargs) -> Tasks:
+        return self._http_operation(self.search_tasks, **kwargs)
+
+    def list_trending_tasks(self, **kwargs) -> TrendingTasks:
+        return self._http_operation(self.get_trending_tasks, **kwargs)
+
+    def list_top_tasks(self, **kwargs) -> List[Task]:
+        return self._http_operation(self.get_top_tasks, **kwargs)
+
+    def lookup_task(self, identifier: str) -> Task:
+        operation = (
+            self.get_task_by_id if identifier.isdigit() else self.get_task_by_slug
+        )
+        return self._http_operation(operation, identifier)
+
+    def get_task_page_for_http(self, identifier: str, **kwargs) -> TaskPage:
+        return self._http_operation(self.get_task_page, identifier, **kwargs)
+
+    def list_task_children(self, identifier: str, **kwargs) -> Tasks:
+        return self._http_operation(self.get_task_children, identifier, **kwargs)
+
+    def list_task_parents(self, identifier: str) -> List[Task]:
+        return self._http_operation(self.get_task_parents, identifier)
+
+    def list_task_papers(self, **kwargs):
+        return self._http_operation(self.get_task_papers, **kwargs)
+
+    def add_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
+        return self._http_operation(self.add_keywords, identifier, keywords)
+
+    def remove_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
+        return self._http_operation(self.remove_keywords, identifier, keywords)
+
+    def replace_task_keywords(self, identifier: str, keywords: List[str]) -> Task:
+        return self._http_operation(self.replace_keywords, identifier, keywords)
+
     def _get_db_task_by_slug(self, slug: str) -> Optional[DBTask]:
         for candidate in task_slug_candidates(slug):
             task = self.db.query(DBTask).filter(DBTask.slug == candidate).first()
@@ -77,7 +124,7 @@ class TaskService:
             result = load_entity_image(self.db, DBTask, candidate)
             if result is not None:
                 return result
-        raise PaperNotFoundError("Image not available")
+        raise CatalogNotFoundError("Image not available")
 
     @staticmethod
     def _deduplicate_task_trending_repositories(query, task_id: int):
@@ -1420,9 +1467,9 @@ class TaskService:
             # Return the created task using the existing get_task_by_id method
             return self.get_task_by_id(str(db_task.id))
 
-        except (ValueError, CatalogConflictError, CatalogValidationError) as e:
+        except ValueError as e:
             self.db.rollback()
             raise e
         except Exception as e:
             self.db.rollback()
-            raise DatabaseError(f"Failed to create task: {str(e)}")
+            raise CatalogPersistenceError(f"Failed to create task: {str(e)}") from e

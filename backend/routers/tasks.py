@@ -27,7 +27,7 @@ from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
 )
-from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.services.catalog_errors import CatalogNotFoundError
 from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -66,41 +66,24 @@ def list_tasks(
     - `/api/v1/tasks/?parent_id=5` - Get subtasks of task 5
     - `/api/v1/tasks/?q=classification` - Search displayed task names
     """
-    try:
-        # Parse ordering
-        order_dir = "asc"
-        order_by = ordering
-        if ordering and ordering.startswith("-"):
-            order_dir = "desc"
-            order_by = ordering[1:]
+    order_dir = "desc" if ordering and ordering.startswith("-") else "asc"
+    order_by = ordering[1:] if order_dir == "desc" else ordering
+    if order_by not in {"name", "created_at", "level", "paper_count"}:
+        order_by = "name"
 
-        # Validate order_by field
-        valid_fields = ["name", "created_at", "level", "paper_count"]
-        if order_by not in valid_fields:
-            order_by = "name"
-
-        service = TaskService(db)
-
-        # Use search if q parameter is provided
-        if q:
-            return service.search_tasks(
-                query=q,
-                page=page,
-                page_size=page_size,
-            )
-
-        return service.get_tasks(
-            page=page,
-            page_size=page_size,
-            name=name,
-            area_id=area_id,
-            parent_id=parent_id,
-            level=level,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    service = TaskService(db)
+    if q:
+        return service.search_tasks_for_http(query=q, page=page, page_size=page_size)
+    return service.list_tasks(
+        page=page,
+        page_size=page_size,
+        name=name,
+        area_id=area_id,
+        parent_id=parent_id,
+        level=level,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
 
 
 @router.get("/trending", response_model=TrendingTasks)
@@ -155,19 +138,15 @@ def get_trending_tasks(
     - `/api/v1/tasks/trending` - default 30d vs preceding 180d, top 8
     - `/api/v1/tasks/trending?limit=12&level=0` - top-level domains only
     """
-    try:
-        service = TaskService(db)
-        return service.get_trending_tasks(
-            limit=limit,
-            recent_days=recent_days,
-            baseline_days=baseline_days,
-            level=level,
-            min_recent_papers=min_recent_papers,
-            min_baseline_papers=min_baseline_papers,
-            min_share_lift=min_share_lift,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).list_trending_tasks(
+        limit=limit,
+        recent_days=recent_days,
+        baseline_days=baseline_days,
+        level=level,
+        min_recent_papers=min_recent_papers,
+        min_baseline_papers=min_baseline_papers,
+        min_share_lift=min_share_lift,
+    )
 
 
 @router.get("/top", response_model=List[Task])
@@ -183,11 +162,7 @@ def get_top_tasks(
     This endpoint is intentionally small and cache-friendly. It avoids the
     pagination count work done by the general `/tasks/` listing.
     """
-    try:
-        service = TaskService(db)
-        return service.get_top_tasks(limit=limit)
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).list_top_tasks(limit=limit)
 
 
 @router.get("/{task_id}/trending-benchmarks", response_model=TrendingBenchmarks)
@@ -233,22 +208,17 @@ def get_trending_benchmarks(
     rate-change multiplier remains available for display. Each paper counts
     once per benchmark even when it contributes multiple model or metric rows.
     """
-    try:
-        return BenchmarkTrendService(db).get_trending_benchmarks(
-            task_id,
-            limit=limit,
-            recent_days=recent_days,
-            baseline_days=baseline_days,
-            min_recent_papers=min_recent_papers,
-            include_descendants=include_descendants,
-            bucket_days=bucket_days,
-            history_buckets=history_buckets,
-            is_open=is_open,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return BenchmarkTrendService(db).get_trending_benchmarks(
+        task_id,
+        limit=limit,
+        recent_days=recent_days,
+        baseline_days=baseline_days,
+        min_recent_papers=min_recent_papers,
+        include_descendants=include_descendants,
+        bucket_days=bucket_days,
+        history_buckets=history_buckets,
+        is_open=is_open,
+    )
 
 
 @router.get("/{task_id}", response_model=Task)
@@ -266,19 +236,7 @@ def get_task(
     - `/api/v1/tasks/1` - Get task with ID 1
     - `/api/v1/tasks/computer-use-agents` - Get task by slug
     """
-    try:
-        service = TaskService(db)
-
-        # Try as numeric ID first
-        if task_id.isdigit():
-            return service.get_task_by_id(task_id)
-
-        # Otherwise, treat as slug
-        return service.get_task_by_slug(task_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).lookup_task(task_id)
 
 
 @router.get("/{task_id}/image")
@@ -294,7 +252,7 @@ def get_task_image(
     """
     try:
         data, mime = TaskService(db).get_image(task_id)
-    except PaperNotFoundError:
+    except CatalogNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Image not available",
@@ -328,13 +286,7 @@ def get_task_page(
     - `/api/v1/tasks/language-modeling/page`
     - `/api/v1/tasks/5/page`
     """
-    try:
-        service = TaskService(db)
-        return service.get_task_page(task_id, is_open=is_open)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).get_task_page_for_http(task_id, is_open=is_open)
 
 
 @router.get("/{task_id}/children", response_model=Tasks)
@@ -355,17 +307,7 @@ def get_task_children(
     **Example:**
     - `/api/v1/tasks/5/children` - Get all subtasks of task 5
     """
-    try:
-        service = TaskService(db)
-        return service.get_task_children(
-            task_id,
-            page=page,
-            page_size=page_size,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).list_task_children(task_id, page=page, page_size=page_size)
 
 
 @router.get("/{task_id}/parents", response_model=list[Task])
@@ -382,13 +324,7 @@ def get_task_parents(
     **Example:**
     - `/api/v1/tasks/10/parents` - Get parent hierarchy of task 10
     """
-    try:
-        service = TaskService(db)
-        return service.get_task_parents(task_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).list_task_parents(task_id)
 
 
 @router.get("/{task_id}/papers", response_model=Papers)
@@ -432,25 +368,19 @@ def get_task_papers(
     - `/api/v1/tasks/object-detection/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/tasks/object-detection/papers?order_by=title&order_dir=asc` - Papers A-Z
     """
-    try:
-        service = TaskService(db)
-        return service.get_task_papers(
-            task_id=task_id,
-            page=page,
-            page_size=page_size,
-            latest_only=latest_only,
-            order_by=order_by,
-            order_dir=order_dir,
-            include_resources=include_resources,
-            has_code=has_code,
-            has_hf_artifacts=has_hf_artifacts,
-            start_date=date_range.start_date,
-            end_date=date_range.end_date,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).list_task_papers(
+        task_id=task_id,
+        page=page,
+        page_size=page_size,
+        latest_only=latest_only,
+        order_by=order_by,
+        order_dir=order_dir,
+        include_resources=include_resources,
+        has_code=has_code,
+        has_hf_artifacts=has_hf_artifacts,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+    )
 
 
 @router.post(
@@ -522,13 +452,7 @@ def add_task_keywords(
     }
     ```
     """
-    try:
-        service = TaskService(db)
-        return service.add_keywords(task_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).add_task_keywords(task_id, keyword_update.keywords)
 
 
 @router.delete(
@@ -558,13 +482,7 @@ def remove_task_keywords(
     }
     ```
     """
-    try:
-        service = TaskService(db)
-        return service.remove_keywords(task_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).remove_task_keywords(task_id, keyword_update.keywords)
 
 
 @router.put(
@@ -594,10 +512,4 @@ def replace_task_keywords(
     }
     ```
     """
-    try:
-        service = TaskService(db)
-        return service.replace_keywords(task_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return TaskService(db).replace_task_keywords(task_id, keyword_update.keywords)

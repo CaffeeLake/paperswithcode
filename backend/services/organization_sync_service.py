@@ -25,6 +25,7 @@ from backend.services.paper_ingestion_service import (
     PaperIngestionError,
     PaperIngestionService,
 )
+from backend.services.catalog_errors import CatalogConflictError
 from backend.utils.slug_utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,9 @@ class OrganizationSyncService:
     ) -> OrganizationSyncStats:
         manifest = BY_PWC_SLUG.get(slug)
         if manifest is None:
-            raise ValueError(f"Organization {slug!r} is not in the featured manifest")
+            raise CatalogConflictError(
+                f"Organization {slug!r} is not in the featured manifest"
+            )
         data = self._fetch_manifest(manifest)
         return await self._sync_manifest(
             manifest,
@@ -137,10 +140,12 @@ class OrganizationSyncService:
         """Synchronize an arbitrary HF organization through the admin API path."""
         normalized_hf_slug = hf_slug.strip()
         if not normalized_hf_slug:
-            raise ValueError("Hugging Face organization handle must not be empty")
+            raise CatalogConflictError(
+                "Hugging Face organization handle must not be empty"
+            )
         requested_slug = slugify(slug or normalized_hf_slug)
         if not requested_slug:
-            raise ValueError("Organization slug must not be empty")
+            raise CatalogConflictError("Organization slug must not be empty")
 
         slug_match = (
             self.db.query(Organization)
@@ -157,7 +162,7 @@ class OrganizationSyncService:
             and slug_match.hf_slug
             and slug_match.hf_slug.lower() != normalized_hf_slug.lower()
         ):
-            raise ValueError(
+            raise CatalogConflictError(
                 f"Organization slug {requested_slug!r} already belongs to Hugging "
                 f"Face handle {slug_match.hf_slug!r}"
             )
@@ -166,7 +171,7 @@ class OrganizationSyncService:
             and hf_match is not None
             and slug_match.id != hf_match.id
         ):
-            raise ValueError(
+            raise CatalogConflictError(
                 f"Organization slug {requested_slug!r} and Hugging Face handle "
                 f"{normalized_hf_slug!r} identify different rows"
             )

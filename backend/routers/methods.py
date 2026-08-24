@@ -17,7 +17,6 @@ from backend.models.api import (
     MethodTrend,
     Papers,
 )
-from backend.models.database import Method as DBMethod
 from backend.services.method_service import MethodService
 from backend.services.method_trend_service import MethodTrendService
 from backend.database.connection import get_database_session
@@ -27,7 +26,7 @@ from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
 )
-from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.services.catalog_errors import CatalogNotFoundError
 
 router = APIRouter(prefix="/methods", tags=["methods"])
 
@@ -86,50 +85,38 @@ def list_methods(
     - `/api/v1/methods/?name=resnet` - Find methods with "resnet" in the name
     - `/api/v1/methods/?ordering=-introduced_year` - Most recent methods first
     """
-    try:
-        # Parse ordering
-        order_dir = "asc"
-        order_by = ordering
-        if ordering and ordering.startswith("-"):
-            order_dir = "desc"
-            order_by = ordering[1:]
+    order_dir = "desc" if ordering and ordering.startswith("-") else "asc"
+    order_by = ordering[1:] if order_dir == "desc" else ordering
+    if order_by not in {
+        "name",
+        "full_name",
+        "introduced_year",
+        "created_at",
+        "paper_count",
+        "trend_score",
+    }:
+        order_by = "name"
 
-        valid_fields = [
-            "name",
-            "full_name",
-            "introduced_year",
-            "created_at",
-            "paper_count",
-            "trend_score",
-        ]
-        if order_by not in valid_fields:
-            order_by = "name"
-
-        service = MethodService(db)
-
-        # Use search if q parameter is provided
-        if q:
-            return service.search_methods(
-                query=q,
-                page=page,
-                page_size=page_size,
-                include_trends=include_trends,
-            )
-
-        return service.get_methods(
+    service = MethodService(db)
+    if q:
+        return service.search_methods_for_http(
+            query=q,
             page=page,
             page_size=page_size,
-            name=name,
-            full_name=full_name,
-            introduced_year=introduced_year,
-            area_id=area_id,
-            exclude_id=exclude_id,
-            order_by=order_by,
-            order_dir=order_dir,
             include_trends=include_trends,
         )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return service.list_methods(
+        page=page,
+        page_size=page_size,
+        name=name,
+        full_name=full_name,
+        introduced_year=introduced_year,
+        area_id=area_id,
+        exclude_id=exclude_id,
+        order_by=order_by,
+        order_dir=order_dir,
+        include_trends=include_trends,
+    )
 
 
 @router.get(
@@ -138,10 +125,7 @@ def list_methods(
     summary="List compact method cards for the public directory",
 )
 def method_index(db: Session = Depends(get_database_session)):
-    try:
-        return MethodService(db).get_method_index()
-    except DatabaseError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    return MethodService(db).get_method_index_for_http()
 
 
 @router.get("/{method_id}", response_model=Method)
@@ -161,19 +145,7 @@ def get_method(
     - `/api/v1/methods/vision-transformer` - Get method by slug
     - `/api/v1/methods/GPT-2` - Get method by name (legacy support)
     """
-    try:
-        service = MethodService(db)
-
-        # Try as numeric ID first
-        if method_id.isdigit():
-            return service.get_method_by_id(method_id)
-
-        # Otherwise, treat as name
-        return service.get_method_by_name(method_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodService(db).lookup_method(method_id)
 
 
 @router.get("/{method_id}/trend", response_model=MethodTrend)
@@ -190,17 +162,12 @@ def get_method_trend(
     db: Session = Depends(get_database_session),
 ):
     """Return complete monthly mention history and reference coverage."""
-    try:
-        return MethodTrendService(db).get_method_trend(
-            method_id,
-            recent_days=recent_days,
-            baseline_days=baseline_days,
-            history_months=history_months,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodTrendService(db).get_method_trend(
+        method_id,
+        recent_days=recent_days,
+        baseline_days=baseline_days,
+        history_months=history_months,
+    )
 
 
 @router.get("/{method_id}/image")
@@ -216,7 +183,7 @@ def get_method_image(
     """
     try:
         data, mime = MethodService(db).get_image(method_id)
-    except PaperNotFoundError:
+    except CatalogNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Image not available",
@@ -267,25 +234,19 @@ def get_method_papers(
     - `/api/v1/methods/Transformer/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/methods/BERT/papers?include_resources=true` - Include GitHub repos
     """
-    try:
-        service = MethodService(db)
-        return service.get_method_papers(
-            method_id=method_id,
-            page=page,
-            page_size=page_size,
-            latest_only=latest_only,
-            order_by=order_by,
-            order_dir=order_dir,
-            include_resources=include_resources,
-            has_code=has_code,
-            has_hf_artifacts=has_hf_artifacts,
-            start_date=date_range.start_date,
-            end_date=date_range.end_date,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodService(db).list_method_papers(
+        method_id=method_id,
+        page=page,
+        page_size=page_size,
+        latest_only=latest_only,
+        order_by=order_by,
+        order_dir=order_dir,
+        include_resources=include_resources,
+        has_code=has_code,
+        has_hf_artifacts=has_hf_artifacts,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+    )
 
 
 @router.post(
@@ -315,13 +276,7 @@ def add_method_keywords(
     }
     ```
     """
-    try:
-        service = MethodService(db)
-        return service.add_keywords(method_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodService(db).add_method_keywords(method_id, keyword_update.keywords)
 
 
 @router.delete(
@@ -351,13 +306,7 @@ def remove_method_keywords(
     }
     ```
     """
-    try:
-        service = MethodService(db)
-        return service.remove_keywords(method_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodService(db).remove_method_keywords(method_id, keyword_update.keywords)
 
 
 @router.put(
@@ -387,10 +336,4 @@ def replace_method_keywords(
     }
     ```
     """
-    try:
-        service = MethodService(db)
-        return service.replace_keywords(method_id, keyword_update.keywords)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return MethodService(db).replace_method_keywords(method_id, keyword_update.keywords)

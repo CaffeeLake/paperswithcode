@@ -122,6 +122,56 @@ def test_taxonomy_endpoint_errors_keep_detail_only_envelopes(
     assert response.json() == {"detail": str(error)}
 
 
+@pytest.mark.parametrize(
+    ("path", "service", "method"),
+    [
+        (
+            "/api/v1/tasks/404",
+            "backend.services.task_service.TaskService",
+            "get_task_by_id",
+        ),
+        (
+            "/api/v1/methods/404",
+            "backend.services.method_service.MethodService",
+            "get_method_by_id",
+        ),
+        (
+            "/api/v1/organizations/missing",
+            "backend.services.organization_service.OrganizationService",
+            "get_organization",
+        ),
+        (
+            "/api/v1/repositories/404",
+            "backend.services.repository_service.RepositoryService",
+            "get_repository_by_id",
+        ),
+        (
+            "/api/v1/project-pages/404",
+            "backend.services.project_page_service.ProjectPageService",
+            "get_project_page_by_id",
+        ),
+    ],
+)
+def test_migrated_taxonomy_lookups_translate_legacy_service_failures(
+    monkeypatch, path, service, method
+):
+    module_name, class_name = service.rsplit(".", 1)
+    module = __import__(module_name, fromlist=[class_name])
+    monkeypatch.setattr(
+        getattr(module, class_name),
+        method,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PaperNotFoundError("entity not found")
+        ),
+    )
+
+    with _catalog_client(monkeypatch) as client:
+        response = client.get(path)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "entity not found"}
+
+
 def test_create_task_requires_catalog_mutator_before_service_is_called(monkeypatch):
     from backend.services.task_service import TaskService
 

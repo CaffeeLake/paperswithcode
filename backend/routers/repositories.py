@@ -30,7 +30,6 @@ from backend.services.github_preview_service import (
 )
 from backend.services.repository_service import RepositoryService
 from backend.services.project_page_service import ProjectPageService
-from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.auth import (
     require_catalog_mutator,
     require_fresh_catalog_mutator,
@@ -159,11 +158,9 @@ def get_repositories_by_owner_and_name(
     """
     Get repositories by owner and name.
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repositories_by_owner_and_name(owner, name)
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return RepositoryService(db).get_repositories_by_owner_and_name_for_http(
+        owner, name
+    )
 
 
 @router.get(
@@ -223,18 +220,12 @@ def get_repository_star_history(
 
     **Note:** Snapshots are ordered chronologically (oldest first).
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repository_star_history(
-            repository_id=repository_id,
-            limit=limit,
-            since=since,
-            hours_lookback=hours_lookback,
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return RepositoryService(db).get_repository_star_history_for_http(
+        repository_id=repository_id,
+        limit=limit,
+        since=since,
+        hours_lookback=hours_lookback,
+    )
 
 
 @router.get(
@@ -268,18 +259,14 @@ def get_project_pages(
     - Filtering by official status
     - Sorting options
     """
-    try:
-        service = ProjectPageService(db)
-        return service.get_project_pages(
-            page=page,
-            page_size=page_size,
-            official_only=official_only,
-            source=source,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).list_project_pages(
+        page=page,
+        page_size=page_size,
+        official_only=official_only,
+        source=source,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
 
 
 @router.get(
@@ -294,13 +281,7 @@ def get_project_page_by_id(
     """
     Get a specific project page by its database ID.
     """
-    try:
-        service = ProjectPageService(db)
-        return service.get_project_page_by_id(page_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).lookup_project_page(page_id)
 
 
 @router.post(
@@ -333,13 +314,7 @@ def create_project_page(
     - 400: Invalid request or URL already exists
     - 500: Internal server error
     """
-    try:
-        service = ProjectPageService(db)
-        return service.create_project_page(request)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).create_project_page_for_http(request)
 
 
 @router.put(
@@ -373,15 +348,7 @@ def update_project_page(
     - 404: Project page not found
     - 500: Internal server error
     """
-    try:
-        service = ProjectPageService(db)
-        return service.update_project_page(page_id, request)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).update_project_page_for_http(page_id, request)
 
 
 @router.delete(
@@ -407,14 +374,8 @@ def delete_project_page(
     - 404: Project page not found
     - 500: Internal server error
     """
-    try:
-        service = ProjectPageService(db)
-        service.delete_project_page(page_id)
-        return None
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    ProjectPageService(db).delete_project_page_for_http(page_id)
+    return None
 
 
 # Paper-specific endpoints
@@ -432,13 +393,7 @@ def get_repositories_for_paper(
     """
     Get all repositories associated with a specific paper.
     """
-    try:
-        service = RepositoryService(db)
-        return service.get_repositories_for_paper(paper_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return RepositoryService(db).list_repositories_for_paper(paper_id)
 
 
 @router.get(
@@ -453,13 +408,7 @@ def get_project_pages_for_paper(
     """
     Get all project pages associated with a specific paper.
     """
-    try:
-        service = ProjectPageService(db)
-        return service.get_project_pages_for_paper(paper_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).list_project_pages_for_paper(paper_id)
 
 
 @router.get(
@@ -477,13 +426,7 @@ def get_project_page_with_papers(
     This endpoint provides detailed information about which papers are associated
     with a project page, including relationship metadata like official status.
     """
-    try:
-        service = ProjectPageService(db)
-        return service.get_project_page_with_papers(page_id)
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).get_project_page_with_papers_for_http(page_id)
 
 
 @router.get(
@@ -504,12 +447,6 @@ def get_paper_project_page_relationships(
     This endpoint provides access to the junction table data, including
     relationship metadata like official status and source information.
     """
-    try:
-        service = ProjectPageService(db)
-        return service.get_paper_project_page_relationships(
-            paper_id=paper_id, project_page_id=project_page_id
-        )
-    except PaperNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return ProjectPageService(db).list_paper_project_page_relationships(
+        paper_id=paper_id, project_page_id=project_page_id
+    )

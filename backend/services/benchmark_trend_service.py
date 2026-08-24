@@ -19,7 +19,7 @@ from backend.models.database import (
     TaskDataset,
 )
 from backend.services.dataset_service import DatasetService
-from backend.utils.exceptions import PaperNotFoundError
+from backend.services.catalog_errors import CatalogNotFoundError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
 
 _SUPPORT_PRIOR_PAPERS = 2.0
@@ -233,7 +233,7 @@ class BenchmarkTrendService:
                 .first()
             )
         if task is None:
-            raise PaperNotFoundError(
+            raise CatalogNotFoundError(
                 f"Task with ID, slug, or name '{task_id}' not found"
             )
         return task

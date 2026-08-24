@@ -22,7 +22,11 @@ from backend.utils.entity_images import load_entity_image
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
 from backend.utils.slug_utils import slugify
-from backend.services.catalog_errors import CatalogConflictError
+from backend.services.catalog_errors import (
+    CatalogConflictError,
+    CatalogNotFoundError,
+    raise_as_catalog_error,
+)
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -43,6 +47,39 @@ class MethodService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _http_operation(self, operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except (PaperNotFoundError, DatabaseError) as error:
+            raise_as_catalog_error(error)
+
+    def list_methods(self, **kwargs) -> Methods:
+        return self._http_operation(self.get_methods, **kwargs)
+
+    def search_methods_for_http(self, **kwargs) -> Methods:
+        return self._http_operation(self.search_methods, **kwargs)
+
+    def get_method_index_for_http(self) -> MethodIndex:
+        return self._http_operation(self.get_method_index)
+
+    def lookup_method(self, identifier: str) -> Method:
+        operation = (
+            self.get_method_by_id if identifier.isdigit() else self.get_method_by_name
+        )
+        return self._http_operation(operation, identifier)
+
+    def list_method_papers(self, **kwargs):
+        return self._http_operation(self.get_method_papers, **kwargs)
+
+    def add_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
+        return self._http_operation(self.add_keywords, identifier, keywords)
+
+    def remove_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
+        return self._http_operation(self.remove_keywords, identifier, keywords)
+
+    def replace_method_keywords(self, identifier: str, keywords: List[str]) -> Method:
+        return self._http_operation(self.replace_keywords, identifier, keywords)
+
     def create_method(self, *, commit: bool = True, **fields) -> DBMethod:
         slug = slugify(fields["name"])
         if self.db.query(DBMethod.id).filter(DBMethod.slug == slug).first():
@@ -59,7 +96,7 @@ class MethodService:
     def get_image(self, identifier: str) -> tuple[bytes, str]:
         result = load_entity_image(self.db, DBMethod, identifier)
         if result is None:
-            raise PaperNotFoundError("Image not available")
+            raise CatalogNotFoundError("Image not available")
         return result
 
     @staticmethod
@@ -89,9 +126,11 @@ class MethodService:
             keywords=db_method.keywords,
             area_id=str(db_method.area_id) if db_method.area_id else None,
             introduced_year=db_method.introduced_year,
-            source_paper_id=str(db_method.source_paper_id)
-            if db_method.source_paper_id is not None
-            else None,
+            source_paper_id=(
+                str(db_method.source_paper_id)
+                if db_method.source_paper_id is not None
+                else None
+            ),
             source_url=get_method_source_url(
                 db_method.source_url, db_method.source_paper
             ),
