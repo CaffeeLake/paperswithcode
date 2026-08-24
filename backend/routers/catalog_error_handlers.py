@@ -1,5 +1,7 @@
 """Central HTTP translation for typed catalog domain failures."""
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.types import ExceptionHandler
@@ -12,6 +14,9 @@ from backend.services.catalog_errors import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 def _catalog_error_response(status_code: int) -> ExceptionHandler:
     async def handler(_request: Request, error: Exception) -> JSONResponse:
         return JSONResponse(
@@ -20,6 +25,16 @@ def _catalog_error_response(status_code: int) -> ExceptionHandler:
         )
 
     return handler
+
+
+async def _catalog_persistence_error_response(
+    _request: Request, error: Exception
+) -> JSONResponse:
+    logger.error("Catalog persistence operation failed", exc_info=error)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 def register_catalog_error_handlers(app: FastAPI) -> None:
@@ -34,5 +49,5 @@ def register_catalog_error_handlers(app: FastAPI) -> None:
         CatalogValidationError, _catalog_error_response(status_code=400)
     )
     app.add_exception_handler(
-        CatalogPersistenceError, _catalog_error_response(status_code=500)
+        CatalogPersistenceError, _catalog_persistence_error_response
     )

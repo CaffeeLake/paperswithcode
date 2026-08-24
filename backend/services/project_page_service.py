@@ -27,7 +27,7 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.services.catalog_errors import CatalogValidationError, catalog_operation
+from backend.services.catalog_errors import CatalogValidationError
 from backend.config import get_settings
 
 
@@ -39,7 +39,6 @@ class ProjectPageService:
         self.db = db
         self.settings = get_settings()
 
-    @catalog_operation
     def get_project_pages(
         self,
         page: int = 1,
@@ -145,7 +144,6 @@ class ProjectPageService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch project pages: {str(e)}")
 
-    @catalog_operation
     def get_project_page_by_id(self, page_id: str) -> ProjectPage:
         """
         Get a specific project page by ID.
@@ -176,7 +174,6 @@ class ProjectPageService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch project page: {str(e)}")
 
-    @catalog_operation
     def get_project_pages_for_paper(self, paper_id: str) -> List[ProjectPage]:
         """
         Get all project pages associated with a paper via the junction table.
@@ -207,7 +204,6 @@ class ProjectPageService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch project pages for paper: {str(e)}")
 
-    @catalog_operation
     def get_project_page_with_papers(self, page_id: str) -> ProjectPageWithPapers:
         """
         Get a project page with all associated papers.
@@ -252,7 +248,6 @@ class ProjectPageService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch project page with papers: {str(e)}")
 
-    @catalog_operation
     def get_paper_project_page_relationships(
         self, paper_id: Optional[str] = None, project_page_id: Optional[str] = None
     ) -> List[PaperProjectPage]:
@@ -517,7 +512,6 @@ class ProjectPageService:
         except Exception as e:
             raise DatabaseError(f"Failed to create project page for paper: {str(e)}")
 
-    @catalog_operation
     def create_project_page(self, request: ProjectPageCreateRequest) -> ProjectPage:
         """
         Create a new project page.
@@ -563,7 +557,6 @@ class ProjectPageService:
             self.db.rollback()
             raise DatabaseError(f"Failed to create project page: {str(e)}")
 
-    @catalog_operation
     def update_project_page(
         self, page_id: str, request: ProjectPageUpdateRequest
     ) -> ProjectPage:
@@ -627,7 +620,6 @@ class ProjectPageService:
             self.db.rollback()
             raise DatabaseError(f"Failed to update project page: {str(e)}")
 
-    @catalog_operation
     def delete_project_page(self, page_id: str) -> None:
         """
         Delete a project page and all its associations.

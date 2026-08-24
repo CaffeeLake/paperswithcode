@@ -349,7 +349,7 @@ def test_evaluation_put_rolls_back_rank_audit_and_idempotency_after_writes_begin
         )
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "outer mutation commit failed"}
+    assert response.json() == {"detail": "Internal server error"}
     assert observed["rank"] == 1
     assert observed["event_count"] == event_count + 1
     assert observed["idempotency"] is not None

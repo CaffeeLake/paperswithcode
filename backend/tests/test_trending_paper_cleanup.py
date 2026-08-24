@@ -285,6 +285,4 @@ def test_trending_router_translates_database_error(trending_client, monkeypatch)
     response = client.get("/api/v1/papers/trending")
 
     assert response.status_code == 500
-    assert response.json() == {
-        "detail": "Error fetching trending papers: database unavailable"
-    }
+    assert response.json() == {"detail": "Internal server error"}

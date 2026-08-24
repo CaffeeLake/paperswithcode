@@ -330,7 +330,7 @@ def test_refresh_database_errors_preserve_existing_http_mapping(monkeypatch, mes
         )
     else:
         assert error.value.status_code == 500
-        assert error.value.detail == message
+        assert error.value.detail == "Internal server error"
 
 
 def test_new_arxiv_submission_ingests_hydrates_and_logs(monkeypatch):
@@ -492,7 +492,7 @@ def test_unexpected_ingestion_failure_preserves_wrapped_500(monkeypatch):
         _submit(PaperSubmitRequest(arxiv_id="2605.18736"))
 
     assert error.value.status_code == 500
-    assert error.value.detail == "Error indexing paper: unexpected failure"
+    assert error.value.detail == "Internal server error"
 
 
 @pytest.mark.parametrize(

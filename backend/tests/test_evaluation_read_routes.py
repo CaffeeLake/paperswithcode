@@ -25,6 +25,20 @@ def _app(monkeypatch, service):
     return app
 
 
+def _rank_recalculation_app(monkeypatch, service):
+    from backend.database.connection import get_database_session
+    from backend.routers import evaluations
+    from backend.utils.auth import require_admin
+
+    app = FastAPI()
+    register_catalog_error_handlers(app)
+    app.include_router(evaluations.router, prefix="/api/v1")
+    app.dependency_overrides[get_database_session] = lambda: None
+    app.dependency_overrides[require_admin] = lambda: {"role": "admin"}
+    monkeypatch.setattr(evaluations, "EvaluationService", lambda _db: service)
+    return app
+
+
 def test_list_route_forwards_filters_to_typed_service(monkeypatch):
     calls = []
 
@@ -71,7 +85,11 @@ def test_lookup_route_preserves_typed_error_envelope(monkeypatch, error, status)
         response = client.get("/api/v1/evaluations/1")
 
     assert response.status_code == status
-    assert response.json() == {"detail": error.detail}
+    assert response.json() == {
+        "detail": "Internal server error"
+        if isinstance(error, CatalogPersistenceError)
+        else error.detail
+    }
 
 
 def test_catalog_lookup_converts_falsey_legacy_result_to_typed_not_found(monkeypatch):
@@ -92,3 +110,23 @@ def test_catalog_list_converts_legacy_database_error_to_typed_persistence(monkey
 
     with pytest.raises(CatalogPersistenceError, match="^read failed$"):
         service.list_catalog_evaluations(ordering=None)
+
+
+def test_rank_recalculation_hides_and_logs_unexpected_service_errors(
+    monkeypatch, caplog
+):
+    class Service:
+        def recalculate_ranks(self, **_kwargs):
+            raise DatabaseError("database password leaked")
+
+    with TestClient(
+        _rank_recalculation_app(monkeypatch, Service()),
+        raise_server_exceptions=False,
+    ) as client:
+        response = client.post(
+            "/api/v1/evaluations/recalculate-ranks?task_id=1&dataset_id=2"
+        )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert "database password leaked" in caplog.text

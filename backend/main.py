@@ -27,7 +27,6 @@ from backend.services.deployment_lifecycle import (
 from backend.routers.catalog_error_handlers import register_catalog_error_handlers
 from backend.services.runtime_validation import validate_runtime
 from backend.utils.csrf import cookie_request_passes_csrf
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 # Requests slower than this (in milliseconds) are logged so production slow
 # pages can be correlated without ad-hoc instrumentation. Tune via the
@@ -600,19 +599,6 @@ def create_app() -> FastAPI:
     from backend.routers import discovery_pages
 
     app.include_router(discovery_pages.router, tags=["discovery_pages"])
-
-    # Global exception handlers
-    @app.exception_handler(PaperNotFoundError)
-    async def paper_not_found_handler(request, exc: PaperNotFoundError):
-        return JSONResponse(
-            status_code=404, content={"error": "Paper not found", "detail": str(exc)}
-        )
-
-    @app.exception_handler(DatabaseError)
-    async def database_error_handler(request, exc: DatabaseError):
-        return JSONResponse(
-            status_code=500, content={"error": "Database error", "detail": str(exc)}
-        )
 
     return app
 

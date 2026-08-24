@@ -5,6 +5,7 @@ Provides endpoints for accessing benchmark evaluation data, including filtering 
 task, and dataset.
 """
 
+import logging
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from backend.utils.auth import (
 from backend.utils.exceptions import DatabaseError
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
+logger = logging.getLogger(__name__)
 
 
 class EvaluationBatchOperation(BaseModel):
@@ -380,7 +382,6 @@ def recalculate_ranks(
             "updated_count": updated_count,
         }
 
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    except DatabaseError:
+        logger.exception("Failed to recalculate evaluation ranks")
+        raise HTTPException(status_code=500, detail="Internal server error") from None

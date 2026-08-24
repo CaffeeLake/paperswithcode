@@ -29,7 +29,6 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.services.catalog_errors import catalog_operation
 from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.config import get_settings
 
@@ -62,7 +61,6 @@ class RepositoryService:
         self.db = db
         self.settings = get_settings()
 
-    @catalog_operation
     def get_repositories(
         self,
         page: int = 1,
@@ -195,7 +193,6 @@ class RepositoryService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch repositories: {str(e)}")
 
-    @catalog_operation
     def get_repository_by_id(self, repository_id: str) -> Repository:
         """
         Get a specific repository by ID.
@@ -230,7 +227,6 @@ class RepositoryService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch repository: {str(e)}")
 
-    @catalog_operation
     def get_repositories_by_owner_and_name(
         self, owner: str, name: str
     ) -> List[Repository]:
@@ -246,7 +242,6 @@ class RepositoryService:
         except Exception as error:
             raise DatabaseError(f"Failed to fetch repositories: {error}") from error
 
-    @catalog_operation
     def get_repositories_for_paper(
         self, paper_id: str, include_relationship_data: bool = True
     ) -> List[PaperRepository]:
@@ -827,7 +822,6 @@ class RepositoryService:
             self.db.rollback()
             raise DatabaseError(f"Error populating owner/name fields: {str(e)}")
 
-    @catalog_operation
     def get_repository_star_history(
         self,
         repository_id: str,

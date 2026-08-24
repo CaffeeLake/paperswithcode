@@ -1,10 +1,7 @@
 """HTTP translation contracts for catalog domain errors."""
 
-import asyncio
-import json
-
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers.catalog_error_handlers import register_catalog_error_handlers
@@ -46,7 +43,7 @@ def _catalog_client(monkeypatch):
         (CatalogPersistenceError("Failed to save paper"), 500),
     ],
 )
-def test_catalog_domain_errors_have_stable_http_translation(error, status_code):
+def test_catalog_domain_errors_have_stable_http_translation(error, status_code, caplog):
     app = FastAPI()
     register_catalog_error_handlers(app)
 
@@ -58,7 +55,11 @@ def test_catalog_domain_errors_have_stable_http_translation(error, status_code):
         response = client.get("/catalog-error")
 
     assert response.status_code == status_code
-    assert response.json() == {"detail": error.detail}
+    if isinstance(error, CatalogPersistenceError):
+        assert response.json() == {"detail": "Internal server error"}
+        assert str(error) in caplog.text
+    else:
+        assert response.json() == {"detail": error.detail}
 
 
 def test_catalog_conflict_preserves_structured_detail():
@@ -79,22 +80,9 @@ def test_catalog_conflict_preserves_structured_detail():
     assert response.json() == {"detail": error.detail}
 
 
-def test_legacy_catalog_errors_remain_compatible_with_new_error_categories():
+def test_legacy_catalog_errors_are_typed_catalog_errors():
     assert isinstance(PaperNotFoundError("missing"), CatalogNotFoundError)
     assert isinstance(DatabaseError("unavailable"), CatalogPersistenceError)
-
-
-def test_catalog_operation_normalizes_legacy_failures():
-    from backend.services.catalog_errors import catalog_operation
-
-    @catalog_operation
-    def operation():
-        raise PaperNotFoundError("legacy missing")
-
-    with pytest.raises(CatalogNotFoundError, match="legacy missing") as error:
-        operation()
-
-    assert type(error.value) is CatalogNotFoundError
 
 
 @pytest.mark.parametrize(
@@ -102,22 +90,28 @@ def test_catalog_operation_normalizes_legacy_failures():
     [
         (
             PaperNotFoundError("Paper with ID 1 not found"),
-            (404, {"error": "Paper not found", "detail": "Paper with ID 1 not found"}),
+            (404, {"detail": "Paper with ID 1 not found"}),
         ),
         (
             DatabaseError("Failed to save paper"),
-            (500, {"error": "Database error", "detail": "Failed to save paper"}),
+            (500, {"detail": "Internal server error"}),
         ),
     ],
 )
-def test_unmigrated_catalog_errors_keep_their_legacy_response_contract(error, expected):
-    from backend.main import create_app
+def test_legacy_catalog_errors_use_the_typed_http_contract(error, expected, caplog):
+    app = FastAPI()
+    register_catalog_error_handlers(app)
 
-    app = create_app()
-    request = Request({"type": "http", "method": "GET", "path": "/"})
-    response = asyncio.run(app.exception_handlers[type(error)](request, error))
+    @app.get("/legacy-error")
+    def legacy_error():
+        raise error
 
-    assert (response.status_code, json.loads(response.body)) == expected
+    with TestClient(app) as client:
+        response = client.get("/legacy-error")
+
+    assert (response.status_code, response.json()) == expected
+    if isinstance(error, DatabaseError):
+        assert str(error) in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -161,7 +155,65 @@ def test_taxonomy_endpoint_errors_keep_detail_only_envelopes(
         response = client.get(path)
 
     assert response.status_code == status
-    assert response.json() == {"detail": str(error)}
+    assert response.json() == {
+        "detail": "Internal server error"
+        if isinstance(error, CatalogPersistenceError)
+        else str(error)
+    }
+
+
+def test_paper_persistence_errors_are_logged_without_exposing_details(
+    monkeypatch, caplog
+):
+    from backend.services.paper_service import PaperService
+
+    monkeypatch.setattr(
+        PaperService,
+        "get_recent_papers",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DatabaseError("database password leaked")
+        ),
+    )
+
+    with _catalog_client(monkeypatch) as client:
+        response = client.get("/api/v1/papers/recent")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert "database password leaked" in caplog.text
+
+
+def test_paper_indexing_implementation_errors_are_logged_without_exposing_details(
+    monkeypatch, caplog
+):
+    from backend.database.connection import get_database_session
+    from backend.main import create_app
+    from backend.routers import papers
+    from backend.services.paper_service import PaperService
+    from backend.utils.auth import require_admin
+
+    monkeypatch.setattr(
+        PaperService,
+        "get_paper_by_arxiv_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PaperNotFoundError("not indexed")
+        ),
+    )
+
+    async def fail_indexing(*_args, **_kwargs):
+        raise RuntimeError("database password leaked")
+
+    monkeypatch.setattr(papers, "_fetch_and_persist_arxiv_paper", fail_indexing)
+    app = create_app()
+    app.dependency_overrides[get_database_session] = lambda: object()
+    app.dependency_overrides[require_admin] = lambda: {"role": "admin"}
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/papers/index/2608.13517")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert "database password leaked" in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -80,7 +80,11 @@ def _evaluation_payload():
     ("error", "status", "detail"),
     [
         (CatalogNotFoundError("Evaluation 1 not found"), 404, "Evaluation 1 not found"),
-        (CatalogPersistenceError("database unavailable"), 500, "database unavailable"),
+        (
+            CatalogPersistenceError("database unavailable"),
+            500,
+            "Internal server error",
+        ),
         (
             CatalogConflictError({"code": "stale_catalog_version"}),
             409,
@@ -124,7 +128,7 @@ def test_delete_success(monkeypatch):
             409,
             {"code": "stale_catalog_version"},
         ),
-        (CatalogPersistenceError("write failed"), 500, "write failed"),
+        (CatalogPersistenceError("write failed"), 500, "Internal server error"),
     ],
 )
 def test_post_put_preserve_typed_error_envelopes(
@@ -196,7 +200,11 @@ def test_post_put_translate_legacy_service_errors_at_boundary(
         response = getattr(client, method)(path, json=payload)
 
     assert response.status_code == status
-    assert response.json() == {"detail": str(legacy_error)}
+    assert response.json() == {
+        "detail": "Internal server error"
+        if isinstance(legacy_error, DatabaseError)
+        else str(legacy_error)
+    }
 
 
 def test_put_forwards_payload_and_returns_success(monkeypatch):
@@ -257,4 +265,8 @@ def test_post_put_translate_legacy_hydration_errors_at_boundary(
 
     expected_status = 404 if isinstance(legacy_error, PaperNotFoundError) else 500
     assert response.status_code == expected_status
-    assert response.json() == {"detail": str(legacy_error)}
+    assert response.json() == {
+        "detail": "Internal server error"
+        if isinstance(legacy_error, DatabaseError)
+        else str(legacy_error)
+    }

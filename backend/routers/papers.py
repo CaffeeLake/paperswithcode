@@ -210,8 +210,6 @@ def get_paper_leaderboard_badge(
         paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
     ranks = paper.leaderboard_ranks or []
     if evaluation_id is not None:
@@ -252,8 +250,6 @@ def get_paper_leaderboard_badge_link(
         paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
     target = resolve_leaderboard_badge_target(
         db,
@@ -370,8 +366,6 @@ def get_papers(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get(
@@ -398,18 +392,15 @@ def search_papers(
     hybrid search fuses both rankings with RRF. Endpoint cold starts, timeouts,
     and malformed vectors fall back immediately to keyword search.
     """
-    try:
-        service = PaperService(db)
-        return service.search_papers_page(
-            q,
-            page,
-            page_size,
-            mode=mode,
-            start_date=date_range.start_date,
-            end_date=date_range.end_date,
-        )
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    service = PaperService(db)
+    return service.search_papers_page(
+        q,
+        page,
+        page_size,
+        mode=mode,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+    )
 
 
 @router.get(
@@ -425,11 +416,8 @@ def get_recent_papers(
     Returns the most recently published papers (latest versions only)
     ordered by publication date.
     """
-    try:
-        service = PaperService(db)
-        return service.get_recent_papers(limit)
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    service = PaperService(db)
+    return service.get_recent_papers(limit)
 
 
 @router.get(
@@ -447,8 +435,6 @@ def get_related_papers(
         return PaperService(db).get_related_papers(paper_id, limit)
     except PaperNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except DatabaseError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @router.get("/papers/stats", summary="Get paper statistics")
@@ -462,11 +448,8 @@ def get_paper_stats(db: Session = Depends(get_database_session)):
     - Latest paper date
     - Version distribution
     """
-    try:
-        service = PaperService(db)
-        return service.get_paper_stats()
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    service = PaperService(db)
+    return service.get_paper_stats()
 
 
 @router.get(
@@ -508,16 +491,11 @@ def get_trending_papers(
     **Note**: The trending feature requires the hourly cron job to run for
     at least 1-2 hours to collect sufficient data for velocity calculations.
     """
-    try:
-        return PaperService(db).get_repository_trending_papers(
-            limit=limit,
-            max_age_days=max_age_days,
-            min_velocity=min_velocity,
-        )
-    except DatabaseError as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error fetching trending papers: {str(e)}"
-        )
+    return PaperService(db).get_repository_trending_papers(
+        limit=limit,
+        max_age_days=max_age_days,
+        min_velocity=min_velocity,
+    )
 
 
 @router.get(
@@ -555,8 +533,6 @@ def get_paper_by_id(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get(
@@ -601,8 +577,6 @@ def get_paper_by_arxiv_id(
         return service.get_paper_by_arxiv_id(arxiv_id, version, include_resources)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get(
@@ -634,8 +608,6 @@ def get_paper_versions(
         return service.get_paper_versions(arxiv_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get(
@@ -678,8 +650,6 @@ def compare_paper_versions(
         return service.compare_paper_versions(arxiv_id, from_version, to_version)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _arxiv_metadata_error(arxiv_id: str, error_type: Optional[str]) -> HTTPException:
@@ -780,8 +750,9 @@ async def index_paper_from_arxiv(
         return await _fetch_and_persist_arxiv_paper(arxiv_id, db, "paper_detail")
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error indexing paper: {str(e)}")
+    except Exception:
+        logger.exception("Unexpected paper indexing failure")
+        raise HTTPException(status_code=500, detail="Internal server error") from None
 
 
 class PaperSubmitRequest(BaseModel):
@@ -903,8 +874,9 @@ async def submit_paper(
         raise _arxiv_metadata_error(exc.arxiv_id, exc.error_type) from exc
     except PaperSubmissionDatabaseError as exc:
         raise DatabaseError(str(exc)) from exc
-    except PaperSubmissionInternalError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except PaperSubmissionInternalError:
+        logger.exception("Unexpected paper submission failure")
+        raise HTTPException(status_code=500, detail="Internal server error") from None
     except PaperSubmissionRateLimitError as exc:
         response.headers["Retry-After"] = str(exc.retry_after)
         response.headers["RateLimit"] = "0"
@@ -950,12 +922,8 @@ async def update_citation_counts(
 
     Returns statistics about the update process.
     """
-    try:
-        service = PaperService(db)
-        result = await service.update_citation_counts(limit)
-        return result
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    service = PaperService(db)
+    return await service.update_citation_counts(limit)
 
 
 @router.get(
@@ -998,8 +966,6 @@ def get_paper_methods(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put(
@@ -1041,8 +1007,6 @@ def update_paper_tasks(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put(
@@ -1084,8 +1048,6 @@ def update_paper_methods(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put(
@@ -1125,8 +1087,6 @@ def update_paper_organizations(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 class RepositoryInput(BaseModel):
@@ -1218,8 +1178,6 @@ def update_paper_repositories(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put(
@@ -1274,8 +1232,6 @@ def update_paper_project_pages(
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 class UpdateHfArtifactsRequest(BaseModel):

@@ -5,9 +5,6 @@ translate that detail centrally, keeping catalog services independent of
 FastAPI while preserving the API's established error payload shape.
 """
 
-from functools import wraps
-
-
 JSONDetail = (
     str | int | float | bool | None | list["JSONDetail"] | dict[str, "JSONDetail"]
 )
@@ -35,34 +32,3 @@ class CatalogValidationError(CatalogError, ValueError):
 
 class CatalogPersistenceError(CatalogError):
     """Raised when catalog persistence cannot complete."""
-
-
-def raise_catalog_error(error: Exception) -> None:
-    """Normalize a legacy catalog failure to the shared typed hierarchy."""
-    from backend.utils.exceptions import DatabaseError, PaperNotFoundError
-
-    if isinstance(error, PaperNotFoundError):
-        raise CatalogNotFoundError(str(error)) from error
-    if isinstance(error, DatabaseError):
-        raise CatalogPersistenceError(str(error)) from error
-    raise error
-
-
-def catalog_operation(operation):
-    """Expose a domain operation with typed catalog failures.
-
-    Modern ``CatalogError`` subclasses pass through unchanged. Legacy
-    ``PaperNotFoundError`` and ``DatabaseError`` are compatibility subclasses
-    that are normalized to the base not-found and persistence categories.
-    """
-
-    @wraps(operation)
-    def wrapped(*args, **kwargs):
-        from backend.utils.exceptions import DatabaseError, PaperNotFoundError
-
-        try:
-            return operation(*args, **kwargs)
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
-
-    return wrapped

@@ -25,7 +25,6 @@ from backend.utils.slug_utils import slugify
 from backend.services.catalog_errors import (
     CatalogConflictError,
     CatalogNotFoundError,
-    catalog_operation,
 )
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
@@ -47,7 +46,6 @@ class MethodService:
     def __init__(self, db: Session):
         self.db = db
 
-    @catalog_operation
     def get_method(self, identifier: str) -> Method:
         operation = (
             self.get_method_by_id if identifier.isdigit() else self.get_method_by_name
@@ -136,7 +134,6 @@ class MethodService:
             updated_at=db_method.updated_at,
         )
 
-    @catalog_operation
     def get_methods(
         self,
         page: int = 1,
@@ -333,7 +330,6 @@ class MethodService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve methods: {str(e)}")
 
-    @catalog_operation
     def get_method_index(
         self,
         *,
@@ -570,7 +566,6 @@ class MethodService:
                 f"Failed to retrieve methods for paper {paper_id}: {str(e)}"
             )
 
-    @catalog_operation
     def search_methods(
         self,
         query: str,
@@ -747,7 +742,6 @@ class MethodService:
             for method_id in method_ids
         }
 
-    @catalog_operation
     def get_method_papers(
         self,
         method_id: str,
@@ -893,7 +887,6 @@ class MethodService:
         except Exception as e:
             raise DatabaseError(f"Failed to get papers for method: {str(e)}")
 
-    @catalog_operation
     def add_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Add keywords to a method (appends to existing keywords).
@@ -959,7 +952,6 @@ class MethodService:
             self.db.rollback()
             raise DatabaseError(f"Failed to add keywords to method: {str(e)}")
 
-    @catalog_operation
     def remove_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Remove specific keywords from a method.
@@ -1027,7 +1019,6 @@ class MethodService:
             self.db.rollback()
             raise DatabaseError(f"Failed to remove keywords from method: {str(e)}")
 
-    @catalog_operation
     def replace_keywords(self, method_id: str, keywords: List[str]) -> Method:
         """
         Replace all keywords for a method.

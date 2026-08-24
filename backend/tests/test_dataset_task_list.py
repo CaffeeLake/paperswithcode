@@ -287,7 +287,7 @@ def test_dataset_persistence_error_uses_central_error_translation(client, monkey
     response = client.get("/api/v1/datasets/10")
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "Failed to retrieve dataset: unavailable"}
+    assert response.json() == {"detail": "Internal server error"}
 
 
 def test_dataset_evaluation_persistence_error_preserves_detail_only_contract(
@@ -301,4 +301,4 @@ def test_dataset_evaluation_persistence_error_preserves_detail_only_contract(
     response = client.get("/api/v1/datasets/10/evaluations/")
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "Failed to retrieve evaluations: unavailable"}
+    assert response.json() == {"detail": "Internal server error"}

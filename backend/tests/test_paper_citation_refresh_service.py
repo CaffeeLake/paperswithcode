@@ -88,10 +88,8 @@ def test_citation_refresh_route_preserves_success_and_error_contract(monkeypatch
             raise DatabaseError(f"refresh failed at limit {limit}")
 
     monkeypatch.setattr(papers_router, "PaperService", FailingPaperService)
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(DatabaseError, match="refresh failed at limit 17"):
         asyncio.run(papers_router.update_citation_counts(limit=17, db=db))
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "refresh failed at limit 17"
 
 
 def test_paper_service_refreshes_before_building_the_public_result(monkeypatch):

@@ -29,10 +29,8 @@ from backend.services.catalog_mutation_service import (
 )
 from backend.services.paper_service import PaperService
 from backend.services.hf_artifact_service import collect_explicit_hf_artifacts
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.services.catalog_errors import (
     CatalogNotFoundError,
-    raise_catalog_error,
 )
 from backend.utils.auth import ensure_fresh_contributor_actor
 
@@ -335,32 +333,26 @@ class PaperCurationService:
                 paper_id, payload["source_url"], commit=False
             ),
         }
-        try:
-            CatalogMutationService(self.db).mutate(
-                actor=actor,
-                operation="update",
-                entity_type=f"paper_{section}",
-                entity_id=str(paper_id),
-                request_payload=payload,
-                idempotency_key=idempotency_key,
-                expected_version=expected_version,
-                snapshot=lambda: self.snapshot(
-                    paper_id,
-                    section,
-                    lock=True,
-                    related_project_urls=related_project_urls,
-                    related_hf_keys=related_hf_keys,
-                ),
-                version_snapshot=lambda: self.snapshot(paper_id, section, lock=False),
-                apply=callbacks[section],
-                request_id=request_id,
-            )
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
-        try:
-            return self.paper_service.get_paper_by_id(paper_id, include_resources=True)
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
+        CatalogMutationService(self.db).mutate(
+            actor=actor,
+            operation="update",
+            entity_type=f"paper_{section}",
+            entity_id=str(paper_id),
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            expected_version=expected_version,
+            snapshot=lambda: self.snapshot(
+                paper_id,
+                section,
+                lock=True,
+                related_project_urls=related_project_urls,
+                related_hf_keys=related_hf_keys,
+            ),
+            version_snapshot=lambda: self.snapshot(paper_id, section, lock=False),
+            apply=callbacks[section],
+            request_id=request_id,
+        )
+        return self.paper_service.get_paper_by_id(paper_id, include_resources=True)
 
     @staticmethod
     def _removes_data(section: str, before: Any, payload: dict) -> bool:

@@ -18,9 +18,7 @@ from backend.services.catalog_errors import (
     CatalogNotFoundError,
     CatalogPersistenceError,
     CatalogValidationError,
-    raise_catalog_error,
 )
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
 EVALUATION_FIELDS = (
@@ -88,18 +86,15 @@ class EvaluationCurationService:
         def snapshot():
             return self.paper_evaluations(paper_id, lock=True)
 
-        try:
-            after, event, replayed = CatalogMutationService(self.db).mutate(
-                operation="create",
-                entity_type="evaluation",
-                entity_id=f"paper:{paper_id}",
-                request_payload=payload,
-                snapshot=snapshot,
-                apply=apply,
-                **mutation,
-            )
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
+        after, event, replayed = CatalogMutationService(self.db).mutate(
+            operation="create",
+            entity_type="evaluation",
+            entity_id=f"paper:{paper_id}",
+            request_payload=payload,
+            snapshot=snapshot,
+            apply=apply,
+            **mutation,
+        )
         if not created_id:
             before_ids = {int(row["id"]) for row in (event.before_snapshot or [])}
             added = [
@@ -112,46 +107,32 @@ class EvaluationCurationService:
                     "Could not resolve idempotent evaluation result"
                 )
             created_id.append(added[0])
-        try:
-            return self.service.get_evaluation(created_id[0])
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
+        return self.service.get_evaluation(created_id[0])
 
     def update(self, *, evaluation_id: int, payload: dict, mutation: dict):
-        try:
-            CatalogMutationService(self.db).mutate(
-                operation="update",
-                entity_type="evaluation",
-                entity_id=str(evaluation_id),
-                request_payload=payload,
-                snapshot=lambda: self.snapshot(evaluation_id, lock=True),
-                apply=lambda: self.service.update_evaluation(
-                    evaluation_id=evaluation_id, commit=False, **payload
-                ),
-                **mutation,
-            )
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
-        try:
-            return self.service.get_evaluation(evaluation_id)
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
+        CatalogMutationService(self.db).mutate(
+            operation="update",
+            entity_type="evaluation",
+            entity_id=str(evaluation_id),
+            request_payload=payload,
+            snapshot=lambda: self.snapshot(evaluation_id, lock=True),
+            apply=lambda: self.service.update_evaluation(
+                evaluation_id=evaluation_id, commit=False, **payload
+            ),
+            **mutation,
+        )
+        return self.service.get_evaluation(evaluation_id)
 
     def delete(self, *, evaluation_id: int, mutation: dict) -> None:
-        try:
-            CatalogMutationService(self.db).mutate(
-                operation="delete",
-                entity_type="evaluation",
-                entity_id=str(evaluation_id),
-                request_payload={},
-                snapshot=lambda: self.snapshot(evaluation_id, lock=True),
-                apply=lambda: self.service.delete_evaluation(
-                    evaluation_id, commit=False
-                ),
-                **mutation,
-            )
-        except (PaperNotFoundError, DatabaseError) as error:
-            raise_catalog_error(error)
+        CatalogMutationService(self.db).mutate(
+            operation="delete",
+            entity_type="evaluation",
+            entity_id=str(evaluation_id),
+            request_payload={},
+            snapshot=lambda: self.snapshot(evaluation_id, lock=True),
+            apply=lambda: self.service.delete_evaluation(evaluation_id, commit=False),
+            **mutation,
+        )
 
     def rollback(
         self, *, event: CatalogMutationEvent, actor: dict, request_id: str

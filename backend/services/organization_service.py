@@ -31,7 +31,6 @@ from backend.services.sitemap_service import eligible_paper_filter
 from backend.services.trending_ranking_service import active_paper_score_components
 from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
-from backend.services.catalog_errors import catalog_operation
 from backend.utils.organization_logos import organization_logo_path
 
 
@@ -112,7 +111,6 @@ class OrganizationService:
             updated_at=db_org.updated_at,
         )
 
-    @catalog_operation
     def get_organizations(
         self,
         featured_only: bool = False,
@@ -233,7 +231,6 @@ class OrganizationService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organizations: {str(e)}")
 
-    @catalog_operation
     def get_organization(self, slug: str) -> Organization:
         try:
             organization = self._get_organization_by_slug(slug)
@@ -247,7 +244,6 @@ class OrganizationService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organization: {str(e)}")
 
-    @catalog_operation
     def get_organization_contributions(self, slug: str) -> OrganizationContributions:
         """Return daily eligible-paper counts for the trailing 365 days."""
         try:
@@ -292,7 +288,6 @@ class OrganizationService:
                 f"Failed to retrieve organization contributions: {str(e)}"
             )
 
-    @catalog_operation
     def get_organization_areas_with_tasks(
         self, slug: str
     ) -> OrganizationAreasWithTasks:
@@ -382,7 +377,6 @@ class OrganizationService:
                 f"Failed to retrieve organization areas with tasks: {str(e)}"
             )
 
-    @catalog_operation
     def get_organization_papers(
         self,
         slug: str,
