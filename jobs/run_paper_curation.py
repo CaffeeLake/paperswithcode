@@ -195,6 +195,22 @@ def _prompt(context: dict) -> str:
     return "\n\n".join(rules)
 
 
+def run_url_preflight(context: dict) -> dict:
+    """Collect source URLs and verify canonical paper Markdown for every stage."""
+    CONTEXT.write_text(json.dumps(context), encoding="utf-8")
+    subprocess.run(
+        [
+            sys.executable,
+            "jobs/url_preflight.py",
+            str(CONTEXT),
+            str(URL_CANDIDATES),
+        ],
+        cwd=WORKTREE,
+        check=True,
+    )
+    return json.loads(URL_CANDIDATES.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     try:
         bootstrap_worktree()
@@ -207,33 +223,22 @@ def main() -> int:
         os.environ.pop("OPENAI_API_KEY", None)
 
         context = api_request("context")
-        CONTEXT.write_text(json.dumps(context), encoding="utf-8")
-        if KIND == "enrich-paper":
-            subprocess.run(
-                [
-                    sys.executable,
-                    "jobs/url_preflight.py",
-                    str(CONTEXT),
-                    str(URL_CANDIDATES),
-                ],
-                cwd=WORKTREE,
-                check=True,
+        preflight = run_url_preflight(context)
+        if preflight.get("awaiting_markdown"):
+            sys.path.insert(0, str(WORKTREE))
+            from jobs.curation_failure_codes import (  # noqa: PLC0415
+                AWAITING_MARKDOWN,
+                format_failure,
             )
-            preflight = json.loads(URL_CANDIDATES.read_text(encoding="utf-8"))
-            if preflight.get("awaiting_markdown"):
-                sys.path.insert(0, str(WORKTREE))
-                from jobs.curation_failure_codes import (  # noqa: PLC0415
-                    AWAITING_MARKDOWN,
-                    format_failure,
-                )
 
-                raise SourceEvidenceIncomplete(
-                    format_failure(
-                        AWAITING_MARKDOWN,
-                        "Awaiting paper Markdown extraction: "
-                        + str(context["paper"].get("arxiv_id") or "unknown"),
-                    )
+            raise SourceEvidenceIncomplete(
+                format_failure(
+                    AWAITING_MARKDOWN,
+                    "Awaiting paper Markdown extraction: "
+                    + str(context["paper"].get("arxiv_id") or "unknown"),
                 )
+            )
+        if KIND == "enrich-paper":
             if not preflight.get("complete"):
                 failed_sources = sorted(
                     {

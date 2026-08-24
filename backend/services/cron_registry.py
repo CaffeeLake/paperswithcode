@@ -1140,7 +1140,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
 # human label makes schedule-boundary behavior deterministic and reviewable.
 _SCHEDULE_CONTRACTS: dict[str, tuple[tuple[SchedulePolicy, ...], int]] = {
     "paper_markdown_backfill": (
-        (SchedulePolicy.fixed(60, offset_minutes=17), SchedulePolicy.daily(2, 43)),
+        (SchedulePolicy.fixed(60, offset_minutes=17),),
         20,
     ),
     "update_hot_github_trending": ((SchedulePolicy.fixed(15),), 10),

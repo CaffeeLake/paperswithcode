@@ -329,6 +329,16 @@ def test_scheduled_enrichment_prompt_is_additive_only():
     assert "Scheduled mode is additive only" in runner
 
 
+def test_remote_runner_checks_markdown_before_both_curation_stages():
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+
+    preflight = runner.index("preflight = run_url_preflight(context)")
+    awaiting_gate = runner.index('preflight.get("awaiting_markdown")', preflight)
+    enrich_only = runner.index('if KIND == "enrich-paper":', awaiting_gate)
+
+    assert preflight < awaiting_gate < enrich_only
+
+
 def test_remote_add_evals_requires_configured_leaderboard_search():
     skill = Path(".agents/skills/remote-paper-curation/SKILL.md").read_text(
         encoding="utf-8"
