@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence, TypeVar
 
-from sqlalchemy import desc, func
-from sqlalchemy.orm import Session
+from sqlalchemy import Integer, and_, cast, desc, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from backend.models.api import (
     AuthorLink,
@@ -80,6 +80,7 @@ class PaperRelations:
     successor_papers: dict[int, list[RelatedPaperSummary]] = field(default_factory=dict)
     conferences: dict[int, PaperConferenceRelation] = field(default_factory=dict)
     repositories: dict[int, list[Repository]] = field(default_factory=dict)
+    repository_coverage: dict[int, tuple[bool, int]] = field(default_factory=dict)
     project_pages: dict[int, list[ProjectPage]] = field(default_factory=dict)
 
 
@@ -142,6 +143,7 @@ class PaperRelationLoader:
         unique_ids = self._unique_ids(paper_ids)
         if unique_ids:
             self._load_card_relations(unique_ids, relations)
+            self._load_repository_coverage(unique_ids, relations)
         return relations
 
     def load_details(self, paper_ids: Sequence[int]) -> PaperRelations:
@@ -163,7 +165,45 @@ class PaperRelationLoader:
                 ),
             )
         self._load_detail_relations(unique_ids, relations)
+        self._load_repository_coverage(unique_ids, relations)
         return relations
+
+    @staticmethod
+    def _family_join(requested, family):
+        return or_(
+            and_(
+                requested.arxiv_id.is_not(None),
+                family.arxiv_id == requested.arxiv_id,
+            ),
+            and_(requested.arxiv_id.is_(None), family.id == requested.id),
+        )
+
+    def _load_repository_coverage(
+        self,
+        paper_ids: list[int],
+        relations: PaperRelations,
+    ) -> None:
+        requested = aliased(DBPaper)
+        family = aliased(DBPaper)
+        rows = (
+            self.db.query(
+                requested.id,
+                func.max(cast(DBPaperRepository.is_official, Integer)),
+                func.count(func.distinct(DBPaperRepository.repository_id)),
+            )
+            .select_from(requested)
+            .join(family, self._family_join(requested, family))
+            .join(DBPaperRepository, DBPaperRepository.paper_id == family.id)
+            .filter(requested.id.in_(paper_ids))
+            .group_by(requested.id)
+            .all()
+        )
+        relations.repository_coverage.update(
+            {
+                int(paper_id): (bool(has_official), int(repository_count))
+                for paper_id, has_official, repository_count in rows
+            }
+        )
 
     def load_resources(
         self,
@@ -175,25 +215,35 @@ class PaperRelationLoader:
         if not unique_ids:
             return relations
 
+        requested = aliased(DBPaper)
+        family = aliased(DBPaper)
         repository_rows = (
             self.db.query(
-                DBPaperRepository.paper_id,
+                requested.id,
                 DBPaperRepository.is_official,
                 DBRepository,
             )
+            .select_from(requested)
+            .join(family, self._family_join(requested, family))
+            .join(DBPaperRepository, DBPaperRepository.paper_id == family.id)
             .join(
                 DBRepository,
                 DBPaperRepository.repository_id == DBRepository.id,
             )
-            .filter(DBPaperRepository.paper_id.in_(unique_ids))
+            .filter(requested.id.in_(unique_ids))
             .order_by(
-                DBPaperRepository.paper_id,
+                requested.id,
                 desc(DBPaperRepository.is_official),
                 desc(DBRepository.num_stars),
             )
             .all()
         )
+        seen_repositories: dict[int, set[int]] = {}
         for paper_id, is_official, repository in repository_rows:
+            seen = seen_repositories.setdefault(int(paper_id), set())
+            if repository.id in seen:
+                continue
+            seen.add(repository.id)
             _append_relation(
                 relations.repositories,
                 paper_id,

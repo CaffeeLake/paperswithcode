@@ -315,6 +315,12 @@ def get_papers(
     has_code: bool = Query(
         False, description="Only include papers with a linked GitHub repository"
     ),
+    has_official_implementation: bool = Query(
+        False,
+        description=(
+            "Only include papers with a catalog-linked official implementation"
+        ),
+    ),
     has_hf_artifacts: bool = Query(
         False, description="Only include papers with linked Hugging Face artifacts"
     ),
@@ -360,6 +366,7 @@ def get_papers(
             order_dir=order_dir,
             include_resources=include_resources,
             has_code=has_code,
+            has_official_implementation=has_official_implementation,
             has_hf_artifacts=has_hf_artifacts,
             framework=framework,
             repository=repository,
@@ -379,6 +386,12 @@ def search_papers(
     page_size: int = Query(10, ge=1, le=100, description="Papers per page"),
     mode: Optional[Literal["keyword", "semantic", "hybrid"]] = Query(
         None, description="Override the configured search mode for this request"
+    ),
+    has_official_implementation: bool = Query(
+        False,
+        description=(
+            "Only include papers with a catalog-linked official implementation"
+        ),
     ),
     date_range: PaperDateRange = Depends(get_paper_date_range),
     db: Session = Depends(get_database_session),
@@ -400,6 +413,7 @@ def search_papers(
         mode=mode,
         start_date=date_range.start_date,
         end_date=date_range.end_date,
+        has_official_implementation=has_official_implementation,
     )
 
 

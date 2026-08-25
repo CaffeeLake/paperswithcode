@@ -20,7 +20,9 @@ from backend.models.database import (
     Method as DBMethod,
     Paper as DBPaper,
     PaperMethod,
+    PaperRepository,
     PaperTask,
+    Repository as DBRepository,
     Task as DBTask,
 )
 from backend.services.paper_service import PaperService
@@ -138,6 +140,245 @@ def search(session, query, limit=10, mode="keyword"):
     service = PaperService(session)._retrieval_service()
     service.settings.paper_search_mode = mode
     return service.search_papers(query, limit)
+
+
+def test_paper_implementation_coverage_unions_repositories_across_versions(
+    session_factory,
+):
+    with session_factory() as session:
+        first = add_paper(
+            session,
+            title="Versioned Implementation Paper",
+            arxiv_id="2607.09990",
+            version="v1",
+            is_latest_version=False,
+        )
+        latest = add_paper(
+            session,
+            title="Versioned Implementation Paper",
+            arxiv_id="2607.09990",
+            version="v2",
+            is_latest_version=True,
+        )
+        official = DBRepository(
+            url="https://github.com/example/official",
+            owner="example",
+            name="official",
+        )
+        community = DBRepository(
+            url="https://github.com/example/community",
+            owner="example",
+            name="community",
+        )
+        session.add_all((official, community))
+        session.flush()
+        session.add_all(
+            (
+                PaperRepository(
+                    paper_id=first.id,
+                    repository_id=official.id,
+                    is_official=True,
+                ),
+                PaperRepository(
+                    paper_id=latest.id,
+                    repository_id=community.id,
+                    is_official=False,
+                ),
+            )
+        )
+        session.commit()
+
+        response = PaperService(session).get_paper_by_id(
+            latest.id, include_resources=True
+        )
+
+        assert response.has_official_implementation is True
+        assert response.code_repository_count == 2
+        assert {repository.url for repository in response.repositories or []} == {
+            official.url,
+            community.url,
+        }
+
+
+def test_recent_paper_summaries_include_family_implementation_coverage(
+    session_factory,
+):
+    with session_factory() as session:
+        first = add_paper(
+            session,
+            title="Summary Coverage Paper",
+            arxiv_id="2607.09991",
+            version="v1",
+            is_latest_version=False,
+        )
+        latest = add_paper(
+            session,
+            title="Summary Coverage Paper",
+            arxiv_id="2607.09991",
+            version="v2",
+            is_latest_version=True,
+        )
+        repository = DBRepository(
+            url="https://github.com/example/summary-official",
+            owner="example",
+            name="summary-official",
+        )
+        session.add(repository)
+        session.flush()
+        session.add(
+            PaperRepository(
+                paper_id=first.id,
+                repository_id=repository.id,
+                is_official=True,
+            )
+        )
+        session.commit()
+
+        summaries = PaperService(session).get_recent_papers(limit=10)
+        summary = next(item for item in summaries if item.id == str(latest.id))
+
+        assert summary.has_official_implementation is True
+        assert summary.code_repository_count == 1
+
+
+def test_paper_list_filters_to_family_official_implementations_and_confirms_filter(
+    session_factory,
+):
+    with session_factory() as session:
+        older = add_paper(
+            session,
+            title="Official Family Paper",
+            arxiv_id="2607.09992",
+            version="v1",
+            is_latest_version=False,
+        )
+        latest = add_paper(
+            session,
+            title="Official Family Paper",
+            arxiv_id="2607.09992",
+            version="v2",
+            is_latest_version=True,
+        )
+        community_only = add_paper(
+            session,
+            title="Community Only Paper",
+            arxiv_id="2607.09993",
+        )
+        official_repository = DBRepository(
+            url="https://github.com/example/family-official",
+            owner="example",
+            name="family-official",
+        )
+        community_repository = DBRepository(
+            url="https://github.com/example/community-only",
+            owner="example",
+            name="community-only",
+        )
+        session.add_all((official_repository, community_repository))
+        session.flush()
+        session.add_all(
+            (
+                PaperRepository(
+                    paper_id=older.id,
+                    repository_id=official_repository.id,
+                    is_official=True,
+                ),
+                PaperRepository(
+                    paper_id=community_only.id,
+                    repository_id=community_repository.id,
+                    is_official=False,
+                ),
+            )
+        )
+        session.commit()
+
+        app = create_app()
+
+        def override_get_database_session():
+            yield session
+
+        app.dependency_overrides[get_database_session] = override_get_database_session
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/papers/",
+                params={
+                    "order_by": "date_published",
+                    "has_official_implementation": "true",
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert [paper["id"] for paper in payload["results"]] == [str(latest.id)]
+        assert payload["results"][0]["has_official_implementation"] is True
+        assert payload["applied_filters"]["has_official_implementation"] == "true"
+
+
+def test_paper_search_filters_to_family_official_implementations_and_confirms_filter(
+    session_factory,
+):
+    with session_factory() as session:
+        older = add_paper(
+            session,
+            title="Official Search Family",
+            abstract="implementation coverage tracer",
+            arxiv_id="2607.09994",
+            version="v1",
+            is_latest_version=False,
+        )
+        latest = add_paper(
+            session,
+            title="Official Search Family",
+            abstract="implementation coverage tracer",
+            arxiv_id="2607.09994",
+            version="v2",
+            is_latest_version=True,
+        )
+        add_paper(
+            session,
+            title="Community Search Result",
+            abstract="implementation coverage tracer",
+            arxiv_id="2607.09995",
+            citation_count=10_000,
+        )
+        repository = DBRepository(
+            url="https://github.com/example/search-official",
+            owner="example",
+            name="search-official",
+        )
+        session.add(repository)
+        session.flush()
+        session.add(
+            PaperRepository(
+                paper_id=older.id,
+                repository_id=repository.id,
+                is_official=True,
+            )
+        )
+        session.commit()
+
+        app = create_app()
+
+        def override_get_database_session():
+            yield session
+
+        app.dependency_overrides[get_database_session] = override_get_database_session
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/papers/search",
+                params={
+                    "q": "implementation coverage tracer",
+                    "mode": "keyword",
+                    "page_size": 1,
+                    "has_official_implementation": "true",
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert [paper["id"] for paper in payload["results"]] == [str(latest.id)]
+        assert payload["next_page"] is None
+        assert payload["applied_filters"]["has_official_implementation"] == "true"
 
 
 def test_exact_title_beats_more_cited_abstract_match(session_factory):
@@ -321,6 +562,66 @@ def test_exact_method_entity_promotes_source_paper_in_every_mode(
 
         results = service.search_papers("AtlasNet", limit=2, mode=mode)
         assert [result.id for result in results] == [str(source.id), str(followup.id)]
+
+
+def test_official_filter_applies_before_method_promotion_and_truncation(
+    session_factory, monkeypatch
+):
+    with session_factory() as session:
+        source = add_paper(session, title="Community FilterNet Source")
+        official = add_paper(session, title="Official FilterNet Result")
+        method = DBMethod(
+            name="FilterNet",
+            slug=f"filternet-{uuid4().hex}",
+            source_paper_id=source.id,
+        )
+        repository = DBRepository(
+            url="https://github.com/example/official-filternet",
+            owner="example",
+            name="official-filternet",
+        )
+        session.add_all((method, repository))
+        session.flush()
+        community_papers = [
+            add_paper(
+                session,
+                title=f"Community FilterNet Follow-up {index}",
+                arxiv_id=f"2607.{10000 + index:05d}",
+                citation_count=10_000 - index,
+            )
+            for index in range(100)
+        ]
+        session.add_all(
+            PaperMethod(paper_id=paper.id, method_id=method.id)
+            for paper in community_papers
+        )
+        session.add(
+            PaperRepository(
+                paper_id=official.id,
+                repository_id=repository.id,
+                is_official=True,
+            )
+        )
+        session.commit()
+
+        service = PaperService(session)._retrieval_service()
+        monkeypatch.setattr(
+            service,
+            "_search_papers_fts",
+            lambda _query, _limit, **_kwargs: [official],
+        )
+        monkeypatch.setattr(
+            service, "_fuzzy_title_candidates", lambda *_args, **_kwargs: []
+        )
+
+        results = service.search_papers(
+            "FilterNet",
+            limit=1,
+            mode="keyword",
+            has_official_implementation=True,
+        )
+
+        assert [result.id for result in results] == [str(official.id)]
 
 
 def test_date_filter_drops_out_of_range_promotion_without_underfilling(
@@ -717,6 +1018,7 @@ def test_search_endpoint_returns_paginated_summaries(session_factory):
     assert response.json() == {
         "next_page": None,
         "previous_page": None,
+        "applied_filters": {},
         "results": [
             {
                 "id": str(paper.id),
@@ -729,6 +1031,8 @@ def test_search_endpoint_returns_paginated_summaries(session_factory):
                 "url_abs": "https://arxiv.org/abs/2607.00040",
                 "citation_count": 7,
                 "thumbnail_url": None,
+                "has_official_implementation": False,
+                "code_repository_count": 0,
             }
         ],
     }

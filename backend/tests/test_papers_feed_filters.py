@@ -680,8 +680,34 @@ def test_trending_feed_filters_to_linked_repositories_when_requested():
 
     assert response.count == 0
     assert "EXISTS" in captured["sql"]
-    assert "code_pr.paper_id = p.id" in captured["sql"]
+    assert "code_pr.paper_id = code_family.id" in captured["sql"]
+    assert "code_family.arxiv_id = p.arxiv_id" in captured["sql"]
     assert captured["params"]["has_code"] is True
+
+
+def test_trending_feed_filters_to_family_official_implementations_when_requested():
+    captured = {}
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeDatabase:
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return EmptyResult()
+
+    response = PaperService(FakeDatabase())._get_trending_papers(
+        page=1,
+        page_size=20,
+        has_official_implementation=True,
+    )
+
+    assert response.count == 0
+    assert "family_pr.is_official = TRUE" in captured["sql"]
+    assert "family.arxiv_id = p.arxiv_id" in captured["sql"]
+    assert captured["params"]["has_official_implementation"] is True
 
 
 def test_trending_feed_filters_to_linked_hf_artifacts_when_requested():

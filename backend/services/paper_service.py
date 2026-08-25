@@ -16,8 +16,6 @@ from sqlalchemy import and_, desc, asc, or_, func, text
 
 from backend.models.database import (
     Paper as DBPaper,
-    Author as DBAuthor,
-    PaperAuthor,
     Task as DBTask,
     Method as DBMethod,
     Repository as DBRepository,
@@ -62,6 +60,9 @@ from backend.utils.urls import (
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
 from backend.services.paper_association_service import PaperAssociationService
+from backend.services.paper_implementation_service import (
+    family_repository_exists_clause,
+)
 from backend.services.paper_citation_refresh_service import PaperCitationRefreshService
 from backend.services.paper_relation_loader import PaperRelationLoader, PaperRelations
 from backend.services.paper_retrieval_service import PaperRetrievalService
@@ -279,6 +280,9 @@ class PaperService:
             relations.hf_artifact_counts.get(db_paper.id) or {},
         )
         repositories = relations.repositories.get(db_paper.id) or None
+        has_official_implementation, code_repository_count = (
+            relations.repository_coverage.get(db_paper.id, (False, 0))
+        )
         project_pages = relations.project_pages.get(db_paper.id) or None
 
         # Create the API model
@@ -315,6 +319,8 @@ class PaperService:
             "hf_datasets": db_paper.hf_datasets or [],
             "hf_spaces": db_paper.hf_spaces or [],
             "hf_artifact_summary": hf_artifact_summary,
+            "has_official_implementation": has_official_implementation,
+            "code_repository_count": code_repository_count,
             "repositories": repositories,
             "project_pages": project_pages,
             "tasks": tasks,
@@ -329,30 +335,12 @@ class PaperService:
 
         return Paper(**paper_data)
 
-    def _convert_db_paper_to_summary(self, db_paper: DBPaper) -> PaperSummary:
-        """
-        Convert database paper model to API paper summary model.
-
-        Args:
-            db_paper: Database paper instance
-
-        Returns:
-            API PaperSummary model
-        """
-        # Get authors for this paper - handle case where authors table doesn't exist yet
-        authors = []
-        try:
-            authors_query = (
-                self.db.query(DBAuthor)
-                .join(PaperAuthor)
-                .filter(PaperAuthor.paper_id == db_paper.id)
-                .order_by(PaperAuthor.author_order)
-            )
-            authors = [author.name for author in authors_query.all()]
-        except Exception:
-            # Authors table doesn't exist yet, use empty list
-            authors = []
-
+    def _to_api_paper_summary(
+        self,
+        db_paper: DBPaper,
+        relations: PaperRelations,
+    ) -> PaperSummary:
+        """Convert one database paper using an already-loaded card projection."""
         # Source-aware URL: ArXiv abs URL for ArXiv rows, source_url for external.
         url_abs = get_paper_abs_url(
             db_paper.source,
@@ -362,6 +350,9 @@ class PaperService:
         )
 
         thumbnail_url = self._resolve_thumbnail_url(db_paper)
+        has_official_implementation, code_repository_count = (
+            relations.repository_coverage.get(db_paper.id, (False, 0))
+        )
 
         return PaperSummary(
             id=str(db_paper.id),
@@ -369,12 +360,24 @@ class PaperService:
             arxiv_id=db_paper.arxiv_id,
             source=db_paper.source,
             source_url=db_paper.source_url,
-            authors=authors,
+            authors=relations.authors.get(db_paper.id, []),
             published=db_paper.date_published,
             url_abs=url_abs,
             citation_count=db_paper.citation_count,
             thumbnail_url=thumbnail_url,
+            has_official_implementation=has_official_implementation,
+            code_repository_count=code_repository_count,
         )
+
+    def _convert_db_papers_to_summaries(
+        self, db_papers: Sequence[DBPaper]
+    ) -> list[PaperSummary]:
+        """Hydrate lightweight paper summaries in a bounded relation batch."""
+        papers = list(db_papers)
+        relations = PaperRelationLoader(self.db).load_cards(
+            [paper.id for paper in papers]
+        )
+        return [self._to_api_paper_summary(paper, relations) for paper in papers]
 
     def get_paper_by_id(self, paper_id: int, include_resources: bool = False) -> Paper:
         """
@@ -522,6 +525,7 @@ class PaperService:
         time_window: str = "all_time",
         include_resources: bool = False,
         has_code: bool = False,
+        has_official_implementation: bool = False,
         has_hf_artifacts: bool = False,
         framework: Optional[str] = None,
         repository: Optional[str] = None,
@@ -580,6 +584,9 @@ class PaperService:
                     if start_date is not None
                     else None,
                     "end_date": end_date.isoformat() if end_date is not None else None,
+                    "has_official_implementation": (
+                        "true" if has_official_implementation else None
+                    ),
                 }.items()
                 if value is not None
             }
@@ -643,6 +650,7 @@ class PaperService:
                     latest_only=latest_only,
                     include_resources=include_resources,
                     has_code=has_code,
+                    has_official_implementation=has_official_implementation,
                     has_hf_artifacts=has_hf_artifacts,
                 )
                 response.applied_filters = applied_filters
@@ -683,6 +691,11 @@ class PaperService:
 
             if has_code:
                 query = self.apply_has_code_filter(query)
+
+            if has_official_implementation:
+                query = query.filter(
+                    family_repository_exists_clause(official_only=True)
+                )
 
             if has_hf_artifacts:
                 query = self.apply_has_hf_artifacts_filter(query)
@@ -927,7 +940,30 @@ class PaperService:
             source,
             source_url,
             thumbnail_url,
-            version
+            version,
+            EXISTS (
+                SELECT 1
+                FROM papers family
+                JOIN paper_repositories family_pr ON family_pr.paper_id = family.id
+                WHERE family_pr.is_official = TRUE
+                  AND (
+                    (ranked_by_repo.arxiv_id IS NOT NULL
+                     AND family.arxiv_id = ranked_by_repo.arxiv_id)
+                    OR (ranked_by_repo.arxiv_id IS NULL
+                        AND family.id = ranked_by_repo.paper_id)
+                  )
+            ) AS has_official_implementation,
+            (
+                SELECT COUNT(DISTINCT family_pr.repository_id)
+                FROM papers family
+                JOIN paper_repositories family_pr ON family_pr.paper_id = family.id
+                WHERE (
+                    (ranked_by_repo.arxiv_id IS NOT NULL
+                     AND family.arxiv_id = ranked_by_repo.arxiv_id)
+                    OR (ranked_by_repo.arxiv_id IS NULL
+                        AND family.id = ranked_by_repo.paper_id)
+                )
+            ) AS code_repository_count
         FROM ranked_by_repo
         WHERE repo_paper_rank = 1
         ORDER BY trending_score DESC NULLS LAST, current_stars DESC
@@ -1048,6 +1084,8 @@ class PaperService:
                 stars_gained_24h=int(row[11]) if row[11] else 0,
             ),
             paper_age_days=float(row[12]) if row[12] else 0.0,
+            has_official_implementation=bool(row[18]),
+            code_repository_count=int(row[19]),
         )
 
     def _resolve_repository_trending_thumbnail_url(
@@ -1083,8 +1121,11 @@ class PaperService:
                 r.trending_score,
                 r.num_stars
             FROM papers p
+            LEFT JOIN papers repository_family
+                ON (p.arxiv_id IS NOT NULL AND repository_family.arxiv_id = p.arxiv_id)
+                OR (p.arxiv_id IS NULL AND repository_family.id = p.id)
             LEFT JOIN paper_repositories pr
-                ON p.id = pr.paper_id
+                ON repository_family.id = pr.paper_id
                 AND pr.is_official = TRUE
             LEFT JOIN repositories r
                 ON pr.repository_id = r.id
@@ -1097,8 +1138,21 @@ class PaperService:
                 AND (:conference IS NULL OR p.conference ILIKE :conference)
                 AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
                 AND (:has_code = FALSE OR EXISTS (
-                    SELECT 1 FROM paper_repositories code_pr
-                    WHERE code_pr.paper_id = p.id
+                    SELECT 1
+                    FROM papers code_family
+                    JOIN paper_repositories code_pr ON code_pr.paper_id = code_family.id
+                    WHERE (p.arxiv_id IS NOT NULL AND code_family.arxiv_id = p.arxiv_id)
+                       OR (p.arxiv_id IS NULL AND code_family.id = p.id)
+                ))
+                AND (:has_official_implementation = FALSE OR EXISTS (
+                    SELECT 1
+                    FROM papers family
+                    JOIN paper_repositories family_pr ON family_pr.paper_id = family.id
+                    WHERE family_pr.is_official = TRUE
+                      AND (
+                        (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                        OR (p.arxiv_id IS NULL AND family.id = p.id)
+                      )
                 ))
                 AND (:has_hf_artifacts = FALSE OR EXISTS (
                     SELECT 1 FROM paper_hf_artifacts artifact_link
@@ -1140,8 +1194,11 @@ class PaperService:
                 r.id as repository_id,
                 r.num_stars
             FROM papers p
+            LEFT JOIN papers repository_family
+                ON (p.arxiv_id IS NOT NULL AND repository_family.arxiv_id = p.arxiv_id)
+                OR (p.arxiv_id IS NULL AND repository_family.id = p.id)
             LEFT JOIN paper_repositories pr
-                ON p.id = pr.paper_id
+                ON repository_family.id = pr.paper_id
                 AND pr.is_official = TRUE
             LEFT JOIN repositories r
                 ON pr.repository_id = r.id
@@ -1153,8 +1210,21 @@ class PaperService:
                 AND (:conference IS NULL OR p.conference ILIKE :conference)
                 AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
                 AND (:has_code = FALSE OR EXISTS (
-                    SELECT 1 FROM paper_repositories code_pr
-                    WHERE code_pr.paper_id = p.id
+                    SELECT 1
+                    FROM papers code_family
+                    JOIN paper_repositories code_pr ON code_pr.paper_id = code_family.id
+                    WHERE (p.arxiv_id IS NOT NULL AND code_family.arxiv_id = p.arxiv_id)
+                       OR (p.arxiv_id IS NULL AND code_family.id = p.id)
+                ))
+                AND (:has_official_implementation = FALSE OR EXISTS (
+                    SELECT 1
+                    FROM papers family
+                    JOIN paper_repositories family_pr ON family_pr.paper_id = family.id
+                    WHERE family_pr.is_official = TRUE
+                      AND (
+                        (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                        OR (p.arxiv_id IS NULL AND family.id = p.id)
+                      )
                 ))
                 AND (:has_hf_artifacts = FALSE OR EXISTS (
                     SELECT 1 FROM paper_hf_artifacts artifact_link
@@ -1194,6 +1264,7 @@ class PaperService:
         page: int,
         page_size: int,
         has_code: bool = False,
+        has_official_implementation: bool = False,
         has_hf_artifacts: bool = False,
     ):
         """Return ``(sql, params)`` for the requested trending ranking mode.
@@ -1214,6 +1285,7 @@ class PaperService:
             "conference": f"%{conference}%" if conference else None,
             "latest_only": latest_only,
             "has_code": has_code,
+            "has_official_implementation": has_official_implementation,
             "has_hf_artifacts": has_hf_artifacts,
             "limit": page_size,
             "offset": (page - 1) * page_size,
@@ -1231,6 +1303,7 @@ class PaperService:
         latest_only: bool = True,
         include_resources: bool = False,
         has_code: bool = False,
+        has_official_implementation: bool = False,
         has_hf_artifacts: bool = False,
     ) -> Papers:
         """
@@ -1258,6 +1331,7 @@ class PaperService:
                 conference=conference,
                 latest_only=latest_only,
                 has_code=has_code,
+                has_official_implementation=has_official_implementation,
                 has_hf_artifacts=has_hf_artifacts,
                 page=page,
                 page_size=page_size,
@@ -1354,7 +1428,7 @@ class PaperService:
     @staticmethod
     def apply_has_code_filter(query):
         """Keep papers with at least one linked GitHub repository."""
-        return query.filter(DBPaper.repositories.any())
+        return query.filter(family_repository_exists_clause())
 
     @staticmethod
     def apply_has_hf_artifacts_filter(query):
@@ -1482,7 +1556,7 @@ class PaperService:
         return PaperRetrievalService(
             self.db,
             settings=self.settings,
-            summary_factory=self._convert_db_paper_to_summary,
+            summary_factory=self._convert_db_papers_to_summaries,
             paper_resolver=self._resolve_db_paper_by_id_or_arxiv,
         )
 
@@ -1493,6 +1567,7 @@ class PaperService:
         mode: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> List[PaperSummary]:
         return self._retrieval_service().search_papers(
             query,
@@ -1500,6 +1575,7 @@ class PaperService:
             mode=mode,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
 
     def search_papers_page(
@@ -1510,6 +1586,7 @@ class PaperService:
         mode: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> PaperSearchResults:
         return self._retrieval_service().search_papers_page(
             query,
@@ -1518,6 +1595,7 @@ class PaperService:
             mode=mode,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
 
     def get_related_papers(
@@ -1545,9 +1623,7 @@ class PaperService:
                 .all()
             )
 
-            return [
-                self._convert_db_paper_to_summary(db_paper) for db_paper in db_papers
-            ]
+            return self._convert_db_papers_to_summaries(db_papers)
 
         except Exception as e:
             raise DatabaseError(f"Error fetching recent papers: {str(e)}")
@@ -1636,12 +1712,12 @@ class PaperService:
 
             # Try to find these papers in our database
             local_titles = {result.title.lower() for result in local_results}
-            supplemental_results = []
+            supplemental_papers = []
 
             for title, citation_count in highly_cited:
                 if (
                     title.lower() not in local_titles
-                    and len(local_results) + len(supplemental_results) < limit
+                    and len(local_results) + len(supplemental_papers) < limit
                 ):
                     # Try to find this paper in our database
                     db_paper = (
@@ -1657,11 +1733,12 @@ class PaperService:
                             db_paper.citation_count = citation_count
                             self.db.commit()
 
-                        supplemental_results.append(
-                            self._convert_db_paper_to_summary(db_paper)
-                        )
+                        supplemental_papers.append(db_paper)
 
             # Combine and return results
+            supplemental_results = self._convert_db_papers_to_summaries(
+                supplemental_papers
+            )
             all_results = local_results + supplemental_results
             return all_results[:limit]
 

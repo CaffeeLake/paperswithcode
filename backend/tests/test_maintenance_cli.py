@@ -141,6 +141,8 @@ def test_trending_cli_uses_repository_trending_service(
             stars_gained_24h=30,
         ),
         paper_age_days=2.0,
+        has_official_implementation=True,
+        code_repository_count=1,
     )
     calls = []
 

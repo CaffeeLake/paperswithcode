@@ -33,6 +33,9 @@ from backend.services.embedding_retrieval_service import (
     RankedCandidate,
     reciprocal_rank_fusion,
 )
+from backend.services.paper_implementation_service import (
+    family_repository_exists_clause,
+)
 from backend.services.query_embedding_client import (
     QueryEmbeddingUnavailable,
     get_query_embedding_client,
@@ -75,7 +78,7 @@ class PaperRetrievalService:
         db: Session,
         *,
         settings: Settings,
-        summary_factory: Callable[[DBPaper], PaperSummary],
+        summary_factory: Callable[[list[DBPaper]], list[PaperSummary]],
         paper_resolver: Callable[[str], DBPaper],
     ) -> None:
         self.db = db
@@ -83,8 +86,10 @@ class PaperRetrievalService:
         self._summary_factory = summary_factory
         self._paper_resolver = paper_resolver
 
-    def _convert_db_paper_to_summary(self, paper: DBPaper) -> PaperSummary:
-        return self._summary_factory(paper)
+    def _convert_db_papers_to_summaries(
+        self, papers: list[DBPaper]
+    ) -> list[PaperSummary]:
+        return self._summary_factory(papers)
 
     def _resolve_db_paper_by_id_or_arxiv(self, identifier: str) -> DBPaper:
         return self._paper_resolver(identifier)
@@ -96,6 +101,7 @@ class PaperRetrievalService:
         mode: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> List[PaperSummary]:
         """
         Search latest papers using the configured rollout mode.
@@ -123,6 +129,7 @@ class PaperRetrievalService:
                     retrieval_limit,
                     start_date=start_date,
                     end_date=end_date,
+                    has_official_implementation=has_official_implementation,
                 )
             elif selected_mode == "semantic":
                 results = self._search_papers_semantic(
@@ -130,6 +137,7 @@ class PaperRetrievalService:
                     retrieval_limit,
                     start_date=start_date,
                     end_date=end_date,
+                    has_official_implementation=has_official_implementation,
                 )
             elif selected_mode == "hybrid":
                 results = self._search_papers_hybrid(
@@ -137,6 +145,7 @@ class PaperRetrievalService:
                     retrieval_limit,
                     start_date=start_date,
                     end_date=end_date,
+                    has_official_implementation=has_official_implementation,
                 )
             else:
                 raise ValueError(f"Unsupported paper search mode: {selected_mode}")
@@ -147,6 +156,7 @@ class PaperRetrievalService:
                 limit,
                 start_date=start_date,
                 end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
             if start_date is not None:
                 results = [
@@ -162,10 +172,7 @@ class PaperRetrievalService:
                     if paper.date_published is not None
                     and paper.date_published <= end_date
                 ]
-            return [
-                self._convert_db_paper_to_summary(db_paper)
-                for db_paper in results[:limit]
-            ]
+            return self._convert_db_papers_to_summaries(results[:limit])
 
         except Exception as e:
             raise DatabaseError(f"Error searching papers: {str(e)}")
@@ -178,6 +185,7 @@ class PaperRetrievalService:
         mode: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> PaperSearchResults:
         """Return a stable slice of the relevance ranking with page metadata."""
         end = page * page_size
@@ -187,12 +195,18 @@ class PaperRetrievalService:
             mode=mode,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
         start = end - page_size
         return PaperSearchResults(
             next_page=page + 1 if len(ranked) > end else None,
             previous_page=page - 1 if page > 1 else None,
             results=ranked[start:end],
+            applied_filters=(
+                {"has_official_implementation": "true"}
+                if has_official_implementation
+                else {}
+            ),
         )
 
     @staticmethod
@@ -377,11 +391,29 @@ class PaperRetrievalService:
             query = query.filter(DBPaper.date_published <= end_date)
         return query
 
+    @staticmethod
+    def _filter_query_by_official_implementation(query, required: bool):
+        if required:
+            return query.filter(family_repository_exists_clause(official_only=True))
+        return query
+
+    def _paper_has_official_implementation(self, paper: DBPaper) -> bool:
+        return (
+            self.db.query(DBPaper.id)
+            .filter(
+                DBPaper.id == paper.id,
+                family_repository_exists_clause(official_only=True),
+            )
+            .first()
+            is not None
+        )
+
     def _method_source_paper(
         self,
         method_row,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> tuple[DBPaper | None, str]:
         """Resolve a method's source paper or a citation-ranked fallback."""
         if method_row.source_paper_id is not None:
@@ -390,6 +422,10 @@ class PaperRetrievalService:
                 source is not None
                 and source.is_latest_version
                 and self._paper_in_date_range(source, start_date, end_date)
+                and (
+                    not has_official_implementation
+                    or self._paper_has_official_implementation(source)
+                )
             ):
                 return source, "source_paper"
             if source is not None and source.arxiv_id:
@@ -398,7 +434,12 @@ class PaperRetrievalService:
                     DBPaper.is_latest_version,
                 )
                 latest = (
-                    self._filter_query_by_date_range(latest_query, start_date, end_date)
+                    self._filter_query_by_official_implementation(
+                        self._filter_query_by_date_range(
+                            latest_query, start_date, end_date
+                        ),
+                        has_official_implementation,
+                    )
                     .order_by(DBPaper.version.desc(), DBPaper.id.desc())
                     .first()
                 )
@@ -417,7 +458,10 @@ class PaperRetrievalService:
             )
         )
         fallback = (
-            self._filter_query_by_date_range(fallback_query, start_date, end_date)
+            self._filter_query_by_official_implementation(
+                self._filter_query_by_date_range(fallback_query, start_date, end_date),
+                has_official_implementation,
+            )
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
                 DBPaper.date_published.asc().nullslast(),
@@ -433,6 +477,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> list[DBPaper]:
         """Return popular papers that use a resolved method."""
         query = (
@@ -441,7 +486,10 @@ class PaperRetrievalService:
             .filter(PaperMethod.method_id == method_id, DBPaper.is_latest_version)
         )
         return (
-            self._filter_query_by_date_range(query, start_date, end_date)
+            self._filter_query_by_official_implementation(
+                self._filter_query_by_date_range(query, start_date, end_date),
+                has_official_implementation,
+            )
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
                 DBPaper.date_published.asc().nullslast(),
@@ -457,6 +505,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> list[tuple[DBPaper, float]]:
         """Use trigram KNN to retrieve short incomplete or misspelled titles."""
         normalized = self._normalize_entity_search_text(query)
@@ -480,6 +529,19 @@ class PaperRetrievalService:
                     WHERE p.is_latest_version
                       AND (:start_date IS NULL OR p.date_published >= CAST(:start_date AS date))
                       AND (:end_date IS NULL OR p.date_published <= CAST(:end_date AS date))
+                      AND (
+                        :has_official_implementation = FALSE
+                        OR EXISTS (
+                            SELECT 1
+                            FROM papers family
+                            JOIN paper_repositories pr ON pr.paper_id = family.id
+                            WHERE pr.is_official = TRUE
+                              AND (
+                                (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                                OR (p.arxiv_id IS NULL AND family.id = p.id)
+                              )
+                        )
+                      )
                     ORDER BY CAST(:query AS text) <<-> lower(p.title)
                     LIMIT :candidate_limit
                 )
@@ -492,6 +554,7 @@ class PaperRetrievalService:
                     "candidate_limit": max(100, limit * 4),
                     "start_date": start_date,
                     "end_date": end_date,
+                    "has_official_implementation": has_official_implementation,
                 },
             )
             .mappings()
@@ -607,6 +670,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> list[DBPaper]:
         """Enrich short navigational searches with taxonomy and title signals.
 
@@ -637,13 +701,17 @@ class PaperRetrievalService:
         method_candidates = []
         if method is not None:
             canonical, evidence = self._method_source_paper(
-                method, start_date=start_date, end_date=end_date
+                method,
+                start_date=start_date,
+                end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
             method_candidates = self._method_paper_candidates(
                 method.id,
                 max(20, limit),
                 start_date=start_date,
                 end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
 
         fuzzy_candidates = self._fuzzy_title_candidates(
@@ -651,6 +719,7 @@ class PaperRetrievalService:
             max(20, limit),
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
         fuzzy_papers = [paper for paper, _score in fuzzy_candidates]
         fuzzy_top = (
@@ -712,6 +781,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> List[DBPaper]:
         """Weighted PostgreSQL FTS with deterministic identity overrides."""
         normalized_title = " ".join(query.lower().split())
@@ -733,6 +803,8 @@ class PaperRetrievalService:
             date_filters.append(DBPaper.date_published >= start_date)
         if end_date is not None:
             date_filters.append(DBPaper.date_published <= end_date)
+        if has_official_implementation:
+            date_filters.append(family_repository_exists_clause(official_only=True))
 
         identity_candidates = select(
             DBPaper.id.label("paper_id"),
@@ -804,6 +876,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> List[DBPaper]:
         """Fuse weighted FTS and pgvector ranks, falling back immediately to FTS."""
         candidate_limit = max(50, limit)
@@ -812,6 +885,7 @@ class PaperRetrievalService:
             candidate_limit,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
         lexical_candidates = [
             RankedCandidate(int(paper.id), rank)
@@ -825,6 +899,7 @@ class PaperRetrievalService:
                 candidate_limit,
                 start_date=start_date,
                 end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
         except Exception as error:
             fallback_reason = type(error).__name__ + ":" + str(error)[:80]
@@ -890,6 +965,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> tuple[ActiveGeneration, list[RankedCandidate]]:
         if self.settings.query_embedder != "hf_endpoint":
             raise QueryEmbeddingUnavailable("query_embedder_disabled")
@@ -910,6 +986,7 @@ class PaperRetrievalService:
             limit,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )
 
     def _search_papers_semantic(
@@ -918,6 +995,7 @@ class PaperRetrievalService:
         limit: int,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> List[DBPaper]:
         """Dense query-to-paper retrieval with exact-identity and keyword fallback."""
         fingerprint = hashlib.sha256(query.casefold().encode()).hexdigest()[:16]
@@ -928,6 +1006,7 @@ class PaperRetrievalService:
                 max(50, limit),
                 start_date=start_date,
                 end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
         except Exception as error:
             search_logger.info(
@@ -940,6 +1019,7 @@ class PaperRetrievalService:
                 limit,
                 start_date=start_date,
                 end_date=end_date,
+                has_official_implementation=has_official_implementation,
             )
 
         normalized_title = " ".join(query.lower().split())
@@ -955,6 +1035,10 @@ class PaperRetrievalService:
             identity_query = identity_query.filter(DBPaper.date_published >= start_date)
         if end_date is not None:
             identity_query = identity_query.filter(DBPaper.date_published <= end_date)
+        if has_official_implementation:
+            identity_query = identity_query.filter(
+                family_repository_exists_clause(official_only=True)
+            )
         identity_rows = identity_query.order_by(DBPaper.id).all()
         ordered_ids = [int(paper.id) for paper in identity_rows]
         ordered_ids.extend(
@@ -968,6 +1052,10 @@ class PaperRetrievalService:
             papers_query = papers_query.filter(DBPaper.date_published >= start_date)
         if end_date is not None:
             papers_query = papers_query.filter(DBPaper.date_published <= end_date)
+        if has_official_implementation:
+            papers_query = papers_query.filter(
+                family_repository_exists_clause(official_only=True)
+            )
         papers = papers_query.all()
         by_id = {int(paper.id): paper for paper in papers}
         elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
@@ -1073,12 +1161,16 @@ class PaperRetrievalService:
         ids = [item[0] for item in selected]
         papers = self.db.query(DBPaper).filter(DBPaper.id.in_(ids)).all() if ids else []
         by_id = {int(paper.id): paper for paper in papers}
+        summaries = {
+            int(summary.id): summary
+            for summary in self._convert_db_papers_to_summaries(papers)
+        }
         recommendations = []
         for paper_id, provenance, similarity, generation_id, stale in selected:
             paper = by_id.get(paper_id)
             if paper is None:
                 continue
-            summary = self._convert_db_paper_to_summary(paper).model_dump()
+            summary = summaries[int(paper.id)].model_dump()
             recommendations.append(
                 RelatedPaperRecommendation(
                     **summary,

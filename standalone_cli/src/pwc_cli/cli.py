@@ -73,19 +73,44 @@ def _paper_id(item: dict[str, Any]) -> str:
     return _clean(item.get("arxiv_id") or item.get("id"))
 
 
-def _paper_rows(items: list[dict[str, Any]]) -> None:
-    print("id\ttitle\tyear\tcitations")
+def _paper_rows(
+    items: list[dict[str, Any]], *, include_implementation_coverage: bool = False
+) -> None:
+    headers = ["id", "title", "year", "citations"]
+    if include_implementation_coverage:
+        headers.extend(("official_implementation", "code_repositories"))
+    print("\t".join(headers))
     for item in items:
         published = _clean(item.get("published") or item.get("date_published"))
-        print(
-            "\t".join(
+        row = [
+            _paper_id(item),
+            _clean(item.get("title")),
+            published[:4],
+            _clean(item.get("citation_count")),
+        ]
+        if include_implementation_coverage:
+            row.extend(
                 (
-                    _paper_id(item),
-                    _clean(item.get("title")),
-                    published[:4],
-                    _clean(item.get("citation_count")),
+                    "true"
+                    if item.get("has_official_implementation") is True
+                    else "false",
+                    _clean(item.get("code_repository_count")),
                 )
             )
+        print("\t".join(row))
+
+
+def _require_official_implementation_filter(
+    payload: Any, args: argparse.Namespace
+) -> None:
+    if not getattr(args, "has_official_implementation", False):
+        return
+    applied = payload.get("applied_filters") if isinstance(payload, dict) else None
+    if not isinstance(applied, dict) or applied.get(
+        "has_official_implementation"
+    ) not in ("true", True):
+        raise ResponseError(
+            "API did not confirm has_official_implementation; refusing unfiltered results"
         )
 
 
@@ -112,6 +137,17 @@ def _emit_page(
     return 0
 
 
+def _emit_paper_page(payload: Any, args: argparse.Namespace) -> int:
+    return _emit_page(
+        payload,
+        args,
+        lambda items: _paper_rows(
+            items,
+            include_implementation_coverage=args.implementation_coverage,
+        ),
+    )
+
+
 def search(args: argparse.Namespace, client: Client) -> int:
     payload = client.get(
         "papers/search",
@@ -120,9 +156,13 @@ def search(args: argparse.Namespace, client: Client) -> int:
             "page": args.page,
             "page_size": args.limit,
             "mode": args.mode,
+            "has_official_implementation": (
+                True if args.has_official_implementation else None
+            ),
         },
     ).json()
-    return _emit_page(payload, args, _paper_rows)
+    _require_official_implementation_filter(payload, args)
+    return _emit_paper_page(payload, args)
 
 
 def paper_info(args: argparse.Namespace, client: Client) -> int:
@@ -145,6 +185,11 @@ def paper_info(args: argparse.Namespace, client: Client) -> int:
         ("authors", ", ".join(payload.get("authors") or [])),
         ("conference", payload.get("conference_name") or payload.get("conference")),
         ("citations", payload.get("citation_count")),
+        (
+            "official_implementation",
+            "true" if payload.get("has_official_implementation") is True else "false",
+        ),
+        ("code_repositories", payload.get("code_repository_count", 0)),
         ("url", payload.get("url_abs") or payload.get("source_url")),
     )
     for label, value in fields:
@@ -189,19 +234,23 @@ def paper_list(args: argparse.Namespace, client: Client) -> int:
             "order_dir": args.order_dir,
             "time": args.time,
             "include_resources": args.include_resources,
+            "has_official_implementation": (
+                True if args.has_official_implementation else None
+            ),
         },
     ).json()
-    return _emit_page(payload, args, _paper_rows)
+    _require_official_implementation_filter(payload, args)
+    return _emit_paper_page(payload, args)
 
 
 def paper_recent(args: argparse.Namespace, client: Client) -> int:
-    return _emit_page(
-        client.get("papers/recent", {"limit": args.limit}).json(), args, _paper_rows
+    return _emit_paper_page(
+        client.get("papers/recent", {"limit": args.limit}).json(), args
     )
 
 
 def paper_trending(args: argparse.Namespace, client: Client) -> int:
-    return _emit_page(
+    return _emit_paper_page(
         client.get(
             "papers/trending",
             {
@@ -211,15 +260,13 @@ def paper_trending(args: argparse.Namespace, client: Client) -> int:
             },
         ).json(),
         args,
-        _paper_rows,
     )
 
 
 def paper_related(args: argparse.Namespace, client: Client) -> int:
-    return _emit_page(
+    return _emit_paper_page(
         client.get(f"papers/{args.paper}/related", {"limit": args.limit}).json(),
         args,
-        _paper_rows,
     )
 
 
@@ -632,6 +679,14 @@ def _json(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _implementation_coverage(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--implementation-coverage",
+        action="store_true",
+        help="add official-implementation status and repository count columns",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = Parser(
         prog="pwc",
@@ -668,6 +723,12 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--mode", choices=("hybrid", "keyword", "semantic"), default="hybrid"
     )
+    search_parser.add_argument(
+        "--has-official-implementation",
+        action="store_true",
+        help="only return papers with a catalog-linked official code repository",
+    )
+    _implementation_coverage(search_parser)
     _json(search_parser)
     search_parser.set_defaults(handler=search)
 
@@ -700,6 +761,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--time", choices=("today", "week", "month", "all_time"), default="all_time"
     )
     listing.add_argument("--include-resources", action="store_true")
+    listing.add_argument(
+        "--has-official-implementation",
+        action="store_true",
+        help="only return papers with a catalog-linked official code repository",
+    )
+    _implementation_coverage(listing)
     _json(listing)
     listing.set_defaults(handler=paper_list)
     for name, handler, default_limit, maximum in (
@@ -715,11 +782,13 @@ def build_parser() -> argparse.ArgumentParser:
                 default=180,
             )
             leaf.add_argument("--min-velocity", type=float)
+        _implementation_coverage(leaf)
         _json(leaf)
         leaf.set_defaults(handler=handler)
     related = paper_commands.add_parser("related", help="list related papers")
     related.add_argument("paper", help="ArXiv or external paper ID")
     related.add_argument("--limit", type=_limit(20), default=4)
+    _implementation_coverage(related)
     _json(related)
     related.set_defaults(handler=paper_related)
     lineage = paper_commands.add_parser("lineage", help="inspect paper lineage")

@@ -94,6 +94,7 @@ class EmbeddingRetrievalService:
         limit: int = 50,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> list[RankedCandidate]:
         rows = self.db.execute(
             text(
@@ -106,6 +107,19 @@ class EmbeddingRetrievalService:
                 WHERE e.generation_id=:generation_id AND p.is_latest_version
                   AND (:start_date IS NULL OR p.date_published >= :start_date)
                   AND (:end_date IS NULL OR p.date_published <= :end_date)
+                  AND (
+                    :has_official_implementation = FALSE
+                    OR EXISTS (
+                        SELECT 1
+                        FROM papers family
+                        JOIN paper_repositories pr ON pr.paper_id = family.id
+                        WHERE pr.is_official = TRUE
+                          AND (
+                            (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                            OR (p.arxiv_id IS NULL AND family.id = p.id)
+                          )
+                    )
+                  )
                 ORDER BY e.embedding::halfvec({generation.dimensions}) <=>
                          CAST(:vector AS halfvec({generation.dimensions}))
                 LIMIT :limit
@@ -117,6 +131,7 @@ class EmbeddingRetrievalService:
                 "limit": limit,
                 "start_date": start_date,
                 "end_date": end_date,
+                "has_official_implementation": has_official_implementation,
             },
         ).all()
         return [
@@ -269,6 +284,7 @@ class EmbeddingRetrievalService:
         *,
         start_date: date | None = None,
         end_date: date | None = None,
+        has_official_implementation: bool = False,
     ) -> list[RankedCandidate]:
         contract = QueryEmbeddingContract(
             generation_id=generation.id,
@@ -284,4 +300,5 @@ class EmbeddingRetrievalService:
             limit=limit,
             start_date=start_date,
             end_date=end_date,
+            has_official_implementation=has_official_implementation,
         )

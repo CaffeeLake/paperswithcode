@@ -228,6 +228,19 @@ class Paper(BaseModel):
             "most popular category link) used by paper feed cards."
         ),
     )
+    has_official_implementation: bool = Field(
+        default=False,
+        description=(
+            "Whether the catalog links an official code repository to any "
+            "version of this paper"
+        ),
+    )
+    code_repository_count: int = Field(
+        default=0,
+        description=(
+            "Number of distinct code repositories linked to any version of this paper"
+        ),
+    )
 
     # Associated resources (optional, populated when requested)
     repositories: Optional[List["Repository"]] = Field(
@@ -380,6 +393,19 @@ class PaperSummary(BaseModel):
     thumbnail_url: Optional[str] = Field(
         None, description="URL to the paper thumbnail image"
     )
+    has_official_implementation: bool = Field(
+        default=False,
+        description=(
+            "Whether the catalog links an official code repository to any "
+            "version of this paper"
+        ),
+    )
+    code_repository_count: int = Field(
+        default=0,
+        description=(
+            "Number of distinct code repositories linked to any version of this paper"
+        ),
+    )
 
     @field_validator("id", mode="before")
     @classmethod
@@ -397,6 +423,10 @@ class PaperSearchResults(BaseModel):
     )
     results: List[PaperSummary] = Field(
         ..., description="Relevance-ranked papers on this page"
+    )
+    applied_filters: dict[str, str] = Field(
+        default_factory=dict,
+        description="Exact catalog filters applied to this search page",
     )
 
 
@@ -660,6 +690,8 @@ class RepositoryTrendingPaper(BaseModel):
     repository: RepositoryTrendingRepository
     trending: RepositoryTrendingScore
     paper_age_days: float
+    has_official_implementation: bool
+    code_repository_count: int
 
 
 class HfArtifactSummary(BaseModel):

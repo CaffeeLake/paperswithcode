@@ -416,7 +416,7 @@ def test_top_level_version_is_offline_and_stable():
             build_parser().parse_args(["--version"])
         except SystemExit as error:
             assert error.code == 0
-    assert output.getvalue() == "pwc 0.1.3\tapi v1\n"
+    assert output.getvalue() == "pwc 0.2.0\tapi v1\n"
 
 
 def test_search_default_output_is_compact_deterministic_tsv(monkeypatch):
@@ -428,6 +428,8 @@ def test_search_default_output_is_compact_deterministic_tsv(monkeypatch):
                 "title": "Line one\nline two",
                 "published": "2025-01-03",
                 "citation_count": 42,
+                "has_official_implementation": True,
+                "code_repository_count": 3,
             }
         ],
     }
@@ -446,6 +448,112 @@ def test_search_default_output_is_compact_deterministic_tsv(monkeypatch):
     assert output.getvalue() == (
         "id\ttitle\tyear\tcitations\n2501.01234\tLine one\\nline two\t2025\t42\n"
     )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert main(["search", "vision", "--implementation-coverage"]) == 0
+    assert output.getvalue() == (
+        "id\ttitle\tyear\tcitations\tofficial_implementation\tcode_repositories\n"
+        "2501.01234\tLine one\\nline two\t2025\t42\ttrue\t3\n"
+    )
+
+
+def test_paper_info_always_renders_implementation_coverage(monkeypatch):
+    payload = {
+        "arxiv_id": "2501.01234",
+        "title": "Implementation Coverage",
+        "has_official_implementation": False,
+        "code_repository_count": 2,
+    }
+
+    class Client:
+        def __init__(self):
+            pass
+
+        def get(self, _path, _params):
+            return Response(json.dumps(payload).encode(), {})
+
+    monkeypatch.setattr("pwc_cli.cli.Client", Client)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert main(["paper", "info", "2501.01234"]) == 0
+
+    assert "official_implementation: false\n" in output.getvalue()
+    assert "code_repositories: 2\n" in output.getvalue()
+
+
+def test_search_official_implementation_filter_is_forwarded_and_fail_closed(
+    monkeypatch, capsys
+):
+    calls = []
+    payloads = [
+        {"results": [], "applied_filters": {}},
+        {
+            "results": [],
+            "applied_filters": {"has_official_implementation": "true"},
+        },
+    ]
+
+    class Client:
+        def __init__(self):
+            pass
+
+        def get(self, path, params):
+            calls.append((path, params))
+            return Response(json.dumps(payloads.pop(0)).encode(), {})
+
+    monkeypatch.setattr("pwc_cli.cli.Client", Client)
+    command = ["search", "vision", "--has-official-implementation"]
+
+    assert main(command) == 4
+    assert "did not confirm has_official_implementation" in capsys.readouterr().err
+    assert main(command) == 0
+    capsys.readouterr()
+
+    assert calls == [
+        (
+            "papers/search",
+            {
+                "q": "vision",
+                "page": 1,
+                "page_size": 10,
+                "mode": "hybrid",
+                "has_official_implementation": True,
+            },
+        ),
+        (
+            "papers/search",
+            {
+                "q": "vision",
+                "page": 1,
+                "page_size": 10,
+                "mode": "hybrid",
+                "has_official_implementation": True,
+            },
+        ),
+    ]
+
+
+def test_paper_list_forwards_confirmed_official_implementation_filter(monkeypatch):
+    calls = []
+    payload = {
+        "results": [],
+        "applied_filters": {"has_official_implementation": "true"},
+    }
+
+    class Client:
+        def __init__(self):
+            pass
+
+        def get(self, path, params):
+            calls.append((path, params))
+            return Response(json.dumps(payload).encode(), {})
+
+    monkeypatch.setattr("pwc_cli.cli.Client", Client)
+    assert main(["paper", "list", "--has-official-implementation"]) == 0
+
+    assert calls[0][0] == "papers/"
+    assert calls[0][1]["has_official_implementation"] is True
 
 
 def test_json_schema_and_errors_use_stable_streams(monkeypatch):

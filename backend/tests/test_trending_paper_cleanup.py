@@ -59,6 +59,8 @@ class _RepositoryTrendingDatabase:
                     "https://example.com/typed-report",
                     "https://cdn.example.com/typed-thumbnail.jpg",
                     "v7",
+                    True,
+                    3,
                 )
             ]
         )
@@ -111,6 +113,8 @@ def _response_row():
             "stars_gained_24h": 24,
         },
         "paper_age_days": 0.0,
+        "has_official_implementation": True,
+        "code_repository_count": 1,
     }
 
 
@@ -135,6 +139,8 @@ def test_trending_route_declares_exact_typed_response_shape():
         "repository",
         "trending",
         "paper_age_days",
+        "has_official_implementation",
+        "code_repository_count",
     ]
     assert all(field.is_required() for field in response_model.model_fields.values())
 
@@ -208,6 +214,8 @@ def test_repository_trending_service_owns_query_policy_and_returns_models(monkey
             "stars_gained_24h": 36,
         },
         "paper_age_days": 1.0,
+        "has_official_implementation": True,
+        "code_repository_count": 3,
     }
 
     assert len(db.executions) == 3
