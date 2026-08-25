@@ -7,7 +7,7 @@ from backend.services.hf_artifact_service import (
     collect_explicit_hf_artifacts,
     sync_explicit_hf_artifact_links,
 )
-from backend.services.paper_service import PaperService
+from backend.services.paper_association_service import PaperAssociationService
 
 
 class _Query:
@@ -64,7 +64,7 @@ def test_sync_explicit_hf_artifact_links_upserts_and_links():
     }
 
 
-def test_paper_service_syncs_links_and_invalidates_checkpoint(monkeypatch):
+def test_paper_association_service_syncs_links_and_invalidates_checkpoint(monkeypatch):
     paper = SimpleNamespace(
         id=104054,
         hf_models=None,
@@ -78,10 +78,9 @@ def test_paper_service_syncs_links_and_invalidates_checkpoint(monkeypatch):
     monkeypatch.setattr(
         paper_association_service, "sync_explicit_hf_artifact_links", sync
     )
-    service = PaperService(db)
-    monkeypatch.setattr(service, "get_paper_by_id", Mock(return_value="paper"))
+    service = PaperAssociationService(db, Mock(return_value="paper"))
 
-    result = service.update_paper_hf_artifacts(
+    result = service.update_hf_artifacts(
         104054,
         ["https://huggingface.co/moonshotai/Kimi-K3"],
         [],

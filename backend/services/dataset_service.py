@@ -777,6 +777,104 @@ class DatasetService:
             published=published,
         )
 
+    def _get_dataset_aggregate(self, identity_predicate) -> tuple | None:
+        """Load the canonical dataset aggregate for either public identity."""
+        return (
+            self.db.query(
+                DBDataset,
+                _leaderboard_row_count().label("paper_count"),
+                func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
+            )
+            .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
+            .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
+            .filter(identity_predicate)
+            .group_by(DBDataset.id)
+            .first()
+        )
+
+    def _project_dataset(
+        self,
+        aggregate: tuple,
+        *,
+        include_paper: bool,
+        task_id: int | None,
+        is_open: bool | None,
+    ) -> Dataset:
+        """Project one loaded aggregate into the stable public API contract."""
+        db_dataset, paper_count, task_count = aggregate
+        dataset_dict = {
+            "id": str(db_dataset.id),
+            "name": db_dataset.name,
+            "slug": db_dataset.slug,
+            "full_name": db_dataset.full_name,
+            "description": db_dataset.description,
+            "url": db_dataset.url,
+            "hf_url": db_dataset.hf_url,
+            "short_description": db_dataset.short_description,
+            "homepage": db_dataset.homepage,
+            "parent_dataset_id": str(db_dataset.parent_dataset_id)
+            if db_dataset.parent_dataset_id
+            else None,
+            "variant_type": db_dataset.variant_type,
+            "split_name": db_dataset.split_name,
+            "image_url": db_dataset.image_url,
+            "thumbnail_url": db_dataset.thumbnail_url,
+            "verified_image_url": db_dataset.verified_image_url,
+            "introducing_paper_id": str(db_dataset.introducing_paper_id)
+            if db_dataset.introducing_paper_id
+            else None,
+            "introducing_paper_title": db_dataset.introducing_paper_title,
+            "paper_url": db_dataset.paper_url,
+            "license_name": db_dataset.license_name,
+            "license_url": db_dataset.license_url,
+            "introduced_year": db_dataset.introduced_year,
+            "introduced_date": db_dataset.introduced_date,
+            "modalities": db_dataset.modalities,
+            "languages": db_dataset.languages,
+            "variants": db_dataset.variants,
+            "num_papers": db_dataset.num_papers,
+            "warning": db_dataset.warning,
+            "pwc_url": db_dataset.pwc_url,
+            "paper_count": paper_count,
+            "task_count": task_count,
+            "supports_harness": self._supports_harness(db_dataset.id),
+        }
+        if include_paper:
+            dataset_dict["introducing_paper"] = self._fetch_introducing_paper(
+                db_dataset.introducing_paper_id
+            )
+        if task_id is not None:
+            dataset_dict["leaderboard_summary"] = self._leaderboard_summary_for_dataset(
+                db_dataset.id,
+                task_id,
+                is_open=is_open,
+            )
+        return Dataset(**dataset_dict)
+
+    def _get_dataset(
+        self,
+        identity_predicate,
+        *,
+        include_paper: bool,
+        task_id: int | None,
+        is_open: bool | None,
+        error_context: str,
+    ) -> Dataset | None:
+        try:
+            aggregate = self._get_dataset_aggregate(identity_predicate)
+            if aggregate is None:
+                return None
+            return self._project_dataset(
+                aggregate,
+                include_paper=include_paper,
+                task_id=task_id,
+                is_open=is_open,
+            )
+        except (SQLAlchemyError, CatalogError, ValueError) as error:
+            raise CatalogPersistenceError(
+                f"Failed to retrieve {error_context}: {error!s}"
+            ) from error
+
     def get_dataset(
         self,
         dataset_id: int,
@@ -784,110 +882,14 @@ class DatasetService:
         task_id: Optional[int] = None,
         is_open: Optional[bool] = None,
     ) -> Optional[Dataset]:
-        """
-        Get a specific dataset by ID.
-
-        Args:
-            dataset_id: Dataset ID
-            include_paper: When True, embed a lightweight `introducing_paper`
-                projection (arxiv_id, title, published) in the response.
-            task_id: When set, embed a lightweight leaderboard summary for
-                this task-dataset pair.
-            is_open: Optional source-availability filter for the summary.
-
-        Returns:
-            Dataset object or None if not found
-
-        Raises:
-            CatalogPersistenceError: If database query fails
-        """
-        try:
-            # Query dataset with counts. `paper_count` is the number of logical
-            # leaderboard rows on the dataset (distinct paper/task/dataset/
-            # model/harness groups) so it stays in sync with the benchmark page
-            # leaderboard table after per-metric rows are merged.
-            result = (
-                self.db.query(
-                    DBDataset,
-                    _leaderboard_row_count().label("paper_count"),
-                    func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
-                )
-                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
-                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
-                .filter(DBDataset.id == dataset_id)
-                .group_by(DBDataset.id)
-                .first()
-            )
-
-            if not result:
-                return None
-
-            db_dataset, paper_count, task_count = result
-            supports_harness = self._supports_harness(db_dataset.id)
-
-            dataset_dict = {
-                "id": str(db_dataset.id),
-                "name": db_dataset.name,
-                "slug": db_dataset.slug,
-                "full_name": db_dataset.full_name,
-                "description": db_dataset.description,
-                "url": db_dataset.url,
-                "hf_url": db_dataset.hf_url,
-                # PWC enriched fields
-                "short_description": db_dataset.short_description,
-                "homepage": db_dataset.homepage,
-                # Hierarchy and variant fields
-                "parent_dataset_id": str(db_dataset.parent_dataset_id)
-                if db_dataset.parent_dataset_id
-                else None,
-                "variant_type": db_dataset.variant_type,
-                "split_name": db_dataset.split_name,
-                # Images
-                "image_url": db_dataset.image_url,
-                "thumbnail_url": db_dataset.thumbnail_url,
-                "verified_image_url": db_dataset.verified_image_url,
-                # Paper reference
-                "introducing_paper_id": str(db_dataset.introducing_paper_id)
-                if db_dataset.introducing_paper_id
-                else None,
-                "introducing_paper_title": db_dataset.introducing_paper_title,
-                "paper_url": db_dataset.paper_url,
-                # Licensing
-                "license_name": db_dataset.license_name,
-                "license_url": db_dataset.license_url,
-                # Dates
-                "introduced_year": db_dataset.introduced_year,
-                "introduced_date": db_dataset.introduced_date,
-                # Metadata
-                "modalities": db_dataset.modalities,
-                "languages": db_dataset.languages,
-                "variants": db_dataset.variants,
-                "num_papers": db_dataset.num_papers,
-                "warning": db_dataset.warning,
-                "pwc_url": db_dataset.pwc_url,
-                # Legacy counts
-                "paper_count": paper_count,
-                "task_count": task_count,
-                "supports_harness": supports_harness,
-            }
-
-            if include_paper:
-                dataset_dict["introducing_paper"] = self._fetch_introducing_paper(
-                    db_dataset.introducing_paper_id
-                )
-            if task_id is not None:
-                dataset_dict["leaderboard_summary"] = (
-                    self._leaderboard_summary_for_dataset(
-                        db_dataset.id,
-                        task_id,
-                        is_open=is_open,
-                    )
-                )
-
-            return Dataset(**dataset_dict)
-
-        except Exception as e:
-            raise CatalogPersistenceError(f"Failed to retrieve dataset: {e!s}")
+        """Get a dataset by ID using the canonical aggregate projection."""
+        return self._get_dataset(
+            DBDataset.id == dataset_id,
+            include_paper=include_paper,
+            task_id=task_id,
+            is_open=is_open,
+            error_context="dataset",
+        )
 
     def get_dataset_by_slug(
         self,
@@ -896,109 +898,14 @@ class DatasetService:
         task_id: Optional[int] = None,
         is_open: Optional[bool] = None,
     ) -> Optional[Dataset]:
-        """
-        Get a specific dataset by slug.
-
-        Args:
-            slug: Dataset slug
-            include_paper: When True, embed a lightweight `introducing_paper`
-                projection (arxiv_id, title, published) in the response.
-            task_id: When set, embed a lightweight leaderboard summary for
-                this task-dataset pair.
-            is_open: Optional source-availability filter for the summary.
-
-        Returns:
-            Dataset object or None if not found
-
-        Raises:
-            CatalogPersistenceError: If database query fails
-        """
-        try:
-            # Query dataset with counts. `paper_count` mirrors the benchmark
-            # leaderboard size (logical rows: distinct paper/task/dataset/
-            # model/harness groups) instead of `paper_datasets`.
-            result = (
-                self.db.query(
-                    DBDataset,
-                    _leaderboard_row_count().label("paper_count"),
-                    func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
-                )
-                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
-                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
-                .filter(func.lower(DBDataset.slug) == slug.lower())
-                .group_by(DBDataset.id)
-                .first()
-            )
-
-            if not result:
-                return None
-
-            db_dataset, paper_count, task_count = result
-            supports_harness = self._supports_harness(db_dataset.id)
-
-            dataset_dict = {
-                "id": str(db_dataset.id),
-                "name": db_dataset.name,
-                "slug": db_dataset.slug,
-                "full_name": db_dataset.full_name,
-                "description": db_dataset.description,
-                "url": db_dataset.url,
-                "hf_url": db_dataset.hf_url,
-                # PWC enriched fields
-                "short_description": db_dataset.short_description,
-                "homepage": db_dataset.homepage,
-                # Hierarchy and variant fields
-                "parent_dataset_id": str(db_dataset.parent_dataset_id)
-                if db_dataset.parent_dataset_id
-                else None,
-                "variant_type": db_dataset.variant_type,
-                "split_name": db_dataset.split_name,
-                # Images
-                "image_url": db_dataset.image_url,
-                "thumbnail_url": db_dataset.thumbnail_url,
-                "verified_image_url": db_dataset.verified_image_url,
-                # Paper reference
-                "introducing_paper_id": str(db_dataset.introducing_paper_id)
-                if db_dataset.introducing_paper_id
-                else None,
-                "introducing_paper_title": db_dataset.introducing_paper_title,
-                "paper_url": db_dataset.paper_url,
-                # Licensing
-                "license_name": db_dataset.license_name,
-                "license_url": db_dataset.license_url,
-                # Dates
-                "introduced_year": db_dataset.introduced_year,
-                "introduced_date": db_dataset.introduced_date,
-                # Metadata
-                "modalities": db_dataset.modalities,
-                "languages": db_dataset.languages,
-                "variants": db_dataset.variants,
-                "num_papers": db_dataset.num_papers,
-                "warning": db_dataset.warning,
-                "pwc_url": db_dataset.pwc_url,
-                # Legacy counts
-                "paper_count": paper_count,
-                "task_count": task_count,
-                "supports_harness": supports_harness,
-            }
-
-            if include_paper:
-                dataset_dict["introducing_paper"] = self._fetch_introducing_paper(
-                    db_dataset.introducing_paper_id
-                )
-            if task_id is not None:
-                dataset_dict["leaderboard_summary"] = (
-                    self._leaderboard_summary_for_dataset(
-                        db_dataset.id,
-                        task_id,
-                        is_open=is_open,
-                    )
-                )
-
-            return Dataset(**dataset_dict)
-
-        except Exception as e:
-            raise CatalogPersistenceError(f"Failed to retrieve dataset by slug: {e!s}")
+        """Get a dataset by case-insensitive slug using the canonical projection."""
+        return self._get_dataset(
+            func.lower(DBDataset.slug) == slug.lower(),
+            include_paper=include_paper,
+            task_id=task_id,
+            is_open=is_open,
+            error_context="dataset by slug",
+        )
 
     def resolve_dataset_id_by_slug(self, slug: str) -> int | None:
         """Resolve one dataset slug case-insensitively without hydrating it."""

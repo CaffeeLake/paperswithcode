@@ -1,4 +1,4 @@
-"""Tests for PaperService.update_paper_repositories deduplication."""
+"""Tests for paper-association repository deduplication."""
 
 import pytest
 from sqlalchemy import BigInteger, create_engine
@@ -9,11 +9,15 @@ from sqlalchemy.pool import StaticPool
 
 from backend.models.database import (
     Base,
-    Paper as DBPaper,
     PaperRepository,
+)
+from backend.models.database import (
+    Paper as DBPaper,
+)
+from backend.models.database import (
     Repository as DBRepository,
 )
-from backend.services.paper_service import PaperService
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.repository_service import RepositoryService
 
 
@@ -100,9 +104,8 @@ def paper_with_duplicate_repo_urls(db_session):
 def test_update_paper_repositories_dedupes_same_github_repo(
     db_session, paper_with_duplicate_repo_urls, monkeypatch
 ):
-    monkeypatch.setattr(PaperService, "get_paper_by_id", lambda *_args, **_kw: None)
-    service = PaperService(db_session)
-    service.update_paper_repositories(
+    service = PaperAssociationService(db_session, lambda *_args, **_kw: None)
+    service.update_repositories(
         1,
         [
             {"url": "https://github.com/pwc-1/Paper-8", "is_official": True},
@@ -133,8 +136,7 @@ def test_update_paper_repositories_dedupes_same_github_repo(
 def test_update_paper_repositories_marks_lone_repository_official(
     db_session, paper_with_duplicate_repo_urls, monkeypatch
 ):
-    monkeypatch.setattr(PaperService, "get_paper_by_id", lambda *_args, **_kw: None)
-    PaperService(db_session).update_paper_repositories(
+    PaperAssociationService(db_session, lambda *_args, **_kw: None).update_repositories(
         1,
         [
             {
@@ -152,7 +154,7 @@ def test_update_paper_repositories_marks_lone_repository_official(
 def test_update_paper_repositories_supports_outer_transaction_rollback(
     db_session, paper_with_duplicate_repo_urls
 ):
-    PaperService(db_session).update_paper_repositories(
+    PaperAssociationService(db_session, lambda *_args, **_kw: None).update_repositories(
         1,
         [
             {

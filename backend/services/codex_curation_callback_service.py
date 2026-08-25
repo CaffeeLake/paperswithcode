@@ -36,6 +36,7 @@ from backend.services.codex_add_evals_service import (
 )
 from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
 from backend.services.evaluation_service import EvaluationService
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_method_link_service import upsert_evidence_links
 from backend.services.paper_service import PaperService
 
@@ -84,12 +85,15 @@ class CodexCurationCallbackService:
         *,
         job_service: CodexPaperJobService = codex_paper_job_service,
         evaluation_service: EvaluationService | None = None,
-        paper_service: PaperService | None = None,
+        association_service: PaperAssociationService | None = None,
     ) -> None:
         self.db = db
         self.job_service = job_service
         self.evaluation_service = evaluation_service or EvaluationService(db)
-        self.paper_service = paper_service or PaperService(db)
+        paper_service = PaperService(db)
+        self.paper_associations = association_service or PaperAssociationService(
+            db, paper_service.get_paper_by_id
+        )
 
     def context(self, row, settings: Settings) -> dict[str, Any]:
         paper = self.db.get(Paper, row.paper_id)
@@ -1192,7 +1196,7 @@ class CodexCurationCallbackService:
                     PaperTask(paper_id=row.paper_id, task_id=task_id, source="auto")
                 )
         elif mutation.task_ids is not None:
-            self.paper_service.update_paper_tasks(
+            self.paper_associations.update_tasks(
                 row.paper_id, mutation.task_ids, commit=False
             )
         if mutation.method_ids is not None and scheduled:
@@ -1226,7 +1230,7 @@ class CodexCurationCallbackService:
                 details={"job_id": str(row.id), "policy_version": row.policy_version},
             )
         elif mutation.method_ids is not None:
-            self.paper_service.update_paper_methods(
+            self.paper_associations.update_methods(
                 row.paper_id, mutation.method_ids, commit=False
             )
         if mutation.method_ids is not None:
@@ -1244,13 +1248,13 @@ class CodexCurationCallbackService:
                     exclusion.reason = reason[:2_000]
                     exclusion.updated_at = datetime.now(UTC)
         if mutation.repositories is not None:
-            self.paper_service.update_paper_repositories(
+            self.paper_associations.update_repositories(
                 row.paper_id,
                 [item.model_dump() for item in mutation.repositories],
                 commit=False,
             )
         if mutation.project_pages is not None:
-            self.paper_service.update_paper_project_pages(
+            self.paper_associations.update_project_pages(
                 row.paper_id,
                 [item.model_dump() for item in mutation.project_pages],
                 commit=False,
@@ -1264,7 +1268,7 @@ class CodexCurationCallbackService:
             value is not None
             for value in (mutation.hf_models, mutation.hf_datasets, mutation.hf_spaces)
         ):
-            self.paper_service.update_paper_hf_artifacts(
+            self.paper_associations.update_hf_artifacts(
                 row.paper_id,
                 mutation.hf_models
                 if mutation.hf_models is not None

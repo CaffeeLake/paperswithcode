@@ -26,6 +26,7 @@ from backend.services.external_resource_service import (
 )
 from backend.services.method_service import MethodService
 from backend.services.metric_service import MetricService
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_service import PaperService
 from backend.services.pending_edit_errors import PendingEditError
 from backend.services.pending_edit_payloads import (
@@ -43,6 +44,10 @@ class PendingEditMutationService:
 
     def __init__(self, db: Session):
         self.db = db
+        paper_service = PaperService(db)
+        self.paper_associations = PaperAssociationService(
+            db, paper_service.get_paper_by_id
+        )
         self._handlers: dict[str, Mutation] = {
             "new_external_paper": self._new_external_paper,
             "new_task": self._new_task,
@@ -224,14 +229,14 @@ class PendingEditMutationService:
 
     def _paper_tasks(self, paper_id: int | None, payload: Payload) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_tasks(
+        self.paper_associations.update_tasks(
             paper_id, list(payload["task_ids"]), commit=False
         )
         return "paper", str(paper_id)
 
     def _paper_methods(self, paper_id: int | None, payload: Payload) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_methods(
+        self.paper_associations.update_methods(
             paper_id, list(payload["method_ids"]), commit=False
         )
         return "paper", str(paper_id)
@@ -240,7 +245,7 @@ class PendingEditMutationService:
         self, paper_id: int | None, payload: Payload
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_repositories(
+        self.paper_associations.update_repositories(
             paper_id, list(payload["repositories"]), commit=False
         )
         return "paper", str(paper_id)
@@ -249,7 +254,7 @@ class PendingEditMutationService:
         self, paper_id: int | None, payload: Payload
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_project_pages(
+        self.paper_associations.update_project_pages(
             paper_id, list(payload["project_pages"]), commit=False
         )
         return "paper", str(paper_id)
@@ -263,7 +268,7 @@ class PendingEditMutationService:
         actor_username: str | None,
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_organizations(
+        self.paper_associations.update_organizations(
             paper_id,
             list(payload["organization_ids"]),
             manual_added_by_hf_subject=actor_hf_subject,
@@ -276,7 +281,7 @@ class PendingEditMutationService:
         self, paper_id: int | None, payload: Payload
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_source_url(
+        self.paper_associations.update_source_url(
             paper_id, payload["source_url"], commit=False
         )
         return "paper", str(paper_id)
@@ -285,7 +290,7 @@ class PendingEditMutationService:
         self, paper_id: int | None, payload: Payload
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
-        PaperService(self.db).update_paper_hf_artifacts(
+        self.paper_associations.update_hf_artifacts(
             paper_id,
             list(payload["hf_models"]),
             list(payload["hf_datasets"]),

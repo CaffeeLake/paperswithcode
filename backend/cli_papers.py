@@ -13,6 +13,7 @@ from backend.services.external_resource_service import (
     ExternalResourceError,
     ExternalResourceService,
 )
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_markdown_service import read_paper_markdown
 from backend.services.paper_service import PaperService
 from backend.utils.paper_reference import normalize_paper_reference, resolve_paper
@@ -423,14 +424,15 @@ def read_paper(args: argparse.Namespace) -> int:
 def update_paper(args: argparse.Namespace) -> int:
     with db_manager.session_local() as db:
         paper, route_reference = resolve_paper(db, args.paper)
-        service = PaperService(db)
+        paper_service = PaperService(db)
+        service = PaperAssociationService(db, paper_service.get_paper_by_id)
         command = args.paper_update_command
         if command == "tasks":
-            result = service.update_paper_tasks(paper.id, args.ids)
+            result = service.update_tasks(paper.id, args.ids)
         elif command == "methods":
-            result = service.update_paper_methods(paper.id, args.ids)
+            result = service.update_methods(paper.id, args.ids)
         elif command == "organizations":
-            result = service.update_paper_organizations(paper.id, args.ids)
+            result = service.update_organizations(paper.id, args.ids)
         elif command in {"repositories", "project-pages"}:
             resources = [
                 {"url": url, "is_official": is_official}
@@ -441,15 +443,15 @@ def update_paper(args: argparse.Namespace) -> int:
                 for url in urls
             ]
             if command == "repositories":
-                result = service.update_paper_repositories(paper.id, resources)
+                result = service.update_repositories(paper.id, resources)
             else:
-                result = service.update_paper_project_pages(paper.id, resources)
+                result = service.update_project_pages(paper.id, resources)
         elif command == "hf-artifacts":
-            result = service.update_paper_hf_artifacts(
+            result = service.update_hf_artifacts(
                 paper.id, args.model, args.dataset, args.space
             )
         elif command == "source-url":
-            result = service.update_paper_source_url(paper.id, args.url)
+            result = service.update_source_url(paper.id, args.url)
         else:
             raise ValueError(f"Unknown paper update target: {command}")
 

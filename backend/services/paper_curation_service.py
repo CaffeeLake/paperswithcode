@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import (
     CatalogMutationEvent,
-    Paper as DBPaper,
+    HfArtifact,
     PaperHfArtifact,
     PaperMethod,
     PaperMethodEvidence,
@@ -19,19 +19,22 @@ from backend.models.database import (
     PaperProjectPage,
     PaperRepository,
     PaperTask,
-    HfArtifact,
     ProjectPage,
     Repository,
+)
+from backend.models.database import (
+    Paper as DBPaper,
+)
+from backend.services.catalog_errors import (
+    CatalogNotFoundError,
 )
 from backend.services.catalog_mutation_service import (
     CatalogMutationService,
     canonical_hash,
 )
-from backend.services.paper_service import PaperService
 from backend.services.hf_artifact_service import collect_explicit_hf_artifacts
-from backend.services.catalog_errors import (
-    CatalogNotFoundError,
-)
+from backend.services.paper_association_service import PaperAssociationService
+from backend.services.paper_service import PaperService
 from backend.utils.auth import ensure_fresh_contributor_actor
 
 
@@ -60,6 +63,9 @@ class PaperCurationService:
     def __init__(self, db: Session):
         self.db = db
         self.paper_service = PaperService(db)
+        self.paper_associations = PaperAssociationService(
+            db, self.paper_service.get_paper_by_id
+        )
 
     def snapshot(
         self,
@@ -303,33 +309,33 @@ class PaperCurationService:
         if self._removes_data(section, before["value"], payload):
             ensure_fresh_contributor_actor(actor)
         callbacks = {
-            "tasks": lambda: self.paper_service.update_paper_tasks(
+            "tasks": lambda: self.paper_associations.update_tasks(
                 paper_id, payload["task_ids"], commit=False
             ),
-            "methods": lambda: self.paper_service.update_paper_methods(
+            "methods": lambda: self.paper_associations.update_methods(
                 paper_id, payload["method_ids"], commit=False
             ),
-            "organizations": lambda: self.paper_service.update_paper_organizations(
+            "organizations": lambda: self.paper_associations.update_organizations(
                 paper_id,
                 payload["organization_ids"],
                 manual_added_by_hf_subject=actor.get("hf_subject"),
                 manual_added_by_hf_username=actor.get("username"),
                 commit=False,
             ),
-            "repositories": lambda: self.paper_service.update_paper_repositories(
+            "repositories": lambda: self.paper_associations.update_repositories(
                 paper_id, payload["repositories"], commit=False
             ),
-            "project_pages": lambda: self.paper_service.update_paper_project_pages(
+            "project_pages": lambda: self.paper_associations.update_project_pages(
                 paper_id, payload["project_pages"], commit=False
             ),
-            "hf_artifacts": lambda: self.paper_service.update_paper_hf_artifacts(
+            "hf_artifacts": lambda: self.paper_associations.update_hf_artifacts(
                 paper_id,
                 payload["hf_models"],
                 payload["hf_datasets"],
                 payload["hf_spaces"],
                 commit=False,
             ),
-            "source_url": lambda: self.paper_service.update_paper_source_url(
+            "source_url": lambda: self.paper_associations.update_source_url(
                 paper_id, payload["source_url"], commit=False
             ),
         }
@@ -429,22 +435,22 @@ class PaperCurationService:
 
         def restore() -> None:
             callbacks = {
-                "tasks": lambda: self.paper_service.update_paper_tasks(
+                "tasks": lambda: self.paper_associations.update_tasks(
                     paper_id, payload["task_ids"], commit=False
                 ),
-                "methods": lambda: self.paper_service.update_paper_methods(
+                "methods": lambda: self.paper_associations.update_methods(
                     paper_id, payload["method_ids"], commit=False
                 ),
-                "organizations": lambda: self.paper_service.update_paper_organizations(
+                "organizations": lambda: self.paper_associations.update_organizations(
                     paper_id, payload["organization_ids"], commit=False
                 ),
-                "repositories": lambda: self.paper_service.update_paper_repositories(
+                "repositories": lambda: self.paper_associations.update_repositories(
                     paper_id, payload["repositories"], commit=False
                 ),
-                "project_pages": lambda: self.paper_service.update_paper_project_pages(
+                "project_pages": lambda: self.paper_associations.update_project_pages(
                     paper_id, payload["project_pages"], commit=False
                 ),
-                "hf_artifacts": lambda: self.paper_service.update_paper_hf_artifacts(
+                "hf_artifacts": lambda: self.paper_associations.update_hf_artifacts(
                     paper_id,
                     payload["hf_models"],
                     payload["hf_datasets"],

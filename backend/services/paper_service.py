@@ -63,7 +63,6 @@ from backend.utils.urls import (
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
-from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_implementation_service import (
     family_repository_exists_clause,
 )
@@ -2059,84 +2058,3 @@ class PaperService:
 
     def get_citation_statistics(self) -> Dict[str, Any]:
         return PaperCitationRefreshService(self.db).statistics()
-
-    def update_paper_tasks(
-        self, paper_id: int, task_ids: List[int], *, commit: bool = True
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(self.db, self.get_paper_by_id).update_tasks(
-            paper_id, task_ids, commit=commit
-        )
-
-    def update_paper_organizations(
-        self,
-        paper_id: int,
-        organization_ids: List[int],
-        *,
-        manual_added_by_hf_subject: Optional[str] = None,
-        manual_added_by_hf_username: Optional[str] = None,
-        commit: bool = True,
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(
-            self.db, self.get_paper_by_id
-        ).update_organizations(
-            paper_id,
-            organization_ids,
-            manual_added_by_hf_subject=manual_added_by_hf_subject,
-            manual_added_by_hf_username=manual_added_by_hf_username,
-            commit=commit,
-        )
-
-    def update_paper_methods(
-        self, paper_id: int, method_ids: List[int], *, commit: bool = True
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(self.db, self.get_paper_by_id).update_methods(
-            paper_id, method_ids, commit=commit
-        )
-
-    def update_paper_repositories(
-        self,
-        paper_id: int,
-        repositories: List[Dict[str, Any]],
-        *,
-        commit: bool = True,
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(
-            self.db, self.get_paper_by_id
-        ).update_repositories(paper_id, repositories, commit=commit)
-
-    def update_paper_project_pages(
-        self,
-        paper_id: int,
-        project_pages: List[Dict[str, Any]],
-        *,
-        commit: bool = True,
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(
-            self.db, self.get_paper_by_id
-        ).update_project_pages(paper_id, project_pages, commit=commit)
-
-    def update_paper_source_url(
-        self, paper_id: int, source_url: str, *, commit: bool = True
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(self.db, self.get_paper_by_id).update_source_url(
-            paper_id, source_url, commit=commit
-        )
-
-    def update_paper_hf_artifacts(
-        self,
-        paper_id: int,
-        hf_models: List[str],
-        hf_datasets: List[str],
-        hf_spaces: List[str],
-        *,
-        commit: bool = True,
-    ) -> Paper | DBPaper:
-        return PaperAssociationService(
-            self.db, self.get_paper_by_id
-        ).update_hf_artifacts(
-            paper_id,
-            hf_models,
-            hf_datasets,
-            hf_spaces,
-            commit=commit,
-        )

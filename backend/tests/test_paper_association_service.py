@@ -6,10 +6,8 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.services import paper_service as paper_service_module
 from backend.services.catalog_errors import CatalogValidationError
 from backend.services.paper_association_service import PaperAssociationService
-from backend.services.paper_service import PaperService
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
@@ -40,117 +38,6 @@ class _SequenceSession:
 
     def rollback(self):
         self.events.append("rollback")
-
-
-def test_paper_service_preserves_every_association_delegate_contract(monkeypatch):
-    db = object()
-    hydrate = Mock(name="hydrate")
-    constructors = []
-    calls = []
-
-    class RecordingAssociationService:
-        def __init__(self, received_db, received_hydrator):
-            constructors.append((received_db, received_hydrator))
-
-        def _record(self, name, *args, **kwargs):
-            calls.append((name, args, kwargs))
-            return name
-
-        def update_tasks(self, *args, **kwargs):
-            return self._record("tasks", *args, **kwargs)
-
-        def update_organizations(self, *args, **kwargs):
-            return self._record("organizations", *args, **kwargs)
-
-        def update_methods(self, *args, **kwargs):
-            return self._record("methods", *args, **kwargs)
-
-        def update_repositories(self, *args, **kwargs):
-            return self._record("repositories", *args, **kwargs)
-
-        def update_project_pages(self, *args, **kwargs):
-            return self._record("project_pages", *args, **kwargs)
-
-        def update_source_url(self, *args, **kwargs):
-            return self._record("source_url", *args, **kwargs)
-
-        def update_hf_artifacts(self, *args, **kwargs):
-            return self._record("hf_artifacts", *args, **kwargs)
-
-    monkeypatch.setattr(
-        paper_service_module, "PaperAssociationService", RecordingAssociationService
-    )
-    service = PaperService(db)
-    service.get_paper_by_id = hydrate
-
-    repositories = [{"url": "https://github.com/acme/repo", "is_official": True}]
-    project_pages = [{"url": "https://example.com/project", "is_official": True}]
-    assert service.update_paper_tasks(1, [2], commit=False) == "tasks"
-    assert (
-        service.update_paper_organizations(
-            1,
-            [3],
-            manual_added_by_hf_subject="hf-subject",
-            manual_added_by_hf_username="curator",
-            commit=False,
-        )
-        == "organizations"
-    )
-    assert service.update_paper_methods(1, [4], commit=False) == "methods"
-    assert (
-        service.update_paper_repositories(1, repositories, commit=False)
-        == "repositories"
-    )
-    assert (
-        service.update_paper_project_pages(1, project_pages, commit=False)
-        == "project_pages"
-    )
-    assert (
-        service.update_paper_source_url(1, "https://example.com/paper", commit=False)
-        == "source_url"
-    )
-    assert (
-        service.update_paper_hf_artifacts(
-            1,
-            ["https://huggingface.co/acme/model"],
-            ["https://huggingface.co/datasets/acme/data"],
-            ["https://huggingface.co/spaces/acme/demo"],
-            commit=False,
-        )
-        == "hf_artifacts"
-    )
-
-    assert constructors == [(db, hydrate)] * 7
-    assert calls == [
-        ("tasks", (1, [2]), {"commit": False}),
-        (
-            "organizations",
-            (1, [3]),
-            {
-                "manual_added_by_hf_subject": "hf-subject",
-                "manual_added_by_hf_username": "curator",
-                "commit": False,
-            },
-        ),
-        ("methods", (1, [4]), {"commit": False}),
-        ("repositories", (1, repositories), {"commit": False}),
-        ("project_pages", (1, project_pages), {"commit": False}),
-        (
-            "source_url",
-            (1, "https://example.com/paper"),
-            {"commit": False},
-        ),
-        (
-            "hf_artifacts",
-            (
-                1,
-                ["https://huggingface.co/acme/model"],
-                ["https://huggingface.co/datasets/acme/data"],
-                ["https://huggingface.co/spaces/acme/demo"],
-            ),
-            {"commit": False},
-        ),
-    ]
 
 
 def test_commit_false_flushes_and_returns_the_locked_row_without_hydration():

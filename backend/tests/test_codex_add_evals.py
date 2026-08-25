@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import uuid
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from huggingface_hub.errors import HfHubHTTPError
 from httpx import Request, Response
+from huggingface_hub.errors import HfHubHTTPError
 
 from backend.codex_add_evals_app import create_codex_add_evals_app
 from backend.config import get_settings
@@ -20,18 +20,18 @@ from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.services.codex_add_evals_service import (
     CURATOR_BOOTSTRAP_PATHS,
+    CURATOR_COMMAND,
     CodexPaperJob,
     CodexPaperJobCounts,
-    CodexPaperJobsResponse,
     CodexPaperJobService,
-    CURATOR_COMMAND,
+    CodexPaperJobsResponse,
     _git_revision,
     _launch_error,
     _release_git_revision,
 )
 from backend.utils.auth import require_hf_admin
-from jobs.curation_api import USER_AGENT as HELPER_USER_AGENT
 from jobs import curation_api
+from jobs.curation_api import USER_AGENT as HELPER_USER_AGENT
 
 
 def _job(kind: str = "add-evals") -> CodexPaperJob:
@@ -694,19 +694,21 @@ def test_enrichment_relations_and_thumbnail_enqueue_commit_atomically(monkeypatc
         def commit(self):
             self.commits += 1
 
-    class FakePaperService:
-        def __init__(self, _db):
+    class FakeAssociationService:
+        def __init__(self, _db, _hydrate):
             pass
 
-        def update_paper_tasks(self, paper_id, values, *, commit):
+        def update_tasks(self, paper_id, values, *, commit):
             calls.append(("tasks", paper_id, values, commit))
 
-        def update_paper_methods(self, paper_id, values, *, commit):
+        def update_methods(self, paper_id, values, *, commit):
             calls.append(("methods", paper_id, values, commit))
 
     database = Database()
     monkeypatch.setattr(codex_curation_callbacks, "_callback_job", lambda *_args: row)
-    monkeypatch.setattr(codex_curation_callbacks, "PaperService", FakePaperService)
+    monkeypatch.setattr(
+        codex_curation_callbacks, "PaperAssociationService", FakeAssociationService
+    )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_database_session] = lambda: database
@@ -759,21 +761,23 @@ def test_late_invalid_enrichment_input_rolls_back_before_enqueue(monkeypatch):
             self.rollbacks += 1
             paper.tasks_changed = False
 
-    class FakePaperService:
-        def __init__(self, db):
+    class FakeAssociationService:
+        def __init__(self, db, _hydrate):
             self.db = db
 
-        def update_paper_tasks(self, _paper_id, _values, *, commit):
+        def update_tasks(self, _paper_id, _values, *, commit):
             assert commit is False
             paper.tasks_changed = True
 
-        def update_paper_methods(self, _paper_id, _values, *, commit):
+        def update_methods(self, _paper_id, _values, *, commit):
             assert commit is False
             raise ValueError("Invalid method IDs: {999}")
 
     database = Database()
     monkeypatch.setattr(codex_curation_callbacks, "_callback_job", lambda *_args: row)
-    monkeypatch.setattr(codex_curation_callbacks, "PaperService", FakePaperService)
+    monkeypatch.setattr(
+        codex_curation_callbacks, "PaperAssociationService", FakeAssociationService
+    )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_database_session] = lambda: database

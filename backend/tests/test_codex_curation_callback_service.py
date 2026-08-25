@@ -102,7 +102,7 @@ def _service(db, evaluation_service) -> CodexCurationCallbackService:
     return CodexCurationCallbackService(
         db,
         evaluation_service=evaluation_service,
-        paper_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
     )
 
 
@@ -172,7 +172,7 @@ def test_context_projection_preserves_the_worker_payload():
         Database(),
         job_service=JobService(),
         evaluation_service=SimpleNamespace(),
-        paper_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
     )
 
     result = service.context(
@@ -228,7 +228,7 @@ def test_context_reports_a_missing_scoped_paper():
     service = CodexCurationCallbackService(
         Database(),
         evaluation_service=SimpleNamespace(),
-        paper_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
     )
 
     with pytest.raises(CodexCurationPaperNotFoundError, match="Paper not found"):
@@ -269,7 +269,7 @@ def test_leaderboard_inventory_preserves_match_and_recent_score_evidence():
     service = CodexCurationCallbackService(
         Database(),
         evaluation_service=SimpleNamespace(),
-        paper_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
     )
 
     assert service.leaderboard_inventory("Gen-Eval") == [
@@ -344,7 +344,7 @@ def test_leaderboard_inventory_orders_exact_matches_before_close_matches():
     service = CodexCurationCallbackService(
         Database(),
         evaluation_service=SimpleNamespace(),
-        paper_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
     )
 
     inventory = service.leaderboard_inventory("GenEval")

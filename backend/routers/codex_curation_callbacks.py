@@ -48,6 +48,7 @@ from backend.services.curation_thumbnail_queue_service import serialize_thumbnai
 from backend.services.curation_trace_service import CurationTraceService
 from backend.services.evaluation_service import EvaluationService
 from backend.services.hf_daily_curation_service import HFDailyCurationService
+from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_service import PaperService
 from backend.utils.auth import require_hf_admin
 
@@ -94,11 +95,12 @@ def _callback_job(
 
 def _service(db: Session) -> CodexCurationCallbackService:
     """Construct through router imports so existing test patch seams remain valid."""
+    paper_service = PaperService(db)
     return CodexCurationCallbackService(
         db,
         job_service=codex_paper_job_service,
         evaluation_service=EvaluationService(db),
-        paper_service=PaperService(db),
+        association_service=PaperAssociationService(db, paper_service.get_paper_by_id),
     )
 
 
