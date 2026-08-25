@@ -55,7 +55,7 @@ The goal is to split up those tasks in the future.
 
 ### Other
 
-- `healthcare` — Healthcare
+- `healthcare` — Healthcare & Medical AI
 - `graph-machine-learning` — Graph Machine Learning
 - `recommendation-systems` — Recommendation Systems
 - `tabular-learning` — Tabular Learning
@@ -144,7 +144,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `graph-machine-learning` — Graph Machine Learning
 - `graph-regression` — Graph Regression
 - `head-pose-estimation` — Head Pose Estimation
-- `healthcare` — Healthcare
+- `healthcare` — Healthcare & Medical AI
 - `image-anomaly-detection` — Image Anomaly Detection
 - `image-classification` — Image Classification
 - `image-compression` — Image Compression
