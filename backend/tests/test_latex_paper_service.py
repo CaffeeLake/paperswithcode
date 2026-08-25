@@ -23,8 +23,11 @@ from backend.models.database import (
     ChatLatexPaperVersion,
     ChatSession,
 )
-from backend.services.chat_artifact_service import LocalArtifactStorage
-from backend.services.chat_artifact_service import StoredArtifactFile
+from backend.services.chat_artifact_service import (
+    LocalArtifactStorage,
+    StoredArtifactFile,
+    owner_artifact_storage_bytes,
+)
 from backend.services.latex_paper_service import LatexPaperService
 from latex_compiler_contract import (
     CompileLimits,
@@ -95,8 +98,14 @@ def _session(
 
 
 class _Compiler:
-    def __init__(self, state: CompilerJobState = CompilerJobState.SUCCEEDED):
+    def __init__(
+        self,
+        state: CompilerJobState = CompilerJobState.SUCCEEDED,
+        *,
+        pdf: bytes = b"%PDF-1.7\nscaffold\n",
+    ):
         self.state = state
+        self.pdf = pdf
         self.submitted: tuple[str, bytes, str] | None = None
 
     def submit(self, *, job_id: str, bundle: bytes, entrypoint: str, limits=None):
@@ -120,7 +129,7 @@ class _Compiler:
         if self.state == CompilerJobState.SUCCEEDED:
             return CompilerResult.succeeded(
                 envelope,
-                pdf=b"%PDF-1.7\nscaffold\n",
+                pdf=self.pdf,
                 log_tail="",
                 compiler_image="test-image",
                 engine_version="pdfTeX",
@@ -303,6 +312,124 @@ def test_failed_ai_repairs_are_ephemeral_until_a_successful_candidate(db, settin
         "model": "selected-model",
         "repair": True,
     }
+
+
+def test_quota_rejected_repair_candidate_keeps_the_failed_head_ephemeral(db, settings):
+    """A compiled AI repair cannot publish when its preview fails quota admission."""
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None and initial.preview_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+    repair_source = b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+    preview = b"%PDF-1.7\n" + b"repair-preview" * 100
+    compiler.state = CompilerJobState.SUCCEEDED
+    compiler.pdf = preview
+    service.settings = settings.model_copy(
+        update={
+            "chat_artifact_owner_quota_bytes": (
+                owner_artifact_storage_bytes(db, "owner-1")
+                + len(repair_source)
+                + len(preview)
+                - 1
+            )
+        }
+    )
+
+    outcome = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={"main.tex": repair_source},
+        provenance={"model": "selected-model", "repair": True},
+    )
+
+    assert outcome.repaired is False
+    assert outcome.exhausted is False
+    assert outcome.descriptor.source_head is not None
+    assert outcome.descriptor.source_head.version_id == failed.source_head.version_id
+    assert outcome.descriptor.preview_head is not None
+    assert outcome.descriptor.preview_head.version_id == initial.preview_head.version_id
+    assert outcome.descriptor.source_head.repair_attempts_remaining == 2
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(ChatLatexPaperVersion)
+            .where(ChatLatexPaperVersion.artifact_id == initial.artifact_id)
+        )
+        == 2
+    )
+
+
+def test_successful_repair_carries_forward_deduplicated_figure_references(db, settings):
+    """An ephemeral repair candidate must compile against its failed parent's figures."""
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None
+    figure = b"\x89PNG\r\n\x1a\nrepair-figure"
+    with_figure = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path="figures/result.png",
+        data=figure,
+        declared_media_type="image/png",
+    )
+    assert with_figure.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=with_figure.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    compiler.state = CompilerJobState.SUCCEEDED
+    repaired = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+        },
+        provenance={"model": "selected-model", "repair": True},
+    )
+
+    assert repaired.repaired is True
+    assert repaired.descriptor.source_head is not None
+    assert (
+        service.read_figure(
+            "owner-1",
+            initial.artifact_id,
+            repaired.descriptor.source_head.version_id,
+            "figures/result.png",
+        ).data
+        == figure
+    )
+    assert db.scalar(select(func.count()).select_from(ChatLatexPaperFigureBlob)) == 1
 
 
 def test_async_repair_waits_for_terminal_sandbox_result(db, settings, monkeypatch):
@@ -709,6 +836,15 @@ def test_figure_upload_rejects_mismatched_signature_and_owner_quota_before_publi
             data=b"\x89PNG\r\n\x1a\noutside",
             declared_media_type="image/png",
         )
+    with pytest.raises(Exception, match="safe relative paths"):
+        service.upload_figure(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            path="figures//inside.png",
+            data=b"\x89PNG\r\n\x1a\ninside",
+            declared_media_type="image/png",
+        )
 
     first = service.upload_figure(
         owner_id="owner-1",
@@ -733,6 +869,92 @@ def test_figure_upload_rejects_mismatched_signature_and_owner_quota_before_publi
             "owner-1", initial.artifact_id
         ).source_head.version_id
         == first.source_head.version_id
+    )
+
+
+def test_figure_quota_charges_an_owner_for_a_cross_owner_deduplicated_blob(
+    db, settings
+):
+    """A global dedup hit is still new durable storage for a second owner."""
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=_Compiler())
+    first_owner = service.create_neutral_scaffold(
+        owner_id="owner-a", session_id=_session(db, owner="owner-a")
+    )
+    second_owner = service.create_neutral_scaffold(
+        owner_id="owner-b", session_id=_session(db, owner="owner-b")
+    )
+    assert first_owner.source_head is not None
+    assert second_owner.source_head is not None
+    figure = b"\x89PNG\r\n\x1a\n" + b"shared-research-image" * 20
+    first_upload = service.upload_figure(
+        owner_id="owner-a",
+        artifact_id=first_owner.artifact_id,
+        expected_parent_version_id=first_owner.source_head.version_id,
+        path="figures/shared.png",
+        data=figure,
+        declared_media_type="image/png",
+    )
+    assert first_upload.source_head is not None
+
+    second_owner_used = owner_artifact_storage_bytes(db, "owner-b")
+    service.settings = settings.model_copy(
+        update={"chat_artifact_owner_quota_bytes": second_owner_used + len(figure) - 1}
+    )
+    with pytest.raises(Exception, match="quota"):
+        service.upload_figure(
+            owner_id="owner-b",
+            artifact_id=second_owner.artifact_id,
+            expected_parent_version_id=second_owner.source_head.version_id,
+            path="figures/shared.png",
+            data=figure,
+            declared_media_type="image/png",
+        )
+    assert (
+        service.get_artifact_descriptor(
+            "owner-b", second_owner.artifact_id
+        ).source_head.version_id
+        == second_owner.source_head.version_id
+    )
+
+
+def test_compile_preview_quota_counts_the_current_pdf_once(db, settings):
+    """A preview admitted exactly at the owner boundary must not be double charged."""
+    pdf = b"%PDF-1.7\n" + b"preview" * 200
+    compiler = _Compiler(pdf=pdf)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None
+    edited_source = b"\\documentclass{article}\\begin{document}Boundary\\end{document}"
+    service.settings = settings.model_copy(
+        update={
+            "chat_artifact_owner_quota_bytes": (
+                owner_artifact_storage_bytes(db, "owner-1")
+                + len(edited_source)
+                + len(pdf)
+            )
+        }
+    )
+
+    saved = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": edited_source},
+    )
+
+    assert saved.source_head is not None and saved.preview_head is not None
+    assert saved.source_head.compile_status == "succeeded"
+    assert saved.preview_head.version_id == saved.source_head.version_id
+    assert owner_artifact_storage_bytes(db, "owner-1") == (
+        service.settings.chat_artifact_owner_quota_bytes
     )
 
 
@@ -941,6 +1163,39 @@ def test_human_save_rejects_a_stale_parent_without_overwriting(db, settings):
     assert (
         db.get(ChatArtifact, initial.artifact_id).source_head_version_id
         == saved.source_head.version_id
+    )
+
+
+def test_human_save_rejects_a_zip_archive_over_the_version_bound(db, settings):
+    """The signed compiler archive has the same bound as aggregate source bytes."""
+    constrained = settings.model_copy(update={"chat_artifact_max_version_bytes": 4_096})
+    service = LatexPaperService(
+        db,
+        constrained,
+        storage=LocalArtifactStorage(Path(constrained.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None
+    files = {"main.tex": b"x"}
+    files.update({f"references/{index}.bib": b"x" * 40 for index in range(99)})
+    assert sum(len(data) for data in files.values()) <= 4_096
+
+    with pytest.raises(Exception, match="archive exceeds"):
+        service.save_human_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            files=files,
+        )
+
+    assert (
+        service.get_artifact_descriptor(
+            "owner-1", initial.artifact_id
+        ).source_head.version_id
+        == initial.source_head.version_id
     )
 
 

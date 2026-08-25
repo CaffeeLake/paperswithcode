@@ -311,11 +311,7 @@ class LatexPaperService:
         if existing is not None:
             raise ArtifactError("paper_exists", "This chat already has a paper")
 
-        source_bytes = sum(len(data) for data in files.values())
-        if source_bytes > self.settings.chat_artifact_max_version_bytes:
-            raise ArtifactError(
-                "artifact_too_large", "Paper scaffold exceeds the version limit"
-            )
+        source_bytes, bundle = self._source_bundle(files)
         lock_owner_artifact_quota(self.db, owner_id)
         self._require_owner_quota(owner_id, additional_text_bytes=source_bytes)
         manifest = LatexPaperManifest(
@@ -332,7 +328,6 @@ class LatexPaperService:
             ],
             display_metadata=LatexPaperDisplayMetadata(unresolved_todo_count=3),
         )
-        bundle = _deterministic_zip(files)
         source_digest = hashlib.sha256(bundle).hexdigest()
         artifact = ChatArtifact(
             id=uuid.uuid4(),
@@ -417,16 +412,11 @@ class LatexPaperService:
         if len(normalized_files) + len(figures) > self.settings.chat_artifact_max_files:
             raise ArtifactError("artifact_too_large", "Paper has too many files")
         bundle_files = self._bundle_files(normalized_files, figures)
-        source_bytes = sum(len(data) for data in bundle_files.values())
-        if source_bytes > self.settings.chat_artifact_max_version_bytes:
-            raise ArtifactError(
-                "artifact_too_large", "Paper source exceeds the 32 MiB version limit"
-            )
+        source_bytes, bundle = self._source_bundle(bundle_files)
         self._require_owner_quota(
             owner_id,
             additional_text_bytes=sum(len(data) for data in normalized_files.values()),
         )
-        bundle = _deterministic_zip(bundle_files)
         source_digest = hashlib.sha256(bundle).hexdigest()
         if self.db.scalar(
             select(ChatLatexPaperVersion.id).where(
@@ -612,17 +602,14 @@ class LatexPaperService:
             bundle_files[path] = data
         else:
             bundle_files = self._bundle_files(text_files, figures)
-        source_bytes = sum(len(item) for item in bundle_files.values())
-        if source_bytes > self.settings.chat_artifact_max_version_bytes:
-            raise ArtifactError(
-                "artifact_too_large", "Paper source exceeds the 32 MiB version limit"
-            )
+        source_bytes, bundle = self._source_bundle(bundle_files)
         self._require_owner_quota(
             owner_id,
             additional_text_bytes=sum(len(item) for item in text_files.values()),
-            additional_figure_bytes=len(data) if is_new_blob else 0,
+            additional_figure_bytes=(
+                0 if self._owner_references_figure_blob(owner_id, digest) else len(data)
+            ),
         )
-        bundle = _deterministic_zip(bundle_files)
         version_number = (artifact.latest_version or 0) + 1
         manifest = LatexPaperManifest(
             title=artifact.title,
@@ -771,8 +758,7 @@ class LatexPaperService:
         text_files = self._read_text_files(source)
         figures = self._figure_blobs_for_version(source)
         bundle_files = self._bundle_files(text_files, figures)
-        source_bytes = sum(len(data) for data in bundle_files.values())
-        bundle = _deterministic_zip(bundle_files)
+        source_bytes, bundle = self._source_bundle(bundle_files)
         if hashlib.sha256(bundle).hexdigest() != source.source_digest:
             raise ArtifactError(
                 "artifact_corrupt", "Paper source digest verification failed"
@@ -914,12 +900,7 @@ class LatexPaperService:
         if len(normalized_files) + len(figures) > self.settings.chat_artifact_max_files:
             raise ArtifactError("artifact_too_large", "Paper has too many files")
         bundle_files = self._bundle_files(normalized_files, figures)
-        source_bytes = sum(len(data) for data in bundle_files.values())
-        if source_bytes > self.settings.chat_artifact_max_version_bytes:
-            raise ArtifactError(
-                "artifact_too_large", "Paper source exceeds the 32 MiB version limit"
-            )
-        bundle = _deterministic_zip(bundle_files)
+        source_bytes, bundle = self._source_bundle(bundle_files)
         source_digest = hashlib.sha256(bundle).hexdigest()
         candidate_id = uuid.uuid4()
         compiler = self.compiler or compiler_transport_from_settings(self.settings)
@@ -1048,6 +1029,39 @@ class LatexPaperService:
             raise ArtifactError(
                 "artifact_storage_failed", "Paper repair storage failed"
             ) from error
+        if version.compile_status != "succeeded":
+            # A repair candidate is intentionally never a durable failed source.
+            # This includes a successful compiler result whose preview cannot be
+            # admitted into the owner's quota.
+            candidate_diagnostics = version.compile_diagnostics or {}
+            candidate_errors = candidate_diagnostics.get("errors")
+            if not isinstance(candidate_errors, list):
+                candidate_errors = candidate_diagnostics.get("diagnostics")
+            diagnostics["repair_attempts"] = attempts + 1
+            diagnostics["last_repair_diagnostics"] = (
+                candidate_errors[:20]
+                if isinstance(candidate_errors, list)
+                else [
+                    {
+                        "severity": "error",
+                        "message": "Paper repair could not be published",
+                    }
+                ]
+            )
+            parent.compile_diagnostics = diagnostics
+            self._schedule_storage_prefix_cleanup(version.storage_key)
+            self.db.execute(
+                delete(ChatLatexPaperFigureReference).where(
+                    ChatLatexPaperFigureReference.version_id == version.id
+                )
+            )
+            self.db.delete(version)
+            self.db.flush()
+            return LatexPaperRepairOutcome(
+                self._descriptor(artifact),
+                repaired=False,
+                exhausted=attempts + 1 >= _MAX_REPAIR_ATTEMPTS,
+            )
         artifact.latest_version = version_number
         artifact.source_head_version_id = version.id
         self.db.flush()
@@ -1083,11 +1097,12 @@ class LatexPaperService:
         )
 
     def _validate_figure(self, path: str, data: bytes, declared_media_type: str) -> str:
+        raw_parts = path.split("/")
         candidate = PurePosixPath(path)
         if (
             not _SAFE_FIGURE_PATH.fullmatch(path)
             or candidate.is_absolute()
-            or any(part in {"", ".", ".."} for part in candidate.parts)
+            or any(part in {"", ".", ".."} for part in raw_parts)
         ):
             raise ArtifactError(
                 "artifact_invalid", "Figure files need safe relative paths"
@@ -1191,12 +1206,47 @@ class LatexPaperService:
         files = self._bundle_files(
             self._read_text_files(version), self._figure_blobs_for_version(version)
         )
-        if (
-            sum(len(data) for data in files.values())
-            > self.settings.chat_artifact_max_version_bytes
-        ):
-            raise ArtifactError("artifact_too_large", "Paper source exceeds its bound")
-        return _deterministic_zip(files)
+        _, bundle = self._source_bundle(files)
+        return bundle
+
+    def _source_bundle(self, files: Mapping[str, bytes]) -> tuple[int, bytes]:
+        """Build the exact signed compiler input within the version limit."""
+        source_bytes = sum(len(data) for data in files.values())
+        if source_bytes > self.settings.chat_artifact_max_version_bytes:
+            raise ArtifactError(
+                "artifact_too_large", "Paper source exceeds the 32 MiB version limit"
+            )
+        bundle = _deterministic_zip(files)
+        if len(bundle) > self.settings.chat_artifact_max_version_bytes:
+            raise ArtifactError(
+                "artifact_too_large",
+                "Paper source archive exceeds the 32 MiB version limit",
+            )
+        return source_bytes, bundle
+
+    def _owner_references_figure_blob(self, owner_id: str, digest: str) -> bool:
+        """Whether this owner already pays for a content-addressed figure."""
+        return (
+            self.db.scalar(
+                select(ChatLatexPaperFigureReference.version_id)
+                .join(
+                    ChatLatexPaperVersion,
+                    ChatLatexPaperFigureReference.version_id
+                    == ChatLatexPaperVersion.id,
+                )
+                .join(
+                    ChatArtifact,
+                    ChatLatexPaperVersion.artifact_id == ChatArtifact.id,
+                )
+                .join(ChatSession, ChatArtifact.session_id == ChatSession.id)
+                .where(
+                    ChatSession.hf_user_id == owner_id,
+                    ChatLatexPaperFigureReference.blob_digest == digest,
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
     def _owner_durable_bytes(self, owner_id: str) -> int:
         return owner_artifact_storage_bytes(self.db, owner_id)
@@ -1581,7 +1631,7 @@ class LatexPaperService:
         self, version: ChatLatexPaperVersion, result: CompilerResult
     ) -> None:
         diagnostics = [item.model_dump(mode="json") for item in result.diagnostics]
-        version.compile_diagnostics = {
+        result_diagnostics = {
             "diagnostics": diagnostics,
             "job_id": result.job_id,
             "pdf_sha256": result.pdf_digest,
@@ -1589,6 +1639,7 @@ class LatexPaperService:
             "failure_category": result.failure_category,
         }
         if result.state != CompilerJobState.SUCCEEDED or result.pdf is None:
+            version.compile_diagnostics = result_diagnostics
             version.compile_status = "failed"
             return
         if result.source_digest != version.source_digest:
@@ -1609,6 +1660,11 @@ class LatexPaperService:
                 ],
             }
             return
+        previous_pdf_bytes = 0
+        if isinstance(previous := version.compile_diagnostics, dict):
+            previous_size = previous.get("pdf_bytes")
+            if isinstance(previous_size, int) and previous_size > 0:
+                previous_pdf_bytes = previous_size
         owner_id = self.db.scalar(
             select(ChatSession.hf_user_id)
             .join(ChatArtifact)
@@ -1626,7 +1682,10 @@ class LatexPaperService:
             return
         lock_owner_artifact_quota(self.db, owner_id)
         try:
-            self._require_owner_quota(owner_id, additional_pdf_bytes=len(result.pdf))
+            self._require_owner_quota(
+                owner_id,
+                additional_pdf_bytes=max(0, len(result.pdf) - previous_pdf_bytes),
+            )
         except ArtifactError as error:
             if error.code != "artifact_quota_exceeded":
                 raise
@@ -1654,6 +1713,7 @@ class LatexPaperService:
             raise ArtifactError(
                 "artifact_storage_failed", "Paper preview storage failed"
             ) from error
+        version.compile_diagnostics = result_diagnostics
         version.compile_status = "succeeded"
         version.compiled_pdf_path = _PREVIEW_PDF
         version.artifact.preview_head_version_id = version.id

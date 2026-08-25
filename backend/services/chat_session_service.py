@@ -38,6 +38,7 @@ from backend.services.chat_edit_service import (
     user_message_projection_bytes,
 )
 from backend.services.chat_title_service import normalize_title
+from backend.services.latex_paper_service import LatexPaperService
 
 
 class ChatServiceError(Exception):
@@ -1788,6 +1789,18 @@ class ChatSessionService:
             raise ChatServiceError(
                 "session_busy", 409, "Stop generation before deleting this chat"
             )
+        paper_artifact_ids = list(
+            self.db.scalars(
+                select(ChatArtifact.id).where(
+                    ChatArtifact.session_id == session.id,
+                    ChatArtifact.kind == "latex_paper",
+                )
+            )
+        )
+        if paper_artifact_ids:
+            paper_service = LatexPaperService(self.db, self.settings)
+            for artifact_id in paper_artifact_ids:
+                paper_service.delete_project(owner.hf_user_id, artifact_id)
         if session.sdk_session_id and session.sdk_project_key:
             self.db.execute(
                 delete(ChatSDKTranscriptEntry).where(
