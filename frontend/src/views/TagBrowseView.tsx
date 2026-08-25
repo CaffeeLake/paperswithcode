@@ -48,6 +48,37 @@ const parseOrderBy = (value: string | null): OrderBy => {
 
 const SUBTASK_BENCH_PREVIEW = 3;
 
+const HEALTHCARE_HUB_DESTINATIONS = [
+  {
+    slug: "healthcare",
+    eyebrow: "Clinical systems",
+    title: "Clinical AI & Healthcare",
+    description: "Agents, clinical workflows, medical calculators, safety, and decision support.",
+    href: "/tasks/healthcare#benchmarks",
+  },
+  {
+    slug: "medical-question-answering",
+    eyebrow: "Language & reasoning",
+    title: "Medical Question Answering",
+    description: "Medical exams, biomedical evidence, clinical comprehension, and explanations.",
+    href: "/tasks/medical-question-answering",
+  },
+  {
+    slug: "medical-imaging",
+    eyebrow: "Vision",
+    title: "Medical Imaging",
+    description: "Radiology, pathology, ophthalmology, ultrasound, and diagnostic imaging.",
+    href: "/tasks/medical-imaging",
+  },
+  {
+    slug: "medical-visual-question-answering",
+    eyebrow: "Multimodal",
+    title: "Medical Visual Question Answering",
+    description: "Questions grounded in radiology, pathology, and other biomedical images.",
+    href: "/tasks/medical-visual-question-answering",
+  },
+] as const;
+
 const formatStarCount = (stars: number) =>
   new Intl.NumberFormat("en", {
     notation: stars >= 1000 ? "compact" : "standard",
@@ -105,6 +136,47 @@ export const TaskBreadcrumb: React.FC<{
     </span>
   </nav>
 );
+
+export const HealthcareMedicalAiHub: React.FC<{
+  task: Task;
+  relatedTasks: Task[];
+}> = ({ task, relatedTasks }) => {
+  const tasksBySlug = new Map(
+    [task, ...relatedTasks].map((candidate) => [candidate.slug, candidate]),
+  );
+
+  return (
+    <section className="medical-ai-hub" aria-labelledby="medical-ai-hub-title">
+      <div className="medical-ai-hub-heading">
+        <span>Medical AI directory</span>
+        <h2 id="medical-ai-hub-title">Explore Healthcare &amp; Medical AI</h2>
+        <p>Browse the field by clinical application, language, vision, or multimodal reasoning.</p>
+      </div>
+      <div className="medical-ai-hub-grid">
+        {HEALTHCARE_HUB_DESTINATIONS.map((destination) => {
+          const destinationTask = tasksBySlug.get(destination.slug);
+          return (
+            <Link
+              key={destination.slug}
+              to={destination.href}
+              className="medical-ai-hub-card"
+            >
+              <span className="medical-ai-hub-card-eyebrow">{destination.eyebrow}</span>
+              <strong>{destination.title}</strong>
+              <span className="medical-ai-hub-card-description">{destination.description}</span>
+              <span className="medical-ai-hub-card-meta">
+                {destinationTask?.paper_count != null
+                  ? `${destinationTask.paper_count.toLocaleString()} papers`
+                  : "Explore task"}
+                <ArrowRight size={14} aria-hidden="true" />
+              </span>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+};
 
 const sortSubtasksForDisplay = (subtasks: Task[]) =>
   [...subtasks].sort((a, b) => {
@@ -407,11 +479,15 @@ const TagBrowseView: React.FC = () => {
         )}
       </div>
 
+      {task.slug === "healthcare" && (
+        <HealthcareMedicalAiHub task={task} relatedTasks={sisters} />
+      )}
+
       <div className="task-page-grid" style={{ marginTop: 28 }}>
         <div>
           {shouldShowBenchmarkList && (
             <>
-              <div className="task-section-head">
+              <div className="task-section-head" id="benchmarks">
                 <div className="task-section-eyebrow">
                   {trendWindowDays}-day reporting activity · select a benchmark
                 </div>
@@ -673,7 +749,7 @@ const TagBrowseView: React.FC = () => {
         </div>
 
         <aside className="task-side">
-          {sisters.length > 0 && (
+          {sisters.length > 0 && task.slug !== "healthcare" && (
             <div className="side-block">
               <div className="side-block-num">01/</div>
               <div className="side-block-label">Sister Tasks</div>

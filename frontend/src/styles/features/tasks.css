@@ -84,6 +84,84 @@
   gap: 56px;
   align-items: start;
 }
+.medical-ai-hub {
+  margin-top: 32px;
+  padding: 24px;
+  border: 1px solid var(--hairline);
+  border-top: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+.medical-ai-hub-heading > span,
+.medical-ai-hub-card-eyebrow {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.medical-ai-hub-heading h2 {
+  margin: 6px 0 4px;
+  font-family: var(--serif);
+  font-size: 26px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.medical-ai-hub-heading p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+.medical-ai-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.medical-ai-hub-card {
+  display: flex;
+  min-width: 0;
+  min-height: 176px;
+  flex-direction: column;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  text-decoration: none;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.medical-ai-hub-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+.medical-ai-hub-card strong {
+  margin-top: 10px;
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.2;
+}
+.medical-ai-hub-card-description {
+  margin-top: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.medical-ai-hub-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
 .task-explainer {
   font-family: var(--serif);
   font-size: 17px;
@@ -827,6 +905,7 @@
     order: -1;
   }
   .subtask-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .medical-ai-hub-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .domain-mega-title { font-size: 40px; }
 
   .bench-row {
@@ -850,6 +929,9 @@
   .domain-mega-title { font-size: 30px; }
 
   .subtask-grid { grid-template-columns: 1fr; }
+  .medical-ai-hub { padding: 18px; }
+  .medical-ai-hub-grid { grid-template-columns: 1fr; }
+  .medical-ai-hub-card { min-height: 0; }
 
   .benchmark-trend-head { display: none; }
   .benchmark-trend-row {

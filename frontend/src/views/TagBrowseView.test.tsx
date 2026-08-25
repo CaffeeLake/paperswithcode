@@ -3,9 +3,70 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import {
+  HealthcareMedicalAiHub,
   RecommendedFrameworkLinks,
   TaskBreadcrumb,
 } from "@/views/TagBrowseView";
+
+describe("HealthcareMedicalAiHub", () => {
+  it("makes the four medical AI destinations directly discoverable", () => {
+    render(
+      <MemoryRouter>
+        <HealthcareMedicalAiHub
+          task={{
+            id: "416",
+            name: "Healthcare",
+            slug: "healthcare",
+            level: 0,
+            paper_count: 3883,
+          }}
+          relatedTasks={[
+            {
+              id: "322",
+              name: "Medical Imaging",
+              slug: "medical-imaging",
+              level: 0,
+              paper_count: 1972,
+            },
+            {
+              id: "714",
+              name: "Medical Visual Question Answering",
+              slug: "medical-visual-question-answering",
+              level: 1,
+              paper_count: 104,
+            },
+            {
+              id: "715",
+              name: "Medical Question Answering",
+              slug: "medical-question-answering",
+              level: 1,
+              paper_count: 249,
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Explore Healthcare & Medical AI" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Clinical AI & Healthcare/ })).toHaveAttribute(
+      "href",
+      "/tasks/healthcare#benchmarks",
+    );
+    expect(screen.getByRole("link", { name: /Medical Question Answering/ })).toHaveAttribute(
+      "href",
+      "/tasks/medical-question-answering",
+    );
+    expect(screen.getByRole("link", { name: /Medical Imaging/ })).toHaveAttribute(
+      "href",
+      "/tasks/medical-imaging",
+    );
+    expect(
+      screen.getByRole("link", { name: /Medical Visual Question Answering/ }),
+    ).toHaveAttribute("href", "/tasks/medical-visual-question-answering");
+  });
+});
 
 describe("RecommendedFrameworkLinks", () => {
   it("links recommendations to their internal framework paper feeds", () => {
