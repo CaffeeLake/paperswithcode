@@ -386,6 +386,8 @@ def frontend_analytics_environment(environment: str) -> dict[str, str]:
     if "VITE_POSTHOG_PROJECT_TOKEN" not in values:
         return {}
     values.setdefault("VITE_POSTHOG_HOST", "https://eu.i.posthog.com")
+    if not values["VITE_POSTHOG_HOST"].startswith("https://"):
+        raise DeployError("VITE_POSTHOG_HOST must use HTTPS")
     return values
 
 
