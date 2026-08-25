@@ -213,10 +213,11 @@ class JobManager:
 class LatexCompilerRunner:
     """Runs a single constrained latexmk process in a freshly extracted root."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, network_isolation_required: bool = False) -> None:
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self._canceled: set[str] = set()
         self._lock = threading.Lock()
+        self.network_isolation_required = network_isolation_required
 
     async def __call__(
         self, envelope: CompilerEnvelope, bundle: bytes
@@ -257,23 +258,7 @@ class LatexCompilerRunner:
                 log_path = root / "compiler.log"
                 with log_path.open("xb") as log:
                     process = subprocess.Popen(
-                        [
-                            "prlimit",
-                            "--cpu=120:120",
-                            "--as=1073741824:1073741824",
-                            "--fsize=26214400:26214400",
-                            "--nofile=64:64",
-                            "--nproc=16:16",
-                            "--",
-                            "latexmk",
-                            "-norc",
-                            "-pdf",
-                            "-bibtex",
-                            "-interaction=nonstopmode",
-                            "-halt-on-error",
-                            "-no-shell-escape",
-                            envelope.entrypoint,
-                        ],
+                        self._command(envelope),
                         cwd=root,
                         stdin=subprocess.DEVNULL,
                         stdout=log,
@@ -344,9 +329,71 @@ class LatexCompilerRunner:
                 failure_category="execution_error",
             )
 
+    def _command(self, envelope: CompilerEnvelope) -> list[str]:
+        command = [
+            "prlimit",
+            "--cpu=120:120",
+            "--as=1073741824:1073741824",
+            "--fsize=26214400:26214400",
+            "--nofile=64:64",
+            "--nproc=16:16",
+            "--",
+            "latexmk",
+            "-norc",
+            "-pdf",
+            "-bibtex",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-no-shell-escape",
+            envelope.entrypoint,
+        ]
+        return (
+            network_isolation_command() + command
+            if self.network_isolation_required
+            else command
+        )
+
+
+def network_isolation_command() -> list[str]:
+    """Fail closed into a fresh user/network/PID namespace for each compile."""
+    return [
+        "unshare",
+        "--user",
+        "--map-root-user",
+        "--net",
+        "--pid",
+        "--fork",
+        "--mount-proc",
+        "--",
+    ]
+
+
+def verify_network_isolation() -> None:
+    """Prove the compiler child can create a net namespace with no default route."""
+    subprocess.run(
+        network_isolation_command()
+        + [
+            "sh",
+            "-ceu",
+            'if awk \'NR > 1 && $2 == "00000000" && $3 != "00000000" { found=1 } END { exit found ? 0 : 1 }\' /proc/net/route; then exit 1; fi',
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+    )
+
 
 def create_app(*, public_key: str, compiler: Compiler | None = None) -> FastAPI:
-    manager = JobManager(compiler or LatexCompilerRunner())
+    network_isolation_required = (
+        os.environ.get("PWC_LATEX_COMPILER_NETWORK_ISOLATION_REQUIRED", "").lower()
+        == "true"
+    )
+    manager = JobManager(
+        compiler
+        or LatexCompilerRunner(network_isolation_required=network_isolation_required)
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -354,6 +401,13 @@ def create_app(*, public_key: str, compiler: Compiler | None = None) -> FastAPI:
             validate_public_key(public_key)
         except EnvelopeError as error:
             raise RuntimeError("PWC_LATEX_COMPILER_PUBLIC_KEY is required") from error
+        if network_isolation_required:
+            try:
+                verify_network_isolation()
+            except (OSError, subprocess.SubprocessError) as error:
+                raise RuntimeError(
+                    "Compiler network isolation is unavailable"
+                ) from error
         await manager.start()
         yield
         await manager.stop()

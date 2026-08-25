@@ -188,6 +188,10 @@ def main() -> int:
     args = _parse_args()
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"Pass --confirm {CONFIRMATION}")
+    raise SystemExit(
+        "Long-lived Docker Space qualification is disabled: use "
+        "qualify_latex_compiler_sandbox instead"
+    )
     settings = get_settings()
     if settings.environment != "staging":
         raise SystemExit("Qualification requires PWC_ENVIRONMENT=staging")

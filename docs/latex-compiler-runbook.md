@@ -26,14 +26,22 @@ Evidence captured on 2026-08-25:
   does not solve this confidentiality risk.
 
 Consequently, a long-lived Docker Space is not adequate evidence for the
-privacy boundary. Before enabling the feature, deploy a per-job Hugging Face
-Sandbox or Job implementation that satisfies `LatexCompilerTransport` in
-`backend/services/latex_compiler_service.py`; the paper service must continue
-to use that transport interface, not a Space-specific API. The necessary
-external inputs are: an approved staging namespace/Space or Job identity,
-public-key secret placement, private endpoint/token configuration, and an
-operator-authorized isolated runtime with an explicit egress policy. Do not
-invent any of those values.
+privacy boundary. The application factory now selects only the per-job Hugging
+Face Sandbox transport in `backend/services/latex_compiler_service.py`. It
+creates one dedicated HF Job VM for each immutable source version, does not
+forward the backend HF token, mounts no volumes or secrets, injects only the
+compiler's public signing key, and starts the compiler only after a fresh,
+unprivileged user/network/PID namespace has no default route. If that preflight
+cannot run, the submission fails before any manuscript bytes are sent.
+
+The required external staging inputs remain intentionally blank in the release
+example: an operator-approved private namespace, an immutable compiler image
+digest, a protected Sandbox-only credential, and the exact
+`sandbox-netns-v1` egress-policy attestation. Do not derive these from the
+authenticated developer identity, reuse a Space credential, or invent a
+target. The legacy `LatexCompilerClient` and Space settings remain only for
+rollback-era direct compatibility; `compiler_transport_from_settings` never
+selects them. `qualify_latex_compiler_space` now refuses to run.
 
 ## Kill switch
 
@@ -50,7 +58,8 @@ Neither control deletes artifacts or invalidates safe historical previews.
 
 ## Health and metrics
 
-The Space exposes only content-free operational endpoints:
+Each disposable Sandbox exposes only content-free operational endpoints through
+its short-lived, authenticated Sandbox proxy:
 
 - `GET /health` reports readiness, serialized capacity, queue depth, active
   work, retained-job count, outcome totals, failure-category totals, and a
@@ -58,8 +67,9 @@ The Space exposes only content-free operational endpoints:
 - `GET /metrics` returns the same bounded counters for collection.
 
 No endpoint, application log, or metric contains a job ID, source digest,
-manuscript bytes, diagnostics, signed envelope, or credential. Space access
-logs are disabled in the Uvicorn command.
+manuscript bytes, diagnostics, signed envelope, provider handle, or credential.
+Uvicorn access logs are disabled. The backend logs only `sandbox_ready` and
+`sandbox_released` event names.
 
 Alert on non-zero or rising `timeout`, `resource_limit`, `execution_error`,
 `service_error`, `transport_failure`, or `lost` counts; alert immediately when
@@ -67,10 +77,13 @@ readiness fails or queue depth remains non-zero without active work.
 
 ## Restart and reconciliation
 
-Each immutable paper version uses its UUID as its compiler idempotency key.
-After a Space/backend restart or a transport outage, resubmission uses the same
-source archive, root document, digest, and idempotency key. It cannot create a
-second logical version.
+Each immutable paper version uses its UUID as its compiler idempotency key. Its
+pending diagnostics persist the opaque Sandbox job handle. After a backend
+restart reconciliation first reconnects with `Sandbox.connect`; if the VM has
+already ended, it creates one replacement Sandbox with the same source archive,
+root document, digest, and logical idempotency key. It cannot create a second
+logical version. Terminal result read or cancellation always kills the
+dedicated Sandbox; repeated cancellation is idempotent.
 
 After confirming the compiler is enabled and healthy, an operator can process
 at most 100 pending versions at a time:
@@ -89,24 +102,27 @@ digest under the same version ID.
 
 ## Qualification procedure
 
-Only after the external inputs in the current decision are supplied and the
-kill switch is intentionally enabled for this isolated staging exercise:
+Only after the exact external inputs above are supplied and the kill switch is
+intentionally enabled for this isolated staging exercise:
 
 ```bash
 uv run --env-file /etc/paperswithcode/staging.env \
-  python -m backend.scripts.qualify_latex_compiler_space \
-  --confirm QUALIFY_PRIVATE_LATEX_COMPILER_SPACE
+  python -m backend.scripts.qualify_latex_compiler_sandbox \
+  --confirm QUALIFY_PRIVATE_LATEX_COMPILER_SANDBOX
 ```
 
 The suite uses fixed synthetic bundles for shell escape, host file reads,
 network pipe input, recursive expansion, process pressure, oversized output,
 path traversal, malformed archives, and malformed PDF figures. It prints only
 case names, terminal outcomes, and elapsed milliseconds. Also perform one
-manual cancellation while compiling and one controlled Space restart followed
-by the reconciliation command; record `/health` and `/metrics` before and
-after. Keep all manuscript content out of tickets, terminal capture, and Space
-logs.
+manual cancellation while compiling and one controlled Sandbox/backend restart
+followed by the reconciliation command; record `/health` and `/metrics` before
+and after. Confirm that the Sandbox preflight completed before submitting the
+first fixture, that the provider Job has no forwarded HF token, mounts, or
+secrets, and that each terminal fixture releases its dedicated Job. Keep all
+manuscript content out of tickets, terminal capture, and provider logs.
 
 Passing local contract tests does **not** qualify the remote isolation. Do not
-claim this procedure passed until a private endpoint, signing-key configuration,
-and isolated runtime have actually run it successfully.
+claim this procedure passed until the exact private namespace/image/credential
+and egress attestation have been configured and the isolated runtime has
+actually run it successfully.

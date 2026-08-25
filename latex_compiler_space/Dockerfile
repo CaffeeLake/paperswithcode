@@ -4,7 +4,7 @@ FROM ghcr.io/xu-cheng/texlive-debian@sha256:3bdf292b53c04ffa3ca694a5114397859bcd
 
 USER root
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y python3 python3-pip \
+    && apt-get install --no-install-recommends -y python3 python3-pip util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 compiler
 

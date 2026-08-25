@@ -478,6 +478,22 @@ class Settings(BaseSettings):
     # only in the PwC backend environment; the Space gets its matching public
     # key as a private Space secret.
     chat_latex_compiler_jobs_enabled: bool = Field(default=False)
+    # A per-job HF Sandbox is the only application transport. The image is
+    # deliberately blank by default so staging cannot accidentally create a VM.
+    chat_latex_compiler_hf_sandbox_image: str = Field(default="", max_length=1000)
+    chat_latex_compiler_hf_sandbox_namespace: str = Field(default="", max_length=128)
+    chat_latex_compiler_hf_sandbox_token: str = Field(default="")
+    chat_latex_compiler_hf_sandbox_flavor: Literal["cpu-basic", "cpu-upgrade"] = Field(
+        default="cpu-upgrade"
+    )
+    chat_latex_compiler_hf_sandbox_idle_timeout_seconds: int = Field(
+        default=180, ge=60, le=600
+    )
+    chat_latex_compiler_hf_sandbox_egress_policy_attestation: str = Field(
+        default="", max_length=128
+    )
+    # Legacy private-Space settings remain readable for rollback-era direct
+    # clients, but the application factory never selects that transport.
     chat_latex_compiler_url: str = Field(default="", max_length=1000)
     chat_latex_compiler_hf_token: str = Field(default="")
     chat_latex_compiler_signing_private_key: str = Field(default="")

@@ -102,6 +102,9 @@ class CompilerStatus(BaseModel):
 
     job_id: str
     state: CompilerJobState
+    # The backend persists this opaque provider handle only for a per-job
+    # transport. The compiler API itself never needs to know about it.
+    provider_job_id: str | None = Field(default=None, max_length=300)
 
 
 class CompilerResult(BaseModel):

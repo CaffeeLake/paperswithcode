@@ -28,6 +28,7 @@ from latex_compiler_space.app import (
     _extract_bundle,
     _read_tail,
     create_app,
+    network_isolation_command,
 )
 
 
@@ -261,3 +262,16 @@ def test_cancellation_before_runner_start_prevents_compilation() -> None:
         await manager.stop()
 
     asyncio.run(exercise())
+
+
+def test_network_isolation_preflight_uses_a_new_network_namespace() -> None:
+    command = network_isolation_command()
+
+    assert command[:5] == [
+        "unshare",
+        "--user",
+        "--map-root-user",
+        "--net",
+        "--pid",
+    ]
+    assert "--mount-proc" in command

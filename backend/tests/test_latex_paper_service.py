@@ -208,6 +208,52 @@ def test_restart_reconciliation_resubmits_the_durable_version_job_id(db, setting
     assert version.compile_status == "succeeded"
 
 
+def test_restart_reconciliation_reattaches_the_saved_sandbox_job(db, settings):
+    class SandboxCompiler(_Compiler):
+        provider_job_id = "opaque-sandbox-job"
+
+        def __init__(self, *, resumed: bool = False):
+            super().__init__(CompilerJobState.COMPILING)
+            self.resumed = resumed
+            self.resume_calls: list[tuple[str, str]] = []
+
+        def submit(self, *, job_id: str, bundle: bytes, entrypoint: str, limits=None):
+            self.submitted = (job_id, bundle, entrypoint)
+            return CompilerStatus(
+                job_id=job_id,
+                state=CompilerJobState.COMPILING,
+                provider_job_id=self.provider_job_id,
+            )
+
+        def resume(
+            self, *, job_id: str, provider_job_id: str, bundle: bytes, entrypoint: str
+        ):
+            self.resume_calls.append((job_id, provider_job_id))
+            return CompilerStatus(
+                job_id=job_id,
+                state=CompilerJobState.COMPILING,
+                provider_job_id=provider_job_id,
+            )
+
+    session_id = _session(db)
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    original = SandboxCompiler()
+    service = LatexPaperService(db, settings, storage=storage, compiler=original)
+    descriptor = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=session_id
+    )
+    version = db.get(ChatLatexPaperVersion, descriptor.source_head.version_id)
+    assert version is not None
+    assert version.compile_diagnostics["provider_job_id"] == "opaque-sandbox-job"
+
+    restarted = SandboxCompiler(resumed=True)
+    recovery = LatexPaperService(db, settings, storage=storage, compiler=restarted)
+    assert recovery.reconcile_pending_compiles(limit=1) == 1
+
+    assert restarted.resume_calls == [(str(version.id), "opaque-sandbox-job")]
+    assert restarted.submitted is None
+
+
 def test_paper_is_private_general_chat_only_and_unique(db, settings):
     session_id = _session(db)
     service = LatexPaperService(
@@ -340,6 +386,56 @@ def test_pending_human_save_advances_preview_when_polled(db, settings):
     assert completed.source_head is not None and completed.preview_head is not None
     assert completed.source_head.compile_status == "succeeded"
     assert completed.preview_head.version_id == completed.source_head.version_id
+
+
+def test_owner_poll_reattaches_a_pending_sandbox_instead_of_submitting_again(
+    db, settings
+):
+    class ResumeCompiler(_Compiler):
+        def __init__(self) -> None:
+            super().__init__(CompilerJobState.QUEUED)
+            self.submit_calls = 0
+            self.resume_calls: list[tuple[str, str]] = []
+
+        def submit(self, *, job_id: str, bundle: bytes, entrypoint: str, limits=None):
+            self.submit_calls += 1
+            if self.submit_calls > 1:
+                raise AssertionError("owner poll must not create another Sandbox")
+            self.submitted = (job_id, bundle, entrypoint)
+            return CompilerStatus(
+                job_id=job_id,
+                state=CompilerJobState.QUEUED,
+                provider_job_id="opaque-sandbox-job",
+            )
+
+        def resume(
+            self, *, job_id: str, provider_job_id: str, bundle: bytes, entrypoint: str
+        ):
+            self.resume_calls.append((job_id, provider_job_id))
+            return CompilerStatus(
+                job_id=job_id,
+                state=CompilerJobState.QUEUED,
+                provider_job_id=provider_job_id,
+            )
+
+    session_id = _session(db)
+    compiler = ResumeCompiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    descriptor = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=session_id
+    )
+
+    service.refresh_compile(owner_id="owner-1", artifact_id=descriptor.artifact_id)
+
+    assert compiler.submit_calls == 1
+    assert compiler.resume_calls == [
+        (str(descriptor.source_head.version_id), "opaque-sandbox-job")
+    ]
 
 
 @pytest.mark.parametrize(

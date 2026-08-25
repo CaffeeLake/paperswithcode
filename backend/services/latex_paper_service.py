@@ -30,7 +30,7 @@ from backend.services.chat_artifact_service import (
 )
 from backend.services.latex_compiler_service import (
     LatexCompilerTransport,
-    compiler_client_from_settings,
+    compiler_transport_from_settings,
 )
 from latex_compiler_contract import CompilerJobState, CompilerResult, EnvelopeError
 
@@ -423,23 +423,46 @@ class LatexPaperService:
             raise ArtifactError(
                 "artifact_corrupt", "Paper source digest verification failed"
             )
-        compiler = self.compiler or compiler_client_from_settings(self.settings)
+        compiler = self.compiler or compiler_transport_from_settings(self.settings)
         try:
-            # The compiler contract makes duplicate job-id submissions idempotent.
-            # Re-submission also restores the local client envelope needed to verify
-            # a result after an ordinary backend request boundary.
-            status = compiler.submit(
-                job_id=job_id, bundle=bundle, entrypoint=manifest.root_document
-            )
+            provider_job_id = (version.compile_diagnostics or {}).get("provider_job_id")
+            resume = getattr(compiler, "resume", None)
+            if isinstance(provider_job_id, str) and callable(resume):
+                try:
+                    status = resume(
+                        job_id=job_id,
+                        provider_job_id=provider_job_id,
+                        bundle=bundle,
+                        entrypoint=manifest.root_document,
+                    )
+                except RuntimeError:
+                    # The dedicated VM ended. A replacement remains safe because
+                    # the immutable source-version UUID is the logical key.
+                    status = compiler.submit(
+                        job_id=job_id, bundle=bundle, entrypoint=manifest.root_document
+                    )
+            else:
+                status = compiler.submit(
+                    job_id=job_id, bundle=bundle, entrypoint=manifest.root_document
+                )
             if status.state not in {
                 CompilerJobState.SUCCEEDED,
                 CompilerJobState.FAILED,
+                CompilerJobState.CANCELED,
             }:
                 version.compile_status = (
                     "compiling"
                     if status.state == CompilerJobState.COMPILING
                     else "queued"
                 )
+                version.compile_diagnostics = {
+                    "job_id": job_id,
+                    **(
+                        {"provider_job_id": status.provider_job_id}
+                        if status.provider_job_id is not None
+                        else {}
+                    ),
+                }
             else:
                 self._store_compile_result(version, compiler.result(job_id))
         except (httpx.HTTPError, EnvelopeError, RuntimeError, ValueError):
@@ -546,21 +569,47 @@ class LatexPaperService:
     def _compile(
         self, version: ChatLatexPaperVersion, bundle: bytes, entrypoint: str
     ) -> None:
-        compiler = self.compiler or compiler_client_from_settings(self.settings)
+        compiler = self.compiler or compiler_transport_from_settings(self.settings)
         # The immutable source-version ID is the durable idempotency key. A
         # fresh backend process can submit the same bundle after a Space restart
         # without creating a second logical compile job.
         job_id = str(version.id)
         try:
-            status = compiler.submit(
-                job_id=job_id, bundle=bundle, entrypoint=entrypoint
-            )
+            previous = version.compile_diagnostics or {}
+            provider_job_id = previous.get("provider_job_id")
+            resume = getattr(compiler, "resume", None)
+            if isinstance(provider_job_id, str) and callable(resume):
+                try:
+                    status = resume(
+                        job_id=job_id,
+                        provider_job_id=provider_job_id,
+                        bundle=bundle,
+                        entrypoint=entrypoint,
+                    )
+                except RuntimeError:
+                    # A completed/lost VM is safe to replace: the immutable
+                    # version UUID remains the logical idempotency key.
+                    status = compiler.submit(
+                        job_id=job_id, bundle=bundle, entrypoint=entrypoint
+                    )
+            else:
+                status = compiler.submit(
+                    job_id=job_id, bundle=bundle, entrypoint=entrypoint
+                )
             if status.state not in {
                 CompilerJobState.SUCCEEDED,
                 CompilerJobState.FAILED,
                 CompilerJobState.CANCELED,
             }:
+                submitted_provider_job_id = status.provider_job_id
                 status = compiler.status(job_id)
+                if (
+                    status.provider_job_id is None
+                    and submitted_provider_job_id is not None
+                ):
+                    status = status.model_copy(
+                        update={"provider_job_id": submitted_provider_job_id}
+                    )
             if status.state not in {
                 CompilerJobState.SUCCEEDED,
                 CompilerJobState.FAILED,
@@ -571,7 +620,14 @@ class LatexPaperService:
                     if status.state == CompilerJobState.COMPILING
                     else "queued"
                 )
-                version.compile_diagnostics = {"job_id": job_id}
+                version.compile_diagnostics = {
+                    "job_id": job_id,
+                    **(
+                        {"provider_job_id": status.provider_job_id}
+                        if status.provider_job_id is not None
+                        else {}
+                    ),
+                }
                 return
             result = compiler.result(job_id)
         except httpx.HTTPError:
