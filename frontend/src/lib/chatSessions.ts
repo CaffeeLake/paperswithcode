@@ -70,6 +70,7 @@ export interface LatexPaperArtifactDescriptor {
   title: string;
   source_head?: LatexPaperVersionDescriptor | null;
   preview_head?: LatexPaperVersionDescriptor | null;
+  editing_enabled?: boolean;
 }
 
 export interface ChatShareSummary {

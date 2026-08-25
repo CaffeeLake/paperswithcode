@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +27,26 @@ const descriptor = {
   },
 };
 
+const savedDescriptor = {
+  ...descriptor,
+  editing_enabled: true,
+  source_head: {
+    ...descriptor.source_head,
+    version_id: "source-2",
+    version: 3,
+    compile_status: "succeeded" as const,
+    preview_head_version_id: "source-2",
+  },
+  preview_head: {
+    ...descriptor.preview_head,
+    version_id: "source-2",
+    version: 3,
+    compile_status: "succeeded" as const,
+    preview_head_version_id: "source-2",
+  },
+};
+let apiDescriptor: typeof descriptor | typeof savedDescriptor;
+
 function Harness() {
   return <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <ArtifactPanelProvider workspaceKey="session-1">
@@ -38,10 +58,12 @@ function Harness() {
 }
 
 beforeEach(() => {
+  apiDescriptor = descriptor;
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/artifacts/artifact-1")) return new Response(JSON.stringify(descriptor));
+    if (init?.method === "POST" && url.endsWith("/save-compile")) return new Response(JSON.stringify(savedDescriptor));
+    if (url.endsWith("/artifacts/artifact-1")) return new Response(JSON.stringify(apiDescriptor));
     if (url.endsWith("/versions/source-1/manifest")) return new Response(JSON.stringify({
       root_document: "main.tex",
       files: [
@@ -50,6 +72,7 @@ beforeEach(() => {
       ],
     }));
     if (url.endsWith("/source/main.tex")) return new Response("\\documentclass{article}");
+    if (url.endsWith("/source/references.bib")) return new Response("@comment{References}");
     return new Response("not found", { status: 404 });
   }));
 });
@@ -74,5 +97,33 @@ describe("Latex paper artifact workspace", () => {
     expect(await screen.findByText("\\documentclass{article}")).toBeVisible();
     expect(screen.queryByRole("button", { name: /save.*compile/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+  });
+
+  it("recovers a browser-local draft and saves it with the checked-out parent", async () => {
+    apiDescriptor = { ...descriptor, editing_enabled: true };
+    window.localStorage.setItem("pwc:latex-paper-draft:artifact-1", JSON.stringify({
+      parentVersionId: "source-1",
+      files: {
+        "main.tex": "\\documentclass{article}\\begin{document}Local draft\\end{document}",
+        "references.bib": "@comment{References}",
+      },
+    }));
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <ArtifactPanelProvider workspaceKey="session-1">
+        <ArtifactWorkspace variant="chat"><main><LatexPaperArtifact descriptor={{ ...descriptor, editing_enabled: true }} /></main></ArtifactWorkspace>
+      </ArtifactPanelProvider>
+    </QueryClientProvider>);
+
+    screen.getByRole("button", { name: "Files" }).click();
+    expect(await screen.findByText(/Local draft/)).toBeVisible();
+    const save = screen.getByRole("button", { name: /save.*compile/i });
+    expect(save).toBeEnabled();
+    save.click();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute("aria-pressed", "true"));
+    const saveCall = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith("/save-compile") && (init as RequestInit).method === "POST");
+    expect(saveCall).toBeDefined();
+    expect(JSON.parse((saveCall![1] as RequestInit).body as string)).toMatchObject({ expected_parent_version_id: "source-1" });
+    expect(window.localStorage.getItem("pwc:latex-paper-draft:artifact-1")).toBeNull();
   });
 });

@@ -557,6 +557,31 @@ class LatexPaperArtifactDescriptor(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     source_head: LatexPaperVersionDescriptor | None = None
     preview_head: LatexPaperVersionDescriptor | None = None
+    editing_enabled: bool = False
+
+
+class LatexPaperSourceEdit(BaseModel):
+    """One editable UTF-8 source file from an explicit human save."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=300)
+    content: str = Field(max_length=2 * 1024 * 1024)
+
+
+class LatexPaperSaveCompileRequest(BaseModel):
+    """The complete browser working copy guarded by its checked-out parent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_parent_version_id: uuid.UUID
+    files: list[LatexPaperSourceEdit] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_unique_paths(self) -> "LatexPaperSaveCompileRequest":
+        if len({file.path for file in self.files}) != len(self.files):
+            raise ValueError("Paper save contains duplicate file paths")
+        return self
 
 
 class ArtifactDisplayBlock(BaseModel):

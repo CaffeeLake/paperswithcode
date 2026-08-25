@@ -36,6 +36,7 @@ from backend.models.chat import (
     ChatFeedbackRequest,
     ChatMessageResponse,
     ChatRequest,
+    LatexPaperSaveCompileRequest,
     ChatSandboxSpendResponse,
     ChatSessionDetail,
     ChatSessionList,
@@ -196,6 +197,7 @@ def _raise_artifact(error: ArtifactError) -> None:
         "poster_storage_quota_exceeded": 429,
         "artifact_storage_failed": 503,
         "artifact_corrupt": 503,
+        "paper_conflict": 409,
     }.get(error.code, 422)
     raise HTTPException(
         status_code=status,
@@ -1069,6 +1071,57 @@ def get_artifact(
             ],
         }
     except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.post("/artifacts/{artifact_id}/save-compile")
+def save_compile_latex_paper(
+    artifact_id: uuid.UUID,
+    request: LatexPaperSaveCompileRequest,
+    http_request: Request,
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Publish a complete human source snapshot; drafts never reach this route."""
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_same_origin_csrf(http_request, settings)
+    try:
+        descriptor = LatexPaperService(db, settings).save_human_version(
+            owner_id=owner_from_user(user).hf_user_id,
+            artifact_id=artifact_id,
+            expected_parent_version_id=request.expected_parent_version_id,
+            files={file.path: file.content.encode("utf-8") for file in request.files},
+        )
+        db.commit()
+        return descriptor
+    except ArtifactError as error:
+        db.rollback()
+        _raise_artifact(error)
+
+
+@router.post("/artifacts/{artifact_id}/refresh-compile")
+def refresh_latex_paper_compile(
+    artifact_id: uuid.UUID,
+    http_request: Request,
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Owner-driven, idempotent polling keeps a queued canvas up to date."""
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_same_origin_csrf(http_request, settings)
+    try:
+        descriptor = LatexPaperService(db, settings).refresh_compile(
+            owner_id=owner_from_user(user).hf_user_id,
+            artifact_id=artifact_id,
+        )
+        db.commit()
+        return descriptor
+    except ArtifactError as error:
+        db.rollback()
         _raise_artifact(error)
 
 

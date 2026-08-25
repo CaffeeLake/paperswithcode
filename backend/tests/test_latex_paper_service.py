@@ -227,6 +227,151 @@ def test_paper_is_private_general_chat_only_and_unique(db, settings):
         service.create_neutral_scaffold(owner_id="owner-1", session_id=reader_id)
 
 
+def test_human_save_creates_a_child_and_advances_both_heads(db, settings):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+
+    saved = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Edited\\end{document}",
+            "references.bib": b"@comment{Edited}\n",
+        },
+    )
+
+    assert saved.source_head is not None and saved.preview_head is not None
+    assert saved.source_head.version == 2
+    assert saved.editing_enabled is True
+    assert saved.source_head.parent_version_id == initial.source_head.version_id
+    assert saved.source_head.version_id == saved.preview_head.version_id
+    version = db.get(ChatLatexPaperVersion, saved.source_head.version_id)
+    assert version is not None and version.actor_type == "human"
+    assert db.get(ChatArtifact, saved.artifact_id).latest_version == 2
+    assert service.read_source_file(
+        "owner-1", saved.artifact_id, version.id, "main.tex"
+    ).data.endswith(b"\\end{document}")
+
+
+def test_human_save_rejects_a_stale_parent_without_overwriting(db, settings):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    saved = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}One\\end{document}"
+        },
+    )
+
+    with pytest.raises(Exception, match="updated elsewhere"):
+        service.save_human_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            files={
+                "main.tex": b"\\documentclass{article}\\begin{document}Two\\end{document}"
+            },
+        )
+    assert (
+        db.get(ChatArtifact, initial.artifact_id).source_head_version_id
+        == saved.source_head.version_id
+    )
+
+
+def test_pending_human_save_advances_preview_when_polled(db, settings):
+    class DelayedCompiler(_Compiler):
+        def __init__(self):
+            super().__init__(CompilerJobState.QUEUED)
+            self.calls = 0
+
+        def submit(self, *, job_id: str, bundle: bytes, entrypoint: str, limits=None):
+            self.calls += 1
+            self.submitted = (job_id, bundle, entrypoint)
+            self.state = (
+                CompilerJobState.QUEUED
+                if self.calls == 2
+                else CompilerJobState.SUCCEEDED
+            )
+            return CompilerStatus(job_id=job_id, state=self.state)
+
+    session_id = _session(db)
+    compiler = DelayedCompiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    pending = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Queued\\end{document}"
+        },
+    )
+    assert pending.source_head is not None
+    assert pending.source_head.compile_status == "queued"
+    assert pending.preview_head is not None
+    assert pending.preview_head.version_id == initial.preview_head.version_id
+
+    completed = service.refresh_compile(
+        owner_id="owner-1", artifact_id=initial.artifact_id
+    )
+    assert completed.source_head is not None and completed.preview_head is not None
+    assert completed.source_head.compile_status == "succeeded"
+    assert completed.preview_head.version_id == completed.source_head.version_id
+
+
+@pytest.mark.parametrize(
+    "files, message",
+    [
+        ({"main.tex": b"x", "unsafe.sty": b"x"}, "supported TeX or BibTeX"),
+        ({"main.tex": b"x", "../outside.tex": b"x"}, "safe relative path"),
+        ({"main.tex": b"x", "dir//outside.tex": b"x"}, "safe relative path"),
+        ({"main.tex": b"x", "nul\x00.tex": b"x"}, "safe relative path"),
+        ({"main.tex": b"x", "folder\\outside.tex": b"x"}, "safe relative path"),
+        ({"references.bib": b"x"}, "root document"),
+    ],
+)
+def test_human_save_rejects_invalid_file_sets(db, settings, files, message):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    with pytest.raises(Exception, match=message):
+        service.save_human_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            files=files,
+        )
+
+
 def test_database_rejects_a_second_paper_even_if_service_is_bypassed(db):
     session_id = _session(db)
     db.add_all(
