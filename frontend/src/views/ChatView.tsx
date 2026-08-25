@@ -259,12 +259,22 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
       }
       activeStreamSessionIdRef.current = null;
       activeStreamRouteSessionIdRef.current = null;
+      if (sessionId && mode === "general") {
+        void getSession(sessionId).then((detail) => {
+          if (routeSessionIdRef.current === sessionId) {
+            setLatexPaper(detail.latex_paper ?? null);
+          }
+        }).catch(() => undefined);
+      }
       void refreshSessions();
     },
     onProviderTerminal: () => {
       if (selectedProviderRef.current === "openrouter") {
         void queryClient.invalidateQueries({ queryKey: OPENROUTER_CREDENTIAL_QUERY_KEY });
       }
+    },
+    onPaperArtifact: (event) => {
+      if (mode === "general") setLatexPaper(event.descriptor);
     },
     onInterrupted: (interruptedDraft) => {
       setDraft(interruptedDraft);
@@ -624,6 +634,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     describedBy: chatPaused ? "chat-paused-description" : undefined,
     paperMentionsEnabled: Boolean(availabilityQuery.data?.paper_mentions_enabled),
     paperSelectionEnabled: availabilityQuery.data?.paper_reader_selection_enabled === true,
+    paperArtifactsEnabled: mode === "general" && availabilityQuery.data?.paper_artifacts_enabled === true,
     webSearchAvailable,
     webSearchEnabled,
     onWebSearchChange: setWebSearchEnabled,

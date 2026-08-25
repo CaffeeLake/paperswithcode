@@ -42,3 +42,24 @@ test("replaces the baked task catalog with the live catalog", async () => {
   assert.doesNotMatch(prompt, /stale task catalog/);
   assert.match(prompt, /`text-reranking` — Text Reranking/);
 });
+
+test("keeps the shared paper prompt behind the trusted paper flag", async () => {
+  const source = [
+    "before",
+    "## Private paper authoring (paper-v1)",
+    "paper-specific instructions",
+    "## Task",
+    "after",
+  ].join("\n");
+
+  const disabled = await renderPrompt({
+    model: "model-a", hfUsername: "reviewer", webSearchEnabled: false, readerMode: false, source,
+  });
+  const enabled = await renderPrompt({
+    model: "model-a", hfUsername: "reviewer", webSearchEnabled: false, readerMode: false,
+    paperArtifactsEnabled: true, paperGuide: "guide", source,
+  });
+
+  assert.doesNotMatch(disabled, /paper-specific instructions/);
+  assert.match(enabled, /paper-specific instructions/);
+});

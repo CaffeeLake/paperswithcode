@@ -65,6 +65,7 @@ class ChatCapabilityService:
             "web_search",
             "hf_catalog",
             "artifact",
+            "paper",
         }
         if not scopes or not scopes <= allowed:
             raise ValueError("Capability scopes are invalid")

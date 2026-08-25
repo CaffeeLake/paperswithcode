@@ -17,7 +17,23 @@ const GUIDES = new Set([
   "/opt/pwc/S2_CLI_SKILL.md",
   "/opt/posterly/SKILL.md",
   "/opt/pwc/POSTERLY_PUBLISH.md",
+  "/opt/pwc/PAPER_AUTHORING.md",
 ]);
+const PAPER_PREFIX = "@@PWC_PAPER@@";
+
+function isPaperActivation(value: string): boolean {
+  const line = value.split(/\r?\n/u).find((item) => item.startsWith(PAPER_PREFIX));
+  if (!line || Buffer.byteLength(line) > 16_384) return false;
+  try {
+    const receipt = JSON.parse(line.slice(PAPER_PREFIX.length)) as Record<string, unknown>;
+    return (receipt.operation === "create" || receipt.operation === "begin-edit")
+      && receipt.activated === true
+      && receipt.paper !== null
+      && typeof receipt.paper === "object";
+  } catch {
+    return false;
+  }
+}
 
 function inside(candidate: string, root: string): boolean {
   const relative = path.relative(root, path.resolve(candidate));
@@ -54,6 +70,10 @@ export interface PolicyOptions {
   posterlyMaximumResultBytes?: number;
   posterlyMaximumTurnOutputBytes?: number;
   posterlyTimeoutSeconds?: number;
+  paperMaximumCalls?: number;
+  paperMaximumRounds?: number;
+  paperMaximumDirectSearches?: number;
+  paperTimeoutSeconds?: number;
 }
 
 export class PolicyController {
@@ -70,7 +90,9 @@ export class PolicyController {
   answerAfterClose = false;
   systemPrompt = "";
   posterMode = false;
+  paperActivated = false;
   private active = new Set<string>();
+  private paperCommandIds = new Set<string>();
 
   constructor(readonly options: PolicyOptions) {}
 
@@ -78,6 +100,7 @@ export class PolicyController {
     this.webSearchEnabled = webSearchEnabled;
     this.systemPrompt = systemPrompt;
     this.posterMode = posterMode;
+    this.paperActivated = false;
     this.calls = 0;
     this.rounds = 0;
     this.searches = 0;
@@ -89,6 +112,7 @@ export class PolicyController {
     this.answerProduced = false;
     this.answerAfterClose = false;
     this.active.clear();
+    this.paperCommandIds.clear();
   }
 
   observeAnswer(): void {
@@ -108,8 +132,8 @@ export class PolicyController {
   authorize(id: string, name: string, input: Record<string, unknown>): string | undefined {
     if (!this.active.size) this.rounds += 1;
     this.active.add(id);
-    const maximumRounds = this.posterMode ? (this.options.posterlyMaximumRounds ?? 20) : this.options.maximumRounds;
-    const maximumCalls = this.posterMode ? (this.options.posterlyMaximumCalls ?? 40) : this.options.maximumCalls;
+    const maximumRounds = this.posterMode ? (this.options.posterlyMaximumRounds ?? 20) : this.paperActivated ? (this.options.paperMaximumRounds ?? 12) : this.options.maximumRounds;
+    const maximumCalls = this.posterMode ? (this.options.posterlyMaximumCalls ?? 40) : this.paperActivated ? (this.options.paperMaximumCalls ?? 30) : this.options.maximumCalls;
     if (this.toolingClosed || this.rounds > maximumRounds || this.calls >= maximumCalls) {
       this.toolingClosed = true;
       return this.deny(id, ANSWER_NOW);
@@ -147,11 +171,16 @@ export class PolicyController {
       const command = typeof input.command === "string" ? input.command : "";
       if (!command) return this.deny(id, "Invalid Bash command.");
       input.timeout = Math.min(
-        this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds,
-        typeof input.timeout === "number" ? input.timeout : (this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds),
+        this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.paperActivated ? (this.options.paperTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds,
+        typeof input.timeout === "number" ? input.timeout : (this.posterMode ? (this.options.posterlyTimeoutSeconds ?? 600) : this.paperActivated ? (this.options.paperTimeoutSeconds ?? 600) : this.options.bashTimeoutSeconds),
       );
+      if (command.trimStart().startsWith("pwc-paper ")) {
+        input.timeout = Math.max(Number(input.timeout), 130);
+        this.paperCommandIds.add(id);
+      }
       if (SEARCH.test(command)) {
-        if (this.searches >= this.options.maximumDirectSearches) {
+        const maximumSearches = this.paperActivated ? (this.options.paperMaximumDirectSearches ?? 8) : this.options.maximumDirectSearches;
+        if (this.searches >= maximumSearches) {
           this.toolingClosed = true;
           return this.deny(id, ANSWER_NOW);
         }
@@ -191,6 +220,9 @@ export class PolicyController {
     const remaining = Math.max(0, maximumTurnOutputBytes - this.outputBytes);
     const bounded = clean(raw, Math.min(remaining, maximumResultBytes));
     this.outputBytes += Buffer.byteLength(bounded.text);
+    if (this.paperCommandIds.delete(id) && isPaperActivation(bounded.text)) {
+      this.paperActivated = true;
+    }
     return {
       content: [{ type: "text", text: bounded.text }],
       ...(bounded.truncated ? { isError: false } : {}),

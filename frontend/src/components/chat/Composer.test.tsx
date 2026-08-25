@@ -132,6 +132,29 @@ describe("Composer paper mentions", () => {
   });
 });
 
+describe("Composer paper commands", () => {
+  it("suggests /write-paper only when paper artifacts are enabled and slash is typed", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <Composer onSend={vi.fn()} paperArtifactsEnabled />
+      </QueryClientProvider>,
+    );
+    const textarea = screen.getByRole("combobox");
+    fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
+    expect(screen.getByRole("option", { name: /write-paper/i })).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("option", { name: /write-paper/i }));
+    expect(textarea).toHaveValue("/write-paper ");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <Composer onSend={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole("option", { name: /write-paper/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("Composer paper selection", () => {
   it("renders the card above an empty composer and does not send without a question", () => {
     const onSend = vi.fn();

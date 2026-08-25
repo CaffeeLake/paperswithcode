@@ -504,6 +504,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/artifact-prepare":
             self._forward("artifact-prepare", body)
             return
+        if path == "/paper":
+            self._forward("paper", body)
+            return
         if path == "/web-search":
             try:
                 payload = json.loads(body)

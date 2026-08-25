@@ -4,6 +4,7 @@ export type PwCEvent = Record<string, unknown> & { type: string };
 
 type UnknownRecord = Record<string, unknown>;
 const ARTIFACT_PREFIX = "@@PWC_ARTIFACT@@";
+const PAPER_PREFIX = "@@PWC_PAPER@@";
 const MAX_TOOL_ARGUMENT_BYTES = 64 * 1024;
 
 function record(value: unknown): UnknownRecord {
@@ -45,6 +46,21 @@ function artifactEvents(content: string): PwCEvent[] {
       { type: "artifact_start", publication_id: ready.publication_id, identifier: ready.identifier, kind: ready.kind, title: ready.title },
       { type: "artifact_ready", ...ready },
     ];
+  } catch {
+    return [];
+  }
+}
+
+function paperEvents(content: string): PwCEvent[] {
+  const line = content.split(/\r?\n/u).find((item) => item.startsWith(PAPER_PREFIX));
+  if (!line || Buffer.byteLength(line) > 16_384) return [];
+  try {
+    const value = record(JSON.parse(line.slice(PAPER_PREFIX.length)));
+    if (value.operation !== "create" && value.operation !== "begin-edit") return [];
+    if (typeof value.activated !== "boolean") return [];
+    const descriptor = record(value.paper);
+    if (typeof descriptor.artifact_id !== "string" || typeof descriptor.title !== "string") return [];
+    return [{ type: "paper_artifact", operation: value.operation, activated: value.activated, descriptor }];
   } catch {
     return [];
   }
@@ -269,6 +285,7 @@ export class PiEventAdapter {
           metadata: { output_truncated: publicContentTruncated },
         },
         ...artifactEvents(content),
+        ...paperEvents(content),
       ];
     }
     if (type === "message_end") {

@@ -5,6 +5,7 @@ const MODEL_SENTINEL = "__PWC_SELECTED_MODEL__";
 const USER_SENTINEL = "__PWC_HF_USERNAME__";
 const TASK_CATALOG_START = "<!-- PWC_TASK_CATALOG_START -->";
 const TASK_CATALOG_END = "<!-- PWC_TASK_CATALOG_END -->";
+const PAPER_PROMPT_START = "## Private paper authoring (paper-v1)";
 
 export async function renderPrompt(options: {
   model: string;
@@ -12,6 +13,9 @@ export async function renderPrompt(options: {
   webSearchEnabled: boolean;
   readerMode: boolean;
   posterlyEnabled?: boolean;
+  paperArtifactsEnabled?: boolean;
+  paperDescriptor?: Record<string, unknown>;
+  paperGuide?: string;
   taskCatalog?: string;
   assetPath?: string;
   source?: string;
@@ -21,13 +25,27 @@ export async function renderPrompt(options: {
   const catalogSource = options.taskCatalog === undefined
     ? source
     : replaceTaskCatalog(source, options.taskCatalog);
-  return catalogSource
+  const rendered = catalogSource
     .replace(DATE_SENTINEL, date)
     .replace(MODEL_SENTINEL, options.model)
     .replace(USER_SENTINEL, options.hfUsername)
     .replace('"web_search_enabled":false', `"web_search_enabled":${String(options.webSearchEnabled)}`)
     .replace('"reader_mode":false', `"reader_mode":${String(options.readerMode)}`)
-    .replace('"posterly_enabled":false', `"posterly_enabled":${String(options.posterlyEnabled === true)}`);
+    .replace('"posterly_enabled":false', `"posterly_enabled":${String(options.posterlyEnabled === true)}`)
+    .replace('"paper_artifacts_enabled":false', `"paper_artifacts_enabled":${String(options.paperArtifactsEnabled === true)}`)
+    .replace('"paper_descriptor":null', `"paper_descriptor":${JSON.stringify(options.paperArtifactsEnabled ? options.paperDescriptor ?? null : null)}`);
+  if (options.paperArtifactsEnabled !== true || options.readerMode) {
+    return stripPaperPrompt(rendered);
+  }
+  const guide = options.paperGuide ?? await readFile("/opt/pwc/PAPER_AUTHORING.md", "utf8");
+  return `${rendered}\n\n# private paper authoring guide\n\n${guide}`;
+}
+
+function stripPaperPrompt(source: string): string {
+  const start = source.indexOf(PAPER_PROMPT_START);
+  if (start < 0) return source;
+  const end = source.indexOf("\n## ", start + PAPER_PROMPT_START.length);
+  return `${source.slice(0, start)}${end < 0 ? "" : source.slice(end)}`.trimEnd();
 }
 
 export function replaceTaskCatalog(source: string, taskCatalog: string): string {

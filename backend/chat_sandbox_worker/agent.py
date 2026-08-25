@@ -38,6 +38,7 @@ from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
     MAX_WIRE_FRAME_BYTES,
     artifact_events_from_output,
+    paper_events_from_output,
     decode_frame,
     encode_frame,
 )
@@ -261,6 +262,7 @@ class WorkerToolHooks:
         web_search_enabled: bool = False,
         poster_mode: bool = False,
     ):
+        self.settings = settings
         self.budget = ToolBudget(
             maximum_calls=(
                 settings.chat_posterly_max_tool_calls
@@ -296,6 +298,8 @@ class WorkerToolHooks:
             * 1000
         )
         self.results: dict[str, dict[str, Any]] = {}
+        self.paper_activated = False
+        self.paper_command_ids: set[str] = set()
 
     def reset(
         self,
@@ -305,6 +309,7 @@ class WorkerToolHooks:
         web_search_enabled: bool = False,
         poster_mode: bool = False,
     ) -> None:
+        self.settings = settings
         self.budget = ToolBudget(
             maximum_calls=(
                 settings.chat_posterly_max_tool_calls
@@ -340,6 +345,19 @@ class WorkerToolHooks:
             * 1000
         )
         self.results.clear()
+        self.paper_activated = False
+        self.paper_command_ids.clear()
+
+    def activate_paper(self, settings: WorkerSettings) -> None:
+        if self.paper_activated:
+            return
+        self.paper_activated = True
+        self.budget.maximum_calls = settings.chat_latex_paper_max_tool_calls
+        self.budget.maximum_rounds = settings.chat_latex_paper_max_tool_rounds
+        self.budget.maximum_direct_searches = (
+            settings.chat_latex_paper_max_direct_search_calls
+        )
+        self.bash_timeout_ms = round(settings.chat_latex_paper_timeout_seconds * 1000)
 
     async def pre(self, hook_input: dict, tool_use_id: str | None, _context: Any):
         tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
@@ -392,6 +410,9 @@ class WorkerToolHooks:
                 ),
                 self.bash_timeout_ms,
             )
+            if isinstance(command, str) and command.lstrip().startswith("pwc-paper "):
+                updated["timeout"] = max(updated["timeout"], 130_000)
+                self.paper_command_ids.add(tool_id)
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -415,6 +436,16 @@ class WorkerToolHooks:
             exit_code=1 if is_error else 0,
         )
         self.results[tool_id] = event
+        if (
+            name == "Bash"
+            and tool_id in self.paper_command_ids
+            and any(
+                event.get("activated") is True
+                for event in paper_events_from_output(text)
+            )
+        ):
+            self.activate_paper(self.settings)
+        self.paper_command_ids.discard(tool_id)
         bounded = event["content"][0]["text"]
         if name == "Bash" and isinstance(original, dict):
             updated: Any = dict(original)
@@ -485,6 +516,12 @@ def _validate_run_frame(
     poster_mode = frame.get("poster_mode", False)
     if not isinstance(poster_mode, bool):
         raise ValueError("Invalid poster mode")
+    paper_artifacts_enabled = frame.get("paper_artifacts_enabled", False)
+    paper_descriptor = frame.get("paper_descriptor")
+    if not isinstance(paper_artifacts_enabled, bool) or (
+        paper_descriptor is not None and not isinstance(paper_descriptor, dict)
+    ):
+        raise ValueError("Invalid paper authorization")
     reasoning_effort = str(frame.get("reasoning_effort") or "high")
     if reasoning_effort not in {"low", "high", "max"}:
         raise ValueError("Invalid reasoning effort")
@@ -524,6 +561,8 @@ def _options(
     web_search_enabled: bool = False,
     reader_mode: bool = False,
     poster_mode: bool = False,
+    paper_artifacts_enabled: bool = False,
+    paper_descriptor: dict | None = None,
     hf_username: str = "unknown",
     current_date: date | None = None,
     finalizing: bool = False,
@@ -538,6 +577,8 @@ def _options(
         web_search_enabled=web_search_enabled,
         reader_mode=reader_mode,
         posterly_enabled=poster_mode,
+        paper_artifacts_enabled=paper_artifacts_enabled,
+        paper_descriptor=paper_descriptor,
         selected_model=model,
         hf_username=hf_username,
         current_date=current_date,
@@ -689,6 +730,8 @@ async def _adapt_messages(
             )
             for artifact_event in artifact_events_from_output(output):
                 yield {"v": 1, "request_id": request_id, **artifact_event}
+            for paper_event in paper_events_from_output(output):
+                yield {"v": 1, "request_id": request_id, **paper_event}
     for event in terminal_events:
         yield event
 
@@ -707,6 +750,8 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         fetchable_urls,
         hf_username,
     ) = _validate_run_frame(frame)
+    paper_artifacts_enabled = frame.get("paper_artifacts_enabled", False)
+    paper_descriptor = frame.get("paper_descriptor")
     hooks = WorkerToolHooks(
         settings,
         prompt,
@@ -728,6 +773,8 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         web_search_enabled=web_search_enabled,
         reader_mode=reader_mode,
         poster_mode=poster_mode,
+        paper_artifacts_enabled=paper_artifacts_enabled,
+        paper_descriptor=paper_descriptor,
         hf_username=hf_username,
         task_catalog_text=task_catalog_text,
     )
@@ -752,7 +799,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         session_id = value
 
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(deadline) as timeout:
             async for event in _adapt_messages(
                 stream,
                 request_id=request_id,
@@ -760,6 +807,12 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                 adapter=adapter,
                 on_session_id=record_session,
             ):
+                if hooks.paper_activated:
+                    deadline = max(
+                        deadline,
+                        time.monotonic() + settings.chat_latex_paper_timeout_seconds,
+                    )
+                    timeout.reschedule(deadline)
                 if event.get("type") == "_execution_limit":
                     limited = True
                 elif event.get("type") == "done":
@@ -947,6 +1000,8 @@ class PersistentAgent:
         self.web_search_enabled = False
         self.reader_mode = False
         self.poster_mode = False
+        self.paper_artifacts_enabled = False
+        self.paper_descriptor: dict | None = None
         self.hf_username = "unknown"
         self.current_date: date | None = None
         self.finalizing = False
@@ -960,6 +1015,8 @@ class PersistentAgent:
         web_search_enabled: bool = False,
         reader_mode: bool = False,
         poster_mode: bool = False,
+        paper_artifacts_enabled: bool = False,
+        paper_descriptor: dict | None = None,
         hf_username: str = "unknown",
         current_date: date | None = None,
         finalizing: bool = False,
@@ -980,6 +1037,8 @@ class PersistentAgent:
             or web_search_enabled != self.web_search_enabled
             or reader_mode != self.reader_mode
             or poster_mode != self.poster_mode
+            or paper_artifacts_enabled != self.paper_artifacts_enabled
+            or paper_descriptor != self.paper_descriptor
             or hf_username != self.hf_username
             or rendered_date != self.current_date
             or finalizing != self.finalizing
@@ -1014,6 +1073,8 @@ class PersistentAgent:
         self.web_search_enabled = web_search_enabled
         self.reader_mode = reader_mode
         self.poster_mode = poster_mode
+        self.paper_artifacts_enabled = paper_artifacts_enabled
+        self.paper_descriptor = paper_descriptor
         self.hf_username = hf_username
         self.current_date = rendered_date
         self.finalizing = finalizing
@@ -1027,6 +1088,8 @@ class PersistentAgent:
                 web_search_enabled=web_search_enabled,
                 reader_mode=reader_mode,
                 poster_mode=poster_mode,
+                paper_artifacts_enabled=paper_artifacts_enabled,
+                paper_descriptor=paper_descriptor,
                 hf_username=hf_username,
                 current_date=rendered_date,
                 finalizing=finalizing,
@@ -1052,6 +1115,8 @@ class PersistentAgent:
             fetchable_urls,
             hf_username,
         ) = _validate_run_frame(frame)
+        paper_artifacts_enabled = frame.get("paper_artifacts_enabled", False)
+        paper_descriptor = frame.get("paper_descriptor")
         deadline = time.monotonic() + (
             self.settings.chat_posterly_timeout_seconds
             if poster_mode
@@ -1064,6 +1129,8 @@ class PersistentAgent:
             web_search_enabled=web_search_enabled,
             reader_mode=reader_mode,
             poster_mode=poster_mode,
+            paper_artifacts_enabled=paper_artifacts_enabled,
+            paper_descriptor=paper_descriptor,
             hf_username=hf_username,
             task_catalog_text=task_catalog_text,
         )
@@ -1085,7 +1152,7 @@ class PersistentAgent:
         limited = False
         research_done: dict[str, Any] | None = None
         research_failure: dict[str, Any] | None = None
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(deadline) as timeout:
             async for event in _adapt_messages(
                 self._response_messages(),
                 request_id=request_id,
@@ -1093,6 +1160,13 @@ class PersistentAgent:
                 adapter=adapter,
                 on_session_id=self._record_session_id,
             ):
+                if self.hooks.paper_activated:
+                    deadline = max(
+                        deadline,
+                        time.monotonic()
+                        + self.settings.chat_latex_paper_timeout_seconds,
+                    )
+                    timeout.reschedule(deadline)
                 if event.get("type") == "_execution_limit":
                     limited = True
                 elif event.get("type") == "done":

@@ -34,6 +34,8 @@ export interface RunTurn {
   web_search_enabled: boolean;
   reader_mode: boolean;
   poster_mode: boolean;
+  paper_artifacts_enabled: boolean;
+  paper_descriptor?: Record<string, unknown>;
   reasoning_effort: "low" | "high" | "max";
   hf_username: string;
 }
@@ -71,6 +73,10 @@ export class PiWorker {
     posterlyMaximumResultBytes: Number(process.env.PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES ?? 196608),
     posterlyMaximumTurnOutputBytes: Number(process.env.PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES ?? 1048576),
     posterlyTimeoutSeconds: Number(process.env.PWC_CHAT_POSTERLY_TIMEOUT_SECONDS ?? 600),
+    paperMaximumCalls: Number(process.env.PWC_CHAT_LATEX_PAPER_MAX_TOOL_CALLS ?? 30),
+    paperMaximumRounds: Number(process.env.PWC_CHAT_LATEX_PAPER_MAX_TOOL_ROUNDS ?? 12),
+    paperMaximumDirectSearches: Number(process.env.PWC_CHAT_LATEX_PAPER_MAX_DIRECT_SEARCH_CALLS ?? 8),
+    paperTimeoutSeconds: Number(process.env.PWC_CHAT_LATEX_PAPER_TIMEOUT_SECONDS ?? 600),
   });
 
   constructor(private readonly emit: (requestId: string, event: PwCEvent) => void) {}
@@ -207,6 +213,8 @@ export class PiWorker {
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
       posterlyEnabled: run.poster_mode,
+      paperArtifactsEnabled: run.paper_artifacts_enabled,
+      ...(run.paper_descriptor === undefined ? {} : { paperDescriptor: run.paper_descriptor }),
       ...(taskCatalog === undefined ? {} : { taskCatalog }),
       source: this.promptAsset!,
     });
@@ -218,6 +226,7 @@ export class PiWorker {
       webSearchEnabled: run.web_search_enabled,
       readerMode: run.reader_mode,
       posterMode: run.poster_mode,
+      paperArtifactsEnabled: run.paper_artifacts_enabled,
       hfUsername: run.hf_username,
       taskCatalogDigest: taskCatalog === undefined
         ? "baked-fallback"

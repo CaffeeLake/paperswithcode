@@ -20,6 +20,7 @@ function runFrame(value: unknown): RunTurn {
   ]);
   const optional = new Set([
     "turn_id", "assignment_token", "worker_generation", "reader_mode", "poster_mode",
+    "paper_artifacts_enabled", "paper_descriptor",
     "provider_protocol",
   ]);
   if (Object.keys(frame).some((key) => !required.has(key) && !optional.has(key))) throw new Error("Invalid Pi run frame keys");
@@ -35,10 +36,12 @@ function runFrame(value: unknown): RunTurn {
     typeof frame.web_search_enabled !== "boolean" ||
     (frame.reader_mode !== undefined && typeof frame.reader_mode !== "boolean") ||
     (frame.poster_mode !== undefined && typeof frame.poster_mode !== "boolean") ||
+    (frame.paper_artifacts_enabled !== undefined && typeof frame.paper_artifacts_enabled !== "boolean") ||
+    (frame.paper_descriptor !== undefined && (!frame.paper_descriptor || typeof frame.paper_descriptor !== "object" || Array.isArray(frame.paper_descriptor))) ||
     !new Set(["low", "high", "max"]).has(String(frame.reasoning_effort)) ||
     typeof frame.hf_username !== "string" || !Array.isArray(frame.fetchable_urls)
   ) throw new Error("Invalid Pi run frame value");
-  return { ...frame, reader_mode: frame.reader_mode === true, poster_mode: frame.poster_mode === true } as unknown as RunTurn;
+  return { ...frame, reader_mode: frame.reader_mode === true, poster_mode: frame.poster_mode === true, paper_artifacts_enabled: frame.paper_artifacts_enabled === true } as unknown as RunTurn;
 }
 
 const worker = new PiWorker(emit);

@@ -470,6 +470,10 @@ class Settings(BaseSettings):
     # Paper creation is independently disabled until the private storage and
     # compiler path have completed staging qualification.
     chat_latex_paper_enabled: bool = Field(default=False)
+    chat_latex_paper_timeout_seconds: float = Field(default=600, ge=60, le=600)
+    chat_latex_paper_max_tool_rounds: int = Field(default=12, ge=3, le=20)
+    chat_latex_paper_max_tool_calls: int = Field(default=30, ge=12, le=40)
+    chat_latex_paper_max_direct_search_calls: int = Field(default=8, ge=1, le=8)
     # Private staging-only compiler boundary. The signing private key belongs
     # only in the PwC backend environment; the Space gets its matching public
     # key as a private Space secret.

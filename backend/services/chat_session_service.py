@@ -107,6 +107,8 @@ class TurnAdmission:
     reasoning_effort: str = "high"
     reader_mode: bool = False
     poster_mode: bool = False
+    paper_artifacts_enabled: bool = False
+    paper_descriptor: dict[str, object] | None = None
     fetchable_urls: tuple[str, ...] = ()
 
 
@@ -1297,6 +1299,35 @@ class ChatSessionService:
         poster_mode: bool,
     ) -> TurnAdmission:
         prior = plan.replacement.prior
+        paper_artifacts_enabled = (
+            self.settings.chat_artifacts_enabled
+            and self.settings.chat_latex_paper_enabled
+            and self.settings.chat_latex_compiler_jobs_enabled
+            and getattr(session, "primary_paper_id", None) is None
+        )
+        paper_descriptor: dict[str, object] | None = None
+        if paper_artifacts_enabled:
+            artifact = self.db.scalar(
+                select(ChatArtifact).where(
+                    ChatArtifact.session_id == session.id,
+                    ChatArtifact.kind == "latex_paper",
+                )
+            )
+            if artifact is not None:
+                paper_descriptor = {
+                    "artifact_id": str(artifact.id),
+                    "title": artifact.title,
+                    "source_head_version_id": (
+                        str(artifact.source_head_version_id)
+                        if artifact.source_head_version_id
+                        else None
+                    ),
+                    "preview_head_version_id": (
+                        str(artifact.preview_head_version_id)
+                        if artifact.preview_head_version_id
+                        else None
+                    ),
+                }
         return TurnAdmission(
             session_id=session.id,
             turn_id=plan.replacement.turn_id,
@@ -1326,6 +1357,8 @@ class ChatSessionService:
             reasoning_effort=reasoning_effort,
             reader_mode=getattr(session, "primary_paper_id", None) is not None,
             poster_mode=poster_mode,
+            paper_artifacts_enabled=paper_artifacts_enabled,
+            paper_descriptor=paper_descriptor,
             fetchable_urls=fetchable_urls,
         )
 

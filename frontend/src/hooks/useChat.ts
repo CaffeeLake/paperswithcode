@@ -56,6 +56,7 @@ interface UseChatOptions {
   onTitle: (title: string) => void;
   onSettled: (sessionId: string | null) => void;
   onProviderTerminal?: () => void;
+  onPaperArtifact?: (event: Extract<ChatEvent, { type: "paper_artifact" }>) => void;
   onInterrupted: (draft: ChatDraft) => void;
   primaryPaperRouteId?: string;
   viewerContext?: () => { page: number } | undefined;
@@ -404,6 +405,7 @@ export function useChat(options: UseChatOptions) {
           : null;
         if (smoothed) smoothedStreamRef.current = { controller, stream: smoothed };
         for await (const event of smoothed?.events ?? source) {
+          if (event.type === "paper_artifact") optionsRef.current.onPaperArtifact?.(event);
           if (event.type === "stream_start") {
             sawStreamStart = true;
             providerExecuted = event.provider_execution !== false;

@@ -85,6 +85,8 @@ class WorkerTurnRequest:
     web_search_enabled: bool = False
     reader_mode: bool = False
     poster_mode: bool = False
+    paper_artifacts_enabled: bool = False
+    paper_descriptor: dict[str, object] | None = None
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -749,6 +751,10 @@ class WorkerTurnExecution:
             run["provider_protocol"] = self.request.provider_protocol
         if self.request.poster_mode:
             run["poster_mode"] = True
+        if self.request.paper_artifacts_enabled:
+            run["paper_artifacts_enabled"] = True
+            if self.request.paper_descriptor is not None:
+                run["paper_descriptor"] = self.request.paper_descriptor
         if self.mode is WorkerTurnMode.PERSISTENT:
             identity = {
                 "assignment_token": self.claim.assignment_token,

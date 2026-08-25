@@ -794,6 +794,7 @@ class ChatAvailabilityResponse(BaseModel):
     native_pdf_reader_enabled: bool = False
     paper_reader_chat_enabled: bool = False
     paper_reader_selection_enabled: bool = False
+    paper_artifacts_enabled: bool = False
 
 
 class ChatWebSearchEventResponse(BaseModel):

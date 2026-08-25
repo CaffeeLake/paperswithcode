@@ -23,6 +23,7 @@ def main() -> None:
         web_search_enabled=False,
         hf_username=USER_SENTINEL,
         agent_harness="pi",
+        paper_artifacts_enabled=True,
     )
     args.output.write_text(value, encoding="utf-8")
 

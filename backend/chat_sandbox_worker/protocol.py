@@ -9,6 +9,7 @@ from typing import Any
 
 FRAME_PREFIX = "@@PWC_CHAT_V1@@"
 ARTIFACT_EVENT_PREFIX = "@@PWC_ARTIFACT@@"
+PAPER_EVENT_PREFIX = "@@PWC_PAPER@@"
 # Inline-paper turns can contain three independently bounded paper contexts.
 # Keep the transport ceiling above the server-built prompt ceiling while still
 # rejecting unexpectedly large worker frames before parsing them.
@@ -47,6 +48,7 @@ class WorkerEventValidator:
         "artifact_start",
         "artifact_ready",
         "artifact_error",
+        "paper_artifact",
         "answer_delta",
         "done",
         "error",
@@ -192,6 +194,16 @@ class WorkerEventValidator:
                 except ValueError:
                     raise ProtocolError("Invalid artifact identifiers") from None
             self.artifact_terminal.add(publication_id)
+        elif kind == "paper_artifact":
+            descriptor = event.get("descriptor")
+            if (
+                event.get("operation") not in {"create", "begin-edit"}
+                or not isinstance(event.get("activated"), bool)
+                or not isinstance(descriptor, dict)
+                or not isinstance(descriptor.get("artifact_id"), str)
+                or not isinstance(descriptor.get("title"), str)
+            ):
+                raise ProtocolError("Invalid paper artifact event")
         elif kind in {"done", "error", "_mirror_error"}:
             if set(self.artifacts) != self.artifact_terminal:
                 raise ProtocolError("Terminal event with an unfinished artifact")
@@ -273,3 +285,25 @@ def artifact_events_from_output(output: str) -> list[dict[str, Any]]:
         },
     }
     return [start, {"type": "artifact_ready", **ready}]
+
+
+def paper_events_from_output(output: str) -> list[dict[str, Any]]:
+    line = next(
+        (item for item in output.splitlines() if item.startswith(PAPER_EVENT_PREFIX)),
+        None,
+    )
+    if line is None or len(line.encode()) > 16 * 1024:
+        return []
+    try:
+        value = json.loads(line[len(PAPER_EVENT_PREFIX) :])
+    except json.JSONDecodeError:
+        return []
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"operation", "activated", "paper"}
+        or value["operation"] not in {"create", "begin-edit"}
+        or not isinstance(value["activated"], bool)
+        or not isinstance(value["paper"], dict)
+    ):
+        return []
+    return [{"type": "paper_artifact", "descriptor": value["paper"], **value}]

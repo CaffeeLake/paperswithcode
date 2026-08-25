@@ -32,6 +32,10 @@ class WorkerSettings:
     chat_posterly_max_tool_calls: int = 40
     chat_posterly_tool_result_max_bytes: int = 192 * 1024
     chat_posterly_turn_tool_output_max_bytes: int = 1024 * 1024
+    chat_latex_paper_timeout_seconds: float = 600
+    chat_latex_paper_max_tool_rounds: int = 12
+    chat_latex_paper_max_tool_calls: int = 30
+    chat_latex_paper_max_direct_search_calls: int = 8
 
     def __post_init__(self) -> None:
         validate_execution_limits(
@@ -76,5 +80,17 @@ class WorkerSettings:
             ),
             chat_posterly_turn_tool_output_max_bytes=_integer(
                 "PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES", 1024 * 1024
+            ),
+            chat_latex_paper_timeout_seconds=_number(
+                "PWC_CHAT_LATEX_PAPER_TIMEOUT_SECONDS", 600
+            ),
+            chat_latex_paper_max_tool_rounds=_integer(
+                "PWC_CHAT_LATEX_PAPER_MAX_TOOL_ROUNDS", 12
+            ),
+            chat_latex_paper_max_tool_calls=_integer(
+                "PWC_CHAT_LATEX_PAPER_MAX_TOOL_CALLS", 30
+            ),
+            chat_latex_paper_max_direct_search_calls=_integer(
+                "PWC_CHAT_LATEX_PAPER_MAX_DIRECT_SEARCH_CALLS", 8
             ),
         )

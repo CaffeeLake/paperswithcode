@@ -70,6 +70,7 @@ from backend.chat_sandbox_worker.protocol import (
     ProtocolError,
     WorkerEventValidator,
     artifact_events_from_output,
+    paper_events_from_output,
     decode_frame,
     encode_frame,
 )
@@ -1613,9 +1614,11 @@ def test_gateway_accepts_configured_output_token_limit_and_rejects_larger():
     assert not _output_tokens_allowed(8_001)
 
 
-def test_gateway_expands_model_budget_only_for_artifact_capabilities():
+def test_gateway_expands_model_budget_only_after_artifact_or_paper_grant():
     ordinary = SimpleNamespace(scopes=["model", "catalog"])
     artifact = SimpleNamespace(scopes=["model", "catalog", "artifact"])
+    paper_available = SimpleNamespace(scopes=["model", "catalog", "paper"])
+    paper_granted = SimpleNamespace(scopes=["model", "catalog", "paper", "paper_grant"])
 
     assert _provider_turn_limits(ordinary) == (
         MAX_PROVIDER_REQUESTS,
@@ -1625,6 +1628,8 @@ def test_gateway_expands_model_budget_only_for_artifact_capabilities():
         MAX_POSTER_PROVIDER_REQUESTS,
         MAX_POSTER_PROVIDER_TURN_TOKENS,
     )
+    assert _provider_turn_limits(paper_available) == _provider_turn_limits(ordinary)
+    assert _provider_turn_limits(paper_granted) == _provider_turn_limits(artifact)
     assert MAX_POSTER_PROVIDER_REQUESTS >= 20 + 2
     assert MAX_POSTER_PROVIDER_TURN_TOKENS > MAX_PROVIDER_TURN_TOKENS
 
@@ -1639,6 +1644,23 @@ def test_worker_expands_output_budget_only_for_poster_mode():
     assert ordinary.budget.maximum_turn_output_bytes == 96 * 1024
     assert poster.budget.maximum_result_bytes == 192 * 1024
     assert poster.budget.maximum_turn_output_bytes == 1024 * 1024
+
+
+def test_paper_receipt_is_bounded_and_emits_a_typed_event():
+    event = paper_events_from_output(
+        '@@PWC_PAPER@@{"operation":"create","activated":true,"paper":{"artifact_id":"paper-1","title":"Draft"}}'
+    )
+    assert event == [
+        {
+            "type": "paper_artifact",
+            "operation": "create",
+            "activated": True,
+            "paper": {"artifact_id": "paper-1", "title": "Draft"},
+            "descriptor": {"artifact_id": "paper-1", "title": "Draft"},
+        }
+    ]
+    validator = WorkerEventValidator()
+    validator.accept(event[0])
 
 
 def test_worker_keeps_large_tool_evidence_out_of_public_events():

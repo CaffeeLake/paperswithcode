@@ -74,6 +74,8 @@ class ChatSandboxTurnRequest:
     web_search_enabled: bool = False
     reader_mode: bool = False
     poster_mode: bool = False
+    paper_artifacts_enabled: bool = False
+    paper_descriptor: dict[str, object] | None = None
     reasoning_effort: str = "high"
     fetchable_urls: tuple[str, ...] = ()
     hf_username: str = "unknown"
@@ -292,6 +294,13 @@ class ChatSandboxTurnCoordinator:
                 if request.poster_mode
                 else self.settings.chat_agent_timeout_seconds
             )
+            if request.paper_artifacts_enabled:
+                # The worker still starts under normal limits and extends only
+                # after a successful authenticated paper command. The process
+                # needs enough headroom to receive that in-turn extension.
+                turn_timeout = max(
+                    turn_timeout, self.settings.chat_latex_paper_timeout_seconds
+                )
             claim = self._claim_worker(request.chat_session_id, sandbox.object_id)
             execution = self.transport.create_execution(
                 sandbox,
@@ -310,6 +319,8 @@ class ChatSandboxTurnCoordinator:
                     web_search_enabled=request.web_search_enabled,
                     reader_mode=request.reader_mode,
                     poster_mode=request.poster_mode,
+                    paper_artifacts_enabled=request.paper_artifacts_enabled,
+                    paper_descriptor=request.paper_descriptor,
                     reasoning_effort=request.reasoning_effort,
                     fetchable_urls=request.fetchable_urls,
                     hf_username=request.hf_username,

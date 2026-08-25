@@ -24,6 +24,7 @@ export interface ChatAvailability {
   native_pdf_reader_enabled?: boolean;
   paper_reader_chat_enabled?: boolean;
   paper_reader_selection_enabled?: boolean;
+  paper_artifacts_enabled?: boolean;
 }
 
 export interface ChatSandboxSpendStatus {

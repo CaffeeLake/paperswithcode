@@ -26,7 +26,8 @@ from sqlalchemy import select
 
 from backend.config import Settings
 from backend.database.connection import db_manager
-from backend.models.database import ChatArtifact, ChatArtifactVersion
+from backend.models.database import ChatArtifact, ChatArtifactVersion, ChatSession
+from backend.services.latex_paper_service import LatexPaperService
 from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_citation_service import (
     PaperCitationCandidate,
@@ -693,6 +694,49 @@ def _trusted_artifact_ready(
             "artifact_id": str(artifact.id),
             "version_id": str(row.id),
             **expected,
+        }
+
+
+def _trusted_paper_artifact(
+    event: dict[str, Any],
+    owner: ChatOwner,
+    admission: TurnAdmission,
+    settings: Settings,
+) -> dict[str, Any] | None:
+    if event.get("operation") not in {"create", "begin-edit"} or not isinstance(
+        event.get("activated"), bool
+    ):
+        return None
+    try:
+        artifact_id = uuid.UUID(str((event.get("descriptor") or {})["artifact_id"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    with db_manager.session_local() as db:
+        artifact = db.scalar(
+            select(ChatArtifact)
+            .join(ChatSession)
+            .where(
+                ChatArtifact.id == artifact_id,
+                ChatArtifact.session_id == admission.session_id,
+                ChatArtifact.kind == "latex_paper",
+                ChatSession.hf_user_id == owner.hf_user_id,
+            )
+        )
+        if artifact is None:
+            return None
+        descriptor = LatexPaperService(db, settings).get_descriptor(
+            owner.hf_user_id, admission.session_id
+        )
+        if descriptor is None or descriptor.artifact_id != artifact.id:
+            return None
+        expected = descriptor.model_dump(mode="json")
+        if event.get("descriptor") != expected:
+            return None
+        return {
+            "type": "paper_artifact",
+            "operation": event["operation"],
+            "activated": event["activated"],
+            "descriptor": expected,
         }
 
 
@@ -1625,6 +1669,18 @@ class ChatStreamOrchestrator:
                     }
                 else:
                     event = trusted
+            if kind == "paper_artifact":
+                trusted_paper = _trusted_paper_artifact(
+                    event, self.owner, self.admission, self.settings
+                )
+                if trusted_paper is None:
+                    logger.warning(
+                        "chat paper receipt rejected request_id=%s turn_id=%s",
+                        self.request_id,
+                        self.admission.turn_id,
+                    )
+                    continue
+                event = trusted_paper
             if getattr(self.admission, "poster_mode", False) and kind in {
                 "tool_call",
                 "tool_call_start",

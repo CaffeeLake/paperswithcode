@@ -64,6 +64,10 @@ and never call it print-ready. Always summarize canvas, direction, omitted
 branding, and warnings concisely.
 """
 
+PAPER_SYSTEM_PROMPT = (
+    Path(__file__).with_name("PAPER_AUTHORING_PROMPT.md").read_text(encoding="utf-8")
+)
+
 TEMPLATE = """
 ## Task
 
@@ -90,6 +94,8 @@ You are a friendly, helpful and patient AI assistant. Your scope is limited to h
 {reader_system_prompt}
 
 {posterly_system_prompt}
+
+{paper_system_prompt}
 
 ## Environment
 
@@ -215,6 +221,7 @@ def _render_template() -> str:
         planned_searches="{planned_searches}",
         reader_system_prompt=READER_SYSTEM_PROMPT.strip(),
         posterly_system_prompt=POSTERLY_SYSTEM_PROMPT.strip(),
+        paper_system_prompt="{paper_system_prompt}",
     )
 
 
@@ -227,6 +234,8 @@ def render_metadata(
     agent_harness: str = "claude",
     reader_mode: bool = False,
     posterly_enabled: bool = False,
+    paper_artifacts_enabled: bool = False,
+    paper_descriptor: dict | None = None,
 ) -> str:
     metadata = {
         "harness": "PwC research agent",
@@ -238,6 +247,8 @@ def render_metadata(
         "hf_username": hf_username,
         "reader_mode": reader_mode,
         "posterly_enabled": posterly_enabled,
+        "paper_artifacts_enabled": paper_artifacts_enabled,
+        "paper_descriptor": paper_descriptor if paper_artifacts_enabled else None,
     }
     return (
         "# Turn metadata\n\n"
@@ -258,6 +269,7 @@ def render(
     guide_path: Path | None = None,
     hf_guide_path: Path | None = None,
     s2_guide_path: Path | None = None,
+    paper_guide_path: Path | None = None,
     catalog_path: Path | None = None,
     task_catalog_text: str | None = None,
     method_catalog_path: Path | None = None,
@@ -267,10 +279,13 @@ def render(
     agent_harness: str = "claude",
     reader_mode: bool = False,
     posterly_enabled: bool = False,
+    paper_artifacts_enabled: bool = False,
+    paper_descriptor: dict | None = None,
 ) -> str:
     guide = guide_path or Path(__file__).with_name("PWC_CLI_SKILL.md")
     hf_guide = hf_guide_path or Path(__file__).with_name("HF_CLI_SKILL.md")
     s2_guide = s2_guide_path or Path(__file__).with_name("S2_CLI_SKILL.md")
+    paper_guide = paper_guide_path or Path(__file__).with_name("PAPER_AUTHORING.md")
     catalog = catalog_path or Path(__file__).with_name("TASK_CATALOG.md")
     method_catalog = method_catalog_path or Path(__file__).with_name(
         "METHOD_CATALOG.md"
@@ -293,12 +308,22 @@ def render(
             max_web_searches=max_web_searches,
             retrieval_turns=min(2, effective_tool_rounds(max_turns)),
             planned_searches=min(2, max_searches),
+            paper_system_prompt=(
+                PAPER_SYSTEM_PROMPT.strip()
+                if paper_artifacts_enabled and not reader_mode
+                else ""
+            ),
         )
         + f"\n\n{TASK_CATALOG_START}\n{catalog_text.rstrip()}\n{TASK_CATALOG_END}"
         + f"\n\n{method_catalog_text}"
         + f"\n\n# pwc CLI skill\n\n{guide_text}"
         + f"\n\n# s2 CLI skill\n\n{s2_guide_text}"
         + f"\n\n# restricted hf CLI skill\n\n{hf_guide_text}"
+        + (
+            f"\n\n# private paper authoring guide\n\n{paper_guide.read_text(encoding='utf-8')}"
+            if paper_artifacts_enabled and not reader_mode
+            else ""
+        )
         + "\n\n"
         + render_metadata(
             selected_model=selected_model,
@@ -308,6 +333,8 @@ def render(
             agent_harness=agent_harness,
             reader_mode=reader_mode,
             posterly_enabled=posterly_enabled,
+            paper_artifacts_enabled=paper_artifacts_enabled and not reader_mode,
+            paper_descriptor=paper_descriptor,
         )
     )
 

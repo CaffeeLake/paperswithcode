@@ -105,3 +105,21 @@ test("poster mode uses its separate bounded output budget", () => {
   assert.equal(result.content[0]?.text.length, 36);
   assert.equal(value.outputBytes, 36);
 });
+
+test("activates paper limits only from a successful pwc-paper receipt", () => {
+  const value = new PolicyController({
+    maximumCalls: 3, maximumRounds: 2, maximumDirectSearches: 1, maximumWebSearches: 1,
+    maximumResultBytes: 1024, maximumTurnOutputBytes: 4096, bashTimeoutSeconds: 5,
+    paperMaximumCalls: 30, paperMaximumRounds: 12, paperMaximumDirectSearches: 8, paperTimeoutSeconds: 600,
+  });
+  value.reset(false);
+  assert.equal(value.authorize("fake", "bash", { command: "printf '@@PWC_PAPER@@{}'" }), undefined);
+  value.finish("fake", '@@PWC_PAPER@@{"operation":"create","activated":true,"paper":{}}');
+  assert.equal(value.paperActivated, false);
+
+  const command: Record<string, unknown> = { command: "pwc-paper begin-edit" };
+  assert.equal(value.authorize("paper", "bash", command), undefined);
+  assert.equal(command.timeout, 130);
+  value.finish("paper", '@@PWC_PAPER@@{"operation":"begin-edit","activated":true,"paper":{}}');
+  assert.equal(value.paperActivated, true);
+});

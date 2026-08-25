@@ -170,6 +170,7 @@ export type ChatEvent =
       total_bytes: number;
     }
   | { type: "artifact_error"; publication_id: string; code: string; message: string }
+  | PaperArtifactEvent
   | { type: "sandbox_start"; session_id: string }
   | { type: "sandbox_ready"; session_id: string; cold_start_ms: number }
   | { type: "answer_delta"; text: string }
@@ -307,6 +308,13 @@ export interface ArtifactBlock {
   total_bytes?: number;
   error_code?: string;
   error_message?: string;
+}
+
+export interface PaperArtifactEvent {
+  type: "paper_artifact";
+  operation: "create" | "begin-edit";
+  activated: boolean;
+  descriptor: import("./chatSessions").LatexPaperArtifactDescriptor;
 }
 
 export type ChatBlock = ReasoningBlock | ToolBlock | AppBlock | ArtifactBlock | AnswerBlock;

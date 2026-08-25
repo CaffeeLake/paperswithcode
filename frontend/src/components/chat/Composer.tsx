@@ -33,6 +33,7 @@ interface ComposerProps {
   onWebSearchChange?: (enabled: boolean) => void;
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  paperArtifactsEnabled?: boolean;
 }
 
 const EMPTY_DRAFT: ChatDraft = emptyChatDraft();
@@ -47,6 +48,7 @@ const Composer: React.FC<ComposerProps> = ({
   onWebSearchChange,
   reasoningEffort = "low",
   onReasoningEffortChange,
+  paperArtifactsEnabled = false,
 }) => {
   const [localDraft, setLocalDraft] = useState<ChatDraft>(EMPTY_DRAFT);
   const value = draft ?? localDraft;
@@ -91,6 +93,7 @@ const Composer: React.FC<ComposerProps> = ({
 
   const selectionBlocked = Boolean(value.paperSelection) && !paperSelectionEnabled;
   const canSend = Boolean(value.text.trim()) && !selectionBlocked;
+  const slashCommandOpen = paperArtifactsEnabled && value.text === "/";
 
   return (
     <div className="chat-composer">
@@ -121,7 +124,7 @@ const Composer: React.FC<ComposerProps> = ({
           onClick={(event) => mentions.refresh(event.currentTarget.selectionStart)}
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
           onBlur={(event) => {
-            if (!event.relatedTarget?.closest?.(".chat-paper-picker")) window.setTimeout(mentions.close, 0);
+            if (!event.relatedTarget?.closest?.(".chat-paper-picker, .chat-slash-command")) window.setTimeout(mentions.close, 0);
           }}
           onKeyDown={(event) => {
             if (mentions.keyDown(event)) return;
@@ -131,9 +134,9 @@ const Composer: React.FC<ComposerProps> = ({
             }
           }}
           role="combobox"
-          aria-expanded={mentions.open}
-          aria-controls={mentions.open ? mentions.pickerId : undefined}
-          aria-activedescendant={mentions.open && mentions.results.length ? `${mentions.optionIdPrefix}-${mentions.activeIndex}` : undefined}
+          aria-expanded={mentions.open || slashCommandOpen}
+          aria-controls={mentions.open ? mentions.pickerId : slashCommandOpen ? "chat-write-paper-command" : undefined}
+          aria-activedescendant={mentions.open && mentions.results.length ? `${mentions.optionIdPrefix}-${mentions.activeIndex}` : slashCommandOpen ? "chat-write-paper-command" : undefined}
           aria-autocomplete="list"
           aria-describedby={[describedBy, mentions.message ? "chat-paper-mention-message" : null].filter(Boolean).join(" ") || undefined}
         />
@@ -148,6 +151,21 @@ const Composer: React.FC<ComposerProps> = ({
           id={mentions.pickerId}
           optionIdPrefix={mentions.optionIdPrefix}
         />
+        {slashCommandOpen && (
+          <button
+            type="button"
+            id="chat-write-paper-command"
+            className="chat-slash-command"
+            role="option"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              change({ ...value, text: "/write-paper " });
+              ref.current?.focus();
+            }}
+          >
+            <code>/write-paper</code><span>Draft a paper from this research chat</span>
+          </button>
+        )}
       </div>
       {mentions.message && <div id="chat-paper-mention-message" className="chat-paper-mention-message" role="alert">{mentions.message}</div>}
       <div className="chat-composer-row">

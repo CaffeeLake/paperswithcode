@@ -128,6 +128,8 @@ class ModalChatTurnRunner:
             web_search_enabled=self.admission.web_search_enabled,
             reader_mode=self.admission.reader_mode,
             poster_mode=self.admission.poster_mode,
+            paper_artifacts_enabled=self.admission.paper_artifacts_enabled,
+            paper_descriptor=self.admission.paper_descriptor,
             reasoning_effort=self.admission.reasoning_effort,
             fetchable_urls=list(self.admission.fetchable_urls),
             hf_username=self.hf_username,
@@ -221,6 +223,8 @@ def create_chat_turn_runner(
             scopes.add("hf_catalog")
         if admission.poster_mode:
             scopes.add("artifact")
+        if admission.paper_artifacts_enabled:
+            scopes.add("paper")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,

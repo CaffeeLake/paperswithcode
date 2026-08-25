@@ -122,6 +122,26 @@
   background: var(--bg-elevated);
   box-shadow: 0 16px 38px -16px rgba(30, 28, 20, 0.45);
 }
+.chat-slash-command {
+  position: absolute;
+  z-index: 50;
+  left: 8px;
+  bottom: calc(100% + 6px);
+  display: flex;
+  width: min(560px, calc(100vw - 48px));
+  min-height: 52px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 11px;
+  color: var(--ink);
+  background: var(--bg-elevated);
+  box-shadow: 0 16px 38px -16px rgba(30, 28, 20, 0.45);
+  text-align: left;
+}
+.chat-slash-command:hover { background: var(--accent-soft); }
+.chat-slash-command span { color: var(--ink-faint); font-size: 12px; }
 .chat-paper-picker-status {
   padding: 10px 12px;
   color: var(--ink-faint);

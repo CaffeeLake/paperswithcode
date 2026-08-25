@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -44,6 +44,7 @@ from backend.services.chat_artifact_service import (
     ChatArtifactService,
     PosterPaperProvenance,
 )
+from backend.services.latex_paper_service import LatexPaperService
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -194,6 +195,12 @@ class ArtifactPrepareRequest(BaseModel):
     paper_route_id: str = Field(min_length=1, max_length=200)
 
 
+class PaperCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["create", "begin-edit"]
+    title: str | None = Field(default=None, max_length=300)
+
+
 def _bearer(authorization: Annotated[str, Header()]) -> str:
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -206,7 +213,7 @@ def _output_tokens_allowed(value: int) -> bool:
 
 
 def _provider_turn_limits(row: ChatTurnCapability) -> tuple[int, int]:
-    if "artifact" in getattr(row, "scopes", ()):
+    if {"artifact", "paper_grant"} & set(getattr(row, "scopes", ())):
         return MAX_POSTER_PROVIDER_REQUESTS, MAX_POSTER_PROVIDER_TURN_TOKENS
     return MAX_PROVIDER_REQUESTS, MAX_PROVIDER_TURN_TOKENS
 
@@ -967,6 +974,69 @@ def artifact_prepare(
             "Only bounded stored Markdown was available; source fidelity and "
             "real-figure extraction may be limited."
         ),
+    }
+
+
+@app.post("/paper")
+def paper_command(
+    body: PaperCommandRequest,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Create or inspect the paper bound to this authenticated live turn."""
+    capability = _scope(_bearer(authorization), "paper", x_pwc_session, x_pwc_turn, db)
+    if not (
+        settings.chat_artifacts_enabled
+        and settings.chat_latex_paper_enabled
+        and settings.chat_latex_compiler_jobs_enabled
+    ):
+        raise HTTPException(status_code=404, detail="Paper authoring is disabled")
+    session = db.get(ChatSession, capability.chat_session_id)
+    if session is None or session.active_turn_id != capability.turn_id:
+        raise HTTPException(status_code=409, detail="Paper turn is no longer active")
+    if session.primary_paper_id is not None:
+        raise HTTPException(
+            status_code=409, detail="Papers are available only in general chat"
+        )
+    owner_id = _capability_owner(capability, db)
+    service = LatexPaperService(db, settings)
+    try:
+        if body.operation == "create":
+            descriptor = service.create_neutral_scaffold(
+                owner_id=owner_id,
+                session_id=capability.chat_session_id,
+                title=body.title or "Untitled Research Draft",
+            )
+        else:
+            descriptor = service.get_descriptor(owner_id, capability.chat_session_id)
+            if descriptor is None:
+                raise ArtifactError("paper_missing", "This chat has no paper yet")
+    except ArtifactError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from None
+
+    activated = "paper_grant" not in capability.scopes
+    if activated:
+        capability.scopes = sorted({*capability.scopes, "paper_grant"})
+        capability.expires_at = max(
+            capability.expires_at,
+            datetime.now(UTC)
+            + timedelta(seconds=settings.chat_latex_paper_timeout_seconds + 60),
+        )
+        session.active_turn_expires_at = datetime.now(UTC) + timedelta(
+            seconds=settings.chat_latex_paper_timeout_seconds + 30
+        )
+    db.commit()
+    return {
+        "operation": body.operation,
+        "activated": activated,
+        "paper": descriptor.model_dump(mode="json"),
     }
 
 

@@ -106,6 +106,10 @@ image = (
     .add_local_file(WORKER / "HF_CLI_SKILL.md", "/opt/pwc/HF_CLI_SKILL.md", copy=True)
     .add_local_file(WORKER / "S2_CLI_SKILL.md", "/opt/pwc/S2_CLI_SKILL.md", copy=True)
     .add_local_file(WORKER / "artifact_cli.py", "/opt/pwc/artifact_cli.py", copy=True)
+    .add_local_file(WORKER / "paper_cli.py", "/opt/pwc/paper_cli.py", copy=True)
+    .add_local_file(
+        WORKER / "PAPER_AUTHORING.md", "/opt/pwc/PAPER_AUTHORING.md", copy=True
+    )
     .add_local_file(
         WORKER / "POSTERLY_PUBLISH.md", "/opt/pwc/POSTERLY_PUBLISH.md", copy=True
     )
@@ -129,6 +133,8 @@ image = (
         "chmod 0644 /opt/pwc/HF_CLI_SKILL.md",
         "chmod 0644 /opt/pwc/S2_CLI_SKILL.md",
         "chmod 0755 /opt/pwc/artifact_cli.py && ln -s /opt/pwc/artifact_cli.py /usr/local/bin/pwc-artifact",
+        "chmod 0755 /opt/pwc/paper_cli.py && ln -s /opt/pwc/paper_cli.py /usr/local/bin/pwc-paper",
+        "chmod 0644 /opt/pwc/PAPER_AUTHORING.md",
         "chmod 0644 /opt/pwc/POSTERLY_PUBLISH.md",
         "python -m pip install --no-deps /opt/pwc/s2_cli",
         "chmod 0755 /opt/pwc/restricted-hf && ln -s /opt/pwc/restricted-hf /usr/local/bin/hf",
@@ -157,6 +163,7 @@ image = (
         'test "$(runuser -u pwc-chat -- hf upload owner/repo file >/dev/null 2>&1; echo $?)" = 2',
         "runuser -u pwc-chat -- test -r /opt/posterly/SKILL.md",
         "runuser -u pwc-chat -- pwc-artifact --help >/dev/null",
+        "runuser -u pwc-chat -- pwc-paper --help >/dev/null",
     )
     .env(
         {
@@ -177,6 +184,10 @@ image = (
             "PWC_CHAT_POSTERLY_MAX_TOOL_CALLS": "40",
             "PWC_CHAT_POSTERLY_TOOL_RESULT_MAX_BYTES": "196608",
             "PWC_CHAT_POSTERLY_TURN_TOOL_OUTPUT_MAX_BYTES": "1048576",
+            "PWC_CHAT_LATEX_PAPER_TIMEOUT_SECONDS": "600",
+            "PWC_CHAT_LATEX_PAPER_MAX_TOOL_ROUNDS": "12",
+            "PWC_CHAT_LATEX_PAPER_MAX_TOOL_CALLS": "30",
+            "PWC_CHAT_LATEX_PAPER_MAX_DIRECT_SEARCH_CALLS": "8",
             "PWC_CHAT_SANDBOX_PIDS_MAX": "64",
             "S2_API_KEY": "sandbox-gateway",
             "S2_API_URL": "http://127.0.0.1:8765/semantic-scholar/graph/v1",
