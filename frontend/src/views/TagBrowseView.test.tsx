@@ -52,7 +52,7 @@ describe("HealthcareMedicalAiHub", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Clinical AI & Healthcare/ })).toHaveAttribute(
       "href",
-      "/tasks/healthcare#benchmarks",
+      "#benchmarks",
     );
     expect(screen.getByRole("link", { name: /Medical Question Answering/ })).toHaveAttribute(
       "href",

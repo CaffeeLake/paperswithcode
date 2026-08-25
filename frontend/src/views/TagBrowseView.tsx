@@ -54,7 +54,7 @@ const HEALTHCARE_HUB_DESTINATIONS = [
     eyebrow: "Clinical systems",
     title: "Clinical AI & Healthcare",
     description: "Agents, clinical workflows, medical calculators, safety, and decision support.",
-    href: "/tasks/healthcare#benchmarks",
+    href: "#benchmarks",
   },
   {
     slug: "medical-question-answering",
@@ -155,12 +155,8 @@ export const HealthcareMedicalAiHub: React.FC<{
       <div className="medical-ai-hub-grid">
         {HEALTHCARE_HUB_DESTINATIONS.map((destination) => {
           const destinationTask = tasksBySlug.get(destination.slug);
-          return (
-            <Link
-              key={destination.slug}
-              to={destination.href}
-              className="medical-ai-hub-card"
-            >
+          const cardContent = (
+            <>
               <span className="medical-ai-hub-card-eyebrow">{destination.eyebrow}</span>
               <strong>{destination.title}</strong>
               <span className="medical-ai-hub-card-description">{destination.description}</span>
@@ -170,6 +166,23 @@ export const HealthcareMedicalAiHub: React.FC<{
                   : "Explore task"}
                 <ArrowRight size={14} aria-hidden="true" />
               </span>
+            </>
+          );
+          return destination.slug === "healthcare" ? (
+            <a
+              key={destination.slug}
+              href={destination.href}
+              className="medical-ai-hub-card"
+            >
+              {cardContent}
+            </a>
+          ) : (
+            <Link
+              key={destination.slug}
+              to={destination.href}
+              className="medical-ai-hub-card"
+            >
+              {cardContent}
             </Link>
           );
         })}
