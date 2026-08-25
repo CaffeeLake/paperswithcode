@@ -28,6 +28,7 @@ TASKS = [
         "slug": "video-understanding",
         "keywords": "video understanding, video reasoning, video question answering, video-language model",
     },
+    {"id": 7, "slug": "healthcare", "keywords": "healthcare, diagnosis"},
 ]
 
 
@@ -137,3 +138,64 @@ def test_background_model_claim_with_modifiers_does_not_keep_both() -> None:
         "performance on image and video understanding benchmarks. We introduce "
         "a benchmark for image understanding.",
     ) == {5}
+
+
+def test_non_medical_diagnosis_does_not_match_healthcare() -> None:
+    assert (
+        match(
+            "D-Bot: Database Diagnosis System using Large Language Models",
+            "We diagnose failures in database systems and recommend repairs.",
+        )
+        == set()
+    )
+
+
+def test_non_medical_diagnosis_overrides_ambiguous_biomedical_word() -> None:
+    assert (
+        match(
+            "A Genetic Algorithm for Failure Diagnosis",
+            "We identify failure modes in industrial systems.",
+        )
+        == set()
+    )
+
+
+def test_plant_disease_diagnosis_does_not_match_healthcare() -> None:
+    assert (
+        match(
+            "A Benchmark for Rice Leaf Disease Diagnosis",
+            "We screen crop images and identify plant diseases.",
+        )
+        == set()
+    )
+
+
+def test_general_reasoning_survey_does_not_match_from_medical_example() -> None:
+    assert (
+        match(
+            "A Survey of Reasoning with Foundation Models",
+            "Applications include negotiation and medical diagnosis.",
+        )
+        == set()
+    )
+
+
+def test_explicit_healthcare_keyword_keeps_diagnosis_match() -> None:
+    assert match(
+        "Reliable Diagnosis in Healthcare",
+        "We improve decision support workflows.",
+    ) == {7}
+
+
+def test_disease_diagnosis_keeps_healthcare_match() -> None:
+    assert match(
+        "Deep Learning for Breast Cancer Diagnosis",
+        "We detect malignant lesions in screening mammograms.",
+    ) == {7}
+
+
+def test_whole_slide_diagnosis_keeps_healthcare_match() -> None:
+    assert match(
+        "Attention-Stabilized Learning for Whole-Slide Imaging",
+        "We improve whole slide image diagnosis across public WSI datasets.",
+    ) == {7}

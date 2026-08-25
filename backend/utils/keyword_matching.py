@@ -277,6 +277,92 @@ _STRONG_IMAGE_CLASSIFICATION_PATTERNS: tuple[str, ...] = (
 )
 
 
+_HEALTHCARE_UNAMBIGUOUS_CONTEXT_PATTERNS: tuple[str, ...] = (
+    r"\b(?:healthcare|health care|medical|medicine|clinical|EHR|FHIR)\b",
+    r"\b(?:electronic health records?|physicians?|clinicians?|patients?|"
+    r"hospitals?|doctors?|nurses?|differential diagnosis)\b",
+    r"\b(?:diseases?|disorders?|syndromes?|cancers?|tumou?rs?|lesions?|"
+    r"malignan\w*|benign|patholog\w*|histolog\w*)\b",
+    r"\b(?:radiolog\w*|radiographs?|mammogra\w*|x-rays?|magnetic resonance|"
+    r"MRI|computed tomography|CT scans?|ultrasounds?|sonogra\w*|PET scans?|"
+    r"whole[- ]slide|WSI)\b",
+    r"\b(?:ECG|EKG|EEG|electrocard\w*|electroenceph\w*|prognos\w*|"
+    r"screening|symptoms?|treatments?|therap\w*|surger\w*)\b",
+    r"\b(?:infections?|vaccines?|cardiac|cardiovascular|pulmonary|hepatic|"
+    r"renal|neurolog\w*|dermat\w*|retina\w*|ophthalm\w*)\b",
+    r"\b(?:diabet\w*|COVID(?:-19)?|Alzheimer(?:'s)?|Parkinson(?:'s)?|"
+    r"pneumonia|tuberculosis|strokes?|psychiatr\w*|mental health|depression|"
+    r"autis\w*|fractures?|wounds?|seizures?|epilep\w*|dementia)\b",
+)
+
+_HEALTHCARE_BIOMEDICAL_CONTEXT_PATTERNS: tuple[str, ...] = (
+    r"\b(?:biomedical|anatom\w*|organs?|tissues?|genom\w*|genetic|genes?|"
+    r"proteins?|drugs?|medications?|pharma\w*)\b",
+    r"\b(?:viruses?|viral|bacter\w*|hearts?|lungs?|livers?|kidneys?|brains?|"
+    r"skins?|breasts?|prostate|colorectal|colon|hematol\w*|blood)\b",
+    r"\b(?:dental|teeth|tooth|chest|spine|spinal)\b",
+)
+
+_NON_MEDICAL_DIAGNOSIS_PATTERN = re.compile(
+    r"\b(?:failure|fault|error|bug|model|reasoning|system|database|software|"
+    r"program|machine|motor|bearing|gearbox|agent|benchmark|trajectory|network|"
+    r"cloud|incident|log|policy|robot|manipulation)s?\s+(?:mode\s+)?diagnosis\b|"
+    r"\bdiagnosis\s+(?:of|for|in)\s+(?:failures?|faults?|errors?|bugs?|models?|"
+    r"reasoning|systems?|databases?|software|programs?|machines?|motors?|"
+    r"bearings?|gearboxes?|agents?|benchmarks?|trajectories?|networks?|clouds?|"
+    r"incidents?|logs?|policies|robots?|manipulation)\b",
+    re.IGNORECASE,
+)
+
+_AGRICULTURAL_TITLE_PATTERN = re.compile(
+    r"\b(?:plant|leaf|leaves|crop|agricultur\w*|rice|wheat|maize|sugarcane|"
+    r"tomato|potato)\b",
+    re.IGNORECASE,
+)
+_GENERIC_TECHNICAL_TITLE_PATTERN = re.compile(
+    r"\b(?:reasoning|foundation models?|language models?|LLMs?|agents?|systems?|"
+    r"benchmarks?|anomaly detection|software|databases?|robots?|faults?|failures?)\b",
+    re.IGNORECASE,
+)
+
+
+def _matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _count_pattern_matches(text: str, patterns: tuple[str, ...]) -> int:
+    return sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in patterns)
+
+
+def has_healthcare_context(text: str, title: str | None = None) -> bool:
+    """Return whether text gives ``diagnosis`` an explicit healthcare meaning."""
+    if title:
+        title_has_healthcare_context = _matches_any_pattern(
+            title,
+            _HEALTHCARE_UNAMBIGUOUS_CONTEXT_PATTERNS
+            + _HEALTHCARE_BIOMEDICAL_CONTEXT_PATTERNS,
+        )
+        if _AGRICULTURAL_TITLE_PATTERN.search(title):
+            return False
+        if (
+            _GENERIC_TECHNICAL_TITLE_PATTERN.search(title)
+            and not title_has_healthcare_context
+            and _count_pattern_matches(
+                text,
+                _HEALTHCARE_UNAMBIGUOUS_CONTEXT_PATTERNS
+                + _HEALTHCARE_BIOMEDICAL_CONTEXT_PATTERNS,
+            )
+            < 2
+        ):
+            return False
+
+    if _matches_any_pattern(text, _HEALTHCARE_UNAMBIGUOUS_CONTEXT_PATTERNS):
+        return True
+    if _NON_MEDICAL_DIAGNOSIS_PATTERN.search(text):
+        return False
+    return _matches_any_pattern(text, _HEALTHCARE_BIOMEDICAL_CONTEXT_PATTERNS)
+
+
 def has_strong_image_classification_signal(text: str) -> bool:
     """Return True when text explicitly signals an image-classification benchmark/task."""
     if not text:
@@ -313,6 +399,18 @@ def apply_task_supersession_rules(
         and not has_strong_image_classification_signal(text)
     ):
         result.discard(image_task_id)
+
+    # "Diagnosis" is common in medical papers, but is also used for failures,
+    # software, models, and reasoning. Require healthcare context when that is
+    # the only signal that could have produced the broad Healthcare tag.
+    healthcare_task_id = slug_to_id.get("healthcare")
+    if (
+        text
+        and healthcare_task_id in result
+        and re.search(r"\bdiagnosis\b", text, re.IGNORECASE)
+        and not has_healthcare_context(text, title)
+    ):
+        result.discard(healthcare_task_id)
 
     if title:
         result = _resolve_image_video_task_conflicts(
