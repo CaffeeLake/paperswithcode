@@ -171,6 +171,48 @@ def test_private_message_purge_cannot_change_stored_public_snapshot():
     assert share.messages == stored_messages
 
 
+def test_private_paper_artifacts_are_omitted_before_a_share_is_materialized():
+    """A paper descriptor or its private IDs must never become a share capability."""
+    paper_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    row = _row(
+        1,
+        role="assistant",
+        content="I prepared a draft.",
+        display_blocks=[
+            {
+                "kind": "artifact",
+                "schema_version": 1,
+                "scope": "owner",
+                "artifact_id": str(paper_id),
+                "version_id": str(version_id),
+                "identifier": "latex-paper",
+                "version": 2,
+                "artifact_kind": "latex_paper",
+                "title": "Private manuscript",
+                "status": "ready",
+                "preview_mime": "application/pdf",
+                "source_language": "latex",
+                "total_bytes": 2048,
+            }
+        ],
+    )
+    db = _ShareDB(_session(), [row])
+    share = ChatShareService(db, get_settings()).create_or_refresh(
+        ChatOwner(hf_user_id="hf-owner", hf_username="owner"), db.session.id
+    )
+    detail = ChatShareService(_PublicDB(share), get_settings()).get_public(
+        str(share.id)
+    )
+
+    assert detail.messages[0].display_blocks == []
+    serialized = str(detail.model_dump(mode="json"))
+    assert "latex-paper" not in serialized
+    assert "Private manuscript" not in serialized
+    assert str(paper_id) not in serialized
+    assert str(version_id) not in serialized
+
+
 @pytest.mark.parametrize(
     ("session", "messages", "code"),
     [(_session(busy=True), [_row(1)], "session_busy"), (_session(), [], "empty_chat")],

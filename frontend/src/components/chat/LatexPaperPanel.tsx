@@ -26,6 +26,14 @@ function figureUrl(artifactId: string, versionId: string, path: string): string 
   return apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/figures/${path.split("/").map(encodeURIComponent).join("/")}`);
 }
 
+function pdfExportUrl(artifactId: string): string {
+  return apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}/export/pdf`);
+}
+
+function sourceZipExportUrl(artifactId: string, versionId: string): string {
+  return apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/export/source.zip`);
+}
+
 function draftKey(artifactId: string): string {
   return `pwc:latex-paper-draft:${artifactId}`;
 }
@@ -367,7 +375,7 @@ export const LatexPaperPanel: React.FC<{
     data-testid="latex-paper-panel"
   >
     <header>
-      <div><span>Private paper</span><h2>{block.title}</h2></div>
+      <div><span>Private paper</span><h2>{block.title}</h2><p>This paper is private to this chat. Source, figures, and PDFs are stored privately; AI-authored text needs your review.</p></div>
       <button type="button" data-artifact-close aria-label={dialog ? "Back to conversation" : "Close paper"} onClick={close}><X /></button>
     </header>
     <nav aria-label="Paper views">
@@ -413,6 +421,7 @@ export const LatexPaperPanel: React.FC<{
           {version.provenance?.restored_from_version_id && <span>Restored from {version.provenance.restored_from_version_id}</span>}
           {version.provenance?.change_summary && <p>{version.provenance.change_summary}</p>}
           {version.provenance?.reference_changes.map((change) => <p key={change}>{change}</p>)}
+          <a href={sourceZipExportUrl(block.artifact_id!, version.version_id)} download>Source ZIP</a>
           {descriptor?.editing_enabled && source?.version_id && version.version_id !== source.version_id && <button type="button" disabled={restoreMutation.isPending || draftIsDirty} onClick={() => restoreMutation.mutate(version.version_id)}>Restore version {version.version}</button>}
         </article>)}
         {historyQuery.data?.next_cursor && <button type="button" onClick={() => setHistoryCursor(historyQuery.data!.next_cursor ?? null)}>Load older versions</button>}
@@ -436,8 +445,8 @@ export const LatexPaperPanel: React.FC<{
         {source?.compile_status === "failed" && source.repair_exhausted && <span role="status">AI repair attempts exhausted</span>}
         <button type="button" onClick={() => { setHistoryCursor(null); setHistoryOpen(!historyOpen); }}>Version history</button>
         {panel.state.tab === "files" && canEdit && <button type="button" disabled={!draftIsDirty} onClick={() => saveMutation.mutate()}><Save />{saveMutation.isPending ? "Saving…" : "Save & Compile"}</button>}
-        {previewUrl && <a href={previewUrl} download><Download /> PDF</a>}
-        {source && sourcePath && <a href={sourceUrl(block.artifact_id!, source.version_id, sourcePath)} download><FileCode2 /> Source</a>}
+        {preview && <a href={pdfExportUrl(block.artifact_id!)} download><Download /> PDF</a>}
+        {source && <a href={sourceZipExportUrl(block.artifact_id!, source.version_id)} download><FileCode2 /> Source ZIP</a>}
       </div>
     </footer>
   </section>;

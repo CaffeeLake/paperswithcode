@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
+from starlette.responses import Response
 
 from backend.config import Settings
 from backend.models.database import (
@@ -677,6 +679,55 @@ def test_paper_is_private_general_chat_only_and_unique(db, settings):
         service.create_neutral_scaffold(owner_id="owner-1", session_id=reader_id)
 
 
+def test_owner_exports_last_good_pdf_and_an_explicit_immutable_source_version(
+    db, settings
+):
+    """Exporting must keep the last successful preview and selected source private."""
+    session_id = _session(db)
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=session_id, title="Careful / Draft"
+    )
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    pdf = service.export_last_successful_pdf("owner-1", initial.artifact_id)
+    source = service.export_source_zip(
+        "owner-1", initial.artifact_id, failed.source_head.version_id
+    )
+
+    assert pdf.data == b"%PDF-1.7\nscaffold\n"
+    assert pdf.filename == "careful-draft.pdf"
+    assert source.filename == "careful-draft-v2-source.zip"
+    with zipfile.ZipFile(BytesIO(source.data)) as archive:
+        assert archive.namelist() == ["main.tex"]
+        assert archive.read("main.tex") == b"\\documentclass{article}\\badcommand"
+        assert all(
+            not name.startswith("/") and ".." not in name.split("/")
+            for name in archive.namelist()
+        )
+
+    with pytest.raises(Exception, match="not found"):
+        service.export_last_successful_pdf("another-owner", initial.artifact_id)
+    with pytest.raises(Exception, match="not found"):
+        service.export_source_zip(
+            "another-owner", initial.artifact_id, failed.source_head.version_id
+        )
+
+
 def test_human_save_creates_a_child_and_advances_both_heads(db, settings):
     session_id = _session(db)
     service = LatexPaperService(
@@ -1091,11 +1142,102 @@ def test_figure_response_forces_private_download_headers(monkeypatch, settings):
     assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
 
 
+def test_paper_export_routes_are_owner_scoped_and_never_cache_bytes(
+    monkeypatch, settings
+):
+    """The download endpoints must proxy owner-only bytes without cache reuse."""
+    from backend.routers import chat as chat_router
+
+    artifact_id, version_id = uuid.uuid4(), uuid.uuid4()
+    calls: list[tuple[str, uuid.UUID, uuid.UUID | None]] = []
+
+    class Service:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export_last_successful_pdf(self, owner, artifact):
+            calls.append((owner, artifact, None))
+            return StoredArtifactFile(
+                data=b"%PDF-1.7\nexport",
+                media_type="application/pdf",
+                filename="draft.pdf",
+            )
+
+        def export_source_zip(self, owner, artifact, version):
+            calls.append((owner, artifact, version))
+            return StoredArtifactFile(
+                data=b"PK\x03\x04",
+                media_type="application/zip",
+                filename="draft-v2-source.zip",
+            )
+
+    monkeypatch.setattr(chat_router, "LatexPaperService", Service)
+    pdf = chat_router.download_latex_paper_pdf(
+        artifact_id,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+    source = chat_router.download_latex_paper_source_zip(
+        artifact_id,
+        version_id,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+
+    assert calls == [
+        ("owner-1", artifact_id, None),
+        ("owner-1", artifact_id, version_id),
+    ]
+    assert pdf.headers["cache-control"] == "private, no-store"
+    assert source.headers["cache-control"] == "private, no-store"
+    assert pdf.headers["content-disposition"] == 'attachment; filename="draft.pdf"'
+    assert (
+        source.headers["content-disposition"]
+        == 'attachment; filename="draft-v2-source.zip"'
+    )
+
+
+def test_paper_manifest_response_never_caches_private_metadata(monkeypatch, settings):
+    """Owner-only source metadata must not survive a browser cache boundary."""
+    from backend.routers import chat as chat_router
+
+    class ArtifactService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_artifact(self, *_args):
+            return type("Artifact", (), {"kind": "latex_paper"})()
+
+    class PaperService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_manifest(self, *_args):
+            return {"root_document": "main.tex", "files": []}
+
+    monkeypatch.setattr(chat_router, "ChatArtifactService", ArtifactService)
+    monkeypatch.setattr(chat_router, "LatexPaperService", PaperService)
+    response = Response()
+    chat_router.get_artifact_manifest(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        response,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+
+    assert response.headers["Cache-Control"] == "private, no-store"
+
+
 def test_version_delete_route_uses_paper_reference_cleanup(monkeypatch, settings):
     """The public version route must not send a paper ID through Posterly deletion."""
     from backend.routers import chat as chat_router
 
     called: list[tuple[str, uuid.UUID, uuid.UUID]] = []
+    csrf_requests: list[object] = []
 
     class ArtifactService:
         def __init__(self, *_args, **_kwargs):
@@ -1120,16 +1262,24 @@ def test_version_delete_route_uses_paper_reference_cleanup(monkeypatch, settings
 
     monkeypatch.setattr(chat_router, "ChatArtifactService", ArtifactService)
     monkeypatch.setattr(chat_router, "LatexPaperService", PaperService)
+    monkeypatch.setattr(
+        chat_router,
+        "_require_same_origin_csrf",
+        lambda request, _settings: csrf_requests.append(request),
+    )
     artifact_id, version_id = uuid.uuid4(), uuid.uuid4()
+    request = object()
     response = chat_router.delete_artifact_version(
         artifact_id,
         version_id,
+        request,
         user={"hf_user_id": "owner-1", "username": "owner"},
         db=Db(),
         settings=settings,
     )
     assert response.status_code == 204
     assert called == [("owner-1", artifact_id, version_id)]
+    assert csrf_requests == [request]
 
 
 def test_human_save_rejects_a_stale_parent_without_overwriting(db, settings):

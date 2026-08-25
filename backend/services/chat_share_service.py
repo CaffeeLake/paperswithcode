@@ -45,6 +45,23 @@ SNAPSHOT_VERSION = 1
 PUBLIC_MESSAGES_ADAPTER = TypeAdapter(list[PublicChatMessage])
 
 
+def _is_private_paper_block(block: object) -> bool:
+    """Fail closed if a private paper block reaches the share projector."""
+    return (
+        isinstance(block, dict)
+        and block.get("kind") == "artifact"
+        and block.get("artifact_kind") == "latex_paper"
+    )
+
+
+def _shareable_blocks(row: ChatMessageRecord) -> list[object]:
+    return [
+        block
+        for block in (row.display_blocks or [])
+        if not _is_private_paper_block(block)
+    ]
+
+
 def _failure_message(code: str | None) -> str:
     if code == "provider_error":
         return (
@@ -61,7 +78,7 @@ def _failure_message(code: str | None) -> str:
 def _public_blocks(
     row: ChatMessageRecord, shared: dict[str, ChatSharedArtifact]
 ) -> list[dict]:
-    blocks = DISPLAY_BLOCKS_ADAPTER.validate_python(row.display_blocks or [])
+    blocks = DISPLAY_BLOCKS_ADAPTER.validate_python(_shareable_blocks(row))
     projection: list[dict] = []
     for block in blocks:
         value = block.model_dump(mode="json", exclude_defaults=True)
@@ -217,7 +234,7 @@ class ChatShareService:
     ) -> dict[str, ChatSharedArtifact]:
         referenced: dict[str, tuple[int, uuid.UUID]] = {}
         for message in messages:
-            for block in message.display_blocks or []:
+            for block in _shareable_blocks(message):
                 if (
                     isinstance(block, dict)
                     and block.get("kind") == "artifact"

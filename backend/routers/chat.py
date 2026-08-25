@@ -901,10 +901,12 @@ def archive_oldest_sessions(
 @router.get("/sessions/{session_id}", response_model=ChatSessionDetail)
 def get_session(
     session_id: uuid.UUID,
+    response: Response,
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         session, messages = ChatSessionService(db, settings).get_session(
             owner_from_user(user), session_id
@@ -1223,7 +1225,7 @@ def get_artifact_manifest(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    response.headers["Cache-Control"] = "private, immutable, max-age=3600"
+    response.headers["Cache-Control"] = "private, no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     try:
         owner = owner_from_user(user).hf_user_id
@@ -1245,10 +1247,12 @@ def get_artifact_manifest(
 def delete_artifact_version(
     artifact_id: uuid.UUID,
     version_id: uuid.UUID,
+    http_request: Request,
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_same_origin_csrf(http_request, settings)
     try:
         owner = owner_from_user(user).hf_user_id
         artifact = ChatArtifactService(db, settings).get_artifact(owner, artifact_id)
@@ -1292,8 +1296,9 @@ def get_artifact_preview(
             content=item.data,
             media_type=item.media_type,
             headers={
-                "Cache-Control": "private, immutable, max-age=31536000",
+                "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
                 "Content-Disposition": f'inline; filename="{item.filename}"',
             },
         )
@@ -1325,8 +1330,9 @@ def get_artifact_source(
             content=item.data,
             media_type="text/plain; charset=utf-8",
             headers={
-                "Cache-Control": "private, immutable, max-age=31536000",
+                "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
                 "Content-Disposition": f'attachment; filename="{item.filename}"',
             },
         )
@@ -1352,11 +1358,64 @@ def get_latex_paper_figure(
             content=item.data,
             media_type=item.media_type,
             headers={
-                "Cache-Control": "private, immutable, max-age=31536000",
+                "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
                 "X-Frame-Options": "DENY",
                 "Cross-Origin-Resource-Policy": "same-origin",
                 "Content-Security-Policy": "sandbox; default-src 'none'",
+                "Content-Disposition": f'attachment; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/export/pdf")
+def download_latex_paper_pdf(
+    artifact_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Download the owner's last successfully compiled paper PDF."""
+    try:
+        item = LatexPaperService(db, settings).export_last_successful_pdf(
+            owner_from_user(user).hf_user_id, artifact_id
+        )
+        return Response(
+            content=item.data,
+            media_type=item.media_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
+                "Content-Disposition": f'attachment; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/export/source.zip")
+def download_latex_paper_source_zip(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Download one owner-selected immutable paper source bundle."""
+    try:
+        item = LatexPaperService(db, settings).export_source_zip(
+            owner_from_user(user).hf_user_id, artifact_id, version_id
+        )
+        return Response(
+            content=item.data,
+            media_type=item.media_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
                 "Content-Disposition": f'attachment; filename="{item.filename}"',
             },
         )

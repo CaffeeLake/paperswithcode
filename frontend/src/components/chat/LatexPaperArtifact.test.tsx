@@ -134,6 +134,7 @@ describe("Latex paper artifact workspace", () => {
       "src", expect.stringContaining("/versions/preview-1/preview"),
     );
     expect(screen.getByText("Out of date")).toBeVisible();
+    expect(screen.getByText(/private to this chat.*AI-authored text needs your review/i)).toBeVisible();
 
     expect(screen.getByText(/main\.tex:7.*Undefined control sequence/i)).toBeVisible();
 

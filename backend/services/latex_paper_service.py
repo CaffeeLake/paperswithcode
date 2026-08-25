@@ -118,6 +118,12 @@ def _deterministic_zip(files: Mapping[str, bytes]) -> bytes:
     return output.getvalue()
 
 
+def _safe_export_stem(title: str) -> str:
+    """Return a bounded ASCII filename stem without path or header syntax."""
+    stem = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
+    return (stem or "paper")[:120].rstrip("-") or "paper"
+
+
 def _figure_storage_key(settings: Settings, digest: str) -> str:
     """Return a generation-specific key for one content-addressed blob.
 
@@ -1460,6 +1466,41 @@ class LatexPaperService:
             raise ArtifactError("artifact_corrupt", "Paper preview is invalid")
         return StoredArtifactFile(
             data=data, media_type="application/pdf", filename="paper.pdf"
+        )
+
+    def export_last_successful_pdf(
+        self, owner_id: str, artifact_id: uuid.UUID
+    ) -> StoredArtifactFile:
+        """Export only the owner's durable last-good preview."""
+        artifact = self._artifact(owner_id, artifact_id)
+        if artifact.preview_head_version_id is None:
+            raise ArtifactError("artifact_not_found", "Paper preview not found")
+        item = self.read_preview_pdf(
+            owner_id, artifact.id, artifact.preview_head_version_id
+        )
+        return StoredArtifactFile(
+            data=item.data,
+            media_type=item.media_type,
+            filename=f"{_safe_export_stem(artifact.title)}.pdf",
+        )
+
+    def export_source_zip(
+        self, owner_id: str, artifact_id: uuid.UUID, version_id: uuid.UUID
+    ) -> StoredArtifactFile:
+        """Build a bounded verified ZIP for an explicitly selected source version."""
+        artifact = self._artifact(owner_id, artifact_id)
+        version = self._version(owner_id, artifact.id, version_id)
+        bundle = self._bundle_for_version(version)
+        if hashlib.sha256(bundle).hexdigest() != version.source_digest:
+            raise ArtifactError(
+                "artifact_corrupt", "Paper source digest verification failed"
+            )
+        return StoredArtifactFile(
+            data=bundle,
+            media_type="application/zip",
+            filename=(
+                f"{_safe_export_stem(artifact.title)}-v{version.version}-source.zip"
+            ),
         )
 
     def _compile(

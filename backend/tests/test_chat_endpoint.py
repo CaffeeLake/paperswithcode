@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 from starlette.requests import Request
 
 from backend.config import Settings, get_settings
@@ -195,6 +196,48 @@ def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
 
     assert response.status_code == 204
     assert calls == [(session_id, turn_id)]
+
+
+def test_session_detail_never_caches_private_paper_metadata(monkeypatch):
+    session_id = uuid.uuid4()
+
+    class SessionService:
+        def __init__(self, *_args):
+            pass
+
+        def get_session(self, *_args):
+            return SimpleNamespace(id=session_id, transcript_status="complete"), []
+
+    class PaperService:
+        def __init__(self, *_args):
+            pass
+
+        def get_descriptor(self, *_args):
+            return {"artifact_id": str(uuid.uuid4())}
+
+    class Summary:
+        def model_dump(self):
+            return {}
+
+    class Detail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", SessionService)
+    monkeypatch.setattr(chat_router, "LatexPaperService", PaperService)
+    monkeypatch.setattr(chat_router, "_summary", lambda _session: Summary())
+    monkeypatch.setattr(chat_router, "ChatSessionDetail", Detail)
+    response = Response()
+
+    chat_router.get_session(
+        session_id,
+        response,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=object(),
+    )
+
+    assert response.headers["Cache-Control"] == "private, no-store"
 
 
 def test_create_session_fails_closed_when_public_admission_is_disabled():
