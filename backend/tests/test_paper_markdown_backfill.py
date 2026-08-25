@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -48,6 +48,105 @@ PROBE_SPEC = importlib.util.spec_from_file_location(
 assert PROBE_SPEC and PROBE_SPEC.loader
 PROBE = importlib.util.module_from_spec(PROBE_SPEC)
 PROBE_SPEC.loader.exec_module(PROBE)
+
+
+def test_bucket_bridge_uses_isolated_sdk_without_exposing_token(monkeypatch):
+    observed = {}
+
+    def run(command, **kwargs):
+        observed.update(command=command, **kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"paths": []}', stderr="")
+
+    monkeypatch.setattr(WORKER.subprocess, "run", run)
+
+    result = WORKER.run_bucket_bridge(
+        "secret-token",
+        {
+            "operation": "existing",
+            "bucket_id": "test/paper-markdown",
+            "keys": ["paper.md"],
+        },
+    )
+
+    assert result == {"paths": []}
+    assert observed["command"][:6] == [
+        "uv",
+        "run",
+        "--no-project",
+        "--with",
+        "huggingface-hub==1.23.0",
+        "python",
+    ]
+    assert "secret-token" not in observed["command"]
+    assert observed["env"]["HF_TOKEN"] == "secret-token"
+    assert json.loads(observed["input"])["operation"] == "existing"
+    assert observed["capture_output"] is True
+
+
+def test_bucket_bridge_code_uses_bucket_apis_for_all_operations(tmp_path, monkeypatch):
+    remote = {"manifest.jsonl": b'{"arxiv_id":"2608.00001"}\n'}
+    uploads = []
+
+    class Api:
+        def get_bucket_paths_info(self, bucket_id, keys):
+            assert bucket_id == "test/paper-markdown"
+            return [SimpleNamespace(path=key) for key in keys if key in remote]
+
+        def download_bucket_files(self, bucket_id, files, *, raise_on_missing_files):
+            assert bucket_id == "test/paper-markdown"
+            assert raise_on_missing_files is True
+            for key, destination in files:
+                Path(destination).write_bytes(remote[key])
+
+        def batch_bucket_files(self, bucket_id, *, add):
+            assert bucket_id == "test/paper-markdown"
+            uploads.extend(
+                (Path(source).read_bytes(), destination) for source, destination in add
+            )
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi=Api))
+
+    def execute(request):
+        output = StringIO()
+        monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(request)))
+        monkeypatch.setattr(sys, "stdout", output)
+        exec(WORKER.BUCKET_BRIDGE_CODE, {})  # noqa: S102 - exercise trusted code
+        return json.loads(output.getvalue())
+
+    assert execute(
+        {
+            "operation": "existing",
+            "bucket_id": "test/paper-markdown",
+            "keys": ["manifest.jsonl", "missing.json"],
+        }
+    ) == {"paths": ["manifest.jsonl"]}
+
+    downloaded = tmp_path / "downloaded.jsonl"
+    assert (
+        execute(
+            {
+                "operation": "download",
+                "bucket_id": "test/paper-markdown",
+                "files": [["manifest.jsonl", str(downloaded)]],
+            }
+        )
+        == {}
+    )
+    assert downloaded.read_bytes() == remote["manifest.jsonl"]
+
+    upload = tmp_path / "result.json"
+    upload.write_text('{"status":"succeeded"}')
+    assert (
+        execute(
+            {
+                "operation": "upload",
+                "bucket_id": "test/paper-markdown",
+                "files": [[str(upload), "_jobs/results/result.json"]],
+            }
+        )
+        == {}
+    )
+    assert uploads == [(upload.read_bytes(), "_jobs/results/result.json")]
 
 
 def test_worker_download_pdf_falls_back_to_existing_arxiv_version(monkeypatch):
@@ -182,27 +281,24 @@ def test_bucket_worker_downloads_manifest_and_uploads_outputs_without_mount(
     stub.mkdir()
     (stub / "2608.00001.md").write_text("A" * 180)
 
-    class FileSystem:
-        def __init__(self, *, token):
-            assert token == "secret"
+    def bucket_bridge(token, request):
+        assert token == "secret"
+        assert request["bucket_id"] == "test/paper-markdown"
+        if request["operation"] == "existing":
+            return {"paths": [key for key in request["keys"] if key in remote]}
+        if request["operation"] == "download":
+            for key, destination_value in request["files"]:
+                destination = Path(destination_value)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(remote[key])
+            return {}
+        if request["operation"] == "upload":
+            for source, key in request["files"]:
+                remote[key] = Path(source).read_bytes()
+            return {}
+        raise AssertionError(f"unexpected bridge operation: {request['operation']}")
 
-        def open(self, path, _mode):
-            key = path.split("/test/paper-markdown/", 1)[1]
-            return BytesIO(remote[key])
-
-    class Api:
-        def __init__(self, *, token):
-            assert token == "secret"
-
-        def get_bucket_paths_info(self, _bucket, paths, **_kwargs):
-            return [SimpleNamespace(path=path) for path in paths if path in remote]
-
-        def batch_bucket_files(self, _bucket, *, add, **_kwargs):
-            for body, key in add:
-                remote[key] = body
-
-    monkeypatch.setattr(WORKER, "HfFileSystem", FileSystem)
-    monkeypatch.setattr(WORKER, "HfApi", Api)
+    monkeypatch.setattr(WORKER, "run_bucket_bridge", bucket_bridge)
     monkeypatch.setenv("HF_TOKEN", "secret")
     monkeypatch.setattr(
         sys,

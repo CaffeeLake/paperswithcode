@@ -2,7 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #   "chandra-ocr==0.2.0",
-#   "huggingface-hub>=0.34.0",
 #   "httpx>=0.28.1",
 #   "pillow>=11.0.0",
 #   "pypdf>=5.0.0",
@@ -33,7 +32,6 @@ from io import BytesIO
 from pathlib import Path
 
 import httpx
-from huggingface_hub import HfApi, HfFileSystem
 from PIL import Image
 
 MODEL_ID = os.environ.get("PWC_MARKDOWN_MODEL_ID", "datalab-to/chandra-ocr-2")
@@ -60,6 +58,68 @@ VLLM_SHUTDOWN_TIMEOUT_SECONDS = int(
     os.environ.get("PWC_MARKDOWN_VLLM_SHUTDOWN_TIMEOUT_SECONDS", "60")
 )
 _TERMINATION_REQUESTED = False
+BUCKET_BRIDGE_HUB_VERSION = "1.23.0"
+BUCKET_BRIDGE_CODE = r"""
+import json
+import sys
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+request = json.load(sys.stdin)
+api = HfApi()
+bucket_id = request["bucket_id"]
+operation = request["operation"]
+if operation == "existing":
+    paths = api.get_bucket_paths_info(bucket_id, request["keys"])
+    response = {"paths": [str(item.path) for item in paths]}
+elif operation == "download":
+    files = [(key, Path(destination)) for key, destination in request["files"]]
+    for _, destination in files:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    api.download_bucket_files(
+        bucket_id,
+        files,
+        raise_on_missing_files=True,
+    )
+    response = {}
+elif operation == "upload":
+    api.batch_bucket_files(
+        bucket_id,
+        add=[(Path(source), destination) for source, destination in request["files"]],
+    )
+    response = {}
+else:
+    raise ValueError(f"unsupported bucket bridge operation: {operation}")
+json.dump(response, sys.stdout)
+"""
+
+
+def run_bucket_bridge(token: str, request: dict[str, object]) -> dict[str, object]:
+    """Run bucket I/O in an SDK environment isolated from vLLM's SDK ceiling."""
+    environment = os.environ.copy()
+    environment["HF_TOKEN"] = token
+    completed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            f"huggingface-hub=={BUCKET_BRIDGE_HUB_VERSION}",
+            "python",
+            "-c",
+            BUCKET_BRIDGE_CODE,
+        ],
+        input=json.dumps(request),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip()[-2000:]
+        raise RuntimeError(f"bucket bridge failed: {detail}")
+    return json.loads(completed.stdout)
 
 
 class BucketContentStore:
@@ -69,28 +129,48 @@ class BucketContentStore:
         self.bucket_id = bucket_id
         self.token = token
         self.content_root = content_root
-        self.api = HfApi(token=token)
-        self.filesystem = HfFileSystem(token=token)
-
-    def _remote_path(self, key: str) -> str:
-        return f"hf://buckets/{self.bucket_id}/{key}"
 
     def existing(self, keys: list[str]) -> set[str]:
         if not keys:
             return set()
-        return {
-            str(item.path)
-            for item in self.api.get_bucket_paths_info(
-                self.bucket_id, keys, token=self.token
-            )
-        }
+        response = run_bucket_bridge(
+            self.token,
+            {"operation": "existing", "bucket_id": self.bucket_id, "keys": keys},
+        )
+        return {str(path) for path in response["paths"]}
 
     def read(self, key: str) -> bytes:
-        with self.filesystem.open(self._remote_path(key), "rb") as handle:
-            return handle.read()
+        with tempfile.TemporaryDirectory(prefix="pwc-paper-read-") as directory:
+            destination = Path(directory) / Path(key).name
+            run_bucket_bridge(
+                self.token,
+                {
+                    "operation": "download",
+                    "bucket_id": self.bucket_id,
+                    "files": [(key, str(destination))],
+                },
+            )
+            return destination.read_bytes()
 
     def download(self, key: str) -> None:
-        atomic_write(self.content_root / key, self.read(key))
+        self.download_many([key])
+
+    def download_many(self, keys: list[str]) -> None:
+        if not keys:
+            return
+        destinations = []
+        for key in keys:
+            destination = self.content_root / key
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destinations.append((key, str(destination)))
+        run_bucket_bridge(
+            self.token,
+            {
+                "operation": "download",
+                "bucket_id": self.bucket_id,
+                "files": destinations,
+            },
+        )
 
     def prepare(self, manifest_key: str, entries: list[dict[str, object]]) -> None:
         run_id = Path(manifest_key).parent.name
@@ -100,12 +180,11 @@ class BucketContentStore:
         status_keys = [f"_jobs/status/{entry['arxiv_id']}.json" for entry in entries]
         output_keys = [str(entry["output_key"]) for entry in entries]
         existing = self.existing([result_key, progress_key, *status_keys, *output_keys])
-        for key in existing:
-            if key in output_keys:
-                # process() only needs existence to preserve a canonical object.
-                atomic_write(self.content_root / key, b"")
-            else:
-                self.download(key)
+        preserved_outputs = existing.intersection(output_keys)
+        for key in preserved_outputs:
+            # process() only needs existence to preserve a canonical object.
+            atomic_write(self.content_root / key, b"")
+        self.download_many(sorted(existing - preserved_outputs))
         asset_keys: list[str] = []
         for status_key in status_keys:
             path = self.content_root / status_key
@@ -116,8 +195,7 @@ class BucketContentStore:
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
             asset_keys.extend(str(key) for key in status.get("asset_keys") or [])
-        for key in self.existing(asset_keys):
-            self.download(key)
+        self.download_many(sorted(self.existing(asset_keys)))
 
     def upload(self, keys: list[str]) -> None:
         unique = list(dict.fromkeys(keys))
@@ -127,12 +205,19 @@ class BucketContentStore:
             if self.read(key) != local:
                 raise ValueError(f"immutable_asset_conflict:{key}")
         additions = [
-            ((self.content_root / key).read_bytes(), key)
+            (str(self.content_root / key), key)
             for key in unique
             if (self.content_root / key).is_file()
         ]
         if additions:
-            self.api.batch_bucket_files(self.bucket_id, add=additions, token=self.token)
+            run_bucket_bridge(
+                self.token,
+                {
+                    "operation": "upload",
+                    "bucket_id": self.bucket_id,
+                    "files": additions,
+                },
+            )
 
 
 def request_termination(_signum: int, _frame: object) -> None:
