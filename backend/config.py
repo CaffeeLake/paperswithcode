@@ -467,6 +467,13 @@ class Settings(BaseSettings):
     # readable when generation flags are disabled.
     chat_artifacts_enabled: bool = Field(default=False)
     chat_posterly_enabled: bool = Field(default=False)
+    # Private staging-only compiler boundary. The signing private key belongs
+    # only in the PwC backend environment; the Space gets its matching public
+    # key as a private Space secret.
+    chat_latex_compiler_jobs_enabled: bool = Field(default=False)
+    chat_latex_compiler_url: str = Field(default="", max_length=1000)
+    chat_latex_compiler_hf_token: str = Field(default="")
+    chat_latex_compiler_signing_private_key: str = Field(default="")
     chat_artifact_shared_preview_enabled: bool = Field(default=False)
     chat_artifact_storage_backend: Literal["local", "hf_bucket"] = Field(
         default="local"
