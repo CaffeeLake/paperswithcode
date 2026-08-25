@@ -22,6 +22,8 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-sync-mmteb-overall.yml` | `7 * * * *` | `pwc-cron sync_mmteb_overall` | `.github/workflows/scripts/hourly/sync_mmteb.py overall` |
 | `cron-sync-mmteb-retrieval.yml` | `22 * * * *` | `pwc-cron sync_mmteb_retrieval` | `.github/workflows/scripts/hourly/sync_mmteb.py retrieval` |
 | `cron-sync-mmteb-reranking.yml` | `37 * * * *` | `pwc-cron sync_mmteb_reranking` | `.github/workflows/scripts/hourly/sync_mmteb.py reranking` |
+| `cron-sync-mmeb-v2.yml` | `12 * * * *` | `pwc-cron sync_mmeb_v2` | `.github/workflows/scripts/hourly/sync_mmeb.py v2` |
+| `cron-sync-mmeb-v3.yml` | `42 * * * *` | `pwc-cron sync_mmeb_v3` | `.github/workflows/scripts/hourly/sync_mmeb.py v3` |
 | `cron-sync-deepswe.yml` | `25 * * * *` | `pwc-cron sync_deepswe` | `.github/workflows/scripts/hourly/sync_deepswe.py` |
 | `cron-sync-artificial-analysis.yml` | `35 * * * *` | `pwc-cron sync_artificial_analysis` | `.github/workflows/scripts/hourly/sync_artificial_analysis.py` |
 | `cron-sync-programbench.yml` | `40 * * * *` | `pwc-cron sync_programbench` | `.github/workflows/scripts/hourly/sync_programbench.py` |
@@ -137,6 +139,13 @@ whose API citation resolves unambiguously to a latest-version local arXiv paper;
 rows without a paper, with a missing local paper, or with unresolved multiple
 citations are skipped. Every lane owns only rows carrying its managed
 methodology prefix, so manual evaluation rows remain untouched.
+
+The MMEB-v2 and MMEB-v3 jobs consume the official MMEB Space's precomputed
+`Overall-V2` and V3 `Overall` tables. They synchronize only rows whose official
+model link resolves to exactly one local paper through an arXiv URL, Hugging
+Face artifact, GitHub repository, project page, or external source URL. Each
+job owns only its managed-prefix rows, leaving manually curated evaluations
+untouched.
 
 `sync_hf_organizations.py` runs daily as an append-only reconciliation backstop
 for the strict 21-organization manifest. It validates HF organization pages,

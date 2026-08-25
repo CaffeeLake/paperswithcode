@@ -159,6 +159,26 @@ COMMANDS: dict[str, Job] = {
             "from the official API"
         ),
     ),
+    "sync_mmeb_v2": job(
+        "-m",
+        "scripts.hourly.sync_mmeb",
+        "v2",
+        timeout="30m",
+        idempotency=(
+            "replace linked managed MMEB-v2 overall evaluation rows from the "
+            "official leaderboard Space"
+        ),
+    ),
+    "sync_mmeb_v3": job(
+        "-m",
+        "scripts.hourly.sync_mmeb",
+        "v3",
+        timeout="30m",
+        idempotency=(
+            "replace linked managed MMEB-v3 overall evaluation rows from the "
+            "official leaderboard Space"
+        ),
+    ),
     "sync_deepswe": job(
         "-m",
         "scripts.hourly.sync_deepswe",
