@@ -33,6 +33,7 @@ from backend.chat_execution_policy import (
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
+from backend.models.chat import LatexPaperSourceEdit
 from backend.models.database import (
     ChatMessageRecord,
     ChatOpenRouterProviderCall,
@@ -1013,6 +1014,8 @@ def paper_command(
                 owner_id=owner_id,
                 session_id=capability.chat_session_id,
                 title=body.title or "Untitled Research Draft",
+                actor_type="ai",
+                model_identity=session.selected_model,
             )
             result = {"paper": descriptor.model_dump(mode="json")}
         elif body.operation == "begin-edit":

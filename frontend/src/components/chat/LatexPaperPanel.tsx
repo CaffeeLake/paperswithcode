@@ -4,7 +4,7 @@ import { Download, FileCode2, FilePlus2, Pencil, Save, Trash2, X } from "lucide-
 
 import { apiUrl } from "@/lib/apiUrl";
 import type { ArtifactBlock } from "@/lib/chat";
-import type { LatexPaperArtifactDescriptor } from "@/lib/chatSessions";
+import type { LatexPaperArtifactDescriptor, LatexPaperHistoryPage, LatexPaperVersionDescriptor } from "@/lib/chatSessions";
 import { LatexSourceEditor } from "./LatexSourceEditor";
 import { useArtifactPanel } from "./useArtifactPanel";
 
@@ -37,6 +37,17 @@ function isSupportedPath(path: string): boolean {
   return !path.includes("\\") && /^(?!\/)(?!.*(?:^|\/)\.\.?\/)[^\0]{1,300}\.(?:tex|bib)$/iu.test(path);
 }
 
+function provenanceLabel(version: LatexPaperVersionDescriptor): string {
+  const action = version.provenance?.action ?? (version.actor_type === "restore" ? "restore" : version.actor_type === "ai" ? "ai_draft" : "human_save");
+  const label = {
+    human_save: "Human save",
+    ai_draft: "AI draft",
+    ai_repair: "AI repair",
+    restore: "Restore",
+  }[action];
+  return version.provenance?.model_identity ? `${label} · ${version.provenance.model_identity}` : label;
+}
+
 export const LatexPaperPanel: React.FC<{
   block: ArtifactBlock;
   forceDialog?: boolean;
@@ -54,6 +65,8 @@ export const LatexPaperPanel: React.FC<{
   const [checkedOut, setCheckedOut] = React.useState(false);
   const [staleDraft, setStaleDraft] = React.useState(false);
   const [editorError, setEditorError] = React.useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [historyCursor, setHistoryCursor] = React.useState<string | null>(null);
   const initializedVersion = React.useRef<string | null>(null);
   const panelRef = React.useRef<HTMLElement>(null);
   const pushedHistoryRef = React.useRef(false);
@@ -117,6 +130,19 @@ export const LatexPaperPanel: React.FC<{
   const descriptor = descriptorQuery.data;
   const source = descriptor?.source_head;
   const preview = descriptor?.preview_head;
+  const historyQuery = useQuery({
+    queryKey: ["chat-latex-paper-history", block.artifact_id, historyCursor],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (historyCursor) params.set("cursor", historyCursor);
+      const response = await fetch(apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/versions?${params}`), {
+        credentials: "include", cache: "no-store",
+      });
+      if (!response.ok) throw new Error("Could not load paper history");
+      return response.json() as Promise<LatexPaperHistoryPage>;
+    },
+    enabled: historyOpen && Boolean(block.artifact_id), staleTime: Number.POSITIVE_INFINITY,
+  });
   const manifestQuery = useQuery({
     queryKey: ["chat-latex-paper-manifest", block.artifact_id, source?.version_id],
     queryFn: async () => {
@@ -201,6 +227,31 @@ export const LatexPaperPanel: React.FC<{
     onError: (error) => setEditorError(error instanceof Error ? error.message : "Could not save paper"),
   });
 
+  const restoreMutation = useMutation({
+    mutationFn: async (sourceVersionId: string) => {
+      if (!source?.version_id) throw new Error("Paper source is not ready to restore");
+      const response = await fetch(apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/versions/restore`), {
+        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_version_id: sourceVersionId, expected_parent_version_id: source.version_id }),
+      });
+      const body = await response.json().catch(() => null) as LatexPaperArtifactDescriptor | { detail?: { message?: string } } | null;
+      if (!response.ok) throw new Error((body as { detail?: { message?: string } } | null)?.detail?.message ?? "Could not restore paper version");
+      return body as LatexPaperArtifactDescriptor;
+    },
+    onSuccess: (restored) => {
+      queryClient.setQueryData(["chat-latex-paper", block.artifact_id], restored);
+      queryClient.invalidateQueries({ queryKey: ["chat-latex-paper-history", block.artifact_id] });
+      queryClient.invalidateQueries({ queryKey: ["chat-latex-paper-manifest", block.artifact_id] });
+      queryClient.invalidateQueries({ queryKey: ["chat-latex-paper-source-files", block.artifact_id] });
+      initializedVersion.current = null;
+      setCheckedOut(false);
+      setHistoryCursor(null);
+      setEditorError(null);
+      panel.setTab("preview");
+    },
+    onError: (error) => setEditorError(error instanceof Error ? error.message : "Could not restore paper version"),
+  });
+
   const refreshMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch(apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/refresh-compile`), {
@@ -222,6 +273,9 @@ export const LatexPaperPanel: React.FC<{
 
   const sourcePath = panel.state.sourceFile ?? manifestQuery.data?.root_document ?? null;
   const canEdit = descriptor?.editing_enabled === true && Boolean(source?.version_id) && checkedOut && !staleDraft && !saveMutation.isPending;
+  const historyVersionNumbers = new Map(
+    historyQuery.data?.items.map((version) => [version.version_id, version.version]) ?? [],
+  );
   const previewUrl = preview
     ? apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/versions/${encodeURIComponent(preview.version_id)}/preview`)
     : null;
@@ -309,6 +363,23 @@ export const LatexPaperPanel: React.FC<{
               </div>}
             </div>
           </div>}
+      {historyOpen && <section className="chat-artifact-history" aria-label="Paper version history">
+        <h3>Version history</h3>
+        {historyQuery.isLoading && <p>Loading history…</p>}
+        {historyQuery.isError && <p role="alert">Paper history could not be loaded.</p>}
+        {historyQuery.data?.items.map((version) => <article key={version.version_id}>
+          <strong>v{version.version} · {version.compile_status}</strong>
+          <span>{provenanceLabel(version)}</span>
+          {version.created_at && <time dateTime={version.created_at}>{version.created_at}</time>}
+          {version.parent_version_id && <span>Parent {historyVersionNumbers.has(version.parent_version_id) ? `v${historyVersionNumbers.get(version.parent_version_id)}` : version.parent_version_id}</span>}
+          {version.provenance?.changed_files.length ? <span>Changed: {version.provenance.changed_files.join(", ")}</span> : null}
+          {version.provenance?.restored_from_version_id && <span>Restored from {version.provenance.restored_from_version_id}</span>}
+          {version.provenance?.change_summary && <p>{version.provenance.change_summary}</p>}
+          {version.provenance?.reference_changes.map((change) => <p key={change}>{change}</p>)}
+          {descriptor?.editing_enabled && source?.version_id && version.version_id !== source.version_id && <button type="button" disabled={restoreMutation.isPending || draftIsDirty} onClick={() => restoreMutation.mutate(version.version_id)}>Restore version {version.version}</button>}
+        </article>)}
+        {historyQuery.data?.next_cursor && <button type="button" onClick={() => setHistoryCursor(historyQuery.data!.next_cursor ?? null)}>Load older versions</button>}
+      </section>}
     </div>
     <footer>
       <div className="chat-artifact-metadata" aria-live="polite">
@@ -326,6 +397,7 @@ export const LatexPaperPanel: React.FC<{
       <div className="chat-artifact-actions">
         {source?.compile_status === "failed" && !source.repair_exhausted && <button type="button" onClick={askAiToFix}>Ask AI to fix</button>}
         {source?.compile_status === "failed" && source.repair_exhausted && <span role="status">AI repair attempts exhausted</span>}
+        <button type="button" onClick={() => { setHistoryCursor(null); setHistoryOpen(!historyOpen); }}>Version history</button>
         {panel.state.tab === "files" && canEdit && <button type="button" disabled={!draftIsDirty} onClick={() => saveMutation.mutate()}><Save />{saveMutation.isPending ? "Saving…" : "Save & Compile"}</button>}
         {previewUrl && <a href={previewUrl} download><Download /> PDF</a>}
         {source && sourcePath && <a href={sourceUrl(block.artifact_id!, source.version_id, sourcePath)} download><FileCode2 /> Source</a>}

@@ -36,6 +36,8 @@ from backend.models.chat import (
     ChatFeedbackRequest,
     ChatMessageResponse,
     ChatRequest,
+    LatexPaperHistoryPage,
+    LatexPaperRestoreRequest,
     LatexPaperSaveCompileRequest,
     ChatSandboxSpendResponse,
     ChatSessionDetail,
@@ -1117,6 +1119,56 @@ def refresh_latex_paper_compile(
         descriptor = LatexPaperService(db, settings).refresh_compile(
             owner_id=owner_from_user(user).hf_user_id,
             artifact_id=artifact_id,
+        )
+        db.commit()
+        return descriptor
+    except ArtifactError as error:
+        db.rollback()
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions", response_model=LatexPaperHistoryPage)
+def get_latex_paper_history(
+    artifact_id: uuid.UUID,
+    response: Response,
+    limit: int = Query(default=20, ge=1, le=50),
+    cursor: str | None = Query(default=None, max_length=16),
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Return one bounded page of private immutable-version audit metadata."""
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return LatexPaperService(db, settings).list_history(
+            owner_id=owner_from_user(user).hf_user_id,
+            artifact_id=artifact_id,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.post("/artifacts/{artifact_id}/versions/restore")
+def restore_latex_paper_version(
+    artifact_id: uuid.UUID,
+    request: LatexPaperRestoreRequest,
+    http_request: Request,
+    response: Response,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Restore a snapshot by publishing a newly compiled immutable child."""
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_same_origin_csrf(http_request, settings)
+    try:
+        descriptor = LatexPaperService(db, settings).restore_version(
+            owner_id=owner_from_user(user).hf_user_id,
+            artifact_id=artifact_id,
+            source_version_id=request.source_version_id,
+            expected_parent_version_id=request.expected_parent_version_id,
         )
         db.commit()
         return descriptor

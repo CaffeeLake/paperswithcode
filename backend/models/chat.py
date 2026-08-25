@@ -490,6 +490,42 @@ class LatexPaperDisplayMetadata(BaseModel):
     warning_count: int = Field(default=0, ge=0, le=10_000)
 
 
+class LatexPaperVersionProvenance(BaseModel):
+    """Bounded authorship and change context for an immutable paper version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["human_save", "ai_draft", "ai_repair", "restore"]
+    model_identity: str | None = Field(default=None, max_length=300)
+    change_summary: str | None = Field(default=None, max_length=500)
+    changed_files: list[
+        Annotated[str, StringConstraints(min_length=1, max_length=300)]
+    ] = Field(default_factory=list, max_length=100)
+    reference_changes: list[
+        Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    ] = Field(default_factory=list, max_length=50)
+    restored_from_version_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_actor_details(self) -> "LatexPaperVersionProvenance":
+        if self.action in {"ai_draft", "ai_repair"} and not self.model_identity:
+            raise ValueError("AI paper versions require a model identity")
+        if self.action in {"human_save", "restore"} and self.model_identity:
+            raise ValueError("Human and restore versions cannot claim an AI model")
+        if self.action != "restore" and self.restored_from_version_id is not None:
+            raise ValueError("Only restore versions can name a restored source")
+        for path in self.changed_files:
+            if (
+                path.startswith("/")
+                or "\\" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+            ):
+                raise ValueError(
+                    "Changed paper file paths must be normalized and relative"
+                )
+        return self
+
+
 class LatexPaperManifest(BaseModel):
     """Kind-specific immutable source manifest for a private LaTeX paper."""
 
@@ -530,6 +566,8 @@ class LatexPaperVersionDescriptor(BaseModel):
     version: int = Field(ge=1, le=10_000)
     source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     compile_status: Literal["queued", "compiling", "succeeded", "failed"]
+    created_at: datetime | None = None
+    actor_type: Literal["ai", "human", "restore"] = "human"
     parent_version_id: uuid.UUID | None = None
     preview_head_version_id: uuid.UUID | None = None
     compile_diagnostics: list["LatexPaperDiagnostic"] = Field(
@@ -540,6 +578,9 @@ class LatexPaperVersionDescriptor(BaseModel):
     generation_provenance: dict | None = None
     display_metadata: LatexPaperDisplayMetadata = Field(
         default_factory=LatexPaperDisplayMetadata
+    )
+    provenance: LatexPaperVersionProvenance = Field(
+        default_factory=lambda: LatexPaperVersionProvenance(action="human_save")
     )
 
     @model_validator(mode="after")
@@ -600,6 +641,26 @@ class LatexPaperSaveCompileRequest(BaseModel):
         if len({file.path for file in self.files}) != len(self.files):
             raise ValueError("Paper save contains duplicate file paths")
         return self
+
+
+class LatexPaperRestoreRequest(BaseModel):
+    """Restore a historical source snapshot as an immutable child of the head."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_version_id: uuid.UUID
+    expected_parent_version_id: uuid.UUID
+
+
+class LatexPaperHistoryPage(BaseModel):
+    """A bounded, newest-first page of paper version audit metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[LatexPaperVersionDescriptor] = Field(
+        default_factory=list, max_length=50
+    )
+    next_cursor: str | None = Field(default=None, max_length=16)
 
 
 class ArtifactDisplayBlock(BaseModel):

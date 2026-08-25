@@ -299,6 +299,111 @@ def test_failed_ai_repairs_are_ephemeral_until_a_successful_candidate(db, settin
     }
 
 
+def test_async_repair_waits_for_terminal_sandbox_result(db, settings, monkeypatch):
+    class AsyncCompiler(_Compiler):
+        def __init__(self):
+            super().__init__(CompilerJobState.QUEUED)
+            self.status_calls = 0
+            self.canceled = False
+
+        def status(self, job_id: str):
+            self.status_calls += 1
+            self.state = CompilerJobState.SUCCEEDED
+            return super().status(job_id)
+
+        def cancel(self, job_id: str):
+            self.canceled = True
+            return super().cancel(job_id)
+
+    compiler = _Compiler()
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=compiler)
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    async_compiler = AsyncCompiler()
+    service.compiler = async_compiler
+    monkeypatch.setattr(
+        "backend.services.latex_paper_service.time.sleep", lambda _: None
+    )
+    repaired = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+        },
+        provenance={"selected_model": "test-model", "repair": True},
+    )
+
+    assert repaired.repaired is True
+    assert async_compiler.status_calls == 1
+    assert async_compiler.canceled is False
+    assert repaired.descriptor.source_head is not None
+    assert repaired.descriptor.source_head.provenance.action == "ai_repair"
+    assert repaired.descriptor.source_head.provenance.model_identity == "test-model"
+
+
+def test_async_repair_cancels_when_sandbox_polling_fails(db, settings, monkeypatch):
+    class PollingFailureCompiler(_Compiler):
+        def __init__(self):
+            super().__init__(CompilerJobState.QUEUED)
+            self.canceled = False
+
+        def status(self, job_id: str):
+            raise RuntimeError("Sandbox connection lost")
+
+        def cancel(self, job_id: str):
+            self.canceled = True
+            return super().cancel(job_id)
+
+    compiler = _Compiler()
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=compiler)
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=_session(db)
+    )
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    failing_compiler = PollingFailureCompiler()
+    service.compiler = failing_compiler
+    monkeypatch.setattr(
+        "backend.services.latex_paper_service.time.sleep", lambda _: None
+    )
+    outcome = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+        },
+        provenance={"selected_model": "test-model", "repair": True},
+    )
+
+    assert outcome.repaired is False
+    assert failing_compiler.canceled is True
+    assert outcome.descriptor.source_head is not None
+    assert outcome.descriptor.source_head.version_id == failed.source_head.version_id
+
+
 def test_repair_budget_leaves_the_failed_human_source_intact_after_three_attempts(
     db, settings
 ):
@@ -505,6 +610,155 @@ def test_human_save_rejects_a_stale_parent_without_overwriting(db, settings):
         db.get(ChatArtifact, initial.artifact_id).source_head_version_id
         == saved.source_head.version_id
     )
+
+
+def test_history_is_paginated_and_exposes_only_bounded_version_audit_data(db, settings):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(
+        owner_id="owner-1",
+        session_id=session_id,
+        actor_type="ai",
+        model_identity="gpt-test",
+    )
+    assert initial.source_head is not None
+    human = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Human\\end{document}"
+        },
+    )
+    assert human.source_head is not None
+    repaired = service.save_ai_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=human.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Repair\\end{document}"
+        },
+        model_identity="gpt-test",
+        change_summary="Fixed the compilation error.",
+        changed_files=["main.tex"],
+        reference_changes=["Added one verified reference."],
+        is_repair=True,
+    )
+    assert repaired.source_head is not None
+
+    first = service.list_history(
+        owner_id="owner-1", artifact_id=initial.artifact_id, limit=2
+    )
+    assert [item.version for item in first.items] == [3, 2]
+    assert first.next_cursor == "2"
+    assert first.items[0].actor_type == "ai"
+    assert first.items[0].created_at is not None
+    assert first.items[0].provenance.action == "ai_repair"
+    assert first.items[0].provenance.model_identity == "gpt-test"
+    assert first.items[0].provenance.changed_files == ["main.tex"]
+    assert first.items[0].provenance.reference_changes == [
+        "Added one verified reference."
+    ]
+    assert first.items[1].actor_type == "human"
+    assert first.items[1].provenance.action == "human_save"
+    assert not hasattr(first.items[0], "files")
+
+    second = service.list_history(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        limit=2,
+        cursor=first.next_cursor,
+    )
+    assert [item.version for item in second.items] == [1]
+    assert second.next_cursor is None
+    assert second.items[0].provenance.action == "ai_draft"
+
+
+def test_restore_creates_a_new_head_and_retains_the_last_good_preview_on_failure(
+    db, settings
+):
+    session_id = _session(db)
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    initial_service = LatexPaperService(
+        db, settings, storage=storage, compiler=_Compiler()
+    )
+    initial = initial_service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=session_id
+    )
+    assert initial.source_head is not None
+    edited = initial_service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}New head\\end{document}"
+        },
+    )
+    assert edited.source_head is not None and edited.preview_head is not None
+
+    restoring = LatexPaperService(
+        db, settings, storage=storage, compiler=_Compiler(CompilerJobState.FAILED)
+    )
+    restored = restoring.restore_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        source_version_id=initial.source_head.version_id,
+        expected_parent_version_id=edited.source_head.version_id,
+    )
+
+    assert restored.source_head is not None and restored.preview_head is not None
+    assert restored.source_head.version == 3
+    assert restored.source_head.parent_version_id == edited.source_head.version_id
+    assert restored.source_head.compile_status == "failed"
+    assert restored.source_head.provenance.action == "restore"
+    assert restored.preview_head.version_id == edited.preview_head.version_id
+    restored_row = db.get(ChatLatexPaperVersion, restored.source_head.version_id)
+    original_row = db.get(ChatLatexPaperVersion, initial.source_head.version_id)
+    assert restored_row is not None and original_row is not None
+    assert restored_row.source_digest == original_row.source_digest
+    assert restored_row.id != original_row.id
+    assert restored.source_head.provenance.restored_from_version_id == original_row.id
+    assert (
+        initial_service.read_source_file(
+            "owner-1", initial.artifact_id, restored_row.id, "main.tex"
+        ).data
+        == initial_service.read_source_file(
+            "owner-1", initial.artifact_id, original_row.id, "main.tex"
+        ).data
+    )
+
+    with pytest.raises(Exception, match="updated elsewhere"):
+        restoring.restore_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            source_version_id=initial.source_head.version_id,
+            expected_parent_version_id=edited.source_head.version_id,
+        )
+
+
+def test_restore_rejects_the_current_head(db, settings):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+
+    with pytest.raises(Exception, match="historical version"):
+        service.restore_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            source_version_id=initial.source_head.version_id,
+            expected_parent_version_id=initial.source_head.version_id,
+        )
 
 
 def test_pending_human_save_advances_preview_when_polled(db, settings):

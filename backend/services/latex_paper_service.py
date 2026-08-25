@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -20,8 +21,10 @@ from backend.models.chat import (
     LatexPaperDiagnostic,
     LatexPaperDisplayMetadata,
     LatexPaperFile,
+    LatexPaperHistoryPage,
     LatexPaperManifest,
     LatexPaperVersionDescriptor,
+    LatexPaperVersionProvenance,
 )
 from backend.models.database import ChatArtifact, ChatLatexPaperVersion, ChatSession
 from backend.services.chat_artifact_service import (
@@ -40,6 +43,9 @@ _PAPER_IDENTIFIER = "latex-paper"
 _SOURCE_ARCHIVE = "source.zip"
 _PREVIEW_PDF = "preview.pdf"
 _MAX_REPAIR_ATTEMPTS = 3
+_REPAIR_POLL_ATTEMPTS = 20
+_REPAIR_POLL_SECONDS = 0.25
+_AUDIT_PROVENANCE_KEY = "_audit_provenance"
 
 
 @dataclass(frozen=True)
@@ -95,57 +101,96 @@ def _deterministic_zip(files: Mapping[str, bytes]) -> bytes:
     return output.getvalue()
 
 
+def _version_display_metadata(
+    version: ChatLatexPaperVersion,
+) -> LatexPaperDisplayMetadata:
+    metadata = dict(version.display_metadata)
+    metadata.pop(_AUDIT_PROVENANCE_KEY, None)
+    return LatexPaperDisplayMetadata.model_validate(metadata)
+
+
+def _version_provenance(version: ChatLatexPaperVersion) -> LatexPaperVersionProvenance:
+    stored = (version.display_metadata or {}).get(_AUDIT_PROVENANCE_KEY)
+    if stored is not None:
+        return LatexPaperVersionProvenance.model_validate(stored)
+    generated = version.generation_provenance or {}
+    if version.actor_type == "ai":
+        model_identity = generated.get("selected_model")
+        return LatexPaperVersionProvenance(
+            action="ai_repair" if generated.get("repair") else "ai_draft",
+            model_identity=(
+                model_identity if isinstance(model_identity, str) else "unknown"
+            ),
+        )
+    return LatexPaperVersionProvenance(
+        action="restore" if version.actor_type == "restore" else "human_save"
+    )
+
+
+def _audit_metadata(
+    metadata: LatexPaperDisplayMetadata, provenance: LatexPaperVersionProvenance
+) -> dict:
+    result = metadata.model_dump(mode="json")
+    result[_AUDIT_PROVENANCE_KEY] = provenance.model_dump(mode="json")
+    return result
+
+
+def _version_descriptor(
+    artifact: ChatArtifact, version: ChatLatexPaperVersion
+) -> LatexPaperVersionDescriptor:
+    diagnostics = version.compile_diagnostics or {}
+    raw_diagnostics = diagnostics.get("diagnostics", [])
+    if not isinstance(raw_diagnostics, list):
+        raw_diagnostics = []
+    repair_diagnostics = diagnostics.get("last_repair_diagnostics", [])
+    if isinstance(repair_diagnostics, list):
+        raw_diagnostics = [*raw_diagnostics, *repair_diagnostics]
+    errors = diagnostics.get("errors", [])
+    if isinstance(errors, list):
+        raw_diagnostics.extend(
+            {"severity": "error", **item} for item in errors if isinstance(item, dict)
+        )
+    normalized_diagnostics = [
+        LatexPaperDiagnostic(
+            severity=item["severity"],
+            phase=diagnostics.get("failure_category"),
+            file=item.get("file"),
+            line=item.get("line"),
+            message=item["message"],
+        )
+        for item in raw_diagnostics[:20]
+        if isinstance(item, dict)
+        and item.get("severity") in {"error", "warning"}
+        and isinstance(item.get("message"), str)
+    ]
+    attempts = diagnostics.get("repair_attempts", 0)
+    attempts = attempts if isinstance(attempts, int) else 0
+    attempts = min(max(attempts, 0), _MAX_REPAIR_ATTEMPTS)
+    return LatexPaperVersionDescriptor(
+        version_id=version.id,
+        version=version.version,
+        source_digest=version.source_digest,
+        compile_status=version.compile_status,
+        created_at=version.created_at,
+        actor_type=version.actor_type,
+        parent_version_id=version.parent_version_id,
+        preview_head_version_id=artifact.preview_head_version_id,
+        compile_diagnostics=normalized_diagnostics,
+        repair_attempts_remaining=_MAX_REPAIR_ATTEMPTS - attempts,
+        repair_exhausted=attempts >= _MAX_REPAIR_ATTEMPTS,
+        generation_provenance=version.generation_provenance,
+        display_metadata=_version_display_metadata(version),
+        provenance=_version_provenance(version),
+    )
+
+
 def _paper_descriptor(artifact: ChatArtifact) -> LatexPaperArtifactDescriptor:
     versions = {item.id: item for item in artifact.paper_versions}
 
     def descriptor(version_id: uuid.UUID | None) -> LatexPaperVersionDescriptor | None:
         if version_id is None or (version := versions.get(version_id)) is None:
             return None
-        diagnostics = version.compile_diagnostics or {}
-        raw_diagnostics = diagnostics.get("diagnostics", [])
-        if not isinstance(raw_diagnostics, list):
-            raw_diagnostics = []
-        repair_diagnostics = diagnostics.get("last_repair_diagnostics", [])
-        if isinstance(repair_diagnostics, list):
-            raw_diagnostics = [*raw_diagnostics, *repair_diagnostics]
-        errors = diagnostics.get("errors", [])
-        if isinstance(errors, list):
-            raw_diagnostics.extend(
-                {"severity": "error", **item}
-                for item in errors
-                if isinstance(item, dict)
-            )
-        normalized_diagnostics = [
-            LatexPaperDiagnostic(
-                severity=item["severity"],
-                phase=diagnostics.get("failure_category"),
-                file=item.get("file"),
-                line=item.get("line"),
-                message=item["message"],
-            )
-            for item in raw_diagnostics[:20]
-            if isinstance(item, dict)
-            and item.get("severity") in {"error", "warning"}
-            and isinstance(item.get("message"), str)
-        ]
-        attempts = diagnostics.get("repair_attempts", 0)
-        attempts = attempts if isinstance(attempts, int) else 0
-        attempts = min(max(attempts, 0), _MAX_REPAIR_ATTEMPTS)
-        return LatexPaperVersionDescriptor(
-            version_id=version.id,
-            version=version.version,
-            source_digest=version.source_digest,
-            compile_status=version.compile_status,
-            parent_version_id=version.parent_version_id,
-            preview_head_version_id=artifact.preview_head_version_id,
-            compile_diagnostics=normalized_diagnostics,
-            repair_attempts_remaining=_MAX_REPAIR_ATTEMPTS - attempts,
-            repair_exhausted=attempts >= _MAX_REPAIR_ATTEMPTS,
-            generation_provenance=version.generation_provenance,
-            display_metadata=LatexPaperDisplayMetadata.model_validate(
-                version.display_metadata
-            ),
-        )
+        return _version_descriptor(artifact, version)
 
     return LatexPaperArtifactDescriptor(
         artifact_id=artifact.id,
@@ -183,6 +228,8 @@ class LatexPaperService:
         owner_id: str,
         session_id: uuid.UUID,
         title: str = "Untitled Research Draft",
+        actor_type: str = "human",
+        model_identity: str | None = None,
     ) -> LatexPaperArtifactDescriptor:
         if (
             not self.settings.chat_artifacts_enabled
@@ -202,6 +249,20 @@ class LatexPaperService:
             raise ArtifactError(
                 "artifact_invalid", "Papers are available only in general chat"
             )
+        if actor_type not in {"ai", "human"}:
+            raise ArtifactError("artifact_invalid", "Invalid initial paper actor")
+        if actor_type == "ai" and not model_identity:
+            raise ArtifactError("artifact_invalid", "AI paper versions require a model")
+        if actor_type == "human" and model_identity:
+            raise ArtifactError(
+                "artifact_invalid", "Human paper versions cannot claim a model"
+            )
+        files = _neutral_scaffold(title)
+        provenance = LatexPaperVersionProvenance(
+            action="ai_draft" if actor_type == "ai" else "human_save",
+            model_identity=model_identity,
+            changed_files=sorted(files),
+        )
         if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
             self.db.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:session))"),
@@ -216,7 +277,6 @@ class LatexPaperService:
         if existing is not None:
             raise ArtifactError("paper_exists", "This chat already has a paper")
 
-        files = _neutral_scaffold(title)
         source_bytes = sum(len(data) for data in files.values())
         if source_bytes > self.settings.chat_artifact_max_version_bytes:
             raise ArtifactError(
@@ -258,8 +318,8 @@ class LatexPaperService:
             storage_key=self._storage_prefix(session_row.id, artifact.id, version=1),
             storage_state="uploading",
             compile_status="queued",
-            display_metadata=manifest.display_metadata.model_dump(mode="json"),
-            actor_type="human",
+            display_metadata=_audit_metadata(manifest.display_metadata, provenance),
+            actor_type=actor_type,
         )
         artifact.source_head_version_id = version.id
         self.db.add(version)
@@ -290,6 +350,8 @@ class LatexPaperService:
         artifact_id: uuid.UUID,
         expected_parent_version_id: uuid.UUID,
         files: Mapping[str, bytes],
+        actor_type: str = "human",
+        provenance: LatexPaperVersionProvenance | None = None,
     ) -> LatexPaperArtifactDescriptor:
         """Publish one complete human source snapshot and submit it to compilation.
 
@@ -297,6 +359,8 @@ class LatexPaperService:
         Save & Compile action, and it must either publish a whole new immutable
         version or leave the current head untouched.
         """
+        if actor_type not in {"ai", "human"}:
+            raise ArtifactError("artifact_invalid", "Invalid paper version actor")
         if (
             not self.settings.chat_artifacts_enabled
             or not self.settings.chat_latex_paper_enabled
@@ -353,6 +417,17 @@ class LatexPaperService:
             ],
             display_metadata=parent_manifest.display_metadata,
         )
+        version_provenance = provenance or LatexPaperVersionProvenance(
+            action="human_save",
+            changed_files=sorted(normalized_files),
+        )
+        valid_actions = (
+            {"ai_draft", "ai_repair"} if actor_type == "ai" else {"human_save"}
+        )
+        if version_provenance.action not in valid_actions:
+            raise ArtifactError(
+                "artifact_invalid", "Paper provenance does not match actor"
+            )
         version = ChatLatexPaperVersion(
             id=uuid.uuid4(),
             artifact=artifact,
@@ -366,8 +441,10 @@ class LatexPaperService:
             ),
             storage_state="uploading",
             compile_status="queued",
-            display_metadata=manifest.display_metadata.model_dump(mode="json"),
-            actor_type="human",
+            display_metadata=_audit_metadata(
+                manifest.display_metadata, version_provenance
+            ),
+            actor_type=actor_type,
         )
         self.db.add(version)
         artifact.latest_version = version_number
@@ -387,6 +464,165 @@ class LatexPaperService:
         version.storage_state = "ready"
         # Advance source before compilation so a failed compile remains a durable,
         # repairable human version while the previous PDF remains the preview head.
+        artifact.source_head_version_id = version.id
+        self._compile(version, bundle, manifest.root_document)
+        self.db.flush()
+        return _paper_descriptor(artifact).model_copy(
+            update={"editing_enabled": self._editing_enabled()}
+        )
+
+    def save_ai_version(
+        self,
+        *,
+        owner_id: str,
+        artifact_id: uuid.UUID,
+        expected_parent_version_id: uuid.UUID,
+        files: Mapping[str, bytes],
+        model_identity: str,
+        change_summary: str | None = None,
+        changed_files: list[str] | None = None,
+        reference_changes: list[str] | None = None,
+        is_repair: bool = False,
+    ) -> LatexPaperArtifactDescriptor:
+        """Publish a bounded AI candidate through the same immutable write seam."""
+        return self.save_human_version(
+            owner_id=owner_id,
+            artifact_id=artifact_id,
+            expected_parent_version_id=expected_parent_version_id,
+            files=files,
+            actor_type="ai",
+            provenance=LatexPaperVersionProvenance(
+                action="ai_repair" if is_repair else "ai_draft",
+                model_identity=model_identity,
+                change_summary=change_summary,
+                changed_files=changed_files or sorted(files),
+                reference_changes=reference_changes or [],
+            ),
+        )
+
+    def list_history(
+        self,
+        *,
+        owner_id: str,
+        artifact_id: uuid.UUID,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> LatexPaperHistoryPage:
+        """Return audit metadata only; immutable manifests and files stay on demand."""
+        if not 1 <= limit <= 50:
+            raise ArtifactError(
+                "artifact_invalid", "Paper history page size is invalid"
+            )
+        before_version: int | None = None
+        if cursor is not None:
+            try:
+                before_version = int(cursor)
+            except ValueError as error:
+                raise ArtifactError(
+                    "artifact_invalid", "Paper history cursor is invalid"
+                ) from error
+            if before_version < 1:
+                raise ArtifactError(
+                    "artifact_invalid", "Paper history cursor is invalid"
+                )
+        artifact = self._artifact(owner_id, artifact_id)
+        statement = select(ChatLatexPaperVersion).where(
+            ChatLatexPaperVersion.artifact_id == artifact.id,
+            ChatLatexPaperVersion.storage_state == "ready",
+        )
+        if before_version is not None:
+            statement = statement.where(ChatLatexPaperVersion.version < before_version)
+        rows = list(
+            self.db.scalars(
+                statement.order_by(ChatLatexPaperVersion.version.desc()).limit(
+                    limit + 1
+                )
+            )
+        )
+        page_rows, extra = rows[:limit], rows[limit:]
+        return LatexPaperHistoryPage(
+            items=[_version_descriptor(artifact, row) for row in page_rows],
+            next_cursor=str(page_rows[-1].version) if extra else None,
+        )
+
+    def restore_version(
+        self,
+        *,
+        owner_id: str,
+        artifact_id: uuid.UUID,
+        source_version_id: uuid.UUID,
+        expected_parent_version_id: uuid.UUID,
+    ) -> LatexPaperArtifactDescriptor:
+        """Copy one historical snapshot into a newly compiled immutable head."""
+        if not self._editing_enabled():
+            raise ArtifactError("artifacts_disabled", "Paper editing is disabled")
+        artifact = self._artifact(owner_id, artifact_id, lock=True)
+        if artifact.source_head_version_id != expected_parent_version_id:
+            raise ArtifactError(
+                "paper_conflict",
+                "This paper was updated elsewhere. Reload its latest version before restoring.",
+            )
+        if source_version_id == expected_parent_version_id:
+            raise ArtifactError(
+                "artifact_invalid", "Choose a historical version to restore"
+            )
+        source = self._version(owner_id, artifact_id, source_version_id)
+        bundle = self.storage.read_file(
+            f"{source.storage_key}/{_SOURCE_ARCHIVE}",
+            max_bytes=self.settings.chat_artifact_max_version_bytes,
+        )
+        if hashlib.sha256(bundle).hexdigest() != source.source_digest:
+            raise ArtifactError(
+                "artifact_corrupt", "Paper source digest verification failed"
+            )
+        manifest = LatexPaperManifest.model_validate(source.source_manifest)
+        version_number = (artifact.latest_version or 0) + 1
+        provenance = LatexPaperVersionProvenance(
+            action="restore", restored_from_version_id=source.id
+        )
+        version = ChatLatexPaperVersion(
+            id=uuid.uuid4(),
+            artifact=artifact,
+            parent_version_id=expected_parent_version_id,
+            version=version_number,
+            source_manifest=manifest.model_dump(mode="json"),
+            source_digest=source.source_digest,
+            source_byte_count=source.source_byte_count,
+            storage_key=self._storage_prefix(
+                artifact.session_id, artifact.id, version=version_number
+            ),
+            storage_state="uploading",
+            compile_status="queued",
+            display_metadata=_audit_metadata(manifest.display_metadata, provenance),
+            actor_type="restore",
+        )
+        self.db.add(version)
+        artifact.latest_version = version_number
+        self.db.flush()
+        try:
+            for file in manifest.files:
+                data = self.storage.read_file(
+                    f"{source.storage_key}/{file.path}", max_bytes=file.bytes
+                )
+                if hashlib.sha256(data).hexdigest() != file.sha256:
+                    raise ArtifactError(
+                        "artifact_corrupt", "Paper source digest verification failed"
+                    )
+                self.storage.write_file(
+                    f"{version.storage_key}/{file.path}", BytesIO(data)
+                )
+            self.storage.write_file(
+                f"{version.storage_key}/{_SOURCE_ARCHIVE}", BytesIO(bundle)
+            )
+        except Exception as error:
+            version.storage_state = "failed"
+            self.storage.delete_prefix(version.storage_key)
+            if isinstance(error, ArtifactError):
+                raise
+            raise ArtifactError(
+                "artifact_storage_failed", "Paper source storage failed"
+            ) from error
+        version.storage_state = "ready"
         artifact.source_head_version_id = version.id
         self._compile(version, bundle, manifest.root_document)
         self.db.flush()
@@ -450,12 +686,7 @@ class LatexPaperService:
         files: Mapping[str, bytes],
         provenance: dict,
     ) -> LatexPaperRepairOutcome:
-        """Compile one AI repair candidate without persisting failed attempts.
-
-        A candidate has a real compiler job UUID but no durable paper version until
-        it succeeds. This keeps mechanical repair attempts out of manuscript
-        history while preserving the failed human source as the repair base.
-        """
+        """Compile one AI repair candidate without persisting failed attempts."""
         artifact = self._artifact(owner_id, artifact_id, lock=True)
         if artifact.source_head_version_id != expected_parent_version_id:
             raise ArtifactError(
@@ -482,41 +713,51 @@ class LatexPaperService:
         bundle = _deterministic_zip(normalized_files)
         source_digest = hashlib.sha256(bundle).hexdigest()
         candidate_id = uuid.uuid4()
-        compiler = self.compiler or compiler_client_from_settings(self.settings)
+        compiler = self.compiler or compiler_transport_from_settings(self.settings)
         result: CompilerResult | None = None
+        submitted = False
         try:
             status = compiler.submit(
                 job_id=str(candidate_id),
                 bundle=bundle,
                 entrypoint=parent_manifest.root_document,
             )
-            if status.state not in {
-                CompilerJobState.SUCCEEDED,
-                CompilerJobState.FAILED,
-            }:
+            submitted = True
+            for _ in range(_REPAIR_POLL_ATTEMPTS + 1):
+                if status.state in {
+                    CompilerJobState.SUCCEEDED,
+                    CompilerJobState.FAILED,
+                }:
+                    result = compiler.result(str(candidate_id))
+                    break
+                time.sleep(_REPAIR_POLL_SECONDS)
                 status = compiler.status(str(candidate_id))
-            if status.state in {CompilerJobState.SUCCEEDED, CompilerJobState.FAILED}:
-                result = compiler.result(str(candidate_id))
+            else:
+                # Repairs are intentionally ephemeral until a candidate finishes.
+                # A pending per-job Sandbox must be released rather than stranded
+                # without a durable version/job record to reconcile later.
+                compiler.cancel(str(candidate_id))
         except (httpx.HTTPError, EnvelopeError, RuntimeError, ValueError):
+            if submitted:
+                try:
+                    compiler.cancel(str(candidate_id))
+                except (httpx.HTTPError, EnvelopeError, RuntimeError, ValueError):
+                    pass
             result = None
 
         if result is None:
-            # The compiler is asynchronous. A non-terminal response is neither a
-            # failed repair nor a durable candidate, so it must not spend budget.
             return LatexPaperRepairOutcome(
                 self._descriptor(artifact), repaired=False, exhausted=False
             )
-
         if (
             result.state != CompilerJobState.SUCCEEDED
             or result.pdf is None
             or result.source_digest != source_digest
         ):
             diagnostics["repair_attempts"] = attempts + 1
-            if result is not None:
-                diagnostics["last_repair_diagnostics"] = [
-                    item.model_dump(mode="json") for item in result.diagnostics[:20]
-                ]
+            diagnostics["last_repair_diagnostics"] = [
+                item.model_dump(mode="json") for item in result.diagnostics[:20]
+            ]
             parent.compile_diagnostics = diagnostics
             self.db.flush()
             return LatexPaperRepairOutcome(
@@ -525,14 +766,7 @@ class LatexPaperService:
                 exhausted=attempts + 1 >= _MAX_REPAIR_ATTEMPTS,
             )
 
-        version_number = (
-            self.db.scalar(
-                select(func.max(ChatLatexPaperVersion.version)).where(
-                    ChatLatexPaperVersion.artifact_id == artifact.id
-                )
-            )
-            or 0
-        ) + 1
+        version_number = (artifact.latest_version or 0) + 1
         manifest = LatexPaperManifest(
             title=artifact.title,
             root_document=parent_manifest.root_document,
@@ -547,6 +781,7 @@ class LatexPaperService:
             ],
             display_metadata=parent_manifest.display_metadata,
         )
+        model_identity = provenance.get("selected_model", provenance.get("model"))
         version = ChatLatexPaperVersion(
             id=candidate_id,
             artifact=artifact,
@@ -560,7 +795,16 @@ class LatexPaperService:
             ),
             storage_state="uploading",
             compile_status="queued",
-            display_metadata=manifest.display_metadata.model_dump(mode="json"),
+            display_metadata=_audit_metadata(
+                manifest.display_metadata,
+                LatexPaperVersionProvenance(
+                    action="ai_repair",
+                    model_identity=model_identity
+                    if isinstance(model_identity, str)
+                    else "unknown",
+                    changed_files=sorted(normalized_files),
+                ),
+            ),
             generation_provenance=provenance,
             actor_type="ai",
         )

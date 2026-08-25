@@ -2643,9 +2643,6 @@ class ChatLatexPaperVersion(Base):
         UniqueConstraint(
             "artifact_id", "version", name="uq_chat_latex_paper_versions_number"
         ),
-        UniqueConstraint(
-            "artifact_id", "source_digest", name="uq_chat_latex_paper_versions_digest"
-        ),
         Index("idx_chat_latex_paper_versions_turn", "turn_id"),
         Index("idx_chat_latex_paper_versions_message", "message_id"),
     )

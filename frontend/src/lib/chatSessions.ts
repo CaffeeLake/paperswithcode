@@ -56,6 +56,8 @@ export interface LatexPaperVersionDescriptor {
   version: number;
   source_digest: string;
   compile_status: "queued" | "compiling" | "succeeded" | "failed";
+  created_at?: string | null;
+  actor_type?: "ai" | "human" | "restore";
   parent_version_id?: string | null;
   preview_head_version_id?: string | null;
   compile_diagnostics?: Array<{
@@ -73,6 +75,19 @@ export interface LatexPaperVersionDescriptor {
     unresolved_todo_count: number;
     warning_count: number;
   };
+  provenance?: {
+    action: "human_save" | "ai_draft" | "ai_repair" | "restore";
+    model_identity?: string | null;
+    change_summary?: string | null;
+    changed_files: string[];
+    reference_changes: string[];
+    restored_from_version_id?: string | null;
+  };
+}
+
+export interface LatexPaperHistoryPage {
+  items: LatexPaperVersionDescriptor[];
+  next_cursor?: string | null;
 }
 
 export interface LatexPaperArtifactDescriptor {
