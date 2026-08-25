@@ -67,6 +67,8 @@ def session_cookie_name() -> str:
 
 SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 STATE_TTL_SECONDS = 5 * 60  # 5 minutes
+POSTHOG_SIGNUP_COOKIE_NAME = "pwc_posthog_signup"
+POSTHOG_SIGNUP_COOKIE_MAX_AGE_SECONDS = 5 * 60
 
 
 class AuthMe(BaseModel):
@@ -544,15 +546,28 @@ async def hf_callback(
         "email_verified": email_verified and state_payload.get("collect_email") is True,
     }
     from backend.database.connection import db_manager
+    from backend.models.database import UserProfile
     from backend.services.user_profile_service import UserProfileService
 
     with db_manager.session_local() as profile_db:
+        is_new_profile = profile_db.get(UserProfile, hf_user_id) is None
         UserProfileService(profile_db).upsert_verified_identity(hf_user_id, username)
         profile_db.commit()
     session_token = _encode_session(user)
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)
     _set_session_cookie(response, session_token, secure=_is_secure_origin(request))
+    if is_new_profile:
+        response.set_cookie(
+            POSTHOG_SIGNUP_COOKIE_NAME,
+            "1",
+            max_age=POSTHOG_SIGNUP_COOKIE_MAX_AGE_SECONDS,
+            httponly=False,
+            secure=_is_secure_origin(request),
+            samesite="lax",
+            path="/",
+            domain=_shared_cookie_domain(),
+        )
     if state_payload.get("authorize_inference") and settings.hf_oauth_credential_secret:
         response.set_cookie(
             OAUTH_COOKIE_NAME,

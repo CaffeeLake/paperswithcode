@@ -11,6 +11,7 @@
  */
 
 import React from "react";
+import posthog from "posthog-js";
 
 import { authApi, type AuthUser } from "./api/auth";
 import { authUrl } from "./apiUrl";
@@ -27,6 +28,15 @@ interface AuthContextValue {
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 export const AUTH_STALE_EVENT = "pwc:auth-stale";
+const POSTHOG_SIGNUP_COOKIE = "pwc_posthog_signup";
+
+function consumeSignupMarker(): boolean {
+  if (!document.cookie.split("; ").includes(`${POSTHOG_SIGNUP_COOKIE}=1`)) {
+    return false;
+  }
+  document.cookie = `${POSTHOG_SIGNUP_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax`;
+  return true;
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = React.useState<AuthUser | null>(null);
@@ -61,7 +71,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [refresh]);
 
   React.useEffect(() => {
-    const handler = () => setUser(null);
+    if (!import.meta.env.VITE_POSTHOG_PROJECT_TOKEN) return;
+    if (!user) {
+      posthog.reset();
+      return;
+    }
+
+    posthog.identify(user.hf_subject, { hf_username: user.username });
+    if (consumeSignupMarker()) {
+      posthog.capture("signup_completed", { auth_provider: "huggingface" });
+    }
+  }, [user]);
+
+  React.useEffect(() => {
+    const handler = () => {
+      setUser(null);
+    };
     window.addEventListener(AUTH_STALE_EVENT, handler);
     return () => window.removeEventListener(AUTH_STALE_EVENT, handler);
   }, []);

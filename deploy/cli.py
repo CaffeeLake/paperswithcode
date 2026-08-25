@@ -360,6 +360,35 @@ def frontend_feature_environment(
     }
 
 
+def frontend_analytics_environment(environment: str) -> dict[str, str]:
+    """Return optional browser-analytics settings for a frontend build.
+
+    The project token is intentionally kept in the protected environment file
+    rather than the repository. Vite still embeds it in the browser bundle,
+    as required by PostHog's client-side SDK.
+    """
+
+    config_path = CONFIG_ROOT / f"{environment}.env"
+    if not config_path.is_file():
+        return {}
+
+    values: dict[str, str] = {}
+    allowed = {"VITE_POSTHOG_PROJECT_TOKEN", "VITE_POSTHOG_HOST"}
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in allowed and value.strip():
+            values[key] = value.strip().strip('"').strip("'")
+
+    if "VITE_POSTHOG_PROJECT_TOKEN" not in values:
+        return {}
+    values.setdefault("VITE_POSTHOG_HOST", "https://eu.i.posthog.com")
+    return values
+
+
 def prepare_release(sha: str, environment: str) -> Path:
     production_chat_enabled = (
         _configured_chat_enabled(environment) if environment == "production" else False
@@ -392,6 +421,7 @@ def prepare_release(sha: str, environment: str) -> Path:
                 production_chat_enabled=production_chat_enabled,
             )
         )
+        build_env.update(frontend_analytics_environment(environment))
         run(["npm", "ci"], cwd=frontend, env=build_env)
         run(
             ["npm", "run", "build", "--", "--mode", environment],
