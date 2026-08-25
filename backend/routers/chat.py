@@ -47,7 +47,11 @@ from backend.models.chat import (
     UpdateSessionRequest,
     sse_event,
 )
-from backend.models.database import ChatArtifactVersion, ChatMessageRecord, ChatSession
+from backend.models.database import (
+    ChatArtifactVersion,
+    ChatMessageRecord,
+    ChatSession,
+)
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_artifact_service import ArtifactError, ChatArtifactService
 from backend.services.chat_feedback_service import (
@@ -55,6 +59,7 @@ from backend.services.chat_feedback_service import (
     ChatFeedbackUnavailable,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.latex_paper_service import LatexPaperService
 from backend.services.chat_live_stream_service import live_chat_stream_registry
 from backend.services.chat_mcp_app_proxy import (
     APP_HTML_MIME,
@@ -879,6 +884,9 @@ def get_session(
             **_summary(session).model_dump(),
             messages=[_message(row) for row in messages],
             transcript_status=session.transcript_status,
+            latex_paper=LatexPaperService(db, settings).get_descriptor(
+                owner_from_user(user).hf_user_id, session.id
+            ),
         )
     except ChatServiceError as exc:
         _raise(exc)
@@ -1008,6 +1016,10 @@ def get_artifact(
     try:
         service = ChatArtifactService(db, settings)
         artifact = service.get_artifact(owner_from_user(user).hf_user_id, artifact_id)
+        if artifact.kind == "latex_paper":
+            return LatexPaperService(db, settings).get_artifact_descriptor(
+                owner_from_user(user).hf_user_id, artifact_id
+            )
         versions = list(
             db.scalars(
                 select(ChatArtifactVersion)
@@ -1052,10 +1064,17 @@ def get_artifact_manifest(
     response.headers["Cache-Control"] = "private, immutable, max-age=3600"
     response.headers["X-Content-Type-Options"] = "nosniff"
     try:
-        version = ChatArtifactService(db, settings).get_version(
-            owner_from_user(user).hf_user_id, artifact_id, version_id
+        owner = owner_from_user(user).hf_user_id
+        artifact = ChatArtifactService(db, settings).get_artifact(owner, artifact_id)
+        if artifact.kind == "latex_paper":
+            return LatexPaperService(db, settings).get_manifest(
+                owner, artifact_id, version_id
+            )
+        return (
+            ChatArtifactService(db, settings)
+            .get_version(owner, artifact_id, version_id)
+            .manifest
         )
-        return version.manifest
     except ArtifactError as error:
         _raise_artifact(error)
 
@@ -1089,19 +1108,20 @@ def get_artifact_preview(
 ):
     try:
         service = ChatArtifactService(db, settings)
-        version = service.get_version(
-            owner_from_user(user).hf_user_id, artifact_id, version_id
-        )
-        item = service.read_version_file(
-            owner_from_user(user).hf_user_id,
-            artifact_id,
-            version_id,
-            version.preview_path,
-            role="preview",
-        )
+        owner = owner_from_user(user).hf_user_id
+        artifact = service.get_artifact(owner, artifact_id)
+        if artifact.kind == "latex_paper":
+            item = LatexPaperService(db, settings).read_preview_pdf(
+                owner, artifact_id, version_id
+            )
+        else:
+            version = service.get_version(owner, artifact_id, version_id)
+            item = service.read_version_file(
+                owner, artifact_id, version_id, version.preview_path, role="preview"
+            )
         return Response(
             content=item.data,
-            media_type="image/png",
+            media_type=item.media_type,
             headers={
                 "Cache-Control": "private, immutable, max-age=31536000",
                 "X-Content-Type-Options": "nosniff",
@@ -1122,13 +1142,16 @@ def get_artifact_source(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        item = ChatArtifactService(db, settings).read_version_file(
-            owner_from_user(user).hf_user_id,
-            artifact_id,
-            version_id,
-            path,
-            role="source",
-        )
+        owner = owner_from_user(user).hf_user_id
+        artifact = ChatArtifactService(db, settings).get_artifact(owner, artifact_id)
+        if artifact.kind == "latex_paper":
+            item = LatexPaperService(db, settings).read_source_file(
+                owner, artifact_id, version_id, path
+            )
+        else:
+            item = ChatArtifactService(db, settings).read_version_file(
+                owner, artifact_id, version_id, path, role="source"
+            )
         return Response(
             content=item.data,
             media_type="text/plain; charset=utf-8",

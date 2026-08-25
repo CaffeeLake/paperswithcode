@@ -467,6 +467,9 @@ class Settings(BaseSettings):
     # readable when generation flags are disabled.
     chat_artifacts_enabled: bool = Field(default=False)
     chat_posterly_enabled: bool = Field(default=False)
+    # Paper creation is independently disabled until the private storage and
+    # compiler path have completed staging qualification.
+    chat_latex_paper_enabled: bool = Field(default=False)
     # Private staging-only compiler boundary. The signing private key belongs
     # only in the PwC backend environment; the Space gets its matching public
     # key as a private Space secret.

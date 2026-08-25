@@ -252,6 +252,16 @@ class HfBucketArtifactStorage(ArtifactStorage):
             self.filesystem.rm(path, recursive=True)
 
 
+def artifact_storage_from_settings(settings: Settings) -> ArtifactStorage:
+    """Build the shared private artifact store without exposing its credentials."""
+    if settings.chat_artifact_storage_backend == "hf_bucket":
+        return HfBucketArtifactStorage(
+            settings.chat_artifact_hf_bucket_id,
+            settings.hf_token or None,
+        )
+    return LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+
+
 def normalize_public_https_url(value: str) -> str:
     parsed = urlsplit(value.strip())
     if (
@@ -550,12 +560,7 @@ class ChatArtifactService:
         self.storage = storage or self._storage_from_settings()
 
     def _storage_from_settings(self) -> ArtifactStorage:
-        if self.settings.chat_artifact_storage_backend == "hf_bucket":
-            return HfBucketArtifactStorage(
-                self.settings.chat_artifact_hf_bucket_id,
-                self.settings.hf_token or None,
-            )
-        return LocalArtifactStorage(Path(self.settings.chat_artifact_local_dir))
+        return artifact_storage_from_settings(self.settings)
 
     def storage_status(self, owner_id: str) -> dict[str, int]:
         used = self.db.scalar(

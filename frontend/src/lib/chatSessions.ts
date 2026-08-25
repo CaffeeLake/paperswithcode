@@ -22,6 +22,7 @@ export interface ChatSession {
 
 export interface ChatSessionDetail extends ChatSession {
   transcript_status: string;
+  latex_paper?: LatexPaperArtifactDescriptor | null;
   messages: Array<{
     id: string;
     turn_id: string;
@@ -48,6 +49,27 @@ export interface ChatSessionDetail extends ChatSession {
     error_code: string | null;
     reasoning_effort?: ReasoningEffort;
   }>;
+}
+
+export interface LatexPaperVersionDescriptor {
+  version_id: string;
+  version: number;
+  source_digest: string;
+  compile_status: "queued" | "compiling" | "succeeded" | "failed";
+  parent_version_id?: string | null;
+  preview_head_version_id?: string | null;
+  display_metadata: {
+    summary?: string | null;
+    unresolved_todo_count: number;
+    warning_count: number;
+  };
+}
+
+export interface LatexPaperArtifactDescriptor {
+  artifact_id: string;
+  title: string;
+  source_head?: LatexPaperVersionDescriptor | null;
+  preview_head?: LatexPaperVersionDescriptor | null;
 }
 
 export interface ChatShareSummary {

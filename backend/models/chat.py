@@ -749,6 +749,7 @@ class ChatSessionSummary(BaseModel):
 class ChatSessionDetail(ChatSessionSummary):
     messages: list[ChatMessageResponse]
     transcript_status: str
+    latex_paper: LatexPaperArtifactDescriptor | None = None
 
 
 class ChatSessionList(BaseModel):

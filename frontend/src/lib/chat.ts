@@ -297,12 +297,12 @@ export interface ArtifactBlock {
   public_capability?: string;
   identifier: string;
   version?: number;
-  artifact_kind: "posterly";
+  artifact_kind: "posterly" | "latex_paper";
   title: string;
   status: "generating" | "ready" | "error";
   phase?: "preparing_paper" | "designing_poster" | "checking_poster" | "rendering_poster" | "publishing_poster";
-  preview_mime?: "image/png";
-  source_language?: "html";
+  preview_mime?: "image/png" | "application/pdf";
+  source_language?: "html" | "latex";
   gate_status?: "passed" | "warnings" | "failed";
   total_bytes?: number;
   error_code?: string;

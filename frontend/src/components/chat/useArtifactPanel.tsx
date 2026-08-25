@@ -3,7 +3,7 @@ import React from "react";
 
 import type { ArtifactBlock } from "@/lib/chat";
 
-export type ArtifactTab = "preview" | "source";
+export type ArtifactTab = "preview" | "source" | "files";
 
 export interface ArtifactPanelState {
   open: boolean;

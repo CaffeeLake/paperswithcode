@@ -5,6 +5,7 @@ import { Download, ExternalLink, FileCode2, X } from "lucide-react";
 
 import { apiUrl } from "@/lib/apiUrl";
 import type { ArtifactBlock } from "@/lib/chat";
+import { LatexPaperPanel } from "./LatexPaperPanel";
 import { useArtifactPanel } from "./useArtifactPanel";
 
 const POSTERLY_SOURCE = "https://github.com/Chenruishuo/posterly/tree/b9f42e5578a49a27525a68f85376bb3bb25af86f";
@@ -84,7 +85,7 @@ function useNarrowDialog(): boolean {
   return narrow;
 }
 
-export const ArtifactPanel: React.FC<{ forceDialog?: boolean; readerFallback?: boolean }> = ({
+const PosterArtifactPanel: React.FC<{ forceDialog?: boolean; readerFallback?: boolean }> = ({
   forceDialog = false,
   readerFallback = false,
 }) => {
@@ -256,4 +257,12 @@ export const ArtifactPanel: React.FC<{ forceDialog?: boolean; readerFallback?: b
       </div>
     </footer>
   </section>;
+};
+
+export const ArtifactPanel: React.FC<{ forceDialog?: boolean; readerFallback?: boolean }> = (props) => {
+  const { state } = useArtifactPanel();
+  if (state.selected?.artifact_kind === "latex_paper") {
+    return <LatexPaperPanel block={state.selected} {...props} />;
+  }
+  return <PosterArtifactPanel {...props} />;
 };

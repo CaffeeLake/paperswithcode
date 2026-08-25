@@ -11,6 +11,7 @@ import {
 import { ChatSessionNavigation } from "@/components/chat/ChatSessionNavigation";
 import { ChatSharing } from "@/components/chat/ChatSharing";
 import { ArtifactWorkspace } from "@/components/chat/ArtifactWorkspace";
+import { LatexPaperArtifact } from "@/components/chat/LatexPaperArtifact";
 import { ArtifactPanelProvider } from "@/components/chat/useArtifactPanel";
 import { useChatArchive } from "@/components/chat/useChatArchive";
 import { PanelIcon, Spinner } from "@/components/chat/icons";
@@ -40,6 +41,7 @@ import {
   PRODUCTION_FALLBACK_CHAT_MODELS,
   STAGING_FALLBACK_CHAT_MODELS,
   type ChatModelChoice,
+  type LatexPaperArtifactDescriptor,
   type ChatSession,
   getChatModels,
   getSession,
@@ -134,6 +136,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     () => routeSessionId ? { id: routeSessionId, status: "loading" } : null,
   );
   const [routeLoadAttempt, setRouteLoadAttempt] = useState(0);
+  const [latexPaper, setLatexPaper] = useState<LatexPaperArtifactDescriptor | null>(null);
   const queuedLaunchRef = useRef(readQueuedChatLaunch());
   const requestedModelRef = useRef(searchParams.get("model") || queuedLaunchRef.current?.model);
   const [models, setModels] = useState<ChatModelChoice[]>(
@@ -397,6 +400,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
       }
       setRouteSessionState(null);
       setRouteViewerPage(null);
+      setLatexPaper(null);
       return;
     }
     if (loadedRouteSessionIdRef.current === routeSessionId) return;
@@ -411,6 +415,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
     void getSession(routeSessionId).then((detail) => {
       if (cancelled) return;
       chat.load(toUiMessages(detail), routeSessionId, detail.is_busy);
+      setLatexPaper(detail.latex_paper ?? null);
       setSelectedModel(detail.selected_model);
       setWebSearchEnabled(
         queuedLaunchRef.current && detail.messages.length === 0
@@ -676,6 +681,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
           )}
         </div>
 
+        {mode === "general" && latexPaper && <LatexPaperArtifact descriptor={latexPaper} />}
         {isRouteSessionLoading && !pendingAutoDraft.text ? <div className="chat-session-loading" role="status" aria-live="polite">
           <Spinner />
           <span>Loading conversation…</span>
