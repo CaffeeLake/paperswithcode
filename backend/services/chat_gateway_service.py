@@ -145,6 +145,7 @@ class ChatGatewayService:
                     start_date=start_date,
                     end_date=end_date,
                     conference=arguments.get("conference"),
+                    authors=arguments.get("authors") or None,
                     **{
                         name: arguments[name]
                         for name in ("task", "method", "organization", "framework")

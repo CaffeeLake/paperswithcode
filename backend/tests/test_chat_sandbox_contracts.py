@@ -1747,6 +1747,7 @@ def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch
             "conference": "CVPR 2026",
             "framework": "PyTorch",
             "organization": "Hugging Face",
+            "authors": ["Kaiming He", "@yilundu"],
         },
     )
 
@@ -1763,6 +1764,7 @@ def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch
         "framework": "PyTorch",
         "organization": "Hugging Face",
     }
+    assert calls[0]["authors"] == ["Kaiming He", "@yilundu"]
 
 
 def test_gateway_search_forwards_the_publication_date_range(monkeypatch):
@@ -1800,7 +1802,8 @@ def test_gateway_search_forwards_the_publication_date_range(monkeypatch):
             "search",
         ),
         (
-            "/api/v1/papers/?start_date=2026-08-01&end_date=2026-08-21",
+            "/api/v1/papers/?start_date=2026-08-01&end_date=2026-08-21"
+            "&author=Kaiming+He&author=%40yilundu",
             "paper_list",
         ),
     ],
@@ -1861,6 +1864,8 @@ def test_broker_forwards_paper_date_ranges_to_the_catalog(
     assert payload["operation"] == expected_operation
     assert payload["arguments"]["start_date"] == "2026-08-01"
     assert payload["arguments"]["end_date"] == "2026-08-21"
+    if expected_operation == "paper_list":
+        assert payload["arguments"]["authors"] == ["Kaiming He", "@yilundu"]
 
 
 def test_gateway_exposes_advertised_taxonomy_detail_operations(monkeypatch):

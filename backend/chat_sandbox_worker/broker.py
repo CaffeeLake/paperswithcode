@@ -539,7 +539,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         parsed = urlsplit(self.path)
-        query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+        query_values = parse_qs(parsed.query)
+        query = {key: values[-1] for key, values in query_values.items()}
         semantic_scholar_prefix = "/semantic-scholar/graph/v1/"
         if parsed.path.startswith(semantic_scholar_prefix):
             payload = json.dumps(
@@ -567,7 +568,8 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path in {"/api/v1/papers", "/api/v1/papers/"}:
             operation = "paper_list"
             arguments = {
-                **query,
+                **{key: value for key, value in query.items() if key != "author"},
+                "authors": query_values.get("author", []),
                 "all_versions": query.get("latest_only") == "false",
                 "include_resources": query.get("include_resources") == "true",
             }
