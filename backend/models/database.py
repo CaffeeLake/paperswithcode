@@ -2451,7 +2451,7 @@ class ChatShare(Base):
 
 
 class ChatArtifact(Base):
-    """Stable Posterly artifact identity within one private chat session."""
+    """Stable identity for one private, typed chat artifact."""
 
     __tablename__ = "chat_artifacts"
 
@@ -2467,6 +2467,15 @@ class ChatArtifact(Base):
     latest_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
+    # LaTeX-paper heads are independent: a failed source can retain a prior
+    # successful preview without ever associating that PDF with new source.
+    # They stay NULL for all legacy and current Posterly rows.
+    source_head_version_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    preview_head_version_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2476,15 +2485,30 @@ class ChatArtifact(Base):
 
     session: Mapped[ChatSession] = relationship(back_populates="artifacts")
     versions: Mapped[list["ChatArtifactVersion"]] = relationship(
+        back_populates="artifact",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="ChatArtifactVersion.artifact_id",
+    )
+    paper_versions: Mapped[list["ChatLatexPaperVersion"]] = relationship(
         back_populates="artifact", cascade="all, delete-orphan", passive_deletes=True
     )
     __table_args__ = (
-        CheckConstraint("kind = 'posterly'", name="chat_artifacts_kind_check"),
+        CheckConstraint(
+            "kind IN ('posterly', 'latex_paper')", name="chat_artifacts_kind_check"
+        ),
         CheckConstraint("latest_version >= 0", name="chat_artifacts_version_check"),
         UniqueConstraint(
             "session_id", "identifier", name="uq_chat_artifacts_session_identifier"
         ),
         Index("idx_chat_artifacts_session", "session_id", "created_at"),
+        Index(
+            "uq_chat_artifacts_session_latex_paper",
+            "session_id",
+            unique=True,
+            postgresql_where=text("kind = 'latex_paper'"),
+            sqlite_where=text("kind = 'latex_paper'"),
+        ),
     )
 
 
@@ -2519,7 +2543,9 @@ class ChatArtifactVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    artifact: Mapped[ChatArtifact] = relationship(back_populates="versions")
+    artifact: Mapped[ChatArtifact] = relationship(
+        back_populates="versions", foreign_keys=[artifact_id]
+    )
     message: Mapped[Optional[ChatMessageRecord]] = relationship(
         back_populates="artifact_versions"
     )
@@ -2542,6 +2568,85 @@ class ChatArtifactVersion(Base):
         ),
         Index("idx_chat_artifact_versions_turn", "turn_id"),
         Index("idx_chat_artifact_versions_message", "message_id"),
+    )
+
+
+class ChatLatexPaperVersion(Base):
+    """Immutable LaTeX source version with a separately tracked compile result."""
+
+    __tablename__ = "chat_latex_paper_versions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_version_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_latex_paper_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    turn_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    message_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    compiled_pdf_path: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    storage_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    compile_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    compile_diagnostics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    display_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    artifact: Mapped[ChatArtifact] = relationship(back_populates="paper_versions")
+    parent_version: Mapped[Optional["ChatLatexPaperVersion"]] = relationship(
+        remote_side=[id], foreign_keys=[parent_version_id]
+    )
+    message: Mapped[Optional[ChatMessageRecord]] = relationship()
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="chat_latex_paper_versions_number_check"),
+        CheckConstraint(
+            "source_byte_count >= 0", name="chat_latex_paper_versions_bytes_check"
+        ),
+        CheckConstraint(
+            "length(source_digest) = 64",
+            name="chat_latex_paper_versions_source_digest_check",
+        ),
+        CheckConstraint(
+            "storage_state IN ('uploading','ready','failed','deleting')",
+            name="chat_latex_paper_versions_storage_state_check",
+        ),
+        CheckConstraint(
+            "compile_status IN ('queued','compiling','succeeded','failed')",
+            name="chat_latex_paper_versions_compile_status_check",
+        ),
+        CheckConstraint(
+            "(compile_status = 'succeeded' AND compiled_pdf_path IS NOT NULL) "
+            "OR (compile_status <> 'succeeded' AND compiled_pdf_path IS NULL)",
+            name="chat_latex_paper_versions_preview_check",
+        ),
+        CheckConstraint(
+            "actor_type IN ('ai','human','restore')",
+            name="chat_latex_paper_versions_actor_type_check",
+        ),
+        UniqueConstraint(
+            "artifact_id", "version", name="uq_chat_latex_paper_versions_number"
+        ),
+        UniqueConstraint(
+            "artifact_id", "source_digest", name="uq_chat_latex_paper_versions_digest"
+        ),
+        Index("idx_chat_latex_paper_versions_turn", "turn_id"),
+        Index("idx_chat_latex_paper_versions_message", "message_id"),
     )
 
 

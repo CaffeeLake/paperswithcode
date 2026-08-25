@@ -450,6 +450,115 @@ class AppDisplayBlock(BaseModel):
         return value
 
 
+class LatexPaperFile(BaseModel):
+    """One bounded file entry in an immutable LaTeX paper source manifest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=300)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bytes: int = Field(ge=0, le=8 * 1024 * 1024)
+    media_type: Literal[
+        "text/x-tex",
+        "application/x-bibtex",
+        "image/png",
+        "image/jpeg",
+        "application/pdf",
+    ]
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        normalized = value.replace("\\", "/")
+        if (
+            normalized != value
+            or normalized.startswith("/")
+            or "//" in normalized
+            or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        ):
+            raise ValueError("Paper file path must be a normalized relative path")
+        return value
+
+
+class LatexPaperDisplayMetadata(BaseModel):
+    """Small, safe summary that can be projected without source bytes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str | None = Field(default=None, max_length=500)
+    unresolved_todo_count: int = Field(default=0, ge=0, le=10_000)
+    warning_count: int = Field(default=0, ge=0, le=10_000)
+
+
+class LatexPaperManifest(BaseModel):
+    """Kind-specific immutable source manifest for a private LaTeX paper."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    kind: Literal["latex_paper"] = "latex_paper"
+    title: str = Field(min_length=1, max_length=300)
+    root_document: str = Field(min_length=1, max_length=300)
+    files: list[LatexPaperFile] = Field(min_length=1, max_length=100)
+    display_metadata: LatexPaperDisplayMetadata = Field(
+        default_factory=LatexPaperDisplayMetadata
+    )
+
+    @model_validator(mode="after")
+    def validate_files(self) -> "LatexPaperManifest":
+        paths = [file.path for file in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("Paper manifest contains duplicate file paths")
+        root = next(
+            (file for file in self.files if file.path == self.root_document), None
+        )
+        if (
+            root is None
+            or root.media_type != "text/x-tex"
+            or not root.path.endswith(".tex")
+        ):
+            raise ValueError("Paper root document must be a declared TeX file")
+        return self
+
+
+class LatexPaperVersionDescriptor(BaseModel):
+    """Bounded API descriptor for one immutable paper source version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: uuid.UUID
+    version: int = Field(ge=1, le=10_000)
+    source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compile_status: Literal["queued", "compiling", "succeeded", "failed"]
+    parent_version_id: uuid.UUID | None = None
+    preview_head_version_id: uuid.UUID | None = None
+    display_metadata: LatexPaperDisplayMetadata = Field(
+        default_factory=LatexPaperDisplayMetadata
+    )
+
+    @model_validator(mode="after")
+    def validate_preview_head(self) -> "LatexPaperVersionDescriptor":
+        if (
+            self.preview_head_version_id == self.version_id
+            and self.compile_status != "succeeded"
+        ):
+            raise ValueError(
+                "An uncompiled source version cannot point at itself as preview"
+            )
+        return self
+
+
+class LatexPaperArtifactDescriptor(BaseModel):
+    """Private paper descriptor with intentionally independent source and preview heads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: uuid.UUID
+    title: str = Field(min_length=1, max_length=300)
+    source_head: LatexPaperVersionDescriptor | None = None
+    preview_head: LatexPaperVersionDescriptor | None = None
+
+
 class ArtifactDisplayBlock(BaseModel):
     """Bounded Posterly descriptor; artifact bytes always live out of band."""
 

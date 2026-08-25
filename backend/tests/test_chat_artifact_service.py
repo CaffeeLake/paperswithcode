@@ -11,15 +11,21 @@ from pydantic import ValidationError
 from PyPDF2 import PdfWriter
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
-from backend.models.chat import DISPLAY_BLOCKS_ADAPTER
+from backend.models.chat import (
+    DISPLAY_BLOCKS_ADAPTER,
+    LatexPaperManifest,
+    LatexPaperVersionDescriptor,
+)
 from backend.models.database import (
     Base,
     ChatArtifact,
     ChatArtifactVersion,
+    ChatLatexPaperVersion,
     ChatMessageRecord,
     ChatSession,
     ChatShare,
@@ -71,6 +77,7 @@ def db():
             ChatMessageRecord.__table__,
             ChatArtifact.__table__,
             ChatArtifactVersion.__table__,
+            ChatLatexPaperVersion.__table__,
             ChatShare.__table__,
             ChatSharedArtifact.__table__,
         ],
@@ -201,6 +208,210 @@ def test_artifact_display_block_keeps_bytes_out_of_projection():
     )[0]
     assert block.status == "ready"
     assert "html" not in block.model_dump(mode="json")
+
+
+def test_latex_paper_manifest_is_kind_specific_and_bounded():
+    manifest = LatexPaperManifest.model_validate(
+        {
+            "schema_version": 1,
+            "kind": "latex_paper",
+            "title": "A Careful Draft",
+            "root_document": "main.tex",
+            "files": [
+                {
+                    "path": "main.tex",
+                    "sha256": "a" * 64,
+                    "bytes": 42,
+                    "media_type": "text/x-tex",
+                },
+                {
+                    "path": "references.bib",
+                    "sha256": "b" * 64,
+                    "bytes": 17,
+                    "media_type": "application/x-bibtex",
+                },
+            ],
+        }
+    )
+
+    assert manifest.root_document == "main.tex"
+    assert manifest.files[0].path == "main.tex"
+    with pytest.raises(ValidationError, match="root document"):
+        LatexPaperManifest.model_validate(
+            {**manifest.model_dump(), "root_document": "missing.tex"}
+        )
+
+
+def test_latex_version_descriptor_keeps_source_and_preview_heads_separate():
+    source = uuid.uuid4()
+    preview = uuid.uuid4()
+    descriptor = LatexPaperVersionDescriptor.model_validate(
+        {
+            "version_id": str(source),
+            "version": 2,
+            "source_digest": "a" * 64,
+            "compile_status": "failed",
+            "parent_version_id": str(preview),
+            "preview_head_version_id": str(preview),
+        }
+    )
+
+    assert descriptor.version_id == source
+    assert descriptor.preview_head_version_id == preview
+    with pytest.raises(ValidationError, match="cannot point at itself"):
+        LatexPaperVersionDescriptor.model_validate(
+            {
+                **descriptor.model_dump(mode="json"),
+                "preview_head_version_id": str(source),
+            }
+        )
+
+
+def test_latex_artifact_columns_are_optional_for_existing_posterly_rows(db):
+    session_id, _ = _active_session(db)
+    artifact = ChatArtifact(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        identifier="existing-poster",
+        kind="posterly",
+        title="Existing Poster",
+        latest_version=1,
+    )
+    db.add(artifact)
+    db.flush()
+
+    assert artifact.source_head_version_id is None
+    assert artifact.preview_head_version_id is None
+
+
+def test_latex_paper_versions_keep_a_failed_source_head_and_prior_preview(db):
+    session_id, _ = _active_session(db)
+    artifact = ChatArtifact(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        identifier="paper",
+        kind="latex_paper",
+        title="A Careful Draft",
+        latest_version=2,
+    )
+    preview = ChatLatexPaperVersion(
+        id=uuid.uuid4(),
+        artifact=artifact,
+        version=1,
+        source_manifest={"kind": "latex_paper"},
+        source_digest="a" * 64,
+        source_byte_count=42,
+        storage_key="papers/preview",
+        compiled_pdf_path="paper.pdf",
+        storage_state="ready",
+        compile_status="succeeded",
+        display_metadata={},
+        actor_type="ai",
+    )
+    failed = ChatLatexPaperVersion(
+        id=uuid.uuid4(),
+        artifact=artifact,
+        parent_version=preview,
+        version=2,
+        source_manifest={"kind": "latex_paper"},
+        source_digest="b" * 64,
+        source_byte_count=48,
+        storage_key="papers/failed",
+        storage_state="ready",
+        compile_status="failed",
+        compile_diagnostics={"errors": []},
+        display_metadata={},
+        actor_type="human",
+    )
+    artifact.source_head_version_id = failed.id
+    artifact.preview_head_version_id = preview.id
+    db.add_all([artifact, preview, failed])
+    db.flush()
+
+    assert artifact.source_head_version_id == failed.id
+    assert artifact.preview_head_version_id == preview.id
+    assert failed.parent_version_id == preview.id
+    assert failed.compiled_pdf_path is None
+
+
+def test_session_allows_only_one_latex_paper_artifact(db):
+    session_id, _ = _active_session(db)
+    db.add(
+        ChatArtifact(
+            id=uuid.uuid4(),
+            session_id=session_id,
+            identifier="first-paper",
+            kind="latex_paper",
+            title="First paper",
+            latest_version=0,
+        )
+    )
+    db.flush()
+    db.add(
+        ChatArtifact(
+            id=uuid.uuid4(),
+            session_id=session_id,
+            identifier="second-paper",
+            kind="latex_paper",
+            title="Second paper",
+            latest_version=0,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db.flush()
+
+
+def test_latex_paper_version_cannot_claim_a_preview_without_its_pdf(db):
+    session_id, _ = _active_session(db)
+    artifact = ChatArtifact(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        identifier="paper",
+        kind="latex_paper",
+        title="A Careful Draft",
+        latest_version=1,
+    )
+    db.add(
+        ChatLatexPaperVersion(
+            id=uuid.uuid4(),
+            artifact=artifact,
+            version=1,
+            source_manifest={"kind": "latex_paper"},
+            source_digest="a" * 64,
+            source_byte_count=42,
+            storage_key="papers/preview",
+            storage_state="ready",
+            compile_status="succeeded",
+            display_metadata={},
+            actor_type="ai",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db.flush()
+
+
+def test_latex_foundation_migration_is_additive_and_rollback_is_non_destructive():
+    migrations = Path(__file__).parents[1] / "database" / "migrations"
+    migration = (migrations / "expand_chat_artifact_foundation.sql").read_text()
+    rollback = (migrations / "rollback_expand_chat_artifact_foundation.sql").read_text()
+
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
+    assert "kind IN ('posterly', 'latex_paper')" in migration
+    assert "ADD COLUMN IF NOT EXISTS source_head_version_id UUID" in migration
+    assert "ADD COLUMN IF NOT EXISTS preview_head_version_id UUID" in migration
+    assert "uq_chat_artifacts_session_latex_paper" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_latex_paper_versions" in migration
+    assert "source_digest VARCHAR(64) NOT NULL" in migration
+    assert "compile_status VARCHAR(16) NOT NULL" in migration
+    assert "chat_latex_paper_versions_preview_check" in migration
+    assert "OWNER TO pwc_staging_owner" in migration
+    assert "TO pwc_staging;" in migration
+    assert "FROM paperswithcode_user;" in migration
+    assert (
+        "cannot roll back artifact foundation while latex_paper rows exist" in rollback
+    )
 
 
 def test_public_block_rejects_private_ids():
