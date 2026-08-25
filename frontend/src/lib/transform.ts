@@ -232,7 +232,7 @@ export function humanizeSlug(slug: string): string {
   return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-const TASK_ACRONYMS = new Set(["OCR"]);
+const TASK_ACRONYMS = new Set(["AI", "OCR"]);
 const TASK_DISPLAY_NAMES = new Map([
   ["3d-tracking", "3D Tracking"],
   ["point-tracking", "2D Point Tracking"],
@@ -263,7 +263,10 @@ export function displayTaskName(name?: string, slug?: string): string {
 
   return label
     .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\b[A-Za-z0-9]+\b/g, (token) =>
+      TASK_ACRONYMS.has(token.toUpperCase()) ? token.toUpperCase() : token,
+    );
 }
 
 function taskKey(value: string): string {

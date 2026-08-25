@@ -169,4 +169,24 @@ describe("TaskBreadcrumb", () => {
       screen.getByRole("navigation", { name: "Breadcrumb" }),
     ).toHaveTextContent("Tasks/2D Point Tracking");
   });
+
+  it("preserves AI capitalization in canonical task names", () => {
+    render(
+      <MemoryRouter>
+        <TaskBreadcrumb
+          parents={[]}
+          task={{
+            id: "416",
+            name: "Healthcare & Medical AI",
+            slug: "healthcare",
+            level: 0,
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("navigation", { name: "Breadcrumb" }),
+    ).toHaveTextContent("Tasks/Healthcare & Medical AI");
+  });
 });
