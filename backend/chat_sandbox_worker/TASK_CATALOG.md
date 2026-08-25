@@ -36,8 +36,8 @@ The goal is to split up those tasks in the future.
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
+- `pseudo-labelling` — Pseudo Labelling
 - `ocr` — OCR
-- `document-understanding` — Document Understanding
 
 ### Language
 
