@@ -137,6 +137,7 @@ interface ArtifactPanelContextValue {
   setSourceFile: (path: string | null) => void;
   setVersion: (versionId: string | null) => void;
   setPanelPercent: (percent: number) => void;
+  askAiToFix: (prompt: string) => void;
   reset: () => void;
 }
 
@@ -146,7 +147,8 @@ export const ArtifactPanelProvider: React.FC<{
   children: React.ReactNode;
   workspaceKey: string;
   autoOpenOnMount?: boolean;
-}> = ({ children, workspaceKey, autoOpenOnMount = false }) => {
+  onAskAiFix?: (prompt: string) => void;
+}> = ({ children, workspaceKey, autoOpenOnMount = false, onAskAiFix }) => {
   const [state, dispatch] = React.useReducer(artifactPanelReducer, undefined, initialState);
   const originRef = React.useRef<HTMLElement | null>(null);
   const priorWorkspaceRef = React.useRef(workspaceKey);
@@ -178,6 +180,7 @@ export const ArtifactPanelProvider: React.FC<{
   const setSourceFile = React.useCallback((path: string | null) => dispatch({ type: "source", path }), []);
   const setVersion = React.useCallback((versionId: string | null) => dispatch({ type: "version", versionId }), []);
   const setPanelPercent = React.useCallback((percent: number) => dispatch({ type: "width", percent }), []);
+  const askAiToFix = React.useCallback((prompt: string) => onAskAiFix?.(prompt), [onAskAiFix]);
   const reset = React.useCallback(() => dispatch({ type: "reset" }), []);
 
   const value = React.useMemo<ArtifactPanelContextValue>(() => ({
@@ -191,8 +194,9 @@ export const ArtifactPanelProvider: React.FC<{
     setSourceFile,
     setVersion,
     setPanelPercent,
+    askAiToFix,
     reset,
-  }), [autoOpenOnMount, close, open, register, reset, setPanelPercent, setSourceFile, setTab, setVersion, state, unregister]);
+  }), [askAiToFix, autoOpenOnMount, close, open, register, reset, setPanelPercent, setSourceFile, setTab, setVersion, state, unregister]);
 
   return <ArtifactPanelContext.Provider value={value}>{children}</ArtifactPanelContext.Provider>;
 };

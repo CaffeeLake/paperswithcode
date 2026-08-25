@@ -197,7 +197,7 @@ class WorkerEventValidator:
         elif kind == "paper_artifact":
             descriptor = event.get("descriptor")
             if (
-                event.get("operation") not in {"create", "begin-edit"}
+                event.get("operation") not in {"create", "begin-edit", "repair"}
                 or not isinstance(event.get("activated"), bool)
                 or not isinstance(descriptor, dict)
                 or not isinstance(descriptor.get("artifact_id"), str)
@@ -300,8 +300,7 @@ def paper_events_from_output(output: str) -> list[dict[str, Any]]:
         return []
     if (
         not isinstance(value, dict)
-        or set(value) != {"operation", "activated", "paper"}
-        or value["operation"] not in {"create", "begin-edit"}
+        or value.get("operation") not in {"create", "begin-edit", "repair"}
         or not isinstance(value["activated"], bool)
         or not isinstance(value["paper"], dict)
     ):

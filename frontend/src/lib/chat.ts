@@ -312,7 +312,7 @@ export interface ArtifactBlock {
 
 export interface PaperArtifactEvent {
   type: "paper_artifact";
-  operation: "create" | "begin-edit";
+  operation: "create" | "begin-edit" | "repair";
   activated: boolean;
   descriptor: import("./chatSessions").LatexPaperArtifactDescriptor;
 }

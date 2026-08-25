@@ -58,6 +58,16 @@ export interface LatexPaperVersionDescriptor {
   compile_status: "queued" | "compiling" | "succeeded" | "failed";
   parent_version_id?: string | null;
   preview_head_version_id?: string | null;
+  compile_diagnostics?: Array<{
+    severity: "error" | "warning";
+    phase?: string | null;
+    file?: string | null;
+    line?: number | null;
+    message: string;
+  }>;
+  repair_attempts_remaining?: number;
+  repair_exhausted?: boolean;
+  generation_provenance?: Record<string, unknown> | null;
   display_metadata: {
     summary?: string | null;
     unresolved_todo_count: number;

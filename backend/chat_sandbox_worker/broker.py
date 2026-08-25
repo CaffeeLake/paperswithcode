@@ -454,7 +454,8 @@ class Handler(BaseHTTPRequestHandler):
                 f"artifact-publish?publication_id={publication_id}", declared_length
             )
             return
-        length = min(declared_length, 512 * 1024)
+        maximum_body = 3 * 1024 * 1024 if path == "/paper" else 512 * 1024
+        length = min(declared_length, maximum_body)
         body = self.rfile.read(length)
         if declared_length != length:
             self.send_error(413)

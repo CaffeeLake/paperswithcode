@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
@@ -23,6 +23,7 @@ from backend.services.chat_artifact_service import LocalArtifactStorage
 from backend.services.latex_paper_service import LatexPaperService
 from latex_compiler_contract import (
     CompileLimits,
+    CompilerDiagnostic,
     CompilerEnvelope,
     CompilerJobState,
     CompilerResult,
@@ -117,7 +118,14 @@ class _Compiler:
             )
         return CompilerResult.failed(
             envelope,
-            diagnostics=[],
+            diagnostics=[
+                CompilerDiagnostic(
+                    severity="error",
+                    file="main.tex",
+                    line=7,
+                    message="Undefined control sequence",
+                )
+            ],
             log_tail="bad TeX",
             compiler_image="test-image",
             engine_version="pdfTeX",
@@ -184,6 +192,164 @@ def test_failed_compile_keeps_source_head_without_preview(db, settings):
     assert descriptor.source_head is not None
     assert descriptor.source_head.compile_status == "failed"
     assert descriptor.preview_head is None
+
+
+def test_failed_human_save_keeps_last_good_preview_and_exposes_diagnostics(
+    db, settings
+):
+    session_id = _session(db)
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+
+    assert failed.source_head is not None and failed.preview_head is not None
+    assert failed.source_head.compile_status == "failed"
+    assert failed.source_head.parent_version_id == initial.source_head.version_id
+    assert failed.preview_head.version_id == initial.preview_head.version_id
+    assert [item.model_dump() for item in failed.source_head.compile_diagnostics] == [
+        {
+            "severity": "error",
+            "phase": "compiler_error",
+            "file": "main.tex",
+            "line": 7,
+            "message": "Undefined control sequence",
+        }
+    ]
+    assert failed.source_head.repair_attempts_remaining == 3
+
+
+def test_failed_ai_repairs_are_ephemeral_until_a_successful_candidate(db, settings):
+    session_id = _session(db)
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    attempt = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\stillbad"},
+        provenance={"model": "selected-model", "repair": True},
+    )
+
+    assert attempt.repaired is False
+    assert attempt.exhausted is False
+    assert attempt.descriptor.source_head is not None
+    assert attempt.descriptor.source_head.version_id == failed.source_head.version_id
+    assert attempt.descriptor.source_head.repair_attempts_remaining == 2
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(ChatLatexPaperVersion)
+            .where(ChatLatexPaperVersion.artifact_id == initial.artifact_id)
+        )
+        == 2
+    )
+
+    compiler.state = CompilerJobState.SUCCEEDED
+    repaired = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+        },
+        provenance={"model": "selected-model", "repair": True},
+    )
+
+    assert repaired.repaired is True
+    assert repaired.exhausted is False
+    assert repaired.descriptor.source_head is not None
+    assert repaired.descriptor.source_head.compile_status == "succeeded"
+    assert (
+        repaired.descriptor.source_head.parent_version_id
+        == failed.source_head.version_id
+    )
+    assert repaired.descriptor.source_head.generation_provenance == {
+        "model": "selected-model",
+        "repair": True,
+    }
+
+
+def test_repair_budget_leaves_the_failed_human_source_intact_after_three_attempts(
+    db, settings
+):
+    session_id = _session(db)
+    compiler = _Compiler()
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=compiler,
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    compiler.state = CompilerJobState.FAILED
+    failed = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        files={"main.tex": b"\\documentclass{article}\\badcommand"},
+    )
+    assert failed.source_head is not None
+
+    for _ in range(3):
+        outcome = service.repair_failed_version(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=failed.source_head.version_id,
+            files={"main.tex": b"\\documentclass{article}\\stillbad"},
+            provenance={"model": "selected-model", "repair": True},
+        )
+    assert outcome.exhausted is True
+    compiler.state = CompilerJobState.SUCCEEDED
+
+    exhausted = service.repair_failed_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=failed.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Fixed\\end{document}"
+        },
+        provenance={"model": "selected-model", "repair": True},
+    )
+
+    assert exhausted.repaired is False
+    assert exhausted.exhausted is True
+    assert exhausted.descriptor.source_head is not None
+    assert exhausted.descriptor.source_head.version_id == failed.source_head.version_id
+    assert exhausted.descriptor.preview_head is not None
+    assert (
+        exhausted.descriptor.preview_head.version_id == initial.preview_head.version_id
+    )
 
 
 def test_restart_reconciliation_resubmits_the_durable_version_job_id(db, settings):

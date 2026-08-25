@@ -6,6 +6,7 @@ import hashlib
 import uuid
 import zipfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
 
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from backend.config import Settings
 from backend.models.chat import (
     LatexPaperArtifactDescriptor,
+    LatexPaperDiagnostic,
     LatexPaperDisplayMetadata,
     LatexPaperFile,
     LatexPaperManifest,
@@ -37,6 +39,14 @@ from latex_compiler_contract import CompilerJobState, CompilerResult, EnvelopeEr
 _PAPER_IDENTIFIER = "latex-paper"
 _SOURCE_ARCHIVE = "source.zip"
 _PREVIEW_PDF = "preview.pdf"
+_MAX_REPAIR_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class LatexPaperRepairOutcome:
+    descriptor: LatexPaperArtifactDescriptor
+    repaired: bool
+    exhausted: bool
 
 
 def _neutral_scaffold(title: str) -> dict[str, bytes]:
@@ -91,6 +101,36 @@ def _paper_descriptor(artifact: ChatArtifact) -> LatexPaperArtifactDescriptor:
     def descriptor(version_id: uuid.UUID | None) -> LatexPaperVersionDescriptor | None:
         if version_id is None or (version := versions.get(version_id)) is None:
             return None
+        diagnostics = version.compile_diagnostics or {}
+        raw_diagnostics = diagnostics.get("diagnostics", [])
+        if not isinstance(raw_diagnostics, list):
+            raw_diagnostics = []
+        repair_diagnostics = diagnostics.get("last_repair_diagnostics", [])
+        if isinstance(repair_diagnostics, list):
+            raw_diagnostics = [*raw_diagnostics, *repair_diagnostics]
+        errors = diagnostics.get("errors", [])
+        if isinstance(errors, list):
+            raw_diagnostics.extend(
+                {"severity": "error", **item}
+                for item in errors
+                if isinstance(item, dict)
+            )
+        normalized_diagnostics = [
+            LatexPaperDiagnostic(
+                severity=item["severity"],
+                phase=diagnostics.get("failure_category"),
+                file=item.get("file"),
+                line=item.get("line"),
+                message=item["message"],
+            )
+            for item in raw_diagnostics[:20]
+            if isinstance(item, dict)
+            and item.get("severity") in {"error", "warning"}
+            and isinstance(item.get("message"), str)
+        ]
+        attempts = diagnostics.get("repair_attempts", 0)
+        attempts = attempts if isinstance(attempts, int) else 0
+        attempts = min(max(attempts, 0), _MAX_REPAIR_ATTEMPTS)
         return LatexPaperVersionDescriptor(
             version_id=version.id,
             version=version.version,
@@ -98,6 +138,10 @@ def _paper_descriptor(artifact: ChatArtifact) -> LatexPaperArtifactDescriptor:
             compile_status=version.compile_status,
             parent_version_id=version.parent_version_id,
             preview_head_version_id=artifact.preview_head_version_id,
+            compile_diagnostics=normalized_diagnostics,
+            repair_attempts_remaining=_MAX_REPAIR_ATTEMPTS - attempts,
+            repair_exhausted=attempts >= _MAX_REPAIR_ATTEMPTS,
+            generation_provenance=version.generation_provenance,
             display_metadata=LatexPaperDisplayMetadata.model_validate(
                 version.display_metadata
             ),
@@ -396,6 +440,178 @@ class LatexPaperService:
                 "artifact_too_large", "Paper text exceeds the editing limit"
             )
         return normalized
+
+    def repair_failed_version(
+        self,
+        *,
+        owner_id: str,
+        artifact_id: uuid.UUID,
+        expected_parent_version_id: uuid.UUID,
+        files: Mapping[str, bytes],
+        provenance: dict,
+    ) -> LatexPaperRepairOutcome:
+        """Compile one AI repair candidate without persisting failed attempts.
+
+        A candidate has a real compiler job UUID but no durable paper version until
+        it succeeds. This keeps mechanical repair attempts out of manuscript
+        history while preserving the failed human source as the repair base.
+        """
+        artifact = self._artifact(owner_id, artifact_id, lock=True)
+        if artifact.source_head_version_id != expected_parent_version_id:
+            raise ArtifactError(
+                "paper_conflict",
+                "This paper was updated elsewhere. Reload before repairing.",
+            )
+        parent = self._version(owner_id, artifact_id, expected_parent_version_id)
+        if parent.compile_status != "failed":
+            raise ArtifactError(
+                "paper_not_failed", "Only a failed source version can be repaired"
+            )
+        diagnostics = dict(parent.compile_diagnostics or {})
+        attempts = diagnostics.get("repair_attempts", 0)
+        attempts = attempts if isinstance(attempts, int) else 0
+        if attempts >= _MAX_REPAIR_ATTEMPTS:
+            return LatexPaperRepairOutcome(
+                self._descriptor(artifact), repaired=False, exhausted=True
+            )
+
+        parent_manifest = LatexPaperManifest.model_validate(parent.source_manifest)
+        normalized_files = self._validate_human_files(
+            files, root_document=parent_manifest.root_document
+        )
+        bundle = _deterministic_zip(normalized_files)
+        source_digest = hashlib.sha256(bundle).hexdigest()
+        candidate_id = uuid.uuid4()
+        compiler = self.compiler or compiler_client_from_settings(self.settings)
+        result: CompilerResult | None = None
+        try:
+            status = compiler.submit(
+                job_id=str(candidate_id),
+                bundle=bundle,
+                entrypoint=parent_manifest.root_document,
+            )
+            if status.state not in {
+                CompilerJobState.SUCCEEDED,
+                CompilerJobState.FAILED,
+            }:
+                status = compiler.status(str(candidate_id))
+            if status.state in {CompilerJobState.SUCCEEDED, CompilerJobState.FAILED}:
+                result = compiler.result(str(candidate_id))
+        except (httpx.HTTPError, EnvelopeError, RuntimeError, ValueError):
+            result = None
+
+        if result is None:
+            # The compiler is asynchronous. A non-terminal response is neither a
+            # failed repair nor a durable candidate, so it must not spend budget.
+            return LatexPaperRepairOutcome(
+                self._descriptor(artifact), repaired=False, exhausted=False
+            )
+
+        if (
+            result.state != CompilerJobState.SUCCEEDED
+            or result.pdf is None
+            or result.source_digest != source_digest
+        ):
+            diagnostics["repair_attempts"] = attempts + 1
+            if result is not None:
+                diagnostics["last_repair_diagnostics"] = [
+                    item.model_dump(mode="json") for item in result.diagnostics[:20]
+                ]
+            parent.compile_diagnostics = diagnostics
+            self.db.flush()
+            return LatexPaperRepairOutcome(
+                self._descriptor(artifact),
+                repaired=False,
+                exhausted=attempts + 1 >= _MAX_REPAIR_ATTEMPTS,
+            )
+
+        version_number = (
+            self.db.scalar(
+                select(func.max(ChatLatexPaperVersion.version)).where(
+                    ChatLatexPaperVersion.artifact_id == artifact.id
+                )
+            )
+            or 0
+        ) + 1
+        manifest = LatexPaperManifest(
+            title=artifact.title,
+            root_document=parent_manifest.root_document,
+            files=[
+                LatexPaperFile(
+                    path=path,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    bytes=len(data),
+                    media_type=_media_type(path),
+                )
+                for path, data in sorted(normalized_files.items())
+            ],
+            display_metadata=parent_manifest.display_metadata,
+        )
+        version = ChatLatexPaperVersion(
+            id=candidate_id,
+            artifact=artifact,
+            parent_version_id=parent.id,
+            version=version_number,
+            source_manifest=manifest.model_dump(mode="json"),
+            source_digest=source_digest,
+            source_byte_count=sum(len(data) for data in normalized_files.values()),
+            storage_key=self._storage_prefix(
+                artifact.session_id, artifact.id, version=version_number
+            ),
+            storage_state="uploading",
+            compile_status="queued",
+            display_metadata=manifest.display_metadata.model_dump(mode="json"),
+            generation_provenance=provenance,
+            actor_type="ai",
+        )
+        self.db.add(version)
+        try:
+            for path, data in normalized_files.items():
+                self.storage.write_file(f"{version.storage_key}/{path}", BytesIO(data))
+            self.storage.write_file(
+                f"{version.storage_key}/{_SOURCE_ARCHIVE}", BytesIO(bundle)
+            )
+            version.storage_state = "ready"
+            self._store_compile_result(version, result)
+        except Exception as error:
+            self.storage.delete_prefix(version.storage_key)
+            self.db.expunge(version)
+            raise ArtifactError(
+                "artifact_storage_failed", "Paper repair storage failed"
+            ) from error
+        artifact.latest_version = version_number
+        artifact.source_head_version_id = version.id
+        self.db.flush()
+        return LatexPaperRepairOutcome(
+            self._descriptor(artifact), repaired=True, exhausted=False
+        )
+
+    def repair_context(
+        self, *, owner_id: str, artifact_id: uuid.UUID
+    ) -> tuple[LatexPaperArtifactDescriptor, dict[str, bytes]]:
+        """Return the current failed source for the authenticated chat turn."""
+        artifact = self._artifact(owner_id, artifact_id)
+        if artifact.source_head_version_id is None:
+            raise ArtifactError("paper_missing", "This chat has no paper source")
+        version = self._version(owner_id, artifact_id, artifact.source_head_version_id)
+        if version.compile_status != "failed":
+            raise ArtifactError(
+                "paper_not_failed", "The current paper source has not failed"
+            )
+        manifest = LatexPaperManifest.model_validate(version.source_manifest)
+        files = {
+            file.path: self.read_source_file(
+                owner_id, artifact_id, version.id, file.path
+            ).data
+            for file in manifest.files
+            if file.media_type in {"text/x-tex", "application/x-bibtex"}
+        }
+        return self._descriptor(artifact), files
+
+    def _descriptor(self, artifact: ChatArtifact) -> LatexPaperArtifactDescriptor:
+        return _paper_descriptor(artifact).model_copy(
+            update={"editing_enabled": self._editing_enabled()}
+        )
 
     def refresh_compile(
         self, *, owner_id: str, artifact_id: uuid.UUID

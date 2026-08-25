@@ -15,6 +15,15 @@ const descriptor = {
     source_digest: "a".repeat(64),
     compile_status: "failed" as const,
     preview_head_version_id: "preview-1",
+    compile_diagnostics: [{
+      severity: "error" as const,
+      phase: "compiler_error",
+      file: "main.tex",
+      line: 7,
+      message: "Undefined control sequence",
+    }],
+    repair_attempts_remaining: 3,
+    repair_exhausted: false,
     display_metadata: { unresolved_todo_count: 2, warning_count: 1 },
   },
   preview_head: {
@@ -47,9 +56,9 @@ const savedDescriptor = {
 };
 let apiDescriptor: typeof descriptor | typeof savedDescriptor;
 
-function Harness() {
+function Harness({ onAskAiFix }: { onAskAiFix?: (prompt: string) => void } = {}) {
   return <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <ArtifactPanelProvider workspaceKey="session-1">
+    <ArtifactPanelProvider workspaceKey="session-1" onAskAiFix={onAskAiFix}>
       <ArtifactWorkspace variant="chat">
         <main data-testid="conversation-pane"><LatexPaperArtifact descriptor={descriptor} /></main>
       </ArtifactWorkspace>
@@ -93,6 +102,8 @@ describe("Latex paper artifact workspace", () => {
     );
     expect(screen.getByText("Out of date")).toBeVisible();
 
+    expect(screen.getByText(/main\.tex:7.*Undefined control sequence/i)).toBeVisible();
+
     screen.getByRole("button", { name: "Files" }).click();
     expect(await screen.findByText("\\documentclass{article}")).toBeVisible();
     expect(screen.queryByRole("button", { name: /save.*compile/i })).not.toBeInTheDocument();
@@ -125,5 +136,15 @@ describe("Latex paper artifact workspace", () => {
     expect(saveCall).toBeDefined();
     expect(JSON.parse((saveCall![1] as RequestInit).body as string)).toMatchObject({ expected_parent_version_id: "source-1" });
     expect(window.localStorage.getItem("pwc:latex-paper-draft:artifact-1")).toBeNull();
+  });
+
+  it("sends a bounded repair request through the existing chat callback", async () => {
+    const onAskAiFix = vi.fn();
+    render(<Harness onAskAiFix={onAskAiFix} />);
+
+    (await screen.findByRole("button", { name: "Ask AI to fix" })).click();
+
+    expect(onAskAiFix).toHaveBeenCalledWith(expect.stringContaining("Undefined control sequence"));
+    expect(onAskAiFix).toHaveBeenCalledWith(expect.stringContaining("source-1"));
   });
 });

@@ -532,6 +532,12 @@ class LatexPaperVersionDescriptor(BaseModel):
     compile_status: Literal["queued", "compiling", "succeeded", "failed"]
     parent_version_id: uuid.UUID | None = None
     preview_head_version_id: uuid.UUID | None = None
+    compile_diagnostics: list["LatexPaperDiagnostic"] = Field(
+        default_factory=list, max_length=20
+    )
+    repair_attempts_remaining: int = Field(default=3, ge=0, le=3)
+    repair_exhausted: bool = False
+    generation_provenance: dict | None = None
     display_metadata: LatexPaperDisplayMetadata = Field(
         default_factory=LatexPaperDisplayMetadata
     )
@@ -546,6 +552,18 @@ class LatexPaperVersionDescriptor(BaseModel):
                 "An uncompiled source version cannot point at itself as preview"
             )
         return self
+
+
+class LatexPaperDiagnostic(BaseModel):
+    """Normalized, bounded compiler feedback safe to show in the paper canvas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["error", "warning"]
+    phase: str | None = Field(default=None, max_length=64)
+    file: str | None = Field(default=None, max_length=300)
+    line: int | None = Field(default=None, ge=1, le=1_000_000)
+    message: str = Field(min_length=1, max_length=1000)
 
 
 class LatexPaperArtifactDescriptor(BaseModel):

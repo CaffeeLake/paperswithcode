@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS chat_latex_paper_versions (
     compile_status VARCHAR(16) NOT NULL,
     compile_diagnostics JSONB,
     display_metadata JSONB NOT NULL,
+    generation_provenance JSONB,
     actor_type VARCHAR(16) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chat_latex_paper_versions_number_check CHECK (version >= 1),

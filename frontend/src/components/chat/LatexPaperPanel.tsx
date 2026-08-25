@@ -263,6 +263,15 @@ export const LatexPaperPanel: React.FC<{
     closePanel();
     if (dialog && pushedHistoryRef.current) { pushedHistoryRef.current = false; window.history.back(); }
   };
+  const askAiToFix = () => {
+    if (!source || source.compile_status !== "failed" || source.repair_exhausted) return;
+    const diagnostics = (source.compile_diagnostics ?? []).slice(0, 20).map((item) => (
+      `${item.file ?? "project"}${item.line ? `:${item.line}` : ""}: ${item.message}`
+    )).join("\n");
+    panel.askAiToFix(
+      `Repair the failed paper source version ${source.version_id}. Use pwc-paper to inspect and repair it; make no more than three attempts. Compiler diagnostics:\n${diagnostics || "No compiler diagnostic was available."}`,
+    );
+  };
 
   return <section
     ref={panelRef}
@@ -305,10 +314,18 @@ export const LatexPaperPanel: React.FC<{
       <div className="chat-artifact-metadata" aria-live="polite">
         {outOfDate && <strong>Out of date</strong>}
         {source && <span>Source v{source.version} · {source.compile_status}</span>}
+        {source?.compile_diagnostics?.map((diagnostic, index) => <button
+          type="button"
+          key={`${diagnostic.file ?? "global"}:${diagnostic.line ?? ""}:${index}`}
+          onClick={() => diagnostic.file && panel.setSourceFile(diagnostic.file)}
+          className="latex-compile-diagnostic"
+        >{diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}: ` : ""}{diagnostic.message}</button>)}
         {editorError && <span role="alert">{editorError}</span>}
         {staleDraft && <button type="button" onClick={discardStaleDraft}>Discard stale local draft</button>}
       </div>
       <div className="chat-artifact-actions">
+        {source?.compile_status === "failed" && !source.repair_exhausted && <button type="button" onClick={askAiToFix}>Ask AI to fix</button>}
+        {source?.compile_status === "failed" && source.repair_exhausted && <span role="status">AI repair attempts exhausted</span>}
         {panel.state.tab === "files" && canEdit && <button type="button" disabled={!draftIsDirty} onClick={() => saveMutation.mutate()}><Save />{saveMutation.isPending ? "Saving…" : "Save & Compile"}</button>}
         {previewUrl && <a href={previewUrl} download><Download /> PDF</a>}
         {source && sourcePath && <a href={sourceUrl(block.artifact_id!, source.version_id, sourcePath)} download><FileCode2 /> Source</a>}

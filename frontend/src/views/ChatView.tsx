@@ -91,8 +91,9 @@ const GeneralArtifactProvider: React.FC<{
   enabled: boolean;
   workspaceKey: string;
   children: React.ReactNode;
-}> = ({ enabled, workspaceKey, children }) => enabled
-  ? <ArtifactPanelProvider workspaceKey={workspaceKey}>{children}</ArtifactPanelProvider>
+  onAskAiFix?: (prompt: string) => void;
+}> = ({ enabled, workspaceKey, children, onAskAiFix }) => enabled
+  ? <ArtifactPanelProvider workspaceKey={workspaceKey} onAskAiFix={onAskAiFix}>{children}</ArtifactPanelProvider>
   : <>{children}</>;
 
 const GeneralArtifactWorkspace: React.FC<{
@@ -643,7 +644,7 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
   };
 
   return (
-    <GeneralArtifactProvider enabled={mode === "general"} workspaceKey={routeSessionId ?? "new-chat"}>
+    <GeneralArtifactProvider enabled={mode === "general"} workspaceKey={routeSessionId ?? "new-chat"} onAskAiFix={(prompt) => { void send(emptyDraft(prompt)); }}>
     <div className={`chat-page${mode === "paper" ? " chat-page--reader" : ""}`} style={{ height: mode === "paper" ? "100%" : `calc(100dvh - ${headerHeight}px)` }}>
       {mode === "general" && <ChatSessionNavigation
         sessions={sessions}

@@ -2603,6 +2603,7 @@ class ChatLatexPaperVersion(Base):
     compile_status: Mapped[str] = mapped_column(String(16), nullable=False)
     compile_diagnostics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     display_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    generation_provenance: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     actor_type: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
