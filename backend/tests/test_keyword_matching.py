@@ -41,6 +41,14 @@ def match(title: str, abstract: str) -> set[int]:
         {task["slug"]: task["id"] for task in TASKS},
         text,
         title,
+        {
+            task["slug"]: [
+                keyword.strip()
+                for keyword in task["keywords"].split(",")
+                if keyword.strip()
+            ]
+            for task in TASKS
+        },
     )
 
 
@@ -184,6 +192,13 @@ def test_explicit_healthcare_keyword_keeps_diagnosis_match() -> None:
     assert match(
         "Reliable Diagnosis in Healthcare",
         "We improve decision support workflows.",
+    ) == {7}
+
+
+def test_abstract_healthcare_keyword_overrides_generic_diagnosis_title() -> None:
+    assert match(
+        "Language Models for Diagnosis",
+        "We study diagnosis in healthcare.",
     ) == {7}
 
 

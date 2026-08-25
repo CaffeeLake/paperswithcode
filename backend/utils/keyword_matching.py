@@ -44,6 +44,13 @@ def is_case_sensitive_keyword(keyword: str) -> bool:
     return any(c.isupper() for c in keyword)
 
 
+def _keyword_matches_simple(text: str, keyword: str) -> bool:
+    """Match one task keyword with the same rules as the simple matcher."""
+    pattern = r"\b" + re.escape(keyword) + r"s?\b"
+    flags = 0 if is_case_sensitive_keyword(keyword) else re.IGNORECASE
+    return re.search(pattern, text, flags) is not None
+
+
 def create_keyword_patterns(
     items: List[Dict],
 ) -> Tuple[Dict[str, List[int]], Dict[str, List[int]]]:
@@ -324,14 +331,15 @@ _GENERIC_TECHNICAL_TITLE_PATTERN = re.compile(
     r"benchmarks?|anomaly detection|software|databases?|robots?|faults?|failures?)\b",
     re.IGNORECASE,
 )
+_MIN_GENERIC_TITLE_CONTEXT_CATEGORIES = 2
 
 
 def _matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
-def _count_pattern_matches(text: str, patterns: tuple[str, ...]) -> int:
-    return sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in patterns)
+def _count_matching_patterns(text: str, patterns: tuple[str, ...]) -> int:
+    return sum(bool(re.search(pattern, text, re.IGNORECASE)) for pattern in patterns)
 
 
 def has_healthcare_context(text: str, title: str | None = None) -> bool:
@@ -347,12 +355,12 @@ def has_healthcare_context(text: str, title: str | None = None) -> bool:
         if (
             _GENERIC_TECHNICAL_TITLE_PATTERN.search(title)
             and not title_has_healthcare_context
-            and _count_pattern_matches(
+            and _count_matching_patterns(
                 text,
                 _HEALTHCARE_UNAMBIGUOUS_CONTEXT_PATTERNS
                 + _HEALTHCARE_BIOMEDICAL_CONTEXT_PATTERNS,
             )
-            < 2
+            < _MIN_GENERIC_TITLE_CONTEXT_CATEGORIES
         ):
             return False
 
@@ -379,6 +387,7 @@ def apply_task_supersession_rules(
     slug_to_id: Dict[str, int],
     text: str | None = None,
     title: str | None = None,
+    task_keywords_by_slug: Dict[str, List[str]] | None = None,
 ) -> Set[int]:
     """Remove subsumed task IDs when a more specific task also matched."""
     result = set(matched_task_ids)
@@ -404,10 +413,17 @@ def apply_task_supersession_rules(
     # software, models, and reasoning. Require healthcare context when that is
     # the only signal that could have produced the broad Healthcare tag.
     healthcare_task_id = slug_to_id.get("healthcare")
+    healthcare_keywords = (task_keywords_by_slug or {}).get("healthcare", [])
+    has_specific_healthcare_keyword = any(
+        keyword.casefold() != "diagnosis"
+        and _keyword_matches_simple(text or "", keyword)
+        for keyword in healthcare_keywords
+    )
     if (
         text
         and healthcare_task_id in result
         and re.search(r"\bdiagnosis\b", text, re.IGNORECASE)
+        and not has_specific_healthcare_keyword
         and not has_healthcare_context(text, title)
     ):
         result.discard(healthcare_task_id)
@@ -451,8 +467,7 @@ def find_matching_items_simple(
     # still be tagged (LVLMs, MLLMs, ...) are expected to be added as their
     # own keywords on the task.
     for keyword, item_ids in case_sensitive_patterns.items():
-        pattern = r"\b" + re.escape(keyword) + r"s?\b"
-        if re.search(pattern, text):
+        if _keyword_matches_simple(text, keyword):
             matched_items.update(item_ids)
 
     # Find case-insensitive matches.
@@ -460,10 +475,8 @@ def find_matching_items_simple(
     # "transformed" when looking for "transformer". The trailing `s?` allows
     # the common English plural so e.g. keyword "large language model" still
     # tags a paper that writes "Large Language Models" in its abstract.
-    text_lower = text.lower()
     for keyword_lower, item_ids in case_insensitive_patterns.items():
-        pattern = r"\b" + re.escape(keyword_lower) + r"s?\b"
-        if re.search(pattern, text_lower):
+        if _keyword_matches_simple(text, keyword_lower):
             matched_items.update(item_ids)
 
     return matched_items

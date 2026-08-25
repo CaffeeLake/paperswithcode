@@ -108,6 +108,14 @@ def link_papers_by_task_keywords(
                 )
         print(f"   ✓ Loaded {len(tasks)} tasks with keywords")
         slug_to_id = {task["slug"]: task["id"] for task in tasks}
+        task_keywords_by_slug = {
+            task["slug"]: [
+                keyword.strip()
+                for keyword in task["keywords"].split(",")
+                if keyword.strip()
+            ]
+            for task in tasks
+        }
 
         print("\n2. Building keyword patterns...")
         case_sensitive_patterns, case_insensitive_patterns = create_keyword_patterns(
@@ -203,7 +211,11 @@ def link_papers_by_task_keywords(
                 text, case_sensitive_patterns, case_insensitive_patterns
             )
             matching_task_ids = apply_task_supersession_rules(
-                matching_task_ids, slug_to_id, text, paper["title"]
+                matching_task_ids,
+                slug_to_id,
+                text,
+                paper["title"],
+                task_keywords_by_slug,
             )
 
             if matching_task_ids:
