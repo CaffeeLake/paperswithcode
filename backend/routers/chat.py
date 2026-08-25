@@ -16,10 +16,13 @@ from typing import Literal
 from fastapi import (
     APIRouter,
     Depends,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -197,7 +200,9 @@ def _raise_artifact(error: ArtifactError) -> None:
         "artifact_unauthorized": 403,
         "artifact_too_large": 413,
         "poster_storage_quota_exceeded": 429,
+        "artifact_quota_exceeded": 429,
         "artifact_storage_failed": 503,
+        "artifact_deletion_failed": 503,
         "artifact_corrupt": 503,
         "paper_conflict": 409,
     }.get(error.code, 422)
@@ -1103,6 +1108,38 @@ def save_compile_latex_paper(
         _raise_artifact(error)
 
 
+@router.post("/artifacts/{artifact_id}/figures")
+def upload_latex_paper_figure(
+    artifact_id: uuid.UUID,
+    http_request: Request,
+    response: Response,
+    expected_parent_version_id: uuid.UUID = Form(),
+    path: str = Form(),
+    figure: UploadFile = File(),
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Publish a vetted PNG/JPEG/PDF figure as an immutable owner-only version."""
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_same_origin_csrf(http_request, settings)
+    try:
+        data = figure.file.read(settings.chat_artifact_max_image_bytes + 1)
+        descriptor = LatexPaperService(db, settings).upload_figure(
+            owner_id=owner_from_user(user).hf_user_id,
+            artifact_id=artifact_id,
+            expected_parent_version_id=expected_parent_version_id,
+            path=path,
+            data=data,
+            declared_media_type=figure.content_type or "",
+        )
+        db.commit()
+        return descriptor
+    except ArtifactError as error:
+        db.rollback()
+        _raise_artifact(error)
+
+
 @router.post("/artifacts/{artifact_id}/refresh-compile")
 def refresh_latex_paper_compile(
     artifact_id: uuid.UUID,
@@ -1213,9 +1250,16 @@ def delete_artifact_version(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        ChatArtifactService(db, settings).delete_version(
-            owner_from_user(user).hf_user_id, artifact_id, version_id
-        )
+        owner = owner_from_user(user).hf_user_id
+        artifact = ChatArtifactService(db, settings).get_artifact(owner, artifact_id)
+        if artifact.kind == "latex_paper":
+            LatexPaperService(db, settings).delete_version(
+                owner, artifact_id, version_id
+            )
+        else:
+            ChatArtifactService(db, settings).delete_version(
+                owner, artifact_id, version_id
+            )
         db.commit()
         return Response(status_code=204)
     except ArtifactError as error:
@@ -1283,6 +1327,36 @@ def get_artifact_source(
             headers={
                 "Cache-Control": "private, immutable, max-age=31536000",
                 "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": f'attachment; filename="{item.filename}"',
+            },
+        )
+    except ArtifactError as error:
+        _raise_artifact(error)
+
+
+@router.get("/artifacts/{artifact_id}/versions/{version_id}/figures/{path:path}")
+def get_latex_paper_figure(
+    artifact_id: uuid.UUID,
+    version_id: uuid.UUID,
+    path: str,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Serve a private figure as a download, never executable active content."""
+    try:
+        item = LatexPaperService(db, settings).read_figure(
+            owner_from_user(user).hf_user_id, artifact_id, version_id, path
+        )
+        return Response(
+            content=item.data,
+            media_type=item.media_type,
+            headers={
+                "Cache-Control": "private, immutable, max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Cross-Origin-Resource-Policy": "same-origin",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
                 "Content-Disposition": f'attachment; filename="{item.filename}"',
             },
         )

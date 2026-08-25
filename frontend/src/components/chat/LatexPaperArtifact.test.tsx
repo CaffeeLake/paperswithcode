@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -201,5 +202,22 @@ describe("Latex paper artifact workspace", () => {
     });
     screen.getByRole("button", { name: "Files" }).click();
     expect(await screen.findByText("Restored source")).toBeVisible();
+  });
+
+  it("uploads an approved figure through the owner-only paper endpoint", async () => {
+    apiDescriptor = { ...descriptor, editing_enabled: true };
+    render(<Harness />);
+    screen.getByRole("button", { name: "Files" }).click();
+
+    const input = await screen.findByLabelText("Upload figure");
+    fireEvent.change(input, {
+      target: { files: [new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "result.png", { type: "image/png" })] },
+    });
+
+    await waitFor(() => {
+      const upload = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith("/figures") && (init as RequestInit).method === "POST");
+      expect(upload).toBeDefined();
+      expect((upload![1] as RequestInit).body).toBeInstanceOf(FormData);
+    });
   });
 });

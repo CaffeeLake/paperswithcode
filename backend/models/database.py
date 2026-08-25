@@ -2613,6 +2613,9 @@ class ChatLatexPaperVersion(Base):
     parent_version: Mapped[Optional["ChatLatexPaperVersion"]] = relationship(
         remote_side=[id], foreign_keys=[parent_version_id]
     )
+    figure_references: Mapped[list["ChatLatexPaperFigureReference"]] = relationship(
+        back_populates="version", cascade="all, delete-orphan", passive_deletes=True
+    )
     message: Mapped[Optional[ChatMessageRecord]] = relationship()
     __table_args__ = (
         CheckConstraint("version >= 1", name="chat_latex_paper_versions_number_check"),
@@ -2645,6 +2648,71 @@ class ChatLatexPaperVersion(Base):
         ),
         Index("idx_chat_latex_paper_versions_turn", "turn_id"),
         Index("idx_chat_latex_paper_versions_message", "message_id"),
+    )
+
+
+class ChatLatexPaperFigureBlob(Base):
+    """One private content-addressed figure, shared by immutable paper versions."""
+
+    __tablename__ = "chat_latex_paper_figure_blobs"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    references: Mapped[list["ChatLatexPaperFigureReference"]] = relationship(
+        back_populates="blob", passive_deletes=True
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "length(digest) = 64", name="chat_latex_paper_figure_blobs_digest_check"
+        ),
+        CheckConstraint(
+            "byte_count > 0", name="chat_latex_paper_figure_blobs_bytes_check"
+        ),
+        CheckConstraint(
+            "media_type IN ('image/png','image/jpeg','application/pdf')",
+            name="chat_latex_paper_figure_blobs_type_check",
+        ),
+    )
+
+
+class ChatLatexPaperFigureReference(Base):
+    """A safe source-tree path from one immutable version to a figure blob."""
+
+    __tablename__ = "chat_latex_paper_figure_references"
+
+    version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_latex_paper_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    path: Mapped[str] = mapped_column(String(300), primary_key=True)
+    blob_digest: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("chat_latex_paper_figure_blobs.digest", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    version: Mapped["ChatLatexPaperVersion"] = relationship(
+        back_populates="figure_references"
+    )
+    blob: Mapped["ChatLatexPaperFigureBlob"] = relationship(back_populates="references")
+    __table_args__ = (
+        CheckConstraint(
+            "length(blob_digest) = 64", name="chat_latex_paper_figure_refs_digest_check"
+        ),
+        Index("idx_chat_latex_paper_figure_refs_digest", "blob_digest"),
+    )
+
+
+class ChatLatexPaperStorageCleanup(Base):
+    """A retriable private-prefix deletion scheduled after a paper DB commit."""
+
+    __tablename__ = "chat_latex_paper_storage_cleanup"
+
+    storage_prefix: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

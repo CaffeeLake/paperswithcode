@@ -18,3 +18,4 @@ def test_reconciliation_requires_an_enabled_staging_compiler() -> None:
     validate_settings(
         Settings(environment="staging", chat_latex_compiler_jobs_enabled=True)
     )
+    validate_settings(Settings(environment="staging"), cleanup_only=True)

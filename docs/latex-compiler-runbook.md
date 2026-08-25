@@ -100,6 +100,10 @@ marked `lost`; a temporary transport fault remains queued for a later bounded
 retry. Do not retry a failed qualification by changing a manuscript or its
 digest under the same version ID.
 
+When the compiler kill switch is on, an operator may append `--cleanup-only`
+to reclaim the bounded queue of already-unreachable private storage prefixes;
+this mode never submits or resumes compiler work.
+
 ## Qualification procedure
 
 Only after the exact external inputs above are supplied and the kill switch is

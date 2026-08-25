@@ -16,10 +16,15 @@ from backend.config import Settings
 from backend.models.database import (
     Base,
     ChatArtifact,
+    ChatArtifactVersion,
+    ChatLatexPaperFigureBlob,
+    ChatLatexPaperFigureReference,
+    ChatLatexPaperStorageCleanup,
     ChatLatexPaperVersion,
     ChatSession,
 )
 from backend.services.chat_artifact_service import LocalArtifactStorage
+from backend.services.chat_artifact_service import StoredArtifactFile
 from backend.services.latex_paper_service import LatexPaperService
 from latex_compiler_contract import (
     CompileLimits,
@@ -49,7 +54,11 @@ def db():
         tables=[
             ChatSession.__table__,
             ChatArtifact.__table__,
+            ChatArtifactVersion.__table__,
             ChatLatexPaperVersion.__table__,
+            ChatLatexPaperFigureBlob.__table__,
+            ChatLatexPaperFigureReference.__table__,
+            ChatLatexPaperStorageCleanup.__table__,
         ],
     )
     with Session(engine) as session:
@@ -160,9 +169,6 @@ def test_create_scaffold_persists_immutable_source_and_preview(db, settings):
     assert storage.read_file(
         f"{version.storage_key}/main.tex", max_bytes=100_000
     ).startswith(b"\\documentclass")
-    assert storage.read_file(
-        f"{version.storage_key}/source.zip", max_bytes=100_000
-    ).startswith(b"PK")
     assert storage.read_file(
         f"{version.storage_key}/preview.pdf", max_bytes=100_000
     ).startswith(b"%PDF")
@@ -578,6 +584,332 @@ def test_human_save_creates_a_child_and_advances_both_heads(db, settings):
     ).data.endswith(b"\\end{document}")
 
 
+def test_figure_upload_is_signature_checked_deduplicated_and_preserved_across_saves(
+    db, settings
+):
+    """A text-only save must retain one durable, safely-addressed figure blob."""
+    session_id = _session(db)
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=_Compiler())
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+
+    png = b"\x89PNG\r\n\x1a\nresearch-image"
+    uploaded = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path="figures/result.png",
+        data=png,
+        declared_media_type="image/png",
+    )
+    assert uploaded.source_head is not None
+    assert uploaded.source_head.version == 2
+    figure = service.read_figure(
+        "owner-1",
+        initial.artifact_id,
+        uploaded.source_head.version_id,
+        "figures/result.png",
+    )
+    assert figure.data == png
+    assert figure.media_type == "image/png"
+
+    saved = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=uploaded.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Edited\\end{document}"
+        },
+    )
+    assert saved.source_head is not None
+    assert (
+        service.read_figure(
+            "owner-1",
+            initial.artifact_id,
+            saved.source_head.version_id,
+            "figures/result.png",
+        ).data
+        == png
+    )
+    assert len(list(Path(settings.chat_artifact_local_dir).glob("**/blobs/*"))) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "media_type"),
+    [
+        ("figures/result.jpg", b"\xff\xd8\xffjpeg", "image/jpeg"),
+        ("figures/result.pdf", b"%PDF-1.7\npdf", "application/pdf"),
+    ],
+)
+def test_figure_upload_accepts_each_non_png_type(db, settings, path, data, media_type):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+
+    uploaded = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path=path,
+        data=data,
+        declared_media_type=media_type,
+    )
+
+    assert uploaded.source_head is not None
+    assert (
+        service.read_figure(
+            "owner-1", initial.artifact_id, uploaded.source_head.version_id, path
+        ).media_type
+        == media_type
+    )
+
+
+def test_figure_upload_rejects_mismatched_signature_and_owner_quota_before_publication(
+    db, settings
+):
+    """Bad media and over-quota bytes must not advance the immutable source head."""
+    constrained = settings.model_copy(update={"chat_artifact_owner_quota_bytes": 6_000})
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        constrained,
+        storage=LocalArtifactStorage(Path(constrained.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    with pytest.raises(Exception, match="signature"):
+        service.upload_figure(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            path="figures/not-a-png.png",
+            data=b"not a PNG",
+            declared_media_type="image/png",
+        )
+    assert (
+        service.get_artifact_descriptor(
+            "owner-1", initial.artifact_id
+        ).source_head.version
+        == 1
+    )
+    with pytest.raises(Exception, match="safe relative paths"):
+        service.upload_figure(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=initial.source_head.version_id,
+            path="../outside.png",
+            data=b"\x89PNG\r\n\x1a\noutside",
+            declared_media_type="image/png",
+        )
+
+    first = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path="figures/large.png",
+        data=b"\x89PNG\r\n\x1a\n" + b"a" * 5_000,
+        declared_media_type="image/png",
+    )
+    assert first.source_head is not None
+    with pytest.raises(Exception, match="quota"):
+        service.upload_figure(
+            owner_id="owner-1",
+            artifact_id=initial.artifact_id,
+            expected_parent_version_id=first.source_head.version_id,
+            path="figures/another.png",
+            data=b"\x89PNG\r\n\x1a\n" + b"b" * 1_000,
+            declared_media_type="image/png",
+        )
+    assert (
+        service.get_artifact_descriptor(
+            "owner-1", initial.artifact_id
+        ).source_head.version_id
+        == first.source_head.version_id
+    )
+
+
+def test_deleting_unreferenced_versions_and_project_reclaims_only_orphaned_figures(
+    db, settings
+):
+    """Version removal drops its reference, but a shared figure survives until project cleanup."""
+
+    class TransientDeleteStorage(LocalArtifactStorage):
+        fail_deletes = False
+
+        def delete_prefix(self, prefix: str) -> None:
+            if self.fail_deletes:
+                raise OSError("temporary storage outage")
+            super().delete_prefix(prefix)
+
+    session_id = _session(db)
+    storage = TransientDeleteStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=_Compiler())
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    uploaded = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path="figures/result.png",
+        data=b"\x89PNG\r\n\x1a\nresearch-image",
+        declared_media_type="image/png",
+    )
+    assert uploaded.source_head is not None
+    saved = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=uploaded.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}Version three\\end{document}"
+        },
+    )
+    assert saved.source_head is not None
+    service.delete_version(
+        "owner-1", initial.artifact_id, uploaded.source_head.version_id
+    )
+    assert len(list(Path(settings.chat_artifact_local_dir).glob("**/blobs/*"))) == 1
+    service.delete_project("owner-1", initial.artifact_id)
+    # Object deletion is deliberately deferred until the DB reference removal
+    # commits, so a concurrent upload cannot reuse an about-to-be-deleted blob.
+    assert len(list(Path(settings.chat_artifact_local_dir).glob("**/blobs/*"))) == 1
+    storage.fail_deletes = True
+    db.commit()
+    assert service.reconcile_storage_cleanup(limit=20) == 0
+    storage.fail_deletes = False
+    assert service.reconcile_storage_cleanup(limit=20) > 0
+    db.commit()
+    assert list(Path(settings.chat_artifact_local_dir).glob("**/blobs/*/content")) == []
+
+
+def test_figure_admission_counts_durable_posterly_storage(db, settings):
+    """The owner limit is shared by Posterly and paper artifacts."""
+    constrained = settings.model_copy(update={"chat_artifact_owner_quota_bytes": 6_000})
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        constrained,
+        storage=LocalArtifactStorage(Path(constrained.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    paper = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert paper.source_head is not None
+    poster = ChatArtifact(
+        id=uuid.uuid4(),
+        session_id=_session(db),
+        identifier="poster",
+        kind="posterly",
+        title="Poster",
+        latest_version=1,
+    )
+    db.add(poster)
+    db.flush()
+    db.add(
+        ChatArtifactVersion(
+            id=uuid.uuid4(),
+            artifact=poster,
+            turn_id=uuid.uuid4(),
+            version=1,
+            manifest={},
+            bundle_digest="a" * 64,
+            byte_count=6_000,
+            storage_key="private/poster",
+            preview_path="poster.pdf",
+            preview_mime="application/pdf",
+            gate_status="passed",
+            state="ready",
+        )
+    )
+    db.flush()
+
+    with pytest.raises(Exception, match="quota"):
+        service.upload_figure(
+            owner_id="owner-1",
+            artifact_id=paper.artifact_id,
+            expected_parent_version_id=paper.source_head.version_id,
+            path="figures/result.png",
+            data=b"\x89PNG\r\n\x1a\nresearch-image",
+            declared_media_type="image/png",
+        )
+
+
+def test_figure_response_forces_private_download_headers(monkeypatch, settings):
+    """A PDF figure is downloaded privately instead of executing in the app origin."""
+    from backend.routers import chat as chat_router
+
+    class Service:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def read_figure(self, *_args):
+            return StoredArtifactFile(
+                data=b"%PDF-1.7\nfigure",
+                media_type="application/pdf",
+                filename="plot.pdf",
+            )
+
+    monkeypatch.setattr(chat_router, "LatexPaperService", Service)
+    response = chat_router.get_latex_paper_figure(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        "figures/plot.pdf",
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+    assert response.headers["content-disposition"] == 'attachment; filename="plot.pdf"'
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+
+
+def test_version_delete_route_uses_paper_reference_cleanup(monkeypatch, settings):
+    """The public version route must not send a paper ID through Posterly deletion."""
+    from backend.routers import chat as chat_router
+
+    called: list[tuple[str, uuid.UUID, uuid.UUID]] = []
+
+    class ArtifactService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_artifact(self, *_args):
+            return type("Artifact", (), {"kind": "latex_paper"})()
+
+    class PaperService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def delete_version(self, owner, artifact_id, version_id):
+            called.append((owner, artifact_id, version_id))
+
+    class Db:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            raise AssertionError("the owner cleanup route should not roll back")
+
+    monkeypatch.setattr(chat_router, "ChatArtifactService", ArtifactService)
+    monkeypatch.setattr(chat_router, "LatexPaperService", PaperService)
+    artifact_id, version_id = uuid.uuid4(), uuid.uuid4()
+    response = chat_router.delete_artifact_version(
+        artifact_id,
+        version_id,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=Db(),
+        settings=settings,
+    )
+    assert response.status_code == 204
+    assert called == [("owner-1", artifact_id, version_id)]
+
+
 def test_human_save_rejects_a_stale_parent_without_overwriting(db, settings):
     session_id = _session(db)
     service = LatexPaperService(
@@ -759,6 +1091,56 @@ def test_restore_rejects_the_current_head(db, settings):
             source_version_id=initial.source_head.version_id,
             expected_parent_version_id=initial.source_head.version_id,
         )
+
+
+def test_restore_keeps_figure_reference_after_source_version_is_deleted(db, settings):
+    session_id = _session(db)
+    service = LatexPaperService(
+        db,
+        settings,
+        storage=LocalArtifactStorage(Path(settings.chat_artifact_local_dir)),
+        compiler=_Compiler(),
+    )
+    initial = service.create_neutral_scaffold(owner_id="owner-1", session_id=session_id)
+    assert initial.source_head is not None
+    figure = b"\x89PNG\r\n\x1a\nrestore-figure"
+    uploaded = service.upload_figure(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=initial.source_head.version_id,
+        path="figures/result.png",
+        data=figure,
+        declared_media_type="image/png",
+    )
+    assert uploaded.source_head is not None
+    newer = service.save_human_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        expected_parent_version_id=uploaded.source_head.version_id,
+        files={
+            "main.tex": b"\\documentclass{article}\\begin{document}newer\\end{document}"
+        },
+    )
+    assert newer.source_head is not None
+    restored = service.restore_version(
+        owner_id="owner-1",
+        artifact_id=initial.artifact_id,
+        source_version_id=uploaded.source_head.version_id,
+        expected_parent_version_id=newer.source_head.version_id,
+    )
+    assert restored.source_head is not None
+    service.delete_version(
+        "owner-1", initial.artifact_id, uploaded.source_head.version_id
+    )
+    assert (
+        service.read_figure(
+            "owner-1",
+            initial.artifact_id,
+            restored.source_head.version_id,
+            "figures/result.png",
+        ).data
+        == figure
+    )
 
 
 def test_pending_human_save_advances_preview_when_polled(db, settings):

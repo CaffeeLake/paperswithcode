@@ -465,6 +465,7 @@ class LatexPaperFile(BaseModel):
         "image/jpeg",
         "application/pdf",
     ]
+    blob_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("path")
     @classmethod
@@ -478,6 +479,13 @@ class LatexPaperFile(BaseModel):
         ):
             raise ValueError("Paper file path must be a normalized relative path")
         return value
+
+    @model_validator(mode="after")
+    def validate_blob_reference(self) -> "LatexPaperFile":
+        is_figure = self.media_type in {"image/png", "image/jpeg", "application/pdf"}
+        if is_figure != (self.blob_digest is not None):
+            raise ValueError("Only figures may have a content-addressed blob reference")
+        return self
 
 
 class LatexPaperDisplayMetadata(BaseModel):

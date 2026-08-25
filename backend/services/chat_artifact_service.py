@@ -31,6 +31,9 @@ from backend.config import Settings
 from backend.models.database import (
     ChatArtifact,
     ChatArtifactVersion,
+    ChatLatexPaperFigureBlob,
+    ChatLatexPaperFigureReference,
+    ChatLatexPaperVersion,
     ChatSession,
 )
 
@@ -61,6 +64,67 @@ class ArtifactError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def lock_owner_artifact_quota(db: Session, owner_id: str) -> None:
+    """Serialize durable artifact quota admission for one owner.
+
+    Posterly and LaTeX paper versions use separate tables, so their normal
+    artifact locks cannot make an owner-wide limit atomic.
+    """
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:owner))"),
+            {"owner": f"chat-artifact-storage:{owner_id}"},
+        )
+
+
+def owner_artifact_storage_bytes(db: Session, owner_id: str) -> int:
+    """Return one owner's durable bytes across all chat artifact types."""
+    poster_bytes = db.scalar(
+        select(func.coalesce(func.sum(ChatArtifactVersion.byte_count), 0))
+        .join(ChatArtifact)
+        .join(ChatSession)
+        .where(
+            ChatSession.hf_user_id == owner_id,
+            ChatArtifactVersion.state.in_(["uploading", "ready"]),
+        )
+    )
+    paper_versions = db.scalars(
+        select(ChatLatexPaperVersion)
+        .join(ChatArtifact)
+        .join(ChatSession)
+        .where(
+            ChatSession.hf_user_id == owner_id,
+            ChatLatexPaperVersion.storage_state == "ready",
+        )
+    ).all()
+    paper_text_bytes = sum(
+        int(file.get("bytes", 0))
+        for version in paper_versions
+        for file in (version.source_manifest or {}).get("files", [])
+        if file.get("blob_digest") is None
+    )
+    figure_digests = db.scalars(
+        select(ChatLatexPaperFigureReference.blob_digest)
+        .join(ChatLatexPaperVersion)
+        .join(ChatArtifact)
+        .join(ChatSession)
+        .where(ChatSession.hf_user_id == owner_id)
+        .distinct()
+    ).all()
+    figure_bytes = sum(
+        blob.byte_count
+        for digest in figure_digests
+        if (blob := db.get(ChatLatexPaperFigureBlob, digest)) is not None
+    )
+    paper_pdf_bytes = sum(
+        diagnostics.get("pdf_bytes", 0)
+        for version in paper_versions
+        if isinstance(diagnostics := version.compile_diagnostics, dict)
+        and isinstance(diagnostics.get("pdf_bytes"), int)
+    )
+    return int(poster_bytes or 0) + paper_text_bytes + figure_bytes + paper_pdf_bytes
 
 
 class PosterCanvas(BaseModel):
@@ -563,16 +627,7 @@ class ChatArtifactService:
         return artifact_storage_from_settings(self.settings)
 
     def storage_status(self, owner_id: str) -> dict[str, int]:
-        used = self.db.scalar(
-            select(func.coalesce(func.sum(ChatArtifactVersion.byte_count), 0))
-            .join(ChatArtifact)
-            .join(ChatSession)
-            .where(
-                ChatSession.hf_user_id == owner_id,
-                ChatArtifactVersion.state.in_(["uploading", "ready"]),
-            )
-        )
-        used_bytes = int(used or 0)
+        used_bytes = owner_artifact_storage_bytes(self.db, owner_id)
         return {
             "used_bytes": used_bytes,
             "quota_bytes": self.settings.chat_artifact_owner_quota_bytes,
@@ -633,24 +688,9 @@ class ChatArtifactService:
         message_id: uuid.UUID | None,
         bundle: ValidatedPosterBundle,
     ) -> ChatArtifactVersion:
-        if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
-            self.db.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:owner))"),
-                {"owner": f"chat-artifacts:{owner_id}"},
-            )
-        used = self.db.scalar(
-            select(func.coalesce(func.sum(ChatArtifactVersion.byte_count), 0))
-            .join(ChatArtifact)
-            .join(ChatSession)
-            .where(
-                ChatSession.hf_user_id == owner_id,
-                ChatArtifactVersion.state.in_(["uploading", "ready"]),
-            )
-        )
-        if (
-            int(used or 0) + bundle.total_bytes
-            > self.settings.chat_artifact_owner_quota_bytes
-        ):
+        lock_owner_artifact_quota(self.db, owner_id)
+        used = owner_artifact_storage_bytes(self.db, owner_id)
+        if used + bundle.total_bytes > self.settings.chat_artifact_owner_quota_bytes:
             raise ArtifactError(
                 "poster_storage_quota_exceeded",
                 "Poster storage quota exceeded; delete a poster or chat and try again",

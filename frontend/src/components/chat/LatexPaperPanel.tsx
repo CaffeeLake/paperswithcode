@@ -22,6 +22,10 @@ function sourceUrl(artifactId: string, versionId: string, path: string): string 
   return apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/source/${path.split("/").map(encodeURIComponent).join("/")}`);
 }
 
+function figureUrl(artifactId: string, versionId: string, path: string): string {
+  return apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/figures/${path.split("/").map(encodeURIComponent).join("/")}`);
+}
+
 function draftKey(artifactId: string): string {
   return `pwc:latex-paper-draft:${artifactId}`;
 }
@@ -157,6 +161,9 @@ export const LatexPaperPanel: React.FC<{
   const textFiles = manifestQuery.data?.files.filter((file) => (
     file.media_type === "text/x-tex" || file.media_type === "application/x-bibtex"
   )) ?? [];
+  const figureFiles = manifestQuery.data?.files.filter((file) => (
+    file.media_type === "image/png" || file.media_type === "image/jpeg" || file.media_type === "application/pdf"
+  )) ?? [];
   const sourceFilesQuery = useQuery({
     queryKey: ["chat-latex-paper-source-files", block.artifact_id, source?.version_id],
     queryFn: async () => Object.fromEntries(await Promise.all(textFiles.map(async (file) => {
@@ -250,6 +257,30 @@ export const LatexPaperPanel: React.FC<{
       panel.setTab("preview");
     },
     onError: (error) => setEditorError(error instanceof Error ? error.message : "Could not restore paper version"),
+  });
+
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      if (!source?.version_id) throw new Error("Paper source is not ready to upload a figure");
+      if (draftIsDirty) throw new Error("Save or discard text edits before uploading a figure");
+      const form = new FormData();
+      form.set("expected_parent_version_id", source.version_id);
+      form.set("path", `figures/${file.name}`);
+      form.set("figure", file);
+      const response = await fetch(apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/figures`), {
+        method: "POST", credentials: "include", body: form,
+      });
+      const body = await response.json().catch(() => null) as LatexPaperArtifactDescriptor | { detail?: { message?: string } } | null;
+      if (!response.ok) throw new Error((body as { detail?: { message?: string } } | null)?.detail?.message ?? "Could not upload figure");
+      return body as LatexPaperArtifactDescriptor;
+    },
+    onSuccess: (uploaded) => {
+      queryClient.setQueryData(["chat-latex-paper", block.artifact_id], uploaded);
+      queryClient.invalidateQueries({ queryKey: ["chat-latex-paper-manifest", block.artifact_id] });
+      queryClient.invalidateQueries({ queryKey: ["chat-latex-paper-source-files", block.artifact_id] });
+      setEditorError(null);
+    },
+    onError: (error) => setEditorError(error instanceof Error ? error.message : "Could not upload figure"),
   });
 
   const refreshMutation = useMutation({
@@ -352,6 +383,12 @@ export const LatexPaperPanel: React.FC<{
             <nav aria-label="Paper source files">
               {textFiles.map((file) => <button type="button" key={file.path} aria-pressed={sourcePath === file.path} onClick={() => selectFile(file.path)}>{file.path}</button>)}
               {canEdit && <button type="button" className="latex-file-action" aria-label="Add TeX file" onClick={addFile}><FilePlus2 /> Add file</button>}
+              {canEdit && <label className="latex-file-action">Upload figure<input aria-label="Upload figure" type="file" accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf" disabled={uploadMutation.isPending} onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) uploadMutation.mutate(file);
+              }} /></label>}
+              {figureFiles.map((file) => source && <a key={file.path} href={figureUrl(block.artifact_id!, source.version_id, file.path)} download>{file.path}</a>)}
             </nav>
             <div className="latex-editor-column">
               {sourcePath && files[sourcePath] !== undefined
