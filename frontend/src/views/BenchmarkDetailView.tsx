@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
@@ -77,7 +77,6 @@ const BenchmarkDetailView: React.FC = () => {
   const highlightEvalId = searchParams.get("eval") || undefined;
   const parameterBound = parseParameterFilter(searchParams.get("max_parameters_exclusive"));
   const { preferences, setHideClosedSourceEvals } = usePreferences();
-  const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
   const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const didScrollToHighlight = useRef(false);
   const chartCardRef = useRef<HTMLDivElement | null>(null);
@@ -104,7 +103,7 @@ const BenchmarkDetailView: React.FC = () => {
 
   // Fetch every evaluation on this dataset once. Metric switching is purely
   // a UI concern (column choice, sort key, SOTA computation), so we must not
-  // pass `bestMetric` as an API filter — the backend filters on the row's
+  // pass the selected metric as an API filter — the backend filters on the row's
   // `best_metric` column, which would drop rows whose primary metric is
   // different from the tab the user clicked (e.g. an F1-primary row that
   // also carries Recall/Precision values).
@@ -275,7 +274,11 @@ const BenchmarkDetailView: React.FC = () => {
     return top || allowedMetrics[0] || mergedTaskEvals[0]?.best_metric || "";
   }, [mergedTaskEvals, allowedMetrics, configuredMetrics]);
 
-  const activeMetric = bestMetric || highlightEval?.best_metric || defaultMetric;
+  const metricFromQuery = searchParams.get("metric")?.trim();
+  const requestedMetric = metricFromQuery
+    ? allowedMetrics.find((metric) => metric.toLocaleLowerCase() === metricFromQuery.toLocaleLowerCase())
+    : undefined;
+  const activeMetric = requestedMetric || highlightEval?.best_metric || defaultMetric;
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
   const arrow: "↑" | "↓" = direction === "lower_is_better" ? "↓" : "↑";
 
@@ -401,6 +404,13 @@ const BenchmarkDetailView: React.FC = () => {
       const next = new URLSearchParams(current);
       if (bound === undefined) next.delete("max_parameters_exclusive");
       else next.set("max_parameters_exclusive", String(bound));
+      return next;
+    });
+  };
+  const setMetric = (metric: string) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("metric", metric);
       return next;
     });
   };
@@ -614,7 +624,7 @@ const BenchmarkDetailView: React.FC = () => {
                     <span className="bm-view-select-label">View</span>
                     <select
                       value={activeMetric}
-                      onChange={(e) => setBestMetric(e.target.value)}
+                      onChange={(e) => setMetric(e.target.value)}
                     >
                       {orderedMetrics.map((m) => (
                         <option key={m} value={m}>{m}</option>
@@ -709,7 +719,7 @@ const BenchmarkDetailView: React.FC = () => {
                   <span className="bm-view-select-label">View</span>
                   <select
                     value={activeMetric}
-                    onChange={(e) => setBestMetric(e.target.value)}
+                    onChange={(e) => setMetric(e.target.value)}
                   >
                     {orderedMetrics.map((m) => (
                       <option key={m} value={m}>{m}</option>
@@ -793,7 +803,7 @@ const BenchmarkDetailView: React.FC = () => {
                         <button
                           type="button"
                           className="bm-metric-header"
-                          onClick={() => setBestMetric(m)}
+                          onClick={() => setMetric(m)}
                           aria-pressed={isActive}
                           title={`Sort by ${m}`}
                         >

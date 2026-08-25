@@ -189,3 +189,58 @@ describe("BenchmarkDetailView parameter filters", () => {
     expect(screen.queryByText(/Parameters known for/)).not.toBeInTheDocument();
   });
 });
+
+describe("BenchmarkDetailView metric deep links", () => {
+  function setupMultipleMetrics() {
+    setup();
+    vi.mocked(catalogApi.metricDirections).mockResolvedValue({
+      directions: { CIDER: "higher_is_better", "R@1": "higher_is_better" },
+    });
+    vi.mocked(catalogApi.leaderboardMetrics).mockResolvedValue([
+      { metric_id: "metric-cider", metric_name: "CIDER", metric_direction: "higher_is_better" },
+      { metric_id: "metric-r1", metric_name: "R@1", metric_direction: "higher_is_better" },
+    ]);
+    vi.mocked(evaluationsApi.byDataset).mockResolvedValue([
+      evaluation({
+        best_metric: "CIDER",
+        metrics: { CIDER: 120, "R@1": 70 },
+        paper_published_date: "2025-01-15",
+      }),
+      evaluation({
+        id: "second",
+        paper_id: "paper-2",
+        model_name: "Model Two",
+        best_metric: "CIDER",
+        metrics: { CIDER: 110, "R@1": 80 },
+        paper_published_date: "2025-02-15",
+      }),
+    ]);
+  }
+
+  it("selects a metric from a case-insensitive URL parameter", async () => {
+    setupMultipleMetrics();
+
+    renderView("/datasets/test-benchmark?metric=r%401");
+
+    const metricSelectors = await screen.findAllByRole("combobox", { name: /view/i });
+    expect(metricSelectors).toHaveLength(2);
+    metricSelectors.forEach((selector) => expect(selector).toHaveValue("R@1"));
+    expect(await screen.findByText("R@1", { selector: ".metric-tag" })).toBeInTheDocument();
+    expect(await screen.findByText("Model Two", { selector: ".best-name" })).toBeInTheDocument();
+  });
+
+  it("writes metric selection to the URL without dropping other parameters", async () => {
+    setupMultipleMetrics();
+
+    renderView("/datasets/test-benchmark?task=test-task");
+
+    const [metricSelector] = await screen.findAllByRole("combobox", { name: /view/i });
+    fireEvent.change(metricSelector, {
+      target: { value: "R@1" },
+    });
+
+    expect(await screen.findByTestId("location")).toHaveTextContent(
+      "?task=test-task&metric=R%401",
+    );
+  });
+});
