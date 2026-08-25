@@ -45,3 +45,8 @@ staging qualification covering the image digest, TeX engine versions, hostile
 bundle handling, timeout/cancellation, and the no-network/no-shell-escape
 controls. The in-memory queue is intentionally ephemeral: PwC owns durable job
 intent and may safely resubmit the same signed job after a Space restart.
+
+See `docs/latex-compiler-runbook.md` in the PwC source checkout for the
+mandatory staging qualification, health/metrics, kill-switch, and restart
+reconciliation procedure. A Docker Space must remain disabled until its
+per-job isolation and egress boundary have been qualified.

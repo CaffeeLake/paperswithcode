@@ -12,6 +12,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import zipfile
 from collections.abc import Awaitable, Callable
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, status
 
 from latex_compiler_contract import (
     MAX_SOURCE_BYTES,
@@ -81,11 +82,24 @@ class JobManager:
         self.jobs: dict[str, _Job] = {}
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.worker: asyncio.Task[None] | None = None
+        self.outcomes: dict[str, int] = {
+            state.value: 0
+            for state in (
+                CompilerJobState.SUCCEEDED,
+                CompilerJobState.FAILED,
+                CompilerJobState.CANCELED,
+            )
+        }
+        self.failure_categories: dict[str, int] = {}
+        self.completed_latency_ms: list[int] = []
 
     async def start(self) -> None:
         self.worker = asyncio.create_task(self._work())
 
     async def stop(self) -> None:
+        shutdown = getattr(self.compiler, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
         if self.worker is not None:
             self.worker.cancel()
             try:
@@ -102,12 +116,7 @@ class JobManager:
         job = _Job(envelope=envelope, bundle=bundle)
         self.jobs[envelope.job_id] = job
         self.queue.put_nowait(envelope.job_id)
-        logger.info(
-            "latex_compiler queued job=%s digest=%s bytes=%d",
-            envelope.job_id,
-            envelope.source_digest[:12],
-            len(bundle),
-        )
+        logger.info("latex_compiler_event event=queued")
         return job.status()
 
     def status(self, job_id: str) -> CompilerStatus | None:
@@ -123,6 +132,7 @@ class JobManager:
         if job is None:
             return None
         if job.state in {CompilerJobState.QUEUED, CompilerJobState.COMPILING}:
+            was_compiling = job.state == CompilerJobState.COMPILING
             job.state = CompilerJobState.CANCELED
             job.result = CompilerResult.canceled(
                 job.envelope,
@@ -130,8 +140,9 @@ class JobManager:
                 engine_version=ENGINE_VERSION,
             )
             cancel = getattr(self.compiler, "cancel", None)
-            if cancel is not None:
+            if was_compiling and cancel is not None:
                 cancel(job_id)
+            self._record_result(job.result)
         return job.status()
 
     async def _work(self) -> None:
@@ -144,8 +155,8 @@ class JobManager:
             try:
                 result = await self.compiler(job.envelope, job.bundle)
                 validate_result(result, expected=job.envelope)
-            except Exception:
-                logger.exception("latex_compiler failed job=%s", job.envelope.job_id)
+            except (EnvelopeError, OSError, RuntimeError, ValueError):
+                logger.error("latex_compiler_event event=failed category=service_error")
                 result = CompilerResult.failed(
                     job.envelope,
                     diagnostics=[
@@ -157,17 +168,46 @@ class JobManager:
                     compiler_image=COMPILER_IMAGE,
                     engine_version=ENGINE_VERSION,
                     elapsed_ms=0,
+                    failure_category="service_error",
                 )
             if job.state != CompilerJobState.CANCELED:
                 job.result = result
                 job.state = result.state
+                self._record_result(result)
                 logger.info(
-                    "latex_compiler completed job=%s digest=%s state=%s pdf_bytes=%d",
-                    job.envelope.job_id,
-                    job.envelope.source_digest[:12],
-                    job.state,
-                    result.pdf_bytes,
+                    "latex_compiler_event event=completed state=%s category=%s",
+                    result.state,
+                    result.failure_category or "none",
                 )
+
+    def metrics(self) -> dict[str, object]:
+        """Return a bounded, content-free operational snapshot."""
+        latencies = self.completed_latency_ms[-100:]
+        return {
+            "capacity": 1,
+            "queue_depth": self.queue.qsize(),
+            "active": sum(
+                job.state == CompilerJobState.COMPILING for job in self.jobs.values()
+            ),
+            "retained_jobs": len(self.jobs),
+            "outcomes": self.outcomes.copy(),
+            "failure_categories": self.failure_categories.copy(),
+            "latency_ms": {
+                "count": len(latencies),
+                "max": max(latencies, default=0),
+                "p50": sorted(latencies)[len(latencies) // 2] if latencies else 0,
+            },
+        }
+
+    def _record_result(self, result: CompilerResult) -> None:
+        self.outcomes[result.state.value] = self.outcomes.get(result.state.value, 0) + 1
+        if result.failure_category is not None:
+            self.failure_categories[result.failure_category] = (
+                self.failure_categories.get(result.failure_category, 0) + 1
+            )
+        self.completed_latency_ms = (self.completed_latency_ms + [result.elapsed_ms])[
+            -100:
+        ]
 
 
 class LatexCompilerRunner:
@@ -175,6 +215,8 @@ class LatexCompilerRunner:
 
     def __init__(self) -> None:
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._canceled: set[str] = set()
+        self._lock = threading.Lock()
 
     async def __call__(
         self, envelope: CompilerEnvelope, bundle: bytes
@@ -182,13 +224,33 @@ class LatexCompilerRunner:
         return await asyncio.to_thread(self._compile, envelope, bundle)
 
     def cancel(self, job_id: str) -> None:
-        process = self.processes.get(job_id)
+        with self._lock:
+            self._canceled.add(job_id)
+            process = self.processes.get(job_id)
         if process is not None and process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            job_ids = tuple(self.processes)
+        for job_id in job_ids:
+            self.cancel(job_id)
+
+    def _is_canceled(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._canceled
 
     def _compile(self, envelope: CompilerEnvelope, bundle: bytes) -> CompilerResult:
         started_at = time.monotonic()
         try:
+            if self._is_canceled(envelope.job_id):
+                with self._lock:
+                    self._canceled.discard(envelope.job_id)
+                return CompilerResult.canceled(
+                    envelope,
+                    compiler_image=COMPILER_IMAGE,
+                    engine_version=ENGINE_VERSION,
+                )
             with tempfile.TemporaryDirectory(prefix="pwc-latex-") as temporary:
                 root = Path(temporary)
                 _extract_bundle(bundle, root, envelope)
@@ -219,7 +281,11 @@ class LatexCompilerRunner:
                         env=_compiler_environment(root),
                         start_new_session=True,
                     )
-                    self.processes[envelope.job_id] = process
+                    with self._lock:
+                        self.processes[envelope.job_id] = process
+                        canceled = envelope.job_id in self._canceled
+                    if canceled:
+                        os.killpg(process.pid, signal.SIGKILL)
                     try:
                         process.wait(timeout=envelope.limits.timeout_seconds)
                     except subprocess.TimeoutExpired:
@@ -230,16 +296,30 @@ class LatexCompilerRunner:
                             _read_tail(log_path, envelope.limits.max_log_bytes),
                             started_at,
                             "Compilation exceeded its time limit",
+                            failure_category="timeout",
                         )
                     finally:
-                        self.processes.pop(envelope.job_id, None)
+                        with self._lock:
+                            self.processes.pop(envelope.job_id, None)
+                            canceled = envelope.job_id in self._canceled
+                            self._canceled.discard(envelope.job_id)
+                    if canceled:
+                        return CompilerResult.canceled(
+                            envelope,
+                            compiler_image=COMPILER_IMAGE,
+                            engine_version=ENGINE_VERSION,
+                        )
                 output = _read_tail(log_path, envelope.limits.max_log_bytes)
                 if process.returncode != 0:
                     return _failed_result(envelope, output, started_at, None)
                 pdf_path = root / PurePosixPath(envelope.entrypoint).with_suffix(".pdf")
                 if pdf_path.stat().st_size > envelope.limits.max_pdf_bytes:
                     return _failed_result(
-                        envelope, output, started_at, "Compiled PDF exceeds its limit"
+                        envelope,
+                        output,
+                        started_at,
+                        "Compiled PDF exceeds its limit",
+                        failure_category="resource_limit",
                     )
                 pdf = pdf_path.read_bytes()
                 return CompilerResult.succeeded(
@@ -252,10 +332,16 @@ class LatexCompilerRunner:
                     diagnostics=_diagnostics(output),
                 )
         except BundleError as error:
-            return _failed_result(envelope, b"", started_at, str(error))
+            return _failed_result(
+                envelope, b"", started_at, str(error), failure_category="invalid_bundle"
+            )
         except (OSError, subprocess.SubprocessError):
             return _failed_result(
-                envelope, b"", started_at, "Compiler execution failed"
+                envelope,
+                b"",
+                started_at,
+                "Compiler execution failed",
+                failure_category="execution_error",
             )
 
 
@@ -342,9 +428,18 @@ def create_app(*, public_key: str, compiler: Compiler | None = None) -> FastAPI:
             )
         return response
 
-    @app.get("/health", status_code=status.HTTP_204_NO_CONTENT)
-    async def health() -> Response:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    @app.get("/health")
+    async def health() -> dict[str, object]:
+        if manager.worker is None or manager.worker.done():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Compiler worker is unavailable",
+            )
+        return {"status": "ready", **manager.metrics()}
+
+    @app.get("/metrics")
+    async def metrics() -> dict[str, object]:
+        return manager.metrics()
 
     return app
 
@@ -368,14 +463,18 @@ def _extract_bundle(bundle: bytes, root: Path, envelope: CompilerEnvelope) -> No
             names.add(name)
             if len(names) > envelope.limits.max_files:
                 raise BundleError("Source bundle has too many files")
-            total_bytes += member.file_size
-            if total_bytes > envelope.limits.max_source_bytes:
-                raise BundleError("Source bundle expands beyond its limit")
             destination = root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
+            member_bytes = 0
             with archive.open(member) as source, destination.open("xb") as target:
                 while chunk := source.read(64 * 1024):
+                    member_bytes += len(chunk)
+                    total_bytes += len(chunk)
+                    if total_bytes > envelope.limits.max_source_bytes:
+                        raise BundleError("Source bundle expands beyond its limit")
                     target.write(chunk)
+            if member_bytes != member.file_size:
+                raise BundleError("Source bundle member size is invalid")
             if destination.suffix.lower() in {".tex", ".bib"}:
                 try:
                     destination.read_text(encoding="utf-8")
@@ -393,6 +492,7 @@ def _safe_member_name(member: zipfile.ZipInfo) -> str:
         or path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
         or path.suffix.lower() not in _ALLOWED_SUFFIXES
+        or member.flag_bits & 0x1
         or stat.S_ISLNK(member.external_attr >> 16)
     ):
         raise BundleError("Source bundle contains an unsafe file")
@@ -414,7 +514,12 @@ def _compiler_environment(root: Path) -> dict[str, str]:
 
 
 def _failed_result(
-    envelope: CompilerEnvelope, output: bytes, started_at: float, message: str | None
+    envelope: CompilerEnvelope,
+    output: bytes,
+    started_at: float,
+    message: str | None,
+    *,
+    failure_category: str = "compiler_error",
 ) -> CompilerResult:
     diagnostics = _diagnostics(output)
     if message is not None:
@@ -430,6 +535,7 @@ def _failed_result(
         compiler_image=COMPILER_IMAGE,
         engine_version=ENGINE_VERSION,
         elapsed_ms=_elapsed_ms(started_at),
+        failure_category=failure_category,
     )
 
 

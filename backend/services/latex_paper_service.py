@@ -322,7 +322,10 @@ class LatexPaperService:
         self, version: ChatLatexPaperVersion, bundle: bytes, entrypoint: str
     ) -> None:
         compiler = self.compiler or compiler_client_from_settings(self.settings)
-        job_id = str(uuid.uuid4())
+        # The immutable source-version ID is the durable idempotency key. A
+        # fresh backend process can submit the same bundle after a Space restart
+        # without creating a second logical compile job.
+        job_id = str(version.id)
         try:
             status = compiler.submit(
                 job_id=job_id, bundle=bundle, entrypoint=entrypoint
@@ -330,11 +333,13 @@ class LatexPaperService:
             if status.state not in {
                 CompilerJobState.SUCCEEDED,
                 CompilerJobState.FAILED,
+                CompilerJobState.CANCELED,
             }:
                 status = compiler.status(job_id)
             if status.state not in {
                 CompilerJobState.SUCCEEDED,
                 CompilerJobState.FAILED,
+                CompilerJobState.CANCELED,
             }:
                 version.compile_status = (
                     "compiling"
@@ -344,15 +349,86 @@ class LatexPaperService:
                 version.compile_diagnostics = {"job_id": job_id}
                 return
             result = compiler.result(job_id)
-        except (httpx.HTTPError, EnvelopeError, RuntimeError, ValueError):
+        except httpx.HTTPError:
+            # The durable version remains eligible for the bounded operator
+            # reconciliation instead of being falsely finalized on a network
+            # failure or a compiler restart.
+            version.compile_status = "queued"
+            version.compile_diagnostics = {
+                "job_id": job_id,
+                "failure_category": "transport_failure",
+            }
+            return
+        except (EnvelopeError, RuntimeError, ValueError):
             version.compile_status = "failed"
             version.compile_diagnostics = {
+                "job_id": job_id,
+                "failure_category": "service_error",
                 "errors": [
                     {"severity": "error", "message": "Compiler submission failed"}
-                ]
+                ],
             }
             return
         self._store_compile_result(version, result)
+
+    def reconcile_pending_compiles(self, *, limit: int = 20) -> int:
+        """Resume a bounded set of durable versions after transport/Space loss.
+
+        This intentionally does nothing while the compiler kill switch is off.
+        It is called by the operator-only reconciliation command, never from a
+        request path, so a Space outage cannot amplify normal chat traffic.
+        """
+        if limit < 1 or not self.settings.chat_latex_compiler_jobs_enabled:
+            return 0
+        versions = self.db.scalars(
+            select(ChatLatexPaperVersion)
+            .where(
+                ChatLatexPaperVersion.storage_state == "ready",
+                ChatLatexPaperVersion.compile_status.in_(("queued", "compiling")),
+            )
+            .order_by(ChatLatexPaperVersion.created_at)
+            .limit(limit)
+        ).all()
+        reconciled = 0
+        for version in versions:
+            manifest = LatexPaperManifest.model_validate(version.source_manifest)
+            try:
+                bundle = self.storage.read_file(
+                    f"{version.storage_key}/{_SOURCE_ARCHIVE}",
+                    max_bytes=self.settings.chat_artifact_max_version_bytes,
+                )
+            except (ArtifactError, httpx.HTTPError, OSError, ValueError):
+                version.compile_status = "failed"
+                version.compile_diagnostics = {
+                    "job_id": str(version.id),
+                    "failure_category": "lost",
+                    "errors": [
+                        {
+                            "severity": "error",
+                            "message": "Compiler source recovery failed",
+                        }
+                    ],
+                }
+                reconciled += 1
+                continue
+            if hashlib.sha256(bundle).hexdigest() != version.source_digest:
+                version.compile_status = "failed"
+                version.compile_diagnostics = {
+                    "job_id": str(version.id),
+                    "failure_category": "lost",
+                    "errors": [
+                        {
+                            "severity": "error",
+                            "message": "Compiler source digest mismatch",
+                        }
+                    ],
+                }
+                reconciled += 1
+                continue
+            self._compile(version, bundle, manifest.root_document)
+            reconciled += 1
+        self.db.flush()
+        return reconciled
 
     def _store_compile_result(
         self, version: ChatLatexPaperVersion, result: CompilerResult
@@ -362,6 +438,7 @@ class LatexPaperService:
             "diagnostics": diagnostics,
             "job_id": result.job_id,
             "pdf_sha256": result.pdf_digest,
+            "failure_category": result.failure_category,
         }
         if result.state != CompilerJobState.SUCCEEDED or result.pdf is None:
             version.compile_status = "failed"

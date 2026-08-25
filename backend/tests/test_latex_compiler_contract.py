@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from latex_compiler_contract import (
     CompileLimits,
     CompilerEnvelope,
+    CompilerJobState,
     CompilerResult,
     CompileSubmission,
     EnvelopeError,
@@ -23,6 +24,7 @@ from latex_compiler_contract import (
 )
 from latex_compiler_space.app import (
     BundleError,
+    JobManager,
     _extract_bundle,
     _read_tail,
     create_app,
@@ -192,3 +194,70 @@ def test_compiler_reads_only_a_bounded_log_tail(tmp_path) -> None:
     path.write_bytes(b"prefix" + b"x" * 100 + b"tail")
 
     assert _read_tail(path, 4) == b"tail"
+
+
+def test_compiler_health_and_metrics_are_content_free_and_bounded() -> None:
+    private_key, public_key = _keys()
+    source = b"manuscript content must not appear in metrics"
+
+    async def compiler(envelope: CompilerEnvelope, bundle: bytes) -> CompilerResult:
+        return CompilerResult.succeeded(
+            envelope,
+            pdf=b"%PDF-test",
+            log_tail="",
+            compiler_image="test-image",
+            engine_version="pdfTeX test",
+        )
+
+    app = create_app(public_key=public_key, compiler=compiler)
+    submission = _submission(private_key, source=source)
+    with TestClient(app) as client:
+        assert (
+            client.post("/v1/jobs", json=submission.model_dump(mode="json")).status_code
+            == 202
+        )
+        health = client.get("/health")
+        metrics = client.get("/metrics")
+
+    assert health.status_code == 200
+    assert health.json()["status"] == "ready"
+    assert metrics.status_code == 200
+    assert metrics.json()["capacity"] == 1
+    assert metrics.json()["outcomes"]["succeeded"] == 1
+    assert source.decode() not in metrics.text
+    assert submission.envelope.job_id not in metrics.text
+    assert submission.envelope.source_digest not in metrics.text
+
+
+def test_cancellation_before_runner_start_prevents_compilation() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    private_key, _ = _keys()
+    envelope = _submission(private_key).envelope
+    calls: list[str] = []
+
+    async def compiler(current: CompilerEnvelope, bundle: bytes) -> CompilerResult:
+        started.set()
+        await release.wait()
+        calls.append(current.job_id)
+        return CompilerResult.succeeded(
+            current,
+            pdf=b"%PDF-test",
+            log_tail="",
+            compiler_image="test-image",
+            engine_version="pdfTeX test",
+        )
+
+    async def exercise() -> None:
+        manager = JobManager(compiler)
+        await manager.start()
+        await manager.submit(envelope, b"source bundle")
+        await manager.cancel(envelope.job_id)
+        await asyncio.sleep(0)
+        assert manager.status(envelope.job_id).state == CompilerJobState.CANCELED
+        assert manager.result(envelope.job_id).state == CompilerJobState.CANCELED
+        assert not started.is_set()
+        assert calls == []
+        await manager.stop()
+
+    asyncio.run(exercise())

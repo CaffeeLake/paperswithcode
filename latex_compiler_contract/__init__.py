@@ -112,6 +112,10 @@ class CompilerResult(BaseModel):
     source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     pdf_base64: str | None = None
     pdf_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    failure_category: str | None = Field(
+        default=None,
+        pattern=r"^(invalid_bundle|timeout|resource_limit|compiler_error|execution_error|service_error|transport_failure|canceled|lost)$",
+    )
     diagnostics: list[CompilerDiagnostic] = Field(default_factory=list, max_length=100)
     log_tail: str = Field(default="", max_length=MAX_LOG_BYTES)
     compiler_image: str = Field(min_length=1, max_length=500)
@@ -163,11 +167,13 @@ class CompilerResult(BaseModel):
         compiler_image: str,
         engine_version: str,
         elapsed_ms: int,
+        failure_category: str = "compiler_error",
     ) -> CompilerResult:
         return cls(
             job_id=envelope.job_id,
             state=CompilerJobState.FAILED,
             source_digest=envelope.source_digest,
+            failure_category=failure_category,
             diagnostics=diagnostics,
             log_tail=_bounded_text(log_tail),
             compiler_image=compiler_image,
@@ -185,6 +191,7 @@ class CompilerResult(BaseModel):
             job_id=envelope.job_id,
             state=CompilerJobState.CANCELED,
             source_digest=envelope.source_digest,
+            failure_category="canceled",
             compiler_image=compiler_image,
             engine_version=engine_version,
             source_bytes=envelope.source_bytes,

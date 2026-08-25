@@ -186,6 +186,28 @@ def test_failed_compile_keeps_source_head_without_preview(db, settings):
     assert descriptor.preview_head is None
 
 
+def test_restart_reconciliation_resubmits_the_durable_version_job_id(db, settings):
+    session_id = _session(db)
+    first_compiler = _Compiler(CompilerJobState.COMPILING)
+    storage = LocalArtifactStorage(Path(settings.chat_artifact_local_dir))
+    service = LatexPaperService(db, settings, storage=storage, compiler=first_compiler)
+    descriptor = service.create_neutral_scaffold(
+        owner_id="owner-1", session_id=session_id
+    )
+    version = db.get(ChatLatexPaperVersion, descriptor.source_head.version_id)
+    assert version is not None
+    assert first_compiler.submitted is not None
+    assert first_compiler.submitted[0] == str(version.id)
+
+    restarted = _Compiler(CompilerJobState.SUCCEEDED)
+    recovery = LatexPaperService(db, settings, storage=storage, compiler=restarted)
+    assert recovery.reconcile_pending_compiles(limit=1) == 1
+
+    assert restarted.submitted is not None
+    assert restarted.submitted[0] == str(version.id)
+    assert version.compile_status == "succeeded"
+
+
 def test_paper_is_private_general_chat_only_and_unique(db, settings):
     session_id = _session(db)
     service = LatexPaperService(
