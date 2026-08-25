@@ -41,7 +41,12 @@ from backend.models.api import (
     PaperBucketCopyResponse,
     RepositoryTrendingPaper,
 )
-from backend.services.paper_service import PaperService
+from backend.services.paper_service import (
+    AmbiguousAuthorError,
+    InvalidAuthorFilterError,
+    MAX_AUTHOR_FILTERS,
+    PaperService,
+)
 from backend.services.badge_service import (
     render_leaderboard_badge,
     resolve_leaderboard_badge_target,
@@ -303,6 +308,13 @@ def get_papers(
     organization: Optional[str] = Query(
         None, description="Filter by an exact organization name, slug, or ID"
     ),
+    authors: Optional[List[str]] = Query(
+        None,
+        alias="author",
+        description=(
+            "Repeatable exact author name, numeric author ID, or @HF username"
+        ),
+    ),
     latest_only: bool = Query(
         True, description="Whether to only include latest versions of papers"
     ),
@@ -350,6 +362,11 @@ def get_papers(
             status_code=422,
             detail="framework and repository are mutually exclusive",
         )
+    if authors is not None and len(authors) > MAX_AUTHOR_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_AUTHOR_FILTERS} author filters are allowed",
+        )
     try:
         service = PaperService(db)
         return service.get_papers(
@@ -362,6 +379,7 @@ def get_papers(
             task=task,
             method=method,
             organization=organization,
+            authors=authors,
             latest_only=latest_only,
             order_by=order_by,
             order_dir=order_dir,
@@ -372,6 +390,24 @@ def get_papers(
             framework=framework,
             repository=repository,
         )
+    except AmbiguousAuthorError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ambiguous_author",
+                "reference": error.reference,
+                "candidates": [
+                    {
+                        "id": str(candidate.id),
+                        "name": candidate.name,
+                        "hf_username": candidate.hf_username,
+                    }
+                    for candidate in error.candidates
+                ],
+            },
+        ) from error
+    except InvalidAuthorFilterError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

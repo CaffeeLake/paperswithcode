@@ -1,8 +1,8 @@
 """PostgreSQL integration coverage for weighted paper full-text search."""
 
+import subprocess
 from datetime import date
 from pathlib import Path
-import subprocess
 from uuid import uuid4
 
 import pytest
@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.config import get_settings
 from backend.database.connection import get_database_session
+from backend.database.migrations.backfill_paper_search_vector import backfill
 from backend.main import create_app
 from backend.models.database import (
     Author as DBAuthor,
@@ -25,9 +26,8 @@ from backend.models.database import (
     Repository as DBRepository,
     Task as DBTask,
 )
-from backend.services.paper_service import PaperService
 from backend.services.paper_retrieval_service import PaperRetrievalService
-from backend.database.migrations.backfill_paper_search_vector import backfill
+from backend.services.paper_service import PaperService
 
 
 MIGRATIONS = Path(__file__).parents[1] / "database" / "migrations"
@@ -99,6 +99,13 @@ def search_engine(search_database_url):
         connection.exec_driver_sql(
             (MIGRATIONS / "add_paper_title_trigram_index.sql").read_text()
         )
+        author_index_statements = (
+            (MIGRATIONS / "add_author_filter_indexes.sql").read_text().split(";")
+        )
+        for _ in range(2):
+            for statement in author_index_statements:
+                if statement.strip():
+                    connection.exec_driver_sql(statement)
         connection.exec_driver_sql(
             (MIGRATIONS / "add_paper_title_trigram_index.sql").read_text()
         )
@@ -444,6 +451,164 @@ def test_search_by_author_name_returns_their_papers(session_factory):
             str(first.id),
             str(second.id),
         ]
+
+
+def test_paper_list_filters_by_normalized_author_name_and_topic(session_factory):
+    with session_factory() as session:
+        author = DBAuthor(name="\tKaiming He\n")
+        target = add_paper(
+            session,
+            title="Generative Modeling via Drifting",
+            abstract="A drifting field for one-step generative modeling.",
+            arxiv_id="2602.04770",
+            date_published=date(2026, 2, 4),
+        )
+        unrelated = add_paper(
+            session,
+            title="Drift Detection without the Requested Author",
+            abstract="A study of drift.",
+            arxiv_id="2602.04771",
+            date_published=date(2026, 2, 5),
+        )
+        target.authors.append(author)
+        session.add_all((target, unrelated))
+        session.commit()
+
+    def override_get_database_session():
+        with session_factory() as request_session:
+            yield request_session
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = override_get_database_session
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/papers/",
+                params=[
+                    ("author", "  KAIMING   HE  "),
+                    ("search", "drift"),
+                    ("order_by", "date_published"),
+                    ("order_dir", "desc"),
+                ],
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [paper["arxiv_id"] for paper in payload["results"]] == ["2602.04770"]
+    assert payload["applied_filters"]["authors"] == [
+        {"id": str(author.id), "name": "\tKaiming He\n", "hf_username": None}
+    ]
+
+
+def test_paper_list_repeated_authors_require_every_resolved_author(session_factory):
+    with session_factory() as session:
+        first_author = DBAuthor(name="Mingyang Deng", hf_username="Goodeat-filter")
+        second_author = DBAuthor(name="Yilun Du", hf_username="yilundu-filter")
+        shared = add_paper(
+            session,
+            title="Shared Author Paper",
+            arxiv_id="2602.04772",
+        )
+        first_only = add_paper(
+            session,
+            title="First Author Only",
+            arxiv_id="2602.04773",
+        )
+        shared.authors.extend((first_author, second_author))
+        first_only.authors.append(first_author)
+        session.commit()
+
+    def override_get_database_session():
+        with session_factory() as request_session:
+            yield request_session
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = override_get_database_session
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/papers/",
+                params=[
+                    ("author", str(first_author.id)),
+                    ("author", "@YILUNDU-filter"),
+                    ("order_by", "date_published"),
+                ],
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [paper["arxiv_id"] for paper in payload["results"]] == ["2602.04772"]
+    assert [author["id"] for author in payload["applied_filters"]["authors"]] == [
+        str(first_author.id),
+        str(second_author.id),
+    ]
+
+
+def test_paper_list_rejects_ambiguous_author_name_with_candidates(session_factory):
+    with session_factory() as session:
+        first = DBAuthor(name="Alex Kim", hf_username="alex-kim-one")
+        second = DBAuthor(name="  ALEX   KIM  ", hf_username="alex-kim-two")
+        session.add_all((first, second))
+        session.commit()
+
+    def override_get_database_session():
+        with session_factory() as request_session:
+            yield request_session
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = override_get_database_session
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/papers/", params=[("author", "alex kim")])
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "ambiguous_author"
+    assert detail["reference"] == "alex kim"
+    assert detail["candidates"] == [
+        {"id": str(first.id), "name": "Alex Kim", "hf_username": "alex-kim-one"},
+        {
+            "id": str(second.id),
+            "name": "  ALEX   KIM  ",
+            "hf_username": "alex-kim-two",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("authors", "status", "detail"),
+    [
+        (["Missing Person"], 404, "Author 'Missing Person' not found"),
+        (["@"], 422, "Hugging Face author references require a username after @"),
+        ([str(index) for index in range(11)], 422, "At most 10 author filters"),
+        (["999999999999999999999999999999"], 404, "Author"),
+    ],
+)
+def test_paper_list_rejects_invalid_author_filters(
+    session_factory, authors, status, detail
+):
+    def override_get_database_session():
+        with session_factory() as request_session:
+            yield request_session
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = override_get_database_session
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/papers/", params=[("author", author) for author in authors]
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status
+    assert detail in str(response.json()["detail"])
 
 
 def test_stemming_multi_term_quotes_and_punctuation_are_safe(session_factory):

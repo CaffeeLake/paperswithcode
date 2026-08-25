@@ -337,6 +337,14 @@ class PaperDateRange(BaseModel):
     end_date: date | None = None
 
 
+class AppliedAuthorFilter(BaseModel):
+    """Canonical author identity resolved for a paper feed filter."""
+
+    id: str
+    name: str
+    hf_username: str | None = None
+
+
 class Papers(BaseModel):
     """
     Object representing a paginated page of papers.
@@ -355,7 +363,7 @@ class Papers(BaseModel):
     scope: Optional[PaperFeedScope] = Field(
         None, description="Resolved repository or framework feed context"
     )
-    applied_filters: dict[str, str] = Field(
+    applied_filters: dict[str, str | list[AppliedAuthorFilter]] = Field(
         default_factory=dict,
         description="Exact catalog filters applied to this paper page",
     )

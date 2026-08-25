@@ -75,6 +75,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_method_source_paper_id.sql` | `methods.source_paper_id` |
 | `add_method_link_provenance.sql` | method-link evidence, exclusions, and resumable keyword/reference backfill state |
 | `add_paper_performance_indexes.sql` | paper query indexes |
+| `add_author_filter_indexes.sql` | exact normalized author-name and Hugging Face username lookup indexes |
 | `add_missing_dataset_variant_fields.sql` | dataset variant columns |
 | `cleanup_obsolete_hidden_tasks.sql` | Preconditioned removal of five obsolete tasks, six low-impact benchmarks, and their explicitly audited links/evaluations |
 | `add_entity_search_vectors.sql` + `backfill_entity_search_vectors.py` + `add_entity_search_indexes.sql` | Name-only benchmark, method, and task search vectors, triggers, and GIN/trigram indexes |

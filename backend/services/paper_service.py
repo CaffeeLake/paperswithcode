@@ -28,6 +28,7 @@ from backend.models.database import (
     PaperHfArtifact as DBPaperHfArtifact,
     Framework as DBFramework,
     TaskFramework as DBTaskFramework,
+    Author as DBAuthor,
 )
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -79,6 +80,20 @@ from backend.utils.github_utils import normalize_github_url, parse_github_url
 
 
 search_logger = logging.getLogger("backend.paper_search")
+MAX_AUTHOR_FILTERS = 10
+
+
+class AmbiguousAuthorError(ValueError):
+    """Raised when an exact normalized author name resolves to several rows."""
+
+    def __init__(self, reference: str, candidates: list[DBAuthor]):
+        super().__init__(f"Author '{reference}' is ambiguous")
+        self.reference = reference
+        self.candidates = candidates
+
+
+class InvalidAuthorFilterError(ValueError):
+    """Raised when author filters exceed the bounded public contract."""
 
 
 class PaperService:
@@ -525,6 +540,7 @@ class PaperService:
         task: Optional[str] = None,
         method: Optional[str] = None,
         organization: Optional[str] = None,
+        authors: Optional[Sequence[str]] = None,
         latest_only: bool = True,
         order_by: str = "trending",
         order_dir: str = "desc",
@@ -549,6 +565,7 @@ class PaperService:
             task: Filter by an exact task name, slug, or ID
             method: Filter by an exact method name, full name, slug, or ID
             organization: Filter by an exact organization name, slug, or ID
+            authors: Filter by exact names, numeric IDs, or @HF usernames
             latest_only: Whether to only include latest versions of papers
             order_by: Field to order by (date_published, citation_count, trending)
             order_dir: Order direction (asc, desc)
@@ -632,10 +649,20 @@ class PaperService:
                 DBConference.short_name,
                 required=False,
             )
+            resolved_authors = self._resolve_author_filters(authors or ())
+            if resolved_authors:
+                applied_filters["authors"] = [
+                    {
+                        "id": str(author.id),
+                        "name": author.name,
+                        "hf_username": author.hf_username,
+                    }
+                    for author in resolved_authors
+                ]
             has_catalog_filter = any(
                 value is not None
                 for value in (task_id, method_id, organization_id, conference_id)
-            )
+            ) or bool(resolved_authors)
             if is_repository_feed:
                 latest_only = True
 
@@ -690,6 +717,9 @@ class PaperService:
                 query = query.filter(
                     DBPaper.organizations.any(DBOrganization.id == organization_id)
                 )
+
+            for author in resolved_authors:
+                query = query.filter(DBPaper.authors.any(DBAuthor.id == author.id))
 
             # Filter for latest versions only
             if latest_only:
@@ -767,7 +797,7 @@ class PaperService:
                 applied_filters=applied_filters,
             )
 
-        except PaperNotFoundError:
+        except (PaperNotFoundError, AmbiguousAuthorError, InvalidAuthorFilterError):
             raise
         except Exception as e:
             raise DatabaseError(f"Error fetching papers: {str(e)}")
@@ -871,6 +901,66 @@ class PaperService:
                 raise PaperNotFoundError(f"{label} '{reference}' not found")
             return None
         return int(entity.id)
+
+    @staticmethod
+    def _normalized_author_name_expression():
+        return func.lower(
+            func.btrim(func.regexp_replace(DBAuthor.name, r"\s+", " ", "g"))
+        )
+
+    def _resolve_author_filters(self, references: Sequence[str]) -> list[DBAuthor]:
+        """Resolve bounded author references while preserving first occurrence."""
+        if len(references) > MAX_AUTHOR_FILTERS:
+            raise InvalidAuthorFilterError(
+                f"At most {MAX_AUTHOR_FILTERS} author filters are allowed"
+            )
+
+        resolved: list[DBAuthor] = []
+        resolved_ids: set[int] = set()
+        for reference in references:
+            value = reference.strip()
+            if not value:
+                raise InvalidAuthorFilterError("Author references cannot be empty")
+
+            query = self.db.query(DBAuthor)
+            if value.isdigit():
+                author_id = int(value)
+                candidates = (
+                    query.filter(DBAuthor.id == author_id).all()
+                    if author_id <= 9_223_372_036_854_775_807
+                    else []
+                )
+            elif value.startswith("@"):
+                username = value[1:].strip()
+                if not username:
+                    raise InvalidAuthorFilterError(
+                        "Hugging Face author references require a username after @"
+                    )
+                candidates = query.filter(
+                    func.lower(DBAuthor.hf_username) == username.lower()
+                ).all()
+            else:
+                normalized = " ".join(value.split()).lower()
+                candidates = (
+                    query.filter(
+                        self._normalized_author_name_expression() == normalized
+                    )
+                    .order_by(DBAuthor.id)
+                    .limit(MAX_AUTHOR_FILTERS + 1)
+                    .all()
+                )
+
+            if not candidates:
+                raise PaperNotFoundError(f"Author '{reference}' not found")
+            if len(candidates) > 1:
+                raise AmbiguousAuthorError(reference, candidates[:MAX_AUTHOR_FILTERS])
+
+            author = candidates[0]
+            if int(author.id) not in resolved_ids:
+                resolved.append(author)
+                resolved_ids.add(int(author.id))
+
+        return resolved
 
     @staticmethod
     def _repository_identity(repository: Optional[DBRepository]) -> Optional[str]:
