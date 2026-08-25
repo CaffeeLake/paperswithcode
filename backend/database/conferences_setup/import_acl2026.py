@@ -180,6 +180,12 @@ def link_tasks(db: Session, conference: Conference) -> int:
     ]
     case_sensitive, case_insensitive = create_keyword_patterns(task_rows)
     slug_to_id = {task.slug: task.id for task in tasks}
+    task_keywords_by_slug = {
+        task.slug: [
+            keyword.strip() for keyword in task.keywords.split(",") if keyword.strip()
+        ]
+        for task in tasks
+    }
     papers = (
         db.query(Paper)
         .join(PaperConference, PaperConference.paper_id == Paper.id)
@@ -192,7 +198,11 @@ def link_tasks(db: Session, conference: Conference) -> int:
         text = " ".join(part for part in (paper.title, paper.abstract) if part)
         task_ids = find_matching_items_simple(text, case_sensitive, case_insensitive)
         task_ids = apply_task_supersession_rules(
-            task_ids, slug_to_id, text, paper.title
+            task_ids,
+            slug_to_id,
+            text,
+            paper.title,
+            task_keywords_by_slug,
         )
         links.extend(
             {"paper_id": paper.id, "task_id": task_id, "source": "auto"}
