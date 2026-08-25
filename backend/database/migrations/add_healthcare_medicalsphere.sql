@@ -12,7 +12,7 @@ VALUES (
     NULL,
     true,
     NULL,
-    '[Medical Sphere](https://medicalsphere.ai/benchmarks)',
+    '[Medical AI photo by Vecteezy](https://www.vecteezy.com/free-photos/medical-ai)',
     'https://medicalsphere.ai/benchmarks'
 )
 ON CONFLICT (slug) DO UPDATE SET
