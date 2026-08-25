@@ -32,11 +32,11 @@ INSERT INTO tasks (
 VALUES (
     'Medical Visual Question Answering',
     'medical-visual-question-answering',
-    'Medical visual question answering (Med-VQA) requires a system to answer natural-language questions about clinical or biomedical images. It combines medical image understanding with [Question Answering](/tasks/question-answering) and is evaluated on both closed-ended diagnostic questions and open-ended answer generation.',
+    'Medical visual question answering (Med-VQA) requires a system to answer natural-language questions about clinical or biomedical images. It combines [Medical Imaging](/tasks/medical-imaging) with [Question Answering](/tasks/question-answering) and is evaluated on both closed-ended diagnostic questions and open-ended answer generation.',
     'medical visual question answering, medical VQA, Med-VQA, MedVQA, biomedical visual question answering, pathology visual question answering, PathVQA, radiology visual question answering',
-    (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
-    0,
-    NULL,
+    (SELECT area_id FROM tasks WHERE slug = 'medical-imaging' LIMIT 1),
+    (SELECT level + 1 FROM tasks WHERE slug = 'medical-imaging' LIMIT 1),
+    (SELECT id FROM tasks WHERE slug = 'medical-imaging' LIMIT 1),
     NULL,
     '[PathVQA: 30000+ Questions for Medical Visual Question Answering](/paper/2003.10286)',
     NULL
