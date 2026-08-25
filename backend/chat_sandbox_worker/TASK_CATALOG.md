@@ -168,6 +168,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `machine-translation` — Machine Translation
 - `math` — Mathematics
 - `medical-imaging` — Medical Imaging
+- `medical-visual-question-answering` — Medical Visual Question Answering
 - `membership-inference` — Membership Inference
 - `molecular-property-prediction` — Molecular Property Prediction
 - `motion-generation` — Motion Generation
