@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { Paper, PaperOrderBy, TrendingPaper } from '@/lib/api/papers.types';
-import type { PaginatedResponse } from '@/lib/api/shared.types';
+import type { PaginatedResponse, PaperSearchFeedPage } from '@/lib/api/shared.types';
 import { papersApi } from '@/lib/api/papers';
 
 interface UsePapersParams {
@@ -134,6 +134,47 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     initialPageParam: 1,
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
+  });
+}
+
+interface UseInfinitePaperSearchParams {
+  q: string;
+  order_by?: 'relevance' | 'date_published' | 'citation_count';
+  start_date?: string;
+  end_date?: string;
+  has_code?: boolean;
+  has_hf_artifacts?: boolean;
+  enabled?: boolean;
+}
+
+export function useInfinitePaperSearch({
+  q,
+  order_by = 'relevance',
+  start_date,
+  end_date,
+  has_code = false,
+  has_hf_artifacts = false,
+  enabled = true,
+}: UseInfinitePaperSearchParams) {
+  return useInfiniteQuery<PaperSearchFeedPage<Paper>, Error>({
+    queryKey: ['paper-search-feed', { q, order_by, start_date, end_date, has_code, has_hf_artifacts }],
+    queryFn: ({ pageParam = 1 }) => papersApi.searchFeed({
+      q,
+      page: pageParam as number,
+      page_size: 20,
+      order_by,
+      start_date,
+      end_date,
+      has_code,
+      has_hf_artifacts,
+      mode: 'hybrid',
+    }),
+    getNextPageParam: (lastPage) => lastPage.next_page,
+    initialPageParam: 1,
+    enabled: enabled && q.trim().length > 0,
+    staleTime: 5 * 60 * 1000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
   });

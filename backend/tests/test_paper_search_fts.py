@@ -1134,6 +1134,135 @@ def test_search_endpoint_pages_through_all_ranked_results(session_factory):
     assert second.json()["next_page"] is None
 
 
+def test_search_feed_uses_stable_top_100_pool_across_sorts_and_includes_external(
+    session_factory,
+):
+    with session_factory() as session:
+        for index in range(101):
+            add_paper(
+                session,
+                title=f"Feedneedle Paper {index}",
+                arxiv_id=f"2607.2{index:04d}",
+                date_published=date(2026, 7, 1 + index % 20),
+                citation_count=500 - index,
+            )
+        external = add_paper(
+            session,
+            title="Feedneedle External Technical Report",
+            arxiv_id=None,
+            source="external",
+            source_url="https://example.com/feedneedle-report",
+            citation_count=10_000,
+        )
+        add_paper(
+            session,
+            title="Feedneedle Superseded Version",
+            arxiv_id="2607.29999",
+            version="v1",
+            is_latest_version=False,
+            citation_count=20_000,
+        )
+        session.commit()
+
+    app = create_app()
+
+    def override_database():
+        with session_factory() as request_session:
+            yield request_session
+
+    app.dependency_overrides[get_database_session] = override_database
+    pools = {}
+    with TestClient(app) as client:
+        for order_by in ("relevance", "date_published", "citation_count"):
+            ids = []
+            final_page = None
+            for page in range(1, 6):
+                response = client.get(
+                    "/api/v1/papers/search/feed",
+                    params={
+                        "q": "feedneedle",
+                        "mode": "keyword",
+                        "order_by": order_by,
+                        "page": page,
+                    },
+                )
+                assert response.status_code == 200
+                payload = response.json()
+                ids.extend(paper["id"] for paper in payload["results"])
+                final_page = payload
+            assert len(ids) == 100
+            assert len(set(ids)) == 100
+            assert final_page["cap"] == 100
+            assert final_page["cap_reached"] is True
+            assert final_page["exhausted"] is True
+            assert final_page["next_page"] is None
+            pools[order_by] = set(ids)
+    app.dependency_overrides.clear()
+
+    assert pools["relevance"] == pools["date_published"] == pools["citation_count"]
+    assert str(external.id) in pools["relevance"]
+
+
+def test_search_feed_applies_code_and_hf_filters_before_keyword_ranking(
+    session_factory,
+):
+    with session_factory() as session:
+        code_paper = add_paper(session, title="Filterneedle Code Paper")
+        hf_paper = add_paper(
+            session,
+            title="Filterneedle Artifact Paper",
+            hf_models=["https://huggingface.co/example/model"],
+        )
+        plain_paper = add_paper(session, title="Filterneedle Plain Paper")
+        repository = DBRepository(
+            url="https://github.com/example/filterneedle",
+            owner="example",
+            name="filterneedle",
+        )
+        session.add(repository)
+        session.flush()
+        session.add(
+            PaperRepository(
+                paper_id=code_paper.id,
+                repository_id=repository.id,
+                is_official=False,
+            )
+        )
+        session.commit()
+
+    app = create_app()
+
+    def override_database():
+        with session_factory() as request_session:
+            yield request_session
+
+    app.dependency_overrides[get_database_session] = override_database
+    with TestClient(app) as client:
+        code = client.get(
+            "/api/v1/papers/search/feed",
+            params={"q": "filterneedle", "mode": "keyword", "has_code": True},
+        )
+        artifacts = client.get(
+            "/api/v1/papers/search/feed",
+            params={
+                "q": "filterneedle",
+                "mode": "keyword",
+                "has_hf_artifacts": True,
+            },
+        )
+    app.dependency_overrides.clear()
+
+    assert code.status_code == 200
+    assert [paper["id"] for paper in code.json()["results"]] == [str(code_paper.id)]
+    assert code.json()["applied_filters"] == {"has_code": "true"}
+    assert artifacts.status_code == 200
+    assert [paper["id"] for paper in artifacts.json()["results"]] == [str(hf_paper.id)]
+    assert artifacts.json()["applied_filters"] == {"has_hf_artifacts": "true"}
+    assert str(plain_paper.id) not in {
+        paper["id"] for paper in code.json()["results"] + artifacts.json()["results"]
+    }
+
+
 def test_related_endpoint_uses_task_fallback_without_embedding_schema(session_factory):
     with session_factory() as session:
         task = DBTask(name="Related Test", slug=f"related-{uuid4().hex}", level=0)

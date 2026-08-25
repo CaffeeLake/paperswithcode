@@ -33,6 +33,7 @@ from backend.models.api import (
     Papers,
     PaperSummary,
     PaperSearchResults,
+    PaperSearchFeedResults,
     RelatedPaperRecommendation,
     PaperVersions,
     VersionComparison,
@@ -414,6 +415,42 @@ def search_papers(
         start_date=date_range.start_date,
         end_date=date_range.end_date,
         has_official_implementation=has_official_implementation,
+    )
+
+
+@router.get(
+    "/papers/search/feed",
+    response_model=PaperSearchFeedResults,
+    summary="Browse a hydrated page from the top paper search results",
+)
+def search_papers_feed(
+    q: str = Query(..., min_length=1, max_length=300, description="Search query"),
+    page: int = Query(1, ge=1, le=5, description="Page number (1-based)"),
+    page_size: int = Query(20, ge=1, le=20, description="Papers per page"),
+    order_by: Literal["relevance", "date_published", "citation_count"] = Query(
+        "relevance", description="Ordering within the fixed relevant pool"
+    ),
+    mode: Literal["keyword", "semantic", "hybrid"] = Query(
+        "hybrid", description="Requested retrieval mode"
+    ),
+    has_code: bool = Query(False, description="Only include papers with code"),
+    has_hf_artifacts: bool = Query(
+        False, description="Only include papers with Hugging Face artifacts"
+    ),
+    date_range: PaperDateRange = Depends(get_paper_date_range),
+    db: Session = Depends(get_database_session),
+):
+    """Apply filters before retrieval, then reorder one capped candidate pool."""
+    return PaperService(db).search_papers_feed(
+        q,
+        page=page,
+        page_size=page_size,
+        order_by=order_by,
+        mode=mode,
+        start_date=date_range.start_date,
+        end_date=date_range.end_date,
+        has_code=has_code,
+        has_hf_artifacts=has_hf_artifacts,
     )
 
 

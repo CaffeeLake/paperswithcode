@@ -85,6 +85,7 @@ class PaperRetrievalService:
         self.settings = settings
         self._summary_factory = summary_factory
         self._paper_resolver = paper_resolver
+        self.applied_mode: str = "keyword"
 
     def _convert_db_papers_to_summaries(
         self, papers: list[DBPaper]
@@ -94,7 +95,7 @@ class PaperRetrievalService:
     def _resolve_db_paper_by_id_or_arxiv(self, identifier: str) -> DBPaper:
         return self._paper_resolver(identifier)
 
-    def search_papers(
+    def search_db_papers(
         self,
         query: str,
         limit: int = 10,
@@ -102,7 +103,9 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
-    ) -> List[PaperSummary]:
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
+    ) -> list[DBPaper]:
         """
         Search latest papers using the configured rollout mode.
 
@@ -122,6 +125,7 @@ class PaperRetrievalService:
 
         try:
             selected_mode = (mode or self.settings.paper_search_mode).lower()
+            self.applied_mode = selected_mode
             retrieval_limit = max(20, limit)
             if selected_mode == "keyword":
                 results = self._search_papers_fts(
@@ -130,6 +134,8 @@ class PaperRetrievalService:
                     start_date=start_date,
                     end_date=end_date,
                     has_official_implementation=has_official_implementation,
+                    has_code=has_code,
+                    has_hf_artifacts=has_hf_artifacts,
                 )
             elif selected_mode == "semantic":
                 results = self._search_papers_semantic(
@@ -138,6 +144,8 @@ class PaperRetrievalService:
                     start_date=start_date,
                     end_date=end_date,
                     has_official_implementation=has_official_implementation,
+                    has_code=has_code,
+                    has_hf_artifacts=has_hf_artifacts,
                 )
             elif selected_mode == "hybrid":
                 results = self._search_papers_hybrid(
@@ -146,6 +154,8 @@ class PaperRetrievalService:
                     start_date=start_date,
                     end_date=end_date,
                     has_official_implementation=has_official_implementation,
+                    has_code=has_code,
+                    has_hf_artifacts=has_hf_artifacts,
                 )
             else:
                 raise ValueError(f"Unsupported paper search mode: {selected_mode}")
@@ -157,6 +167,8 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
             if start_date is not None:
                 results = [
@@ -172,10 +184,34 @@ class PaperRetrievalService:
                     if paper.date_published is not None
                     and paper.date_published <= end_date
                 ]
-            return self._convert_db_papers_to_summaries(results[:limit])
+            return results[:limit]
 
         except Exception as e:
             raise DatabaseError(f"Error searching papers: {str(e)}")
+
+    def search_papers(
+        self,
+        query: str,
+        limit: int = 10,
+        mode: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
+    ) -> List[PaperSummary]:
+        """Return the lightweight compatibility projection for search consumers."""
+        papers = self.search_db_papers(
+            query,
+            limit,
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
+            has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
+        )
+        return self._convert_db_papers_to_summaries(papers)
 
     def search_papers_page(
         self,
@@ -186,6 +222,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> PaperSearchResults:
         """Return a stable slice of the relevance ranking with page metadata."""
         end = page * page_size
@@ -196,6 +234,8 @@ class PaperRetrievalService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
         start = end - page_size
         return PaperSearchResults(
@@ -397,6 +437,23 @@ class PaperRetrievalService:
             return query.filter(family_repository_exists_clause(official_only=True))
         return query
 
+    @staticmethod
+    def _filter_query_by_search_artifacts(
+        query, has_code: bool, has_hf_artifacts: bool
+    ):
+        if has_code:
+            query = query.filter(family_repository_exists_clause())
+        if has_hf_artifacts:
+            query = query.filter(
+                or_(
+                    DBPaper.hf_artifacts.any(),
+                    func.cardinality(DBPaper.hf_models) > 0,
+                    func.cardinality(DBPaper.hf_datasets) > 0,
+                    func.cardinality(DBPaper.hf_spaces) > 0,
+                )
+            )
+        return query
+
     def _paper_has_official_implementation(self, paper: DBPaper) -> bool:
         return (
             self.db.query(DBPaper.id)
@@ -414,6 +471,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> tuple[DBPaper | None, str]:
         """Resolve a method's source paper or a citation-ranked fallback."""
         if method_row.source_paper_id is not None:
@@ -426,6 +485,12 @@ class PaperRetrievalService:
                     not has_official_implementation
                     or self._paper_has_official_implementation(source)
                 )
+                and self._filter_query_by_search_artifacts(
+                    self.db.query(DBPaper.id).filter(DBPaper.id == source.id),
+                    has_code,
+                    has_hf_artifacts,
+                ).first()
+                is not None
             ):
                 return source, "source_paper"
             if source is not None and source.arxiv_id:
@@ -434,11 +499,15 @@ class PaperRetrievalService:
                     DBPaper.is_latest_version,
                 )
                 latest = (
-                    self._filter_query_by_official_implementation(
-                        self._filter_query_by_date_range(
-                            latest_query, start_date, end_date
+                    self._filter_query_by_search_artifacts(
+                        self._filter_query_by_official_implementation(
+                            self._filter_query_by_date_range(
+                                latest_query, start_date, end_date
+                            ),
+                            has_official_implementation,
                         ),
-                        has_official_implementation,
+                        has_code,
+                        has_hf_artifacts,
                     )
                     .order_by(DBPaper.version.desc(), DBPaper.id.desc())
                     .first()
@@ -458,9 +527,15 @@ class PaperRetrievalService:
             )
         )
         fallback = (
-            self._filter_query_by_official_implementation(
-                self._filter_query_by_date_range(fallback_query, start_date, end_date),
-                has_official_implementation,
+            self._filter_query_by_search_artifacts(
+                self._filter_query_by_official_implementation(
+                    self._filter_query_by_date_range(
+                        fallback_query, start_date, end_date
+                    ),
+                    has_official_implementation,
+                ),
+                has_code,
+                has_hf_artifacts,
             )
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
@@ -478,6 +553,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> list[DBPaper]:
         """Return popular papers that use a resolved method."""
         query = (
@@ -486,9 +563,13 @@ class PaperRetrievalService:
             .filter(PaperMethod.method_id == method_id, DBPaper.is_latest_version)
         )
         return (
-            self._filter_query_by_official_implementation(
-                self._filter_query_by_date_range(query, start_date, end_date),
-                has_official_implementation,
+            self._filter_query_by_search_artifacts(
+                self._filter_query_by_official_implementation(
+                    self._filter_query_by_date_range(query, start_date, end_date),
+                    has_official_implementation,
+                ),
+                has_code,
+                has_hf_artifacts,
             )
             .order_by(
                 DBPaper.citation_count.desc().nullslast(),
@@ -506,6 +587,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> list[tuple[DBPaper, float]]:
         """Use trigram KNN to retrieve short incomplete or misspelled titles."""
         normalized = self._normalize_entity_search_text(query)
@@ -542,6 +625,24 @@ class PaperRetrievalService:
                               )
                         )
                       )
+                      AND (
+                        :has_code = FALSE
+                        OR EXISTS (
+                            SELECT 1 FROM papers family
+                            JOIN paper_repositories pr ON pr.paper_id = family.id
+                            WHERE (
+                                (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                                OR (p.arxiv_id IS NULL AND family.id = p.id)
+                            )
+                        )
+                      )
+                      AND (
+                        :has_hf_artifacts = FALSE
+                        OR EXISTS (SELECT 1 FROM paper_hf_artifacts pha WHERE pha.paper_id = p.id)
+                        OR cardinality(p.hf_models) > 0
+                        OR cardinality(p.hf_datasets) > 0
+                        OR cardinality(p.hf_spaces) > 0
+                      )
                     ORDER BY CAST(:query AS text) <<-> lower(p.title)
                     LIMIT :candidate_limit
                 )
@@ -555,6 +656,8 @@ class PaperRetrievalService:
                     "start_date": start_date,
                     "end_date": end_date,
                     "has_official_implementation": has_official_implementation,
+                    "has_code": has_code,
+                    "has_hf_artifacts": has_hf_artifacts,
                 },
             )
             .mappings()
@@ -671,6 +774,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> list[DBPaper]:
         """Enrich short navigational searches with taxonomy and title signals.
 
@@ -705,6 +810,8 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
             method_candidates = self._method_paper_candidates(
                 method.id,
@@ -712,6 +819,8 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
 
         fuzzy_candidates = self._fuzzy_title_candidates(
@@ -720,6 +829,8 @@ class PaperRetrievalService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
         fuzzy_papers = [paper for paper, _score in fuzzy_candidates]
         fuzzy_top = (
@@ -782,6 +893,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> List[DBPaper]:
         """Weighted PostgreSQL FTS with deterministic identity overrides."""
         normalized_title = " ".join(query.lower().split())
@@ -805,6 +918,17 @@ class PaperRetrievalService:
             date_filters.append(DBPaper.date_published <= end_date)
         if has_official_implementation:
             date_filters.append(family_repository_exists_clause(official_only=True))
+        if has_code:
+            date_filters.append(family_repository_exists_clause())
+        if has_hf_artifacts:
+            date_filters.append(
+                or_(
+                    DBPaper.hf_artifacts.any(),
+                    func.cardinality(DBPaper.hf_models) > 0,
+                    func.cardinality(DBPaper.hf_datasets) > 0,
+                    func.cardinality(DBPaper.hf_spaces) > 0,
+                )
+            )
 
         identity_candidates = select(
             DBPaper.id.label("paper_id"),
@@ -877,6 +1001,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> List[DBPaper]:
         """Fuse weighted FTS and pgvector ranks, falling back immediately to FTS."""
         candidate_limit = max(50, limit)
@@ -886,6 +1012,8 @@ class PaperRetrievalService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
         lexical_candidates = [
             RankedCandidate(int(paper.id), rank)
@@ -900,8 +1028,11 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
         except Exception as error:
+            self.applied_mode = "keyword"
             fallback_reason = type(error).__name__ + ":" + str(error)[:80]
             search_logger.info(
                 "paper_search mode=keyword_fallback fingerprint=%s results=%s fallback=%s",
@@ -966,6 +1097,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> tuple[ActiveGeneration, list[RankedCandidate]]:
         if self.settings.query_embedder != "hf_endpoint":
             raise QueryEmbeddingUnavailable("query_embedder_disabled")
@@ -987,6 +1120,8 @@ class PaperRetrievalService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
 
     def _search_papers_semantic(
@@ -996,6 +1131,8 @@ class PaperRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> List[DBPaper]:
         """Dense query-to-paper retrieval with exact-identity and keyword fallback."""
         fingerprint = hashlib.sha256(query.casefold().encode()).hexdigest()[:16]
@@ -1007,8 +1144,11 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
         except Exception as error:
+            self.applied_mode = "keyword"
             search_logger.info(
                 "paper_search mode=keyword_fallback fingerprint=%s fallback=%s",
                 fingerprint,
@@ -1020,6 +1160,8 @@ class PaperRetrievalService:
                 start_date=start_date,
                 end_date=end_date,
                 has_official_implementation=has_official_implementation,
+                has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
             )
 
         normalized_title = " ".join(query.lower().split())
@@ -1039,6 +1181,9 @@ class PaperRetrievalService:
             identity_query = identity_query.filter(
                 family_repository_exists_clause(official_only=True)
             )
+        identity_query = self._filter_query_by_search_artifacts(
+            identity_query, has_code, has_hf_artifacts
+        )
         identity_rows = identity_query.order_by(DBPaper.id).all()
         ordered_ids = [int(paper.id) for paper in identity_rows]
         ordered_ids.extend(
@@ -1056,6 +1201,9 @@ class PaperRetrievalService:
             papers_query = papers_query.filter(
                 family_repository_exists_clause(official_only=True)
             )
+        papers_query = self._filter_query_by_search_artifacts(
+            papers_query, has_code, has_hf_artifacts
+        )
         papers = papers_query.all()
         by_id = {int(paper.id): paper for paper in papers}
         elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000

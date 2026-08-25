@@ -24,6 +24,27 @@ describe("domain API clients", () => {
     );
   });
 
+  it("encapsulates the hydrated paper search feed without changing autocomplete", async () => {
+    const request = vi.fn().mockResolvedValue({ results: [] }) as ApiRequest;
+    const papers = new PapersApi(request);
+
+    await papers.searchFeed({
+      q: "vision transformer",
+      page: 2,
+      page_size: 20,
+      order_by: "citation_count",
+      start_date: "2026-08-01",
+      has_code: true,
+      has_hf_artifacts: true,
+      mode: "hybrid",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "/papers/search/feed?q=vision+transformer&page=2&page_size=20&order_by=citation_count&start_date=2026-08-01&has_code=true&has_hf_artifacts=true&mode=hybrid",
+      { cache: "no-cache" },
+    );
+  });
+
   it("encapsulates account preference mutation payloads", async () => {
     const preferences: UserPreferences = { hide_closed_source_evals: true };
     const request = vi.fn().mockResolvedValue(preferences) as ApiRequest;

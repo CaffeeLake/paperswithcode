@@ -95,6 +95,8 @@ class EmbeddingRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> list[RankedCandidate]:
         rows = self.db.execute(
             text(
@@ -120,6 +122,28 @@ class EmbeddingRetrievalService:
                           )
                     )
                   )
+                  AND (
+                    :has_code = FALSE
+                    OR EXISTS (
+                        SELECT 1
+                        FROM papers family
+                        JOIN paper_repositories pr ON pr.paper_id = family.id
+                        WHERE (
+                            (p.arxiv_id IS NOT NULL AND family.arxiv_id = p.arxiv_id)
+                            OR (p.arxiv_id IS NULL AND family.id = p.id)
+                        )
+                    )
+                  )
+                  AND (
+                    :has_hf_artifacts = FALSE
+                    OR EXISTS (
+                        SELECT 1 FROM paper_hf_artifacts pha
+                        WHERE pha.paper_id = p.id
+                    )
+                    OR cardinality(p.hf_models) > 0
+                    OR cardinality(p.hf_datasets) > 0
+                    OR cardinality(p.hf_spaces) > 0
+                  )
                 ORDER BY e.embedding::halfvec({generation.dimensions}) <=>
                          CAST(:vector AS halfvec({generation.dimensions}))
                 LIMIT :limit
@@ -132,6 +156,8 @@ class EmbeddingRetrievalService:
                 "start_date": start_date,
                 "end_date": end_date,
                 "has_official_implementation": has_official_implementation,
+                "has_code": has_code,
+                "has_hf_artifacts": has_hf_artifacts,
             },
         ).all()
         return [
@@ -285,6 +311,8 @@ class EmbeddingRetrievalService:
         start_date: date | None = None,
         end_date: date | None = None,
         has_official_implementation: bool = False,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> list[RankedCandidate]:
         contract = QueryEmbeddingContract(
             generation_id=generation.id,
@@ -301,4 +329,6 @@ class EmbeddingRetrievalService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )

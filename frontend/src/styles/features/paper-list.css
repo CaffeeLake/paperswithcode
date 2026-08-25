@@ -272,6 +272,21 @@ a.paper-resource.is-link:focus-visible {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+.paper-title mark,
+.paper-abstract mark {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.search-results-end {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--ink-faint);
+  font: 11px var(--mono);
+}
 .paper-tags {
   display: flex;
   flex-wrap: wrap;

@@ -28,8 +28,8 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const [query, setQuery] = React.useState("");
-  const [paperPage, setPaperPage] = React.useState(1);
   const debouncedQuery = useDebounce(query, 200);
+  const trimmedQuery = query.trim();
   const chatEnabled = isChatEnabled();
 
   useEffect(() => {
@@ -43,8 +43,8 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   }, [open, onClose]);
 
   const papersQ = useQuery({
-    queryKey: ["search-papers", debouncedQuery, paperPage],
-    queryFn: () => papersApi.search(debouncedQuery, paperPage, PAPER_PAGE_SIZE),
+    queryKey: ["search-papers", debouncedQuery],
+    queryFn: () => papersApi.search(debouncedQuery, 1, PAPER_PAGE_SIZE),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
@@ -111,10 +111,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
           className="search-modal-input"
           placeholder="Search papers, tasks, methods, or benchmarks…"
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setPaperPage(1);
-          }}
+          onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (chatEnabled && e.key === "Enter") {
               e.preventDefault();
@@ -197,7 +194,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
           )}
           {matchedPapers.length > 0 && (
             <>
-              <div className="search-section-label">Papers · page {paperPage}</div>
+              <div className="search-section-label">Papers · {matchedPapers.length}</div>
               {matchedPapers.map((p) => (
                 <div key={p.id} className="search-result" onClick={() => go(`/paper/${p.arxiv_id || p.id}`)}>
                   <div className="search-result-title">
@@ -220,28 +217,16 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
                   </div>
                 </div>
               ))}
-              {(papersQ.data?.previous_page || papersQ.data?.next_page) && (
-                <div className="search-paper-pagination">
-                  <button
-                    type="button"
-                    disabled={!papersQ.data.previous_page || papersQ.isFetching}
-                    onClick={() => setPaperPage(papersQ.data?.previous_page || 1)}
-                  >
-                    Previous
-                  </button>
-                  <span>Page {paperPage}</span>
-                  <button
-                    type="button"
-                    disabled={!papersQ.data.next_page || papersQ.isFetching}
-                    onClick={() => {
-                      if (papersQ.data?.next_page) setPaperPage(papersQ.data.next_page);
-                    }}
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
             </>
+          )}
+          {trimmedQuery.length >= 2 && (
+            <button
+              type="button"
+              className="search-view-all-row"
+              onClick={() => go(`/papers?search=${encodeURIComponent(trimmedQuery)}`)}
+            >
+              View all paper results for “{trimmedQuery}”
+            </button>
           )}
         </div>
       </div>

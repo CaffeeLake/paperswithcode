@@ -6,12 +6,18 @@ import { ApiError } from "@/lib/apiTransport";
 import PapersListView from "@/views/PapersListView";
 
 let infiniteState: Record<string, unknown>;
+let searchInfiniteState: Record<string, unknown>;
 const paperParams = vi.fn();
+const searchParamsSpy = vi.fn();
 
 vi.mock("@/hooks/usePapers", () => ({
   useInfinitePapers: (params: unknown) => {
     paperParams(params);
     return infiniteState;
+  },
+  useInfinitePaperSearch: (params: unknown) => {
+    searchParamsSpy(params);
+    return searchInfiniteState;
   },
 }));
 
@@ -43,6 +49,7 @@ const renderView = (entry: string) => render(
 describe("PapersListView repository scopes", () => {
   beforeEach(() => {
     paperParams.mockClear();
+    searchParamsSpy.mockClear();
     infiniteState = {
       data: {
         pages: [{
@@ -60,6 +67,27 @@ describe("PapersListView repository scopes", () => {
             introducing_paper_arxiv_id: "2602.22818",
             recommended_tasks: [{ id: "9", slug: "robotics", name: "Robotics" }],
           },
+        }],
+      },
+      error: null,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    };
+    searchInfiniteState = {
+      data: {
+        pages: [{
+          results: [],
+          next_page: null,
+          previous_page: null,
+          cap: 100,
+          cap_reached: false,
+          exhausted: true,
+          applied_filters: {},
+          requested_mode: "hybrid",
+          applied_mode: "hybrid",
+          order_by: "relevance",
         }],
       },
       error: null,
@@ -172,5 +200,36 @@ describe("PapersListView repository scopes", () => {
     expect(screen.getByRole("button", { name: "trending" })).toHaveClass("active");
     expect(screen.getByRole("button", { name: "Has code" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+  });
+
+  it("uses the focused search layout, relevance sorts, and persistent filters", async () => {
+    renderView("/papers?search=vision&start_date=2026-08-01&has_code=true&has_hf_artifacts=true");
+
+    expect(screen.getByRole("heading", { name: /Search results for “vision”/ })).toBeInTheDocument();
+    expect(screen.queryByText("Top Domains")).toBeNull();
+    expect(screen.getByRole("button", { name: "relevance" })).toHaveClass("active");
+    expect(screen.queryByRole("button", { name: "trending" })).toBeNull();
+    expect(searchParamsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      q: "vision",
+      order_by: "relevance",
+      start_date: "2026-08-01",
+      has_code: true,
+      has_hf_artifacts: true,
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "most cited" }));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("order_by=citation_count"));
+    expect(screen.getByTestId("location")).toHaveTextContent("has_code=true");
+    expect(screen.getByTestId("location")).toHaveTextContent("has_hf_artifacts=true");
+  });
+
+  it("restores the normal All Papers layout after clearing the query", async () => {
+    renderView("/papers?search=vision&order_by=relevance");
+    fireEvent.change(screen.getByPlaceholderText("Search title or abstract…"), {
+      target: { value: "" },
+    });
+    await waitFor(() => expect(screen.getByRole("heading", { name: /All Papers/ })).toBeInTheDocument());
+    expect(screen.getByText("Top Domains")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "trending" })).toHaveClass("active");
   });
 });

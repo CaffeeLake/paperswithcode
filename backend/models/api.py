@@ -430,6 +430,30 @@ class PaperSearchResults(BaseModel):
     )
 
 
+class PaperSearchFeedResults(BaseModel):
+    """Hydrated page from one bounded, relevance-selected search pool."""
+
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Paper] = Field(..., description="Hydrated papers on this page")
+    applied_filters: dict[str, str] = Field(
+        default_factory=dict,
+        description="Exact catalog filters applied before retrieval",
+    )
+    requested_mode: Literal["keyword", "semantic", "hybrid"]
+    applied_mode: Literal["keyword", "semantic", "hybrid"]
+    order_by: Literal["relevance", "date_published", "citation_count"]
+    cap: int = Field(100, description="Maximum size of the fixed candidate pool")
+    cap_reached: bool = Field(
+        False, description="Whether additional relevant records existed beyond the cap"
+    )
+    exhausted: bool = Field(
+        ..., description="Whether this page is the final page in the candidate pool"
+    )
+
+
 class RelatedPaperRecommendation(PaperSummary):
     """Paper summary plus non-presentational retrieval diagnostics."""
 

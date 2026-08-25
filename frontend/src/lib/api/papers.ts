@@ -10,7 +10,7 @@ import type {
   RelatedPaperRecommendation,
   TrendingPaper,
 } from "./papers.types";
-import type { PaginatedResponse, SearchPage } from "./shared.types";
+import type { PaginatedResponse, PaperSearchFeedPage, SearchPage } from "./shared.types";
 import type { ApiRequest } from "../apiTransport";
 import { paperCuration } from "./curation";
 import { apiRequest } from "./request";
@@ -43,6 +43,18 @@ export interface PaperFeedParams {
   has_hf_artifacts?: boolean;
   start_date?: string;
   end_date?: string;
+}
+
+export interface PaperSearchFeedParams {
+  q: string;
+  page?: number;
+  page_size?: number;
+  order_by?: "relevance" | "date_published" | "citation_count";
+  start_date?: string;
+  end_date?: string;
+  has_code?: boolean;
+  has_hf_artifacts?: boolean;
+  mode?: PaperSearchMode;
 }
 
 function query(params?: object): string {
@@ -88,6 +100,10 @@ export class PapersApi {
       `/papers/search?${searchParams.toString()}`,
       { signal },
     );
+  }
+
+  searchFeed(params: PaperSearchFeedParams): Promise<PaperSearchFeedPage<Paper>> {
+    return this.request(`/papers/search/feed${query(params)}`, { cache: "no-cache" });
   }
 
   get(id: string, includeResources = true): Promise<Paper> {

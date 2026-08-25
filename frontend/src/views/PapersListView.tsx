@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Icon, PaperCard, TagChip } from "@/components";
 import { catalogApi } from "@/lib/api/catalog";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
-import { useInfinitePapers } from "@/hooks/usePapers";
+import { useInfinitePapers, useInfinitePaperSearch } from "@/hooks/usePapers";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,10 +14,17 @@ import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { PaperDateFilter } from "@/components/PaperDateFilter";
 import { ApiError } from "@/lib/apiTransport";
 import { readPaperDateRange, withPaperDateRange } from "@/lib/paperDateRange";
+import { queryCenteredExcerpt } from "@/lib/paperSearchPresentation";
+import { isChatEnabled } from "@/lib/apiUrl";
 
-type SortKey = "trending" | "new" | "cited";
-const SORT_OPTIONS: Array<[SortKey, string]> = [
+type SortKey = "trending" | "relevance" | "new" | "cited";
+const ALL_PAPERS_SORT_OPTIONS: Array<[SortKey, string]> = [
   ["trending", "trending"],
+  ["new", "newest"],
+  ["cited", "most cited"],
+];
+const SEARCH_SORT_OPTIONS: Array<[SortKey, string]> = [
+  ["relevance", "relevance"],
   ["new", "newest"],
   ["cited", "most cited"],
 ];
@@ -36,6 +43,7 @@ const PapersListView: React.FC = () => {
   const urlSearch = searchParams.get("search") || "";
   const [searchInput, setSearchInput] = useState(urlSearch);
   const debouncedSearch = useDebounce(searchInput, 300);
+  const isSearchMode = !isRepositoryFeed && urlSearch.trim().length > 0;
 
   useEffect(() => setSearchInput(urlSearch), [urlSearch]);
 
@@ -48,12 +56,26 @@ const PapersListView: React.FC = () => {
     setSearchParams(next, { replace: true });
   }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const requested = searchParams.get("order_by");
+    const next = new URLSearchParams(searchParams);
+    if (isSearchMode && !["relevance", "date_published", "citation_count"].includes(requested || "")) {
+      next.set("order_by", "relevance");
+      setSearchParams(next, { replace: true });
+    } else if (!isSearchMode && requested === "relevance") {
+      next.delete("order_by");
+      setSearchParams(next, { replace: true });
+    }
+  }, [isSearchMode, searchParams, setSearchParams]);
+
   const requestedOrder = searchParams.get("order_by");
   const sortBy: SortKey = requestedOrder === "citation_count"
     ? "cited"
     : requestedOrder === "date_published"
       ? "new"
-      : "trending";
+      : isSearchMode
+        ? "relevance"
+        : "trending";
   const dateRange = readPaperDateRange(searchParams);
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const hasCode = !isRepositoryFeed && searchParams.get("has_code") === "true";
@@ -68,7 +90,7 @@ const PapersListView: React.FC = () => {
   const setSortBy = (nextSort: SortKey) => {
     setQueryParam(
       "order_by",
-      nextSort === "cited" ? "citation_count" : nextSort === "new" ? "date_published" : "trending",
+      nextSort === "cited" ? "citation_count" : nextSort === "new" ? "date_published" : nextSort,
     );
   };
 
@@ -78,11 +100,11 @@ const PapersListView: React.FC = () => {
       : sortBy === "cited"
         ? "citation_count"
         : "date_published";
-  const infinite = useInfinitePapers({
+  const regularInfinite = useInfinitePapers({
     page_size: 20,
     order_by: orderBy,
     order_dir: "desc",
-    search: debouncedSearch || undefined,
+    search: isRepositoryFeed ? debouncedSearch || undefined : undefined,
     start_date: dateRange.startDate,
     end_date: dateRange.endDate,
     include_resources: true,
@@ -92,19 +114,36 @@ const PapersListView: React.FC = () => {
     has_hf_artifacts: hasHfArtifacts,
     framework,
     repository,
+    enabled: !isSearchMode,
   });
+
+  const searchInfinite = useInfinitePaperSearch({
+    q: debouncedSearch.trim(),
+    order_by: sortBy === "cited" ? "citation_count" : sortBy === "new" ? "date_published" : "relevance",
+    start_date: dateRange.startDate,
+    end_date: dateRange.endDate,
+    has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
+    enabled: isSearchMode,
+  });
+  const infinite = isSearchMode ? searchInfinite : regularInfinite;
 
   const topTasks = useQuery({
     queryKey: ["top-tasks-sidebar"],
     queryFn: () => catalogApi.topTasks(8),
-    enabled: !isRepositoryFeed,
+    enabled: !isRepositoryFeed && !isSearchMode,
     staleTime: 10 * 60 * 1000,
   });
 
   const cards = useMemo(() => {
     const all = infinite.data?.pages.flatMap((p) => p.results) || [];
-    return all.map(transformPaperForCard);
-  }, [infinite.data]);
+    return all.map((paper) => {
+      const card = transformPaperForCard(paper);
+      return isSearchMode
+        ? { ...card, abstract: queryCenteredExcerpt(card.abstract, urlSearch) }
+        : card;
+    });
+  }, [infinite.data, isSearchMode, urlSearch]);
 
   const { targetRef: sentinelRef, isIntersecting } = useIntersectionObserver({ rootMargin: "200px" });
   useEffect(() => {
@@ -113,8 +152,9 @@ const PapersListView: React.FC = () => {
     }
   }, [isIntersecting, infinite.hasNextPage, infinite.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totalCount = infinite.data?.pages?.[0]?.count ?? 0;
-  const scope = infinite.data?.pages?.[0]?.scope;
+  const totalCount = regularInfinite.data?.pages?.[0]?.count ?? 0;
+  const scope = regularInfinite.data?.pages?.[0]?.scope;
+  const searchMetadata = searchInfinite.data?.pages?.at(-1);
   const frameworkNotFound = framework && infinite.error instanceof ApiError && infinite.error.status === 404;
   const headingName = scope?.kind === "framework" ? scope.framework_name : scope?.repository;
 
@@ -132,7 +172,11 @@ const PapersListView: React.FC = () => {
       <div className="feed-header">
         <div>
           <h1 className="feed-title">
-            {isRepositoryFeed ? <>Papers implemented by <em>{headingName || framework || repository}</em></> : <>All <em>Papers</em></>}
+            {isRepositoryFeed
+              ? <>Papers implemented by <em>{headingName || framework || repository}</em></>
+              : isSearchMode
+                ? <>Search results for <em>“{urlSearch}”</em></>
+                : <>All <em>Papers</em></>}
           </h1>
           <div className="feed-subtitle">
             {isRepositoryFeed
@@ -141,7 +185,9 @@ const PapersListView: React.FC = () => {
                 : scope?.repository
                 ? <>GitHub repository <strong>{scope.repository}</strong>. {totalCount > 0 && `${totalCount.toLocaleString()} papers.`}</>
                 : "Repository-scoped paper feed."
-              : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
+              : isSearchMode
+                ? `${cards.length} loaded from the most relevant results.`
+                : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
           </div>
           {isRepositoryFeed && scope && (
             <div className="paper-feed-scope-links">
@@ -204,8 +250,8 @@ const PapersListView: React.FC = () => {
         </div>
       </div>
 
-      <div className={isRepositoryFeed ? "papers-feed-layout-scoped" : "layout-with-sidebar"}>
-        {!isRepositoryFeed && <aside className="sidebar">
+      <div className={isRepositoryFeed || isSearchMode ? "papers-feed-layout-scoped" : "layout-with-sidebar"}>
+        {!isRepositoryFeed && !isSearchMode && <aside className="sidebar">
           <div className="sidebar-section">
             <div className="sidebar-label">Top Domains</div>
             {topTasks.isLoading && (
@@ -228,7 +274,7 @@ const PapersListView: React.FC = () => {
           <div className="sort-bar">
             <div className="paper-feed-toolbar-controls">
               <div className="sort-options">
-                {SORT_OPTIONS.map(([k, l]) => (
+                {(isSearchMode ? SEARCH_SORT_OPTIONS : ALL_PAPERS_SORT_OPTIONS).map(([k, l]) => (
                   <button
                     key={k}
                     className={`sort-btn ${sortBy === k ? "active" : ""}`}
@@ -271,18 +317,35 @@ const PapersListView: React.FC = () => {
               ))}
             </div>
           ) : cards.length === 0 ? (
-            <div className="no-results">No matching papers.</div>
+            <div className="no-results">
+              <p>No matching papers.</p>
+              {isSearchMode && isChatEnabled() && (
+                <Link to={`/chat?q=${encodeURIComponent(urlSearch.trim())}`}>Ask the assistant instead</Link>
+              )}
+            </div>
           ) : (
             <>
               <div className="paper-list">
                 {cards.map((p, i) => (
-                  <PaperCard key={p.id} paper={p} rank={i + 1} />
+                  <PaperCard
+                    key={p.id}
+                    paper={p}
+                    rank={i + 1}
+                    highlightQuery={isSearchMode ? urlSearch : undefined}
+                  />
                 ))}
               </div>
               <div ref={sentinelRef} style={{ height: 1 }} />
               {infinite.isFetchingNextPage && (
                 <div style={{ padding: "20px 0", textAlign: "center", color: "var(--ink-faint)" }}>
                   Loading more…
+                </div>
+              )}
+              {!infinite.hasNextPage && !infinite.isFetchingNextPage && isSearchMode && (
+                <div className="search-results-end">
+                  {searchMetadata?.cap_reached
+                    ? "End of the top 100 results"
+                    : "End of results"}
                 </div>
               )}
             </>

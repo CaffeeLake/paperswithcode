@@ -788,6 +788,7 @@ interface PaperCardComponentProps {
   rank?: number | null;
   showInstitution?: boolean;
   onClickTag?: (slug: string) => void;
+  highlightQuery?: string;
 }
 
 const LANGUAGE_MODELING_TASK_SLUG = "language-modeling";
@@ -845,13 +846,14 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({
   rank,
   showInstitution = true,
   onClickTag,
+  highlightQuery,
 }) => {
   const queryClient = useQueryClient();
   const paperHref = `/paper/${paper.id}`;
   const prefetchPaper = React.useCallback(() => {
     queryClient.prefetchQuery({
-      queryKey: ["paper-arxiv", paper.id],
-      queryFn: () => papersApi.getByArxivId(paper.id, true),
+      queryKey: ["paper-route", paper.id],
+      queryFn: () => papersApi.get(paper.id, true),
       staleTime: 10 * 60 * 1000,
     });
   }, [paper.id, queryClient]);
@@ -874,7 +876,7 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({
         <div className="paper-body-main">
           <h3 className="paper-title">
             <Link to={paperHref} onFocus={prefetchPaper} onMouseEnter={prefetchPaper}>
-              <LatexTitle title={paper.title} />
+              <LatexTitle title={paper.title} highlight={highlightQuery} />
             </Link>
             {showInstitution && paper.organizations.length > 0 && (
               <span className="paper-organization-logos">
@@ -906,7 +908,7 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({
           </div>
           {paper.abstract && (
             <p className="paper-abstract">
-              <LatexText text={paper.abstract} />
+              <LatexText text={paper.abstract} highlight={highlightQuery} />
             </p>
           )}
           {paper.sotaRanks.length > 0 && <SotaBadges ranks={paper.sotaRanks} paperHref={paperHref} />}

@@ -22,3 +22,13 @@ export interface SearchPage<T> {
   previous_page: number | null;
   results: T[];
 }
+
+export interface PaperSearchFeedPage<T> extends SearchPage<T> {
+  applied_filters: Record<string, string>;
+  requested_mode: 'keyword' | 'semantic' | 'hybrid';
+  applied_mode: 'keyword' | 'semantic' | 'hybrid';
+  order_by: 'relevance' | 'date_published' | 'citation_count';
+  cap: number;
+  cap_reached: boolean;
+  exhausted: boolean;
+}

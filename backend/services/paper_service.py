@@ -8,6 +8,8 @@ This service handles all paper-related operations, including:
 - Managing paper versions
 """
 
+import hashlib
+import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -40,6 +42,7 @@ from backend.models.api import (
     Papers,
     PaperSummary,
     PaperSearchResults,
+    PaperSearchFeedResults,
     RelatedPaperRecommendation,
     RepositoryTrendingPaper,
     RepositoryTrendingRepository,
@@ -73,6 +76,9 @@ from backend.services.paper_version_refresh_service import (
 from backend.services.semantic_scholar_service import SemanticScholarService
 from backend.services.trending_ranking_service import active_paper_score_components
 from backend.utils.github_utils import normalize_github_url, parse_github_url
+
+
+search_logger = logging.getLogger("backend.paper_search")
 
 
 class PaperService:
@@ -1596,6 +1602,89 @@ class PaperService:
             start_date=start_date,
             end_date=end_date,
             has_official_implementation=has_official_implementation,
+        )
+
+    def search_papers_feed(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 20,
+        order_by: str = "relevance",
+        mode: str = "hybrid",
+        start_date: date | None = None,
+        end_date: date | None = None,
+        has_code: bool = False,
+        has_hf_artifacts: bool = False,
+    ) -> PaperSearchFeedResults:
+        """Hydrate one page from a fixed, relevance-selected top-100 pool."""
+        retrieval = self._retrieval_service()
+        pool = retrieval.search_db_papers(
+            query,
+            101,
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
+            has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
+        )
+        cap_reached = len(pool) > 100
+        pool = pool[:100]
+        relevance_position = {int(paper.id): index for index, paper in enumerate(pool)}
+        if order_by == "date_published":
+            pool.sort(
+                key=lambda paper: (
+                    paper.date_published is None,
+                    -(paper.date_published.toordinal() if paper.date_published else 0),
+                    relevance_position[int(paper.id)],
+                )
+            )
+        elif order_by == "citation_count":
+            pool.sort(
+                key=lambda paper: (
+                    -(paper.citation_count or 0),
+                    relevance_position[int(paper.id)],
+                )
+            )
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_rows = pool[start:end]
+        results = self.hydrate_cards(page_rows, include_resources=True)
+        exhausted = end >= len(pool)
+        applied_filters = {
+            name: value
+            for name, value in {
+                "start_date": start_date.isoformat() if start_date else None,
+                "end_date": end_date.isoformat() if end_date else None,
+                "has_code": "true" if has_code else None,
+                "has_hf_artifacts": "true" if has_hf_artifacts else None,
+            }.items()
+            if value is not None
+        }
+        fingerprint = hashlib.sha256(query.casefold().encode()).hexdigest()[:16]
+        search_logger.info(
+            "paper_search_feed fingerprint=%s requested_mode=%s applied_mode=%s "
+            "order_by=%s pool_size=%s page=%s page_size=%s cap_reached=%s filters=%s",
+            fingerprint,
+            mode,
+            retrieval.applied_mode,
+            order_by,
+            len(pool),
+            page,
+            page_size,
+            cap_reached,
+            sorted(applied_filters),
+        )
+        return PaperSearchFeedResults(
+            next_page=page + 1 if not exhausted else None,
+            previous_page=page - 1 if page > 1 else None,
+            results=results,
+            applied_filters=applied_filters,
+            requested_mode=mode,
+            applied_mode=retrieval.applied_mode,
+            order_by=order_by,
+            cap_reached=cap_reached,
+            exhausted=exhausted,
         )
 
     def get_related_papers(

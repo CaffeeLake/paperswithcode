@@ -5,6 +5,7 @@ import 'katex/dist/katex.min.css';
 interface LatexTextProps {
   text: string;
   className?: string;
+  highlight?: string;
 }
 
 type TextToken = { type: 'text'; content: string } | { type: 'inline'; content: string } | { type: 'display'; content: string };
@@ -177,7 +178,24 @@ function readScriptedMath(text: string, start: number): { latex: string; end: nu
   return { latex: text.slice(mathStart, i), end: i };
 }
 
-function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
+function literalTerms(query: string | undefined): string[] {
+  return Array.from(new Set((query || "").trim().split(/\s+/).filter(Boolean)))
+    .sort((a, b) => b.length - a.length);
+}
+
+function highlightText(text: string, query: string | undefined, keyPrefix: string): ReactNode[] {
+  const terms = literalTerms(query);
+  if (!terms.length) return [text];
+  const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const matcher = new RegExp(`(${escaped.join("|")})`, "gi");
+  return text.split(matcher).filter(Boolean).map((part, index) =>
+    terms.some((term) => term.toLocaleLowerCase() === part.toLocaleLowerCase())
+      ? <mark key={`${keyPrefix}-mark-${index}`}>{part}</mark>
+      : part
+  );
+}
+
+function parseTextContent(text: string, keyPrefix: string, highlight?: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -223,7 +241,7 @@ function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
         const braced = readBraced(text, i);
         if (braced) {
           i = braced.end;
-          nodes.push(wrap('strong', parseTextContent(braced.content, nextKey())));
+          nodes.push(wrap('strong', parseTextContent(braced.content, nextKey(), highlight)));
           continue;
         }
       }
@@ -232,7 +250,7 @@ function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
         const braced = readBraced(text, i);
         if (braced) {
           i = braced.end;
-          nodes.push(wrap('em', parseTextContent(braced.content, nextKey())));
+          nodes.push(wrap('em', parseTextContent(braced.content, nextKey(), highlight)));
           continue;
         }
       }
@@ -244,7 +262,7 @@ function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
           const bodyArg = readBraced(text, i);
           if (bodyArg) {
             i = bodyArg.end;
-            nodes.push(...parseTextContent(bodyArg.content, nextKey()));
+            nodes.push(...parseTextContent(bodyArg.content, nextKey(), highlight));
           }
           continue;
         }
@@ -263,7 +281,7 @@ function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
       const braced = readBraced(text, i);
       if (braced) {
         i = braced.end;
-        nodes.push(...parseTextContent(braced.content, nextKey()));
+        nodes.push(...parseTextContent(braced.content, nextKey(), highlight));
         continue;
       }
 
@@ -289,7 +307,7 @@ function parseTextContent(text: string, keyPrefix: string): ReactNode[] {
       if (readScriptedMath(text, j)) break;
       j += 1;
     }
-    if (j > i) nodes.push(text.slice(i, j));
+    if (j > i) nodes.push(...highlightText(text.slice(i, j), highlight, nextKey()));
     i = j;
   }
 
@@ -320,14 +338,14 @@ function KatexHtml({ latex, display }: { latex: string; display: boolean }) {
   );
 }
 
-function renderLatexNodes(text: string): ReactNode {
+function renderLatexNodes(text: string, highlight?: string): ReactNode {
   const tokens = tokenizeMathAndText(text);
   const parts: ReactNode[] = [];
 
   tokens.forEach((token, index) => {
     const keyPrefix = `latex-${index}`;
     if (token.type === 'text') {
-      const children = parseTextContent(token.content, keyPrefix);
+      const children = parseTextContent(token.content, keyPrefix, highlight);
       if (children.length === 1) parts.push(children[0]);
       else if (children.length > 1) parts.push(<Fragment key={keyPrefix}>{children}</Fragment>);
       return;
@@ -347,13 +365,13 @@ function renderLatexNodes(text: string): ReactNode {
  * Renders text with LaTeX math ($...$, $$...$$, and un-delimited ^{}/_{} fragments)
  * and common text-mode commands (\\textbf, \\emph, \\color, accents, spacing, ~) used in arXiv titles/abstracts.
  */
-const LatexText = ({ text, className = '' }: LatexTextProps) => {
-  const content = useMemo(() => renderLatexNodes(text), [text]);
+const LatexText = ({ text, className = '', highlight }: LatexTextProps) => {
+  const content = useMemo(() => renderLatexNodes(text, highlight), [text, highlight]);
   return <span className={className}>{content}</span>;
 };
 
-const LatexTitle = ({ title, className = '' }: { title: string; className?: string }) => (
-  <LatexText text={title} className={className} />
+const LatexTitle = ({ title, className = '', highlight }: { title: string; className?: string; highlight?: string }) => (
+  <LatexText text={title} className={className} highlight={highlight} />
 );
 
 export default LatexTitle;
