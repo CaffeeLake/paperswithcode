@@ -56,6 +56,7 @@ export const ArtifactWorkspace: React.FC<{
     bounds.left,
     bounds.right,
   );
+  const canvasLabel = panel.state.selected?.artifact_kind === "latex_paper" ? "paper" : "poster";
   const applyPercent = (next: number) => {
     const bounded = clampArtifactPercent(width, next, bounds.left, bounds.right);
     pendingPercentRef.current = bounded;
@@ -89,7 +90,7 @@ export const ArtifactWorkspace: React.FC<{
         ref={handleRef}
         className="chat-artifact-resize-handle"
         role="separator"
-        aria-label="Resize conversation and poster panels"
+        aria-label={`Resize conversation and ${canvasLabel} panels`}
         aria-orientation="vertical"
         aria-valuemin={Math.ceil(clampArtifactPercent(width, 0, bounds.left, bounds.right))}
         aria-valuemax={Math.floor(clampArtifactPercent(width, 100, bounds.left, bounds.right))}

@@ -5,6 +5,14 @@ import type { ArtifactBlock } from "@/lib/chat";
 
 export type ArtifactTab = "preview" | "source" | "files";
 
+const ARTIFACT_NAVIGATION_EVENT = "pwc:artifact-navigation";
+
+/** Lets the session shell ask the currently open canvas before replacing its workspace. */
+export function canNavigateAwayFromArtifact(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.dispatchEvent(new Event(ARTIFACT_NAVIGATION_EVENT, { cancelable: true }));
+}
+
 export interface ArtifactPanelState {
   open: boolean;
   selectedKey: string | null;
@@ -162,7 +170,9 @@ export const ArtifactPanelProvider: React.FC<{
 
   const close = React.useCallback(() => {
     dispatch({ type: "close" });
-    window.setTimeout(() => originRef.current?.focus(), 0);
+    window.setTimeout(() => {
+      if (originRef.current?.isConnected) originRef.current.focus();
+    }, 0);
   }, []);
 
   const register = React.useCallback((block: ArtifactBlock) => dispatch({
@@ -173,7 +183,10 @@ export const ArtifactPanelProvider: React.FC<{
   }), [autoOpenOnMount]);
   const unregister = React.useCallback((key: string) => dispatch({ type: "unregister", key }), []);
   const open = React.useCallback((block: ArtifactBlock, origin?: HTMLElement | null) => {
-    originRef.current = origin ?? null;
+    const activeElement = document.activeElement;
+    originRef.current = origin ?? (
+      activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null
+    );
     dispatch({ type: "open", key: artifactPanelKey(block), block });
   }, []);
   const setTab = React.useCallback((tab: ArtifactTab) => dispatch({ type: "tab", tab }), []);

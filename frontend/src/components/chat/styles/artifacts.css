@@ -49,12 +49,17 @@ button.chat-artifact-card { cursor: pointer; }
 .chat-artifact-panel header span { color: #6d7788; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
 .chat-artifact-panel h2 { margin: 2px 0 0; font-size: 18px; }
 .chat-artifact-panel header button { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+.chat-paper-status { margin: 4px 0 0; color: #687386; font-size: 12px; }
+.chat-artifact-header-actions { display: flex; align-items: center; gap: 6px; }
+.chat-artifact-header-actions > button:first-child { width: auto; min-height: 36px; padding: 7px 10px; border: 1px solid #cfd6e4; color: #253143; background: #fff; font-size: 12px; }
 .chat-artifact-version { display: flex; align-items: center; gap: 7px; margin-left: auto; margin-right: 8px; color: #687386; font-size: 12px; }
 .chat-artifact-version select { padding: 6px 8px; border: 1px solid #cfd6e4; border-radius: 7px; background: #fff; }
 .chat-artifact-panel > nav { position: sticky; z-index: 1; top: 0; display: flex; gap: 4px; padding: 8px 18px 0; background: #fff; }
 .chat-artifact-panel nav button { padding: 9px 14px; border: 0; border-bottom: 2px solid transparent; color: #667085; background: transparent; cursor: pointer; }
 .chat-artifact-panel nav button.active { color: #273a91; border-bottom-color: #5367d9; font-weight: 650; }
+.chat-artifact-panel button:focus-visible, .chat-artifact-panel a:focus-visible, .chat-artifact-panel input:focus-visible, .latex-source-editor .cm-content:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .chat-artifact-panel-body { min-height: 0; display: grid; place-items: center; overflow: auto; padding: 20px; }
+.chat-artifact-panel-body > .pdf-viewer { align-self: stretch; justify-self: stretch; width: 100%; height: 100%; }
 .chat-artifact-panel-body > img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; box-shadow: 0 4px 22px rgb(15 23 42 / 12%); }
 .chat-artifact-panel-body > pre { align-self: stretch; justify-self: stretch; overflow: auto; margin: 0; padding: 18px; color: #d8dee9; background: #18202c; border-radius: 10px; font-size: 12px; white-space: pre-wrap; }
 .chat-artifact-source-workspace { width: 100%; height: 100%; min-height: 0; display: flex; overflow: hidden; border-radius: 10px; background: #18202c; }
@@ -77,12 +82,20 @@ button.chat-artifact-card { cursor: pointer; }
 .chat-artifact-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .chat-artifact-actions a { display: inline-flex; align-items: center; gap: 5px; padding: 8px 10px; color: #263b94; border: 1px solid #cfd6e4; border-radius: 8px; text-decoration: none; font-size: 12px; font-weight: 600; }
 .chat-artifact-actions svg { width: 14px; height: 14px; }
+.paper-pdf-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px; border-bottom: 1px solid #dce1e8; background: #fff; }
+.paper-pdf-toolbar-group { display: flex; align-items: center; gap: 6px; }
+.paper-pdf-toolbar button, .paper-pdf-toolbar input, .paper-pdf-toolbar a { min-height: 32px; border: 1px solid #cfd6e4; border-radius: 7px; padding: 5px 8px; color: #253143; background: #fff; font-size: 12px; text-decoration: none; }
+.paper-pdf-toolbar input { width: 56px; }
+.paper-pdf-toolbar button:disabled { cursor: not-allowed; opacity: .55; }
 
 @media (max-width: 700px) {
   .chat-artifact-card > img { width: 120px; }
   .chat-artifact-panel { width: 100vw; height: 100dvh; }
   .chat-artifact-panel footer { align-items: stretch; flex-direction: column; }
   .chat-artifact-actions { justify-content: flex-start; }
+  .chat-artifact-panel header { padding: 12px 14px; }
+  .chat-artifact-header-actions > button:first-child { padding-inline: 8px; }
+  .paper-pdf-toolbar { align-items: flex-start; flex-direction: column; }
 }
 
 @media (forced-colors: active) {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let observedWidth = 800;
 let resizeCallback: ResizeObserverCallback | undefined;
+const reactPdf = vi.hoisted(() => ({ documentOptions: [] as unknown[] }));
 
 vi.mock("@/lib/pdf", () => ({
   assertPdfWorkerConfigured: vi.fn(),
@@ -24,10 +25,14 @@ vi.mock("./PdfToolbar", () => ({
 }));
 
 vi.mock("react-pdf", () => ({
-    Document: ({ children, onLoadSuccess }: {
+    Document: ({ children, onLoadSuccess, options }: {
       children: React.ReactNode;
       onLoadSuccess: (pdf: { numPages: number }) => void;
-    }) => <div><button onClick={() => onLoadSuccess({ numPages: 1 })}>Load PDF</button>{children}</div>,
+      options?: unknown;
+    }) => {
+      reactPdf.documentOptions.push(options);
+      return <div><button onClick={() => onLoadSuccess({ numPages: 1 })}>Load PDF</button>{children}</div>;
+    },
     Page: ({ width }: { width: number }) => <div data-testid="pdf-page" data-width={width} />,
 }));
 
@@ -52,6 +57,7 @@ describe("PdfViewer resize rendering", () => {
   beforeEach(() => {
     observedWidth = 800;
     resizeCallback = undefined;
+    reactPdf.documentOptions.length = 0;
     Object.defineProperty(HTMLElement.prototype, "clientWidth", {
       configurable: true,
       get: () => observedWidth,
@@ -171,5 +177,49 @@ describe("PdfViewer resize rendering", () => {
     expect(screen.getByRole("button", { name: "Close search" })).toBeVisible();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("button", { name: "Close search" })).not.toBeInTheDocument();
+  });
+
+  it("provides application-owned canvas controls for a private paper preview", async () => {
+    render(<PdfViewer
+      url="/api/v1/chat/artifacts/paper-1/versions/version-1/preview"
+      paperKey="paper-1:version-1"
+      paperTitle="Careful Draft"
+      paperHref="/chat"
+      chrome="canvas"
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load PDF" }));
+
+    expect(screen.getByRole("region", { name: "Careful Draft PDF preview" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Fit to width" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute(
+      "href", "/api/v1/chat/artifacts/paper-1/versions/version-1/preview",
+    );
+    expect(screen.getByText("Page 1 of 1")).toBeVisible();
+  });
+
+  it("keeps PDF credentials scoped to private canvas previews", () => {
+    const reader = render(<PdfViewer
+      url="https://arxiv.org/pdf/1706.03762"
+      paperKey="1706.03762"
+      paperTitle="Attention Is All You Need"
+      paperHref="/paper/1706.03762"
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(reactPdf.documentOptions.every((options) => options === undefined)).toBe(true);
+
+    reader.unmount();
+    reactPdf.documentOptions.length = 0;
+    render(<PdfViewer
+      url="/api/v1/chat/artifacts/paper-1/versions/version-1/preview"
+      paperKey="paper-1:version-1"
+      paperTitle="Careful Draft"
+      paperHref="/chat"
+      chrome="canvas"
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(reactPdf.documentOptions).not.toHaveLength(0);
+    expect(reactPdf.documentOptions.every((options) => options === reactPdf.documentOptions[0])).toBe(true);
+    expect(reactPdf.documentOptions[0]).toEqual({ withCredentials: true });
   });
 });

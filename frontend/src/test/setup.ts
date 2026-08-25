@@ -37,6 +37,13 @@ if (!window.PointerEvent) {
   });
 }
 
+if (!Range.prototype.getClientRects) {
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
 Object.defineProperties(Element.prototype, {
   hasPointerCapture: {
     configurable: true,

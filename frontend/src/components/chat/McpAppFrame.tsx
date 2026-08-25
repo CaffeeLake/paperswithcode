@@ -146,6 +146,11 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
       };
       host.onsizechange = () => undefined;
       host.oninitialized = () => {
+        const activeHost = host;
+        if (!activeHost) {
+          setState("error");
+          return;
+        }
         initialized.current = true;
         try {
           const parsed = JSON.parse(elements) as unknown;
@@ -158,11 +163,11 @@ export const McpAppFrame: React.FC<{ block: AppBlock }> = ({ block }) => {
           // reliable without assuming an arbitrary React scheduling point.
           for (const delay of [0, 50, 200, 750]) {
             sceneDeliveryTimers.push(window.setTimeout(() => {
-              if (bridge.current !== host) return;
-              void host!.sendToolInput(input);
+              if (bridge.current !== activeHost) return;
+              void activeHost.sendToolInput(input);
             }, delay));
           }
-          void host.sendToolResult(blockRef.current.result as never);
+          void activeHost.sendToolResult(blockRef.current.result as never);
         } catch {
           setState("error");
         }

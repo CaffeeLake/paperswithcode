@@ -32,6 +32,7 @@ export const LatexSourceEditor: React.FC<{
         bracketMatching(),
         StreamLanguage.define(stex),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+        EditorView.contentAttributes.of({ "aria-label": `Editing ${path}` }),
         editability.current.of(EditorView.editable.of(!readOnly)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());

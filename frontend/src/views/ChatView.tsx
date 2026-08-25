@@ -12,7 +12,7 @@ import { ChatSessionNavigation } from "@/components/chat/ChatSessionNavigation";
 import { ChatSharing } from "@/components/chat/ChatSharing";
 import { ArtifactWorkspace } from "@/components/chat/ArtifactWorkspace";
 import { LatexPaperArtifact } from "@/components/chat/LatexPaperArtifact";
-import { ArtifactPanelProvider } from "@/components/chat/useArtifactPanel";
+import { ArtifactPanelProvider, canNavigateAwayFromArtifact } from "@/components/chat/useArtifactPanel";
 import { useChatArchive } from "@/components/chat/useChatArchive";
 import { PanelIcon, Spinner } from "@/components/chat/icons";
 import { hfLoginUrl } from "@/components/HfSignInButton";
@@ -673,7 +673,11 @@ export const ChatExperience: React.FC<ChatExperienceProps> = ({
             <Link
               className="chat-reader-action"
               to={`/pdf/${current.primary_paper.route_id}`}
-              onClick={() => {
+              onClick={(event) => {
+                if (!canNavigateAwayFromArtifact()) {
+                  event.preventDefault();
+                  return;
+                }
                 const readerRoute = current.primary_paper!.route_id;
                 sessionStorage.setItem(`pwc:reader:session:${readerRoute}`, current.id);
                 if (routeViewerPage) {

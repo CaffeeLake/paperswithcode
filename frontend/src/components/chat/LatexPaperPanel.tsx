@@ -1,10 +1,11 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, FileCode2, FilePlus2, Pencil, Save, Trash2, X } from "lucide-react";
+import { FileCode2, FilePlus2, Pencil, Save, Trash2, X } from "lucide-react";
 
 import { apiUrl } from "@/lib/apiUrl";
 import type { ArtifactBlock } from "@/lib/chat";
 import type { LatexPaperArtifactDescriptor, LatexPaperHistoryPage, LatexPaperVersionDescriptor } from "@/lib/chatSessions";
+import { PdfViewer } from "@/components/pdf/PdfViewer";
 import { LatexSourceEditor } from "./LatexSourceEditor";
 import { useArtifactPanel } from "./useArtifactPanel";
 
@@ -99,7 +100,7 @@ export const LatexPaperPanel: React.FC<{
     window.history.pushState({ ...window.history.state, pwcArtifactPanel: true }, "");
     pushedHistoryRef.current = true;
     const onPopState = () => {
-      if (draftIsDirty && !window.confirm("Discard unsaved paper edits?")) {
+      if (draftIsDirty && !window.confirm("Leave this view? Unsaved paper edits remain in this browser.")) {
         window.history.pushState({ ...window.history.state, pwcArtifactPanel: true }, "");
         pushedHistoryRef.current = true;
         return;
@@ -110,7 +111,7 @@ export const LatexPaperPanel: React.FC<{
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      if (draftIsDirty && !window.confirm("Discard unsaved paper edits?")) return;
+      if (draftIsDirty && !window.confirm("Leave this view? Unsaved paper edits remain in this browser.")) return;
       closePanel();
       if (pushedHistoryRef.current) { pushedHistoryRef.current = false; window.history.back(); }
     };
@@ -119,6 +120,27 @@ export const LatexPaperPanel: React.FC<{
     return () => { window.removeEventListener("popstate", onPopState); document.removeEventListener("keydown", onKeyDown); };
   }, [closePanel, dialog, draftIsDirty]);
   React.useEffect(() => {
+    if (!dialog) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
+      )];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [dialog]);
+  React.useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!draftIsDirty) return;
       event.preventDefault();
@@ -126,6 +148,13 @@ export const LatexPaperPanel: React.FC<{
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [draftIsDirty]);
+  React.useEffect(() => {
+    const onArtifactNavigation = (event: Event) => {
+      if (draftIsDirty && !window.confirm("Leave this view? Unsaved paper edits remain in this browser.")) event.preventDefault();
+    };
+    window.addEventListener("pwc:artifact-navigation", onArtifactNavigation);
+    return () => window.removeEventListener("pwc:artifact-navigation", onArtifactNavigation);
   }, [draftIsDirty]);
 
   const descriptorQuery = useQuery({
@@ -319,7 +348,19 @@ export const LatexPaperPanel: React.FC<{
     ? apiUrl(`/api/v1/chat/artifacts/${encodeURIComponent(block.artifact_id!)}/versions/${encodeURIComponent(preview.version_id)}/preview`)
     : null;
   const outOfDate = Boolean(source && preview && source.version_id !== preview.version_id);
-  const guardDirty = () => !draftIsDirty || window.confirm("Discard unsaved paper edits?");
+  const guardDirty = () => !draftIsDirty || window.confirm("Leave this view? Unsaved paper edits remain in this browser.");
+  const selectTab = (tab: "preview" | "files") => {
+    if (tab !== panel.state.tab && !guardDirty()) return false;
+    panel.setTab(tab);
+    return true;
+  };
+  const moveBetweenTabs = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (!(["ArrowLeft", "ArrowRight", "Home", "End"] as string[]).includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "ArrowLeft" || event.key === "Home" ? "preview" : "files";
+    if (!selectTab(next)) return;
+    event.currentTarget.parentElement?.querySelector<HTMLElement>(`#paper-${next}-tab`)?.focus();
+  };
   const selectFile = (path: string) => {
     if (path !== sourcePath && draftIsDirty && !window.confirm("Switch files? Unsaved edits stay in this browser.")) return;
     panel.setSourceFile(path);
@@ -365,28 +406,51 @@ export const LatexPaperPanel: React.FC<{
       `Repair the failed paper source version ${source.version_id}. Use pwc-paper to inspect and repair it; make no more than three attempts. Compiler diagnostics:\n${diagnostics || "No compiler diagnostic was available."}`,
     );
   };
+  const selectDiagnostic = (path?: string | null) => {
+    if (!path || !selectTab("files")) return;
+    panel.setSourceFile(path);
+  };
 
   return <section
     ref={panelRef}
     className={`chat-artifact-panel${dialog ? " is-dialog" : " is-docked"}`}
     role={dialog ? "dialog" : "complementary"}
     aria-modal={dialog ? true : undefined}
-    aria-label={block.title}
+    aria-labelledby="latex-paper-title"
     data-testid="latex-paper-panel"
   >
     <header>
-      <div><span>Private paper</span><h2>{block.title}</h2><p>This paper is private to this chat. Source, figures, and PDFs are stored privately; AI-authored text needs your review.</p></div>
-      <button type="button" data-artifact-close aria-label={dialog ? "Back to conversation" : "Close paper"} onClick={close}><X /></button>
+      <div>
+        <span>Private paper</span>
+        <h2 id="latex-paper-title">{block.title}</h2>
+        <p className="chat-paper-status" role="status" aria-live="polite">
+          {source ? `Source v${source.version} · ${source.compile_status}` : "Preparing paper source"}
+          {outOfDate ? " · Preview out of date" : ""}
+        </p>
+        <p className="chat-paper-privacy-note">This paper is private to this chat. Source, figures, and PDFs are stored privately; AI-authored text needs your review.</p>
+      </div>
+      <div className="chat-artifact-header-actions">
+        <button type="button" aria-expanded={historyOpen} aria-controls="paper-version-history" onClick={() => { setHistoryCursor(null); setHistoryOpen(!historyOpen); }}>Version history</button>
+        <button type="button" data-artifact-close aria-label={dialog ? "Back to conversation" : "Close paper"} onClick={close}><X /></button>
+      </div>
     </header>
-    <nav aria-label="Paper views">
-      <button type="button" aria-pressed={panel.state.tab === "preview"} className={panel.state.tab === "preview" ? "active" : ""} onClick={() => panel.setTab("preview")}>Preview</button>
-      <button type="button" aria-pressed={panel.state.tab === "files"} className={panel.state.tab === "files" ? "active" : ""} onClick={() => panel.setTab("files")}>Files</button>
+    <nav aria-label="Paper views" role="tablist">
+      <button type="button" id="paper-preview-tab" role="tab" aria-selected={panel.state.tab === "preview"} aria-controls="paper-preview-panel" tabIndex={panel.state.tab === "preview" ? 0 : -1} className={panel.state.tab === "preview" ? "active" : ""} onClick={() => selectTab("preview")} onKeyDown={moveBetweenTabs}>Preview</button>
+      <button type="button" id="paper-files-tab" role="tab" aria-selected={panel.state.tab === "files"} aria-controls="paper-files-panel" tabIndex={panel.state.tab === "files" ? 0 : -1} className={panel.state.tab === "files" ? "active" : ""} onClick={() => selectTab("files")} onKeyDown={moveBetweenTabs}>Files</button>
     </nav>
-    <div className="chat-artifact-panel-body">
+    <div id={panel.state.tab === "preview" ? "paper-preview-panel" : "paper-files-panel"} role="tabpanel" aria-labelledby={panel.state.tab === "preview" ? "paper-preview-tab" : "paper-files-tab"} className="chat-artifact-panel-body">
       {panel.state.tab === "preview"
-        ? previewUrl
-          ? <iframe key={preview?.version_id} title={`Preview of ${block.title}`} src={previewUrl} className="h-full w-full border-0" />
-          : <p>Preview is compiling. The stored source is available in Files.</p>
+        ? descriptorQuery.isError
+          ? <div role="alert">Could not load paper details. <button type="button" onClick={() => void descriptorQuery.refetch()}>Retry paper details</button></div>
+          : previewUrl
+            ? <PdfViewer key={preview?.version_id} url={previewUrl} downloadUrl={pdfExportUrl(block.artifact_id!)} paperKey={`${block.artifact_id}:${preview?.version_id}`} paperTitle={block.title} paperHref="/chat" chrome="canvas" />
+            : !source
+              ? <p role="status">Paper source and compiled preview are not available yet.</p>
+              : source.compile_status === "failed"
+                ? <p role="alert">No compiled preview is available for this failed source version. Review the diagnostics or fix the paper in Files.</p>
+                : ["queued", "compiling"].includes(source.compile_status)
+                  ? <p role="status">Preview is compiling. The stored source is available in Files.</p>
+                  : <p role="alert">No compiled preview is available for this source version.</p>
         : <div className="chat-artifact-source-workspace">
             <nav aria-label="Paper source files">
               {textFiles.map((file) => <button type="button" key={file.path} aria-pressed={sourcePath === file.path} onClick={() => selectFile(file.path)}>{file.path}</button>)}
@@ -408,7 +472,7 @@ export const LatexPaperPanel: React.FC<{
               </div>}
             </div>
           </div>}
-      {historyOpen && <section className="chat-artifact-history" aria-label="Paper version history">
+      {historyOpen && <section id="paper-version-history" className="chat-artifact-history" aria-label="Paper version history">
         <h3>Version history</h3>
         {historyQuery.isLoading && <p>Loading history…</p>}
         {historyQuery.isError && <p role="alert">Paper history could not be loaded.</p>}
@@ -430,11 +494,10 @@ export const LatexPaperPanel: React.FC<{
     <footer>
       <div className="chat-artifact-metadata" aria-live="polite">
         {outOfDate && <strong>Out of date</strong>}
-        {source && <span>Source v{source.version} · {source.compile_status}</span>}
         {source?.compile_diagnostics?.map((diagnostic, index) => <button
           type="button"
           key={`${diagnostic.file ?? "global"}:${diagnostic.line ?? ""}:${index}`}
-          onClick={() => diagnostic.file && panel.setSourceFile(diagnostic.file)}
+          onClick={() => selectDiagnostic(diagnostic.file)}
           className="latex-compile-diagnostic"
         >{diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}: ` : ""}{diagnostic.message}</button>)}
         {editorError && <span role="alert">{editorError}</span>}
@@ -443,9 +506,7 @@ export const LatexPaperPanel: React.FC<{
       <div className="chat-artifact-actions">
         {source?.compile_status === "failed" && !source.repair_exhausted && <button type="button" onClick={askAiToFix}>Ask AI to fix</button>}
         {source?.compile_status === "failed" && source.repair_exhausted && <span role="status">AI repair attempts exhausted</span>}
-        <button type="button" onClick={() => { setHistoryCursor(null); setHistoryOpen(!historyOpen); }}>Version history</button>
         {panel.state.tab === "files" && canEdit && <button type="button" disabled={!draftIsDirty} onClick={() => saveMutation.mutate()}><Save />{saveMutation.isPending ? "Saving…" : "Save & Compile"}</button>}
-        {preview && <a href={pdfExportUrl(block.artifact_id!)} download><Download /> PDF</a>}
         {source && <a href={sourceZipExportUrl(block.artifact_id!, source.version_id)} download><FileCode2 /> Source ZIP</a>}
       </div>
     </footer>

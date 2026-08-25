@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { PanelIcon, PlusIcon, TrashIcon } from "./icons";
+import { canNavigateAwayFromArtifact } from "./useArtifactPanel";
 import { type ChatSession, groupSessions } from "@/lib/chatSessions";
 
 interface ChatSessionNavigationProps {
@@ -59,7 +60,7 @@ export function ChatSessionNavigation({
   return (
     <aside className={`chat-sidebar${open ? "" : " chat-sidebar-closed"}`}>
       <div className="chat-sidebar-top">
-        <button type="button" className="chat-new-chat" onClick={onNew}><PlusIcon /> New chat</button>
+        <button type="button" className="chat-new-chat" onClick={() => { if (canNavigateAwayFromArtifact()) onNew(); }}><PlusIcon /> New chat</button>
         <button type="button" className="icon-btn" onClick={onClose} title="Collapse sidebar"><PanelIcon /></button>
       </div>
       <nav className="chat-sessions" aria-label="Chat history">
@@ -75,9 +76,9 @@ export function ChatSessionNavigation({
             className={`chat-session${session.id === activeSessionId ? " chat-session-active" : ""}`}
             role="button"
             tabIndex={0}
-            onClick={() => onNavigate(session.id)}
+            onClick={() => { if (canNavigateAwayFromArtifact()) onNavigate(session.id); }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") onNavigate(session.id);
+              if (event.key === "Enter" && canNavigateAwayFromArtifact()) onNavigate(session.id);
               if (event.key === "F2") beginRename(session);
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
                 event.preventDefault();
@@ -122,7 +123,7 @@ export function ChatSessionNavigation({
               aria-label="Delete conversation"
               onClick={(event) => {
                 event.stopPropagation();
-                onDelete(session.id);
+                if (canNavigateAwayFromArtifact()) onDelete(session.id);
               }}
             ><TrashIcon /></button>
           </div>)}

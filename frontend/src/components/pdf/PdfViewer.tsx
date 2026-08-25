@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy, TextItem } from "pdfjs-dist/types/src/display/api";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -13,6 +13,7 @@ import type { PdfToolbarResources } from "./PdfToolbar";
 
 interface PdfViewerProps {
   url: string;
+  downloadUrl?: string;
   paperKey: string;
   paperTitle: string;
   paperHref: string;
@@ -24,6 +25,7 @@ interface PdfViewerProps {
   onPaperSelection?: (selection: PaperSelectionDraft) => void;
   onPaperSelectionError?: (message: string) => void;
   onPageChange?: (page: number) => void;
+  chrome?: "reader" | "canvas";
 }
 
 function pdfErrorMessage(error: Error): string {
@@ -100,8 +102,47 @@ function LazyPdfPage({
   </div>;
 }
 
+function CanvasPdfToolbar({
+  downloadUrl, page, pages, zoomPercent, onPage, onZoomIn, onZoomOut, onFitWidth,
+}: {
+  downloadUrl: string;
+  page: number;
+  pages: number;
+  zoomPercent: number;
+  onPage: (page: number) => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onFitWidth: () => void;
+}) {
+  const submitPage = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const next = Number(new FormData(event.currentTarget).get("page"));
+    if (Number.isInteger(next)) onPage(next);
+  };
+
+  return <div className="paper-pdf-toolbar" aria-label="Paper preview controls">
+    <div className="paper-pdf-toolbar-group">
+      <button type="button" onClick={() => onPage(page - 1)} disabled={page <= 1} aria-label="Previous page">Previous</button>
+      <form onSubmit={submitPage}>
+        <label className="sr-only" htmlFor="paper-pdf-current-page">Current page</label>
+        <input id="paper-pdf-current-page" name="page" type="number" min={1} max={pages || 1} defaultValue={page} key={page} aria-label={`Page ${page} of ${pages || "unknown"}`} />
+      </form>
+      <span role="status" aria-live="polite">Page {page} of {pages || "—"}</span>
+      <button type="button" onClick={() => onPage(page + 1)} disabled={!pages || page >= pages} aria-label="Next page">Next</button>
+    </div>
+    <div className="paper-pdf-toolbar-group">
+      <button type="button" onClick={onZoomOut} aria-label="Zoom out">−</button>
+      <output aria-live="polite">{zoomPercent}%</output>
+      <button type="button" onClick={onZoomIn} aria-label="Zoom in">+</button>
+      <button type="button" onClick={onFitWidth}>Fit to width</button>
+      <a href={downloadUrl} download>Download PDF</a>
+    </div>
+  </div>;
+}
+
 export function PdfViewer({
   url,
+  downloadUrl = url,
   paperKey,
   paperTitle,
   paperHref,
@@ -113,6 +154,7 @@ export function PdfViewer({
   onPaperSelection,
   onPaperSelectionError,
   onPageChange,
+  chrome = "reader",
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -139,6 +181,12 @@ export function PdfViewer({
   const [matches, setMatches] = useState<number[]>([]);
   const [activeMatch, setActiveMatch] = useState(0);
   const pageWidth = Math.max(240, Math.round(fitWidth * zoom));
+  // Canvas previews are private artifact endpoints. Public reader PDFs must keep
+  // their normal cross-origin fetch behavior.
+  const documentOptions = useMemo(
+    () => chrome === "canvas" ? { withCredentials: true } : undefined,
+    [chrome],
+  );
 
   usePdfSelection({
     enabled: selectionEnabled && Boolean(paperVersion),
@@ -362,7 +410,16 @@ export function PdfViewer({
   const pageNumbers = useMemo(() => Array.from({ length: pages }, (_, index) => index + 1), [pages]);
 
   return <div ref={rootRef} className="pdf-viewer">
-    <PdfToolbar
+    {chrome === "canvas" ? <CanvasPdfToolbar
+      downloadUrl={downloadUrl}
+      page={page}
+      pages={pages}
+      zoomPercent={Math.round(zoom * 100)}
+      onPage={jumpToPage}
+      onZoomIn={() => setCenteredZoom((value) => Math.min(3, value + 0.15))}
+      onZoomOut={() => setCenteredZoom((value) => Math.max(0.5, value - 0.15))}
+      onFitWidth={() => setCenteredZoom(() => 1)}
+    /> : <PdfToolbar
       paperTitle={paperTitle}
       paperHref={paperHref}
       resources={resources}
@@ -381,15 +438,16 @@ export function PdfViewer({
       onCloseSearch={closeSearch}
       onSearchQuery={setSearchQuery}
       onSearch={navigateMatch}
-    />
-    <div ref={scrollRef} className="pdf-scroll" role="region" aria-label="Paper PDF">
+    />}
+    <div ref={scrollRef} className="pdf-scroll" role="region" aria-label={chrome === "canvas" ? `${paperTitle} PDF preview` : "Paper PDF"}>
       {error ? <div className="pdf-error" role="alert">
         <p>{error}</p>
-        <div><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button> <a href={url} target="_blank" rel="noopener noreferrer">Open original PDF</a></div>
+        <div><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button> <a href={url} target="_blank" rel="noopener noreferrer">Open PDF</a></div>
       </div> : <Document
         key={`${paperKey}-${retry}`}
         file={url}
-        loading={<div className="pdf-loading" role="status">Loading paper…</div>}
+        options={documentOptions}
+        loading={<div className="pdf-loading" role="status">{chrome === "canvas" ? "Loading paper preview…" : "Loading paper…"}</div>}
         onLoadSuccess={(pdf) => {
           documentRef.current = pdf;
           setPages(pdf.numPages);
