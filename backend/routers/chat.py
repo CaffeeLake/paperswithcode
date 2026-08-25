@@ -29,22 +29,20 @@ from sqlalchemy.orm import Session
 from backend.chat_sandbox_worker.mcp_app_registry import WORKER_MCP_PROVIDERS
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
-from backend.models.api import (
-    ChatAvailabilityResponse,
-    ChatSandboxSpendResponse,
-    ChatWebSearchBudgetResponse,
-)
 from backend.models.chat import (
     ArchiveOldChatsResponse,
+    ChatAvailabilityResponse,
     ChatBrowserLatencyRequest,
     ChatFeedbackRequest,
     ChatMessageResponse,
     ChatRequest,
+    ChatSandboxSpendResponse,
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
     ChatShareDetail,
     ChatShareSummary,
+    ChatWebSearchBudgetResponse,
     CreateSessionRequest,
     UpdateSessionRequest,
     sse_event,

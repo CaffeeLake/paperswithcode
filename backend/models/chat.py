@@ -784,6 +784,101 @@ class UpdateSessionRequest(BaseModel):
         return self
 
 
+class ChatAvailabilityResponse(BaseModel):
+    status: Literal["available", "paused"]
+    reason: Literal["chat_temporarily_disabled"] | None = None
+    expected_recovery_at: datetime | None = None
+    paper_mentions_enabled: bool = False
+    web_search_available: bool = False
+    native_pdf_reader_enabled: bool = False
+    paper_reader_chat_enabled: bool = False
+    paper_reader_selection_enabled: bool = False
+
+
+class ChatWebSearchEventResponse(BaseModel):
+    id: str
+    type: str
+    error_class: str | None = None
+    created_at: datetime
+    details: dict[str, object]
+
+
+class ChatWebSearchBudgetResponse(BaseModel):
+    environment: str
+    billing_cycle: str
+    cycle_end_at: datetime
+    available: bool
+    warning_calls: int
+    hard_limit_calls: int
+    call_count: int
+    remaining_calls: int
+    success_count: int
+    failure_count: int
+    provider_cost_microusd: int
+    last_latency_ms: int | None = None
+    last_result_count: int | None = None
+    circuit_state: Literal["armed", "warning", "cooldown", "tripped"]
+    trip_reason: str | None = None
+    cooldown_until: datetime | None = None
+    last_provider_error_class: str | None = None
+    events: list[ChatWebSearchEventResponse]
+
+
+class ChatSandboxSpendEventResponse(BaseModel):
+    id: str
+    type: str
+    severity: str
+    reason: str | None = None
+    created_at: datetime
+    details: dict[str, object]
+
+
+class ChatSandboxDailySpendResponse(BaseModel):
+    date: str
+    blank_pool_microusd: int
+    assigned_microusd: int
+
+
+class ChatSandboxPriorCycleResponse(BaseModel):
+    billing_cycle: str
+    estimated_microusd: int
+    provider_floor_microusd: int
+    effective_microusd: int
+
+
+class ChatSandboxSpendResponse(BaseModel):
+    environment: str
+    provider_mode: Literal["starter_workspace", "team_environments"]
+    billing_cycle: str
+    cycle_end_at: datetime
+    circuit_state: Literal["armed", "warning", "tripped"]
+    trip_reason: str | None = None
+    tripped_at: datetime | None = None
+    estimated_microusd: int
+    provider_floor_microusd: int
+    effective_microusd: int
+    warning_microusd: int
+    application_cap_microusd: int
+    environment_cap_microusd: int | None = None
+    workspace_cap_microusd: int
+    remaining_microusd: int
+    outstanding_reservation_microusd: int
+    last_metered_at: datetime | None = None
+    last_reconciled_at: datetime | None = None
+    last_reconciliation_attempt_at: datetime | None = None
+    next_reconciliation_at: datetime | None = None
+    reconciliation_state: Literal["fresh", "stale", "unavailable"]
+    live_count: int
+    termination_uncertain_count: int
+    live_states: dict[str, int]
+    oldest_live_at: datetime | None = None
+    burn_rate_microusd_per_hour: int | None = None
+    projected_cap_hit_at: datetime | None = None
+    prior_cycle: ChatSandboxPriorCycleResponse | None = None
+    daily_spend: list[ChatSandboxDailySpendResponse]
+    events: list[ChatSandboxSpendEventResponse]
+
+
 class _StrictEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

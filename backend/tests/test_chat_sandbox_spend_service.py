@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.config import Settings
 from backend.models.api import ChatSandboxSpendResponse
+from backend.models.chat import ChatSandboxSpendResponse as CanonicalSpendResponse
 from backend.models.database import (
     ChatSandboxBudgetState,
     ChatSandboxCircuitEvent,
@@ -947,3 +948,7 @@ def test_billing_cycle_is_utc_and_rejects_naive_time():
     )
     with pytest.raises(ValueError):
         billing_cycle(datetime(2026, 8, 1))  # noqa: DTZ001 - verifies rejection
+
+
+def test_legacy_spend_schema_import_reexports_canonical_chat_contract():
+    assert ChatSandboxSpendResponse is CanonicalSpendResponse
