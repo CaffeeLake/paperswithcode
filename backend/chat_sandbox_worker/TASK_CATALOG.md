@@ -34,8 +34,8 @@ The goal is to split up those tasks in the future.
 - `world-models` — World Models
 - `robotics` — Robotics
 - `embedding-models` — Embedding models
-- `remote-sensing` — Remote Sensing
 - `pseudo-labelling` — Pseudo Labelling
+- `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
 - `ocr` — OCR
 
