@@ -3267,10 +3267,12 @@ def test_chat_worker_exposes_parameter_filtered_benchmarks():
         Path(__file__).resolve().parents[1] / "chat_sandbox_worker" / "image.py"
     ).read_text()
 
-    assert PWC_CLI_VERSION == "0.1.17"
+    assert PWC_CLI_VERSION == "0.3.0"
+    assert "--author AUTHOR" in skill
     assert "--max-parameters SIZE" in skill
     assert "at or below an inclusive parameter" in skill
     assert "pwc benchmark --help | grep -F -- '--max-parameters'" in image_source
+    assert "pwc paper list --help" in image_source
 
 
 def test_control_websocket_requires_verified_worker_generation(monkeypatch):

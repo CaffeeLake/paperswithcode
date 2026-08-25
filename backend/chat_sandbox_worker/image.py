@@ -139,6 +139,7 @@ image = (
         f"pwc version | grep -F 'pwc {PWC_CLI_VERSION}'",
         "pwc --help >/dev/null",
         "pwc paper --help >/dev/null",
+        "pwc paper list --help | grep -F -- '--author' >/dev/null",
         "pwc benchmark --help >/dev/null",
         "pwc benchmark --help | grep -F -- '--max-parameters' >/dev/null",
         "pwc benchmark list --help >/dev/null",
