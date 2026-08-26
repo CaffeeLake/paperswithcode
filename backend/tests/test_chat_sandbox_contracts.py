@@ -1528,6 +1528,70 @@ def test_broker_routes_paper_evaluations_to_catalog(monkeypatch):
     }
 
 
+def test_broker_routes_parameter_filtered_benchmark_evaluations_to_catalog(
+    monkeypatch,
+):
+    broker = _import_broker(monkeypatch)
+
+    class Response:
+        status = 200
+
+        def read(self, _size):
+            return b'{"result":{"count":0,"results":[]}}'
+
+    class Connection:
+        requests: list[tuple[str, str, bytes]] = []
+
+        def request(self, method, request_path, body, headers):
+            del headers
+            self.requests.append((method, request_path, body))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return
+
+    class Request:
+        path = (
+            "/api/v1/evaluations/?page=1&page_size=100&dataset_id=124"
+            "&ordering=best_rank&max_parameters_exclusive=1000000001"
+        )
+        wfile = BytesIO()
+        status = None
+
+        def _connection(self):
+            return Connection()
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, _name, _value):
+            return
+
+        def end_headers(self):
+            return
+
+        def send_error(self, status):
+            self.status = status
+
+    request = Request()
+    broker.Handler.do_GET(request)
+
+    assert request.status == 200
+    payload = json.loads(Connection.requests[-1][2])
+    assert payload == {
+        "operation": "benchmark_evaluations",
+        "arguments": {
+            "dataset": "124",
+            "page": "1",
+            "page_size": "100",
+            "is_open": None,
+            "max_parameters_exclusive": "1000000001",
+        },
+    }
+
+
 def test_proxy_routes_only_claude_model_posts_to_gateway(monkeypatch):
     broker = _import_broker(monkeypatch)
 
@@ -2053,6 +2117,45 @@ def test_gateway_paper_evaluations_uses_bounded_service_arguments(monkeypatch):
             "paper_id": 42,
             "order_by": "benchmark_popularity",
             "order_dir": "desc",
+        }
+    ]
+
+
+def test_gateway_benchmark_evaluations_forwards_parameter_bound(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_evaluations(self, **options):
+            calls.append(options)
+            return {"count": 0, "results": []}
+
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.EvaluationService", Service
+    )
+
+    result = ChatGatewayService("db", SimpleNamespace()).catalog(
+        "benchmark_evaluations",
+        {
+            "dataset": "124",
+            "page": "1",
+            "page_size": "100",
+            "max_parameters_exclusive": "1000000001",
+        },
+    )
+
+    assert result == {"count": 0, "results": []}
+    assert calls == [
+        {
+            "page": 1,
+            "page_size": 100,
+            "dataset_id": 124,
+            "is_open": None,
+            "max_parameters_exclusive": 1_000_000_001,
+            "order_by": "best_rank",
+            "order_dir": "asc",
         }
     ]
 
