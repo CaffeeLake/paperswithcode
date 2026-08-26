@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -20,12 +21,26 @@ from backend.services.chat_turn_job_repository import (
     TurnLeaseClaim,
 )
 from backend.services.chat_sandbox_worker_transport import WorkerCancelStatus
+from backend.services.chat_sandbox_provider import SandboxError
+from backend.services.chat_turn_cancellation_coordinator import (
+    ChatTurnCancellationCoordinator,
+)
+from backend.services.chat_turn_admission_coordinator import (
+    ChatTurnAdmissionCoordinator,
+)
+from backend.services.chat_turn_job_repository import ExpiryProjectionMismatch
 
 
 def _enabled_settings():
     return get_settings().model_copy(
         update={"chat_durable_turn_dispatch_enabled": True}
     )
+
+
+async def _cancel_with(db, manager, sessions, session_id):
+    coordinator = ChatTurnCancellationCoordinator(db, _enabled_settings(), manager)
+    coordinator.sessions = sessions
+    await coordinator.cancel(ChatOwner("owner-1", "owner"), session_id)
 
 
 def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
@@ -56,20 +71,8 @@ def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
             ordering.append("signal")
             return WorkerCancelStatus.COMPLETED
 
-    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
-    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
     db = DB()
-
-    response = asyncio.run(
-        chat_router.cancel_active_turn(
-            session_id,
-            user={"hf_user_id": "owner-1", "username": "owner"},
-            db=db,
-            settings=_enabled_settings(),
-        )
-    )
-
-    assert response.status_code == 204
+    asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
     assert ordering == ["cancelling", "commit", "signal"]
 
 
@@ -105,18 +108,8 @@ def test_enabled_missing_cancel_control_terminalizes_projection(monkeypatch):
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
 
-    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
-    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
     db = DB()
-
-    asyncio.run(
-        chat_router.cancel_active_turn(
-            session_id,
-            user={"hf_user_id": "owner-1", "username": "owner"},
-            db=db,
-            settings=_enabled_settings(),
-        )
-    )
+    asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
 
     assert calls == [
         "commit",
@@ -156,21 +149,10 @@ def test_enabled_failed_termination_still_terminalizes_projection(monkeypatch):
 
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
-            raise RuntimeError("termination failed")
+            raise SandboxError("termination_failed", "termination failed")
 
-    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
-    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
-
-    response = asyncio.run(
-        chat_router.cancel_active_turn(
-            session_id,
-            user={"hf_user_id": "owner-1", "username": "owner"},
-            db=DB(),
-            settings=_enabled_settings(),
-        )
-    )
-
-    assert response.status_code == 204
+    db = DB()
+    asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
     assert calls == [
         "commit",
         "cancel",
@@ -213,19 +195,8 @@ def test_enabled_uncertain_cancel_status_terminalizes_once(monkeypatch, status):
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
 
-    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
-    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
-
-    response = asyncio.run(
-        chat_router.cancel_active_turn(
-            session_id,
-            user={"hf_user_id": "owner-1", "username": "owner"},
-            db=DB(),
-            settings=_enabled_settings(),
-        )
-    )
-
-    assert response.status_code == 204
+    db = DB()
+    asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
     assert calls == ["commit", status.value, "terminate", "interrupted", "commit"]
 
 
@@ -254,25 +225,246 @@ def test_enabled_cancel_exception_terminates_and_terminalizes_once(monkeypatch):
     class Manager:
         async def cancel_status(self, *_args):
             calls.append("cancel")
-            raise RuntimeError("cancel failed")
+            raise SandboxError("cancel_failed", "cancel failed")
 
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
 
-    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
-    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
+    db = DB()
+    asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
+    assert calls == ["commit", "cancel", "terminate", "interrupted", "commit"]
+
+
+def test_unexpected_cancel_error_propagates_without_terminal_mislabel():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+    class Service:
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id)
+
+        def interrupt_cancel_without_control(self, *_args):
+            calls.append("interrupted")
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            calls.append("cancel")
+            raise RuntimeError("programming error")
+
+        async def terminate(self, *_args, **_kwargs):
+            calls.append("terminate")
+
+    db = DB()
+    with pytest.raises(RuntimeError, match="programming error"):
+        asyncio.run(_cancel_with(db, Manager(), Service(), session_id))
+    assert calls == ["commit", "cancel"]
+
+
+def test_unexpected_termination_error_propagates_without_terminal_mislabel():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+    class Service:
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id)
+
+        def interrupt_cancel_without_control(self, *_args):
+            calls.append("interrupted")
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            calls.append("cancel")
+            return WorkerCancelStatus.NOT_FOUND
+
+        async def terminate(self, *_args, **_kwargs):
+            calls.append("terminate")
+            raise RuntimeError("programming error")
+
+    db = DB()
+    with pytest.raises(RuntimeError, match="programming error"):
+        asyncio.run(_cancel_with(db, Manager(), Service(), session_id))
+    assert calls == ["commit", "cancel", "terminate"]
+
+
+def test_enabled_cancel_route_delegates_to_coordinator_and_preserves_204(monkeypatch):
+    session_id = uuid.uuid4()
+    calls = []
+
+    class Coordinator:
+        def __init__(self, db, settings, manager):
+            calls.append((db, settings, manager))
+
+        async def cancel(self, owner, requested_session_id):
+            calls.append((owner.hf_user_id, requested_session_id))
+
+    manager = object()
+    db = SimpleNamespace()
+    settings = _enabled_settings()
+    monkeypatch.setattr(chat_router, "ChatTurnCancellationCoordinator", Coordinator)
+    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: manager)
 
     response = asyncio.run(
         chat_router.cancel_active_turn(
             session_id,
             user={"hf_user_id": "owner-1", "username": "owner"},
-            db=DB(),
-            settings=_enabled_settings(),
+            db=db,
+            settings=settings,
         )
     )
 
     assert response.status_code == 204
-    assert calls == ["commit", "cancel", "terminate", "interrupted", "commit"]
+    assert calls == [(db, settings, manager), ("owner-1", session_id)]
+
+
+def test_admission_reconciles_globally_expired_claim_before_capacity_count():
+    now = datetime.now(UTC)
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    job = SimpleNamespace(
+        turn_id=turn_id,
+        chat_session_id=session_id,
+        hf_user_id="other-owner",
+        state="running",
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        hf_user_id="other-owner",
+        active_turn_id=turn_id,
+        active_turn_expires_at=now + timedelta(seconds=180),
+    )
+    message = SimpleNamespace(status="generating", error_code=None)
+    ordering: list[str] = []
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class DB:
+        def __init__(self):
+            self.results = iter((Result(session), Result(message)))
+
+        def execute(self, _query):
+            return next(self.results)
+
+    class Repository:
+        def lock_admission_authority(self, _db, *, hf_user_id):
+            assert hf_user_id == "new-owner"
+            ordering.append("locks")
+
+        def load_expired_claims(self, _db, *, now, hf_user_id, limit):
+            assert hf_user_id == "new-owner"
+            assert limit == _enabled_settings().chat_max_concurrency
+            ordering.append("expired")
+            return (job,)
+
+        def load_by_turn(self, _db, requested_turn_id, *, lock):
+            assert requested_turn_id == job.turn_id
+            assert lock is True
+            return job
+
+        def is_expired_claim(self, loaded_job, *, now):
+            assert loaded_job is job
+            return True
+
+        def interrupt_exact_expired(self, _db, *, turn_id, now):
+            assert turn_id == job.turn_id
+            job.state = "interrupted"
+            ordering.append("interrupted")
+
+        def preflight_admission(self, _db, **kwargs):
+            assert kwargs["authority_locked"] is True
+            assert job.state == "interrupted"
+            assert session.active_turn_id is None
+            assert message.status == "interrupted"
+            ordering.append("count")
+            return SimpleNamespace(existing_job=None)
+
+    coordinator = ChatTurnAdmissionCoordinator(
+        DB(), _enabled_settings(), repository=Repository()
+    )
+
+    coordinator.preflight(
+        hf_user_id="new-owner",
+        request_id="new-request",
+        requested_session_id=None,
+    )
+
+    assert ordering == ["locks", "expired", "interrupted", "count"]
+    assert session.active_turn_expires_at is None
+    assert message.error_code == "lease_expired"
+
+
+def test_expired_claim_projection_mismatch_fails_before_mutation():
+    now = datetime.now(UTC)
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    job = SimpleNamespace(
+        turn_id=turn_id,
+        chat_session_id=session_id,
+        hf_user_id="owner-1",
+        state="running",
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        hf_user_id="owner-1",
+        active_turn_id=uuid.uuid4(),
+        active_turn_expires_at=now + timedelta(seconds=180),
+    )
+    message = SimpleNamespace(status="generating", error_code=None)
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class DB:
+        def __init__(self):
+            self.results = iter((Result(session), Result(message)))
+
+        def execute(self, _query):
+            return next(self.results)
+
+    class Repository:
+        def load_expired_claims(self, *_args, **_kwargs):
+            return (job,)
+
+        def load_by_turn(self, _db, requested_turn_id, *, lock):
+            assert requested_turn_id == job.turn_id
+            assert lock is True
+            return job
+
+        def is_expired_claim(self, loaded_job, *, now):
+            assert loaded_job is job
+            return True
+
+        def interrupt_exact_expired(self, *_args, **_kwargs):
+            pytest.fail("durable terminal mutated before projection validation")
+
+    coordinator = ChatTurnAdmissionCoordinator(
+        DB(), _enabled_settings(), repository=Repository()
+    )
+
+    with pytest.raises(ExpiryProjectionMismatch):
+        coordinator._reconcile_expired_claims(hf_user_id="owner-1", now=now)
+
+    assert job.state == "running"
+    assert message.status == "generating"
+    assert session.active_turn_id != turn_id
 
 
 def test_false_mode_cancel_keeps_old_path_without_durable_method(monkeypatch):

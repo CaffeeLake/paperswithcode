@@ -754,6 +754,92 @@ def test_exact_expiry_refuses_live_or_incompatible_terminal_job(db):
         )
 
 
+def test_crashed_worker_lease_is_visible_before_legacy_projection_expires(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:crashed",
+        worker_generation=41,
+        now=NOW,
+        lease_seconds=30,
+    )
+    session.active_turn_id = job.turn_id
+    session.active_turn_expires_at = NOW + timedelta(seconds=210)
+    db.flush()
+
+    expired = repository.load_expired_claims(
+        db,
+        now=NOW + timedelta(seconds=30),
+        hf_user_id="new-owner",
+        limit=100,
+    )
+
+    assert expired == (job,)
+    assert session.active_turn_expires_at > NOW + timedelta(seconds=30)
+
+
+def test_expired_claim_does_not_consume_live_capacity_at_lease_boundary(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    crashed_session = _session(db, owner="crashed-owner")
+    job = _admit(repository, db, crashed_session, capacity=1).job
+    repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:crashed",
+        worker_generation=42,
+        now=NOW,
+        lease_seconds=30,
+    )
+    new_session = _session(db, owner="new-owner")
+
+    preflight = repository.preflight_admission(
+        db,
+        hf_user_id=new_session.hf_user_id,
+        request_id="new-request",
+        chat_session_id=new_session.id,
+        emergency_capacity=1,
+        now=NOW + timedelta(seconds=30),
+    )
+
+    assert preflight.existing_job is None
+
+
+def test_expired_claim_batch_prioritizes_request_owner(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    other_session = _session(db, owner="other-owner")
+    owner_session = _session(db, owner="request-owner")
+    other = _admit(repository, db, other_session, capacity=2).job
+    owner = _admit(repository, db, owner_session, capacity=2).job
+    repository.claim(
+        db,
+        turn_id=other.turn_id,
+        worker_id="local-runner:other",
+        worker_generation=1,
+        now=NOW,
+        lease_seconds=10,
+    )
+    repository.claim(
+        db,
+        turn_id=owner.turn_id,
+        worker_id="local-runner:owner",
+        worker_generation=1,
+        now=NOW,
+        lease_seconds=20,
+    )
+
+    expired = repository.load_expired_claims(
+        db,
+        now=NOW + timedelta(seconds=30),
+        hf_user_id="request-owner",
+        limit=1,
+    )
+
+    assert expired == (owner,)
+
+
 def test_stale_session_cannot_replace_a_newer_committed_claim(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'stale-claim.db'}")
     ChatSession.__table__.create(engine)

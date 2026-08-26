@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
-from backend.models.database import ChatTurnJob
+from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnJob
+from backend.services.chat_edit_service import PREPARING_STATUS, ChatEditService
 from backend.services.chat_turn_job_repository import (
     ChatTurnJobRepository,
+    ExpiryProjectionMismatch,
     IdempotencyMismatch,
     TurnAdmissionPreflight,
 )
@@ -46,12 +49,17 @@ class ChatTurnAdmissionCoordinator:
         request_id: str,
         requested_session_id: uuid.UUID | None,
     ) -> DurableAdmissionPreflight:
+        now = datetime.now(UTC)
+        self.repository.lock_admission_authority(self.db, hf_user_id=hf_user_id)
+        self._reconcile_expired_claims(hf_user_id=hf_user_id, now=now)
         result = self.repository.preflight_admission(
             self.db,
             hf_user_id=hf_user_id,
             request_id=request_id,
             chat_session_id=requested_session_id,
             emergency_capacity=self.settings.chat_max_concurrency,
+            authority_locked=True,
+            now=now,
         )
         return DurableAdmissionPreflight(
             request_id=request_id,
@@ -59,6 +67,70 @@ class ChatTurnAdmissionCoordinator:
             existing_job=result.existing_job,
             repository_preflight=result,
         )
+
+    def _reconcile_expired_claims(self, *, hf_user_id: str, now: datetime) -> None:
+        """Atomically repair bounded durable and legacy expiry projections."""
+        jobs = self.repository.load_expired_claims(
+            self.db,
+            now=now,
+            hf_user_id=hf_user_id,
+            limit=min(self.settings.chat_max_concurrency, 100),
+        )
+        edits = ChatEditService(self.db)
+        for candidate in jobs:
+            session = self.db.execute(
+                select(ChatSession)
+                .where(ChatSession.id == candidate.chat_session_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            job = self.repository.load_by_turn(self.db, candidate.turn_id, lock=True)
+            if (
+                session is None
+                or job is None
+                or job.chat_session_id != candidate.chat_session_id
+                or job.hf_user_id != candidate.hf_user_id
+            ):
+                raise ExpiryProjectionMismatch(
+                    "Expired durable turn projection mismatches"
+                )
+            if not self.repository.is_expired_claim(job, now=now):
+                if (
+                    job.state in ("completed", "failed", "interrupted")
+                    and session.active_turn_id == job.turn_id
+                ):
+                    raise ExpiryProjectionMismatch(
+                        "Terminal durable turn projection remains active"
+                    )
+                continue
+            message = self.db.execute(
+                select(ChatMessageRecord)
+                .where(
+                    ChatMessageRecord.session_id == job.chat_session_id,
+                    ChatMessageRecord.turn_id == job.turn_id,
+                    ChatMessageRecord.role == "user",
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if (
+                session.hf_user_id != job.hf_user_id
+                or session.active_turn_id != job.turn_id
+                or message is None
+                or message.status not in ("generating", PREPARING_STATUS)
+            ):
+                raise ExpiryProjectionMismatch(
+                    "Expired durable turn projection mismatches"
+                )
+            self.repository.interrupt_exact_expired(
+                self.db, turn_id=job.turn_id, now=now
+            )
+            if message.status == PREPARING_STATUS:
+                edits.expire_preparation(session, message)
+            message.status = "interrupted"
+            message.error_code = "lease_expired"
+            session.active_turn_id = None
+            session.active_turn_expires_at = None
 
     def admit(
         self,

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, SessionTransaction
 
 from backend.models.database import ChatTurnJob
@@ -59,6 +59,10 @@ class StaleTurnClaim(TurnJobError):
 
 class InvalidTurnTransition(TurnJobError):
     """A claimed turn requested an invalid state transition."""
+
+
+class ExpiryProjectionMismatch(TurnJobError):
+    """An expired durable turn disagrees with its legacy projection."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +128,8 @@ class ChatTurnJobRepository:
         chat_session_id: uuid.UUID | None,
         emergency_capacity: int,
         turn_id: uuid.UUID | None = None,
+        authority_locked: bool = False,
+        now: datetime | None = None,
     ) -> TurnAdmissionPreflight:
         """Lock and decide admission before any session or message is written."""
         if (
@@ -134,8 +140,11 @@ class ChatTurnJobRepository:
             or emergency_capacity <= 0
         ):
             raise ValueError("Turn admission preflight is invalid")
-        self._advisory_locker(db, f"chat-user:{hf_user_id}")
-        self._advisory_locker(db, "chat-global-active-turns")
+        if not authority_locked:
+            self.lock_admission_authority(db, hf_user_id=hf_user_id)
+        now = now or datetime.now(UTC)
+        if now.tzinfo is None:
+            raise ValueError("Turn admission timestamp is invalid")
 
         if turn_id is None:
             matches = tuple(
@@ -186,6 +195,10 @@ class ChatTurnJobRepository:
             .where(
                 ChatTurnJob.hf_user_id == hf_user_id,
                 ChatTurnJob.state.in_(NONTERMINAL_STATES),
+                or_(
+                    ChatTurnJob.state == "admitted",
+                    ChatTurnJob.lease_expires_at > now,
+                ),
             )
         )
         if owner_active:
@@ -193,7 +206,13 @@ class ChatTurnJobRepository:
         active_total = db.scalar(
             select(func.count())
             .select_from(ChatTurnJob)
-            .where(ChatTurnJob.state.in_(NONTERMINAL_STATES))
+            .where(
+                ChatTurnJob.state.in_(NONTERMINAL_STATES),
+                or_(
+                    ChatTurnJob.state == "admitted",
+                    ChatTurnJob.lease_expires_at > now,
+                ),
+            )
         )
         if (active_total or 0) >= emergency_capacity:
             raise ChatOverload("Emergency chat capacity is full")
@@ -206,6 +225,49 @@ class ChatTurnJobRepository:
             session=db,
             transaction=self._active_transaction(db),
         )
+
+    def lock_admission_authority(self, db: Session, *, hf_user_id: str) -> None:
+        """Acquire user then global admission authority for the transaction."""
+        self._advisory_locker(db, f"chat-user:{hf_user_id}")
+        self._advisory_locker(db, "chat-global-active-turns")
+
+    def load_expired_claims(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        hf_user_id: str,
+        limit: int,
+    ) -> tuple[ChatTurnJob, ...]:
+        if (
+            now.tzinfo is None
+            or not hf_user_id
+            or len(hf_user_id) > 255
+            or limit <= 0
+            or limit > 100
+        ):
+            raise ValueError("Expired turn reconciliation bound is invalid")
+        return tuple(
+            db.execute(
+                select(ChatTurnJob)
+                .where(
+                    ChatTurnJob.state.in_(_CLAIMED_STATES),
+                    ChatTurnJob.lease_expires_at <= now,
+                )
+                .order_by(
+                    case((ChatTurnJob.hf_user_id == hf_user_id, 0), else_=1),
+                    ChatTurnJob.lease_expires_at,
+                    ChatTurnJob.turn_id,
+                )
+                .limit(limit)
+                .execution_options(populate_existing=True)
+            ).scalars()
+        )
+
+    def is_expired_claim(self, job: ChatTurnJob, *, now: datetime) -> bool:
+        if now.tzinfo is None:
+            raise ValueError("Expiry timestamp is invalid")
+        return job.state in _CLAIMED_STATES and self._lease_expired(job, now)
 
     def admit(
         self,
@@ -241,6 +303,7 @@ class ChatTurnJobRepository:
             chat_session_id=chat_session_id,
             emergency_capacity=emergency_capacity,
             turn_id=turn_id,
+            now=now,
         )
 
         return self.admit_preflighted(
