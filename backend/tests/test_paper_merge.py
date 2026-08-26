@@ -116,8 +116,9 @@ def test_merge_hf_artifacts_preserves_arrays_and_normalized_links(monkeypatch):
     assert arxiv_paper.hf_datasets == ["https://huggingface.co/datasets/org/data"]
     assert arxiv_paper.hf_spaces == ["https://huggingface.co/spaces/org/demo"]
     assert arxiv_paper.hf_artifacts_scanned_at is None
-    assert moved_link.paper_id == 20
-    db.delete.assert_called_once_with(duplicate_link)
+    assert moved_link.paper_id == 10
+    transfer_sql = str(db.execute.call_args_list[0].args[0])
+    assert "ON CONFLICT (paper_id, hf_artifact_id) DO NOTHING" in transfer_sql
     sync.assert_called_once_with(
         db,
         20,

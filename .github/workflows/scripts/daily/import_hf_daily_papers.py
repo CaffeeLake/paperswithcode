@@ -185,6 +185,9 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             self.logger.debug(
                 f"Paper {arxiv_id} already exists; reconciling organization link"
             )
+            self._merge_external_duplicate(
+                arxiv_id, existing["id"], (paper_info.get("title") or "").strip()
+            )
             self._link_organizations(
                 existing["id"],
                 paper_data.get("organization") or paper_info.get("organization"),
@@ -207,31 +210,7 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.tag_paper_with_tasks(paper_id, title, abstract)
         self.tag_paper_with_methods(paper_id, title, abstract)
 
-        session = db_manager.session_local()
-        try:
-            external_match = find_external_paper_for_title(session, title)
-            if external_match is not None:
-                stats = merge_external_paper_into_arxiv(
-                    session, external_match.id, paper_id
-                )
-                session.commit()
-                self.logger.info(
-                    "Merged external paper %s into new ArXiv row %s (%s): %s",
-                    external_match.id,
-                    paper_id,
-                    arxiv_id,
-                    stats,
-                )
-        except Exception as exc:
-            session.rollback()
-            self.logger.error(
-                "Failed to merge external duplicate for %s into paper %s: %s",
-                arxiv_id,
-                paper_id,
-                exc,
-            )
-        finally:
-            session.close()
+        self._merge_external_duplicate(arxiv_id, paper_id, title)
 
         github_repo, project_page = asyncio.run(self.fetch_paper_urls_legacy(arxiv_id))
         if github_repo:
@@ -243,6 +222,38 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             paper_id,
             paper_data.get("organization") or paper_info.get("organization"),
         )
+
+    def _merge_external_duplicate(
+        self, arxiv_id: str, paper_id: int, title: str
+    ) -> None:
+        if not title:
+            return
+        session = db_manager.session_local()
+        try:
+            external_match = find_external_paper_for_title(session, title)
+            if external_match is not None:
+                stats = merge_external_paper_into_arxiv(
+                    session, external_match.id, paper_id
+                )
+                session.commit()
+                self.logger.info(
+                    "Merged external paper %s into ArXiv row %s (%s): %s",
+                    external_match.id,
+                    paper_id,
+                    arxiv_id,
+                    stats,
+                )
+        except Exception as exc:
+            self.error_count += 1
+            session.rollback()
+            self.logger.error(
+                "Failed to merge external duplicate for %s into paper %s: %s",
+                arxiv_id,
+                paper_id,
+                exc,
+            )
+        finally:
+            session.close()
 
     def _link_organizations(self, paper_id: int, payload) -> None:
         if not payload:

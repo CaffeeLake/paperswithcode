@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import aiohttp
@@ -144,3 +145,49 @@ def test_later_page_network_failure_raises_instead_of_returning_partial_cohort(
         _fetch(job)
 
     job.logger.error.assert_called_once()
+
+
+def test_existing_paper_retries_external_duplicate_merge(monkeypatch):
+    job = HuggingFaceDailyPapersJob.__new__(HuggingFaceDailyPapersJob)
+    job.logger = MagicMock()
+    job.get_paper_by_arxiv_id = MagicMock(return_value={"id": 109717})
+    job._link_organizations = MagicMock()
+    session = MagicMock()
+    external = SimpleNamespace(id=109693)
+    monkeypatch.setattr(
+        importer_module, "db_manager", SimpleNamespace(session_local=lambda: session)
+    )
+    monkeypatch.setattr(
+        importer_module,
+        "find_external_paper_for_title",
+        MagicMock(return_value=external),
+    )
+    merge = MagicMock(return_value={"hf_artifacts_merged": 3})
+    monkeypatch.setattr(importer_module, "merge_external_paper_into_arxiv", merge)
+
+    job.process_paper({"paper": {"id": "2608.24053", "title": "Example"}})
+
+    merge.assert_called_once_with(session, 109693, 109717)
+    session.commit.assert_called_once_with()
+
+
+def test_external_duplicate_merge_failure_counts_as_import_error(monkeypatch):
+    job = HuggingFaceDailyPapersJob.__new__(HuggingFaceDailyPapersJob)
+    job.logger = MagicMock()
+    job.get_paper_by_arxiv_id = MagicMock(return_value={"id": 109717})
+    job._link_organizations = MagicMock()
+    job.error_count = 0
+    session = MagicMock()
+    monkeypatch.setattr(
+        importer_module, "db_manager", SimpleNamespace(session_local=lambda: session)
+    )
+    monkeypatch.setattr(
+        importer_module,
+        "find_external_paper_for_title",
+        MagicMock(side_effect=RuntimeError("duplicate")),
+    )
+
+    job.process_paper({"paper": {"id": "2608.24053", "title": "Example"}})
+
+    assert job.error_count == 1
+    session.rollback.assert_called_once_with()

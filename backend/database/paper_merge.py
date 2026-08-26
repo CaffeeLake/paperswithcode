@@ -133,12 +133,32 @@ def _merge_hf_artifacts(
     for link in (
         db.query(PaperHfArtifact).filter(PaperHfArtifact.paper_id == external.id).all()
     ):
-        if link.hf_artifact_id in arxiv_links:
-            db.delete(link)
+        artifact_id = link.hf_artifact_id
+        db.execute(
+            text(
+                """
+                INSERT INTO paper_hf_artifacts
+                    (paper_id, hf_artifact_id, created_at)
+                VALUES (:paper_id, :artifact_id, NOW())
+                ON CONFLICT (paper_id, hf_artifact_id) DO NOTHING
+                """
+            ),
+            {"paper_id": arxiv_paper.id, "artifact_id": artifact_id},
+        )
+        db.execute(
+            text(
+                """
+                DELETE FROM paper_hf_artifacts
+                WHERE paper_id = :external_id
+                  AND hf_artifact_id = :artifact_id
+                """
+            ),
+            {"external_id": external.id, "artifact_id": artifact_id},
+        )
+        if artifact_id in arxiv_links:
             stats["hf_artifacts_merged"] += 1
         else:
-            link.paper_id = arxiv_paper.id
-            arxiv_links[link.hf_artifact_id] = link
+            arxiv_links[artifact_id] = link
             stats["hf_artifacts_moved"] += 1
 
     synced = sync_explicit_hf_artifact_links(
