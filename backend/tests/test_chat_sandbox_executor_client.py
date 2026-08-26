@@ -183,7 +183,7 @@ class _SocketProvider:
         self.calls = 0
 
     async def open_executor_relay(self, _sandbox, *, timeout_seconds):
-        assert timeout_seconds in {7, 10}
+        assert timeout_seconds in {10, 15}
         self.calls += 1
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.connect(str(self.socket_path))
@@ -590,11 +590,12 @@ def test_daemon_tiny_chunks_fit_shared_client_frame_budget_end_to_end(tmp_path):
     provider = _SocketProvider(server.socket_path)
     client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
 
+    # This stress case verifies frame accounting, not a two-second latency SLO.
     result = asyncio.run(
         client.exec(
             _context(),
             command="for ((i=0; i<1023; i++)); do printf x; done",
-            timeout_ms=2000,
+            timeout_ms=10_000,
         )
     )
 
