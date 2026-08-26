@@ -1091,6 +1091,80 @@ def test_callback_applies_resolution_and_records_job_result():
     assert refreshed.mutation_result["status"] == "rejected"
 
 
+@pytest.mark.parametrize(
+    ("paper_source", "thumbnail_url", "expected_thumbnail_status"),
+    [
+        ("external", None, "queued"),
+        ("arxiv", None, None),
+        ("external", "https://example.com/thumbnail.jpg", None),
+    ],
+)
+def test_callback_atomically_queues_thumbnail_for_external_resolution(
+    monkeypatch, paper_source, thumbnail_url, expected_thumbnail_status
+):
+    db = _resolution_session()
+    paper = Paper(
+        title="Official Model Release",
+        source=paper_source,
+        source_url="https://example.com/model-release",
+        arxiv_id="2608.12345" if paper_source == "arxiv" else None,
+        thumbnail_url=thumbnail_url,
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="org/model",
+        author="org",
+        readme_sha="1" * 64,
+        status="resolving",
+    )
+    db.add_all([paper, candidate])
+    db.flush()
+    row = PaperCurationJob(
+        id=uuid.uuid4(),
+        kind="resolve-model-paper",
+        candidate_id=candidate.id,
+        requested_by="hf-trending-cron",
+        trigger="hf-trending-cron",
+        policy_version="hf-trending-v1",
+        priority=25,
+        status="running",
+    )
+    db.add(row)
+    db.commit()
+    service = CodexCurationCallbackService(db)
+    monkeypatch.setattr(
+        service, "_resolution_paper_candidates", lambda _candidate: [paper]
+    )
+
+    result = service.apply(
+        row,
+        ApplyMutationRequest(
+            resolve_model_paper={
+                "decision": "accept",
+                "reason": "Official release with newly trained weights.",
+                "novelty_kind": "new_weights",
+                "evidence_urls": [paper.source_url],
+                "existing_paper_id": paper.id,
+                "model_release": {
+                    "canonical_name": "Model",
+                    "publisher": "org",
+                    "is_open": True,
+                    "aliases": ["org/model"],
+                },
+            }
+        ),
+    )
+
+    assert result["paper_id"] == paper.id
+    db.refresh(row)
+    assert row.mutation_result["paper_id"] == paper.id
+    assert row.thumbnail_status == expected_thumbnail_status
+    assert (row.thumbnail_requested_at is not None) == (
+        expected_thumbnail_status == "queued"
+    )
+
+
 def test_hourly_reconcile_queues_new_release_rejects_conversion_and_skips_unchanged(
     monkeypatch,
 ):
@@ -1452,3 +1526,5 @@ def test_resolved_candidate_enqueues_existing_two_stage_workflow(monkeypatch):
     assert job.kind == "enrich-paper"
     assert job.trigger == "hf-trending-cron"
     assert job.priority == 25
+    assert job.thumbnail_status is None
+    assert job.thumbnail_requested_at is None

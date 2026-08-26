@@ -1222,12 +1222,23 @@ class CodexPaperJobService:
         if completion_error is None and not accepted_apply:
             completion_error = "Remote job completed without an accepted apply."
         thumbnail_status = getattr(row, "thumbnail_status", None)
-        if completion_error is None and thumbnail_status in {"queued", "processing"}:
+        thumbnail_blocks_completion = (
+            getattr(row, "kind", None) != "resolve-model-paper"
+        )
+        if (
+            completion_error is None
+            and thumbnail_blocks_completion
+            and thumbnail_status in {"queued", "processing"}
+        ):
             completion_error = (
                 "Remote job completed before requested thumbnail work reached a "
                 "terminal state."
             )
-        if completion_error is None and thumbnail_status == "failed":
+        if (
+            completion_error is None
+            and thumbnail_blocks_completion
+            and thumbnail_status == "failed"
+        ):
             completion_error = (
                 getattr(row, "thumbnail_error", None)
                 or "Requested thumbnail generation failed."

@@ -210,6 +210,19 @@ def test_claim_is_durable_and_a_claimed_row_is_not_claimed_twice():
     assert db.commits == 1
 
 
+def test_resolution_thumbnail_claim_uses_applied_paper_id():
+    row = _queue_row(
+        kind="resolve-model-paper",
+        paper_id=None,
+        mutation_result={"status": "resolved", "paper_id": 109743},
+    )
+    db = _Database(row=row, query_rows=[row])
+
+    claim = CurationThumbnailQueueService().claim_next(db)
+
+    assert claim == ThumbnailClaim(job_id=row.id, paper_id=109743)
+
+
 def test_stale_processing_claim_can_be_recovered():
     row = _queue_row(
         thumbnail_status="processing",
@@ -329,6 +342,27 @@ def test_completion_requires_accepted_apply_and_successful_thumbnail(monkeypatch
         settings=settings,
     )
     assert result.status == "completed"
+
+
+def test_resolution_completion_does_not_wait_for_thumbnail_worker(monkeypatch):
+    service = CodexPaperJobService()
+    monkeypatch.setattr(service, "dispatch_next", lambda *_args: None)
+    row = _queue_row(
+        kind="resolve-model-paper",
+        paper_id=None,
+        thumbnail_status="queued",
+    )
+
+    result = service.complete(
+        _Database(row=row),
+        row,
+        report="resolved",
+        error=None,
+        settings=get_settings(),
+    )
+
+    assert result.status == "completed"
+    assert row.thumbnail_status == "queued"
 
 
 def test_legitimate_no_changes_submission_can_complete(monkeypatch):

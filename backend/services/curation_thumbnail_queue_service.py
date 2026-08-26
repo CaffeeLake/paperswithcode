@@ -21,6 +21,22 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def queue_thumbnail(row: PaperCurationJob) -> None:
+    """Reset one curation row to a fresh durable thumbnail request."""
+    row.thumbnail_status = "queued"
+    row.thumbnail_requested_at = _now()
+    row.thumbnail_claimed_at = None
+    row.thumbnail_finished_at = None
+    row.thumbnail_attempt_count = 0
+    row.thumbnail_url = None
+    row.thumbnail_previous_width = None
+    row.thumbnail_previous_height = None
+    row.thumbnail_generated_width = None
+    row.thumbnail_generated_height = None
+    row.thumbnail_warnings = None
+    row.thumbnail_error = None
+
+
 def serialize_thumbnail(row: PaperCurationJob) -> dict:
     requested_at = getattr(row, "thumbnail_requested_at", None)
     status = getattr(row, "thumbnail_status", None)
@@ -93,13 +109,18 @@ class CurationThumbnailQueueService:
         )
         if row is None:
             return None
+        paper_id = row.paper_id
+        if paper_id is None:
+            paper_id = (row.mutation_result or {}).get("paper_id")
+        if paper_id is None:
+            raise RuntimeError("Thumbnail request has no target paper")
         row.thumbnail_status = "processing"
         row.thumbnail_claimed_at = _now()
         row.thumbnail_finished_at = None
         row.thumbnail_attempt_count += 1
         row.thumbnail_error = None
         db.commit()
-        return ThumbnailClaim(job_id=row.id, paper_id=int(row.paper_id))
+        return ThumbnailClaim(job_id=row.id, paper_id=int(paper_id))
 
     def succeed(self, db: Session, claim: ThumbnailClaim, result) -> None:
         row = db.get(PaperCurationJob, claim.job_id)

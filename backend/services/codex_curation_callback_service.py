@@ -40,7 +40,10 @@ from backend.services.codex_add_evals_service import (
     CodexPaperJobService,
     codex_paper_job_service,
 )
-from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
+from backend.services.curation_thumbnail_queue_service import (
+    queue_thumbnail,
+    serialize_thumbnail,
+)
 from backend.services.evaluation_service import EvaluationService
 from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_method_link_service import upsert_evidence_links
@@ -530,6 +533,14 @@ class CodexCurationCallbackService:
                     "post_write_verification": "passed",
                 }
                 row.mutation_result = result
+                if result["status"] == "resolved":
+                    paper = self.db.get(Paper, result["paper_id"])
+                    if (
+                        paper is not None
+                        and paper.source == "external"
+                        and not paper.thumbnail_url
+                    ):
+                        queue_thumbnail(row)
                 self.db.commit()
                 return dict(result)
             except Exception as exc:
@@ -1497,15 +1508,4 @@ class CodexCurationCallbackService:
                 commit=False,
             )
         if mutation.regenerate_thumbnail:
-            row.thumbnail_status = "queued"
-            row.thumbnail_requested_at = datetime.now(UTC)
-            row.thumbnail_claimed_at = None
-            row.thumbnail_finished_at = None
-            row.thumbnail_attempt_count = 0
-            row.thumbnail_url = None
-            row.thumbnail_previous_width = None
-            row.thumbnail_previous_height = None
-            row.thumbnail_generated_width = None
-            row.thumbnail_generated_height = None
-            row.thumbnail_warnings = None
-            row.thumbnail_error = None
+            queue_thumbnail(row)
