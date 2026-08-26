@@ -372,6 +372,25 @@ uv run --env-file backend/keys.env python \
 
 ## Autonomous HF daily-paper curation
 
+### Enrichment dashboard export
+
+The private Hugging Face Space at
+`https://huggingface.co/spaces/nielsr/pwc-enrichment-dashboard` reads its
+latest snapshot from the private dataset
+`nielsr/pwc-enrichment-dashboard-data`. The daily
+`export_enrichment_dashboard` job rebuilds the complete historical snapshot
+from production curation jobs, evaluations, and benchmark-gap evidence, then
+uploads it to the dataset. A manual backfill or verification can be run with:
+
+```bash
+sudo pwc-cron export_enrichment_dashboard
+```
+
+The Space never connects directly to PostgreSQL. Keep
+`PWC_ENRICHMENT_DASHBOARD_REPO_ID` and the write-capable `PWC_HF_TOKEN` only in
+the production CRON environment; the Space uses its own read-only download
+secret.
+
 The reconciler runs hourly at minute `27` through the installed immutable-release
 launcher. Besides discovering new daily-paper cohorts, each pass requeues papers
 whose canonical Markdown has appeared since an earlier curation attempt:

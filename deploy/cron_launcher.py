@@ -238,6 +238,14 @@ COMMANDS: dict[str, Job] = {
             "workflows and the shared bounded curation queue"
         ),
     ),
+    "export_enrichment_dashboard": job(
+        "-m",
+        "backend.scripts.export_enrichment_dashboard",
+        "--upload",
+        timeout="30m",
+        idempotency="publish one daily enrichment dashboard snapshot",
+        mutates_shared_data=False,
+    ),
     "sync_hf_organizations": job(
         "-m",
         "scripts.daily.sync_hf_organizations",
