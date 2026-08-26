@@ -59,6 +59,15 @@ def main() -> int:
             repo_type="dataset",
             commit_message=f"Refresh enrichment dashboard through {snapshot['end_date']}",
         )
+        space_repo_id = os.environ.get("PWC_ENRICHMENT_DASHBOARD_SPACE_REPO_ID")
+        if space_repo_id:
+            HfApi(token=token).upload_file(
+                path_or_fileobj=str(args.output),
+                path_in_repo="data/snapshot.json",
+                repo_id=space_repo_id,
+                repo_type="space",
+                commit_message=f"Refresh bundled dashboard data through {snapshot['end_date']}",
+            )
     print(
         f"exported {len(snapshot['papers'])} papers, {len(snapshot['evaluations'])} evaluations, {len(snapshot['benchmark_gaps'])} benchmark gaps through {snapshot['end_date']}"
     )
