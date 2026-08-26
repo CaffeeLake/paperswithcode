@@ -145,8 +145,8 @@ not be after the end date.
 
 1. Use `pwc benchmark list --task TASK` to discover active benchmarks for a given task,
    then `pwc benchmark --name NAME` to inspect a specific leaderboard.
-   Add `--max-parameters SIZE` when the request constrains model size, including
-   on-device or edge-inference discovery.
+   Add `--max-parameters SIZE` for on-device, edge-inference, or other
+   resource-constrained device requests.
    For accuracy/latency or other multi-metric questions, use
    `--require-metrics`, thresholds, or `--pareto`; do not infer a tradeoff from
    a leaderboard sorted by one metric.

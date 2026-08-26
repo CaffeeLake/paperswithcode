@@ -3401,6 +3401,7 @@ def test_chat_worker_exposes_parameter_filtered_benchmarks():
     assert "--author AUTHOR" in skill
     assert "--max-parameters SIZE" in skill
     assert "at or below an inclusive parameter" in skill
+    assert "resource-constrained device requests" in skill
     assert "pwc benchmark --help | grep -F -- '--max-parameters'" in image_source
     assert "pwc paper list --help" in image_source
 
