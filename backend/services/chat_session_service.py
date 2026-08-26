@@ -47,12 +47,12 @@ from backend.services.chat_turn_admission_coordinator import (
 from backend.services.chat_turn_job_repository import (
     AccountBusy,
     ChatOverload,
-    IdempotencyMismatch,
-    TurnJobError,
-    TurnLeaseClaim,
     ChatTurnJobRepository,
+    IdempotencyMismatch,
     InvalidTurnTransition,
     StaleTurnClaim,
+    TurnJobError,
+    TurnLeaseClaim,
     TurnNotClaimable,
 )
 from backend.services.latex_paper_service import LatexPaperService
@@ -1562,6 +1562,9 @@ class ChatSessionService:
                     request_id=client_message_id,
                     requested_session_id=session_id,
                 )
+                recovered_durable_preflight_expiry = (
+                    durable_preflight.reconciled_expired_count > 0
+                )
             except AccountBusy as error:
                 if session_id is None:
                     raise self._durable_admission_error(error) from error
@@ -1580,9 +1583,11 @@ class ChatSessionService:
                         requested_session_id=session_id,
                     )
                 except (TurnJobError, ValueError, SQLAlchemyError) as retry_error:
-                    admission_error = self._durable_admission_error(retry_error)
-                    admission_error.commit_changes = True
-                    raise admission_error from retry_error
+                    raise self._durable_admission_error(retry_error) from retry_error
+                recovered_durable_preflight_expiry = (
+                    recovered_durable_preflight_expiry
+                    or durable_preflight.reconciled_expired_count > 0
+                )
             except (TurnJobError, ValueError, SQLAlchemyError) as error:
                 raise self._durable_admission_error(error) from error
             if durable_preflight.existing_job is not None:
@@ -1602,13 +1607,21 @@ class ChatSessionService:
             )
         )
         now = _now()
-        replay = self._resolve_replay(
-            session,
-            client_message_id=client_message_id,
-            web_search_enabled=web_search_enabled,
-            reasoning_effort=effective_reasoning_effort,
-            now=now,
-        )
+        try:
+            replay = self._resolve_replay(
+                session,
+                client_message_id=client_message_id,
+                web_search_enabled=web_search_enabled,
+                reasoning_effort=effective_reasoning_effort,
+                now=now,
+            )
+        except ChatServiceError as error:
+            if (
+                recovered_durable_preflight_expiry
+                and error.code == "turn_requires_retry"
+            ):
+                error.commit_changes = True
+            raise
         if replay.kind == "admitted":
             assert replay.admission is not None
             if durable_coordinator is not None:

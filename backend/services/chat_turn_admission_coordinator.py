@@ -24,6 +24,7 @@ from backend.services.chat_turn_job_repository import (
 class DurableAdmissionPreflight:
     request_id: str
     requested_session_id: uuid.UUID | None
+    reconciled_expired_count: int
     existing_job: ChatTurnJob | None
     repository_preflight: TurnAdmissionPreflight
 
@@ -51,7 +52,9 @@ class ChatTurnAdmissionCoordinator:
     ) -> DurableAdmissionPreflight:
         now = datetime.now(UTC)
         self.repository.lock_admission_authority(self.db, hf_user_id=hf_user_id)
-        self._reconcile_expired_claims(hf_user_id=hf_user_id, now=now)
+        reconciled_expired_count = self._reconcile_expired_claims(
+            hf_user_id=hf_user_id, now=now
+        )
         result = self.repository.preflight_admission(
             self.db,
             hf_user_id=hf_user_id,
@@ -64,11 +67,12 @@ class ChatTurnAdmissionCoordinator:
         return DurableAdmissionPreflight(
             request_id=request_id,
             requested_session_id=requested_session_id,
+            reconciled_expired_count=reconciled_expired_count,
             existing_job=result.existing_job,
             repository_preflight=result,
         )
 
-    def _reconcile_expired_claims(self, *, hf_user_id: str, now: datetime) -> None:
+    def _reconcile_expired_claims(self, *, hf_user_id: str, now: datetime) -> int:
         """Atomically repair bounded durable and legacy expiry projections."""
         jobs = self.repository.load_expired_claims(
             self.db,
@@ -77,6 +81,7 @@ class ChatTurnAdmissionCoordinator:
             limit=min(self.settings.chat_max_concurrency, 100),
         )
         edits = ChatEditService(self.db)
+        reconciled_count = 0
         for candidate in jobs:
             session = self.db.execute(
                 select(ChatSession)
@@ -131,6 +136,8 @@ class ChatTurnAdmissionCoordinator:
             message.error_code = "lease_expired"
             session.active_turn_id = None
             session.active_turn_expires_at = None
+            reconciled_count += 1
+        return reconciled_count
 
     def admit(
         self,

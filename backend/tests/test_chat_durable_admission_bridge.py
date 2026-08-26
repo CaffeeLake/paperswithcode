@@ -51,6 +51,7 @@ def test_enabled_completed_replay_validates_durable_revision_before_return(monke
             return SimpleNamespace(
                 request_id="stable-request",
                 requested_session_id=session.id,
+                reconciled_expired_count=0,
                 existing_job=durable_job,
             )
 
@@ -150,7 +151,7 @@ def test_enabled_request_without_session_recovers_exact_completed_replay(monkeyp
             pass
 
         def preflight(self, **_kwargs):
-            return SimpleNamespace(existing_job=job)
+            return SimpleNamespace(existing_job=job, reconciled_expired_count=0)
 
         def validate_replay(self, _preflight, **identity):
             validated.append(identity)
@@ -223,7 +224,8 @@ def test_enabled_in_progress_replay_is_not_readmitted(monkeypatch):
 
         def preflight(self, **_kwargs):
             return SimpleNamespace(
-                existing_job=SimpleNamespace(chat_session_id=session.id)
+                existing_job=SimpleNamespace(chat_session_id=session.id),
+                reconciled_expired_count=0,
             )
 
         def admit(self, *_args, **_kwargs):
@@ -266,7 +268,7 @@ def test_enabled_integrity_failure_rolls_back_session_and_message(monkeypatch):
             pass
 
         def preflight(self, **_kwargs):
-            return SimpleNamespace(existing_job=None)
+            return SimpleNamespace(existing_job=None, reconciled_expired_count=0)
 
         def admit(self, *_args, **_kwargs):
             raise IntegrityError("insert chat_turn_jobs", {}, RuntimeError("conflict"))

@@ -10,25 +10,25 @@ import pytest
 from backend.config import get_settings
 from backend.routers import chat as chat_router
 from backend.services import chat_session_service as chat_session_module
+from backend.services.chat_sandbox_provider import SandboxError
+from backend.services.chat_sandbox_worker_transport import WorkerCancelStatus
 from backend.services.chat_session_service import (
     ChatOwner,
     ChatServiceError,
     ChatSessionService,
 )
-from backend.services.chat_turn_job_repository import (
-    AccountBusy,
-    StaleTurnClaim,
-    TurnLeaseClaim,
-)
-from backend.services.chat_sandbox_worker_transport import WorkerCancelStatus
-from backend.services.chat_sandbox_provider import SandboxError
-from backend.services.chat_turn_cancellation_coordinator import (
-    ChatTurnCancellationCoordinator,
-)
 from backend.services.chat_turn_admission_coordinator import (
     ChatTurnAdmissionCoordinator,
 )
-from backend.services.chat_turn_job_repository import ExpiryProjectionMismatch
+from backend.services.chat_turn_cancellation_coordinator import (
+    ChatTurnCancellationCoordinator,
+)
+from backend.services.chat_turn_job_repository import (
+    AccountBusy,
+    ExpiryProjectionMismatch,
+    StaleTurnClaim,
+    TurnLeaseClaim,
+)
 
 
 def _enabled_settings():
@@ -390,19 +390,20 @@ def test_admission_reconciles_globally_expired_claim_before_capacity_count():
             assert session.active_turn_id is None
             assert message.status == "interrupted"
             ordering.append("count")
-            return SimpleNamespace(existing_job=None)
+            return SimpleNamespace(existing_job=None, reconciled_expired_count=0)
 
     coordinator = ChatTurnAdmissionCoordinator(
         DB(), _enabled_settings(), repository=Repository()
     )
 
-    coordinator.preflight(
+    preflight = coordinator.preflight(
         hf_user_id="new-owner",
         request_id="new-request",
         requested_session_id=None,
     )
 
     assert ordering == ["locks", "expired", "interrupted", "count"]
+    assert preflight.reconciled_expired_count == 1
     assert session.active_turn_expires_at is None
     assert message.error_code == "lease_expired"
 
@@ -706,7 +707,7 @@ def test_account_busy_preflight_reconciles_expired_projection_then_retries(
             calls.append(f"preflight-{self.calls}")
             if self.calls == 1:
                 raise AccountBusy("existing expired turn")
-            return SimpleNamespace(existing_job=None)
+            return SimpleNamespace(existing_job=None, reconciled_expired_count=0)
 
     monkeypatch.setattr(
         chat_session_module, "ChatTurnAdmissionCoordinator", Coordinator
