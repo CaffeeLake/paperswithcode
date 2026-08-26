@@ -2572,6 +2572,16 @@ class ChatTurnJob(Base):
             "= (terminal_at IS NOT NULL)",
             name="chat_turn_jobs_terminal_timestamp_check",
         ),
+        CheckConstraint(
+            "failure_code IS NULL OR failure_code ~ '^[a-z0-9][a-z0-9_]{0,63}$'",
+            name="chat_turn_jobs_failure_code_check",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "failure_code IS NULL OR (length(failure_code) BETWEEN 1 AND 64 "
+            "AND failure_code NOT GLOB '*[^a-z0-9_]*' "
+            "AND substr(failure_code, 1, 1) GLOB '[a-z0-9]')",
+            name="chat_turn_jobs_failure_code_check",
+        ).ddl_if(dialect="sqlite"),
         Index("idx_chat_turn_jobs_claim", "state", "admitted_at", "turn_id"),
         Index("idx_chat_turn_jobs_expiry", "state", "lease_expires_at"),
         Index(

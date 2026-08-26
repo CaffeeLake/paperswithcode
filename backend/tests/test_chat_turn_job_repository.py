@@ -5,9 +5,11 @@ from pathlib import Path
 from threading import Barrier, Lock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from backend.models.database import ChatSession, ChatTurnJob
@@ -16,6 +18,7 @@ from backend.services.chat_turn_job_repository import (
     ChatOverload,
     ChatTurnJobRepository,
     IdempotencyMismatch,
+    InvalidTurnTransition,
     StaleTurnClaim,
     TurnNotClaimable,
 )
@@ -81,6 +84,8 @@ def test_turn_job_model_has_durable_state_and_owner_guards():
     assert table.c.request_id.unique
     assert "revision > 0" in ddl
     assert "lease_generation > 0" in ddl
+    assert "chat_turn_jobs_failure_code_check" in ddl
+    assert "failure_code ~ '^[a-z0-9][a-z0-9_]{0,63}$'" in ddl
     assert (
         "admitted', 'leased', 'running', 'waiting_model', 'waiting_tool', "
         "'cancelling', 'completed', 'failed', 'interrupted"
@@ -90,6 +95,29 @@ def test_turn_job_model_has_durable_state_and_owner_guards():
         "state IN "
         "('admitted','leased','running','waiting_model','waiting_tool','cancelling')"
     ) in indexes
+
+
+def test_model_created_schema_rejects_unsafe_failure_codes(db):
+    session = _session(db)
+    db.add(
+        ChatTurnJob(
+            turn_id=uuid.uuid4(),
+            chat_session_id=session.id,
+            hf_user_id=session.hf_user_id,
+            request_id="unsafe-failure-code",
+            revision=1,
+            dispatch_class="interactive",
+            dispatch_route="external-pi",
+            state="admitted",
+            app_release_id="release-a",
+            worker_contract_version="external-pi-v1",
+            admitted_at=NOW,
+            failure_code="Unsafe Code!",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db.flush()
 
 
 def test_matching_admission_is_idempotent_and_mismatch_fails_closed(db):
@@ -211,6 +239,12 @@ def test_claim_mutations_are_fenced_and_terminal_is_idempotent(db):
     stale_claims = (
         claim.__class__(
             turn_id=claim.turn_id,
+            worker_id="worker-2",
+            worker_generation=claim.worker_generation,
+            lease_generation=claim.lease_generation,
+        ),
+        claim.__class__(
+            turn_id=claim.turn_id,
             worker_id=claim.worker_id,
             worker_generation=claim.worker_generation + 1,
             lease_generation=claim.lease_generation,
@@ -227,6 +261,21 @@ def test_claim_mutations_are_fenced_and_terminal_is_idempotent(db):
             repository.heartbeat(
                 db, claim=stale, now=NOW + timedelta(seconds=5), lease_seconds=15
             )
+        with pytest.raises(StaleTurnClaim):
+            repository.transition(
+                db,
+                claim=stale,
+                state="running",
+                now=NOW + timedelta(seconds=5),
+            )
+        with pytest.raises(StaleTurnClaim):
+            repository.write_terminal(
+                db,
+                claim=stale,
+                state="failed",
+                now=NOW + timedelta(seconds=5),
+                failure_code="worker_failed",
+            )
 
     terminal = repository.write_terminal(
         db,
@@ -241,7 +290,7 @@ def test_claim_mutations_are_fenced_and_terminal_is_idempotent(db):
         now=NOW + timedelta(seconds=7),
     )
     assert terminal is replay
-    assert terminal.terminal_at == NOW + timedelta(seconds=6)
+    assert terminal.terminal_at.replace(tzinfo=UTC) == NOW + timedelta(seconds=6)
     assert terminal.lease_expires_at is None
     with pytest.raises(TurnNotClaimable):
         repository.claim(
@@ -298,6 +347,109 @@ def test_expired_lease_is_interrupted_and_never_claimable(db):
         )
 
 
+def test_stale_session_cannot_replace_a_newer_committed_claim(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'stale-claim.db'}")
+    ChatSession.__table__.create(engine)
+    ChatTurnJob.__table__.create(engine)
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    with Session(engine, expire_on_commit=False) as setup:
+        session = _session(setup)
+        turn_id = _admit(repository, setup, session).job.turn_id
+        setup.commit()
+
+    with (
+        Session(engine, expire_on_commit=False) as stale,
+        Session(engine, expire_on_commit=False) as current,
+    ):
+        stale_job = repository.load_by_turn(stale, turn_id)
+        assert stale_job.state == "admitted"
+        stale.commit()
+        authoritative = repository.claim(
+            current,
+            turn_id=turn_id,
+            worker_id="worker-current",
+            worker_generation=9,
+            now=NOW + timedelta(seconds=1),
+            lease_seconds=15,
+        )
+        current.commit()
+
+        with pytest.raises(TurnNotClaimable):
+            repository.claim(
+                stale,
+                turn_id=turn_id,
+                worker_id="worker-stale",
+                worker_generation=3,
+                now=NOW + timedelta(seconds=2),
+                lease_seconds=15,
+            )
+        stale.rollback()
+
+    with Session(engine) as verify:
+        row = repository.load_by_turn(verify, turn_id)
+        assert row.worker_id == authoritative.worker_id
+        assert row.worker_generation == authoritative.worker_generation
+        assert row.lease_generation == authoritative.lease_generation
+
+
+def test_stale_session_cannot_overwrite_a_newer_committed_terminal(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'stale-terminal.db'}")
+    ChatSession.__table__.create(engine)
+    ChatTurnJob.__table__.create(engine)
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    with Session(engine, expire_on_commit=False) as setup:
+        session = _session(setup)
+        job = _admit(repository, setup, session).job
+        claim = repository.claim(
+            setup,
+            turn_id=job.turn_id,
+            worker_id="worker-current",
+            worker_generation=9,
+            now=NOW,
+            lease_seconds=15,
+        )
+        setup.commit()
+
+    with (
+        Session(engine, expire_on_commit=False) as stale,
+        Session(engine, expire_on_commit=False) as current,
+    ):
+        stale_job = repository.load_by_turn(stale, job.turn_id)
+        assert stale_job.state == "leased"
+        stale.commit()
+        # SQLite drops timezone information; restore the PostgreSQL-equivalent
+        # loaded value without marking the stale object dirty.
+        set_committed_value(stale_job, "lease_expires_at", NOW + timedelta(seconds=15))
+        current.execute(
+            update(ChatTurnJob)
+            .where(ChatTurnJob.turn_id == job.turn_id)
+            .values(
+                state="completed",
+                failure_code=None,
+                terminal_at=NOW + timedelta(seconds=1),
+                heartbeat_at=NOW + timedelta(seconds=1),
+                lease_expires_at=None,
+            )
+        )
+        current.commit()
+
+        with pytest.raises(InvalidTurnTransition):
+            repository.write_terminal(
+                stale,
+                claim=claim,
+                state="failed",
+                failure_code="stale_worker",
+                now=NOW + timedelta(seconds=2),
+            )
+        stale.rollback()
+
+    with Session(engine) as verify:
+        row = repository.load_by_turn(verify, job.turn_id)
+        assert row.state == "completed"
+        assert row.failure_code is None
+        assert row.terminal_at.replace(tzinfo=UTC) == NOW + timedelta(seconds=1)
+
+
 def test_turn_job_migration_is_guarded_and_preserves_schema_ownership():
     migration = (
         Path(__file__).parents[1] / "database/migrations/add_chat_turn_jobs.sql"
@@ -306,6 +458,8 @@ def test_turn_job_migration_is_guarded_and_preserves_schema_ownership():
     assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "CREATE TABLE IF NOT EXISTS chat_turn_jobs" in migration
     assert "uq_chat_turn_jobs_nonterminal_owner" in migration
+    assert "chat_turn_jobs_failure_code_check" in migration
+    assert "failure_code ~ '^[a-z0-9][a-z0-9_]{0,63}$'" in migration
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration

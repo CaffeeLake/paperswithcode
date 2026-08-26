@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from sqlalchemy import func, or_, select
@@ -93,7 +93,7 @@ class ChatTurnJobRepository:
     ) -> ChatTurnJob | None:
         query = select(ChatTurnJob).where(ChatTurnJob.turn_id == turn_id)
         if lock:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         return db.execute(query).scalar_one_or_none()
 
     def load_by_request(
@@ -101,7 +101,7 @@ class ChatTurnJobRepository:
     ) -> ChatTurnJob | None:
         query = select(ChatTurnJob).where(ChatTurnJob.request_id == request_id)
         if lock:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         return db.execute(query).scalar_one_or_none()
 
     def admit(
@@ -146,6 +146,7 @@ class ChatTurnJobRepository:
                     )
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             ).scalars()
         )
         if matches:
@@ -242,7 +243,7 @@ class ChatTurnJobRepository:
         if now.tzinfo is None or lease_seconds <= 0:
             raise ValueError("Turn heartbeat is invalid")
         job = self._load_claimed(db, claim)
-        if job.state not in _CLAIMED_STATES or job.lease_expires_at <= now:
+        if job.state not in _CLAIMED_STATES or self._lease_expired(job, now):
             raise StaleTurnClaim("Turn lease is no longer live")
         job.heartbeat_at = now
         job.lease_expires_at = now + timedelta(seconds=lease_seconds)
@@ -262,7 +263,7 @@ class ChatTurnJobRepository:
         if now.tzinfo is None:
             raise ValueError("Turn transition timestamp is invalid")
         job = self._load_claimed(db, claim)
-        if job.lease_expires_at is None or job.lease_expires_at <= now:
+        if self._lease_expired(job, now):
             raise StaleTurnClaim("Turn lease is no longer live")
         if state not in _TRANSITIONS.get(job.state, frozenset()):
             raise InvalidTurnTransition(f"Cannot transition {job.state} to {state}")
@@ -301,7 +302,7 @@ class ChatTurnJobRepository:
             return job
         if job.state not in _CLAIMED_STATES:
             raise InvalidTurnTransition("Only a claimed turn can become terminal")
-        if job.lease_expires_at is None or job.lease_expires_at <= now:
+        if self._lease_expired(job, now):
             raise StaleTurnClaim("Turn lease is no longer live")
         job.state = state
         job.failure_code = failure_code
@@ -328,6 +329,7 @@ class ChatTurnJobRepository:
                 .order_by(ChatTurnJob.lease_expires_at, ChatTurnJob.turn_id)
                 .limit(limit)
                 .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
             ).scalars()
         )
         for job in jobs:
@@ -344,6 +346,15 @@ class ChatTurnJobRepository:
         if job is None or self._claim_for(job) != claim:
             raise StaleTurnClaim("Turn claim was fenced")
         return job
+
+    @staticmethod
+    def _lease_expired(job: ChatTurnJob, now: datetime) -> bool:
+        expires_at = job.lease_expires_at
+        if expires_at is None:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= now
 
     @staticmethod
     def _claim_for(job: ChatTurnJob) -> TurnLeaseClaim:
