@@ -2493,6 +2493,103 @@ class ChatSession(Base):
     )
 
 
+class ChatTurnJob(Base):
+    """Content-free durable ownership and fencing for one research chat turn."""
+
+    __tablename__ = "chat_turn_jobs"
+
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    hf_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    dispatch_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    dispatch_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    worker_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    worker_generation: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    lease_generation: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    worker_contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    admitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminal_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_agent_session_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    last_resume_boundary_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="chat_turn_jobs_revision_check"),
+        CheckConstraint(
+            "worker_generation IS NULL OR worker_generation > 0",
+            name="chat_turn_jobs_worker_generation_check",
+        ),
+        CheckConstraint(
+            "lease_generation IS NULL OR lease_generation > 0",
+            name="chat_turn_jobs_lease_generation_check",
+        ),
+        CheckConstraint(
+            "state IN ('admitted', 'leased', 'running', 'waiting_model', "
+            "'waiting_tool', 'cancelling', 'completed', 'failed', 'interrupted')",
+            name="chat_turn_jobs_state_check",
+        ),
+        CheckConstraint(
+            "(state = 'admitted' AND worker_id IS NULL "
+            "AND worker_generation IS NULL AND lease_generation IS NULL "
+            "AND lease_expires_at IS NULL) OR "
+            "(state IN "
+            "('leased','running','waiting_model','waiting_tool','cancelling') "
+            "AND worker_id IS NOT NULL AND worker_generation IS NOT NULL "
+            "AND lease_generation IS NOT NULL AND lease_expires_at IS NOT NULL) OR "
+            "(state IN ('completed','failed','interrupted') "
+            "AND worker_id IS NOT NULL AND worker_generation IS NOT NULL "
+            "AND lease_generation IS NOT NULL AND lease_expires_at IS NULL)",
+            name="chat_turn_jobs_lease_fields_check",
+        ),
+        CheckConstraint(
+            "(state IN ('completed','failed','interrupted')) "
+            "= (terminal_at IS NOT NULL)",
+            name="chat_turn_jobs_terminal_timestamp_check",
+        ),
+        Index("idx_chat_turn_jobs_claim", "state", "admitted_at", "turn_id"),
+        Index("idx_chat_turn_jobs_expiry", "state", "lease_expires_at"),
+        Index(
+            "uq_chat_turn_jobs_nonterminal_owner",
+            "hf_user_id",
+            unique=True,
+            postgresql_where=text(
+                "state IN "
+                "('admitted','leased','running','waiting_model','waiting_tool','cancelling')"
+            ),
+            sqlite_where=text(
+                "state IN "
+                "('admitted','leased','running','waiting_model','waiting_tool','cancelling')"
+            ),
+        ),
+    )
+
+
 class ChatMessageRecord(Base):
     """Sanitized UI projection for one durable user or assistant message."""
 
