@@ -2822,6 +2822,65 @@ class ChatSandboxLease(Base):
     )
 
 
+class ChatExternalWorker(Base):
+    """Durable identity, capacity, and fencing for an external Pi worker."""
+
+    __tablename__ = "chat_external_workers"
+
+    worker_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    instance_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    maximum_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "environment IN ('staging','production')",
+            name="chat_external_workers_environment_check",
+        ),
+        CheckConstraint(
+            "state IN ('ready','draining','offline')",
+            name="chat_external_workers_state_check",
+        ),
+        CheckConstraint(
+            "generation > 0",
+            name="chat_external_workers_generation_check",
+        ),
+        CheckConstraint(
+            "maximum_sessions BETWEEN 1 AND 32",
+            name="chat_external_workers_maximum_sessions_check",
+        ),
+        CheckConstraint(
+            "active_sessions BETWEEN 0 AND maximum_sessions",
+            name="chat_external_workers_active_sessions_check",
+        ),
+        Index(
+            "idx_chat_external_workers_dispatch",
+            "environment",
+            "state",
+            "contract_version",
+            "lease_expires_at",
+        ),
+    )
+
+
 class ChatSandboxPool(Base):
     """Auditable lifecycle for one unassigned blank chat sandbox."""
 
