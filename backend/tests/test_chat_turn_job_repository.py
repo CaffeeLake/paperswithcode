@@ -1,3 +1,4 @@
+import inspect
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -239,7 +240,6 @@ def test_preflighted_replay_validates_full_dispatch_identity(db, field, differen
         "app_release_id": admitted.app_release_id,
         "worker_contract_version": admitted.worker_contract_version,
         "now": NOW,
-        "emergency_capacity": 1,
     }
     identity[field] = different
 
@@ -276,11 +276,90 @@ def test_preflighted_new_admission_does_not_relock_or_recount(db):
         app_release_id="release-a",
         worker_contract_version="external-pi-v1",
         now=NOW,
-        emergency_capacity=1,
     )
 
     assert admission.created is True
+    assert preflight.emergency_capacity == 1
+    assert (
+        "emergency_capacity"
+        not in inspect.signature(repository.admit_preflighted).parameters
+    )
     assert lock_order == ["chat-user:owner-1", "chat-global-active-turns"]
+
+
+def test_preflighted_admission_rejects_a_different_session(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'preflight-session.db'}")
+    ChatSession.__table__.create(engine)
+    ChatTurnJob.__table__.create(engine)
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    with Session(engine, expire_on_commit=False) as seed:
+        session = _session(seed)
+        seed.commit()
+        session_id = session.id
+        owner = session.hf_user_id
+
+    with (
+        Session(engine, expire_on_commit=False) as first,
+        Session(engine, expire_on_commit=False) as second,
+    ):
+        preflight = repository.preflight_admission(
+            first,
+            hf_user_id=owner,
+            request_id="cross-session",
+            chat_session_id=session_id,
+            emergency_capacity=1,
+        )
+
+        with pytest.raises(ValueError, match="transaction"):
+            repository.admit_preflighted(
+                second,
+                preflight=preflight,
+                turn_id=uuid.uuid4(),
+                chat_session_id=session_id,
+                hf_user_id=owner,
+                request_id="cross-session",
+                revision=1,
+                dispatch_class="interactive",
+                dispatch_route="external-pi",
+                app_release_id="release-a",
+                worker_contract_version="external-pi-v1",
+                now=NOW,
+            )
+
+        assert second.query(ChatTurnJob).count() == 0
+
+
+@pytest.mark.parametrize("finish_transaction", ["commit", "rollback"])
+def test_preflighted_admission_rejects_a_finished_transaction(db, finish_transaction):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    db.commit()
+    preflight = repository.preflight_admission(
+        db,
+        hf_user_id=session.hf_user_id,
+        request_id=f"after-{finish_transaction}",
+        chat_session_id=session.id,
+        emergency_capacity=1,
+    )
+    getattr(db, finish_transaction)()
+
+    with pytest.raises(ValueError, match="transaction"):
+        repository.admit_preflighted(
+            db,
+            preflight=preflight,
+            turn_id=uuid.uuid4(),
+            chat_session_id=session.id,
+            hf_user_id=session.hf_user_id,
+            request_id=f"after-{finish_transaction}",
+            revision=1,
+            dispatch_class="interactive",
+            dispatch_route="external-pi",
+            app_release_id="release-a",
+            worker_contract_version="external-pi-v1",
+            now=NOW,
+        )
+
+    assert db.query(ChatTurnJob).count() == 0
 
 
 def test_admission_rejects_busy_owner_and_capacity_edge_without_insert(db):

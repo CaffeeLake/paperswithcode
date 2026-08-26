@@ -86,7 +86,6 @@ class ChatTurnAdmissionCoordinator:
             app_release_id=app_release_id,
             worker_contract_version=worker_contract_version,
             now=now,
-            emergency_capacity=self.settings.chat_max_concurrency,
         )
         return admitted.job
 

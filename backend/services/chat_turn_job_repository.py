@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from backend.models.database import ChatTurnJob
 
@@ -80,7 +80,10 @@ class TurnAdmissionPreflight:
     hf_user_id: str
     request_id: str
     requested_session_id: uuid.UUID | None
+    emergency_capacity: int
     existing_job: ChatTurnJob | None
+    session: Session = field(repr=False, compare=False)
+    transaction: SessionTransaction = field(repr=False, compare=False)
 
 
 AdvisoryLocker = Callable[[Session, str], None]
@@ -171,7 +174,10 @@ class ChatTurnJobRepository:
                 hf_user_id=hf_user_id,
                 request_id=request_id,
                 requested_session_id=chat_session_id,
+                emergency_capacity=emergency_capacity,
                 existing_job=existing,
+                session=db,
+                transaction=self._active_transaction(db),
             )
 
         owner_active = db.scalar(
@@ -195,7 +201,10 @@ class ChatTurnJobRepository:
             hf_user_id=hf_user_id,
             request_id=request_id,
             requested_session_id=chat_session_id,
+            emergency_capacity=emergency_capacity,
             existing_job=None,
+            session=db,
+            transaction=self._active_transaction(db),
         )
 
     def admit(
@@ -247,7 +256,6 @@ class ChatTurnJobRepository:
             app_release_id=app_release_id,
             worker_contract_version=worker_contract_version,
             now=now,
-            emergency_capacity=emergency_capacity,
         )
 
     def admit_preflighted(
@@ -265,9 +273,14 @@ class ChatTurnJobRepository:
         app_release_id: str,
         worker_contract_version: str,
         now: datetime,
-        emergency_capacity: int,
     ) -> TurnAdmission:
         """Finalize admission under locks already acquired by ``preflight_admission``."""
+        if (
+            db is not preflight.session
+            or db.get_transaction() is not preflight.transaction
+            or not preflight.transaction.is_active
+        ):
+            raise ValueError("Turn admission preflight transaction is no longer active")
         self._validate_admission(
             hf_user_id=hf_user_id,
             request_id=request_id,
@@ -277,7 +290,7 @@ class ChatTurnJobRepository:
             app_release_id=app_release_id,
             worker_contract_version=worker_contract_version,
             now=now,
-            emergency_capacity=emergency_capacity,
+            emergency_capacity=preflight.emergency_capacity,
         )
         if (
             preflight.hf_user_id != hf_user_id
@@ -343,6 +356,13 @@ class ChatTurnJobRepository:
         db.add(job)
         db.flush()
         return TurnAdmission(job, created=True)
+
+    @staticmethod
+    def _active_transaction(db: Session) -> SessionTransaction:
+        transaction = db.get_transaction()
+        if transaction is None or not transaction.is_active:
+            raise ValueError("Turn admission preflight requires an active transaction")
+        return transaction
 
     def claim(
         self,
