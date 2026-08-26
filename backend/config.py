@@ -431,7 +431,9 @@ class Settings(BaseSettings):
     chat_max_turns: int = Field(default=8, ge=3, le=12)
     chat_max_search_calls: int = Field(default=2, ge=1, le=5)
     chat_timeout_seconds: float = Field(default=180, gt=0, le=300)
-    chat_max_concurrency: int = Field(default=1, ge=1, le=8)
+    # Protected emergency active-turn limit. Deployed profiles stay at their
+    # qualified 1/2-turn values until a separate load qualification raises it.
+    chat_max_concurrency: int = Field(default=1, ge=1, le=100)
     chat_user_max_concurrency: int = Field(default=2, ge=1, le=8)
     chat_public_admission_enabled: bool = Field(default=True)
     chat_sandbox_admission_enabled: bool = Field(default=True)
@@ -464,8 +466,8 @@ class Settings(BaseSettings):
     chat_external_pi_worker_token: str = Field(default="", repr=False)
     chat_external_pi_worker_contract_version: str = Field(default="", max_length=64)
     chat_external_pi_worker_max_sessions: int = Field(default=8, ge=1, le=32)
-    chat_external_pi_heartbeat_seconds: float = Field(default=5, ge=1, le=20)
-    chat_external_pi_lease_seconds: int = Field(default=15, ge=5, le=60)
+    chat_external_pi_heartbeat_seconds: float = Field(default=10, ge=1, le=30)
+    chat_external_pi_lease_seconds: int = Field(default=30, ge=5, le=60)
     chat_external_pi_startup_timeout_seconds: int = Field(default=60, ge=5, le=300)
     chat_external_pi_drain_seconds: int = Field(default=60, ge=5, le=300)
     chat_external_pi_drain_poll_seconds: float = Field(default=1, ge=0.1, le=5)

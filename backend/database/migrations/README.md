@@ -41,6 +41,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_chat_edit_preparation_state.sql` | Typed durable fork identity used to recover interrupted chat edits |
 | `add_chat_sandbox_runtime.sql` | Staging-only additive immutable chat backend selection, runtime provenance, sandbox leases, and hash-only turn capabilities; run as PostgreSQL superuser with `search_path=staging,public` before activating the bridge |
 | `add_chat_external_worker_registry.sql` | Additive durable identity, capacity, heartbeat, graceful-drain state, and fencing generations for trusted external Pi workers; apply to staging before enabling the external-worker shadow supervisor |
+| `add_chat_turn_jobs.sql` | Additive durable per-turn ownership, immediate admission, idempotency, worker lease fencing, and interruption state; apply to staging before enabling `PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED` |
 | `add_chat_turn_latency.sql` | Staging-only, content-free per-turn server/browser latency telemetry with 30-day application retention; apply after `add_chat_sandbox_runtime.sql` |
 | `add_chat_sandbox_pool.sql` | Staging-only blank-worker pool lifecycle, generation binding, resource/cost accounting, and 35-day audit state; apply with `search_path=staging,public` before deploying pool-aware readiness |
 | `add_chat_warm_assignment_race.sql` | Additive health-probe ownership and content-free warm-fallback diagnostics for either environment-owned chat schema; apply before deploying the warm-assignment race fix |

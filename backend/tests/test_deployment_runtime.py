@@ -2943,6 +2943,29 @@ def test_qualified_staging_capacity_keeps_one_warm_sandbox():
     }
 
 
+@pytest.mark.parametrize(
+    ("environment", "active_turn_limit"),
+    [("staging", "2"), ("production", "1")],
+)
+def test_environment_examples_keep_durable_dispatch_disabled_and_current_safe(
+    environment, active_turn_limit
+):
+    values = {
+        key: value
+        for line in Path(f"deploy/env/{environment}.env.example")
+        .read_text()
+        .splitlines()
+        if line and not line.startswith("#")
+        for key, value in [line.split("=", 1)]
+    }
+
+    assert values["PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED"] == "false"
+    assert values["PWC_CHAT_MAX_CONCURRENCY"] == active_turn_limit
+    assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
+    assert values["PWC_CHAT_EXTERNAL_PI_HEARTBEAT_SECONDS"] == "10"
+    assert values["PWC_CHAT_EXTERNAL_PI_LEASE_SECONDS"] == "30"
+
+
 def test_staging_capacity_configuration_preserves_explicit_pool_toggle():
     enabled = {"PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true"}
     values = configure_host_env.staging_chat_capacity_configuration(enabled)

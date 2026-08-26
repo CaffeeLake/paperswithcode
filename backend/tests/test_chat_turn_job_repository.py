@@ -465,3 +465,10 @@ def test_turn_job_migration_is_guarded_and_preserves_schema_ownership():
     assert "FROM paperswithcode_user;" in migration
     assert "OWNER TO paperswithcode_user" in migration
     assert "FROM pwc_staging;" in migration
+
+    migration_readme = (
+        Path(__file__).parents[1] / "database/migrations/README.md"
+    ).read_text()
+    deployment = (Path(__file__).parents[2] / "docs/deployment.md").read_text()
+    assert "`add_chat_turn_jobs.sql`" in migration_readme
+    assert "`add_chat_turn_jobs.sql`" in deployment

@@ -214,8 +214,8 @@ def test_external_pi_shadow_worker_starts_at_eight_but_remains_configurable():
     defaults = Settings(_env_file=None)
     assert defaults.chat_external_pi_worker_max_sessions == 8
     assert defaults.chat_external_pi_supervisor_enabled is False
-    assert defaults.chat_external_pi_heartbeat_seconds == 5
-    assert defaults.chat_external_pi_lease_seconds == 15
+    assert defaults.chat_external_pi_heartbeat_seconds == 10
+    assert defaults.chat_external_pi_lease_seconds == 30
     assert defaults.chat_external_pi_startup_timeout_seconds == 60
     assert defaults.chat_external_pi_drain_seconds == 60
     assert defaults.chat_external_pi_drain_poll_seconds == 1
@@ -227,6 +227,20 @@ def test_external_pi_shadow_worker_starts_at_eight_but_remains_configurable():
     )
     with pytest.raises(ValidationError):
         Settings(_env_file=None, chat_external_pi_worker_max_sessions=33)
+
+
+def test_durable_turn_controls_keep_current_capacity_and_allow_100_qualification():
+    defaults = Settings(_env_file=None)
+
+    assert defaults.chat_durable_turn_dispatch_enabled is False
+    assert defaults.chat_max_concurrency == 1
+    assert defaults.chat_timeout_seconds == 180
+    assert (
+        Settings(_env_file=None, chat_max_concurrency=100).chat_max_concurrency == 100
+    )
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, chat_max_concurrency=101)
 
 
 def test_external_pi_shadow_can_be_armed_without_changing_chat_admission(
@@ -257,6 +271,26 @@ def test_external_pi_migration_controls_remain_staging_only(settings_factory):
     settings.chat_external_pi_supervisor_enabled = True
     with pytest.raises(RuntimeError, match="staging-only"):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_disabled_production_rejects_durable_turn_dispatch(settings_factory):
+    settings, _release = settings_factory("production")
+    assert settings.chat_enabled is False
+    settings.chat_durable_turn_dispatch_enabled = True
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_runtime(settings)
+
+
+def test_staging_can_qualify_durable_bridge_without_external_admission(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_durable_turn_dispatch_enabled = True
+
+    runtime_validation.validate_external_pi_migration_policy(settings)
+
+    assert settings.chat_external_pi_admission_enabled is False
 
 
 @pytest.mark.parametrize(
@@ -339,6 +373,32 @@ def test_external_pi_admission_requires_the_executor_bridge(settings_factory):
         runtime_validation.validate_external_pi_migration_policy(settings)
 
 
+def test_external_pi_admission_requires_durable_bridge_and_exact_contracts(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "s" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_admission_enabled = True
+    settings.chat_remote_workspace_tools_enabled = True
+    settings.chat_lazy_workspace_enabled = True
+    settings.chat_sandbox_executor_enabled = True
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+    settings.chat_remote_bash_enabled = True
+    settings.chat_remote_read_enabled = True
+
+    with pytest.raises(RuntimeError, match="durable turn dispatch"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+    settings.chat_durable_turn_dispatch_enabled = True
+    runtime_validation.validate_external_pi_migration_policy(settings)
+
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v2"
+    with pytest.raises(RuntimeError, match="sandbox executor contract"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_executor_bridge_environment_examples_remain_disabled(environment):
     source = Path(f"deploy/env/{environment}.env.example").read_text()
@@ -357,13 +417,14 @@ def test_external_pi_supervisor_requires_a_safe_heartbeat_lease_ratio(
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
-    settings.chat_external_pi_heartbeat_seconds = 10
-    settings.chat_external_pi_lease_seconds = 15
+    settings.chat_external_pi_heartbeat_seconds = 30
+    settings.chat_external_pi_lease_seconds = 30
 
-    with pytest.raises(
-        RuntimeError, match="heartbeat must renew before half the lease"
-    ):
+    with pytest.raises(RuntimeError, match="heartbeat must be shorter than the lease"):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    settings.chat_external_pi_heartbeat_seconds = 29
+    runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
 def test_environment_policy_isolated_from_storage(settings_factory):

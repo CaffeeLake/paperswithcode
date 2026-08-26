@@ -179,6 +179,7 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    routes, including the anonymous read-only HF catalog route and the bounded
    artifact preparation/publication routes.
 4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`,
+   `add_chat_turn_jobs.sql`,
    `add_chat_sandbox_pool.sql`, `add_chat_active_cost.sql`,
    `add_chat_user_billing.sql`, `add_chat_qualification_metadata.sql`,
    `add_chat_openrouter_user_budget.sql`, and
@@ -193,6 +194,9 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    revoke the production application role. The pool migration remains required
    even while `PWC_CHAT_BLANK_POOL_ENABLED=false`, because readiness validates
    the rollback-safe audit schema before pool activation.
+   Keep `PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED=false` until this migration is
+   verified in the staging schema and the exact release passes turn-ownership
+   qualification; an application deployment does not apply the migration.
 5. Keep `PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED=false`; snapshot activation is
    outside the latency project and requires a separate approved plan. V1 uses
    Modal's isolated, automatically reclaimed ephemeral disk; PID and memory

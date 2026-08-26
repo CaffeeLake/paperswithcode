@@ -50,9 +50,9 @@ def test_build_runtime_pins_the_release_contract_and_lifecycle_limits():
     assert runtime.supervisor.expected_release_id == "release-a"
     assert runtime.supervisor.expected_contract_version == "external-pi-v1"
     assert runtime.supervisor.expected_maximum_sessions == 8
-    assert runtime.supervisor.lease_seconds == 15
+    assert runtime.supervisor.lease_seconds == 30
     assert runtime.supervisor.drain_seconds == 60
-    assert runtime.heartbeat_interval_seconds == 5
+    assert runtime.heartbeat_interval_seconds == 10
     assert runtime.startup_timeout_seconds == 60
     assert runtime.drain_poll_seconds == 1
     assert runtime.wait_for_stop is wait_for_stop

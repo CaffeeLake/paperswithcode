@@ -953,10 +953,13 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
 def validate_external_pi_migration_policy(settings: Settings) -> None:
     """Keep each external-harness bridge independently reversible."""
 
-    switches = {
+    worker_switches = {
         "shadow": settings.chat_external_pi_shadow_enabled,
         "admission": settings.chat_external_pi_admission_enabled,
         "supervisor": settings.chat_external_pi_supervisor_enabled,
+    }
+    migration_switches = {
+        **worker_switches,
         "remote_tools": settings.chat_remote_workspace_tools_enabled,
         "safe_cli": settings.chat_safe_cli_fast_path_enabled,
         "lazy_workspace": settings.chat_lazy_workspace_enabled,
@@ -968,12 +971,12 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         "read": settings.chat_remote_read_enabled,
     }
     if settings.environment == "production" and any(
-        (*switches.values(), *executor_switches.values())
+        (*migration_switches.values(), *executor_switches.values())
     ):
         raise RuntimeError(
             "external Pi migration controls are staging-only until production approval"
         )
-    if any(switches.values()):
+    if any(worker_switches.values()):
         endpoint = urlsplit(settings.chat_external_pi_worker_url)
         if (
             endpoint.scheme != "http"
@@ -1001,11 +1004,10 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         ) and not settings.chat_sandbox_executor_enabled:
             raise RuntimeError("remote Bash and Read require the sandbox executor")
     if (
-        settings.chat_external_pi_supervisor_enabled
-        and settings.chat_external_pi_heartbeat_seconds * 2
-        > settings.chat_external_pi_lease_seconds
+        settings.chat_external_pi_heartbeat_seconds
+        >= settings.chat_external_pi_lease_seconds
     ):
-        raise RuntimeError("external Pi heartbeat must renew before half the lease")
+        raise RuntimeError("external Pi heartbeat must be shorter than the lease")
     if settings.chat_safe_cli_fast_path_enabled and not (
         settings.chat_remote_workspace_tools_enabled
     ):
