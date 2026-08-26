@@ -1,11 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-import { createExternalShadowServer } from "./external_server.js";
+import { createExternalWorkerServer } from "./external_server.js";
 
 const host = process.env.PWC_EXTERNAL_PI_HOST ?? "127.0.0.1";
 const port = Number(process.env.PWC_EXTERNAL_PI_PORT ?? "8766");
-const token = process.env.PWC_EXTERNAL_PI_TOKEN ?? "";
-const maximumConcurrent = Number(process.env.PWC_EXTERNAL_PI_MAX_SESSIONS ?? "8");
+const token = process.env.PWC_EXTERNAL_PI_TOKEN
+  ?? process.env.PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN
+  ?? "";
+const maximumConcurrent = Number(
+  process.env.PWC_EXTERNAL_PI_MAX_SESSIONS
+    ?? process.env.PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS
+    ?? "8",
+);
+const workerId = process.env.PWC_EXTERNAL_PI_WORKER_ID ?? "";
+const instanceId = process.env.PWC_EXTERNAL_PI_INSTANCE_ID ?? randomUUID();
+const releaseId = process.env.PWC_EXTERNAL_PI_RELEASE_ID
+  ?? process.env.PWC_RELEASE_ID
+  ?? "";
 const promptPath = process.env.PWC_EXTERNAL_PI_PROMPT_PATH ?? "";
 const toolNamesValue = process.env.PWC_EXTERNAL_PI_TOOL_NAMES ?? "";
 
@@ -22,8 +34,11 @@ if (!Array.isArray(toolNames) || toolNames.some((name) => typeof name !== "strin
   throw new Error("External shadow worker tool profile is invalid");
 }
 
-createExternalShadowServer({
+createExternalWorkerServer({
   token,
   maximumConcurrent,
+  workerId,
+  instanceId,
+  releaseId,
   profile: { prompt: readFileSync(promptPath, "utf8"), tool_names: toolNames },
 }).listen(port, host);

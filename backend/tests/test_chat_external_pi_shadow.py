@@ -8,6 +8,8 @@ import pytest
 from backend.services.chat_external_pi_shadow import (
     ExternalPiShadowClient,
     ExternalPiShadowRequest,
+    ExternalPiWorkerControlClient,
+    ExternalPiWorkerStatus,
 )
 
 
@@ -100,3 +102,82 @@ def test_external_pi_shadow_bounds_utf8_prompt_bytes_and_hides_client_token():
         assert "secret-token" not in repr(client)
     finally:
         asyncio.run(client.http.aclose())
+
+
+def test_external_pi_worker_status_and_drain_are_authenticated_and_typed():
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "protocol": "external-pi-v1",
+                "worker_id": "worker-1",
+                "instance_id": "10000000-0000-4000-8000-000000000001",
+                "release_id": "release-a",
+                "state": "draining" if request.method == "POST" else "ready",
+                "active_sessions": 2,
+                "maximum_sessions": 8,
+                "worker_generation": None if request.url.path == "/v1/status" else 3,
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ExternalPiWorkerControlClient(
+                base_url="http://worker.internal",
+                token="secret",
+                http=http,
+            )
+            return (
+                await client.status(),
+                await client.bind_claim(3),
+                await client.begin_drain(3),
+            )
+
+    ready, claimed, draining = asyncio.run(run())
+
+    assert isinstance(ready, ExternalPiWorkerStatus)
+    assert ready.state == "ready"
+    assert ready.worker_generation is None
+    assert claimed.worker_generation == 3
+    assert draining.state == "draining"
+    assert [request.url.path for request in requests] == [
+        "/v1/status",
+        "/v1/claim",
+        "/v1/drain",
+    ]
+    assert all(
+        request.headers["Authorization"] == "Bearer secret" for request in requests
+    )
+    assert requests[-1].headers["X-PWC-Worker-Generation"] == "3"
+
+
+def test_external_pi_worker_status_rejects_unexpected_or_oversized_capacity():
+    async def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "protocol": "external-pi-v1",
+                "worker_id": "worker-1",
+                "instance_id": "10000000-0000-4000-8000-000000000001",
+                "release_id": "release-a",
+                "state": "ready",
+                "active_sessions": 0,
+                "maximum_sessions": 33,
+                "worker_generation": None,
+                "host_path": "/workspace",
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await ExternalPiWorkerControlClient(
+                base_url="http://worker.internal",
+                token="secret",
+                http=http,
+            ).status()
+
+    with pytest.raises(RuntimeError, match="invalid response"):
+        asyncio.run(run())

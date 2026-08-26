@@ -94,6 +94,25 @@ class ExternalPiShadowProjection(BaseModel):
         )
 
 
+class ExternalPiWorkerStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol: str = Field(pattern=r"^external-pi-v1$")
+    worker_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    instance_id: uuid.UUID
+    release_id: str = Field(min_length=1, max_length=255)
+    state: str = Field(pattern=r"^(ready|draining)$")
+    active_sessions: int = Field(ge=0, le=32)
+    maximum_sessions: int = Field(ge=1, le=32)
+    worker_generation: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_capacity(self):
+        if self.active_sessions > self.maximum_sessions:
+            raise ValueError("External Pi worker capacity is invalid")
+        return self
+
+
 @dataclass(slots=True)
 class ExternalPiShadowClient:
     base_url: str
@@ -120,3 +139,50 @@ class ExternalPiShadowClient:
         if not projection.compatible_with(request):
             raise RuntimeError("External Pi shadow compatibility mismatch")
         return projection
+
+
+@dataclass(slots=True)
+class ExternalPiWorkerControlClient:
+    base_url: str
+    token: str = field(repr=False)
+    http: httpx.AsyncClient
+    timeout_seconds: float = 5.0
+
+    async def _control(
+        self,
+        method: str,
+        path: str,
+        *,
+        generation: int | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> ExternalPiWorkerStatus:
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            if generation is not None:
+                headers["X-PWC-Worker-Generation"] = str(generation)
+            response = await self.http.request(
+                method,
+                f"{self.base_url.rstrip('/')}{path}",
+                headers=headers,
+                json=json_body,
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            return ExternalPiWorkerStatus.model_validate(response.json())
+        except (httpx.HTTPError, ValueError, ValidationError) as error:
+            raise RuntimeError(
+                "External Pi worker returned an invalid response"
+            ) from error
+
+    async def status(self) -> ExternalPiWorkerStatus:
+        return await self._control("GET", "/v1/status")
+
+    async def bind_claim(self, generation: int) -> ExternalPiWorkerStatus:
+        return await self._control(
+            "POST",
+            "/v1/claim",
+            json_body={"worker_generation": generation},
+        )
+
+    async def begin_drain(self, generation: int) -> ExternalPiWorkerStatus:
+        return await self._control("POST", "/v1/drain", generation=generation)

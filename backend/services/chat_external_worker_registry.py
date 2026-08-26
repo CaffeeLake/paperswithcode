@@ -127,7 +127,7 @@ class ChatExternalWorkerRegistry:
         return row, ExternalWorkerClaim(worker_id, instance_id, row.generation)
 
     @staticmethod
-    def _require_claim(row: ExternalWorkerRecord, claim: ExternalWorkerClaim) -> None:
+    def require_claim(row: ExternalWorkerRecord, claim: ExternalWorkerClaim) -> None:
         if (
             row.worker_id != claim.worker_id
             or row.instance_id != claim.instance_id
@@ -144,7 +144,7 @@ class ChatExternalWorkerRegistry:
         now: datetime,
         lease_seconds: int,
     ) -> None:
-        self._require_claim(row, claim)
+        self.require_claim(row, claim)
         if (
             not 0 <= active_sessions <= row.maximum_sessions
             or not 5 <= lease_seconds <= 60
@@ -172,7 +172,7 @@ class ChatExternalWorkerRegistry:
         now: datetime,
         drain_seconds: int,
     ) -> None:
-        self._require_claim(row, claim)
+        self.require_claim(row, claim)
         if not 5 <= drain_seconds <= 300 or now.tzinfo is None:
             raise ValueError("External worker drain deadline is invalid")
         if (
@@ -193,7 +193,7 @@ class ChatExternalWorkerRegistry:
         claim: ExternalWorkerClaim,
         now: datetime,
     ) -> None:
-        self._require_claim(row, claim)
+        self.require_claim(row, claim)
         if now.tzinfo is None:
             raise ValueError("External worker offline timestamp is invalid")
         if (
@@ -290,6 +290,23 @@ class ChatExternalWorkerRepository:
         if row is None:
             raise StaleWorkerClaim("External worker claim was fenced")
         return row
+
+    def require_ready_claim(
+        self,
+        db: Session,
+        *,
+        claim: ExternalWorkerClaim,
+        now: datetime,
+    ) -> None:
+        row = self._load_claimed(db, claim)
+        self.registry.require_claim(row, claim)
+        if (
+            now.tzinfo is None
+            or row.environment != self.environment
+            or row.state != "ready"
+            or row.lease_expires_at <= now
+        ):
+            raise WorkerLeaseUnavailable("External worker is not ready")
 
     def heartbeat(
         self,

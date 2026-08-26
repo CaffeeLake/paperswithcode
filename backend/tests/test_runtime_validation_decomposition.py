@@ -2,7 +2,9 @@ import json
 from itertools import count
 
 import pytest
+from pydantic import ValidationError
 
+from backend.config import Settings
 from backend.services import openrouter_budget_service
 from backend.services import runtime_validation
 from backend.tests.test_deployment_runtime import deployed_settings, make_bundle
@@ -201,6 +203,18 @@ def test_external_pi_migration_switches_are_independent_and_fail_closed(
         RuntimeError, match="safe CLI fast path requires remote workspace tools"
     ):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_external_pi_shadow_worker_starts_at_eight_but_remains_configurable():
+    assert Settings(_env_file=None).chat_external_pi_worker_max_sessions == 8
+    assert (
+        Settings(
+            _env_file=None, chat_external_pi_worker_max_sessions=32
+        ).chat_external_pi_worker_max_sessions
+        == 32
+    )
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, chat_external_pi_worker_max_sessions=33)
 
 
 def test_external_pi_shadow_can_be_armed_without_changing_chat_admission(
