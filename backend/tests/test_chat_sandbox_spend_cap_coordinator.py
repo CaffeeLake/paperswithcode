@@ -487,6 +487,28 @@ def test_armed_status_keeps_enforcement_as_a_typed_noop_with_status_side_effects
     assert states[0].circuit_state == "armed"
 
 
+def test_trip_enforcement_releases_abandoned_pre_provider_reservations():
+    harness = _Harness()
+    session_id = harness.add_lease(state="failed")
+    with harness.sessions() as db, db.begin():
+        interval_id = ChatSandboxSpendService(db, harness.settings).reserve_interval(
+            origin="direct",
+            worker_generation="abandoned-generation",
+            chat_session_id=session_id,
+            now=harness.clock.now,
+        )
+    harness.trip(seconds_ago=31)
+
+    result = asyncio.run(harness.coordinator().enforce())
+
+    assert result == SpendCapEnforcementResult(state="tripped")
+    with harness.sessions() as db:
+        interval = db.get(ChatSandboxComputeInterval, interval_id)
+        assert interval.terminal_reason == "lease_owner_terminated"
+        assert interval.reserved_microusd == 0
+    assert harness.events()[-1] == "kill_sweep_complete"
+
+
 def test_enforcement_preserves_global_state_scope_order_and_action_counts():
     harness = _Harness()
     immediate_ids = {

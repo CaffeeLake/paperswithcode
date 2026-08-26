@@ -754,6 +754,42 @@ def test_policy_change_without_new_attestation_trips_accounting_integrity():
         assert state.trip_reason == "accounting_integrity"
 
 
+def test_lock_wait_does_not_treat_a_newer_committed_meter_as_clock_corruption():
+    sessions = factory()
+    captured_at = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        ChatSandboxSpendService(db, settings()).refresh(
+            captured_at + timedelta(seconds=10)
+        )
+    with sessions() as db, db.begin():
+        state = ChatSandboxSpendService(
+            db,
+            settings(),
+            utcnow=lambda: captured_at + timedelta(seconds=11),
+        ).refresh(captured_at, capacity_locked=True)
+
+    assert state.circuit_state == "armed"
+    assert state.last_metered_at == captured_at + timedelta(seconds=11)
+
+
+def test_meter_timestamp_ahead_of_the_post_lock_clock_trips_degraded():
+    sessions = factory()
+    captured_at = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        ChatSandboxSpendService(db, settings()).refresh(
+            captured_at + timedelta(seconds=10)
+        )
+    with sessions() as db, db.begin():
+        state = ChatSandboxSpendService(
+            db,
+            settings(),
+            utcnow=lambda: captured_at,
+        ).refresh(captured_at, capacity_locked=True)
+
+    assert state.circuit_state == "tripped"
+    assert state.trip_reason == "metering_degraded"
+
+
 def test_invalid_lifecycle_timestamp_trips_metering_degraded():
     sessions = factory()
     now = datetime(2026, 8, 3, tzinfo=UTC)
@@ -770,6 +806,76 @@ def test_invalid_lifecycle_timestamp_trips_metering_degraded():
         )
         assert state.circuit_state == "tripped"
         assert state.trip_reason == "metering_degraded"
+
+
+def test_abandoned_direct_reservations_release_only_terminal_lease_owners():
+    sessions = factory()
+    now = datetime(2026, 8, 3, tzinfo=UTC)
+    configured = settings()
+    abandoned_session_id = uuid.uuid4()
+    active_session_id = uuid.uuid4()
+    with sessions() as db, db.begin():
+        for session_id, owner in (
+            (abandoned_session_id, "abandoned-owner"),
+            (active_session_id, "active-owner"),
+        ):
+            db.add(
+                ChatSession(
+                    id=session_id,
+                    hf_user_id=owner,
+                    hf_username=owner,
+                    selected_model="google/gemma-4-31B-it",
+                    execution_backend="modal_cli",
+                )
+            )
+        db.flush()
+        db.add_all(
+            [
+                ChatSandboxLease(
+                    chat_session_id=abandoned_session_id,
+                    app_release_id=configured.release_id,
+                    image_version=configured.chat_modal_image_version,
+                    worker_contract_version=configured.chat_worker_contract_version,
+                    state="failed",
+                    worker_generation="abandoned-generation",
+                ),
+                ChatSandboxLease(
+                    chat_session_id=active_session_id,
+                    app_release_id=configured.release_id,
+                    image_version=configured.chat_modal_image_version,
+                    worker_contract_version=configured.chat_worker_contract_version,
+                    state="starting",
+                    worker_generation="active-generation",
+                ),
+            ]
+        )
+        service = ChatSandboxSpendService(db, configured)
+        abandoned_interval_id = service.reserve_interval(
+            origin="direct",
+            worker_generation="abandoned-generation",
+            chat_session_id=abandoned_session_id,
+            now=now,
+        )
+        active_interval_id = service.reserve_interval(
+            origin="direct",
+            worker_generation="active-generation",
+            chat_session_id=active_session_id,
+            now=now,
+        )
+
+    with sessions() as db, db.begin():
+        released = ChatSandboxSpendService(
+            db, configured
+        ).abort_abandoned_direct_reservations(now + timedelta(minutes=1))
+
+    assert released == 1
+    with sessions() as db:
+        abandoned = db.get(ChatSandboxComputeInterval, abandoned_interval_id)
+        active = db.get(ChatSandboxComputeInterval, active_interval_id)
+        assert abandoned.terminal_reason == "lease_owner_terminated"
+        assert abandoned.reserved_microusd == 0
+        assert active.terminal_at is None
+        assert active.reserved_microusd > 0
 
 
 def test_admin_spend_status_matches_the_typed_api_contract():

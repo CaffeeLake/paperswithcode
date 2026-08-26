@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
@@ -23,11 +24,13 @@ from backend.services.chat_sandbox_capacity_repository import (
     CAPACITY_LOCK_NAME as CAPACITY_LOCK_NAME,  # noqa: PLC0414
 )
 from backend.services.chat_sandbox_capacity_repository import (
+    LIVE_LEASE_STATES,
     lock_capacity,
 )
 
 CPU_MICROUSD_PER_CORE_SECOND = Decimal("39.42")
 MEMORY_MICROUSD_PER_GIB_SECOND = Decimal("6.72")
+METERING_CLOCK_SKEW_SECONDS = 5
 
 
 class ChatComputeDisabled(RuntimeError):
@@ -62,9 +65,16 @@ def cycle_end(cycle: date) -> datetime:
 class ChatSandboxSpendService:
     """All money is integer microdollars; the provider floor can only raise spend."""
 
-    def __init__(self, db: Session, settings: Settings):
+    def __init__(
+        self,
+        db: Session,
+        settings: Settings,
+        *,
+        utcnow: Callable[[], datetime] | None = None,
+    ):
         self.db = db
         self.settings = settings
+        self.utcnow = utcnow or (lambda: datetime.now(UTC))
 
     def _lock(self) -> None:
         lock_capacity(self.db)
@@ -392,7 +402,8 @@ class ChatSandboxSpendService:
                     or interval.memory_request_mib <= 0
                     or interval.cpu_limit_millicores < interval.cpu_request_millicores
                     or interval.memory_limit_mib < interval.memory_request_mib
-                    or interval_start > now + timedelta(seconds=5)
+                    or interval_start
+                    > now + timedelta(seconds=METERING_CLOCK_SKEW_SECONDS)
                     or (
                         provider_created_at is not None
                         and provider_created_at < interval_start
@@ -466,7 +477,8 @@ class ChatSandboxSpendService:
                     "cycle_finish": cycle_finish,
                     "cycle_start": cycle_start,
                     "environment": self.settings.environment,
-                    "future_limit": now + timedelta(seconds=5),
+                    "future_limit": now
+                    + timedelta(seconds=METERING_CLOCK_SKEW_SECONDS),
                     "has_coverage": coverage_end is not None,
                 },
             )
@@ -496,9 +508,17 @@ class ChatSandboxSpendService:
             integrity_reason = "accounting_integrity"
         last_metered = state.last_metered_at
         if last_metered is not None and self._aware(last_metered) > now + timedelta(
-            seconds=5
+            seconds=METERING_CLOCK_SKEW_SECONDS
         ):
-            integrity_reason = "metering_degraded"
+            observed_now = self.utcnow()
+            if self._aware(last_metered) <= observed_now + timedelta(
+                seconds=METERING_CLOCK_SKEW_SECONDS
+            ):
+                now = max(now, observed_now)
+                if billing_cycle(now) != state.billing_cycle:
+                    state = self._state(now)
+            else:
+                integrity_reason = "metering_degraded"
         self.reconcile_terminal_leases(now)
         cycle_start = datetime(
             state.billing_cycle.year, state.billing_cycle.month, 1, tzinfo=UTC
@@ -539,7 +559,7 @@ class ChatSandboxSpendService:
             if (
                 interval.cpu_limit_millicores <= 0
                 or interval.memory_limit_mib <= 0
-                or interval_start > now + timedelta(seconds=5)
+                or interval_start > now + timedelta(seconds=METERING_CLOCK_SKEW_SECONDS)
                 or (
                     provider_created_at is not None
                     and provider_created_at < interval_start
@@ -848,6 +868,43 @@ class ChatSandboxSpendService:
         )
         for row in rows:
             self.abort_reservation(row.id, "pool_owner_terminated", now)
+        return len(rows)
+
+    def abort_abandoned_direct_reservations(
+        self, now: datetime | None = None, *, limit: int = 100
+    ) -> int:
+        """Release pre-provider reservations without a live durable lease owner."""
+
+        now = now or datetime.now(UTC)
+        active_lease = (
+            select(ChatSandboxLease.chat_session_id)
+            .where(
+                ChatSandboxLease.chat_session_id
+                == ChatSandboxComputeInterval.chat_session_id,
+                ChatSandboxLease.state.in_(LIVE_LEASE_STATES),
+            )
+            .exists()
+        )
+        self._lock()
+        rows = list(
+            self.db.scalars(
+                select(ChatSandboxComputeInterval)
+                .where(
+                    ChatSandboxComputeInterval.environment == self.settings.environment,
+                    ChatSandboxComputeInterval.origin == "direct",
+                    ChatSandboxComputeInterval.chat_session_id.is_not(None),
+                    ChatSandboxComputeInterval.modal_sandbox_id.is_(None),
+                    ChatSandboxComputeInterval.provider_created_at.is_(None),
+                    ChatSandboxComputeInterval.terminal_at.is_(None),
+                    ~active_lease,
+                )
+                .order_by(ChatSandboxComputeInterval.reserved_at)
+                .limit(limit)
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            self.abort_reservation(row.id, "lease_owner_terminated", now)
         return len(rows)
 
     def claim(

@@ -283,6 +283,10 @@ class ChatSandboxSpendCapCoordinator:
 
     def _record_kill_sweep(self, *, provider_uncertain: int) -> None:
         with self.session_factory() as db, db.begin():
+            spend = self.spend_factory(db)
+            ChatSandboxSpendService(
+                db, self.settings
+            ).abort_abandoned_direct_reservations()
             self.capacity_locker(db)
             remaining_live = (
                 db.scalar(
@@ -319,7 +323,7 @@ class ChatSandboxSpendCapCoordinator:
                 )
                 or 0
             )
-            self.spend_factory(db).record_kill_sweep(
+            spend.record_kill_sweep(
                 complete=(
                     provider_uncertain == 0
                     and remaining_live == 0
