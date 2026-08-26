@@ -4,6 +4,7 @@ import asyncio
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -359,6 +360,106 @@ def test_cancelled_terminal_waits_for_transaction_without_orphan_or_duplicate(
 
     assert terminal_calls == [terminal_path]
     assert orchestrator.lease_heartbeat_task is None
+
+
+@pytest.mark.parametrize("terminal_path", ["outer", "preparation", "generic"])
+def test_orchestrator_cancellation_during_terminal_cleanup_is_exactly_once(
+    monkeypatch, terminal_path
+):
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_heartbeat_seconds": 0.01,
+        }
+    )
+    started = threading.Event()
+    release = threading.Event()
+    terminal_calls: list[str] = []
+    heartbeats: list[TurnLeaseClaim] = []
+
+    def claim_turn(_settings, current):
+        return current.__class__(
+            **{
+                name: getattr(current, name)
+                for name in current.__dataclass_fields__
+                if name != "durable_claim"
+            },
+            durable_claim=claim,
+        )
+
+    async def preparation(*_args, **_kwargs):
+        if terminal_path == "preparation":
+            raise RuntimeError("preparation failed")
+
+    def create_runner(**_kwargs):
+        if terminal_path == "outer":
+            raise asyncio.CancelledError
+        raise RuntimeError("generic failure")
+
+    def blocked_terminal(*_args):
+        terminal_calls.append(terminal_path)
+        started.set()
+        assert release.wait(timeout=1)
+
+    class Latency:
+        def __init__(self, _db):
+            pass
+
+        def finalize(self, *_args):
+            pass
+
+    @contextmanager
+    def session_local():
+        yield SimpleNamespace(commit=lambda: None)
+
+    monkeypatch.setattr(chat_stream_service, "_claim_local_turn", claim_turn)
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda _settings, current: heartbeats.append(current.durable_claim),
+    )
+    monkeypatch.setattr(chat_stream_service, "_start_local_turn", lambda *_args: None)
+    monkeypatch.setattr(chat_stream_service, "_prepare_replacement", preparation)
+    monkeypatch.setattr(chat_stream_service, "create_chat_turn_runner", create_runner)
+    monkeypatch.setattr(chat_stream_service, "_persist_failure", blocked_terminal)
+    monkeypatch.setattr(
+        chat_stream_service, "_persist_preparation_failure", blocked_terminal
+    )
+    monkeypatch.setattr(
+        chat_stream_service, "db_manager", SimpleNamespace(session_local=session_local)
+    )
+    monkeypatch.setattr(chat_stream_service, "ChatLatencyService", Latency)
+    orchestrator = _orchestrator(settings, admission)
+
+    async def exercise():
+        stream = asyncio.create_task(_collect_stream_events(orchestrator))
+        while not started.is_set():
+            await asyncio.sleep(0)
+        stream.cancel()
+        await asyncio.sleep(0.025)
+        first_count = len(heartbeats)
+        assert first_count >= 1
+        stream.cancel()
+        await asyncio.sleep(0.025)
+        assert len(heartbeats) > first_count
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stream
+        stopped_at = len(heartbeats)
+        await asyncio.sleep(0.025)
+        assert len(heartbeats) == stopped_at
+
+    asyncio.run(exercise())
+
+    assert terminal_calls == [terminal_path]
+    assert orchestrator.lease_heartbeat_task is None
+    assert orchestrator.terminal_cleanup_completed is True
+
+
+async def _collect_stream_events(orchestrator):
+    return [frame async for frame in orchestrator._events()]
 
 
 def test_stale_claim_never_prepares_or_dispatches(monkeypatch):

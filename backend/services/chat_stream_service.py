@@ -1331,6 +1331,7 @@ class ChatStreamOrchestrator:
         self.title_task: asyncio.Task | None = None
         self.lease_heartbeat_task: asyncio.Task | None = None
         self.lease_heartbeat_error: Exception | None = None
+        self.terminal_cleanup_completed = False
         self.runner: ChatTurnRunner | None = None
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
         self.edit_activated = False
@@ -1463,24 +1464,25 @@ class ChatStreamOrchestrator:
         except asyncio.CancelledError:
             interruption_reason = self.interruption_reason or "stream_cancelled"
             await self._cancel_runner()
-            if self.admission.is_replacement and not self.edit_activated:
-                await self._persist_terminal_with_lease(
-                    _persist_preparation_failure,
-                    self.owner,
-                    self.settings,
-                    self.admission,
-                    "interrupted",
-                )
-            else:
-                await self._persist_terminal_with_lease(
-                    _persist_failure,
-                    self.owner,
-                    self.settings,
-                    self.admission,
-                    "interrupted",
-                    True,
-                    self.projection.completed_blocks(),
-                )
+            if not self.terminal_cleanup_completed:
+                if self.admission.is_replacement and not self.edit_activated:
+                    await self._persist_terminal_with_lease(
+                        _persist_preparation_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                    )
+                else:
+                    await self._persist_terminal_with_lease(
+                        _persist_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                        True,
+                        self.projection.completed_blocks(),
+                    )
             self.terminal = "interrupted"
             self.trace.finish(
                 "".join(self.projection.answer_parts),
@@ -1640,6 +1642,7 @@ class ChatStreamOrchestrator:
                     break
                 except asyncio.CancelledError as exc:
                     cancellation = cancellation or exc
+            self.terminal_cleanup_completed = True
             if cancellation is not None:
                 raise cancellation
         finally:
@@ -2148,7 +2151,7 @@ class ChatStreamOrchestrator:
         # instead of delivering CancelledError. Persist the interruption here
         # as a last resort so a disconnected browser cannot leave the turn
         # generating until its lease expires.
-        if self.terminal == "disconnect":
+        if self.terminal == "disconnect" and not self.terminal_cleanup_completed:
             self.interruption_reason = self.interruption_reason or "stream_closed"
             if self.admission.is_replacement and not self.edit_activated:
                 await self._persist_terminal_with_lease(
