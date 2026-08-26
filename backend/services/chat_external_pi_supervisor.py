@@ -21,6 +21,10 @@ class ExternalPiWorkerMismatch(RuntimeError):
     """The reachable worker does not match the protected deployment contract."""
 
 
+class ExternalPiWorkerDrainIncomplete(RuntimeError):
+    """The worker is draining but still owns active sessions."""
+
+
 @dataclass(slots=True)
 class ChatExternalPiSupervisor:
     client: ExternalPiWorkerControlClient
@@ -114,7 +118,9 @@ class ChatExternalPiSupervisor:
         status = await self.client.status()
         self._validate(status, claim=claim, expected_state="draining")
         if status.active_sessions != 0:
-            raise ExternalPiWorkerMismatch("External Pi worker drain is incomplete")
+            raise ExternalPiWorkerDrainIncomplete(
+                "External Pi worker drain is incomplete"
+            )
         self.repository.heartbeat(
             db,
             claim=claim,

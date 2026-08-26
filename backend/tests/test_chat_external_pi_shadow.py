@@ -10,6 +10,8 @@ from backend.services.chat_external_pi_shadow import (
     ExternalPiShadowRequest,
     ExternalPiWorkerControlClient,
     ExternalPiWorkerStatus,
+    ExternalPiWorkerControlRejected,
+    ExternalPiWorkerUnavailable,
 )
 
 
@@ -181,3 +183,46 @@ def test_external_pi_worker_status_rejects_unexpected_or_oversized_capacity():
 
     with pytest.raises(RuntimeError, match="invalid response"):
         asyncio.run(run())
+
+
+@pytest.mark.parametrize("status_code", [500, 503])
+def test_external_pi_worker_control_classifies_transient_server_failures(status_code):
+    async def handler(_request):
+        return httpx.Response(status_code)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await ExternalPiWorkerControlClient(
+                base_url="http://worker.internal",
+                token="secret",
+                http=http,
+            ).status()
+
+    with pytest.raises(ExternalPiWorkerUnavailable):
+        asyncio.run(run())
+
+
+def test_external_pi_worker_control_does_not_retry_rejected_or_malformed_responses():
+    responses = iter(
+        (
+            httpx.Response(401),
+            httpx.Response(200, json={"protocol": "external-pi-v1"}),
+        )
+    )
+
+    async def handler(_request):
+        return next(responses)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ExternalPiWorkerControlClient(
+                base_url="http://worker.internal",
+                token="secret",
+                http=http,
+            )
+            with pytest.raises(ExternalPiWorkerControlRejected):
+                await client.status()
+            with pytest.raises(ExternalPiWorkerControlRejected):
+                await client.status()
+
+    asyncio.run(run())

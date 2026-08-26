@@ -8,6 +8,7 @@ import pytest
 from backend.services.chat_external_pi_shadow import ExternalPiWorkerStatus
 from backend.services.chat_external_pi_supervisor import (
     ChatExternalPiSupervisor,
+    ExternalPiWorkerDrainIncomplete,
     ExternalPiWorkerMismatch,
 )
 from backend.services.chat_external_worker_registry import ExternalWorkerClaim
@@ -154,3 +155,37 @@ def test_stale_supervisor_cannot_mutate_the_remote_worker():
         )
 
     client.begin_drain.assert_not_awaited()
+
+
+def test_supervisor_reports_an_incomplete_drain_without_marking_offline():
+    claim = ExternalWorkerClaim(
+        "worker-1",
+        uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        3,
+    )
+    client = Mock(
+        status=AsyncMock(
+            return_value=_status(
+                state="draining", active_sessions=1, worker_generation=3
+            )
+        )
+    )
+    repository = Mock()
+    supervisor = ChatExternalPiSupervisor(
+        client=client,
+        repository=repository,
+        expected_release_id="release-a",
+        expected_contract_version="external-pi-v1",
+        expected_maximum_sessions=8,
+    )
+
+    with pytest.raises(ExternalPiWorkerDrainIncomplete):
+        asyncio.run(
+            supervisor.finish_drain(
+                Mock(),
+                claim=claim,
+                now=datetime(2026, 8, 26, 12, tzinfo=UTC),
+            )
+        )
+
+    repository.mark_offline.assert_not_called()

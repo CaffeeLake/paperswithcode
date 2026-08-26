@@ -206,7 +206,14 @@ def test_external_pi_migration_switches_are_independent_and_fail_closed(
 
 
 def test_external_pi_shadow_worker_starts_at_eight_but_remains_configurable():
-    assert Settings(_env_file=None).chat_external_pi_worker_max_sessions == 8
+    defaults = Settings(_env_file=None)
+    assert defaults.chat_external_pi_worker_max_sessions == 8
+    assert defaults.chat_external_pi_supervisor_enabled is False
+    assert defaults.chat_external_pi_heartbeat_seconds == 5
+    assert defaults.chat_external_pi_lease_seconds == 15
+    assert defaults.chat_external_pi_startup_timeout_seconds == 60
+    assert defaults.chat_external_pi_drain_seconds == 60
+    assert defaults.chat_external_pi_drain_poll_seconds == 1
     assert (
         Settings(
             _env_file=None, chat_external_pi_worker_max_sessions=32
@@ -239,6 +246,28 @@ def test_external_pi_migration_controls_remain_staging_only(settings_factory):
     settings.chat_external_pi_shadow_enabled = True
 
     with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    settings.chat_external_pi_shadow_enabled = False
+    settings.chat_external_pi_supervisor_enabled = True
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_external_pi_supervisor_requires_a_safe_heartbeat_lease_ratio(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "s" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_heartbeat_seconds = 10
+    settings.chat_external_pi_lease_seconds = 15
+
+    with pytest.raises(
+        RuntimeError, match="heartbeat must renew before half the lease"
+    ):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 

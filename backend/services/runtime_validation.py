@@ -559,7 +559,7 @@ def validate_chat_provider_policy(
 def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     """Validate sandbox spend, capacity, alerting, and provider reserve."""
 
-    _validate_external_pi_migration_policy(settings)
+    validate_external_pi_migration_policy(settings)
     if not settings.chat_sandbox_spend_enforcement_enabled:
         raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
     configured_spend = SandboxSpendPolicy(
@@ -944,12 +944,13 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             raise RuntimeError("Pi prewarm requires an immutable prompt digest")
 
 
-def _validate_external_pi_migration_policy(settings: Settings) -> None:
+def validate_external_pi_migration_policy(settings: Settings) -> None:
     """Keep each external-harness bridge independently reversible."""
 
     switches = {
         "shadow": settings.chat_external_pi_shadow_enabled,
         "admission": settings.chat_external_pi_admission_enabled,
+        "supervisor": settings.chat_external_pi_supervisor_enabled,
         "remote_tools": settings.chat_remote_workspace_tools_enabled,
         "safe_cli": settings.chat_safe_cli_fast_path_enabled,
         "lazy_workspace": settings.chat_lazy_workspace_enabled,
@@ -979,6 +980,12 @@ def _validate_external_pi_migration_policy(settings: Settings) -> None:
             or settings.chat_external_pi_worker_contract_version != "external-pi-v1"
         ):
             raise RuntimeError("external Pi worker identity is invalid")
+    if (
+        settings.chat_external_pi_supervisor_enabled
+        and settings.chat_external_pi_heartbeat_seconds * 2
+        > settings.chat_external_pi_lease_seconds
+    ):
+        raise RuntimeError("external Pi heartbeat must renew before half the lease")
     if settings.chat_safe_cli_fast_path_enabled and not (
         settings.chat_remote_workspace_tools_enabled
     ):

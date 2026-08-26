@@ -113,6 +113,14 @@ class ExternalPiWorkerStatus(BaseModel):
         return self
 
 
+class ExternalPiWorkerUnavailable(RuntimeError):
+    """The worker could not be reached or returned a transient server failure."""
+
+
+class ExternalPiWorkerControlRejected(RuntimeError):
+    """The worker rejected the request or violated the control contract."""
+
+
 @dataclass(slots=True)
 class ExternalPiShadowClient:
     base_url: str
@@ -156,10 +164,10 @@ class ExternalPiWorkerControlClient:
         generation: int | None = None,
         json_body: dict[str, object] | None = None,
     ) -> ExternalPiWorkerStatus:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if generation is not None:
+            headers["X-PWC-Worker-Generation"] = str(generation)
         try:
-            headers = {"Authorization": f"Bearer {self.token}"}
-            if generation is not None:
-                headers["X-PWC-Worker-Generation"] = str(generation)
             response = await self.http.request(
                 method,
                 f"{self.base_url.rstrip('/')}{path}",
@@ -167,10 +175,24 @@ class ExternalPiWorkerControlClient:
                 json=json_body,
                 timeout=self.timeout_seconds,
             )
+        except httpx.RequestError as error:
+            raise ExternalPiWorkerUnavailable(
+                "External Pi worker is unavailable"
+            ) from error
+        try:
             response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            if response.status_code >= 500:
+                raise ExternalPiWorkerUnavailable(
+                    "External Pi worker is unavailable"
+                ) from error
+            raise ExternalPiWorkerControlRejected(
+                "External Pi worker returned an invalid response"
+            ) from error
+        try:
             return ExternalPiWorkerStatus.model_validate(response.json())
-        except (httpx.HTTPError, ValueError, ValidationError) as error:
-            raise RuntimeError(
+        except (ValueError, ValidationError) as error:
+            raise ExternalPiWorkerControlRejected(
                 "External Pi worker returned an invalid response"
             ) from error
 
