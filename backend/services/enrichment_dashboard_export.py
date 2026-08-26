@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -17,6 +18,8 @@ SCHEMA_VERSION = 1
 def _iso(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
     return value
 
 

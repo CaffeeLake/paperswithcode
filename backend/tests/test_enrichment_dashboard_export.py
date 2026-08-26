@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime, timezone
 
 from backend.services.enrichment_dashboard_export import build_snapshot, write_snapshot
@@ -18,18 +19,25 @@ class FakeDB:
     def __init__(
         self, jobs, evaluations, gaps, trending_models=None, trending_decisions=None
     ):
-        self.results = iter(
-            [
-                Result(jobs),
-                Result(evaluations),
-                Result(gaps),
-                Result(trending_models or []),
-                Result(trending_decisions or []),
-            ]
-        )
+        self.jobs = jobs
+        self.evaluations = evaluations
+        self.gaps = gaps
+        self.trending_models = trending_models or []
+        self.trending_decisions = trending_decisions or []
 
-    def execute(self, *_args, **_kwargs):
-        return next(self.results)
+    def execute(self, statement, *_args, **_kwargs):
+        query = str(statement)
+        if "JOIN trending_model_candidates" in query:
+            return Result(self.trending_decisions)
+        if "FROM paper_curation_jobs" in query:
+            return Result(self.jobs)
+        if "FROM evaluations" in query:
+            return Result(self.evaluations)
+        if "FROM benchmark_curation_candidates" in query:
+            return Result(self.gaps)
+        if "FROM trending_model_candidates" in query:
+            return Result(self.trending_models)
+        raise AssertionError(f"Unexpected snapshot query: {query}")
 
 
 def test_snapshot_groups_jobs_and_deduplicates_gap_paper_pairs(tmp_path):
@@ -106,3 +114,29 @@ def test_write_snapshot_creates_json(tmp_path):
     path = tmp_path / "snapshot.json"
     write_snapshot({"schema_version": 1, "generated_at": "now"}, path)
     assert path.exists()
+
+
+def test_snapshot_serializes_trending_decision_job_uuid(tmp_path):
+    timestamp = datetime(2026, 8, 26, 15, tzinfo=timezone.utc)
+    job_id = uuid.uuid4()
+    snapshot = build_snapshot(
+        FakeDB(
+            [],
+            [],
+            [],
+            trending_decisions=[
+                {
+                    "repo_id": "org/model",
+                    "job_id": job_id,
+                    "created_at": timestamp,
+                }
+            ],
+        ),
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+    )
+    path = tmp_path / "snapshot.json"
+
+    write_snapshot(snapshot, path)
+
+    assert str(job_id) in path.read_text()
