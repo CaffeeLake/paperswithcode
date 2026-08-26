@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -15,11 +16,17 @@ from sqlalchemy import text
 SCHEMA_VERSION = 1
 
 
-def _iso(value: Any) -> Any:
+def _json_safe(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, UUID):
         return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
     return value
 
 
@@ -194,7 +201,7 @@ def build_snapshot(
         daily[_day(row["created_at"])]["benchmark_gap_reports"] += 1
 
     def clean(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{key: _iso(value) for key, value in row.items()} for row in rows]
+        return [_json_safe(row) for row in rows]
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -220,5 +227,7 @@ def write_snapshot(snapshot: dict[str, Any], path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
+    temporary.write_text(
+        json.dumps(_json_safe(snapshot), indent=2, sort_keys=True) + "\n"
+    )
     temporary.replace(target)

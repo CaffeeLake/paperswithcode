@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from backend.services.enrichment_dashboard_export import build_snapshot, write_snapshot
 
@@ -167,3 +168,28 @@ def test_snapshot_handles_in_progress_enrichment_without_mutation_result():
     )
 
     assert snapshot["papers"][0]["mutation_status"] is None
+
+
+def test_snapshot_serializes_postgres_numeric_values(tmp_path):
+    timestamp = datetime(2026, 8, 26, 15, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        FakeDB(
+            [],
+            [],
+            [],
+            trending_models=[
+                {
+                    "repo_id": "org/model",
+                    "trending_score": Decimal("123.45"),
+                    "first_seen_at": timestamp,
+                }
+            ],
+        ),
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+    )
+    path = tmp_path / "snapshot.json"
+
+    write_snapshot(snapshot, path)
+
+    assert '"trending_score": 123.45' in path.read_text()
