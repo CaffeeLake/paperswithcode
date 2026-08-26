@@ -399,6 +399,49 @@ def test_resolution_rejects_existing_paper_without_canonical_source_evidence():
         )
 
 
+def test_resolution_accepts_pinned_model_card_for_existing_hf_model_paper():
+    db = _resolution_session()
+    paper = Paper(
+        title="Qwen3.8-27B",
+        source="external",
+        source_url="https://huggingface.co/Qwen/Qwen3.8-27B",
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="Qwen/Qwen3.8-27B",
+        author="Qwen",
+        readme_sha="a" * 64,
+        status="resolving",
+    )
+    db.add_all([paper, candidate])
+    db.commit()
+
+    result = TrendingModelResolutionService(db).apply(
+        candidate.id,
+        ResolveModelPaperMutation.model_validate(
+            {
+                "decision": "accept",
+                "reason": "First-party pinned model card documents new weights.",
+                "novelty_kind": "new_weights",
+                "evidence_urls": [
+                    "https://huggingface.co/Qwen/Qwen3.8-27B/raw/abc123/README.md"
+                ],
+                "existing_paper_id": paper.id,
+                "model_release": {
+                    "canonical_name": "Qwen3.8-27B",
+                    "publisher": "Qwen",
+                    "is_open": True,
+                    "aliases": ["Qwen/Qwen3.8-27B"],
+                },
+            }
+        ),
+    )
+
+    assert result["paper_id"] == paper.id
+    assert db.get(TrendingModelCandidate, candidate.id).status == "resolved"
+
+
 def test_resolution_rejection_is_durable_and_creates_no_catalog_rows():
     db = _resolution_session()
     candidate = TrendingModelCandidate(

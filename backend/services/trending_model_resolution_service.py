@@ -165,8 +165,20 @@ class TrendingModelResolutionService:
             if paper is None:
                 raise LookupError("Resolved paper not found")
             evidence = {url.rstrip("/") for url in mutation.evidence_urls}
+            source_url = paper.source_url.rstrip("/") if paper.source_url else None
             source_supported = bool(
-                paper.source_url and paper.source_url.rstrip("/") in evidence
+                source_url
+                and (
+                    source_url in evidence
+                    or (
+                        source_url.startswith("https://huggingface.co/")
+                        and any(
+                            url.startswith(f"{source_url}/raw/")
+                            and url.endswith("/README.md")
+                            for url in evidence
+                        )
+                    )
+                )
             )
             arxiv_supported = bool(
                 paper.arxiv_id
