@@ -142,6 +142,147 @@ def test_matching_admission_is_idempotent_and_mismatch_fails_closed(db):
     assert db.query(ChatTurnJob).count() == 1
 
 
+def test_preflight_locks_in_order_and_returns_exact_request_replay(db):
+    lock_order = []
+    repository = ChatTurnJobRepository(
+        advisory_locker=lambda _db, key: lock_order.append(key)
+    )
+    session = _session(db)
+    admitted = _admit(repository, db, session, request_id="stable-request").job
+    lock_order.clear()
+
+    replay = repository.preflight_admission(
+        db,
+        hf_user_id=session.hf_user_id,
+        request_id="stable-request",
+        chat_session_id=session.id,
+        emergency_capacity=1,
+    )
+
+    assert replay.existing_job is admitted
+    assert lock_order == ["chat-user:owner-1", "chat-global-active-turns"]
+
+
+def test_preflight_rejects_identity_contention_and_exact_capacity_without_writes(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    owner = _session(db)
+    other = _session(db, owner="owner-2")
+    third = _session(db, owner="owner-3")
+    admitted = _admit(repository, db, owner, request_id="owner-request").job
+
+    with pytest.raises(IdempotencyMismatch):
+        repository.preflight_admission(
+            db,
+            hf_user_id=other.hf_user_id,
+            request_id=admitted.request_id,
+            chat_session_id=None,
+            emergency_capacity=3,
+        )
+    with pytest.raises(IdempotencyMismatch):
+        repository.preflight_admission(
+            db,
+            hf_user_id=owner.hf_user_id,
+            request_id=admitted.request_id,
+            chat_session_id=other.id,
+            emergency_capacity=3,
+        )
+    with pytest.raises(AccountBusy):
+        repository.preflight_admission(
+            db,
+            hf_user_id=owner.hf_user_id,
+            request_id="new-owner-request",
+            chat_session_id=owner.id,
+            emergency_capacity=3,
+        )
+
+    _admit(repository, db, other, request_id="other-request", capacity=3)
+    before = db.query(ChatTurnJob).count()
+    with pytest.raises(ChatOverload):
+        repository.preflight_admission(
+            db,
+            hf_user_id=third.hf_user_id,
+            request_id="third-request",
+            chat_session_id=None,
+            emergency_capacity=2,
+        )
+    assert db.query(ChatTurnJob).count() == before
+
+
+@pytest.mark.parametrize(
+    ("field", "different"),
+    [
+        ("revision", 2),
+        ("dispatch_route", "different-route"),
+        ("app_release_id", "release-b"),
+        ("worker_contract_version", "external-pi-v2"),
+    ],
+)
+def test_preflighted_replay_validates_full_dispatch_identity(db, field, different):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    admitted = _admit(repository, db, session, request_id="exact-replay").job
+    preflight = repository.preflight_admission(
+        db,
+        hf_user_id=session.hf_user_id,
+        request_id=admitted.request_id,
+        chat_session_id=session.id,
+        emergency_capacity=1,
+    )
+    identity = {
+        "turn_id": admitted.turn_id,
+        "chat_session_id": session.id,
+        "hf_user_id": session.hf_user_id,
+        "request_id": admitted.request_id,
+        "revision": admitted.revision,
+        "dispatch_class": admitted.dispatch_class,
+        "dispatch_route": admitted.dispatch_route,
+        "app_release_id": admitted.app_release_id,
+        "worker_contract_version": admitted.worker_contract_version,
+        "now": NOW,
+        "emergency_capacity": 1,
+    }
+    identity[field] = different
+
+    with pytest.raises(IdempotencyMismatch):
+        repository.admit_preflighted(db, preflight=preflight, **identity)
+
+    assert db.query(ChatTurnJob).count() == 1
+
+
+def test_preflighted_new_admission_does_not_relock_or_recount(db):
+    lock_order = []
+    repository = ChatTurnJobRepository(
+        advisory_locker=lambda _db, key: lock_order.append(key)
+    )
+    session = _session(db)
+    preflight = repository.preflight_admission(
+        db,
+        hf_user_id=session.hf_user_id,
+        request_id="preflighted-new",
+        chat_session_id=session.id,
+        emergency_capacity=1,
+    )
+
+    admission = repository.admit_preflighted(
+        db,
+        preflight=preflight,
+        turn_id=uuid.uuid4(),
+        chat_session_id=session.id,
+        hf_user_id=session.hf_user_id,
+        request_id="preflighted-new",
+        revision=1,
+        dispatch_class="interactive",
+        dispatch_route="external-pi",
+        app_release_id="release-a",
+        worker_contract_version="external-pi-v1",
+        now=NOW,
+        emergency_capacity=1,
+    )
+
+    assert admission.created is True
+    assert lock_order == ["chat-user:owner-1", "chat-global-active-turns"]
+
+
 def test_admission_rejects_busy_owner_and_capacity_edge_without_insert(db):
     repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
     owner_session = _session(db)

@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from backend.config import get_settings
+from backend.models.database import ChatMessageRecord
+from backend.services import chat_session_service as chat_session_module
+from backend.services.chat_session_service import (
+    ChatOwner,
+    ChatServiceError,
+    ChatSessionService,
+)
+from backend.services.chat_turn_job_repository import (
+    AccountBusy,
+    ChatOverload,
+    IdempotencyMismatch,
+)
+from backend.tests.test_chat_turn_admission_characterization import (
+    _Result,
+    _ScriptedDB,
+    _session,
+)
+from backend.tests.test_chat_turn_admission_decomposition import (
+    _TransactionalScriptedDB,
+)
+
+
+def test_enabled_completed_replay_validates_durable_revision_before_return(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    session = _session(settings)
+    turn_id = uuid.uuid4()
+    durable_job = SimpleNamespace(
+        turn_id=turn_id,
+        chat_session_id=session.id,
+        hf_user_id="owner-1",
+        request_id="stable-request",
+        revision=2,
+    )
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(
+                request_id="stable-request",
+                requested_session_id=session.id,
+                existing_job=durable_job,
+            )
+
+        def validate_replay(self, _preflight, **identity):
+            if identity["revision"] != durable_job.revision:
+                raise IdempotencyMismatch("revision differs")
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    user_message = SimpleNamespace(
+        id=uuid.uuid4(),
+        turn_id=turn_id,
+        status="complete",
+        model=session.selected_model,
+        model_route=settings.chat_model_routes[session.selected_model],
+        sequence=1,
+        revision=1,
+        web_search_enabled=False,
+    )
+    db = _ScriptedDB(
+        execute_results=(
+            _Result(one=user_message),
+            _Result(one=SimpleNamespace(content="persisted", followups=[])),
+        )
+    )
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=session.id,
+            client_message_id="stable-request",
+            text="retry",
+        )
+
+    assert exc_info.value.code == "idempotency_conflict"
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("repository_error", "expected_code"),
+    [(AccountBusy("busy"), "account_busy"), (ChatOverload("full"), "chat_overload")],
+)
+def test_enabled_capacity_rejection_precedes_session_and_message_writes(
+    monkeypatch, repository_error, expected_code
+):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    db = _ScriptedDB()
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            raise repository_error
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: pytest.fail(
+        "session loaded before preflight"
+    )
+    service.create_session = lambda *_args, **_kwargs: pytest.fail(
+        "session created before preflight"
+    )
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=None,
+            client_message_id="rejected-request",
+            text="must not persist",
+        )
+
+    assert exc_info.value.code == expected_code
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
+def test_enabled_request_without_session_recovers_exact_completed_replay(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    session = _session(settings)
+    turn_id = uuid.uuid4()
+    job = SimpleNamespace(chat_session_id=session.id)
+    validated = []
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(existing_job=job)
+
+        def validate_replay(self, _preflight, **identity):
+            validated.append(identity)
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        turn_id=turn_id,
+        status="complete",
+        model=session.selected_model,
+        model_route=settings.chat_model_routes[session.selected_model],
+        sequence=1,
+        revision=3,
+        web_search_enabled=False,
+        app_release_id="release-a",
+        worker_contract_version="contract-a",
+    )
+    db = _ScriptedDB(
+        execute_results=(
+            _Result(one=existing),
+            _Result(one=SimpleNamespace(content="persisted", followups=[])),
+        )
+    )
+    service = ChatSessionService(db, settings)
+    loaded_session_ids = []
+
+    def _owned(_owner, session_id, **_kwargs):
+        loaded_session_ids.append(session_id)
+        return session
+
+    service._owned = _owned
+
+    admission = service.begin_turn(
+        ChatOwner("owner-1", "owner"),
+        session_id=None,
+        client_message_id="stable-request",
+        text="retry",
+    )
+
+    assert admission.turn_id == turn_id
+    assert admission.replay_assistant is not None
+    assert loaded_session_ids == [session.id]
+    assert validated == [
+        {
+            "turn_id": turn_id,
+            "chat_session_id": session.id,
+            "hf_user_id": "owner-1",
+            "revision": 3,
+            "dispatch_route": "legacy-claude",
+            "app_release_id": "release-a",
+            "worker_contract_version": "contract-a",
+            "now": validated[0]["now"],
+        }
+    ]
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
+def test_enabled_in_progress_replay_is_not_readmitted(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    session = _session(settings)
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(
+                existing_job=SimpleNamespace(chat_session_id=session.id)
+            )
+
+        def admit(self, *_args, **_kwargs):
+            pytest.fail("in-progress replay was readmitted")
+
+        def validate_replay(self, *_args, **_kwargs):
+            pytest.fail("in-progress replay was treated as completed")
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    existing = SimpleNamespace(
+        turn_id=uuid.uuid4(), status="generating", web_search_enabled=False
+    )
+    db = _ScriptedDB(execute_results=(_Result(one=existing), _Result(one=None)))
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=None,
+            client_message_id="running-request",
+            text="retry",
+        )
+
+    assert exc_info.value.code == "turn_in_progress"
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
+def test_enabled_integrity_failure_rolls_back_session_and_message(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    session = _session(settings)
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(existing_job=None)
+
+        def admit(self, *_args, **_kwargs):
+            raise IntegrityError("insert chat_turn_jobs", {}, RuntimeError("conflict"))
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    db = _TransactionalScriptedDB(
+        execute_results=(_Result(one=None), _Result()),
+        scalar_results=(0,),
+        tracked=(session,),
+    )
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+    before = vars(session).copy()
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=session.id,
+            client_message_id="flush-conflict",
+            text="must roll back",
+        )
+    db.rollback()
+
+    assert exc_info.value.code == "durable_admission_failed"
+    assert exc_info.value.commit_changes is False
+    assert any(isinstance(row, ChatMessageRecord) for row in db.rows_at_rollback)
+    assert vars(session) == before
+    assert db.rows == []
+
+
+def test_disabled_mode_never_constructs_durable_coordinator(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": False}
+    )
+    session = _session(settings)
+
+    class _ForbiddenCoordinator:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("disabled durable coordinator was constructed")
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _ForbiddenCoordinator
+    )
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        status="complete",
+        model=session.selected_model,
+        model_route=settings.chat_model_routes[session.selected_model],
+        sequence=1,
+        revision=1,
+        web_search_enabled=False,
+    )
+    db = _ScriptedDB(
+        execute_results=(
+            _Result(one=existing),
+            _Result(one=SimpleNamespace(content="persisted", followups=[])),
+        )
+    )
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    admission = service.begin_turn(
+        ChatOwner("owner-1", "owner"),
+        session_id=session.id,
+        client_message_id="legacy-replay",
+        text="retry",
+    )
+
+    assert admission.turn_id == existing.turn_id
+    assert db.added == []
+    assert db.flush_calls == 0

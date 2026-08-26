@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.chat_execution_policy import bounded_url_seed
@@ -38,6 +39,16 @@ from backend.services.chat_edit_service import (
     user_message_projection_bytes,
 )
 from backend.services.chat_title_service import normalize_title
+from backend.services.chat_turn_admission_coordinator import (
+    ChatTurnAdmissionCoordinator,
+    DurableAdmissionPreflight,
+)
+from backend.services.chat_turn_job_repository import (
+    AccountBusy,
+    ChatOverload,
+    IdempotencyMismatch,
+    TurnJobError,
+)
 from backend.services.latex_paper_service import LatexPaperService
 
 
@@ -346,6 +357,36 @@ class ChatSessionService:
         self.db = db
         self.settings = settings
         self.edits = ChatEditService(db)
+
+    @staticmethod
+    def _durable_admission_error(error: Exception) -> ChatServiceError:
+        if isinstance(error, AccountBusy):
+            return ChatServiceError(
+                "account_busy", 429, "This account already has an active turn"
+            )
+        if isinstance(error, ChatOverload):
+            return ChatServiceError(
+                "chat_overload", 429, "Research chat is temporarily at capacity"
+            )
+        if isinstance(error, IdempotencyMismatch):
+            return ChatServiceError(
+                "idempotency_conflict",
+                409,
+                "This request ID was already used by another turn",
+            )
+        return ChatServiceError(
+            "durable_admission_failed",
+            503,
+            "Research chat admission could not be persisted",
+        )
+
+    @staticmethod
+    def _durable_dispatch_route(agent_harness: str) -> str:
+        return f"legacy-{agent_harness}"
+
+    @staticmethod
+    def _durable_worker_contract(worker_contract_version: str | None) -> str:
+        return worker_contract_version or "legacy-local-v1"
 
     def _owned(
         self, owner: ChatOwner, session_id: uuid.UUID, *, lock: bool = False
@@ -848,6 +889,13 @@ class ChatSessionService:
                     ),
                     prompt_revision=existing.revision,
                     execution_backend=session.execution_backend,
+                    app_release_id=(
+                        getattr(existing, "app_release_id", None)
+                        or self.settings.release_id
+                    ),
+                    worker_contract_version=self._durable_worker_contract(
+                        getattr(existing, "worker_contract_version", None)
+                    ),
                     web_search_enabled=existing_web_search_enabled,
                     reasoning_effort=existing_reasoning_effort,
                     reader_mode=getattr(session, "primary_paper_id", None) is not None,
@@ -1383,6 +1431,20 @@ class ChatSessionService:
         reasoning_effort: str | None = None,
         update_web_search_preference: bool = True,
     ) -> TurnAdmission:
+        durable_coordinator: ChatTurnAdmissionCoordinator | None = None
+        durable_preflight: DurableAdmissionPreflight | None = None
+        if self.settings.chat_durable_turn_dispatch_enabled:
+            durable_coordinator = ChatTurnAdmissionCoordinator(self.db, self.settings)
+            try:
+                durable_preflight = durable_coordinator.preflight(
+                    hf_user_id=owner.hf_user_id,
+                    request_id=client_message_id,
+                    requested_session_id=session_id,
+                )
+            except (TurnJobError, ValueError, SQLAlchemyError) as error:
+                raise self._durable_admission_error(error) from error
+            if durable_preflight.existing_job is not None:
+                session_id = durable_preflight.existing_job.chat_session_id
         session = (
             None if session_id is None else self._owned(owner, session_id, lock=True)
         )
@@ -1404,7 +1466,38 @@ class ChatSessionService:
         )
         if replay.kind == "admitted":
             assert replay.admission is not None
+            if durable_coordinator is not None:
+                assert durable_preflight is not None
+                admission = replay.admission
+                try:
+                    durable_coordinator.validate_replay(
+                        durable_preflight,
+                        turn_id=admission.turn_id,
+                        chat_session_id=admission.session_id,
+                        hf_user_id=owner.hf_user_id,
+                        revision=admission.prompt_revision,
+                        dispatch_route=self._durable_dispatch_route(
+                            admission.agent_harness
+                        ),
+                        app_release_id=admission.app_release_id,
+                        worker_contract_version=self._durable_worker_contract(
+                            admission.worker_contract_version
+                        ),
+                        now=now,
+                    )
+                except (TurnJobError, ValueError, SQLAlchemyError) as error:
+                    raise self._durable_admission_error(error) from error
             return replay.admission
+        if (
+            durable_preflight is not None
+            and durable_preflight.existing_job is not None
+            and replay.kind == "continue"
+        ):
+            raise ChatServiceError(
+                "durable_admission_failed",
+                503,
+                "The durable turn is missing its chat projection",
+            )
         if replay.kind == "expired":
             assert session is not None
             assert replay.expired_message is not None
@@ -1433,9 +1526,10 @@ class ChatSessionService:
                     "This conversation belongs to a different paper.",
                 )
 
-        self._lock_admission_keys(owner)
-        capacity = self._load_capacity_snapshot(owner, session)
-        self._validate_capacity(capacity)
+        if durable_coordinator is None:
+            self._lock_admission_keys(owner)
+            capacity = self._load_capacity_snapshot(owner, session)
+            self._validate_capacity(capacity)
 
         # Capacity admission precedes creation so a rejected new-chat request
         # cannot leave behind a session or any message state.
@@ -1526,6 +1620,27 @@ class ChatSessionService:
             update_web_search_preference=update_web_search_preference,
             now=now,
         )
+        if durable_coordinator is not None:
+            assert durable_preflight is not None
+            try:
+                durable_coordinator.admit(
+                    durable_preflight,
+                    turn_id=plan.replacement.turn_id,
+                    chat_session_id=session.id,
+                    hf_user_id=owner.hf_user_id,
+                    revision=plan.replacement.revision,
+                    dispatch_route=self._durable_dispatch_route(
+                        getattr(message, "agent_harness", None)
+                        or getattr(session, "agent_harness", "claude")
+                    ),
+                    app_release_id=message.app_release_id,
+                    worker_contract_version=self._durable_worker_contract(
+                        message.worker_contract_version
+                    ),
+                    now=now,
+                )
+            except (TurnJobError, ValueError, SQLAlchemyError) as error:
+                raise self._durable_admission_error(error) from error
         fetchable_urls = tuple(
             self.fetchable_url_seed(
                 session.id,

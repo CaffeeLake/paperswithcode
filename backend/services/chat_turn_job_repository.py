@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Callable
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -75,6 +75,14 @@ class TurnAdmission:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TurnAdmissionPreflight:
+    hf_user_id: str
+    request_id: str
+    requested_session_id: uuid.UUID | None
+    existing_job: ChatTurnJob | None
+
+
 AdvisoryLocker = Callable[[Session, str], None]
 
 
@@ -104,6 +112,92 @@ class ChatTurnJobRepository:
             query = query.with_for_update().execution_options(populate_existing=True)
         return db.execute(query).scalar_one_or_none()
 
+    def preflight_admission(
+        self,
+        db: Session,
+        *,
+        hf_user_id: str,
+        request_id: str,
+        chat_session_id: uuid.UUID | None,
+        emergency_capacity: int,
+        turn_id: uuid.UUID | None = None,
+    ) -> TurnAdmissionPreflight:
+        """Lock and decide admission before any session or message is written."""
+        if (
+            not hf_user_id
+            or len(hf_user_id) > 255
+            or not request_id
+            or len(request_id) > 200
+            or emergency_capacity <= 0
+        ):
+            raise ValueError("Turn admission preflight is invalid")
+        self._advisory_locker(db, f"chat-user:{hf_user_id}")
+        self._advisory_locker(db, "chat-global-active-turns")
+
+        if turn_id is None:
+            matches = tuple(
+                job
+                for job in (self.load_by_request(db, request_id, lock=True),)
+                if job is not None
+            )
+        else:
+            matches = tuple(
+                db.execute(
+                    select(ChatTurnJob)
+                    .where(
+                        or_(
+                            ChatTurnJob.turn_id == turn_id,
+                            ChatTurnJob.request_id == request_id,
+                        )
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).scalars()
+            )
+        if matches:
+            existing = matches[0]
+            if (
+                len(matches) != 1
+                or existing.request_id != request_id
+                or (turn_id is not None and existing.turn_id != turn_id)
+                or existing.hf_user_id != hf_user_id
+                or (
+                    chat_session_id is not None
+                    and existing.chat_session_id != chat_session_id
+                )
+            ):
+                raise IdempotencyMismatch("Request idempotency identity mismatches")
+            return TurnAdmissionPreflight(
+                hf_user_id=hf_user_id,
+                request_id=request_id,
+                requested_session_id=chat_session_id,
+                existing_job=existing,
+            )
+
+        owner_active = db.scalar(
+            select(func.count())
+            .select_from(ChatTurnJob)
+            .where(
+                ChatTurnJob.hf_user_id == hf_user_id,
+                ChatTurnJob.state.in_(NONTERMINAL_STATES),
+            )
+        )
+        if owner_active:
+            raise AccountBusy("This account already has a nonterminal turn")
+        active_total = db.scalar(
+            select(func.count())
+            .select_from(ChatTurnJob)
+            .where(ChatTurnJob.state.in_(NONTERMINAL_STATES))
+        )
+        if (active_total or 0) >= emergency_capacity:
+            raise ChatOverload("Emergency chat capacity is full")
+        return TurnAdmissionPreflight(
+            hf_user_id=hf_user_id,
+            request_id=request_id,
+            requested_session_id=chat_session_id,
+            existing_job=None,
+        )
+
     def admit(
         self,
         db: Session,
@@ -131,10 +225,87 @@ class ChatTurnJobRepository:
             now=now,
             emergency_capacity=emergency_capacity,
         )
-        # This order is shared with the existing chat admission path. Both are
-        # transaction-scoped locks, so count-then-insert remains atomic in PG.
-        self._advisory_locker(db, f"chat-user:{hf_user_id}")
-        self._advisory_locker(db, "chat-global-active-turns")
+        preflight = self.preflight_admission(
+            db,
+            hf_user_id=hf_user_id,
+            request_id=request_id,
+            chat_session_id=chat_session_id,
+            emergency_capacity=emergency_capacity,
+            turn_id=turn_id,
+        )
+
+        return self.admit_preflighted(
+            db,
+            preflight=preflight,
+            turn_id=turn_id,
+            chat_session_id=chat_session_id,
+            hf_user_id=hf_user_id,
+            request_id=request_id,
+            revision=revision,
+            dispatch_class=dispatch_class,
+            dispatch_route=dispatch_route,
+            app_release_id=app_release_id,
+            worker_contract_version=worker_contract_version,
+            now=now,
+            emergency_capacity=emergency_capacity,
+        )
+
+    def admit_preflighted(
+        self,
+        db: Session,
+        *,
+        preflight: TurnAdmissionPreflight,
+        turn_id: uuid.UUID,
+        chat_session_id: uuid.UUID,
+        hf_user_id: str,
+        request_id: str,
+        revision: int,
+        dispatch_class: str,
+        dispatch_route: str,
+        app_release_id: str,
+        worker_contract_version: str,
+        now: datetime,
+        emergency_capacity: int,
+    ) -> TurnAdmission:
+        """Finalize admission under locks already acquired by ``preflight_admission``."""
+        self._validate_admission(
+            hf_user_id=hf_user_id,
+            request_id=request_id,
+            revision=revision,
+            dispatch_class=dispatch_class,
+            dispatch_route=dispatch_route,
+            app_release_id=app_release_id,
+            worker_contract_version=worker_contract_version,
+            now=now,
+            emergency_capacity=emergency_capacity,
+        )
+        if (
+            preflight.hf_user_id != hf_user_id
+            or preflight.request_id != request_id
+            or (
+                preflight.requested_session_id is not None
+                and preflight.requested_session_id != chat_session_id
+            )
+        ):
+            raise IdempotencyMismatch("Admission does not match its preflight identity")
+
+        expected = {
+            "turn_id": turn_id,
+            "chat_session_id": chat_session_id,
+            "hf_user_id": hf_user_id,
+            "request_id": request_id,
+            "revision": revision,
+            "dispatch_class": dispatch_class,
+            "dispatch_route": dispatch_route,
+            "app_release_id": app_release_id,
+            "worker_contract_version": worker_contract_version,
+        }
+        if preflight.existing_job is not None:
+            if not self._matches_admission(preflight.existing_job, **expected):
+                raise IdempotencyMismatch(
+                    "Preflight replay identity mismatches admission"
+                )
+            return TurnAdmission(preflight.existing_job, created=False)
 
         matches = list(
             db.execute(
@@ -150,40 +321,11 @@ class ChatTurnJobRepository:
             ).scalars()
         )
         if matches:
-            if len(matches) != 1 or not self._matches_admission(
-                matches[0],
-                turn_id=turn_id,
-                chat_session_id=chat_session_id,
-                hf_user_id=hf_user_id,
-                request_id=request_id,
-                revision=revision,
-                dispatch_class=dispatch_class,
-                dispatch_route=dispatch_route,
-                app_release_id=app_release_id,
-                worker_contract_version=worker_contract_version,
-            ):
+            if len(matches) != 1 or not self._matches_admission(matches[0], **expected):
                 raise IdempotencyMismatch(
                     "Turn/request idempotency identity mismatches"
                 )
             return TurnAdmission(matches[0], created=False)
-
-        owner_active = db.scalar(
-            select(func.count())
-            .select_from(ChatTurnJob)
-            .where(
-                ChatTurnJob.hf_user_id == hf_user_id,
-                ChatTurnJob.state.in_(NONTERMINAL_STATES),
-            )
-        )
-        if owner_active:
-            raise AccountBusy("This account already has a nonterminal turn")
-        active_total = db.scalar(
-            select(func.count())
-            .select_from(ChatTurnJob)
-            .where(ChatTurnJob.state.in_(NONTERMINAL_STATES))
-        )
-        if (active_total or 0) >= emergency_capacity:
-            raise ChatOverload("Emergency chat capacity is full")
 
         job = ChatTurnJob(
             turn_id=turn_id,
