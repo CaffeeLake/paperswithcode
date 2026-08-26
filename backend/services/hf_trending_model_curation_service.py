@@ -329,15 +329,63 @@ class HFTrendingModelCurationService:
                 self.jobs.enqueue_resolved_candidate_workflow(
                     self.db, resolved, self.settings, dispatch=False
                 )
-        models = self.discovery.list_top_models()
         summary = {
-            "discovered": len(models),
+            "discovered": 0,
             "queued": 0,
             "rejected_conversions": 0,
             "unchanged": 0,
             "errors": [],
             "queued_candidate_ids": [],
         }
+        # A sibling release can establish the canonical family paper after the
+        # original model has fallen out of the live trending page. Reconsider
+        # those bounded rejections independently of today's discovery feed.
+        rejected_candidates = (
+            self.db.query(TrendingModelCandidate)
+            .filter(TrendingModelCandidate.status == "rejected")
+            .order_by(
+                TrendingModelCandidate.processed_at.desc(),
+                TrendingModelCandidate.id,
+            )
+            .limit(100)
+            .all()
+        )
+        for candidate in rejected_candidates:
+            attempts = (
+                self.db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.candidate_id == candidate.id,
+                    PaperCurationJob.kind == "resolve-model-paper",
+                )
+                .count()
+            )
+            latest_resolution = (
+                self.db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.candidate_id == candidate.id,
+                    PaperCurationJob.kind == "resolve-model-paper",
+                )
+                .order_by(PaperCurationJob.created_at.desc())
+                .first()
+            )
+            if (
+                attempts < 3
+                and summary["queued"] < max_queued
+                and self._rejected_candidate_can_converge(candidate, latest_resolution)
+            ):
+                self.jobs.enqueue_resolution(
+                    self.db,
+                    candidate=candidate,
+                    requested_by="hf-trending-cron-family-retry",
+                    settings=self.settings,
+                    dispatch=False,
+                    commit=False,
+                )
+                summary["queued"] += 1
+                summary["queued_candidate_ids"].append(str(candidate.id))
+
+        models = self.discovery.list_top_models()
+        summary["discovered"] = len(models)
         now = datetime.now(UTC)
         for model in models:
             candidate = (

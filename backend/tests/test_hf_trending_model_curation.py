@@ -1272,19 +1272,10 @@ def test_hourly_reconcile_retries_substantive_rejection_after_family_paper_exist
     )
     db.commit()
 
-    model = HFTrendingModel.from_payload(
-        {
-            "id": candidate.repo_id,
-            "author": candidate.author,
-            "tags": ["transformers", "eval-results"],
-            "trending_score": 100,
-        }
-    )
-
     class Discovery:
         @staticmethod
         def list_top_models():
-            return [model]
+            return []
 
     class Cards:
         @staticmethod
@@ -1316,6 +1307,7 @@ def test_hourly_reconcile_retries_substantive_rejection_after_family_paper_exist
     ).reconcile(dispatch=False)
 
     assert result["queued"] == 1
+    assert result["discovered"] == 0
     assert queued == ["ornith-ai/Ornith-1.5-9B"]
 
 
