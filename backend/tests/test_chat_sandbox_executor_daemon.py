@@ -207,7 +207,7 @@ def test_duplicate_exec_reattaches_without_repeating_side_effect(
 def test_read_is_bounded_and_descriptor_contained(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "note.txt").write_text("abcdef")
+    (workspace / "note.bin").write_bytes(b"\xff\xc3\xa9\x00Z")
     (workspace / "outside-link").symlink_to(tmp_path / "outside.txt")
     (tmp_path / "outside.txt").write_text("secret")
     server = ExecutorServer(
@@ -225,18 +225,41 @@ def test_read_is_bounded_and_descriptor_contained(tmp_path: Path) -> None:
         "type": "read_file",
         "request_id": "request-read",
         **IDENTITY,
-        "offset": 2,
+        "offset": 0,
         "max_bytes": 3,
     }
 
-    valid = _operation(server.socket_path, {**base, "path": "note.txt"})
+    valid = _operation(server.socket_path, {**base, "path": "note.bin"})
+    split_multibyte = _operation(
+        server.socket_path,
+        {
+            **base,
+            "request_id": "request-split",
+            "path": "note.bin",
+            "offset": 1,
+            "max_bytes": 1,
+        },
+    )
+    nul = _operation(
+        server.socket_path,
+        {
+            **base,
+            "request_id": "request-nul",
+            "path": "note.bin",
+            "offset": 3,
+            "max_bytes": 1,
+        },
+    )
     traversal = _operation(server.socket_path, {**base, "path": "../outside.txt"})
     symlink = _operation(server.socket_path, {**base, "path": "outside-link"})
 
     assert valid[1]["type"] == "read_result"
-    assert valid[1]["offset"] == 2
-    assert valid[1]["data"] == "cde"
+    assert valid[1]["offset"] == 0
+    assert valid[1]["data_base64"] == "/8Op"
     assert valid[1]["eof"] is False
+    assert split_multibyte[1]["data_base64"] == "ww=="
+    assert split_multibyte[1]["eof"] is False
+    assert nul[1]["data_base64"] == "AA=="
     assert traversal[-1]["error"] == "invalid_workspace_path"
     assert symlink[-1]["error"] == "invalid_workspace_path"
     server.shutdown()
@@ -324,6 +347,56 @@ def test_timeout_is_terminal_and_does_not_run_later_side_effect(tmp_path: Path) 
     assert responses[-1]["status"] == "failed"
     assert responses[-1]["error"] == "execution_timeout"
     assert not (workspace / "after-timeout").exists()
+    assert not broker.active
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_timeout_kills_term_ignoring_descendant_after_shell_exits(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    broker = _Broker()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=broker,
+        command_preexec=None,
+        terminate_grace=0.03,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-descendant-timeout",
+            **IDENTITY,
+            "command": (
+                "trap 'exit 0' TERM; "
+                "(trap '' TERM; exec </dev/null >descendant.log 2>&1; "
+                'printf "$BASHPID" > descendant.pid; '
+                "sleep .5; printf late > after-descendant-timeout) & wait"
+            ),
+            "timeout_ms": 150,
+        },
+    )
+
+    descendant_pid = int((workspace / "descendant.pid").read_text())
+    stat_path = Path(f"/proc/{descendant_pid}/stat")
+    if stat_path.exists():
+        state = stat_path.read_text().rsplit(")", 1)[1].split()[0]
+        assert state == "Z"
+    assert responses[-1]["status"] == "failed"
+    assert responses[-1]["error"] == "execution_timeout"
+    time.sleep(0.55)
+    assert not (workspace / "after-descendant-timeout").exists()
     assert not broker.active
     server.shutdown()
     thread.join(timeout=2)
@@ -741,7 +814,7 @@ def test_lost_install_response_still_clears_mutated_broker(tmp_path: Path) -> No
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    class SyntheticLostInstallResponse(BaseException):
+    class SyntheticLostInstallResponse(ConnectionError):
         pass
 
     class LostInstallResponseBroker:
@@ -786,6 +859,64 @@ def test_lost_install_response_still_clears_mutated_broker(tmp_path: Path) -> No
     assert responses[-1]["error"] == "execution_start_failed"
     assert broker.active is False
     assert not (workspace / "lost-install-side-effect").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_unexpected_broker_defect_propagates_after_cleanup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    propagated: list[BaseException] = []
+    propagated_event = threading.Event()
+
+    class DefectiveBroker:
+        def __init__(self) -> None:
+            self.active = False
+
+        def __call__(self, payload: dict[str, object]) -> dict[str, object]:
+            if payload["operation"] == "install":
+                self.active = True
+                raise AssertionError("synthetic unexpected broker defect")
+            if payload["operation"] == "clear":
+                self.active = False
+            return {"ok": True, "active": self.active}
+
+    def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+        propagated.append(args.exc_value)
+        propagated_event.set()
+
+    monkeypatch.setattr(threading, "excepthook", capture_thread_exception)
+    broker = DefectiveBroker()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=broker,
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-unexpected-broker",
+            **IDENTITY,
+            "command": "true",
+            "timeout_ms": 2_000,
+        },
+    )
+
+    assert propagated_event.wait(1)
+    assert isinstance(propagated[0], AssertionError)
+    assert broker.active is False
+    assert responses[-1]["error"] == "execution_lost"
     server.shutdown()
     thread.join(timeout=2)
 
@@ -1048,6 +1179,104 @@ def test_acceptance_write_failure_leaves_no_attachable_hanging_execution(
     assert retry[-1]["status"] == "failed"
     assert retry[-1]["error"] == "executor_containment_failure"
     assert not (workspace / "acceptance-side-effect").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_thread_start_failure_is_durable_execution_lost_for_duplicates(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class FailedStartThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("synthetic thread-start failure")
+
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+        execution_thread_factory=FailedStartThread,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-thread-start",
+        **IDENTITY,
+        "command": "printf bad > thread-start-side-effect",
+        "timeout_ms": 2_000,
+    }
+
+    first = _operation(server.socket_path, request)
+    duplicate = _operation(
+        server.socket_path,
+        {**request, "request_id": "request-thread-start-duplicate"},
+    )
+
+    assert first[-1]["error"] == "execution_lost"
+    assert duplicate[-1]["error"] == "execution_lost"
+    assert not (workspace / "thread-start-side-effect").exists()
+    record = json.loads(next((tmp_path / "state").glob("*/record.json")).read_text())
+    assert record["phase"] == "terminal"
+    assert record["terminal"]["error"] == "execution_lost"
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_thread_start_terminal_failure_closes_stream_and_drains(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_replace = os.replace
+
+    class FailedStartThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("synthetic thread-start failure")
+
+    def fail_terminal_replace(source: str | bytes, target: str | bytes) -> None:
+        value = json.loads(Path(source).read_text(encoding="utf-8"))
+        if value.get("phase") == "terminal":
+            raise OSError("synthetic execution-lost persistence failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_terminal_replace)
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+        execution_thread_factory=FailedStartThread,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-thread-start-terminal-failure",
+        **IDENTITY,
+        "command": "true",
+        "timeout_ms": 2_000,
+    }
+
+    first = _operation(server.socket_path, request)
+    duplicate = _operation(
+        server.socket_path,
+        {**request, "request_id": "request-thread-start-contained"},
+    )
+
+    assert [frame["type"] for frame in first] == ["acknowledged"]
+    assert duplicate[-1]["error"] == "executor_containment_failure"
     server.shutdown()
     thread.join(timeout=2)
 

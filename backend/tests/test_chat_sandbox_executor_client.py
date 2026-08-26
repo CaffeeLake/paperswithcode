@@ -142,7 +142,7 @@ class _SocketProvider:
         self.calls = 0
 
     async def open_executor_relay(self, _sandbox, *, timeout_seconds):
-        assert timeout_seconds == 7
+        assert timeout_seconds in {7, 10}
         self.calls += 1
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.connect(str(self.socket_path))
@@ -314,7 +314,7 @@ def test_executor_client_exposes_health_ensure_attach_cancel_and_read():
                 "read_result",
                 path="notes.txt",
                 offset=3,
-                data="safe text",
+                data_base64="c2FmZSB0ZXh0",
                 eof=True,
             ),
         ],
@@ -337,7 +337,7 @@ def test_executor_client_exposes_health_ensure_attach_cancel_and_read():
 
     assert read.path == "notes.txt"
     assert read.offset == 3
-    assert read.data == "safe text"
+    assert read.data == b"safe text"
     assert read.eof is True
     request_types = []
     for index, process in enumerate(processes):
@@ -427,11 +427,37 @@ def test_daemon_tiny_chunks_fit_shared_client_frame_budget_end_to_end(tmp_path):
     thread.join(timeout=2)
 
 
-@pytest.mark.parametrize(
-    ("data", "max_bytes"),
-    [("abcd", 3), ("éé", 3)],
-)
-def test_read_rejects_data_larger_than_the_requested_utf8_byte_limit(data, max_bytes):
+def test_binary_read_round_trips_through_daemon_socket_and_client(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "bytes.bin").write_bytes(b"\xff\xc3\xa9\x00Z")
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-a",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    provider = _SocketProvider(server.socket_path)
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    result = asyncio.run(
+        client.read_file(_context(), path="bytes.bin", offset=0, max_bytes=4)
+    )
+
+    assert result.data == b"\xff\xc3\xa9\x00"
+    assert result.offset == 0
+    assert result.eof is False
+    assert provider.calls == 1
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_read_rejects_decoded_data_larger_than_the_requested_byte_limit():
     provider = _Provider(
         [
             _Process(
@@ -441,7 +467,7 @@ def test_read_rejects_data_larger_than_the_requested_utf8_byte_limit(data, max_b
                         "read_result",
                         path="notes.txt",
                         offset=0,
-                        data=data,
+                        data_base64="YWJjZA==",
                         eof=False,
                     ),
                 ]
@@ -452,14 +478,17 @@ def test_read_rejects_data_larger_than_the_requested_utf8_byte_limit(data, max_b
 
     with pytest.raises(ProtocolError, match="requested byte limit"):
         asyncio.run(
-            client.read_file(
-                _context(), path="notes.txt", offset=0, max_bytes=max_bytes
-            )
+            client.read_file(_context(), path="notes.txt", offset=0, max_bytes=3)
         )
 
 
-@pytest.mark.parametrize(("data", "max_bytes"), [("abc", 3), ("éé", 4)])
-def test_read_accepts_data_at_the_exact_requested_utf8_byte_limit(data, max_bytes):
+@pytest.mark.parametrize(
+    ("data_base64", "expected", "max_bytes"),
+    [("YWJj", b"abc", 3), ("/8OpAA==", b"\xff\xc3\xa9\x00", 4)],
+)
+def test_read_accepts_exact_binary_data_at_the_requested_byte_limit(
+    data_base64, expected, max_bytes
+):
     provider = _Provider(
         [
             _Process(
@@ -469,7 +498,7 @@ def test_read_accepts_data_at_the_exact_requested_utf8_byte_limit(data, max_byte
                         "read_result",
                         path="notes.txt",
                         offset=0,
-                        data=data,
+                        data_base64=data_base64,
                         eof=True,
                     ),
                 ]
@@ -482,7 +511,7 @@ def test_read_accepts_data_at_the_exact_requested_utf8_byte_limit(data, max_byte
         client.read_file(_context(), path="notes.txt", offset=0, max_bytes=max_bytes)
     )
 
-    assert result.data == data
+    assert result.data == expected
 
 
 @pytest.mark.parametrize("capability", ["", "x" * (64 * 1024)])

@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from backend.chat_sandbox_worker.executor_protocol import (
@@ -145,7 +147,7 @@ def test_each_request_type_round_trips_without_resolving_content(
             **OPERATION_IDENTITY,
             "path": "../literal/path.txt",
             "offset": 2,
-            "data": "llo",
+            "data_base64": "bGxv",
             "eof": True,
         },
         {
@@ -168,6 +170,24 @@ def test_each_request_type_round_trips_without_resolving_content(
 )
 def test_each_response_type_round_trips(response_frame: dict[str, object]) -> None:
     assert decode_response(encode_response(response_frame)) == response_frame
+
+
+def test_read_result_requires_canonical_base64_bytes() -> None:
+    response = {
+        "protocol": PROTOCOL,
+        "type": "read_result",
+        "request_id": "request-bytes",
+        **OPERATION_IDENTITY,
+        "path": "binary.dat",
+        "offset": 4,
+        "data_base64": "/wDAqQ==",
+        "eof": False,
+    }
+
+    assert decode_response(encode_response(response)) == response
+    for invalid in ("***", "Zh==", "YQ", "w6k", "AA==\x00"):
+        with pytest.raises(ProtocolError, match="base64"):
+            encode_response({**response, "data_base64": invalid})
 
 
 def test_rejects_malformed_oversized_and_non_utf8_frames() -> None:
@@ -312,16 +332,6 @@ def test_rejects_oversized_output_chunk() -> None:
         },
         {
             "protocol": PROTOCOL,
-            "type": "read_result",
-            "request_id": "request-1",
-            **OPERATION_IDENTITY,
-            "path": "path.txt",
-            "offset": 0,
-            "data": "before\x00after",
-            "eof": True,
-        },
-        {
-            "protocol": PROTOCOL,
             "type": "terminal",
             "request_id": "request-1",
             **OPERATION_IDENTITY,
@@ -374,7 +384,7 @@ def test_maximum_read_result_is_encodable_at_worst_json_expansion() -> None:
         "tool_call_id": "c" * MAX_TOOL_CALL_ID_BYTES,
         "path": "\\" * MAX_PATH_BYTES,
         "offset": MAX_OFFSET,
-        "data": "\\" * MAX_READ_BYTES,
+        "data_base64": base64.b64encode(b"x" * MAX_READ_BYTES).decode("ascii"),
         "eof": False,
     }
 

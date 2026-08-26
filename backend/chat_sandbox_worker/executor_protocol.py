@@ -5,6 +5,8 @@ This module deliberately performs no command interpretation or path resolution.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from collections.abc import Callable
@@ -23,9 +25,10 @@ MAX_WORKSPACE_GENERATION = 2**63 - 1
 # The daemon must never persist more output frames than the shared remainder.
 MAX_EXECUTION_RESPONSE_FRAMES = 1024
 MAX_EXECUTION_OUTPUT_FRAMES = MAX_EXECUTION_RESPONSE_FRAMES - 2
-# Reserve enough wire space for maximally escaped paths and immutable identities;
-# read data itself can JSON-expand to two bytes per accepted UTF-8 byte.
-MAX_READ_BYTES = (MAX_FRAME_BYTES - 16 * 1024) // 2
+# Reserve wire space for maximally escaped paths and immutable identities. Base64
+# expands three raw bytes to four ASCII bytes with no further JSON expansion.
+MAX_READ_BYTES = ((MAX_FRAME_BYTES - 64 * 1024) // 4) * 3
+MAX_READ_BASE64_BYTES = 4 * ((MAX_READ_BYTES + 2) // 3)
 
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _TOOL_CALL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
@@ -98,6 +101,25 @@ def _sanitized_text(
         for character in value
     ):
         raise ProtocolError(f"Invalid control content in {name}")
+
+
+def decode_read_result_data(value: Any) -> bytes:
+    """Decode the canonical byte-safe Read representation."""
+
+    _bounded_text(
+        value,
+        "read-result base64",
+        MAX_READ_BASE64_BYTES,
+        allow_empty=True,
+    )
+    try:
+        encoded = value.encode("ascii")
+        data = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, binascii.Error) as error:
+        raise ProtocolError("Invalid read-result base64") from error
+    if base64.b64encode(data) != encoded or len(data) > MAX_READ_BYTES:
+        raise ProtocolError("Invalid or oversized read-result base64")
+    return data
 
 
 def _exact_fields(value: dict[str, Any], fields: set[str]) -> None:
@@ -227,11 +249,11 @@ def _validate_response(value: dict[str, Any]) -> None:
             allow_empty=True,
         )
     elif kind == "read_result":
-        _exact_fields(value, operation | {"path", "offset", "data", "eof"})
+        _exact_fields(value, operation | {"path", "offset", "data_base64", "eof"})
         _validate_operation_identity(value)
         _bounded_text(value["path"], "path", MAX_PATH_BYTES)
         _nonnegative_integer(value["offset"], "offset", MAX_OFFSET)
-        _sanitized_text(value["data"], "read result", MAX_READ_BYTES, allow_empty=True)
+        decode_read_result_data(value["data_base64"])
         if not isinstance(value["eof"], bool):
             raise ProtocolError("Invalid read-result EOF marker")
     elif kind == "health_result":

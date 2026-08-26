@@ -15,6 +15,7 @@ from backend.chat_sandbox_worker.executor_protocol import (
     PROTOCOL,
     ProtocolError,
     ResponseSequenceValidator,
+    decode_read_result_data,
     decode_response,
     encode_request,
 )
@@ -63,7 +64,7 @@ class ExecutorExecutionResult:
 class ExecutorReadResult:
     path: str
     offset: int
-    data: str
+    data: bytes
     eof: bool
 
 
@@ -223,12 +224,13 @@ class SandboxExecutorClient:
             raise ProtocolError("Invalid read response sequence")
         if response["path"] != path or response["offset"] != offset:
             raise ProtocolError("Uncorrelated executor read response")
-        if len(str(response["data"]).encode("utf-8")) > max_bytes:
+        data = decode_read_result_data(response["data_base64"])
+        if len(data) > max_bytes:
             raise ProtocolError("Executor read exceeded the requested byte limit")
         return ExecutorReadResult(
             path=str(response["path"]),
             offset=int(response["offset"]),
-            data=str(response["data"]),
+            data=data,
             eof=bool(response["eof"]),
         )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -166,6 +167,7 @@ class ExecutorServer:
         broker_control: Callable[
             [dict[str, object]], dict[str, object]
         ] = _broker_control,
+        execution_thread_factory: Callable[..., threading.Thread] = threading.Thread,
         command_preexec: Callable[[], None] | None | object = _DEFAULT,
         capture_limit: int = MAX_CAPTURE_BYTES,
         read_chunk_size: int = MAX_OUTPUT_CHUNK_BYTES,
@@ -178,6 +180,7 @@ class ExecutorServer:
             "PWC_CHAT_WORKER_GENERATION", ""
         )
         self.broker_control = broker_control
+        self.execution_thread_factory = execution_thread_factory
         self.command_preexec = (
             _demote_command if command_preexec is _DEFAULT else command_preexec
         )
@@ -466,7 +469,7 @@ class ExecutorServer:
                     self._contained.set()
                     return
                 self._executions[key] = execution
-                threading.Thread(
+                worker = self.execution_thread_factory(
                     target=self._run,
                     args=(
                         execution,
@@ -475,7 +478,11 @@ class ExecutorServer:
                         bootstrap,
                     ),
                     daemon=True,
-                ).start()
+                )
+                try:
+                    worker.start()
+                except RuntimeError:
+                    self._finish(execution, "failed", None, "execution_lost")
             elif execution.fingerprint != fingerprint:
                 self._ack(connection, request)
                 self._send_terminal(
@@ -547,63 +554,81 @@ class ExecutorServer:
                 self._finish(execution, "cancelled", None, None)
                 return
             install_attempted = False
+            outcome: tuple[str, int | None, str | None] | None = None
             try:
-                install_attempted = True
-                response = self.broker_control(
-                    {
-                        "operation": "install",
-                        "capability": bootstrap["capability"],
-                        "session_id": execution.identity["session_id"],
-                        "turn_id": execution.identity["turn_id"],
-                    }
-                )
-                if (
-                    not isinstance(response, dict)
-                    or response.get("ok") is not True
-                    or response.get("active") is not True
-                ):
-                    raise RuntimeError
-                _atomic_json(
-                    execution.directory / "record.json",
-                    {
-                        "phase": "running",
-                        "identity": execution.identity,
-                        "fingerprint": execution.fingerprint,
-                        "worker_generation": self.worker_generation,
-                        "terminal": None,
-                    },
-                )
-                process = subprocess.Popen(
-                    ["/bin/bash", "-lc", command],
-                    cwd=self.workspace_root,
-                    env=_command_environment(),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    preexec_fn=self.command_preexec,
-                    start_new_session=True,
-                    bufsize=0,
-                )
-                execution.process = process
-                outcome = self._capture(execution, process, timeout_ms / 1000)
-            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-                process = execution.process
-                if process is not None and process.poll() is None:
-                    self._terminate(process)
-                outcome = ("failed", None, "execution_start_failed")
-            except BaseException:
-                process = execution.process
-                if process is not None and process.poll() is None:
-                    self._terminate(process)
-                self._contained.set()
-                outcome = ("failed", None, "execution_start_failed")
-            cleanup_failed = install_attempted and not self._clear_or_prove_inactive(
-                execution
-            )
-            if cleanup_failed:
-                self._contained.set()
-                outcome = ("failed", None, "capability_cleanup_failed")
-            self._finish(execution, *outcome)
+                try:
+                    install_attempted = True
+                    response = self.broker_control(
+                        {
+                            "operation": "install",
+                            "capability": bootstrap["capability"],
+                            "session_id": execution.identity["session_id"],
+                            "turn_id": execution.identity["turn_id"],
+                        }
+                    )
+                    if (
+                        not isinstance(response, dict)
+                        or response.get("ok") is not True
+                        or response.get("active") is not True
+                    ):
+                        raise RuntimeError("Broker did not confirm capability install")
+                except (OSError, RuntimeError, ValueError):
+                    outcome = ("failed", None, "execution_start_failed")
+                else:
+                    try:
+                        _atomic_json(
+                            execution.directory / "record.json",
+                            {
+                                "phase": "running",
+                                "identity": execution.identity,
+                                "fingerprint": execution.fingerprint,
+                                "worker_generation": self.worker_generation,
+                                "terminal": None,
+                            },
+                        )
+                        process = subprocess.Popen(
+                            ["/bin/bash", "-lc", command],
+                            cwd=self.workspace_root,
+                            env=_command_environment(),
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            preexec_fn=self.command_preexec,
+                            start_new_session=True,
+                            bufsize=0,
+                        )
+                        execution.process = process
+                        outcome = self._capture(execution, process, timeout_ms / 1000)
+                    except (OSError, ValueError, subprocess.SubprocessError):
+                        process = execution.process
+                        if process is not None and process.poll() is None:
+                            self._terminate(process)
+                        outcome = ("failed", None, "execution_start_failed")
+            finally:
+                try:
+                    process = execution.process
+                    if (
+                        outcome is None
+                        and process is not None
+                        and process.poll() is None
+                    ):
+                        self._terminate(process)
+                finally:
+                    cleanup_proven = not install_attempted
+                    try:
+                        if install_attempted:
+                            cleanup_proven = self._clear_or_prove_inactive(execution)
+                    finally:
+                        if not cleanup_proven:
+                            self._contained.set()
+                            outcome = (
+                                "failed",
+                                None,
+                                "capability_cleanup_failed",
+                            )
+                        elif outcome is None:
+                            outcome = ("failed", None, "execution_lost")
+                        self._finish(execution, *outcome)
 
     def _clear_or_prove_inactive(self, execution: _Execution) -> bool:
         try:
@@ -622,11 +647,11 @@ class ExecutorServer:
                 return True
         # Broker transport loss may surface after either mutation. Always attempt
         # the independent status proof before deciding whether to drain.
-        except BaseException:
+        except (OSError, RuntimeError, ValueError):
             pass
         try:
             response = self.broker_control({"operation": "status"})
-        except BaseException:
+        except (OSError, RuntimeError, ValueError):
             return False
         return (
             isinstance(response, dict)
@@ -667,15 +692,44 @@ class ExecutorServer:
         if process.poll() is not None:
             return
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=self.terminate_grace)
+            process_group = os.getpgid(process.pid)
         except ProcessLookupError:
             return
-        except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        # Do not reap the group leader during the grace period. Its process-group
+        # identity remains pinned while descendants handle TERM, so the numeric
+        # group ID cannot be reused before the final group-wide signal.
+        time.sleep(self.terminate_grace)
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        containment_deadline = time.monotonic() + max(self.terminate_grace, 0.25)
+        while self._process_group_has_live_member(process_group):
+            if time.monotonic() >= containment_deadline:
+                self._contained.set()
+            time.sleep(0.005)
+
+    @staticmethod
+    def _process_group_has_live_member(process_group: int) -> bool:
+        for process_path in Path("/proc").iterdir():
+            if not process_path.name.isdigit():
+                continue
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                fields = (process_path / "stat").read_text().rsplit(")", 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if (
+                len(fields) >= 3
+                and fields[0] != "Z"
+                and int(fields[2]) == process_group
+            ):
+                return True
+        return False
 
     def _append_output(self, execution: _Execution, stream: str, data: bytes) -> None:
         with execution.condition:
@@ -799,7 +853,7 @@ class ExecutorServer:
                         "type": "read_result",
                         "path": request["path"],
                         "offset": request["offset"],
-                        "data": _sanitize(data, len(data)),
+                        "data_base64": base64.b64encode(data).decode("ascii"),
                         "eof": eof,
                     }
                 )
