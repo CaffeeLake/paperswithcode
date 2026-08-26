@@ -96,6 +96,13 @@ def summary_markdown(snapshot: dict[str, Any], day: str) -> str:
     )
 
 
+def refresh_snapshot() -> str:
+    latest = load_snapshot()
+    snapshot.clear()
+    snapshot.update(latest)
+    return f"Snapshot refreshed: **{snapshot.get('generated_at', 'unknown')}**"
+
+
 snapshot = load_snapshot()
 dates = _date_options(snapshot)
 default_day = dates[0] if dates else ""
@@ -105,7 +112,11 @@ with gr.Blocks(title="PWC Daily Enrichment Dashboard", theme=gr.themes.Soft()) a
     gr.Markdown(
         "# Papers With Code · Daily Enrichment\nRead-only operational history of paper enrichment, evaluations, and benchmark gaps."
     )
-    gr.Markdown(f"Snapshot generated: **{snapshot.get('generated_at', 'unknown')}**")
+    snapshot_status = gr.Markdown(
+        f"Snapshot generated: **{snapshot.get('generated_at', 'unknown')}**"
+    )
+    refresh = gr.Button("Refresh snapshot", size="sm")
+    refresh.click(refresh_snapshot, outputs=snapshot_status)
     with gr.Tab("Enrichment & evaluations"):
         day = gr.Dropdown(
             dates, value=default_day, label="UTC day", allow_custom_value=True
