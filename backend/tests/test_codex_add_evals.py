@@ -383,6 +383,15 @@ def test_remote_add_evals_requires_configured_leaderboard_search():
     assert "taxonomy command returns only tasks and methods" in normalized_runner
 
 
+def test_add_evals_skill_treats_existing_equivalent_rows_as_satisfied():
+    skill = Path(".agents/skills/add-evals/SKILL.md").read_text(encoding="utf-8")
+    normalized = " ".join(skill.split())
+
+    assert "same introduced model, harness/setup, selected metric" in normalized
+    assert "submit an empty `evaluations` array" in normalized
+    assert "Do not manufacture `validation_evidence` for unchanged rows" in normalized
+
+
 def test_codex_endpoint_enqueues_exact_paper(monkeypatch):
     from backend.routers import codex_add_evals
 
