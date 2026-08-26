@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import (
+    ModelRelease,
     PaperCurationJob,
     PaperCurationWorkflow,
     TrendingModelCandidate,
@@ -26,6 +27,7 @@ from backend.services.hf_trending_model_discovery_service import (
     is_obvious_conversion,
     should_requeue_card,
 )
+from backend.services.trending_model_resolution_service import model_family_key
 
 
 class HFTrendingModelCurationService:
@@ -53,6 +55,45 @@ class HFTrendingModelCurationService:
             self.db.add(state)
             self.db.flush()
         return state
+
+    def _rejected_candidate_can_converge(
+        self, candidate: TrendingModelCandidate, latest_job: PaperCurationJob | None
+    ) -> bool:
+        """Retry when a matching family paper appeared after the rejection."""
+        if candidate.status != "rejected" or latest_job is None or not candidate.author:
+            return False
+        resolution = (latest_job.proposal or {}).get("resolve_model_paper") or {}
+        if resolution.get("decision") != "reject" or resolution.get(
+            "novelty_kind"
+        ) not in {"new_weights", "new_method", "new_release", "uncertain"}:
+            return False
+        candidate_family = model_family_key(candidate.repo_id)
+        if not candidate_family:
+            return False
+        rejected_at = (
+            latest_job.applied_at
+            or latest_job.submitted_at
+            or latest_job.finished_at
+            or latest_job.created_at
+        )
+        releases = (
+            self.db.query(ModelRelease)
+            .filter(
+                func.lower(ModelRelease.publisher) == candidate.author.casefold(),
+                ModelRelease.created_at > rejected_at,
+            )
+            .order_by(ModelRelease.created_at.desc(), ModelRelease.id.desc())
+            .limit(50)
+            .all()
+        )
+        return any(
+            candidate_family
+            in {
+                model_family_key(identity)
+                for identity in [release.canonical_name, *(release.aliases or [])]
+            }
+            for release in releases
+        )
 
     def _release_canary_if_healthy(self, state: TrendingModelCurationState) -> bool:
         if state.canary_released_at is not None:
@@ -343,6 +384,15 @@ class HFTrendingModelCurationService:
                     )
                     .count()
                 )
+                latest_resolution = (
+                    self.db.query(PaperCurationJob)
+                    .filter(
+                        PaperCurationJob.candidate_id == candidate.id,
+                        PaperCurationJob.kind == "resolve-model-paper",
+                    )
+                    .order_by(PaperCurationJob.created_at.desc())
+                    .first()
+                )
                 if (
                     candidate.status == "failed"
                     and attempts < 3
@@ -352,6 +402,22 @@ class HFTrendingModelCurationService:
                         self.db,
                         candidate=candidate,
                         requested_by="hf-trending-cron-retry",
+                        settings=self.settings,
+                        dispatch=False,
+                        commit=False,
+                    )
+                    summary["queued"] += 1
+                    summary["queued_candidate_ids"].append(str(candidate.id))
+                    continue
+                if (
+                    self._rejected_candidate_can_converge(candidate, latest_resolution)
+                    and attempts < 3
+                    and summary["queued"] < max_queued
+                ):
+                    self.jobs.enqueue_resolution(
+                        self.db,
+                        candidate=candidate,
+                        requested_by="hf-trending-cron-family-retry",
                         settings=self.settings,
                         dispatch=False,
                         commit=False,

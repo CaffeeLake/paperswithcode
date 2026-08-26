@@ -6,6 +6,7 @@ import asyncio
 import re
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from backend.models.database import (
     PaperMethodExclusion,
     PaperOrganization,
     PaperProjectPage,
+    PaperRelation,
     PaperRepository,
     PaperTask,
     ProjectPage,
@@ -38,6 +40,21 @@ from backend.services.external_resource_service import (
 from backend.services.paper_ingestion_service import PaperIngestionService
 
 
+class TrendingModelResolutionScopeError(RuntimeError):
+    """A remote resolver selected a paper outside its callback context."""
+
+
+def model_family_key(value: str) -> str:
+    """Normalize model-family names while ignoring parameter-size variants."""
+    name = value.rsplit("/", 1)[-1].casefold()
+    tokens = [
+        token
+        for token in re.split(r"[-_\s]+", name)
+        if token and not re.fullmatch(r"a?\d+(?:\.\d+)?[bmk]", token)
+    ]
+    return re.sub(r"[^a-z0-9]+", "", "".join(tokens))
+
+
 class TrendingModelResolutionService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -47,6 +64,7 @@ class TrendingModelResolutionService:
         candidate_id: uuid.UUID,
         mutation: ResolveModelPaperMutation,
         *,
+        allowed_paper_ids: set[int] | None = None,
         commit: bool = True,
     ) -> dict:
         candidate = self.db.get(TrendingModelCandidate, candidate_id)
@@ -65,7 +83,33 @@ class TrendingModelResolutionService:
                 self.db.flush()
             return {"status": "rejected", "candidate_id": str(candidate.id)}
 
-        paper = self._resolve_paper(mutation, candidate)
+        paper = self._resolve_paper(
+            mutation, candidate, allowed_paper_ids=allowed_paper_ids
+        )
+        predecessor_id = mutation.predecessor_paper_id
+        if predecessor_id is not None:
+            if allowed_paper_ids is None or predecessor_id not in allowed_paper_ids:
+                raise TrendingModelResolutionScopeError(
+                    "Predecessor paper is outside the scoped paper candidates"
+                )
+            predecessor = self.db.get(Paper, predecessor_id)
+            if predecessor is None:
+                raise LookupError("Predecessor paper not found")
+            if predecessor.id == paper.id:
+                raise ValueError("A release cannot be its own predecessor")
+            if not self._paper_supported_by_evidence(
+                predecessor, mutation.evidence_urls
+            ):
+                raise ValueError(
+                    "Predecessor relation requires canonical source evidence"
+                )
+            if self.db.get(PaperRelation, (predecessor.id, paper.id)) is None:
+                self.db.add(
+                    PaperRelation(
+                        source_paper_id=predecessor.id,
+                        target_paper_id=paper.id,
+                    )
+                )
         proposal = mutation.model_release
         assert proposal is not None
         release = self._find_release(candidate, paper, proposal)
@@ -158,45 +202,31 @@ class TrendingModelResolutionService:
         }
 
     def _resolve_paper(
-        self, mutation: ResolveModelPaperMutation, candidate: TrendingModelCandidate
+        self,
+        mutation: ResolveModelPaperMutation,
+        candidate: TrendingModelCandidate,
+        *,
+        allowed_paper_ids: set[int] | None,
     ) -> Paper:
         if mutation.existing_paper_id is not None:
+            if (
+                allowed_paper_ids is not None
+                and mutation.existing_paper_id not in allowed_paper_ids
+            ):
+                raise TrendingModelResolutionScopeError(
+                    "Resolved paper is outside the scoped paper candidates"
+                )
             paper = self.db.get(Paper, mutation.existing_paper_id)
             if paper is None:
                 raise LookupError("Resolved paper not found")
-            evidence = {url.rstrip("/") for url in mutation.evidence_urls}
-            source_url = paper.source_url.rstrip("/") if paper.source_url else None
-            source_supported = bool(
-                source_url
-                and (
-                    source_url in evidence
-                    or (
-                        source_url.startswith("https://huggingface.co/")
-                        and any(
-                            url.startswith(f"{source_url}/raw/")
-                            and url.endswith("/README.md")
-                            for url in evidence
-                        )
-                    )
-                )
-            )
-            arxiv_supported = bool(
-                paper.arxiv_id
-                and any(
-                    f"/{paper.arxiv_id}" in url
-                    or f"arxiv:{paper.arxiv_id}" in url.lower()
-                    for url in evidence
-                )
-            )
-            if not source_supported and not arxiv_supported:
+            if not self._paper_supported_by_evidence(paper, mutation.evidence_urls):
                 raise ValueError(
                     "Existing paper resolution requires canonical source evidence"
                 )
             return paper
         if mutation.arxiv_id is not None:
             if not any(
-                f"/{mutation.arxiv_id}" in url
-                or f"arxiv:{mutation.arxiv_id}" in url.lower()
+                self._canonical_arxiv_evidence(mutation.arxiv_id, url)
                 for url in mutation.evidence_urls
             ):
                 raise ValueError("arXiv resolution requires matching source evidence")
@@ -228,6 +258,50 @@ class TrendingModelResolutionService:
         if paper is None:
             raise RuntimeError("External paper ingestion returned no database row")
         return paper
+
+    @staticmethod
+    def _paper_supported_by_evidence(paper: Paper, evidence_urls: list[str]) -> bool:
+        evidence = {url.rstrip("/") for url in evidence_urls}
+        source_url = paper.source_url.rstrip("/") if paper.source_url else None
+        source_supported = bool(
+            source_url
+            and (
+                source_url in evidence
+                or (
+                    source_url.startswith("https://huggingface.co/")
+                    and any(
+                        url.startswith(f"{source_url}/raw/")
+                        and url.endswith("/README.md")
+                        for url in evidence
+                    )
+                )
+            )
+        )
+        arxiv_supported = bool(
+            paper.arxiv_id
+            and any(
+                TrendingModelResolutionService._canonical_arxiv_evidence(
+                    paper.arxiv_id, url
+                )
+                for url in evidence
+            )
+        )
+        return source_supported or arxiv_supported
+
+    @staticmethod
+    def _canonical_arxiv_evidence(arxiv_id: str, url: str) -> bool:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
+            "arxiv.org",
+            "www.arxiv.org",
+        }:
+            return False
+        path = parsed.path.rstrip("/")
+        return path in {
+            f"/abs/{arxiv_id}",
+            f"/pdf/{arxiv_id}",
+            f"/pdf/{arxiv_id}.pdf",
+        }
 
     def _find_release(self, candidate, paper, proposal) -> ModelRelease | None:
         if candidate.model_release_id is not None:

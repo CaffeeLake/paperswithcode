@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
@@ -16,17 +16,18 @@ from backend.models.api import ApplyMutationRequest
 from backend.models.database import (
     Dataset,
     Evaluation,
+    HfArtifact,
     Method,
     Metric,
+    ModelRelease,
     Paper,
+    PaperCurationWorkflow,
+    PaperHfArtifact,
     PaperMethod,
     PaperMethodEvidence,
     PaperMethodExclusion,
     PaperRepository,
-    PaperCurationWorkflow,
     PaperTask,
-    HfArtifact,
-    PaperHfArtifact,
     Repository,
     Task,
     TaskDataset,
@@ -34,6 +35,7 @@ from backend.models.database import (
     TrendingModelCandidate,
 )
 from backend.services.benchmark_gap_service import BenchmarkGapService
+from backend.services.catalog_errors import CatalogValidationError
 from backend.services.codex_add_evals_service import (
     CodexPaperJobService,
     codex_paper_job_service,
@@ -45,6 +47,7 @@ from backend.services.paper_method_link_service import upsert_evidence_links
 from backend.services.paper_service import PaperService
 from backend.services.trending_model_resolution_service import (
     TrendingModelResolutionService,
+    model_family_key,
 )
 
 
@@ -83,6 +86,18 @@ def _requires_scheduled_dispatch_pause(_exc: Exception) -> bool:
     return False
 
 
+def _retryable_scheduled_validation(row, exc: Exception) -> bool:
+    """Allow one correction only for ordinary, proposal-fixable validation."""
+    prior_rejection = (getattr(row, "validation_summary", None) or {}).get(
+        "status"
+    ) == "rejected"
+    return bool(
+        getattr(row, "trigger", "admin") != "admin"
+        and not prior_rejection
+        and (type(exc) is ValueError or isinstance(exc, CatalogValidationError))
+    )
+
+
 class CodexCurationCallbackService:
     """Own callback projections and the single-apply mutation transaction."""
 
@@ -102,6 +117,64 @@ class CodexCurationCallbackService:
             db, paper_service.get_paper_by_id
         )
 
+    def _resolution_paper_candidates(
+        self, candidate: TrendingModelCandidate
+    ) -> list[Paper]:
+        exact_candidates = (
+            self.db.query(Paper)
+            .join(PaperHfArtifact, PaperHfArtifact.paper_id == Paper.id)
+            .join(HfArtifact, HfArtifact.id == PaperHfArtifact.hf_artifact_id)
+            .filter(
+                HfArtifact.kind == "model",
+                HfArtifact.repo_id == candidate.repo_id,
+                Paper.is_latest_version,
+            )
+            .order_by(Paper.id)
+            .all()
+        )
+        family_candidates: list[Paper] = []
+        publisher_candidates: list[Paper] = []
+        if candidate.author:
+            candidate_family = model_family_key(candidate.repo_id)
+            releases = (
+                self.db.query(ModelRelease)
+                .filter(
+                    func.lower(ModelRelease.publisher) == candidate.author.casefold()
+                )
+                .order_by(ModelRelease.id.desc())
+                .yield_per(100)
+            )
+            for release in releases:
+                if candidate_family not in {
+                    model_family_key(identity)
+                    for identity in [release.canonical_name, *(release.aliases or [])]
+                }:
+                    continue
+                paper = self.db.get(Paper, release.paper_id)
+                if paper is not None and paper.is_latest_version:
+                    family_candidates.append(paper)
+                if len(family_candidates) == 20:
+                    break
+            publisher_candidates = (
+                self.db.query(Paper)
+                .join(ModelRelease, ModelRelease.paper_id == Paper.id)
+                .filter(
+                    func.lower(ModelRelease.publisher) == candidate.author.casefold(),
+                    Paper.is_latest_version,
+                )
+                .order_by(Paper.id.desc())
+                .limit(20)
+                .all()
+            )
+
+        candidates = list(exact_candidates)
+        seen_paper_ids = {paper.id for paper in candidates}
+        for paper in [*family_candidates, *publisher_candidates]:
+            if paper.id not in seen_paper_ids:
+                candidates.append(paper)
+                seen_paper_ids.add(paper.id)
+        return candidates
+
     def context(self, row, settings: Settings) -> dict[str, Any]:
         if getattr(row, "kind", None) == "resolve-model-paper":
             candidate = self.db.get(TrendingModelCandidate, row.candidate_id)
@@ -109,18 +182,7 @@ class CodexCurationCallbackService:
                 raise CodexCurationPaperNotFoundError(
                     "Trending model candidate not found"
                 )
-            paper_candidates = (
-                self.db.query(Paper)
-                .join(PaperHfArtifact, PaperHfArtifact.paper_id == Paper.id)
-                .join(HfArtifact, HfArtifact.id == PaperHfArtifact.hf_artifact_id)
-                .filter(
-                    HfArtifact.kind == "model",
-                    HfArtifact.repo_id == candidate.repo_id,
-                    Paper.is_latest_version,
-                )
-                .order_by(Paper.id)
-                .all()
-            )
+            paper_candidates = self._resolution_paper_candidates(candidate)
             revision = candidate.readme_revision or "main"
             return {
                 "job": self.job_service.serialize(row, settings).model_dump(
@@ -441,9 +503,21 @@ class CodexCurationCallbackService:
                     self.db.refresh(row, with_for_update=True)
                 self._validate_mutation(row, body)
                 assert body.resolve_model_paper is not None
+                allowed_paper_ids = None
+                if body.resolve_model_paper.decision == "accept":
+                    candidate = self.db.get(TrendingModelCandidate, row.candidate_id)
+                    if candidate is None:
+                        raise CodexCurationPaperNotFoundError(
+                            "Trending model candidate not found"
+                        )
+                    allowed_paper_ids = {
+                        paper.id
+                        for paper in self._resolution_paper_candidates(candidate)
+                    }
                 result = TrendingModelResolutionService(self.db).apply(
                     row.candidate_id,
                     body.resolve_model_paper,
+                    allowed_paper_ids=allowed_paper_ids,
                     commit=False,
                 )
                 now = datetime.now(UTC)
@@ -460,15 +534,23 @@ class CodexCurationCallbackService:
                 return dict(result)
             except Exception as exc:
                 self.db.rollback()
-                rejected = self.db.get(type(row), row.id)
+                mutation_closed = isinstance(exc, CodexCurationMutationClosedError)
+                rejected = (
+                    self.db.get(type(row), row.id) if not mutation_closed else None
+                )
                 if rejected is not None:
+                    retryable_validation = _retryable_scheduled_validation(
+                        rejected, exc
+                    )
                     rejected.proposal = body.model_dump(mode="json")
                     rejected.validation_summary = {
                         "status": "rejected",
                         "error_type": type(exc).__name__,
                         "error": str(exc)[:2_000],
+                        "retryable": retryable_validation,
                     }
-                    rejected.submitted_at = datetime.now(UTC)
+                    if not retryable_validation:
+                        rejected.submitted_at = datetime.now(UTC)
                     self.db.commit()
                 raise
         gap_service = BenchmarkGapService(self.db)
@@ -581,6 +663,9 @@ class CodexCurationCallbackService:
             )
             should_commit = False
             if rejected_row is not None:
+                retryable_validation = _retryable_scheduled_validation(
+                    rejected_row, exc
+                )
                 rejected_row.proposal = body.model_dump(mode="json")
                 rejected_row.validation_summary = {
                     "status": "rejected",
@@ -588,8 +673,13 @@ class CodexCurationCallbackService:
                     "error": str(exc)[:2_000],
                     "before_state": before_state,
                     "benchmark_gaps_rejected": rejected_gaps,
+                    "retryable": retryable_validation,
                 }
-                rejected_row.submitted_at = datetime.now(UTC)
+                # A scheduled worker gets one opportunity to correct an ordinary
+                # proposal-validation error. Keep the mutation open after the
+                # first rejection; a second rejected proposal closes the job.
+                if not retryable_validation:
+                    rejected_row.submitted_at = datetime.now(UTC)
                 should_commit = True
             if (
                 not mutation_closed

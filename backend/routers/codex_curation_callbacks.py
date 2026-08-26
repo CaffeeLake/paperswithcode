@@ -362,7 +362,10 @@ def apply_mutation(
     except CodexCurationEnrichmentRequiredError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (LookupError, RuntimeError, ValueError) as error:
-        if getattr(row, "kind", None) == "resolve-model-paper":
+        if getattr(row, "kind", None) == "resolve-model-paper" or (
+            getattr(row, "trigger", "admin") != "admin"
+            and isinstance(error, ValueError)
+        ):
             raise HTTPException(status_code=422, detail=str(error)) from error
         raise
 

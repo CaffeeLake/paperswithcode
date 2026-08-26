@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +33,7 @@ from backend.models.database import (
     PaperMethodExclusion,
     PaperOrganization,
     PaperProjectPage,
+    PaperRelation,
     PaperRepository,
     PaperTask,
     ProjectPage,
@@ -59,6 +60,7 @@ from backend.services.hf_trending_model_discovery_service import (
     should_requeue_card,
 )
 from backend.services.trending_model_resolution_service import (
+    TrendingModelResolutionScopeError,
     TrendingModelResolutionService,
 )
 
@@ -265,6 +267,11 @@ def test_resolution_accepts_exactly_one_canonical_paper_identity():
     )
     assert external.external_paper is not None
 
+    follow_up = ResolveModelPaperMutation.model_validate(
+        {**common, "existing_paper_id": 2, "predecessor_paper_id": 1}
+    )
+    assert follow_up.predecessor_paper_id == 1
+
     with pytest.raises(ValidationError, match="exactly one paper identity"):
         ResolveModelPaperMutation.model_validate(
             {**common, "existing_paper_id": 1, "arxiv_id": "2608.12345"}
@@ -308,9 +315,125 @@ def _resolution_session() -> Session:
             PaperConference.__table__,
             PaperOrganization.__table__,
             Evaluation.__table__,
+            PaperRelation.__table__,
+            PaperCurationJob.__table__,
         ],
     )
     return Session(engine)
+
+
+def test_resolution_creates_follow_up_relation():
+    db = _resolution_session()
+    predecessor = Paper(
+        title="Earlier Family Release",
+        source="external",
+        source_url="https://example.com/earlier",
+        version="v1",
+        is_latest_version=True,
+    )
+    successor = Paper(
+        title="New Family Release",
+        source="external",
+        source_url="https://example.com/new",
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="org/new-model",
+        author="org",
+        readme_sha="9" * 64,
+        status="resolving",
+    )
+    db.add_all([predecessor, successor, candidate])
+    db.commit()
+
+    TrendingModelResolutionService(db).apply(
+        candidate.id,
+        ResolveModelPaperMutation.model_validate(
+            {
+                "decision": "accept",
+                "reason": "Official release page establishes a distinct follow-up.",
+                "novelty_kind": "new_weights",
+                "evidence_urls": [
+                    "https://example.com/new",
+                    "https://example.com/earlier",
+                ],
+                "existing_paper_id": successor.id,
+                "predecessor_paper_id": predecessor.id,
+                "model_release": {
+                    "canonical_name": "New Model",
+                    "publisher": "org",
+                    "is_open": True,
+                    "aliases": ["org/new-model"],
+                },
+            }
+        ),
+        allowed_paper_ids={predecessor.id, successor.id},
+    )
+
+    relation = db.get(PaperRelation, (predecessor.id, successor.id))
+    assert relation is not None
+
+
+def test_resolution_rejects_predecessor_outside_callback_scope():
+    db = _resolution_session()
+    predecessor = Paper(
+        title="Unscoped Earlier Release",
+        source="external",
+        source_url="https://example.com/earlier",
+        version="v1",
+        is_latest_version=True,
+    )
+    successor = Paper(
+        title="Scoped New Release",
+        source="external",
+        source_url="https://example.com/new",
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="org/new-model",
+        author="org",
+        readme_sha="9" * 64,
+        status="resolving",
+    )
+    db.add_all([predecessor, successor, candidate])
+    db.commit()
+
+    mutation = ResolveModelPaperMutation.model_validate(
+        {
+            "decision": "accept",
+            "reason": "Official release page establishes a distinct follow-up.",
+            "novelty_kind": "new_weights",
+            "evidence_urls": [
+                "https://example.com/new",
+                "https://example.com/earlier",
+            ],
+            "existing_paper_id": successor.id,
+            "predecessor_paper_id": predecessor.id,
+            "model_release": {
+                "canonical_name": "New Model",
+                "publisher": "org",
+                "is_open": True,
+                "aliases": ["org/new-model"],
+            },
+        }
+    )
+    with pytest.raises(TrendingModelResolutionScopeError, match="outside"):
+        TrendingModelResolutionService(db).apply(
+            candidate.id,
+            mutation,
+            allowed_paper_ids={successor.id},
+        )
+
+
+def test_arxiv_evidence_requires_the_canonical_arxiv_host():
+    assert TrendingModelResolutionService._canonical_arxiv_evidence(
+        "2608.54321", "https://arxiv.org/pdf/2608.54321.pdf"
+    )
+    assert not TrendingModelResolutionService._canonical_arxiv_evidence(
+        "2608.54321", "https://example.com/abs/2608.54321"
+    )
 
 
 def test_resolution_links_existing_paper_release_and_hf_artifact():
@@ -725,7 +848,7 @@ def test_enqueue_resolution_creates_scoped_high_priority_job(monkeypatch):
     assert db.get(TrendingModelCandidate, candidate.id).status == "queued"
 
 
-def test_resolution_context_exposes_only_scoped_candidate_and_exact_linked_papers():
+def test_resolution_context_exposes_exact_and_same_publisher_paper_candidates():
     db = _resolution_session()
     paper = Paper(
         title="Existing Model Report",
@@ -739,6 +862,13 @@ def test_resolution_context_exposes_only_scoped_candidate_and_exact_linked_paper
         repo_id="org/model",
         url="https://huggingface.co/org/model",
     )
+    sibling_paper = Paper(
+        title="Existing Family Release",
+        source="external",
+        source_url="https://example.com/family",
+        version="v1",
+        is_latest_version=True,
+    )
     candidate = TrendingModelCandidate(
         repo_id="org/model",
         author="org",
@@ -747,8 +877,18 @@ def test_resolution_context_exposes_only_scoped_candidate_and_exact_linked_paper
         featured_publisher=True,
         status="resolving",
     )
-    db.add_all([paper, artifact, candidate])
+    db.add_all([paper, sibling_paper, artifact, candidate])
     db.flush()
+    db.add(
+        ModelRelease(
+            paper_id=sibling_paper.id,
+            canonical_name="Model 35B",
+            publisher="org",
+            canonical_source_url="https://example.com/family",
+            aliases=["org/model-35b"],
+            is_open=True,
+        )
+    )
     db.add(PaperHfArtifact(paper_id=paper.id, hf_artifact_id=artifact.id))
     db.commit()
 
@@ -772,9 +912,82 @@ def test_resolution_context_exposes_only_scoped_candidate_and_exact_linked_paper
             "title": "Existing Model Report",
             "arxiv_id": None,
             "source_url": "https://example.com/report",
-        }
+        },
+        {
+            "id": sibling_paper.id,
+            "title": "Existing Family Release",
+            "arxiv_id": None,
+            "source_url": "https://example.com/family",
+        },
     ]
     assert "paper" not in context
+
+
+def test_scheduled_resolution_gets_one_validation_correction_attempt(monkeypatch):
+    db = _resolution_session()
+    paper = Paper(
+        title="Scoped Release",
+        source="external",
+        source_url="https://example.com/release",
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="org/model",
+        author="org",
+        readme_sha="d" * 64,
+        status="resolving",
+    )
+    db.add_all([paper, candidate])
+    db.flush()
+    job = PaperCurationJob(
+        id=uuid.uuid4(),
+        kind="resolve-model-paper",
+        candidate_id=candidate.id,
+        requested_by="hf-trending-cron",
+        trigger="hf-trending-cron",
+        policy_version="hf-trending-v1",
+        priority=25,
+        status="running",
+    )
+    db.add(job)
+    db.commit()
+    service = CodexCurationCallbackService(db)
+    monkeypatch.setattr(
+        service, "_resolution_paper_candidates", lambda _candidate: [paper]
+    )
+    body = ApplyMutationRequest.model_validate(
+        {
+            "resolve_model_paper": {
+                "decision": "accept",
+                "reason": "Official release.",
+                "novelty_kind": "new_weights",
+                "evidence_urls": ["https://example.com/not-the-release"],
+                "existing_paper_id": paper.id,
+                "model_release": {
+                    "canonical_name": "Model",
+                    "publisher": "org",
+                    "is_open": True,
+                    "aliases": ["org/model"],
+                },
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="canonical source evidence"):
+        service.apply(job, body)
+    db.refresh(job)
+    assert job.submitted_at is None
+    assert job.validation_summary["retryable"] is True
+
+    with pytest.raises(ValueError, match="canonical source evidence"):
+        service.apply(job, body)
+    db.refresh(job)
+    assert job.submitted_at is not None
+    assert job.validation_summary["retryable"] is False
+
+    with pytest.raises(RuntimeError, match="may no longer apply mutations"):
+        service.apply(job, body)
 
 
 def test_remote_proposal_schema_accepts_typed_model_resolution():
@@ -964,6 +1177,146 @@ def test_hourly_reconcile_queues_new_release_rejects_conversion_and_skips_unchan
         .status
         == "rejected"
     )
+
+
+def test_hourly_reconcile_retries_substantive_rejection_after_family_paper_exists():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Paper.__table__,
+            ModelRelease.__table__,
+            TrendingModelCandidate.__table__,
+            PaperCurationWorkflow.__table__,
+            PaperCurationJob.__table__,
+        ],
+    )
+    db = Session(engine)
+    paper = Paper(
+        title="Ornith 1.5",
+        source="external",
+        source_url="https://example.com/ornith-1.5",
+        version="v1",
+        is_latest_version=True,
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="ornith-ai/Ornith-1.5-9B",
+        author="ornith-ai",
+        readme_revision="a" * 40,
+        readme_sha="b" * 64,
+        status="rejected",
+        rejection_reason="Substantive sibling, but no canonical paper found yet.",
+    )
+    db.add_all([paper, candidate])
+    db.flush()
+    queued_at = datetime(2026, 8, 26, 15, tzinfo=UTC)
+    rejected_at = queued_at + timedelta(minutes=5)
+    resolution_job = PaperCurationJob(
+        id=uuid.uuid4(),
+        kind="resolve-model-paper",
+        candidate_id=candidate.id,
+        requested_by="hf-trending-cron",
+        trigger="hf-trending-cron",
+        policy_version="hf-trending-v1",
+        priority=25,
+        status="failed",
+        created_at=queued_at,
+        submitted_at=rejected_at,
+        proposal={
+            "resolve_model_paper": {
+                "decision": "reject",
+                "novelty_kind": "uncertain",
+                "reason": "No family paper existed when inspected.",
+                "evidence_urls": ["https://huggingface.co/ornith-ai/Ornith-1.5-9B"],
+            }
+        },
+    )
+    db.add_all(
+        [
+            resolution_job,
+            ModelRelease(
+                paper_id=paper.id,
+                canonical_name="Different-Family-7B",
+                publisher="ornith-ai",
+                canonical_source_url="https://example.com/different",
+                aliases=["ornith-ai/Different-Family-7B"],
+                is_open=True,
+                created_at=rejected_at + timedelta(minutes=1),
+            ),
+            ModelRelease(
+                paper_id=paper.id,
+                canonical_name="Ornith-1.5-70B-A7B",
+                publisher="ornith-ai",
+                canonical_source_url="https://example.com/ornith-1.5",
+                aliases=["ornith-ai/Ornith-1.5-70B-A7B"],
+                is_open=True,
+                created_at=queued_at + timedelta(minutes=1),
+            ),
+        ]
+    )
+    db.commit()
+
+    convergence = HFTrendingModelCurationService(db, get_settings())
+    assert not convergence._rejected_candidate_can_converge(candidate, resolution_job)
+
+    db.add(
+        ModelRelease(
+            paper_id=paper.id,
+            canonical_name="Ornith-1.5-35B-A3B",
+            publisher="ornith-ai",
+            canonical_source_url="https://example.com/ornith-1.5",
+            aliases=["ornith-ai/Ornith-1.5-35B-A3B"],
+            is_open=True,
+            created_at=rejected_at + timedelta(minutes=2),
+        )
+    )
+    db.commit()
+
+    model = HFTrendingModel.from_payload(
+        {
+            "id": candidate.repo_id,
+            "author": candidate.author,
+            "tags": ["transformers", "eval-results"],
+            "trending_score": 100,
+        }
+    )
+
+    class Discovery:
+        @staticmethod
+        def list_top_models():
+            return [model]
+
+    class Cards:
+        @staticmethod
+        def snapshot(_repo_id):
+            return HFModelCardSnapshot(
+                repo_revision="a" * 40,
+                readme_sha="b" * 64,
+                markdown="# Ornith 1.5 9B",
+            )
+
+    queued = []
+
+    class Jobs:
+        @staticmethod
+        def enqueue_resolution(_db, *, candidate, **_kwargs):
+            candidate.status = "queued"
+            queued.append(candidate.repo_id)
+
+        @staticmethod
+        def dispatch_next(*_args, **_kwargs):
+            return None
+
+    result = HFTrendingModelCurationService(
+        db,
+        get_settings(),
+        discovery=Discovery(),
+        cards=Cards(),
+        jobs=Jobs(),
+    ).reconcile(dispatch=False)
+
+    assert result["queued"] == 1
+    assert queued == ["ornith-ai/Ornith-1.5-9B"]
 
 
 def test_rollout_freezes_canary_until_full_workflow_succeeds(monkeypatch):

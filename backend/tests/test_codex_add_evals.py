@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import sys
+import urllib.error
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,10 +88,10 @@ def test_release_manifest_pins_remote_worker_revision(tmp_path):
 def test_remote_job_uses_immutable_curator_image():
     settings = get_settings()
     assert settings.codex_jobs_image == (
-        "hf.co/spaces/nielsr/pwc-codex-curator-070e6b144a39"
+        "hf.co/spaces/nielsr/pwc-codex-curator-c0e97b88ca86"
     )
     assert settings.codex_jobs_image_revision == (
-        "1d8e260e30e3e938fd30ee2bc7da259ccac24946"
+        "7067f309c98f9ea002b812773c9a256400c740ef"
     )
     assert settings.codex_jobs_namespace == ""
     assert CURATOR_COMMAND == "exec python3 /runner/run_paper_curation.py"
@@ -502,6 +504,29 @@ def test_curation_helper_exposes_leaderboard_search(monkeypatch):
     curation_api.main()
 
     assert calls == ["leaderboards?q=DPG-Bench"]
+
+
+def test_curation_helper_surfaces_callback_validation_detail(monkeypatch):
+    monkeypatch.setenv("PWC_CURATION_API_URL", "https://paperswithcode.co/api/v1")
+    monkeypatch.setenv("PWC_CURATION_JOB_ID", str(_job().id))
+    monkeypatch.setenv("PWC_CURATION_JOB_TOKEN", "scoped-token")
+    response = urllib.error.HTTPError(
+        "https://paperswithcode.co/api/v1/admin/codex-curation/jobs/job/apply",
+        422,
+        "Unprocessable Entity",
+        {},
+        io.BytesIO(
+            b'{"detail":"Evaluation metric value 91.9 is outside configured scale 0-1"}'
+        ),
+    )
+    monkeypatch.setattr(
+        curation_api.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(response),
+    )
+
+    with pytest.raises(RuntimeError, match="outside configured scale 0-1"):
+        curation_api.request_json("apply", "POST", {"evaluations": []})
 
 
 def test_empty_add_evals_apply_is_an_explicit_no_op(monkeypatch):

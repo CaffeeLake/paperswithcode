@@ -54,6 +54,7 @@
           "items": {"type": "string", "format": "uri"}
         },
         "existing_paper_id": {"type": ["integer", "null"], "minimum": 1},
+        "predecessor_paper_id": {"type": ["integer", "null"], "minimum": 1},
         "arxiv_id": {"type": ["string", "null"], "pattern": "^\\d{4}\\.\\d{4,5}(?:v\\d+)?$"},
         "external_paper": {
           "type": ["object", "null"],

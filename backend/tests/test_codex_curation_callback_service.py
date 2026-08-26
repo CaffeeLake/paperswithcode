@@ -492,6 +492,54 @@ def test_late_evaluation_failure_rolls_back_the_whole_apply():
     assert row.applied_at is None
 
 
+def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
+    row = SimpleNamespace(
+        id=42,
+        kind="add-evals",
+        status="running",
+        trigger="hf-trending-cron",
+        submitted_at=None,
+        applied_at=None,
+        paper_id=42,
+    )
+
+    class Database(_MutationDatabase):
+        def get(self, model, _key):
+            return row if model is type(row) else None
+
+    database = Database()
+    service = _service(database, SimpleNamespace())
+    service._validate_scheduled_policy = lambda *_args: (_ for _ in ()).throw(
+        ValueError("Evaluation metric value 91.9 is outside configured scale 0-1")
+    )
+
+    with pytest.raises(ValueError, match="outside configured scale"):
+        service.apply(row, ApplyMutationRequest(evaluations=[]))
+
+    assert row.submitted_at is None
+    assert row.applied_at is None
+    assert row.validation_summary["status"] == "rejected"
+    assert "outside configured scale" in row.validation_summary["error"]
+    assert database.rollbacks == 1
+    assert database.commits == 1
+
+    with pytest.raises(ValueError, match="outside configured scale"):
+        service.apply(row, ApplyMutationRequest(evaluations=[]))
+
+    assert row.submitted_at is not None
+    assert row.validation_summary["retryable"] is False
+    assert database.rollbacks == 2
+    assert database.commits == 2
+
+    with pytest.raises(
+        CodexCurationMutationClosedError, match="may no longer apply mutations"
+    ):
+        service.apply(row, ApplyMutationRequest(evaluations=[]))
+
+    assert database.rollbacks == 3
+    assert database.commits == 2
+
+
 def test_all_evaluation_paper_ids_are_checked_before_the_first_write():
     database = _MutationDatabase()
 

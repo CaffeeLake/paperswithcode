@@ -2706,6 +2706,7 @@ class ResolveModelPaperMutation(BaseModel):
     ]
     evidence_urls: list[str] = Field(min_length=1, max_length=20)
     existing_paper_id: int | None = Field(default=None, gt=0)
+    predecessor_paper_id: int | None = Field(default=None, gt=0)
     arxiv_id: str | None = Field(default=None, pattern=r"^\d{4}\.\d{4,5}(?:v\d+)?$")
     external_paper: ExternalPaperProposal | None = None
     model_release: ModelReleaseProposal | None = None
@@ -2726,7 +2727,11 @@ class ResolveModelPaperMutation(BaseModel):
             )
         )
         if self.decision == "reject":
-            if identities or self.model_release is not None:
+            if (
+                identities
+                or self.predecessor_paper_id is not None
+                or self.model_release is not None
+            ):
                 raise ValueError("rejection cannot include a paper mutation")
             return self
         if identities != 1:
