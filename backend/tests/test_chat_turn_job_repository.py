@@ -523,6 +523,135 @@ def test_claim_mutations_are_fenced_and_terminal_is_idempotent(db):
         )
 
 
+def test_stop_before_claim_claims_once_and_blocks_later_dispatch(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+
+    claim = repository.request_cancelling(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:control",
+        worker_generation=17,
+        now=NOW,
+        lease_seconds=30,
+    )
+    repeated = repository.request_cancelling(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:replacement",
+        worker_generation=18,
+        now=NOW + timedelta(seconds=1),
+        lease_seconds=30,
+    )
+
+    assert claim is not None
+    assert repeated == claim
+    assert repository.load_by_turn(db, job.turn_id).state == "cancelling"
+    with pytest.raises(TurnNotClaimable):
+        repository.claim(
+            db,
+            turn_id=job.turn_id,
+            worker_id="orchestrator",
+            worker_generation=1,
+            now=NOW + timedelta(seconds=2),
+            lease_seconds=30,
+        )
+
+
+def test_stop_after_claim_preserves_other_process_fence(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:other-process",
+        worker_generation=23,
+        now=NOW,
+        lease_seconds=30,
+    )
+    repository.transition(db, claim=claim, state="running", now=NOW)
+
+    cancelled_claim = repository.request_cancelling(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:this-process",
+        worker_generation=24,
+        now=NOW + timedelta(seconds=1),
+        lease_seconds=30,
+    )
+
+    assert cancelled_claim == claim
+    assert repository.claim_for(repository.load_by_turn(db, job.turn_id)) == claim
+
+
+def test_missing_cancel_control_terminalizes_exact_claim_once(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.request_cancelling(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:control",
+        worker_generation=29,
+        now=NOW,
+        lease_seconds=1,
+    )
+    assert claim is not None
+
+    interrupted = repository.interrupt_control_missing(
+        db, claim=claim, now=NOW + timedelta(seconds=2)
+    )
+    repeated = repository.interrupt_control_missing(
+        db, claim=claim, now=NOW + timedelta(seconds=3)
+    )
+
+    assert interrupted is repeated
+    assert interrupted.state == "interrupted"
+    assert interrupted.failure_code == "cancel_control_missing"
+    assert repository.claim_for(interrupted) == claim
+
+
+def test_stop_expired_or_terminal_turn_is_not_reclaimed(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="local-runner:old-process",
+        worker_generation=31,
+        now=NOW,
+        lease_seconds=1,
+    )
+    with pytest.raises(StaleTurnClaim):
+        repository.request_cancelling(
+            db,
+            turn_id=job.turn_id,
+            worker_id="local-runner:new-process",
+            worker_generation=32,
+            now=NOW + timedelta(seconds=1),
+            lease_seconds=30,
+        )
+    assert repository.claim_for(repository.load_by_turn(db, job.turn_id)) == claim
+
+    repository.interrupt_exact_expired(
+        db, turn_id=job.turn_id, now=NOW + timedelta(seconds=1)
+    )
+    assert (
+        repository.request_cancelling(
+            db,
+            turn_id=job.turn_id,
+            worker_id="local-runner:new-process",
+            worker_generation=32,
+            now=NOW + timedelta(seconds=2),
+            lease_seconds=30,
+        )
+        is None
+    )
+
+
 def test_expired_lease_is_interrupted_and_never_claimable(db):
     repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
     session = _session(db)
@@ -564,6 +693,64 @@ def test_expired_lease_is_interrupted_and_never_claimable(db):
             worker_generation=1,
             now=NOW + timedelta(seconds=6),
             lease_seconds=5,
+        )
+
+
+def test_exact_expiry_preserves_claim_and_is_idempotent(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="worker-1",
+        worker_generation=11,
+        now=NOW,
+        lease_seconds=5,
+    )
+
+    interrupted = repository.interrupt_exact_expired(
+        db, turn_id=job.turn_id, now=NOW + timedelta(seconds=5)
+    )
+    repeated = repository.interrupt_exact_expired(
+        db, turn_id=job.turn_id, now=NOW + timedelta(seconds=6)
+    )
+
+    assert interrupted is repeated
+    assert repository.claim_for(interrupted) == claim
+    assert interrupted.state == "interrupted"
+    assert interrupted.failure_code == "lease_expired"
+    assert interrupted.lease_expires_at is None
+
+
+def test_exact_expiry_refuses_live_or_incompatible_terminal_job(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="worker-1",
+        worker_generation=12,
+        now=NOW,
+        lease_seconds=10,
+    )
+
+    with pytest.raises(StaleTurnClaim):
+        repository.interrupt_exact_expired(
+            db, turn_id=job.turn_id, now=NOW + timedelta(seconds=9)
+        )
+
+    repository.write_terminal(
+        db,
+        claim=claim,
+        state="failed",
+        now=NOW + timedelta(seconds=2),
+        failure_code="provider_failed",
+    )
+    with pytest.raises(InvalidTurnTransition):
+        repository.interrupt_exact_expired(
+            db, turn_id=job.turn_id, now=NOW + timedelta(seconds=11)
         )
 
 

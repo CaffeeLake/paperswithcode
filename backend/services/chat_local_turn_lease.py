@@ -84,6 +84,30 @@ class ChatLocalTurnLeaseService:
             now=now,
         )
 
+    def request_cancelling(
+        self, turn_id: uuid.UUID, *, now: datetime
+    ) -> TurnLeaseClaim | None:
+        self._require_enabled()
+        return self.repository.request_cancelling(
+            self.db,
+            turn_id=turn_id,
+            worker_id=self.owner.worker_id,
+            worker_generation=self.owner.worker_generation,
+            now=now,
+            lease_seconds=self.settings.chat_external_pi_lease_seconds,
+        )
+
+    def interrupt_expired(self, turn_id: uuid.UUID, *, now: datetime) -> ChatTurnJob:
+        self._require_enabled()
+        return self.repository.interrupt_exact_expired(
+            self.db,
+            turn_id=turn_id,
+            now=now,
+            admitted_worker_id=self.owner.worker_id,
+            admitted_worker_generation=self.owner.worker_generation,
+            lease_seconds=self.settings.chat_external_pi_lease_seconds,
+        )
+
     def write_terminal(
         self,
         claim: TurnLeaseClaim,

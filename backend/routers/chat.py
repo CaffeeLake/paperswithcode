@@ -1581,6 +1581,31 @@ async def cancel_active_turn(
     settings: Settings = Depends(get_settings),
 ):
     owner = owner_from_user(user)
+    if getattr(settings, "chat_durable_turn_dispatch_enabled", False):
+        service = ChatSessionService(db, settings)
+        try:
+            cancel_request = service.request_cancel(owner, session_id)
+            db.commit()
+        except ChatServiceError as exc:
+            db.rollback()
+            _raise(exc)
+        if cancel_request is None:
+            return Response(status_code=204)
+        manager = shared_sandbox_manager(settings)
+        cancelled = await manager.cancel(session_id, cancel_request.turn_id)
+        if not cancelled:
+            try:
+                await manager.terminate(
+                    session_id, failure_code="cancel_control_missing"
+                )
+            finally:
+                try:
+                    service.interrupt_cancel_without_control(owner, cancel_request)
+                    db.commit()
+                except ChatServiceError as exc:
+                    db.rollback()
+                    _raise(exc)
+        return Response(status_code=204)
     try:
         session, _messages = ChatSessionService(db, settings).get_session(
             owner, session_id

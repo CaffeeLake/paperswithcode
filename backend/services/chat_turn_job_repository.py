@@ -440,6 +440,66 @@ class ChatTurnJobRepository:
         db.flush()
         return job
 
+    def request_cancelling(
+        self,
+        db: Session,
+        *,
+        turn_id: uuid.UUID,
+        worker_id: str,
+        worker_generation: int,
+        now: datetime,
+        lease_seconds: int,
+    ) -> TurnLeaseClaim | None:
+        """Lock the exact turn and durably request cancellation once."""
+        job = self.load_by_turn(db, turn_id, lock=True)
+        if job is None or job.state in TERMINAL_STATES:
+            return None
+        if job.state == "admitted":
+            claim = self.claim(
+                db,
+                turn_id=turn_id,
+                worker_id=worker_id,
+                worker_generation=worker_generation,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+        else:
+            claim = self.claim_for(job)
+            if self._lease_expired(job, now):
+                raise StaleTurnClaim("Turn lease is no longer live")
+            if job.state == "cancelling":
+                return claim
+        self.transition(db, claim=claim, state="cancelling", now=now)
+        return claim
+
+    def interrupt_control_missing(
+        self,
+        db: Session,
+        *,
+        claim: TurnLeaseClaim,
+        now: datetime,
+    ) -> ChatTurnJob:
+        """Finish the exact cancelling claim when no runner control exists."""
+        if now.tzinfo is None:
+            raise ValueError("Control interruption timestamp is invalid")
+        job = self._load_claimed(db, claim)
+        if job.state in TERMINAL_STATES:
+            if (
+                job.state != "interrupted"
+                or job.failure_code != "cancel_control_missing"
+            ):
+                raise InvalidTurnTransition("Terminal turn state is immutable")
+            return job
+        if job.state != "cancelling":
+            raise InvalidTurnTransition("Only a cancelling turn can lose control")
+        job.state = "interrupted"
+        job.failure_code = "cancel_control_missing"
+        job.terminal_at = now
+        job.heartbeat_at = now
+        job.lease_expires_at = None
+        db.flush()
+        return job
+
     def write_terminal(
         self,
         db: Session,
@@ -503,11 +563,62 @@ class ChatTurnJobRepository:
         db.flush()
         return len(jobs)
 
+    def interrupt_exact_expired(
+        self,
+        db: Session,
+        *,
+        turn_id: uuid.UUID,
+        now: datetime,
+        admitted_worker_id: str | None = None,
+        admitted_worker_generation: int | None = None,
+        lease_seconds: int | None = None,
+    ) -> ChatTurnJob:
+        """Interrupt one exact expired job without permitting redispatch."""
+        if now.tzinfo is None:
+            raise ValueError("Expiry timestamp is invalid")
+        job = self.load_by_turn(db, turn_id, lock=True)
+        if job is None:
+            raise StaleTurnClaim("Durable turn is missing")
+        if job.state in TERMINAL_STATES:
+            if job.state != "interrupted" or job.failure_code != "lease_expired":
+                raise InvalidTurnTransition("Terminal turn state is immutable")
+            return job
+        if job.state == "admitted":
+            if (
+                admitted_worker_id is None
+                or admitted_worker_generation is None
+                or lease_seconds is None
+            ):
+                raise StaleTurnClaim("Admitted turn has no expiry control claim")
+            self.claim(
+                db,
+                turn_id=turn_id,
+                worker_id=admitted_worker_id,
+                worker_generation=admitted_worker_generation,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+            job = self.load_by_turn(db, turn_id, lock=True)
+            assert job is not None
+        elif not self._lease_expired(job, now):
+            raise StaleTurnClaim("Turn lease is still live")
+        job.state = "interrupted"
+        job.failure_code = "lease_expired"
+        job.terminal_at = now
+        job.heartbeat_at = now
+        job.lease_expires_at = None
+        db.flush()
+        return job
+
     def _load_claimed(self, db: Session, claim: TurnLeaseClaim) -> ChatTurnJob:
         job = self.load_by_turn(db, claim.turn_id, lock=True)
         if job is None or self._claim_for(job) != claim:
             raise StaleTurnClaim("Turn claim was fenced")
         return job
+
+    def claim_for(self, job: ChatTurnJob) -> TurnLeaseClaim:
+        """Return the exact persisted fence without creating or replacing it."""
+        return self._claim_for(job)
 
     @staticmethod
     def _lease_expired(job: ChatTurnJob, now: datetime) -> bool:
