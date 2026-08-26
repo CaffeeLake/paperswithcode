@@ -470,6 +470,12 @@ class Settings(BaseSettings):
     chat_external_pi_drain_seconds: int = Field(default=60, ge=5, le=300)
     chat_external_pi_drain_poll_seconds: float = Field(default=1, ge=0.1, le=5)
     chat_remote_workspace_tools_enabled: bool = Field(default=False)
+    # Inert Phase-2 executor bridge. These controls may be qualified on staging
+    # without admitting any external Pi traffic.
+    chat_sandbox_executor_enabled: bool = Field(default=False)
+    chat_sandbox_executor_contract_version: str = Field(default="", max_length=64)
+    chat_remote_bash_enabled: bool = Field(default=False)
+    chat_remote_read_enabled: bool = Field(default=False)
     chat_safe_cli_fast_path_enabled: bool = Field(default=False)
     chat_lazy_workspace_enabled: bool = Field(default=False)
     chat_durable_turn_dispatch_enabled: bool = Field(default=False)

@@ -12,10 +12,12 @@ from backend.chat_sandbox_worker.contract import (
     CONTROL_PORT,
     MODAL_APP_NAME,
 )
+from backend.chat_sandbox_worker.executor_protocol import PROTOCOL as EXECUTOR_PROTOCOL
 from backend.config import Settings
 from backend.services import chat_sandbox_provider, chat_sandbox_service
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
+    SandboxLaunchMode,
     SandboxError,
     sandbox_environment,
 )
@@ -110,6 +112,95 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     assert options["env"]["PWC_CHAT_SHOW_REASONING"] == "true"
 
 
+def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def lookup(*_args, **_options):
+        return object()
+
+    async def resolve_image(_reference):
+        return object()
+
+    async def create(*command, **options):
+        captured["command"] = command
+        captured["options"] = options
+        return SimpleNamespace(object_id="sb-executor")
+
+    monkeypatch.setattr(chat_sandbox_provider.modal.App, "lookup", _AsyncCall(lookup))
+    monkeypatch.setattr(
+        chat_sandbox_provider.modal.Sandbox,
+        "create",
+        _AsyncCall(create),
+    )
+    provider = ModalSandboxProviderAdapter(
+        _settings(
+            chat_sandbox_executor_enabled=True,
+            chat_sandbox_executor_contract_version=EXECUTOR_PROTOCOL,
+        ),
+        image_resolver=resolve_image,
+    )
+
+    result = asyncio.run(
+        provider.create(
+            name="chat-executor-test",
+            tags={"service": "pwc-chat"},
+            worker_generation="generation-a",
+            launch_mode=SandboxLaunchMode.EXECUTOR,
+        )
+    )
+
+    assert result.object_id == "sb-executor"
+    assert captured["command"] == (
+        "python",
+        "-m",
+        "backend.chat_sandbox_worker.executor_daemon",
+    )
+    options = captured["options"]
+    assert options["env"]["PWC_CHAT_EXECUTOR_CONTRACT_VERSION"] == EXECUTOR_PROTOCOL
+    assert options["env"]["PWC_CHAT_WORKER_GENERATION"] == "generation-a"
+    assert "OPENAI_API_KEY" not in options["env"]
+    assert "OPENROUTER_API_KEY" not in options["env"]
+    assert "HF_TOKEN" not in options["env"]
+    assert options["inbound_cidr_allowlist"] == []
+
+
+def test_executor_launch_mode_requires_its_independent_kill_switch():
+    provider = ModalSandboxProviderAdapter(
+        _settings(chat_sandbox_executor_enabled=False)
+    )
+
+    with pytest.raises(SandboxError) as exc_info:
+        asyncio.run(
+            provider.create(
+                name="chat-executor-test",
+                tags={"service": "pwc-chat"},
+                launch_mode=SandboxLaunchMode.EXECUTOR,
+            )
+        )
+
+    assert exc_info.value.code == "sandbox_executor_disabled"
+
+
+def test_executor_launch_mode_requires_the_pinned_wire_contract():
+    provider = ModalSandboxProviderAdapter(
+        _settings(
+            chat_sandbox_executor_enabled=True,
+            chat_sandbox_executor_contract_version="sandbox-executor-v0",
+        )
+    )
+
+    with pytest.raises(SandboxError) as exc_info:
+        asyncio.run(
+            provider.create(
+                name="chat-executor-test",
+                tags={"service": "pwc-chat"},
+                launch_mode=SandboxLaunchMode.EXECUTOR,
+            )
+        )
+
+    assert exc_info.value.code == "sandbox_executor_contract_invalid"
+
+
 def test_enabled_excalidraw_passes_reviewed_hostname_to_modal(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -175,6 +266,7 @@ def test_pi_prewarm_environment_is_pool_only_and_contains_no_credential():
 
 def test_create_persistent_sandbox_waits_for_successful_worker_health(monkeypatch):
     probes: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    launches: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     class Sandbox:
         object_id = "sb-persistent"
@@ -205,7 +297,8 @@ def test_create_persistent_sandbox_waits_for_successful_worker_health(monkeypatc
     async def resolve_image(_reference):
         return object()
 
-    async def create(*_command, **_options):
+    async def create(*command, **options):
+        launches.append((command, options))
         return sandbox
 
     monkeypatch.setattr(
@@ -232,6 +325,12 @@ def test_create_persistent_sandbox_waits_for_successful_worker_health(monkeypatc
     )
 
     assert result is sandbox
+    assert launches[0][0] == (
+        "python",
+        "-m",
+        "backend.chat_sandbox_worker.control_daemon",
+    )
+    assert "PWC_CHAT_EXECUTOR_CONTRACT_VERSION" not in launches[0][1]["env"]
     assert probes == [
         (
             (
@@ -536,6 +635,40 @@ def test_open_turn_process_preserves_supervisor_execution_options():
                 "stdout": StreamType.PIPE,
                 "stderr": StreamType.PIPE,
                 "timeout": 42,
+                "workdir": "/workspace",
+                "text": False,
+            },
+        )
+    ]
+
+
+def test_open_executor_relay_uses_bounded_binary_process():
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    process = object()
+
+    async def execute(*command, **options):
+        calls.append((command, options))
+        return process
+
+    sandbox = SimpleNamespace(exec=_AsyncCall(execute))
+    provider = ModalSandboxProviderAdapter(_settings())
+
+    assert (
+        asyncio.run(provider.open_executor_relay(sandbox, timeout_seconds=31))
+        is process
+    )
+    assert calls == [
+        (
+            (
+                "python",
+                "-m",
+                "backend.chat_sandbox_worker.executor_relay",
+            ),
+            {
+                "stdin": StreamType.PIPE,
+                "stdout": StreamType.PIPE,
+                "stderr": StreamType.DEVNULL,
+                "timeout": 31,
                 "workdir": "/workspace",
                 "text": False,
             },

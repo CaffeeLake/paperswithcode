@@ -3389,6 +3389,10 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     ) in source
     assert '"chown pwc-broker:pwc-broker /var/empty/pwc-broker"' in source
     assert '"websockets==16.0"' in source
+    assert "import backend.chat_sandbox_worker.executor_daemon" in source
+    assert "import backend.chat_sandbox_worker.executor_relay" in source
+    assert "EXECUTOR_USER == 'pwc-chat'" in source
+    assert "DEFAULT_EXECUTOR_PIDS_MAX == 64" in source
 
 
 def test_chat_worker_exposes_parameter_filtered_benchmarks():

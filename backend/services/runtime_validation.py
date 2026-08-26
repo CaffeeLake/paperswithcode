@@ -956,7 +956,14 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         "lazy_workspace": settings.chat_lazy_workspace_enabled,
         "durable_dispatch": settings.chat_durable_turn_dispatch_enabled,
     }
-    if settings.environment == "production" and any(switches.values()):
+    executor_switches = {
+        "executor": settings.chat_sandbox_executor_enabled,
+        "bash": settings.chat_remote_bash_enabled,
+        "read": settings.chat_remote_read_enabled,
+    }
+    if settings.environment == "production" and any(
+        (*switches.values(), *executor_switches.values())
+    ):
         raise RuntimeError(
             "external Pi migration controls are staging-only until production approval"
         )
@@ -980,6 +987,13 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
             or settings.chat_external_pi_worker_contract_version != "external-pi-v1"
         ):
             raise RuntimeError("external Pi worker identity is invalid")
+    if any(executor_switches.values()):
+        if settings.chat_sandbox_executor_contract_version != "sandbox-executor-v1":
+            raise RuntimeError("sandbox executor contract is invalid")
+        if (
+            settings.chat_remote_bash_enabled or settings.chat_remote_read_enabled
+        ) and not settings.chat_sandbox_executor_enabled:
+            raise RuntimeError("remote Bash and Read require the sandbox executor")
     if (
         settings.chat_external_pi_supervisor_enabled
         and settings.chat_external_pi_heartbeat_seconds * 2
@@ -1004,6 +1018,16 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         raise RuntimeError(
             "external Pi admission requires remote workspace tools, lazy workspaces, "
             "and durable turn dispatch"
+        )
+    if settings.chat_external_pi_admission_enabled and not all(
+        (
+            settings.chat_sandbox_executor_enabled,
+            settings.chat_remote_bash_enabled,
+            settings.chat_remote_read_enabled,
+        )
+    ):
+        raise RuntimeError(
+            "external Pi admission requires the sandbox executor with Bash and Read"
         )
 
 

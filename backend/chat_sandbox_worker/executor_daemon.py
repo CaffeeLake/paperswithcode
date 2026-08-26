@@ -43,6 +43,8 @@ EXECUTOR_STATE = Path("/var/lib/pwc-chat-executor")
 WORKSPACE_ROOT = Path("/workspace")
 MAX_CAPTURE_BYTES = 256 * 1024
 TERMINATE_GRACE_SECONDS = 0.25
+EXECUTOR_USER = "pwc-chat"
+DEFAULT_EXECUTOR_PIDS_MAX = 64
 _DEFAULT = object()
 _OPERATION_FIELDS = (
     "workspace_id",
@@ -129,8 +131,10 @@ def _command_environment() -> dict[str, str]:
 
 def _demote_command() -> None:
     _demote(
-        "pwc-chat",
-        pids_max=int(os.environ.get("PWC_CHAT_SANDBOX_PIDS_MAX", "64")),
+        EXECUTOR_USER,
+        pids_max=int(
+            os.environ.get("PWC_CHAT_SANDBOX_PIDS_MAX", str(DEFAULT_EXECUTOR_PIDS_MAX))
+        ),
     )()
 
 

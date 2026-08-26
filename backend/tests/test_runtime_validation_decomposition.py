@@ -1,5 +1,6 @@
 import json
 from itertools import count
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -186,6 +187,10 @@ def test_external_pi_migration_switches_are_independent_and_fail_closed(
     assert settings.chat_external_pi_shadow_enabled is False
     assert settings.chat_external_pi_admission_enabled is False
     assert settings.chat_remote_workspace_tools_enabled is False
+    assert settings.chat_sandbox_executor_enabled is False
+    assert settings.chat_sandbox_executor_contract_version == ""
+    assert settings.chat_remote_bash_enabled is False
+    assert settings.chat_remote_read_enabled is False
     assert settings.chat_safe_cli_fast_path_enabled is False
     assert settings.chat_lazy_workspace_enabled is False
     assert settings.chat_durable_turn_dispatch_enabled is False
@@ -252,6 +257,59 @@ def test_external_pi_migration_controls_remain_staging_only(settings_factory):
     settings.chat_external_pi_supervisor_enabled = True
     with pytest.raises(RuntimeError, match="staging-only"):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+@pytest.mark.parametrize(
+    "switch",
+    [
+        "chat_sandbox_executor_enabled",
+        "chat_remote_bash_enabled",
+        "chat_remote_read_enabled",
+    ],
+)
+def test_executor_bridge_controls_remain_staging_only(settings_factory, switch):
+    settings, _release = settings_factory("production")
+    setattr(settings, switch, True)
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_executor_bridge_contract_does_not_admit_external_pi(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_sandbox_executor_enabled = True
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+    settings.chat_remote_bash_enabled = True
+    settings.chat_remote_read_enabled = True
+
+    runtime_validation.validate_external_pi_migration_policy(settings)
+
+    assert settings.chat_external_pi_admission_enabled is False
+
+
+def test_external_pi_admission_requires_the_executor_bridge(settings_factory):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "s" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_admission_enabled = True
+    settings.chat_remote_workspace_tools_enabled = True
+    settings.chat_lazy_workspace_enabled = True
+    settings.chat_durable_turn_dispatch_enabled = True
+
+    with pytest.raises(RuntimeError, match="sandbox executor with Bash and Read"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_executor_bridge_environment_examples_remain_disabled(environment):
+    source = Path(f"deploy/env/{environment}.env.example").read_text()
+
+    assert "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED=false\n" in source
+    assert "PWC_CHAT_SANDBOX_EXECUTOR_CONTRACT_VERSION=\n" in source
+    assert "PWC_CHAT_REMOTE_BASH_ENABLED=false\n" in source
+    assert "PWC_CHAT_REMOTE_READ_ENABLED=false\n" in source
 
 
 def test_external_pi_supervisor_requires_a_safe_heartbeat_lease_ratio(
