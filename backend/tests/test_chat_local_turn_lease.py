@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -198,6 +199,106 @@ def test_periodic_heartbeat_runs_during_continuous_work(monkeypatch):
 
     assert len(calls) >= 2
     assert set(calls) == {claim}
+
+
+def test_blocked_replacement_is_cancelled_and_awaited_when_heartbeat_fails(
+    monkeypatch,
+):
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_heartbeat_seconds": 0.01,
+        }
+    )
+    cleanup_finished = asyncio.Event()
+    order: list[str] = []
+
+    async def blocked_preparation(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            order.append("preparation_cleanup")
+            cleanup_finished.set()
+
+    monkeypatch.setattr(
+        chat_stream_service, "_prepare_replacement", blocked_preparation
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda *_args: (_ for _ in ()).throw(ValueError("lease lost")),
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_persist_preparation_failure",
+        lambda *_args: order.append("terminal_persisted"),
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+
+    async def exercise():
+        orchestrator.lease_heartbeat_task = asyncio.create_task(
+            orchestrator._heartbeat_durable_turn()
+        )
+        result = await asyncio.wait_for(orchestrator._replacement_or_error(), 0.2)
+        assert cleanup_finished.is_set()
+        return result
+
+    assert asyncio.run(exercise()) == (False, None)
+    assert order == ["preparation_cleanup", "terminal_persisted"]
+    assert orchestrator.lease_heartbeat_task is None
+
+
+@pytest.mark.parametrize("terminal_path", ["cancellation", "preparation", "close"])
+def test_slow_terminal_keeps_heartbeat_live_until_transaction_returns(
+    monkeypatch, terminal_path
+):
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_heartbeat_seconds": 0.01,
+        }
+    )
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[TurnLeaseClaim] = []
+
+    def slow_terminal(path):
+        assert path == terminal_path
+        started.set()
+        assert release.wait(timeout=1)
+
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda _settings, current: calls.append(current.durable_claim),
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+
+    async def exercise():
+        orchestrator.lease_heartbeat_task = asyncio.create_task(
+            orchestrator._heartbeat_durable_turn()
+        )
+        terminal = asyncio.create_task(
+            orchestrator._persist_terminal_with_lease(slow_terminal, terminal_path)
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.035)
+        assert len(calls) >= 2
+        release.set()
+        await terminal
+        stopped_at = len(calls)
+        await asyncio.sleep(0.025)
+        assert len(calls) == stopped_at
+
+    asyncio.run(exercise())
+
+    assert orchestrator.lease_heartbeat_task is None
 
 
 def test_stale_claim_never_prepares_or_dispatches(monkeypatch):

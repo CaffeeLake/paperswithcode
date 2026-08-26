@@ -1463,28 +1463,25 @@ class ChatStreamOrchestrator:
         except asyncio.CancelledError:
             interruption_reason = self.interruption_reason or "stream_cancelled"
             await self._cancel_runner()
-            await self._stop_lease_heartbeat()
             if self.admission.is_replacement and not self.edit_activated:
-                await asyncio.shield(
-                    asyncio.to_thread(
-                        _persist_preparation_failure,
-                        self.owner,
-                        self.settings,
-                        self.admission,
-                        "interrupted",
-                    )
+                await self._persist_terminal_with_lease(
+                    _persist_preparation_failure,
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "interrupted",
+                    shield=True,
                 )
             else:
-                await asyncio.shield(
-                    asyncio.to_thread(
-                        _persist_failure,
-                        self.owner,
-                        self.settings,
-                        self.admission,
-                        "interrupted",
-                        True,
-                        self.projection.completed_blocks(),
-                    )
+                await self._persist_terminal_with_lease(
+                    _persist_failure,
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "interrupted",
+                    True,
+                    self.projection.completed_blocks(),
+                    shield=True,
                 )
             self.terminal = "interrupted"
             self.trace.finish(
@@ -1499,12 +1496,12 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            await self._stop_lease_heartbeat()
             if (
                 self.admission.durable_claim is not None
                 or not self.settings.chat_durable_turn_dispatch_enabled
             ):
-                _persist_failure(
+                await self._persist_terminal_with_lease(
+                    _persist_failure,
                     self.owner,
                     self.settings,
                     self.admission,
@@ -1531,13 +1528,7 @@ class ChatStreamOrchestrator:
 
     async def _replacement_or_error(self) -> tuple[bool, uuid.UUID | None]:
         try:
-            resume_id = await _prepare_replacement(
-                self.owner,
-                self.settings,
-                self.admission,
-                self.store,
-                lambda: setattr(self, "edit_activated", True),
-            )
+            resume_id = await self._prepare_replacement_with_lease()
             self._assert_durable_lease()
             return True, resume_id
         except Exception as exc:
@@ -1546,12 +1537,48 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            await self._stop_lease_heartbeat()
-            _persist_preparation_failure(
-                self.owner, self.settings, self.admission, "replacement_prepare_failed"
+            await self._persist_terminal_with_lease(
+                _persist_preparation_failure,
+                self.owner,
+                self.settings,
+                self.admission,
+                "replacement_prepare_failed",
             )
             self.terminal = "error"
             return False, None
+
+    async def _prepare_replacement_with_lease(self) -> uuid.UUID | None:
+        preparation = asyncio.create_task(
+            _prepare_replacement(
+                self.owner,
+                self.settings,
+                self.admission,
+                self.store,
+                lambda: setattr(self, "edit_activated", True),
+            )
+        )
+        heartbeat = self.lease_heartbeat_task
+        if heartbeat is None:
+            return await preparation
+        try:
+            done, _pending = await asyncio.wait(
+                (preparation, heartbeat), return_when=asyncio.FIRST_COMPLETED
+            )
+            if preparation in done:
+                result = await preparation
+                self._assert_durable_lease()
+                return result
+            preparation.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await preparation
+            self._assert_durable_lease()
+            raise RuntimeError("Durable turn heartbeat stopped")
+        except BaseException:
+            if not preparation.done():
+                preparation.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await preparation
+            raise
 
     async def _claim_durable_turn(self) -> None:
         if not self.settings.chat_durable_turn_dispatch_enabled:
@@ -1600,6 +1627,26 @@ class ChatStreamOrchestrator:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+    async def _persist_terminal_with_lease(
+        self,
+        function: Callable[..., None],
+        *args: object,
+        shield: bool = False,
+    ) -> None:
+        persistence = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            if shield:
+                await asyncio.shield(persistence)
+            else:
+                await persistence
+        except asyncio.CancelledError:
+            if shield:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await persistence
+            raise
+        finally:
+            await self._stop_lease_heartbeat()
 
     async def _produce_research(self, queue: asyncio.Queue) -> None:
         try:
@@ -2106,28 +2153,25 @@ class ChatStreamOrchestrator:
         # generating until its lease expires.
         if self.terminal == "disconnect":
             self.interruption_reason = self.interruption_reason or "stream_closed"
-            await self._stop_lease_heartbeat()
             if self.admission.is_replacement and not self.edit_activated:
-                await asyncio.shield(
-                    asyncio.to_thread(
-                        _persist_preparation_failure,
-                        self.owner,
-                        self.settings,
-                        self.admission,
-                        "interrupted",
-                    )
+                await self._persist_terminal_with_lease(
+                    _persist_preparation_failure,
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "interrupted",
+                    shield=True,
                 )
             else:
-                await asyncio.shield(
-                    asyncio.to_thread(
-                        _persist_failure,
-                        self.owner,
-                        self.settings,
-                        self.admission,
-                        "interrupted",
-                        True,
-                        self.projection.completed_blocks(),
-                    )
+                await self._persist_terminal_with_lease(
+                    _persist_failure,
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "interrupted",
+                    True,
+                    self.projection.completed_blocks(),
+                    shield=True,
                 )
             self.terminal = "interrupted"
             self.trace.finish(
