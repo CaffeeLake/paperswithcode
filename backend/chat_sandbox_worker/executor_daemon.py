@@ -145,6 +145,7 @@ class _Execution:
     cancel: threading.Event = field(default_factory=threading.Event)
     process: subprocess.Popen[bytes] | None = None
     captured_bytes: int = 0
+    persistence_failed: bool = False
 
 
 class ExecutorServer:
@@ -405,6 +406,7 @@ class ExecutorServer:
                     {
                         "workspace_id": requested[0],
                         "workspace_generation": requested[1],
+                        "worker_generation": self.worker_generation,
                     },
                 )
             return self._workspace == requested
@@ -413,6 +415,7 @@ class ExecutorServer:
         immutable = {
             key: request[key] for key in (*_OPERATION_FIELDS, "command", "timeout_ms")
         }
+        immutable["worker_generation"] = self.worker_generation
         return hashlib.sha256(
             json.dumps(immutable, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -432,23 +435,28 @@ class ExecutorServer:
                     self.state_path
                     / hashlib.sha256(f"{key[0]}\0{key[1]}".encode()).hexdigest()
                 )
-                directory.mkdir(mode=0o700)
                 execution = _Execution(
                     identity={field: request[field] for field in _OPERATION_FIELDS},
                     fingerprint=fingerprint,
                     directory=directory,
                 )
+                try:
+                    directory.mkdir(mode=0o700)
+                    _atomic_json(
+                        directory / "record.json",
+                        {
+                            "phase": "accepted",
+                            "identity": execution.identity,
+                            "fingerprint": fingerprint,
+                            "worker_generation": self.worker_generation,
+                            "terminal": None,
+                        },
+                    )
+                    _fsync_directory(self.state_path)
+                except OSError:
+                    self._contained.set()
+                    return
                 self._executions[key] = execution
-                _atomic_json(
-                    directory / "record.json",
-                    {
-                        "phase": "accepted",
-                        "identity": execution.identity,
-                        "fingerprint": fingerprint,
-                        "terminal": None,
-                    },
-                )
-                _fsync_directory(self.state_path)
                 threading.Thread(
                     target=self._run,
                     args=(
@@ -529,8 +537,9 @@ class ExecutorServer:
             if execution.cancel.is_set():
                 self._finish(execution, "cancelled", None, None)
                 return
-            installed = False
+            install_attempted = False
             try:
+                install_attempted = True
                 response = self.broker_control(
                     {
                         "operation": "install",
@@ -545,13 +554,13 @@ class ExecutorServer:
                     or response.get("active") is not True
                 ):
                     raise RuntimeError
-                installed = True
                 _atomic_json(
                     execution.directory / "record.json",
                     {
                         "phase": "running",
                         "identity": execution.identity,
                         "fingerprint": execution.fingerprint,
+                        "worker_generation": self.worker_generation,
                         "terminal": None,
                     },
                 )
@@ -573,27 +582,48 @@ class ExecutorServer:
                 if process is not None and process.poll() is None:
                     self._terminate(process)
                 outcome = ("failed", None, "execution_start_failed")
-            cleanup_failed = False
-            if installed:
-                try:
-                    response = self.broker_control(
-                        {
-                            "operation": "clear",
-                            "session_id": execution.identity["session_id"],
-                            "turn_id": execution.identity["turn_id"],
-                        }
-                    )
-                    cleanup_failed = (
-                        not isinstance(response, dict)
-                        or response.get("ok") is not True
-                        or response.get("active") is not False
-                    )
-                except (OSError, RuntimeError, ValueError):
-                    cleanup_failed = True
+            except BaseException:
+                process = execution.process
+                if process is not None and process.poll() is None:
+                    self._terminate(process)
+                self._contained.set()
+                outcome = ("failed", None, "execution_start_failed")
+            cleanup_failed = install_attempted and not self._clear_or_prove_inactive(
+                execution
+            )
             if cleanup_failed:
                 self._contained.set()
                 outcome = ("failed", None, "capability_cleanup_failed")
             self._finish(execution, *outcome)
+
+    def _clear_or_prove_inactive(self, execution: _Execution) -> bool:
+        try:
+            response = self.broker_control(
+                {
+                    "operation": "clear",
+                    "session_id": execution.identity["session_id"],
+                    "turn_id": execution.identity["turn_id"],
+                }
+            )
+            if (
+                isinstance(response, dict)
+                and response.get("ok") is True
+                and response.get("active") is False
+            ):
+                return True
+        # Broker transport loss may surface after either mutation. Always attempt
+        # the independent status proof before deciding whether to drain.
+        except BaseException:
+            pass
+        try:
+            response = self.broker_control({"operation": "status"})
+        except BaseException:
+            return False
+        return (
+            isinstance(response, dict)
+            and response.get("ok") is True
+            and response.get("active") is False
+        )
 
     def _capture(
         self, execution: _Execution, process: subprocess.Popen[bytes], timeout: float
@@ -675,22 +705,30 @@ class ExecutorServer:
         error: str | None,
     ) -> None:
         with execution.condition:
-            if execution.terminal is not None:
+            if execution.terminal is not None or execution.persistence_failed:
                 return
-            execution.terminal = {
+            terminal = {
                 "status": status,
                 "exit_code": exit_code,
                 "error": error,
             }
-            _atomic_json(
-                execution.directory / "record.json",
-                {
-                    "phase": "terminal",
-                    "identity": execution.identity,
-                    "fingerprint": execution.fingerprint,
-                    "terminal": execution.terminal,
-                },
-            )
+            try:
+                _atomic_json(
+                    execution.directory / "record.json",
+                    {
+                        "phase": "terminal",
+                        "identity": execution.identity,
+                        "fingerprint": execution.fingerprint,
+                        "worker_generation": self.worker_generation,
+                        "terminal": terminal,
+                    },
+                )
+            except OSError:
+                execution.persistence_failed = True
+                self._contained.set()
+                execution.condition.notify_all()
+                return
+            execution.terminal = terminal
             execution.condition.notify_all()
 
     def _stream(
@@ -707,7 +745,8 @@ class ExecutorServer:
                     event for event in execution.events if int(event["sequence"]) > sent
                 ]
                 terminal = execution.terminal
-                if not available and terminal is None:
+                persistence_failed = execution.persistence_failed
+                if not available and terminal is None and not persistence_failed:
                     execution.condition.wait(timeout=0.1)
                     continue
             for event in available:
@@ -719,6 +758,8 @@ class ExecutorServer:
                 sent = int(event["sequence"])
             if terminal is not None:
                 self._send_terminal(connection, request, terminal)
+                return
+            if persistence_failed:
                 return
 
     def _send_terminal(
@@ -795,12 +836,18 @@ class ExecutorServer:
         workspace_record = self.state_path / "workspace.json"
         if workspace_record.is_file():
             value = json.loads(workspace_record.read_text(encoding="utf-8"))
-            self._workspace = (
-                str(value["workspace_id"]),
-                int(value["workspace_generation"]),
-            )
+            if value.get("worker_generation") != self.worker_generation:
+                self._contained.set()
+            else:
+                self._workspace = (
+                    str(value["workspace_id"]),
+                    int(value["workspace_generation"]),
+                )
         for record_path in self.state_path.glob("*/record.json"):
             value = json.loads(record_path.read_text(encoding="utf-8"))
+            if value.get("worker_generation") != self.worker_generation:
+                self._contained.set()
+                continue
             identity = value["identity"]
             execution = _Execution(
                 identity=identity,
@@ -808,26 +855,95 @@ class ExecutorServer:
                 directory=record_path.parent,
             )
             output_path = record_path.parent / "output.jsonl"
+            output_corrupt = False
             if output_path.is_file():
-                for line in output_path.read_text(encoding="utf-8").splitlines():
-                    event = json.loads(line)
-                    execution.events.append(event)
-                    execution.captured_bytes += len(str(event["data"]).encode())
-            if value["phase"] == "terminal":
+                output_corrupt = self._recover_output(execution, output_path)
+            if value["phase"] == "terminal" and not output_corrupt:
                 execution.terminal = value["terminal"]
             else:
-                execution.terminal = {
+                terminal = {
                     "status": "failed",
                     "exit_code": None,
                     "error": "execution_lost",
                 }
-                _atomic_json(
-                    record_path,
-                    {**value, "phase": "terminal", "terminal": execution.terminal},
-                )
+                try:
+                    _atomic_json(
+                        record_path,
+                        {**value, "phase": "terminal", "terminal": terminal},
+                    )
+                except OSError:
+                    self._contained.set()
+                    continue
+                execution.terminal = terminal
             self._executions[
                 (str(identity["turn_id"]), str(identity["tool_call_id"]))
             ] = execution
+
+    def _recover_output(self, execution: _Execution, output_path: Path) -> bool:
+        def exact_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ProtocolError("Duplicate executor output fields")
+                result[key] = item
+            return result
+
+        truncate_at: int | None = None
+        try:
+            with output_path.open("rb") as handle:
+                while True:
+                    line_start = handle.tell()
+                    line = handle.readline(MAX_FRAME_BYTES + 1)
+                    if not line:
+                        break
+                    if not line.endswith(b"\n"):
+                        if len(line) > MAX_FRAME_BYTES or handle.read(1):
+                            raise ProtocolError(
+                                "Executor output journal frame is too large"
+                            )
+                        truncate_at = line_start
+                        break
+                    event = json.loads(line, object_pairs_hook=exact_object)
+                    if not isinstance(event, dict) or set(event) != {
+                        "sequence",
+                        "stream",
+                        "data",
+                    }:
+                        raise ProtocolError("Invalid executor output evidence")
+                    expected_sequence = len(execution.events) + 1
+                    if event.get("sequence") != expected_sequence:
+                        raise ProtocolError("Misordered executor output evidence")
+                    encode_response(
+                        {
+                            "protocol": PROTOCOL,
+                            "type": "output",
+                            "request_id": "recovery",
+                            **execution.identity,
+                            **event,
+                        }
+                    )
+                    execution.events.append(event)
+                    execution.captured_bytes += len(str(event["data"]).encode())
+                    if execution.captured_bytes > self.capture_limit:
+                        raise ProtocolError("Oversized executor output evidence")
+            if truncate_at is not None:
+                with output_path.open("r+b") as handle:
+                    handle.truncate(truncate_at)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                _fsync_directory(output_path.parent)
+        except (
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            OSError,
+            ProtocolError,
+            TypeError,
+            ValueError,
+        ):
+            execution.events.clear()
+            execution.captured_bytes = 0
+            return True
+        return False
 
 
 def main() -> int:

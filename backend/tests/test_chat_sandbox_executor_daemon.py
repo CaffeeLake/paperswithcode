@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -59,6 +60,7 @@ def _operation(
     request: dict[str, object],
     *,
     capability: str = "synthetic-capability",
+    worker_generation: str = "worker-1",
 ) -> list[dict[str, object]]:
     bootstrap = {
         "operation": "executor_connect",
@@ -67,7 +69,7 @@ def _operation(
         "workspace_generation": request["workspace_generation"],
         "session_id": request["session_id"],
         "turn_id": request["turn_id"],
-        "worker_generation": "worker-1",
+        "worker_generation": worker_generation,
     }
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(str(socket_path))
@@ -532,6 +534,65 @@ def test_restart_turns_durable_acceptance_into_execution_lost(
     first.shutdown()
 
 
+def test_restart_rejects_evidence_from_an_old_worker_generation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_path = tmp_path / "state"
+    first = ExecutorServer(
+        socket_path=tmp_path / "first" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    first_thread = threading.Thread(target=first.serve_forever, daemon=True)
+    first_thread.start()
+    assert first.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-generation-one",
+        **IDENTITY,
+        "command": "printf old-generation",
+        "timeout_ms": 2_000,
+    }
+    assert _operation(first.socket_path, request)[-1]["status"] == "completed"
+    first.shutdown()
+    first_thread.join(timeout=2)
+
+    recovered = ExecutorServer(
+        socket_path=tmp_path / "second" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-2",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    recovered_thread = threading.Thread(target=recovered.serve_forever, daemon=True)
+    recovered_thread.start()
+    assert recovered.wait_until_ready(2)
+    attached = _operation(
+        recovered.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "attach_execution",
+            "request_id": "request-generation-two",
+            **IDENTITY,
+            "offset": 0,
+        },
+        worker_generation="worker-2",
+    )
+
+    assert attached[-1]["status"] == "failed"
+    assert attached[-1]["error"] == "executor_containment_failure"
+    assert all(frame["type"] != "output" for frame in attached)
+    recovered.shutdown()
+    recovered_thread.join(timeout=2)
+
+
 def test_relay_copies_bytes_through_a_real_unix_socket(tmp_path: Path) -> None:
     socket_path = tmp_path / "relay.sock"
     ready = threading.Event()
@@ -672,6 +733,59 @@ def test_capability_cleanup_failure_is_a_terminal_containment_failure(
         connection.shutdown(socket.SHUT_WR)
         health = _read_frames(connection)
     assert health[0]["status"] == "draining"
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_lost_install_response_still_clears_mutated_broker(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class SyntheticLostInstallResponse(BaseException):
+        pass
+
+    class LostInstallResponseBroker:
+        def __init__(self) -> None:
+            self.active = False
+
+        def __call__(self, payload: dict[str, object]) -> dict[str, object]:
+            if payload["operation"] == "install":
+                self.active = True
+                raise SyntheticLostInstallResponse("synthetic lost response")
+            if payload["operation"] == "clear":
+                self.active = False
+                raise SyntheticLostInstallResponse("synthetic lost clear response")
+            return {"ok": True, "active": self.active}
+
+    broker = LostInstallResponseBroker()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=broker,
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-lost-install",
+            **IDENTITY,
+            "command": "printf bad > lost-install-side-effect",
+            "timeout_ms": 2_000,
+        },
+    )
+
+    assert responses[-1]["status"] == "failed"
+    assert responses[-1]["error"] == "execution_start_failed"
+    assert broker.active is False
+    assert not (workspace / "lost-install-side-effect").exists()
     server.shutdown()
     thread.join(timeout=2)
 
@@ -825,3 +939,256 @@ def test_invalid_utf8_at_chunk_limit_still_reaches_terminal(tmp_path: Path) -> N
     )
     server.shutdown()
     thread.join(timeout=2)
+
+
+def test_terminal_write_failure_exposes_no_success_and_drains(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_replace = os.replace
+
+    def fail_terminal_replace(source: str | bytes, target: str | bytes) -> None:
+        value = json.loads(Path(source).read_text(encoding="utf-8"))
+        if value.get("phase") == "terminal":
+            raise OSError("synthetic terminal persistence failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_terminal_replace)
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    connection, reader = _open_operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-terminal-write",
+            **IDENTITY,
+            "command": "true",
+            "timeout_ms": 2_000,
+        },
+    )
+    connection.settimeout(0.5)
+
+    assert decode_response(reader.readline())["type"] == "acknowledged"
+    assert reader.readline() == b""
+    reader.close()
+    connection.close()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as health_connection:
+        health_connection.connect(str(server.socket_path))
+        health_connection.sendall(
+            encode_request(
+                {
+                    "protocol": PROTOCOL,
+                    "type": "health",
+                    "request_id": "request-terminal-health",
+                    "execution_id": "execution-terminal-health",
+                }
+            )
+        )
+        health_connection.shutdown(socket.SHUT_WR)
+        health = _read_frames(health_connection)
+    assert health[0]["status"] == "draining"
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_acceptance_write_failure_leaves_no_attachable_hanging_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_replace = os.replace
+    failed = False
+
+    def fail_first_acceptance(source: str | bytes, target: str | bytes) -> None:
+        nonlocal failed
+        value = json.loads(Path(source).read_text(encoding="utf-8"))
+        if value.get("phase") == "accepted" and not failed:
+            failed = True
+            raise OSError("synthetic acceptance persistence failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_first_acceptance)
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-acceptance-write",
+        **IDENTITY,
+        "command": "printf bad > acceptance-side-effect",
+        "timeout_ms": 2_000,
+    }
+
+    assert _operation(server.socket_path, request) == []
+    retry = _operation(
+        server.socket_path,
+        {**request, "request_id": "request-acceptance-retry"},
+    )
+
+    assert retry[-1]["status"] == "failed"
+    assert retry[-1]["error"] == "executor_containment_failure"
+    assert not (workspace / "acceptance-side-effect").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_restart_discards_only_an_incomplete_output_journal_tail(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_path = tmp_path / "state"
+    first = ExecutorServer(
+        socket_path=tmp_path / "first" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    first_thread = threading.Thread(target=first.serve_forever, daemon=True)
+    first_thread.start()
+    assert first.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-partial-tail",
+        **IDENTITY,
+        "command": "printf first; sleep .05; printf second >&2",
+        "timeout_ms": 2_000,
+    }
+    original = _operation(first.socket_path, request)
+    assert original[-1]["status"] == "completed"
+    first.shutdown()
+    first_thread.join(timeout=2)
+    output_path = next(state_path.glob("*/output.jsonl"))
+    with output_path.open("ab") as handle:
+        handle.write(b'{"sequence":3')
+
+    recovered = ExecutorServer(
+        socket_path=tmp_path / "recovered" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    recovered_thread = threading.Thread(target=recovered.serve_forever, daemon=True)
+    recovered_thread.start()
+    assert recovered.wait_until_ready(2)
+    attached = _operation(
+        recovered.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "attach_execution",
+            "request_id": "request-partial-attach",
+            **IDENTITY,
+            "offset": 0,
+        },
+    )
+
+    assert (
+        "".join(str(frame["data"]) for frame in attached if frame["type"] == "output")
+        == "firstsecond"
+    )
+    assert attached[-1]["status"] == "completed"
+    assert output_path.read_bytes().endswith(b"\n")
+    recovered.shutdown()
+    recovered_thread.join(timeout=2)
+
+
+def test_restart_turns_malformed_middle_output_into_execution_lost(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_path = tmp_path / "state"
+    first = ExecutorServer(
+        socket_path=tmp_path / "first" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    first_thread = threading.Thread(target=first.serve_forever, daemon=True)
+    first_thread.start()
+    assert first.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-malformed-middle",
+        **IDENTITY,
+        "command": "printf first; sleep .05; printf second >&2",
+        "timeout_ms": 2_000,
+    }
+    original = _operation(first.socket_path, request)
+    assert original[-1]["status"] == "completed"
+    first.shutdown()
+    first_thread.join(timeout=2)
+    output_path = next(state_path.glob("*/output.jsonl"))
+    lines = output_path.read_bytes().splitlines(keepends=True)
+    assert len(lines) == 2
+    final_event = json.loads(lines[1])
+    final_event["sequence"] = 3
+    malformed_middle = {
+        "sequence": 2,
+        "stream": "stdout",
+        "data": "tampered",
+        "workspace_id": "workspace-other",
+    }
+    output_path.write_bytes(
+        lines[0]
+        + json.dumps(malformed_middle, separators=(",", ":")).encode()
+        + b"\n"
+        + json.dumps(final_event, separators=(",", ":")).encode()
+        + b"\n"
+    )
+
+    recovered = ExecutorServer(
+        socket_path=tmp_path / "recovered" / "executor.sock",
+        state_path=state_path,
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    recovered_thread = threading.Thread(target=recovered.serve_forever, daemon=True)
+    recovered_thread.start()
+    assert recovered.wait_until_ready(2)
+    attached = _operation(
+        recovered.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "attach_execution",
+            "request_id": "request-malformed-attach",
+            **IDENTITY,
+            "offset": 0,
+        },
+    )
+
+    assert all(frame["type"] != "output" for frame in attached)
+    assert attached[-1]["status"] == "failed"
+    assert attached[-1]["error"] == "execution_lost"
+    recovered.shutdown()
+    recovered_thread.join(timeout=2)
