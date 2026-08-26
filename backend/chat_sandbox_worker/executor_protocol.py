@@ -16,9 +16,12 @@ MAX_COMMAND_BYTES = 64 * 1024
 MAX_OUTPUT_CHUNK_BYTES = 64 * 1024
 MAX_PATH_BYTES = 4 * 1024
 MAX_TOOL_CALL_ID_BYTES = 256
-MAX_TIMEOUT_MS = 15 * 60 * 1000
+MAX_TIMEOUT_MS = 30 * 1000
 MAX_OFFSET = 2**63 - 1
-MAX_READ_BYTES = 1024 * 1024
+MAX_WORKSPACE_GENERATION = 2**63 - 1
+# Reserve enough wire space for maximally escaped paths and immutable identities;
+# read data itself can JSON-expand to two bytes per accepted UTF-8 byte.
+MAX_READ_BYTES = (MAX_FRAME_BYTES - 16 * 1024) // 2
 
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _TOOL_CALL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
@@ -81,6 +84,18 @@ def _bounded_text(
         raise ProtocolError(f"Invalid or oversized {name}")
 
 
+def _sanitized_text(
+    value: Any, name: str, maximum: int, *, allow_empty: bool = False
+) -> None:
+    _bounded_text(value, name, maximum, allow_empty=allow_empty)
+    if any(
+        (ord(character) < 0x20 and character not in "\t\n")
+        or 0x7F <= ord(character) <= 0x9F
+        for character in value
+    ):
+        raise ProtocolError(f"Invalid control content in {name}")
+
+
 def _exact_fields(value: dict[str, Any], fields: set[str]) -> None:
     if set(value) != fields:
         raise ProtocolError("Executor frame has missing or extra fields")
@@ -97,27 +112,51 @@ def _base(value: dict[str, Any]) -> str:
     return kind
 
 
+_OPERATION_IDENTITY_FIELDS = {
+    "workspace_id",
+    "workspace_generation",
+    "session_id",
+    "turn_id",
+    "execution_id",
+    "tool_call_id",
+}
+
+
+def _validate_operation_identity(value: dict[str, Any]) -> None:
+    _identity(value.get("workspace_id"), "workspace identity")
+    workspace_generation = value.get("workspace_generation")
+    if (
+        isinstance(workspace_generation, bool)
+        or not isinstance(workspace_generation, int)
+        or not 1 <= workspace_generation <= MAX_WORKSPACE_GENERATION
+    ):
+        raise ProtocolError("Invalid workspace generation")
+    _identity(value.get("session_id"), "session identity")
+    _identity(value.get("turn_id"), "turn identity")
+    tool_call_id = value.get("tool_call_id")
+    _bounded_text(tool_call_id, "tool-call ID", MAX_TOOL_CALL_ID_BYTES)
+    if _TOOL_CALL_ID.fullmatch(tool_call_id) is None:
+        raise ProtocolError("Invalid tool-call ID")
+
+
 def _validate_request(value: dict[str, Any]) -> None:
     kind = _base(value)
     common = {"protocol", "type", "request_id", "execution_id"}
     if kind == "health":
         _exact_fields(value, common)
         return
-    operation = common | {"tool_call_id"}
+    operation = common | _OPERATION_IDENTITY_FIELDS
     if kind == "ensure_workspace":
-        _exact_fields(value, operation | {"workspace_id"})
-        _identity(value["workspace_id"], "workspace identity")
+        _exact_fields(value, operation)
     elif kind == "exec":
         _exact_fields(
             value,
             operation
             | {
-                "workspace_id",
                 "command",
                 "timeout_ms",
             },
         )
-        _identity(value["workspace_id"], "workspace identity")
         _bounded_text(value["command"], "command", MAX_COMMAND_BYTES)
         timeout = value["timeout_ms"]
         if (
@@ -144,10 +183,7 @@ def _validate_request(value: dict[str, Any]) -> None:
             raise ProtocolError("Invalid read size")
     else:
         raise ProtocolError("Unknown executor request type")
-    tool_call_id = value["tool_call_id"]
-    _bounded_text(tool_call_id, "tool-call ID", MAX_TOOL_CALL_ID_BYTES)
-    if _TOOL_CALL_ID.fullmatch(tool_call_id) is None:
-        raise ProtocolError("Invalid tool-call ID")
+    _validate_operation_identity(value)
 
 
 def _nonnegative_integer(value: Any, name: str, maximum: int) -> None:
@@ -162,33 +198,36 @@ def _nonnegative_integer(value: Any, name: str, maximum: int) -> None:
 def _validate_response(value: dict[str, Any]) -> None:
     kind = _base(value)
     common = {"protocol", "type", "request_id", "execution_id"}
+    operation = common | _OPERATION_IDENTITY_FIELDS
     if kind == "acknowledged":
-        _exact_fields(value, common | {"operation"})
+        _exact_fields(value, operation | {"operation"})
         if value["operation"] not in {
             "ensure_workspace",
             "exec",
             "attach_execution",
             "cancel_execution",
             "read_file",
-            "health",
         }:
             raise ProtocolError("Invalid acknowledged operation")
+        _validate_operation_identity(value)
     elif kind == "output":
-        _exact_fields(value, common | {"sequence", "stream", "data"})
+        _exact_fields(value, operation | {"sequence", "stream", "data"})
+        _validate_operation_identity(value)
         _nonnegative_integer(value["sequence"], "output sequence", MAX_OFFSET)
         if value["stream"] not in {"stdout", "stderr"}:
             raise ProtocolError("Invalid output stream")
-        _bounded_text(
+        _sanitized_text(
             value["data"],
             "output chunk",
             MAX_OUTPUT_CHUNK_BYTES,
             allow_empty=True,
         )
     elif kind == "read_result":
-        _exact_fields(value, common | {"path", "offset", "data", "eof"})
+        _exact_fields(value, operation | {"path", "offset", "data", "eof"})
+        _validate_operation_identity(value)
         _bounded_text(value["path"], "path", MAX_PATH_BYTES)
         _nonnegative_integer(value["offset"], "offset", MAX_OFFSET)
-        _bounded_text(value["data"], "read result", MAX_READ_BYTES, allow_empty=True)
+        _sanitized_text(value["data"], "read result", MAX_READ_BYTES, allow_empty=True)
         if not isinstance(value["eof"], bool):
             raise ProtocolError("Invalid read-result EOF marker")
     elif kind == "health_result":
@@ -196,7 +235,8 @@ def _validate_response(value: dict[str, Any]) -> None:
         if value["status"] not in {"ok", "draining"}:
             raise ProtocolError("Invalid executor health status")
     elif kind == "terminal":
-        _exact_fields(value, common | {"status", "exit_code", "error"})
+        _exact_fields(value, operation | {"status", "exit_code", "error"})
+        _validate_operation_identity(value)
         if value["status"] not in {"completed", "cancelled", "failed"}:
             raise ProtocolError("Invalid terminal status")
         exit_code = value["exit_code"]
@@ -208,7 +248,7 @@ def _validate_response(value: dict[str, Any]) -> None:
             raise ProtocolError("Invalid terminal exit code")
         error = value["error"]
         if error is not None:
-            _bounded_text(error, "terminal error", MAX_OUTPUT_CHUNK_BYTES)
+            _sanitized_text(error, "terminal error", MAX_OUTPUT_CHUNK_BYTES)
         if value["status"] == "completed" and (exit_code is None or error is not None):
             raise ProtocolError("Invalid completed terminal response")
         if value["status"] == "failed" and error is None:
@@ -240,11 +280,29 @@ def _encode(
 class ResponseSequenceValidator:
     """Incrementally validate one correlated execution response sequence."""
 
-    def __init__(self, request_id: str, execution_id: str):
+    def __init__(
+        self,
+        request_id: str,
+        *,
+        workspace_id: str,
+        workspace_generation: int,
+        session_id: str,
+        turn_id: str,
+        execution_id: str,
+        tool_call_id: str,
+    ):
         _identity(request_id, "request identity")
         _identity(execution_id, "execution identity")
-        self.request_id = request_id
-        self.execution_id = execution_id
+        identity = {
+            "workspace_id": workspace_id,
+            "workspace_generation": workspace_generation,
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "execution_id": execution_id,
+            "tool_call_id": tool_call_id,
+        }
+        _validate_operation_identity(identity)
+        self.identity = {"request_id": request_id, **identity}
         self._acknowledged = False
         self._last_output_sequence: int | None = None
         self._terminal = False
@@ -253,15 +311,16 @@ class ResponseSequenceValidator:
         if not isinstance(response, dict):
             raise ProtocolError("Executor response must be a JSON object")
         _validate_response(response)
-        if (
-            response["request_id"] != self.request_id
-            or response["execution_id"] != self.execution_id
+        if any(
+            response[field] != expected for field, expected in self.identity.items()
         ):
             raise ProtocolError("Uncorrelated executor response")
         if self._terminal:
             raise ProtocolError("Executor response followed a terminal response")
 
         kind = response["type"]
+        if not self._acknowledged and kind != "acknowledged":
+            raise ProtocolError("Executor response sequence must begin acknowledged")
         if kind == "acknowledged":
             if self._acknowledged or self._last_output_sequence is not None:
                 raise ProtocolError("Misordered acknowledged response")
@@ -280,15 +339,31 @@ class ResponseSequenceValidator:
             raise ProtocolError("Non-execution response in execution sequence")
 
     def finish(self) -> None:
-        if not self._terminal:
+        if not self._acknowledged or not self._terminal:
             raise ProtocolError("Executor response sequence has no terminal response")
 
 
 def validate_response_sequence(
-    responses: list[dict[str, Any]], *, request_id: str, execution_id: str
+    responses: list[dict[str, Any]],
+    *,
+    request_id: str,
+    workspace_id: str,
+    workspace_generation: int,
+    session_id: str,
+    turn_id: str,
+    execution_id: str,
+    tool_call_id: str,
 ) -> None:
     """Validate a complete, correlated execution response sequence."""
-    validator = ResponseSequenceValidator(request_id, execution_id)
+    validator = ResponseSequenceValidator(
+        request_id,
+        workspace_id=workspace_id,
+        workspace_generation=workspace_generation,
+        session_id=session_id,
+        turn_id=turn_id,
+        execution_id=execution_id,
+        tool_call_id=tool_call_id,
+    )
     for response in responses:
         validator.accept(response)
     validator.finish()

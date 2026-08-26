@@ -19,36 +19,58 @@ from backend.chat_sandbox_worker.executor_protocol import (
     validate_response_sequence,
 )
 
+OPERATION_IDENTITY = {
+    "workspace_id": "workspace-1",
+    "workspace_generation": 7,
+    "session_id": "session-1",
+    "turn_id": "turn-1",
+    "execution_id": "execution-1",
+    "tool_call_id": "tool-1",
+}
+
 
 def test_request_and_response_known_literals_round_trip() -> None:
     request = {
         "protocol": "sandbox-executor-v1",
         "type": "exec",
         "request_id": "request-7",
+        "workspace_id": "workspace-2",
+        "workspace_generation": 3,
+        "session_id": "session-4",
+        "turn_id": "turn-5",
         "execution_id": "execution-9",
         "tool_call_id": "toolu_01ABC",
-        "workspace_id": "workspace-2",
         "command": "printf 'héllo'",
         "timeout_ms": 30_000,
     }
     request_wire = (
         b'{"protocol":"sandbox-executor-v1","type":"exec",'
-        b'"request_id":"request-7","execution_id":"execution-9",'
-        b'"tool_call_id":"toolu_01ABC","workspace_id":"workspace-2",'
+        b'"request_id":"request-7","workspace_id":"workspace-2",'
+        b'"workspace_generation":3,"session_id":"session-4",'
+        b'"turn_id":"turn-5","execution_id":"execution-9",'
+        b'"tool_call_id":"toolu_01ABC",'
         b'"command":"printf \'h\xc3\xa9llo\'","timeout_ms":30000}\n'
     )
     response = {
         "protocol": "sandbox-executor-v1",
         "type": "output",
         "request_id": "request-7",
+        "workspace_id": "workspace-2",
+        "workspace_generation": 3,
+        "session_id": "session-4",
+        "turn_id": "turn-5",
         "execution_id": "execution-9",
+        "tool_call_id": "toolu_01ABC",
         "sequence": 1,
         "stream": "stdout",
         "data": "héllo",
     }
     response_wire = (
         b'{"protocol":"sandbox-executor-v1","type":"output",'
-        b'"request_id":"request-7","execution_id":"execution-9",'
+        b'"request_id":"request-7","workspace_id":"workspace-2",'
+        b'"workspace_generation":3,"session_id":"session-4",'
+        b'"turn_id":"turn-5","execution_id":"execution-9",'
+        b'"tool_call_id":"toolu_01ABC",'
         b'"sequence":1,"stream":"stdout","data":"h\xc3\xa9llo"}\n'
     )
 
@@ -66,31 +88,26 @@ def test_request_and_response_known_literals_round_trip() -> None:
             "protocol": PROTOCOL,
             "type": "ensure_workspace",
             "request_id": "request-1",
-            "execution_id": "execution-1",
-            "tool_call_id": "tool-1",
-            "workspace_id": "workspace-1",
+            **OPERATION_IDENTITY,
         },
         {
             "protocol": PROTOCOL,
             "type": "attach_execution",
             "request_id": "request-2",
-            "execution_id": "execution-1",
-            "tool_call_id": "tool-2",
+            **OPERATION_IDENTITY,
             "offset": 4096,
         },
         {
             "protocol": PROTOCOL,
             "type": "cancel_execution",
             "request_id": "request-3",
-            "execution_id": "execution-1",
-            "tool_call_id": "tool-3",
+            **OPERATION_IDENTITY,
         },
         {
             "protocol": PROTOCOL,
             "type": "read_file",
             "request_id": "request-4",
-            "execution_id": "execution-1",
-            "tool_call_id": "tool-4",
+            **OPERATION_IDENTITY,
             "path": "../literal/./path.txt",
             "offset": 5,
             "max_bytes": 8192,
@@ -116,14 +133,14 @@ def test_each_request_type_round_trips_without_resolving_content(
             "protocol": PROTOCOL,
             "type": "acknowledged",
             "request_id": "request-1",
-            "execution_id": "execution-1",
+            **OPERATION_IDENTITY,
             "operation": "exec",
         },
         {
             "protocol": PROTOCOL,
             "type": "read_result",
             "request_id": "request-2",
-            "execution_id": "execution-1",
+            **OPERATION_IDENTITY,
             "path": "../literal/path.txt",
             "offset": 2,
             "data": "llo",
@@ -140,7 +157,7 @@ def test_each_request_type_round_trips_without_resolving_content(
             "protocol": PROTOCOL,
             "type": "terminal",
             "request_id": "request-4",
-            "execution_id": "execution-1",
+            **OPERATION_IDENTITY,
             "status": "completed",
             "exit_code": 0,
             "error": None,
@@ -167,9 +184,7 @@ def test_rejects_malformed_oversized_and_non_utf8_frames() -> None:
         "protocol": PROTOCOL,
         "type": "exec",
         "request_id": "request-1",
-        "execution_id": "execution-1",
-        "tool_call_id": "tool-1",
-        "workspace_id": "workspace-1",
+        **OPERATION_IDENTITY,
         "command": "\ud800",
         "timeout_ms": 1000,
     }
@@ -182,8 +197,7 @@ def test_rejects_missing_extra_and_bad_identity_fields() -> None:
         "protocol": PROTOCOL,
         "type": "cancel_execution",
         "request_id": "request-1",
-        "execution_id": "execution-1",
-        "tool_call_id": "tool-1",
+        **OPERATION_IDENTITY,
     }
     invalid = [
         {key: value for key, value in valid.items() if key != "request_id"},
@@ -210,9 +224,7 @@ def test_rejects_oversized_exec_inputs(field: str, value: object) -> None:
         "protocol": PROTOCOL,
         "type": "exec",
         "request_id": "request-1",
-        "execution_id": "execution-1",
-        "tool_call_id": "tool-1",
-        "workspace_id": "workspace-1",
+        **OPERATION_IDENTITY,
         "command": "pwd",
         "timeout_ms": 1000,
     }
@@ -220,6 +232,22 @@ def test_rejects_oversized_exec_inputs(field: str, value: object) -> None:
 
     with pytest.raises(ProtocolError):
         encode_request(frame)
+
+
+def test_timeout_is_strictly_bounded_to_thirty_seconds() -> None:
+    frame = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-1",
+        **OPERATION_IDENTITY,
+        "command": "pwd",
+        "timeout_ms": 30_000,
+    }
+
+    assert MAX_TIMEOUT_MS == 30_000
+    assert decode_request(encode_request(frame)) == frame
+    with pytest.raises(ProtocolError):
+        encode_request({**frame, "timeout_ms": 30_001})
 
 
 @pytest.mark.parametrize(
@@ -239,8 +267,7 @@ def test_rejects_bounded_read_and_attach_values(
         "protocol": PROTOCOL,
         "type": request_type,
         "request_id": "request-1",
-        "execution_id": "execution-1",
-        "tool_call_id": "tool-1",
+        **OPERATION_IDENTITY,
         "path": "path.txt",
         "offset": 0,
         "max_bytes": 4096,
@@ -259,7 +286,7 @@ def test_rejects_oversized_output_chunk() -> None:
         "protocol": PROTOCOL,
         "type": "output",
         "request_id": "request-1",
-        "execution_id": "execution-1",
+        **OPERATION_IDENTITY,
         "sequence": 0,
         "stream": "stdout",
         "data": "x" * (MAX_OUTPUT_CHUNK_BYTES + 1),
@@ -269,12 +296,98 @@ def test_rejects_oversized_output_chunk() -> None:
         encode_response(output)
 
 
+@pytest.mark.parametrize(
+    "response_frame",
+    [
+        {
+            "protocol": PROTOCOL,
+            "type": "output",
+            "request_id": "request-1",
+            **OPERATION_IDENTITY,
+            "sequence": 0,
+            "stream": "stdout",
+            "data": "safe\x1b[31munsafe",
+        },
+        {
+            "protocol": PROTOCOL,
+            "type": "read_result",
+            "request_id": "request-1",
+            **OPERATION_IDENTITY,
+            "path": "path.txt",
+            "offset": 0,
+            "data": "before\x00after",
+            "eof": True,
+        },
+        {
+            "protocol": PROTOCOL,
+            "type": "terminal",
+            "request_id": "request-1",
+            **OPERATION_IDENTITY,
+            "status": "failed",
+            "exit_code": 1,
+            "error": "unsafe\x9bcontent",
+        },
+        {
+            "protocol": PROTOCOL,
+            "type": "output",
+            "request_id": "request-1",
+            **OPERATION_IDENTITY,
+            "sequence": 0,
+            "stream": "stderr",
+            "data": "carriage\rreturn",
+        },
+    ],
+)
+def test_rejects_ansi_nul_and_control_response_content(
+    response_frame: dict[str, object],
+) -> None:
+    with pytest.raises(ProtocolError, match="control"):
+        encode_response(response_frame)
+
+
+def test_preserves_sanitized_line_oriented_response_content() -> None:
+    response_frame = {
+        "protocol": PROTOCOL,
+        "type": "output",
+        "request_id": "request-1",
+        **OPERATION_IDENTITY,
+        "sequence": 0,
+        "stream": "stdout",
+        "data": "one\ttwo\nthree",
+    }
+
+    assert decode_response(encode_response(response_frame)) == response_frame
+
+
+def test_maximum_read_result_is_encodable_at_worst_json_expansion() -> None:
+    response_frame = {
+        "protocol": PROTOCOL,
+        "type": "read_result",
+        "request_id": "r" * 128,
+        "workspace_id": "w" * 128,
+        "workspace_generation": MAX_OFFSET,
+        "session_id": "s" * 128,
+        "turn_id": "t" * 128,
+        "execution_id": "e" * 128,
+        "tool_call_id": "c" * MAX_TOOL_CALL_ID_BYTES,
+        "path": "\\" * MAX_PATH_BYTES,
+        "offset": MAX_OFFSET,
+        "data": "\\" * MAX_READ_BYTES,
+        "eof": False,
+    }
+
+    wire = encode_response(response_frame)
+
+    assert len(wire) <= MAX_FRAME_BYTES
+    assert decode_response(wire) == response_frame
+
+
 def _execution_response(kind: str, **fields: object) -> dict[str, object]:
     return {
         "protocol": PROTOCOL,
         "type": kind,
         "request_id": "request-1",
-        "execution_id": "execution-1",
+        **OPERATION_IDENTITY,
         **fields,
     }
 
@@ -287,11 +400,9 @@ def test_validates_increasing_output_and_exactly_one_terminal_response() -> None
         _execution_response("terminal", status="completed", exit_code=0, error=None),
     ]
 
-    validate_response_sequence(
-        responses, request_id="request-1", execution_id="execution-1"
-    )
+    validate_response_sequence(responses, request_id="request-1", **OPERATION_IDENTITY)
 
-    validator = ResponseSequenceValidator("request-1", "execution-1")
+    validator = ResponseSequenceValidator("request-1", **OPERATION_IDENTITY)
     for response in responses:
         validator.accept(response)
     validator.finish()
@@ -300,6 +411,13 @@ def test_validates_increasing_output_and_exactly_one_terminal_response() -> None
 @pytest.mark.parametrize(
     "responses",
     [
+        [
+            _execution_response("output", sequence=1, stream="stdout", data="early"),
+            _execution_response(
+                "terminal", status="completed", exit_code=0, error=None
+            ),
+        ],
+        [_execution_response("terminal", status="completed", exit_code=0, error=None)],
         [
             _execution_response("output", sequence=2, stream="stdout", data="a"),
             _execution_response("output", sequence=2, stream="stdout", data="b"),
@@ -337,5 +455,77 @@ def test_rejects_invalid_output_and_terminal_ordering(
 ) -> None:
     with pytest.raises(ProtocolError):
         validate_response_sequence(
-            responses, request_id="request-1", execution_id="execution-1"
+            responses, request_id="request-1", **OPERATION_IDENTITY
+        )
+
+
+def test_execution_frames_require_full_immutable_identity() -> None:
+    request_frame = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-identity",
+        "workspace_id": "workspace-1",
+        "workspace_generation": 7,
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "execution_id": "execution-1",
+        "tool_call_id": "tool-1",
+        "command": "pwd",
+        "timeout_ms": 1000,
+    }
+    response_frame = {
+        "protocol": PROTOCOL,
+        "type": "output",
+        "request_id": "request-identity",
+        "workspace_id": "workspace-1",
+        "workspace_generation": 7,
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "execution_id": "execution-1",
+        "tool_call_id": "tool-1",
+        "sequence": 0,
+        "stream": "stdout",
+        "data": "ok",
+    }
+
+    assert decode_request(encode_request(request_frame)) == request_frame
+    assert decode_response(encode_response(response_frame)) == response_frame
+
+    missing_turn = {
+        key: value for key, value in request_frame.items() if key != "turn_id"
+    }
+    with pytest.raises(ProtocolError):
+        encode_request(missing_turn)
+    with pytest.raises(ProtocolError):
+        encode_request({**request_frame, "workspace_generation": 0})
+
+
+@pytest.mark.parametrize(
+    ("field", "mismatch"),
+    [
+        ("request_id", "request-other"),
+        ("workspace_id", "workspace-other"),
+        ("workspace_generation", 8),
+        ("session_id", "session-other"),
+        ("turn_id", "turn-other"),
+        ("execution_id", "execution-other"),
+        ("tool_call_id", "tool-other"),
+    ],
+)
+def test_sequence_rejects_every_cross_identity_mismatch(
+    field: str, mismatch: object
+) -> None:
+    responses = [
+        _execution_response("acknowledged", operation="exec"),
+        {
+            **_execution_response(
+                "terminal", status="completed", exit_code=0, error=None
+            ),
+            field: mismatch,
+        },
+    ]
+
+    with pytest.raises(ProtocolError, match="Uncorrelated"):
+        validate_response_sequence(
+            responses, request_id="request-1", **OPERATION_IDENTITY
         )
