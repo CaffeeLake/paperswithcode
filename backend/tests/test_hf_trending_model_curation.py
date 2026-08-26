@@ -93,7 +93,7 @@ def test_discovery_uses_hf_cli_global_top_fifty():
             ]
         )
 
-    models = HFTrendingDiscoveryClient(run=run).list_top_models()
+    models = HFTrendingDiscoveryClient(run=run, hf_cli="hf").list_top_models()
 
     assert calls == [
         [
@@ -112,6 +112,24 @@ def test_discovery_uses_hf_cli_global_top_fifty():
     ]
     assert models[0].repo_id == "Qwen/Qwen3.8-Flash-Next"
     assert models[0].featured_publisher is True
+
+
+def test_discovery_prefers_hf_cli_from_running_virtualenv(tmp_path, monkeypatch):
+    python = tmp_path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    hf = python.with_name("hf")
+    hf.touch(mode=0o755)
+    monkeypatch.setattr("sys.executable", str(python))
+    calls = []
+
+    def run(command):
+        calls.append(command)
+        return "[]"
+
+    HFTrendingDiscoveryClient(run=run).list_top_models(limit=1)
+
+    assert calls[0][0] == str(hf)
 
 
 def test_non_featured_original_release_is_not_deterministically_rejected():
@@ -205,7 +223,7 @@ def test_model_card_snapshot_hashes_readme_not_noisy_repo_metadata(tmp_path):
             return json.dumps({"sha": "repo-revision-1"})
         return str(readme)
 
-    snapshot = HFModelCardClient(run=run).snapshot("org/model")
+    snapshot = HFModelCardClient(run=run, hf_cli="hf").snapshot("org/model")
 
     assert snapshot.repo_revision == "repo-revision-1"
     assert len(snapshot.readme_sha) == 64

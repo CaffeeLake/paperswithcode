@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import os
+import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +42,13 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
+def _hf_cli() -> str:
+    sibling = Path(sys.executable).with_name("hf")
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return shutil.which("hf") or "hf"
+
+
 @dataclass(frozen=True)
 class HFTrendingModel:
     repo_id: str
@@ -67,15 +77,16 @@ class HFTrendingModel:
 
 
 class HFTrendingDiscoveryClient:
-    def __init__(self, *, run: CommandRunner = _run) -> None:
+    def __init__(self, *, run: CommandRunner = _run, hf_cli: str | None = None) -> None:
         self.run = run
+        self.hf_cli = hf_cli or _hf_cli()
 
     def list_top_models(self, *, limit: int = 50) -> list[HFTrendingModel]:
         if limit <= 0:
             raise ValueError("limit must be positive")
         output = self.run(
             [
-                "hf",
+                self.hf_cli,
                 "models",
                 "list",
                 "--sort",
@@ -102,14 +113,15 @@ class HFModelCardSnapshot:
 
 
 class HFModelCardClient:
-    def __init__(self, *, run: CommandRunner = _run) -> None:
+    def __init__(self, *, run: CommandRunner = _run, hf_cli: str | None = None) -> None:
         self.run = run
+        self.hf_cli = hf_cli or _hf_cli()
 
     def snapshot(self, repo_id: str) -> HFModelCardSnapshot:
         info = json.loads(
             self.run(
                 [
-                    "hf",
+                    self.hf_cli,
                     "models",
                     "info",
                     repo_id,
@@ -126,7 +138,7 @@ class HFModelCardClient:
         path = Path(
             self.run(
                 [
-                    "hf",
+                    self.hf_cli,
                     "download",
                     repo_id,
                     "README.md",
