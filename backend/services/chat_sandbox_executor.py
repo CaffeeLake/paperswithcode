@@ -80,9 +80,15 @@ class ExecutorReadResult:
 class ExecutorTransportError(RuntimeError):
     """The trusted client could not prove a complete relay exchange."""
 
-    def __init__(self, responses: tuple[dict[str, object], ...] = ()) -> None:
+    def __init__(
+        self,
+        responses: tuple[dict[str, object], ...] = (),
+        *,
+        payload_delivery_attempted: bool = False,
+    ) -> None:
         super().__init__("Sandbox executor transport was lost")
         self.responses = responses
+        self.payload_delivery_attempted = payload_delivery_attempted
 
 
 class ExecutorExecutionLost(RuntimeError):
@@ -176,6 +182,8 @@ class SandboxExecutorClient:
                 if error.responses[-1]["type"] == "terminal":
                     return self._execution_result(error.responses, request, "exec")
                 raise ExecutorExecutionLost() from error
+            if error.payload_delivery_attempted:
+                raise ExecutorExecutionLost() from error
             raise
         if self._valid_execution_prefix(responses, request, "exec") and (
             not responses or responses[-1]["type"] != "terminal"
@@ -267,15 +275,22 @@ class SandboxExecutorClient:
         if context is not None:
             payload = self._bootstrap(context) + request_frame
         responses: list[dict[str, object]] = []
+        payload_delivery_attempted = False
         try:
             process = await self.provider.open_executor_relay(
                 sandbox, timeout_seconds=timeout_seconds
             )
-            process.stdin.write(payload)
+            write = process.stdin.write
+            payload_delivery_attempted = True
+            write(payload)
             await process.stdin.drain.aio()
             async for response in self._responses(process.stdout):
                 responses.append(response)
             await process.wait.aio()
+            if not responses:
+                raise _ExecutorDisconnect(
+                    "Executor response stream ended before its first frame"
+                )
         except ProtocolError:
             raise
         except (
@@ -289,7 +304,10 @@ class SandboxExecutorClient:
             SandboxTerminatedError,
             _ExecutorDisconnect,
         ) as error:
-            raise ExecutorTransportError(tuple(responses)) from error
+            raise ExecutorTransportError(
+                tuple(responses),
+                payload_delivery_attempted=payload_delivery_attempted,
+            ) from error
         return tuple(responses)
 
     @staticmethod

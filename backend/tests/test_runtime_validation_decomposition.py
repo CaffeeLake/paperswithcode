@@ -571,10 +571,12 @@ def test_runtime_finishes_local_chat_policy_before_openrouter_guardrail(
         calls.append("provider")
 
     monkeypatch.setattr(runtime_validation, "validate_chat_provider_policy", provider)
+
+    def capacity(_settings):
+        calls.append("capacity")
+
     monkeypatch.setattr(
-        runtime_validation,
-        "validate_chat_capacity_and_spend_policy",
-        lambda _settings: calls.append("capacity"),
+        runtime_validation, "_validate_chat_capacity_and_spend_policy", capacity
     )
     monkeypatch.setattr(
         runtime_validation,
@@ -585,6 +587,29 @@ def test_runtime_finishes_local_chat_policy_before_openrouter_guardrail(
     runtime_validation.validate_runtime(settings)
 
     assert calls == ["provider", "capacity", "openrouter"]
+
+
+def test_runtime_validates_external_migration_policy_exactly_once(
+    settings_factory, monkeypatch
+):
+    settings, _release = settings_factory("staging")
+    original = runtime_validation.validate_external_pi_migration_policy
+    calls = 0
+
+    def migration_policy(current_settings):
+        nonlocal calls
+        calls += 1
+        original(current_settings)
+
+    monkeypatch.setattr(
+        runtime_validation,
+        "validate_external_pi_migration_policy",
+        migration_policy,
+    )
+
+    runtime_validation.validate_runtime(settings)
+
+    assert calls == 1
 
 
 def test_release_manifest_isolated_from_storage_and_tolerates_extra_keys(

@@ -48,14 +48,31 @@ class _AsyncCall:
 
 
 class _Input:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        write_error: Exception | None = None,
+        drain_error: Exception | None = None,
+        partial_write_bytes: int = 0,
+    ):
         self.writes: list[bytes] = []
+        self.write_attempts = 0
+        self.write_error = write_error
+        self.drain_error = drain_error
+        self.partial_write_bytes = partial_write_bytes
         self.drain = _AsyncCall(self._drain)
 
     def write(self, value: bytes) -> None:
+        self.write_attempts += 1
+        if self.write_error is not None:
+            if self.partial_write_bytes:
+                self.writes.append(value[: self.partial_write_bytes])
+            raise self.write_error
         self.writes.append(value)
 
     async def _drain(self) -> None:
+        if self.drain_error is not None:
+            raise self.drain_error
         return None
 
 
@@ -81,8 +98,9 @@ class _Process:
         *,
         error: Exception | None = None,
         trailing: bytes = b"",
+        stdin: _Input | None = None,
     ):
-        self.stdin = _Input()
+        self.stdin = stdin or _Input()
         self.stdout = _Output(
             [encode_response(frame) for frame in frames] + [trailing], error
         )
@@ -111,6 +129,16 @@ class _FailingProvider:
     async def open_executor_relay(self, _sandbox, *, timeout_seconds):
         self.calls += 1
         raise self.error
+
+
+class _PreWriteFailureProcess:
+    def __init__(self):
+        self.stdin_lookups = 0
+
+    @property
+    def stdin(self):
+        self.stdin_lookups += 1
+        raise ConnectionError("synthetic pre-write failure")
 
 
 class _SocketProcess:
@@ -255,8 +283,21 @@ def test_exec_disconnect_after_ack_is_typed_lost_and_is_not_retried():
     assert len(process.stdin.writes) == 1
 
 
-def test_exec_disconnect_before_ack_is_typed_transport_failure():
+def test_exec_disconnect_before_ack_is_typed_lost_and_is_not_retried():
     process = _Process([], error=ConnectionResetError("synthetic disconnect"))
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert exc_info.value.code == "execution_lost"
+    assert len(provider.calls) == 1
+    assert process.stdin.write_attempts == 1
+
+
+def test_exec_authoritative_pre_write_failure_remains_transport_failure():
+    process = _PreWriteFailureProcess()
     provider = _Provider([process])
     client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
 
@@ -264,6 +305,66 @@ def test_exec_disconnect_before_ack_is_typed_transport_failure():
         asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
 
     assert len(provider.calls) == 1
+    assert process.stdin_lookups == 1
+
+
+def test_exec_write_failure_is_conservatively_lost_without_zero_delivery_proof():
+    stdin = _Input(write_error=ConnectionResetError("synthetic write failure"))
+    process = _Process([], stdin=stdin)
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorExecutionLost):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
+    assert stdin.write_attempts == 1
+    assert stdin.writes == []
+
+
+def test_exec_partial_write_failure_is_typed_lost_and_is_not_retried():
+    stdin = _Input(
+        write_error=ConnectionResetError("synthetic partial write"),
+        partial_write_bytes=17,
+    )
+    process = _Process([], stdin=stdin)
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorExecutionLost):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
+    assert stdin.write_attempts == 1
+    assert len(stdin.writes) == 1
+    assert len(stdin.writes[0]) == 17
+
+
+def test_exec_clean_eof_before_ack_after_full_write_is_typed_lost():
+    process = _Process([])
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorExecutionLost):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
+    assert process.stdin.write_attempts == 1
+    assert len(process.stdin.writes) == 1
+
+
+def test_exec_drain_failure_after_full_write_is_typed_lost():
+    stdin = _Input(drain_error=ConnectionResetError("synthetic drain failure"))
+    process = _Process([], stdin=stdin)
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorExecutionLost):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
+    assert stdin.write_attempts == 1
+    assert len(stdin.writes) == 1
 
 
 @pytest.mark.parametrize(
@@ -278,10 +379,25 @@ def test_exec_provider_connection_failure_is_typed_transport_failure(failure):
     provider = _FailingProvider(failure)
     client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
 
-    with pytest.raises(ExecutorTransportError):
+    with pytest.raises(ExecutorTransportError) as exc_info:
         asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
 
+    assert exc_info.value.payload_delivery_attempted is False
     assert provider.calls == 1
+
+
+def test_non_exec_write_failure_retains_transport_semantics():
+    stdin = _Input(write_error=ConnectionResetError("synthetic write failure"))
+    process = _Process([], stdin=stdin)
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorTransportError) as exc_info:
+        asyncio.run(client.health(object()))
+
+    assert exc_info.value.payload_delivery_attempted is True
+    assert len(provider.calls) == 1
+    assert stdin.write_attempts == 1
 
 
 @pytest.mark.parametrize(

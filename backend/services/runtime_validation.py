@@ -557,9 +557,15 @@ def validate_chat_provider_policy(
 
 
 def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
-    """Validate sandbox spend, capacity, alerting, and provider reserve."""
+    """Validate migration controls and the chat capacity policy."""
 
     validate_external_pi_migration_policy(settings)
+    _validate_chat_capacity_and_spend_policy(settings)
+
+
+def _validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
+    """Validate sandbox spend, capacity, alerting, and provider reserve."""
+
     if not settings.chat_sandbox_spend_enforcement_enabled:
         raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
     configured_spend = SandboxSpendPolicy(
@@ -1120,7 +1126,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     validate_chat_configuration = validate_chat_runtime_descriptor(settings)
     if validate_chat_configuration:
         validate_chat_provider_policy(settings, include_openrouter=False)
-        validate_chat_capacity_and_spend_policy(settings)
+        _validate_chat_capacity_and_spend_policy(settings)
         _validate_chat_openrouter_policy(settings)
     validate_release_manifest(settings)
     validate_deployed_mutation_policy(settings)
