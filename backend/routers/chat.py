@@ -88,6 +88,7 @@ from backend.services.chat_sandbox_spend_access import (
     assert_chat_sandbox_spend_available,
     chat_sandbox_spend_status,
 )
+from backend.services.chat_sandbox_worker_transport import WorkerCancelStatus
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
 )
@@ -1592,11 +1593,25 @@ async def cancel_active_turn(
         if cancel_request is None:
             return Response(status_code=204)
         manager = shared_sandbox_manager(settings)
-        cancelled = await manager.cancel(session_id, cancel_request.turn_id)
-        if not cancelled:
+        cancel_status: WorkerCancelStatus | None = None
+        try:
+            cancel_status = await manager.cancel_status(
+                session_id, cancel_request.turn_id
+            )
+        except Exception:
+            logger.exception(
+                "Durable chat cancel delivery failed",
+                extra={"chat_session_id": str(session_id)},
+            )
+        if cancel_status is not WorkerCancelStatus.COMPLETED:
             try:
                 await manager.terminate(
                     session_id, failure_code="cancel_control_missing"
+                )
+            except Exception:
+                logger.exception(
+                    "Durable chat cancel termination failed",
+                    extra={"chat_session_id": str(session_id)},
                 )
             finally:
                 try:

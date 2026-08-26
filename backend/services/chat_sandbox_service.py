@@ -609,8 +609,15 @@ class SandboxSessionManager:
             yield event
 
     async def cancel(self, chat_session_id: uuid.UUID, turn_id: uuid.UUID) -> bool:
-        outcome = await self._turn_coordinator().cancel(chat_session_id, turn_id)
+        outcome = await self.cancel_status(chat_session_id, turn_id)
         return outcome is not WorkerCancelStatus.NOT_FOUND
+
+    async def cancel_status(
+        self, chat_session_id: uuid.UUID, turn_id: uuid.UUID
+    ) -> WorkerCancelStatus:
+        """Expose exact cancel delivery while preserving the legacy bool façade."""
+        outcome = await self._turn_coordinator().cancel(chat_session_id, turn_id)
+        return outcome
 
     async def terminate(
         self, chat_session_id: uuid.UUID, *, failure_code: str | None = None

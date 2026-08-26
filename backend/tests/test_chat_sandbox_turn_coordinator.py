@@ -122,6 +122,21 @@ def test_manager_cancel_facade_preserves_legacy_boolean_contract():
     assert asyncio.run(run()) == [False, True, True, True]
 
 
+def test_manager_exposes_typed_cancel_status_without_changing_legacy_facade():
+    class TurnCoordinator:
+        async def cancel(self, _chat_session_id, _turn_id):
+            return WorkerCancelStatus.CONTROL_LOST
+
+    manager = SandboxSessionManager(
+        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+    )
+    manager._sandbox_turn = TurnCoordinator()
+
+    status = asyncio.run(manager.cancel_status(uuid.uuid4(), uuid.uuid4()))
+
+    assert status is WorkerCancelStatus.CONTROL_LOST
+
+
 def test_manager_composes_one_shared_turn_component_graph():
     manager = SandboxSessionManager(
         Settings(_env_file=None, chat_workspace_snapshots_enabled=False)

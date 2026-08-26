@@ -19,6 +19,7 @@ from backend.services.chat_turn_job_repository import (
     StaleTurnClaim,
     TurnLeaseClaim,
 )
+from backend.services.chat_sandbox_worker_transport import WorkerCancelStatus
 
 
 def _enabled_settings():
@@ -50,10 +51,10 @@ def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
             return SimpleNamespace(session_id=session_id, turn_id=turn_id)
 
     class Manager:
-        async def cancel(self, requested_session_id, requested_turn_id):
+        async def cancel_status(self, requested_session_id, requested_turn_id):
             assert (requested_session_id, requested_turn_id) == (session_id, turn_id)
             ordering.append("signal")
-            return True
+            return WorkerCancelStatus.COMPLETED
 
     monkeypatch.setattr(chat_router, "ChatSessionService", Service)
     monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
@@ -97,9 +98,9 @@ def test_enabled_missing_cancel_control_terminalizes_projection(monkeypatch):
             calls.append("interrupted")
 
     class Manager:
-        async def cancel(self, *_args):
+        async def cancel_status(self, *_args):
             calls.append("cancel")
-            return False
+            return WorkerCancelStatus.NOT_FOUND
 
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
@@ -149,9 +150,9 @@ def test_enabled_failed_termination_still_terminalizes_projection(monkeypatch):
             calls.append("interrupted")
 
     class Manager:
-        async def cancel(self, *_args):
+        async def cancel_status(self, *_args):
             calls.append("cancel")
-            return False
+            return WorkerCancelStatus.CONTROL_LOST
 
         async def terminate(self, *_args, **_kwargs):
             calls.append("terminate")
@@ -160,16 +161,16 @@ def test_enabled_failed_termination_still_terminalizes_projection(monkeypatch):
     monkeypatch.setattr(chat_router, "ChatSessionService", Service)
     monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
 
-    with pytest.raises(RuntimeError, match="termination failed"):
-        asyncio.run(
-            chat_router.cancel_active_turn(
-                session_id,
-                user={"hf_user_id": "owner-1", "username": "owner"},
-                db=DB(),
-                settings=_enabled_settings(),
-            )
+    response = asyncio.run(
+        chat_router.cancel_active_turn(
+            session_id,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=DB(),
+            settings=_enabled_settings(),
         )
+    )
 
+    assert response.status_code == 204
     assert calls == [
         "commit",
         "cancel",
@@ -177,6 +178,101 @@ def test_enabled_failed_termination_still_terminalizes_projection(monkeypatch):
         "interrupted",
         "commit",
     ]
+
+
+@pytest.mark.parametrize(
+    "status", [WorkerCancelStatus.CONTROL_LOST, WorkerCancelStatus.TIMED_OUT]
+)
+def test_enabled_uncertain_cancel_status_terminalizes_once(monkeypatch, status):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+        def rollback(self):
+            calls.append("rollback")
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id)
+
+        def interrupt_cancel_without_control(self, *_args):
+            calls.append("interrupted")
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            calls.append(status.value)
+            return status
+
+        async def terminate(self, *_args, **_kwargs):
+            calls.append("terminate")
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
+
+    response = asyncio.run(
+        chat_router.cancel_active_turn(
+            session_id,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=DB(),
+            settings=_enabled_settings(),
+        )
+    )
+
+    assert response.status_code == 204
+    assert calls == ["commit", status.value, "terminate", "interrupted", "commit"]
+
+
+def test_enabled_cancel_exception_terminates_and_terminalizes_once(monkeypatch):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+        def rollback(self):
+            calls.append("rollback")
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id)
+
+        def interrupt_cancel_without_control(self, *_args):
+            calls.append("interrupted")
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            calls.append("cancel")
+            raise RuntimeError("cancel failed")
+
+        async def terminate(self, *_args, **_kwargs):
+            calls.append("terminate")
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
+
+    response = asyncio.run(
+        chat_router.cancel_active_turn(
+            session_id,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=DB(),
+            settings=_enabled_settings(),
+        )
+    )
+
+    assert response.status_code == 204
+    assert calls == ["commit", "cancel", "terminate", "interrupted", "commit"]
 
 
 def test_false_mode_cancel_keeps_old_path_without_durable_method(monkeypatch):
