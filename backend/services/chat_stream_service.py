@@ -17,17 +17,18 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from claude_agent_sdk import fork_session_via_store
 from claude_agent_sdk._internal.session_store import project_key_for_directory
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.models.database import ChatArtifact, ChatArtifactVersion, ChatSession
-from backend.services.latex_paper_service import LatexPaperService
 from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_citation_service import (
     PaperCitationCandidate,
@@ -41,6 +42,7 @@ from backend.services.chat_citation_service import (
     resolve_citation_targets,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_local_turn_lease import ChatLocalTurnLeaseService
 from backend.services.chat_pi_transcript_service import ChatPiTranscriptService
 from backend.services.chat_sandbox_service import SandboxError
 from backend.services.chat_session_service import (
@@ -65,7 +67,9 @@ from backend.services.chat_tracing_service import (
     trace_chat_turn,
 )
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
+from backend.services.chat_turn_job_repository import TurnJobError
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
+from backend.services.latex_paper_service import LatexPaperService
 from backend.services.openrouter_user_budget_service import OpenRouterUserBudgetService
 from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
 from backend.utils.urls import parse_arxiv_url
@@ -953,6 +957,8 @@ def _persist_failure(
         except Exception:
             db.rollback()
             logger.exception("chat cleanup failed session_id=%s", admission.session_id)
+            if settings.chat_durable_turn_dispatch_enabled:
+                raise
 
 
 def _persist_preparation_failure(
@@ -971,6 +977,49 @@ def _persist_preparation_failure(
                 "chat edit preparation cleanup failed session_id=%s",
                 admission.session_id,
             )
+            if settings.chat_durable_turn_dispatch_enabled:
+                raise
+
+
+def _claim_local_turn(settings: Settings, admission: TurnAdmission) -> TurnAdmission:
+    with db_manager.session_local() as db:
+        try:
+            claim = ChatLocalTurnLeaseService(db, settings).claim(
+                admission.turn_id, now=datetime.now(UTC)
+            )
+            db.commit()
+        except (TurnJobError, SQLAlchemyError, ValueError):
+            db.rollback()
+            raise
+    return replace(admission, durable_claim=claim)
+
+
+def _heartbeat_local_turn(settings: Settings, admission: TurnAdmission) -> None:
+    if admission.durable_claim is None:
+        raise RuntimeError("Durable turn claim is missing")
+    with db_manager.session_local() as db:
+        try:
+            ChatLocalTurnLeaseService(db, settings).heartbeat(
+                admission.durable_claim, now=datetime.now(UTC)
+            )
+            db.commit()
+        except (TurnJobError, SQLAlchemyError, ValueError):
+            db.rollback()
+            raise
+
+
+def _start_local_turn(settings: Settings, admission: TurnAdmission) -> None:
+    if admission.durable_claim is None:
+        raise RuntimeError("Durable turn claim is missing")
+    with db_manager.session_local() as db:
+        try:
+            ChatLocalTurnLeaseService(db, settings).transition_running(
+                admission.durable_claim, now=datetime.now(UTC)
+            )
+            db.commit()
+        except (TurnJobError, SQLAlchemyError, ValueError):
+            db.rollback()
+            raise
 
 
 def _persist_trace_id(
@@ -1280,6 +1329,8 @@ class ChatStreamOrchestrator:
         self.store = PostgresSDKSessionStore()
         self.research_task: asyncio.Task | None = None
         self.title_task: asyncio.Task | None = None
+        self.lease_heartbeat_task: asyncio.Task | None = None
+        self.lease_heartbeat_error: Exception | None = None
         self.runner: ChatTurnRunner | None = None
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
         self.edit_activated = False
@@ -1357,6 +1408,7 @@ class ChatStreamOrchestrator:
                 self.terminal = "success"
                 return
 
+            await self._claim_durable_turn()
             replacement_ready, resume_id = await self._replacement_or_error()
             if not replacement_ready:
                 self.trace.finish(
@@ -1370,6 +1422,13 @@ class ChatStreamOrchestrator:
                     },
                 )
                 return
+
+            await self._renew_durable_turn()
+            if self.settings.chat_durable_turn_dispatch_enabled:
+                await asyncio.to_thread(
+                    _start_local_turn, self.settings, self.admission
+                )
+            self._assert_durable_lease()
 
             queue: asyncio.Queue = asyncio.Queue()
             self.runner = create_chat_turn_runner(
@@ -1404,6 +1463,7 @@ class ChatStreamOrchestrator:
         except asyncio.CancelledError:
             interruption_reason = self.interruption_reason or "stream_cancelled"
             await self._cancel_runner()
+            await self._stop_lease_heartbeat()
             if self.admission.is_replacement and not self.edit_activated:
                 await asyncio.shield(
                     asyncio.to_thread(
@@ -1439,13 +1499,18 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            _persist_failure(
-                self.owner,
-                self.settings,
-                self.admission,
-                "persistence_error",
-                False,
-            )
+            await self._stop_lease_heartbeat()
+            if (
+                self.admission.durable_claim is not None
+                or not self.settings.chat_durable_turn_dispatch_enabled
+            ):
+                _persist_failure(
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "persistence_error",
+                    False,
+                )
             self.terminal = "error"
             self.trace.finish(
                 "".join(self.projection.answer_parts),
@@ -1473,6 +1538,7 @@ class ChatStreamOrchestrator:
                 self.store,
                 lambda: setattr(self, "edit_activated", True),
             )
+            self._assert_durable_lease()
             return True, resume_id
         except Exception as exc:
             logger.warning(
@@ -1480,11 +1546,60 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
+            await self._stop_lease_heartbeat()
             _persist_preparation_failure(
                 self.owner, self.settings, self.admission, "replacement_prepare_failed"
             )
             self.terminal = "error"
             return False, None
+
+    async def _claim_durable_turn(self) -> None:
+        if not self.settings.chat_durable_turn_dispatch_enabled:
+            return
+        self.admission = await asyncio.to_thread(
+            _claim_local_turn, self.settings, self.admission
+        )
+        self.lease_heartbeat_task = asyncio.create_task(self._heartbeat_durable_turn())
+
+    async def _heartbeat_durable_turn(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.settings.chat_external_pi_heartbeat_seconds)
+                await asyncio.to_thread(
+                    _heartbeat_local_turn, self.settings, self.admission
+                )
+        except asyncio.CancelledError:
+            raise
+        except (TurnJobError, SQLAlchemyError, ValueError) as exc:
+            self.lease_heartbeat_error = exc
+
+    async def _renew_durable_turn(self) -> None:
+        if not self.settings.chat_durable_turn_dispatch_enabled:
+            return
+        self._assert_durable_lease()
+        await asyncio.to_thread(_heartbeat_local_turn, self.settings, self.admission)
+        self._assert_durable_lease()
+
+    def _assert_durable_lease(self) -> None:
+        if not self.settings.chat_durable_turn_dispatch_enabled:
+            return
+        if self.admission.durable_claim is None:
+            raise RuntimeError("Durable turn claim is missing")
+        if self.lease_heartbeat_error is not None:
+            raise RuntimeError(
+                "Durable turn lease was lost"
+            ) from self.lease_heartbeat_error
+        if self.lease_heartbeat_task is not None and self.lease_heartbeat_task.done():
+            self.lease_heartbeat_task.result()
+
+    async def _stop_lease_heartbeat(self) -> None:
+        task = self.lease_heartbeat_task
+        self.lease_heartbeat_task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     async def _produce_research(self, queue: asyncio.Queue) -> None:
         try:
@@ -1516,6 +1631,7 @@ class ChatStreamOrchestrator:
         title_finished = self.title_task is None
         last_write = time.monotonic()
         while not (research_finished and title_finished):
+            self._assert_durable_lease()
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=1)
             except TimeoutError:
@@ -1543,7 +1659,8 @@ class ChatStreamOrchestrator:
                 self._bind_sdk_session(event)
                 continue
             if kind == "_mirror_error":
-                frame = self._fail_mirror(event)
+                frame = await asyncio.to_thread(self._fail_mirror, event)
+                await self._stop_lease_heartbeat()
                 self.trace.finish(
                     "".join(self.projection.answer_parts),
                     self.terminal,
@@ -1554,7 +1671,8 @@ class ChatStreamOrchestrator:
                     self.research_task.cancel()
                 continue
             if kind == "_cancelled":
-                _persist_failure(
+                await asyncio.to_thread(
+                    _persist_failure,
                     self.owner,
                     self.settings,
                     self.admission,
@@ -1562,6 +1680,7 @@ class ChatStreamOrchestrator:
                     True,
                     self.projection.completed_blocks(),
                 )
+                await self._stop_lease_heartbeat()
                 self.terminal = "stopped"
                 self.trace.finish("".join(self.projection.answer_parts), "stopped")
                 yield ChatStreamFrame(
@@ -1777,7 +1896,8 @@ class ChatStreamOrchestrator:
                             event["message"] = (
                                 "Your OpenRouter API key is temporarily rate-limited."
                             )
-                _persist_failure(
+                await asyncio.to_thread(
+                    _persist_failure,
                     self.owner,
                     self.settings,
                     self.admission,
@@ -1785,6 +1905,7 @@ class ChatStreamOrchestrator:
                     budget_interrupted,
                     self.projection.completed_blocks(),
                 )
+                await self._stop_lease_heartbeat()
                 self.terminal = "error"
                 self.trace.finish(
                     "".join(self.projection.answer_parts),
@@ -1792,7 +1913,8 @@ class ChatStreamOrchestrator:
                     terminal_code=event.get("code") or "provider_error",
                 )
             elif kind == "done":
-                self._complete_turn(event)
+                await asyncio.to_thread(self._complete_turn, event)
+                await self._stop_lease_heartbeat()
                 event["citations"] = self.projection.citations
                 self.terminal = event.get("finish_reason", "success")
                 self.trace.finish("".join(self.projection.answer_parts), self.terminal)
@@ -1984,6 +2106,7 @@ class ChatStreamOrchestrator:
         # generating until its lease expires.
         if self.terminal == "disconnect":
             self.interruption_reason = self.interruption_reason or "stream_closed"
+            await self._stop_lease_heartbeat()
             if self.admission.is_replacement and not self.edit_activated:
                 await asyncio.shield(
                     asyncio.to_thread(
@@ -2013,6 +2136,7 @@ class ChatStreamOrchestrator:
                 interruption_reason=self.interruption_reason,
             )
         await self._cancel_runner()
+        await self._stop_lease_heartbeat()
         if self.runner:
             with contextlib.suppress(Exception):
                 await asyncio.shield(self.runner.close())

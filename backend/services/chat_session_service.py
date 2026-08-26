@@ -38,6 +38,7 @@ from backend.services.chat_edit_service import (
     ChatEditService,
     user_message_projection_bytes,
 )
+from backend.services.chat_local_turn_lease import ChatLocalTurnLeaseService
 from backend.services.chat_title_service import normalize_title
 from backend.services.chat_turn_admission_coordinator import (
     ChatTurnAdmissionCoordinator,
@@ -48,6 +49,7 @@ from backend.services.chat_turn_job_repository import (
     ChatOverload,
     IdempotencyMismatch,
     TurnJobError,
+    TurnLeaseClaim,
 )
 from backend.services.latex_paper_service import LatexPaperService
 
@@ -122,6 +124,7 @@ class TurnAdmission:
     paper_artifacts_enabled: bool = False
     paper_descriptor: dict[str, object] | None = None
     fetchable_urls: tuple[str, ...] = ()
+    durable_claim: TurnLeaseClaim | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1725,6 +1728,11 @@ class ChatSessionService:
         code: str = "edit_prepare_failed",
     ) -> None:
         session = self._owned(owner, admission.session_id, lock=True)
+        self._write_durable_terminal(
+            admission,
+            state="interrupted" if code == "interrupted" else "failed",
+            failure_code=code,
+        )
         self.edits.abort(session, admission, code)
 
     def complete_turn(
@@ -1758,6 +1766,7 @@ class ChatSessionService:
             raise ChatServiceError(
                 "citations_too_large", 422, "The citation projection is too large"
             )
+        self._write_durable_terminal(admission, state="completed")
         followups = [
             _normalized(value, 500) for value in followups[:5] if value.strip()
         ]
@@ -1808,6 +1817,11 @@ class ChatSessionService:
         session = self._owned(owner, admission.session_id, lock=True)
         if session.active_turn_id != admission.turn_id:
             return
+        self._write_durable_terminal(
+            admission,
+            state="interrupted" if interrupted else "failed",
+            failure_code=code,
+        )
         message = self.db.get(ChatMessageRecord, admission.user_message_id)
         if message:
             if self.edits.fail_preparation(session, message, code):
@@ -1827,6 +1841,33 @@ class ChatSessionService:
         session.active_turn_id = None
         session.active_turn_expires_at = None
         session.updated_at = _now()
+
+    def _write_durable_terminal(
+        self,
+        admission: TurnAdmission,
+        *,
+        state: str,
+        failure_code: str | None = None,
+    ) -> None:
+        if not self.settings.chat_durable_turn_dispatch_enabled:
+            return
+        if admission.durable_claim is None:
+            raise ChatServiceError(
+                "durable_claim_missing",
+                503,
+                "The durable chat turn claim is missing",
+            )
+        sanitized_code = failure_code
+        if sanitized_code is not None and not re.fullmatch(
+            r"[a-z0-9][a-z0-9_]{0,63}", sanitized_code
+        ):
+            sanitized_code = "turn_failed"
+        ChatLocalTurnLeaseService(self.db, self.settings).write_terminal(
+            admission.durable_claim,
+            state=state,
+            now=_now(),
+            failure_code=sanitized_code,
+        )
 
     def mark_transcript_degraded(
         self, owner: ChatOwner, session_id: uuid.UUID, turn_id: uuid.UUID

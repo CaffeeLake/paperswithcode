@@ -1,0 +1,395 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from backend.config import get_settings
+from backend.services import chat_session_service as chat_session_module
+from backend.services import chat_stream_service
+from backend.services.chat_local_turn_lease import (
+    LOCAL_TURN_LEASE_OWNER,
+    ChatLocalTurnLeaseService,
+)
+from backend.services.chat_session_service import (
+    ChatOwner,
+    ChatSessionService,
+    TurnAdmission,
+)
+from backend.services.chat_stream_service import ChatStreamOrchestrator
+from backend.services.chat_turn_job_repository import TurnLeaseClaim
+
+NOW = datetime(2026, 8, 26, tzinfo=UTC)
+
+
+def _admission(*, claim: TurnLeaseClaim | None = None) -> TurnAdmission:
+    return TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=claim.turn_id if claim else uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="gpt-5.6-luna@openai",
+        model_route="gpt-5.6-luna@openai",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        durable_claim=claim,
+    )
+
+
+def _orchestrator(settings, admission):
+    return ChatStreamOrchestrator(
+        settings=settings,
+        owner=ChatOwner("owner-1", "owner"),
+        admission=admission,
+        prompt="research",
+        request_id="request-1",
+        title_token=None,
+        is_disconnected=lambda: asyncio.sleep(0, result=False),
+        release_admission=lambda: asyncio.sleep(0),
+    )
+
+
+def test_local_owner_identity_is_opaque_and_positive():
+    assert re.fullmatch(r"local-runner:[0-9a-f]{32}", LOCAL_TURN_LEASE_OWNER.worker_id)
+    assert LOCAL_TURN_LEASE_OWNER.worker_generation > 0
+    assert not any(
+        value in LOCAL_TURN_LEASE_OWNER.worker_id.lower()
+        for value in ("root", "localhost", "/root", "prompt", "transcript")
+    )
+    assert LOCAL_TURN_LEASE_OWNER.create() != LOCAL_TURN_LEASE_OWNER
+
+
+def test_claim_uses_exact_process_boot_fence_and_protected_lease():
+    repository = Mock()
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 3)
+    repository.claim.return_value = claim
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_lease_seconds": 30,
+        }
+    )
+    service = ChatLocalTurnLeaseService(
+        Mock(),
+        settings,
+        repository=repository,
+        owner=type(
+            "Owner", (), {"worker_id": "local-runner:abc", "worker_generation": 7}
+        )(),
+    )
+
+    assert service.claim(claim.turn_id, now=NOW) == claim
+    repository.claim.assert_called_once_with(
+        service.db,
+        turn_id=claim.turn_id,
+        worker_id="local-runner:abc",
+        worker_generation=7,
+        now=NOW,
+        lease_seconds=30,
+    )
+
+
+def test_local_lease_service_cannot_be_used_when_bridge_is_disabled():
+    service = ChatLocalTurnLeaseService(Mock(), get_settings(), repository=Mock())
+
+    with pytest.raises(RuntimeError, match="disabled"):
+        service.claim(uuid.uuid4(), now=NOW)
+
+
+def test_orchestrator_claims_and_starts_before_runner_dispatch(monkeypatch):
+    order: list[str] = []
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, claim.worker_id, 7, 1)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+
+    def claim_turn(_settings, current):
+        order.append("claim")
+        return current.__class__(
+            **{
+                name: getattr(current, name)
+                for name in current.__dataclass_fields__
+                if name != "durable_claim"
+            },
+            durable_claim=claim,
+        )
+
+    async def prepare(*_args, **_kwargs):
+        order.append("prepare")
+
+    monkeypatch.setattr(chat_stream_service, "_claim_local_turn", claim_turn)
+    monkeypatch.setattr(chat_stream_service, "_prepare_replacement", prepare)
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda *_args: order.append("heartbeat"),
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_start_local_turn",
+        lambda *_args: order.append("running"),
+    )
+
+    def create_runner(**_kwargs):
+        order.append("dispatch")
+        raise RuntimeError("runner construction failed")
+
+    monkeypatch.setattr(chat_stream_service, "create_chat_turn_runner", create_runner)
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_persist_failure",
+        lambda *_args: order.append("failed"),
+    )
+    orchestrator = _orchestrator(settings, admission)
+    orchestrator._close = AsyncMock()
+
+    async def collect():
+        return [frame async for frame in orchestrator._events()]
+
+    frames = asyncio.run(collect())
+
+    assert [frame.event for frame in frames] == ["stream_start", "error"]
+    assert order == ["claim", "prepare", "heartbeat", "running", "dispatch", "failed"]
+    assert orchestrator.admission.durable_claim == claim
+
+
+def test_periodic_heartbeat_runs_during_continuous_work(monkeypatch):
+    calls: list[TurnLeaseClaim] = []
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_heartbeat_seconds": 0.01,
+        }
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_claim_local_turn",
+        lambda _settings, current: current.__class__(
+            **{
+                name: getattr(current, name)
+                for name in current.__dataclass_fields__
+                if name != "durable_claim"
+            },
+            durable_claim=claim,
+        ),
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda _settings, current: calls.append(current.durable_claim),
+    )
+    orchestrator = _orchestrator(settings, admission)
+
+    async def exercise():
+        await orchestrator._claim_durable_turn()
+        await asyncio.sleep(0.035)
+        await orchestrator._stop_lease_heartbeat()
+
+    asyncio.run(exercise())
+
+    assert len(calls) >= 2
+    assert set(calls) == {claim}
+
+
+def test_stale_claim_never_prepares_or_dispatches(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    admission = _admission()
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_claim_local_turn",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("already claimed")),
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_prepare_replacement",
+        lambda *_args, **_kwargs: pytest.fail("stale turn was prepared"),
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "create_chat_turn_runner",
+        lambda **_kwargs: pytest.fail("stale turn was dispatched"),
+    )
+    orchestrator = _orchestrator(settings, admission)
+    orchestrator._close = AsyncMock()
+
+    async def collect():
+        return [frame async for frame in orchestrator._events()]
+
+    frames = asyncio.run(collect())
+
+    assert [frame.event for frame in frames] == ["stream_start", "error"]
+    assert orchestrator.admission.durable_claim is None
+
+
+def test_terminal_fence_failure_leaves_legacy_projection_unchanged(monkeypatch):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    admission = _admission(claim=claim)
+    session = SimpleNamespace(
+        active_turn_id=admission.turn_id,
+        active_turn_expires_at=NOW,
+        updated_at=NOW,
+        projection_bytes=0,
+    )
+    message = SimpleNamespace(status="generating", error_code=None)
+
+    class DB:
+        def get(self, _model, key):
+            return message if key == admission.user_message_id else None
+
+    class FailingLease:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def write_terminal(self, *_args, **_kwargs):
+            raise RuntimeError("stale fence")
+
+    monkeypatch.setattr(chat_session_module, "ChatLocalTurnLeaseService", FailingLease)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    service = ChatSessionService(DB(), settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    with pytest.raises(RuntimeError, match="stale fence"):
+        service.fail_turn(ChatOwner("owner-1", "owner"), admission, "provider_error")
+
+    assert session.active_turn_id == admission.turn_id
+    assert message.status == "generating"
+    assert message.error_code is None
+
+
+def test_disabled_terminal_projection_never_constructs_lease_service(monkeypatch):
+    admission = _admission()
+    session = SimpleNamespace(
+        active_turn_id=admission.turn_id,
+        active_turn_expires_at=NOW,
+        updated_at=NOW,
+        projection_bytes=0,
+    )
+    message = SimpleNamespace(status="generating", error_code=None)
+
+    class DB:
+        def get(self, _model, key):
+            return message if key == admission.user_message_id else None
+
+    monkeypatch.setattr(
+        chat_session_module,
+        "ChatLocalTurnLeaseService",
+        lambda *_args, **_kwargs: pytest.fail("durable table queried"),
+    )
+    service = ChatSessionService(DB(), get_settings())
+    service._owned = lambda *_args, **_kwargs: session
+
+    service.fail_turn(ChatOwner("owner-1", "owner"), admission, "provider_error")
+
+    assert session.active_turn_id is None
+    assert message.status == "error"
+
+
+def test_completion_writes_durable_terminal_before_legacy_projection(monkeypatch):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    admission = _admission(claim=claim)
+    session = SimpleNamespace(
+        id=admission.session_id,
+        active_turn_id=admission.turn_id,
+        active_turn_expires_at=NOW,
+        updated_at=NOW,
+        projection_bytes=0,
+        last_sequence=1,
+        message_count=1,
+    )
+    message = SimpleNamespace(status="generating")
+    terminal_calls = []
+
+    class DB:
+        def __init__(self):
+            self.added = []
+
+        def get(self, _model, key):
+            return message if key == admission.user_message_id else None
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            pass
+
+    database = DB()
+
+    class Lease:
+        def __init__(self, db, _settings):
+            assert db is database
+
+        def write_terminal(self, exact_claim, **terminal):
+            assert session.active_turn_id == admission.turn_id
+            terminal_calls.append((exact_claim, terminal))
+
+    monkeypatch.setattr(chat_session_module, "ChatLocalTurnLeaseService", Lease)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    service = ChatSessionService(database, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    service.complete_turn(
+        ChatOwner("owner-1", "owner"),
+        admission,
+        "answer",
+        [],
+        [],
+        [],
+        "success",
+    )
+
+    assert terminal_calls[0][0] == claim
+    assert terminal_calls[0][1]["state"] == "completed"
+    assert terminal_calls[0][1]["failure_code"] is None
+    assert session.active_turn_id is None
+    assert message.status == "complete"
+
+
+def test_preparation_failure_pairs_sanitized_terminal_on_same_database(monkeypatch):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    admission = _admission(claim=claim)
+    session = SimpleNamespace(active_turn_id=admission.turn_id)
+    database = Mock()
+    terminal_calls = []
+
+    class Lease:
+        def __init__(self, db, _settings):
+            assert db is database
+
+        def write_terminal(self, exact_claim, **terminal):
+            terminal_calls.append((exact_claim, terminal))
+
+    monkeypatch.setattr(chat_session_module, "ChatLocalTurnLeaseService", Lease)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    service = ChatSessionService(database, settings)
+    service._owned = lambda *_args, **_kwargs: session
+    service.edits = Mock()
+
+    service.abort_prepared_edit(
+        ChatOwner("owner-1", "owner"),
+        admission,
+        "Provider Error! includes unsafe detail",
+    )
+
+    assert terminal_calls[0][0] == claim
+    assert terminal_calls[0][1]["state"] == "failed"
+    assert terminal_calls[0][1]["failure_code"] == "turn_failed"
+    service.edits.abort.assert_called_once_with(
+        session, admission, "Provider Error! includes unsafe detail"
+    )
