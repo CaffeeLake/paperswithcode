@@ -10,6 +10,7 @@ from typing import Protocol
 
 from backend.chat_sandbox_worker.executor_daemon import EXECUTOR_BOOTSTRAP_PREFIX
 from backend.chat_sandbox_worker.executor_protocol import (
+    MAX_EXECUTION_RESPONSE_FRAMES,
     MAX_FRAME_BYTES,
     PROTOCOL,
     ProtocolError,
@@ -19,7 +20,7 @@ from backend.chat_sandbox_worker.executor_protocol import (
 )
 
 MAX_EXECUTOR_RESPONSE_BYTES = 2 * MAX_FRAME_BYTES
-MAX_EXECUTOR_RESPONSE_FRAMES = 1024
+MAX_EXECUTOR_RESPONSE_FRAMES = MAX_EXECUTION_RESPONSE_FRAMES
 
 
 class ExecutorRelayProvider(Protocol):
@@ -222,6 +223,8 @@ class SandboxExecutorClient:
             raise ProtocolError("Invalid read response sequence")
         if response["path"] != path or response["offset"] != offset:
             raise ProtocolError("Uncorrelated executor read response")
+        if len(str(response["data"]).encode("utf-8")) > max_bytes:
+            raise ProtocolError("Executor read exceeded the requested byte limit")
         return ExecutorReadResult(
             path=str(response["path"]),
             offset=int(response["offset"]),
@@ -249,12 +252,12 @@ class SandboxExecutorClient:
         timeout_seconds: int,
     ) -> tuple[dict[str, object], ...]:
         request_frame = encode_request(request)
-        process = await self.provider.open_executor_relay(
-            sandbox, timeout_seconds=timeout_seconds
-        )
         payload = request_frame
         if context is not None:
             payload = self._bootstrap(context) + request_frame
+        process = await self.provider.open_executor_relay(
+            sandbox, timeout_seconds=timeout_seconds
+        )
         responses: list[dict[str, object]] = []
         try:
             process.stdin.write(payload)
@@ -270,6 +273,13 @@ class SandboxExecutorClient:
 
     @staticmethod
     def _bootstrap(context: ExecutorContext) -> bytes:
+        if (
+            not isinstance(context.capability, str)
+            or not context.capability
+            or not isinstance(context.worker_generation, str)
+            or not context.worker_generation
+        ):
+            raise ProtocolError("Invalid executor bootstrap")
         value = {
             "operation": "executor_connect",
             "capability": context.capability,

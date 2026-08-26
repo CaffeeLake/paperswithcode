@@ -19,6 +19,10 @@ MAX_TOOL_CALL_ID_BYTES = 256
 MAX_TIMEOUT_MS = 30 * 1000
 MAX_OFFSET = 2**63 - 1
 MAX_WORKSPACE_GENERATION = 2**63 - 1
+# Execution streams reserve one frame each for acknowledgement and terminal.
+# The daemon must never persist more output frames than the shared remainder.
+MAX_EXECUTION_RESPONSE_FRAMES = 1024
+MAX_EXECUTION_OUTPUT_FRAMES = MAX_EXECUTION_RESPONSE_FRAMES - 2
 # Reserve enough wire space for maximally escaped paths and immutable identities;
 # read data itself can JSON-expand to two bytes per accepted UTF-8 byte.
 MAX_READ_BYTES = (MAX_FRAME_BYTES - 16 * 1024) // 2
@@ -306,8 +310,12 @@ class ResponseSequenceValidator:
         self._acknowledged = False
         self._last_output_sequence: int | None = None
         self._terminal = False
+        self._response_frames = 0
 
     def accept(self, response: dict[str, Any]) -> None:
+        self._response_frames += 1
+        if self._response_frames > MAX_EXECUTION_RESPONSE_FRAMES:
+            raise ProtocolError("Executor response sequence has too many frames")
         if not isinstance(response, dict):
             raise ProtocolError("Executor response must be a JSON object")
         _validate_response(response)

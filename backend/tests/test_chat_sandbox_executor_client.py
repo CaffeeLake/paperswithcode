@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import threading
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from backend.chat_sandbox_worker.executor_daemon import EXECUTOR_BOOTSTRAP_PREFIX
+from backend.chat_sandbox_worker.executor_daemon import (
+    EXECUTOR_BOOTSTRAP_PREFIX,
+    ExecutorServer,
+)
 from backend.chat_sandbox_worker.executor_protocol import (
+    MAX_EXECUTION_OUTPUT_FRAMES,
+    MAX_EXECUTION_RESPONSE_FRAMES,
     PROTOCOL,
     ProtocolError,
     decode_request,
@@ -89,6 +98,67 @@ class _Provider:
     async def open_executor_relay(self, sandbox, *, timeout_seconds):
         self.calls.append((sandbox, timeout_seconds))
         return self.processes.pop(0)
+
+
+class _SocketProcess:
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+        self.stdin = _SocketInput(connection)
+        self.stdout = _SocketOutput(connection)
+        self.wait = _AsyncCall(self._wait)
+
+    async def _wait(self) -> None:
+        self.connection.close()
+
+
+class _SocketInput:
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+        self.drain = _AsyncCall(self._drain)
+
+    def write(self, value: bytes) -> None:
+        self.connection.sendall(value)
+        self.connection.shutdown(socket.SHUT_WR)
+
+    async def _drain(self) -> None:
+        return None
+
+
+class _SocketOutput:
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        while data := await asyncio.to_thread(self.connection.recv, 64 * 1024):
+            yield data
+
+
+class _SocketProvider:
+    def __init__(self, socket_path: Path):
+        self.socket_path = socket_path
+        self.calls = 0
+
+    async def open_executor_relay(self, _sandbox, *, timeout_seconds):
+        assert timeout_seconds == 7
+        self.calls += 1
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect(str(self.socket_path))
+        return _SocketProcess(connection)
+
+
+class _Broker:
+    def __init__(self):
+        self.active = False
+
+    def __call__(self, request):
+        if request["operation"] == "install":
+            self.active = True
+        elif request["operation"] == "clear":
+            self.active = False
+        return {"ok": True, "active": self.active}
 
 
 def _context() -> ExecutorContext:
@@ -318,3 +388,110 @@ def test_executor_client_bounds_the_complete_response_stream():
 
     with pytest.raises(ProtocolError, match="too many frames"):
         asyncio.run(client.health(object()))
+
+
+def test_daemon_tiny_chunks_fit_shared_client_frame_budget_end_to_end(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-a",
+        broker_control=_Broker(),
+        command_preexec=None,
+        read_chunk_size=1,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    provider = _SocketProvider(server.socket_path)
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    result = asyncio.run(
+        client.exec(
+            _context(),
+            command="for ((i=0; i<1023; i++)); do printf x; done",
+            timeout_ms=2000,
+        )
+    )
+
+    assert MAX_EXECUTION_OUTPUT_FRAMES == MAX_EXECUTION_RESPONSE_FRAMES - 2
+    assert len(result.outputs) == MAX_EXECUTION_OUTPUT_FRAMES
+    assert "".join(str(output["data"]) for output in result.outputs) == (
+        "x" * MAX_EXECUTION_OUTPUT_FRAMES
+    )
+    assert result.terminal == {"status": "completed", "exit_code": 0, "error": None}
+    assert provider.calls == 1
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    ("data", "max_bytes"),
+    [("abcd", 3), ("éé", 3)],
+)
+def test_read_rejects_data_larger_than_the_requested_utf8_byte_limit(data, max_bytes):
+    provider = _Provider(
+        [
+            _Process(
+                [
+                    _response("acknowledged", operation="read_file"),
+                    _response(
+                        "read_result",
+                        path="notes.txt",
+                        offset=0,
+                        data=data,
+                        eof=False,
+                    ),
+                ]
+            )
+        ]
+    )
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ProtocolError, match="requested byte limit"):
+        asyncio.run(
+            client.read_file(
+                _context(), path="notes.txt", offset=0, max_bytes=max_bytes
+            )
+        )
+
+
+@pytest.mark.parametrize(("data", "max_bytes"), [("abc", 3), ("éé", 4)])
+def test_read_accepts_data_at_the_exact_requested_utf8_byte_limit(data, max_bytes):
+    provider = _Provider(
+        [
+            _Process(
+                [
+                    _response("acknowledged", operation="read_file"),
+                    _response(
+                        "read_result",
+                        path="notes.txt",
+                        offset=0,
+                        data=data,
+                        eof=True,
+                    ),
+                ]
+            )
+        ]
+    )
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    result = asyncio.run(
+        client.read_file(_context(), path="notes.txt", offset=0, max_bytes=max_bytes)
+    )
+
+    assert result.data == data
+
+
+@pytest.mark.parametrize("capability", ["", "x" * (64 * 1024)])
+def test_invalid_bootstrap_is_rejected_before_opening_provider_relay(capability):
+    provider = _Provider([])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+    context = replace(_context(), capability=capability)
+
+    with pytest.raises(ProtocolError, match="Invalid executor bootstrap"):
+        asyncio.run(client.exec(context, command="true", timeout_ms=1000))
+
+    assert provider.calls == []

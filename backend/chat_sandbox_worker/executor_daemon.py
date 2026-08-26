@@ -22,6 +22,7 @@ from backend.chat_sandbox_worker.control_daemon import (
     _stop,
 )
 from backend.chat_sandbox_worker.executor_protocol import (
+    MAX_EXECUTION_OUTPUT_FRAMES,
     MAX_FRAME_BYTES,
     MAX_OUTPUT_CHUNK_BYTES,
     PROTOCOL,
@@ -167,6 +168,7 @@ class ExecutorServer:
         ] = _broker_control,
         command_preexec: Callable[[], None] | None | object = _DEFAULT,
         capture_limit: int = MAX_CAPTURE_BYTES,
+        read_chunk_size: int = MAX_OUTPUT_CHUNK_BYTES,
         terminate_grace: float = TERMINATE_GRACE_SECONDS,
     ) -> None:
         self.socket_path = socket_path
@@ -180,6 +182,9 @@ class ExecutorServer:
             _demote_command if command_preexec is _DEFAULT else command_preexec
         )
         self.capture_limit = capture_limit
+        if not 1 <= read_chunk_size <= MAX_OUTPUT_CHUNK_BYTES:
+            raise ValueError("Invalid executor read chunk size")
+        self.read_chunk_size = read_chunk_size
         self.terminate_grace = terminate_grace
         self._ready = threading.Event()
         self._stop = threading.Event()
@@ -644,7 +649,7 @@ class ExecutorServer:
                 self._terminate(process)
             for key, _ in selector.select(0.02):
                 stream: BinaryIO = key.fileobj
-                data = os.read(stream.fileno(), MAX_OUTPUT_CHUNK_BYTES)
+                data = os.read(stream.fileno(), self.read_chunk_size)
                 if not data:
                     selector.unregister(stream)
                     continue
@@ -677,6 +682,7 @@ class ExecutorServer:
             if (
                 execution.terminal is not None
                 or execution.captured_bytes >= self.capture_limit
+                or len(execution.events) >= MAX_EXECUTION_OUTPUT_FRAMES
             ):
                 return
             remaining = self.capture_limit - execution.captured_bytes
@@ -915,6 +921,8 @@ class ExecutorServer:
                     }:
                         raise ProtocolError("Invalid executor output evidence")
                     expected_sequence = len(execution.events) + 1
+                    if expected_sequence > MAX_EXECUTION_OUTPUT_FRAMES:
+                        raise ProtocolError("Too many executor output frames")
                     if event.get("sequence") != expected_sequence:
                         raise ProtocolError("Misordered executor output evidence")
                     encode_response(

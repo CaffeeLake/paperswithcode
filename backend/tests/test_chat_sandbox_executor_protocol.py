@@ -2,6 +2,8 @@ import pytest
 
 from backend.chat_sandbox_worker.executor_protocol import (
     MAX_COMMAND_BYTES,
+    MAX_EXECUTION_OUTPUT_FRAMES,
+    MAX_EXECUTION_RESPONSE_FRAMES,
     MAX_FRAME_BYTES,
     MAX_OFFSET,
     MAX_OUTPUT_CHUNK_BYTES,
@@ -406,6 +408,30 @@ def test_validates_increasing_output_and_exactly_one_terminal_response() -> None
     for response in responses:
         validator.accept(response)
     validator.finish()
+
+
+def test_execution_sequence_enforces_the_shared_response_frame_budget() -> None:
+    maximum = [
+        _execution_response("acknowledged", operation="exec"),
+        *[
+            _execution_response("output", sequence=sequence, stream="stdout", data="x")
+            for sequence in range(1, MAX_EXECUTION_OUTPUT_FRAMES + 1)
+        ],
+        _execution_response("terminal", status="completed", exit_code=0, error=None),
+    ]
+
+    assert len(maximum) == MAX_EXECUTION_RESPONSE_FRAMES
+    validate_response_sequence(maximum, request_id="request-1", **OPERATION_IDENTITY)
+    with pytest.raises(ProtocolError, match="too many frames"):
+        validate_response_sequence(
+            [
+                maximum[0],
+                _execution_response("output", sequence=0, stream="stdout", data="x"),
+                *maximum[1:],
+            ],
+            request_id="request-1",
+            **OPERATION_IDENTITY,
+        )
 
 
 @pytest.mark.parametrize(
