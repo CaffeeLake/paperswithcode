@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from textwrap import dedent
 from typing import BinaryIO
 
 from backend.chat_sandbox_worker.executor_daemon import (
@@ -106,6 +107,36 @@ def _open_operation(
     connection.shutdown(socket.SHUT_WR)
     reader = connection.makefile("rb")
     return connection, reader
+
+
+def _write_exited_leader_command(workspace: Path) -> str:
+    (workspace / "exited-leader.py").write_text(
+        dedent("""
+import os, signal, time
+with open("leader.pid", "w") as handle:
+    handle.write(str(os.getpid()))
+ready_read, ready_write = os.pipe()
+descendant = os.fork()
+if descendant:
+    os.close(ready_write)
+    os.read(ready_read, 1)
+    os._exit(0)
+os.close(ready_read)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+output = os.open("descendant.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.dup2(output, 1)
+os.dup2(output, 2)
+os.close(output)
+with open("descendant.pid", "w") as handle:
+    handle.write(str(os.getpid()))
+os.write(ready_write, b"1")
+os.close(ready_write)
+time.sleep(0.5)
+with open("after-exited-leader", "w") as handle:
+    handle.write("late")
+""")
+    )
+    return f"exec {sys.executable} exited-leader.py"
 
 
 def test_health_is_served_over_a_private_unix_socket(tmp_path: Path) -> None:
@@ -399,6 +430,140 @@ def test_timeout_kills_term_ignoring_descendant_after_shell_exits(
     assert not (workspace / "after-descendant-timeout").exists()
     assert not broker.active
     server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_timeout_contains_group_after_leader_already_exited(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+        terminate_grace=0.03,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-exited-leader",
+            **IDENTITY,
+            "command": _write_exited_leader_command(workspace),
+            "timeout_ms": 150,
+        },
+    )
+
+    descendant_pid = int((workspace / "descendant.pid").read_text())
+    stat_path = Path(f"/proc/{descendant_pid}/stat")
+    if stat_path.exists():
+        state = stat_path.read_text().rsplit(")", 1)[1].split()[0]
+        assert state == "Z"
+    assert responses[-1]["status"] == "failed"
+    assert responses[-1]["error"] == "execution_timeout"
+    time.sleep(0.55)
+    assert not (workspace / "after-exited-leader").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_fast_command_reaps_leader_without_hanging(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-fast-reap",
+            **IDENTITY,
+            "command": "printf $$ > fast-leader.pid",
+            "timeout_ms": 2_000,
+        },
+    )
+
+    leader_pid = int((workspace / "fast-leader.pid").read_text())
+    assert responses[-1]["status"] == "completed"
+    assert not Path(f"/proc/{leader_pid}").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_shutdown_contains_group_after_leader_already_exited(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    broker = _Broker()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=broker,
+        command_preexec=None,
+        terminate_grace=0.03,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    connection, reader = _open_operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-shutdown-exited-leader",
+            **IDENTITY,
+            "command": _write_exited_leader_command(workspace),
+            "timeout_ms": 2_000,
+        },
+    )
+    assert decode_response(reader.readline())["type"] == "acknowledged"
+    deadline = time.monotonic() + 1
+    while not (workspace / "descendant.pid").is_file():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    leader_pid = int((workspace / "leader.pid").read_text())
+    while True:
+        leader_stat = Path(f"/proc/{leader_pid}/stat")
+        if (
+            leader_stat.exists()
+            and leader_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+        ):
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+    server.shutdown()
+    terminal = decode_response(reader.readline())
+    descendant_pid = int((workspace / "descendant.pid").read_text())
+    descendant_stat = Path(f"/proc/{descendant_pid}/stat")
+    if descendant_stat.exists():
+        assert descendant_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    reader.close()
+    connection.close()
+
+    assert terminal["status"] == "cancelled"
+    time.sleep(0.55)
+    assert not (workspace / "after-exited-leader").exists()
+    assert broker.active is False
     thread.join(timeout=2)
 
 

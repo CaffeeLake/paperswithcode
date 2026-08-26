@@ -150,6 +150,9 @@ class _Execution:
     condition: threading.Condition = field(default_factory=threading.Condition)
     cancel: threading.Event = field(default_factory=threading.Event)
     process: subprocess.Popen[bytes] | None = None
+    process_group: int | None = None
+    process_group_contained: bool = False
+    termination_lock: threading.Lock = field(default_factory=threading.Lock)
     captured_bytes: int = 0
     persistence_failed: bool = False
 
@@ -538,8 +541,8 @@ class ExecutorServer:
             return
         execution.cancel.set()
         process = execution.process
-        if process is not None and process.poll() is None:
-            self._terminate(process)
+        if process is not None:
+            self._terminate(execution)
         self._stream(connection, request, execution, 0)
 
     def _run(
@@ -597,22 +600,19 @@ class ExecutorServer:
                             start_new_session=True,
                             bufsize=0,
                         )
+                        execution.process_group = process.pid
                         execution.process = process
                         outcome = self._capture(execution, process, timeout_ms / 1000)
                     except (OSError, ValueError, subprocess.SubprocessError):
                         process = execution.process
-                        if process is not None and process.poll() is None:
-                            self._terminate(process)
+                        if process is not None:
+                            self._terminate(execution)
                         outcome = ("failed", None, "execution_start_failed")
             finally:
                 try:
                     process = execution.process
-                    if (
-                        outcome is None
-                        and process is not None
-                        and process.poll() is None
-                    ):
-                        self._terminate(process)
+                    if outcome is None and process is not None:
+                        self._terminate(execution)
                 finally:
                     cleanup_proven = not install_attempted
                     try:
@@ -668,51 +668,84 @@ class ExecutorServer:
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         deadline = time.monotonic() + timeout
         timed_out = False
-        while selector.get_map():
+        while True:
             if execution.cancel.is_set() or time.monotonic() >= deadline:
                 timed_out = not execution.cancel.is_set()
-                self._terminate(process)
-            for key, _ in selector.select(0.02):
+                self._terminate(execution)
+            for key, _ in selector.select(0.02 if selector.get_map() else 0):
                 stream: BinaryIO = key.fileobj
                 data = os.read(stream.fileno(), self.read_chunk_size)
                 if not data:
                     selector.unregister(stream)
                     continue
                 self._append_output(execution, str(key.data), data)
-            if process.poll() is not None and not selector.get_map():
+            if (
+                not selector.get_map()
+                and (execution.process_group_contained or self._leader_exited(process))
+                and self._reap_inactive_process_group(execution)
+            ):
                 break
-        process.wait()
+            if not selector.get_map():
+                time.sleep(0.005)
         if execution.cancel.is_set():
             return "cancelled", None, None
         if timed_out:
             return "failed", None, "execution_timeout"
         return "completed", int(process.returncode), None
 
-    def _terminate(self, process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is not None:
-            return
-        try:
-            process_group = os.getpgid(process.pid)
-        except ProcessLookupError:
-            return
-        try:
-            os.killpg(process_group, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        # Do not reap the group leader during the grace period. Its process-group
-        # identity remains pinned while descendants handle TERM, so the numeric
-        # group ID cannot be reused before the final group-wide signal.
-        time.sleep(self.terminate_grace)
-        try:
-            os.killpg(process_group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-        containment_deadline = time.monotonic() + max(self.terminate_grace, 0.25)
-        while self._process_group_has_live_member(process_group):
-            if time.monotonic() >= containment_deadline:
-                self._contained.set()
-            time.sleep(0.005)
+    @staticmethod
+    def _leader_exited(process: subprocess.Popen[bytes]) -> bool:
+        return (
+            os.waitid(
+                os.P_PID,
+                process.pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            )
+            is not None
+        )
+
+    def _reap_inactive_process_group(self, execution: _Execution) -> bool:
+        with execution.termination_lock:
+            if execution.process_group_contained:
+                return True
+            process = execution.process
+            process_group = execution.process_group
+            if (
+                process is None
+                or process_group is None
+                or self._process_group_has_live_member(process_group)
+            ):
+                return False
+            process.wait()
+            execution.process_group_contained = True
+            return True
+
+    def _terminate(self, execution: _Execution) -> None:
+        with execution.termination_lock:
+            if execution.process_group_contained:
+                return
+            process = execution.process
+            process_group = execution.process_group
+            if process is None or process_group is None:
+                raise RuntimeError("Execution process group was not captured")
+            try:
+                os.killpg(process_group, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            # The unreaped leader pins the numeric group ID while descendants
+            # handle TERM, preventing reuse before the final group-wide signal.
+            time.sleep(self.terminate_grace)
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            containment_deadline = time.monotonic() + max(self.terminate_grace, 0.25)
+            while self._process_group_has_live_member(process_group):
+                if time.monotonic() >= containment_deadline:
+                    self._contained.set()
+                time.sleep(0.005)
+            process.wait()
+            execution.process_group_contained = True
 
     @staticmethod
     def _process_group_has_live_member(process_group: int) -> bool:
