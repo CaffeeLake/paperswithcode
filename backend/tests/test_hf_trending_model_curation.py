@@ -986,6 +986,24 @@ def test_rollout_freezes_canary_until_full_workflow_succeeds(monkeypatch):
     assert paused["queued"] == 0
     assert db.query(PaperCurationJob).count() == 1
 
+    canary_candidate = db.get(
+        TrendingModelCandidate,
+        uuid.UUID(canary["queued_candidate_ids"][0]),
+    )
+    canary_candidate.status = "failed"
+    db.query(PaperCurationJob).filter(
+        PaperCurationJob.candidate_id == canary_candidate.id
+    ).one().status = "failed"
+    db.commit()
+
+    retry = service.reconcile(dispatch=False, max_queued=1)
+
+    assert retry["rollout_phase"] == "canary_in_progress"
+    assert retry["retried_canary"] == 1
+    assert db.query(PaperCurationJob).count() == 2
+    assert canary_candidate.status == "queued"
+    assert db.query(TrendingModelCandidate).count() == 1
+
 
 def test_resolved_candidate_enqueues_existing_two_stage_workflow(monkeypatch):
     engine = create_engine("sqlite:///:memory:")

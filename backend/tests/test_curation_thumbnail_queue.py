@@ -66,6 +66,32 @@ def test_scheduled_enrichment_proposals_preserve_existing_relations(monkeypatch)
     assert proposal["enrich"]["task_ids"] == [2]
 
 
+def test_resolution_proposal_discards_schema_generated_empty_enrichment(monkeypatch):
+    monkeypatch.setenv("PWC_CURATION_TRIGGER", "hf-trending-cron")
+    proposal = {
+        "resolve_model_paper": {"decision": "reject"},
+        "evaluations": [],
+        "evaluation_removals": [],
+        "benchmark_gaps": [],
+        "validation_evidence": [],
+        "enrich": {
+            "task_ids": None,
+            "method_ids": None,
+            "repositories": None,
+            "project_pages": None,
+            "urls_extracted": None,
+            "regenerate_thumbnail": False,
+            "task_removal_reasons": {},
+            "method_removal_reasons": {},
+            "project_page_removal_reasons": {},
+        },
+    }
+
+    result = curation_api.make_scheduled_enrichment_additive(proposal, {})
+
+    assert result["enrich"] is None
+
+
 def _queue_row(**overrides):
     values = {
         "id": uuid.UUID("00000000-0000-0000-0000-000000000042"),

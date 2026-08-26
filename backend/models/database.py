@@ -1150,6 +1150,9 @@ class PaperCurationJob(Base):
             postgresql_where=text(
                 "kind = 'resolve-model-paper' AND status IN ('queued', 'dispatching', 'running')"
             ),
+            sqlite_where=text(
+                "kind = 'resolve-model-paper' AND status IN ('queued', 'dispatching', 'running')"
+            ),
         ),
     )
 

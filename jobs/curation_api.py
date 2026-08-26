@@ -81,6 +81,15 @@ def make_scheduled_enrichment_additive(proposal: dict, context: dict) -> dict:
 
     if os.environ.get("PWC_CURATION_TRIGGER", "admin") == "admin":
         return proposal
+    if proposal.get("resolve_model_paper") is not None:
+        enrich = proposal.get("enrich")
+        if isinstance(enrich, dict) and not any(
+            value not in (None, False, {}, []) for value in enrich.values()
+        ):
+            normalized = copy.deepcopy(proposal)
+            normalized["enrich"] = None
+            return normalized
+        return proposal
     enrich = proposal.get("enrich")
     paper = context.get("paper") or {}
     if not isinstance(enrich, dict):

@@ -94,6 +94,48 @@ class HFTrendingModelCurationService:
         state.canary_released_at = datetime.now(UTC)
         return True
 
+    def _retry_failed_canary(
+        self, state: TrendingModelCurationState, *, limit: int
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        candidate_ids = [
+            uuid.UUID(candidate_id)
+            for candidate_id in list(state.canary_candidate_ids or [])
+        ]
+        failed = (
+            self.db.query(TrendingModelCandidate)
+            .filter(
+                TrendingModelCandidate.id.in_(candidate_ids),
+                TrendingModelCandidate.status == "failed",
+            )
+            .order_by(TrendingModelCandidate.processed_at, TrendingModelCandidate.id)
+            .limit(min(limit, 10))
+            .all()
+        )
+        retried: list[str] = []
+        for candidate in failed:
+            attempts = (
+                self.db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.candidate_id == candidate.id,
+                    PaperCurationJob.kind == "resolve-model-paper",
+                )
+                .count()
+            )
+            if attempts >= 3:
+                continue
+            self.jobs.enqueue_resolution(
+                self.db,
+                candidate=candidate,
+                requested_by="hf-trending-cron-canary-retry",
+                settings=self.settings,
+                dispatch=False,
+                commit=False,
+            )
+            retried.append(str(candidate.id))
+        return retried
+
     def status(self) -> dict:
         candidate_counts = {
             status: int(count)
@@ -167,9 +209,13 @@ class HFTrendingModelCurationService:
             return summary
 
         if state.canary_started_at is not None and state.canary_released_at is None:
+            retried = self._retry_failed_canary(state, limit=max_queued)
             summary = self._reconcile_once(
                 dispatch=dispatch, dry_run=False, max_queued=0
             )
+            summary["retried_canary"] = len(retried)
+            summary["queued"] += len(retried)
+            summary["queued_candidate_ids"].extend(retried)
             state = self._rollout_state()
             released = self._release_canary_if_healthy(state)
             self.db.commit()
