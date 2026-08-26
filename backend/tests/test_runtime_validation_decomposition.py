@@ -276,6 +276,43 @@ def test_executor_bridge_controls_remain_staging_only(settings_factory, switch):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
+@pytest.mark.parametrize(
+    "switch",
+    [
+        "chat_sandbox_executor_enabled",
+        "chat_remote_bash_enabled",
+        "chat_remote_read_enabled",
+    ],
+)
+def test_disabled_production_runtime_rejects_executor_bridge_controls(
+    settings_factory, switch
+):
+    settings, _release = settings_factory("production")
+    assert settings.chat_enabled is False
+    setattr(settings, switch, True)
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_runtime(settings)
+
+
+def test_deployed_runtime_allows_disabled_executor_bridge_and_staging_qualification(
+    settings_factory,
+):
+    production, _release = settings_factory("production")
+    runtime_validation.validate_runtime(production)
+
+    staging, _release = settings_factory("staging")
+    staging.chat_sandbox_executor_enabled = True
+    staging.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+    staging.chat_remote_bash_enabled = True
+    staging.chat_remote_read_enabled = True
+
+    runtime_validation.validate_runtime(staging)
+
+    assert staging.chat_external_pi_admission_enabled is False
+
+
 def test_executor_bridge_contract_does_not_admit_external_pi(settings_factory):
     settings, _release = settings_factory("staging")
     settings.chat_sandbox_executor_enabled = True

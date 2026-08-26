@@ -8,6 +8,15 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from grpclib import GRPCError
+from grpclib.exceptions import StreamTerminatedError
+from modal.exception import (
+    ConnectionError as ModalConnectionError,
+    ExecTimeoutError,
+    ExecutionError,
+    SandboxTerminatedError,
+)
+
 from backend.chat_sandbox_worker.executor_daemon import EXECUTOR_BOOTSTRAP_PREFIX
 from backend.chat_sandbox_worker.executor_protocol import (
     MAX_EXECUTION_RESPONSE_FRAMES,
@@ -257,11 +266,11 @@ class SandboxExecutorClient:
         payload = request_frame
         if context is not None:
             payload = self._bootstrap(context) + request_frame
-        process = await self.provider.open_executor_relay(
-            sandbox, timeout_seconds=timeout_seconds
-        )
         responses: list[dict[str, object]] = []
         try:
+            process = await self.provider.open_executor_relay(
+                sandbox, timeout_seconds=timeout_seconds
+            )
             process.stdin.write(payload)
             await process.stdin.drain.aio()
             async for response in self._responses(process.stdout):
@@ -269,7 +278,17 @@ class SandboxExecutorClient:
             await process.wait.aio()
         except ProtocolError:
             raise
-        except Exception as error:
+        except (
+            OSError,
+            EOFError,
+            GRPCError,
+            StreamTerminatedError,
+            ModalConnectionError,
+            ExecTimeoutError,
+            ExecutionError,
+            SandboxTerminatedError,
+            _ExecutorDisconnect,
+        ) as error:
             raise ExecutorTransportError(tuple(responses)) from error
         return tuple(responses)
 

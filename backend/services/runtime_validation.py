@@ -1116,6 +1116,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     validate_runtime_storage(settings)
     validate_codex_jobs_configuration(settings)
     validate_environment_policy(settings)
+    validate_external_pi_migration_policy(settings)
     validate_chat_configuration = validate_chat_runtime_descriptor(settings)
     if validate_chat_configuration:
         validate_chat_provider_policy(settings, include_openrouter=False)

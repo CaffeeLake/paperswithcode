@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from grpclib import GRPCError, Status
+from modal.exception import ConnectionError as ModalConnectionError
 
 from backend.chat_sandbox_worker.executor_daemon import (
     EXECUTOR_BOOTSTRAP_PREFIX,
@@ -25,6 +27,7 @@ from backend.services.chat_sandbox_executor import (
     MAX_EXECUTOR_RESPONSE_FRAMES,
     ExecutorContext,
     ExecutorExecutionLost,
+    ExecutorTransportError,
     SandboxExecutorClient,
 )
 
@@ -98,6 +101,16 @@ class _Provider:
     async def open_executor_relay(self, sandbox, *, timeout_seconds):
         self.calls.append((sandbox, timeout_seconds))
         return self.processes.pop(0)
+
+
+class _FailingProvider:
+    def __init__(self, error: Exception):
+        self.error = error
+        self.calls = 0
+
+    async def open_executor_relay(self, _sandbox, *, timeout_seconds):
+        self.calls += 1
+        raise self.error
 
 
 class _SocketProcess:
@@ -240,6 +253,56 @@ def test_exec_disconnect_after_ack_is_typed_lost_and_is_not_retried():
     assert exc_info.value.code == "execution_lost"
     assert len(provider.calls) == 1
     assert len(process.stdin.writes) == 1
+
+
+def test_exec_disconnect_before_ack_is_typed_transport_failure():
+    process = _Process([], error=ConnectionResetError("synthetic disconnect"))
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorTransportError):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionError("synthetic provider failure"),
+        ModalConnectionError("synthetic Modal failure"),
+        GRPCError(Status.UNAVAILABLE, "synthetic relay failure"),
+    ],
+)
+def test_exec_provider_connection_failure_is_typed_transport_failure(failure):
+    provider = _FailingProvider(failure)
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(ExecutorTransportError):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert provider.calls == 1
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        AssertionError("synthetic invariant defect"),
+        TypeError("synthetic programming defect"),
+    ],
+)
+def test_exec_does_not_reclassify_unexpected_client_defects_after_ack(defect):
+    process = _Process(
+        [_response("acknowledged", operation="exec")],
+        error=defect,
+    )
+    provider = _Provider([process])
+    client = SandboxExecutorClient(provider, request_id_factory=lambda: "request-a")
+
+    with pytest.raises(type(defect), match="synthetic"):
+        asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
+
+    assert len(provider.calls) == 1
 
 
 def test_exec_truncated_frame_after_ack_is_typed_lost():
