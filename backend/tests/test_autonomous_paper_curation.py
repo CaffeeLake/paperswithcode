@@ -41,6 +41,7 @@ from backend.services.curation_trace_service import (
 from backend.services.hf_daily_curation_service import (
     HFDailyCurationService,
     _dispatched_canary_workflows,
+    _MAX_AUTOMATIC_RETRIES,
 )
 from jobs import url_preflight
 
@@ -441,6 +442,58 @@ def test_scheduled_job_retry_uses_the_shared_durable_queue():
     ).retry_scheduled_job(job_id)
 
     assert result == serialized
+
+
+def test_terminal_workflow_retry_is_bounded_and_reuses_the_latest_attempt():
+    workflow_id = uuid.uuid4()
+    first = SimpleNamespace(
+        id=uuid.uuid4(),
+        parent_workflow_id=workflow_id,
+        trigger="hf-daily-cron",
+        status="failed",
+        created_at=datetime(2026, 8, 24, tzinfo=UTC),
+    )
+    latest = SimpleNamespace(
+        id=uuid.uuid4(),
+        parent_workflow_id=workflow_id,
+        trigger="hf-daily-cron",
+        status="failed",
+        created_at=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+    workflow = SimpleNamespace(id=workflow_id, status="partial")
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return [latest, first]
+
+    class Database:
+        def query(self, _model):
+            return Query()
+
+    class Jobs:
+        def __init__(self):
+            self.retried = []
+
+        def retry(self, db, row, settings, *, priority):
+            self.retried.append((db, row, settings, priority))
+            return SimpleNamespace()
+
+    jobs = Jobs()
+    service = HFDailyCurationService(
+        Database(),
+        SimpleNamespace(),
+        job_service=jobs,
+    )
+
+    assert service.retry_terminal_workflow(workflow) is True
+    assert jobs.retried == [(service.db, latest, service.settings, 50)]
+    assert _MAX_AUTOMATIC_RETRIES == 3
 
 
 def test_missing_markdown_defers_workflow_without_immediate_retry():

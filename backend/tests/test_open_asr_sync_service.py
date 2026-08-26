@@ -133,8 +133,11 @@ def test_parse_and_fetch_public_leaderboard_contract():
         def predict(self, query, proprietary, llm, columns, *, api_name):
             assert (query, proprietary, llm) == ("", True, False)
             assert columns == DEFAULT_COLUMNS
-            assert api_name == "/filter_main_table"
-            return payload
+            assert api_name == "/_main_table_update"
+            return {
+                "datatype": ["str", "str", "markdown", "number", "number"],
+                "value": payload,
+            }
 
     entries = fetch_open_asr_leaderboard(FakeClient)
     assert entries[0] == OpenAsrEntry("org/model-1", 1, 4.1, None, False)

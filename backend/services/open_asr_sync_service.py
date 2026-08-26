@@ -58,6 +58,16 @@ DEFAULT_COLUMNS = [
     "Private (conversational)",
 ]
 
+
+def _leaderboard_value(payload: Any) -> Any:
+    """Accept the current Gradio component-update response shape."""
+    if isinstance(payload, dict):
+        value = payload.get("value")
+        if isinstance(value, dict) and "headers" in value and "data" in value:
+            return value
+    return payload
+
+
 # Exact, reviewed model-to-paper overrides. Models without a defensible paper
 # remain unmatched; legacy importer rows provide additional continuity during
 # the first live synchronization.
@@ -329,9 +339,9 @@ def fetch_open_asr_leaderboard(
         True,
         False,
         DEFAULT_COLUMNS,
-        api_name="/filter_main_table",
+        api_name="/_main_table_update",
     )
-    return parse_open_asr_leaderboard(payload)
+    return parse_open_asr_leaderboard(_leaderboard_value(payload))
 
 
 class OpenAsrPaperDiscoveryService:

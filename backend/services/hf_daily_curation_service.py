@@ -38,6 +38,7 @@ from backend.utils.urls import get_paper_route_identifier
 FetchCohort = Callable[[date], list[str]]
 MarkdownAvailable = Callable[[Paper, Settings], bool]
 logger = logging.getLogger(__name__)
+_MAX_AUTOMATIC_RETRIES = 3
 
 
 def _dispatched_canary_workflows(
@@ -94,6 +95,39 @@ class HFDailyCurationService:
         self.fetch_cohort = fetch_cohort
         self.job_service = job_service
         self.markdown_available = markdown_available
+
+    def retry_terminal_workflow(self, workflow: PaperCurationWorkflow) -> bool:
+        """Retry one failed scheduled workflow without creating an unbounded loop."""
+        attempts = (
+            self.db.query(PaperCurationJob)
+            .filter(
+                PaperCurationJob.parent_workflow_id == workflow.id,
+                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.status.in_(
+                    {"dispatching", "running", "completed", "failed", "canceled"}
+                ),
+            )
+            .order_by(PaperCurationJob.created_at.desc())
+            .all()
+        )
+        if not attempts or any(
+            attempt.status in {"dispatching", "running"} for attempt in attempts
+        ):
+            return False
+        terminal_attempts = [
+            attempt
+            for attempt in attempts
+            if attempt.status in {"completed", "failed", "canceled"}
+        ]
+        if len(terminal_attempts) >= _MAX_AUTOMATIC_RETRIES:
+            return False
+        self.job_service.retry(
+            self.db,
+            terminal_attempts[0],
+            self.settings,
+            priority=50,
+        )
+        return True
 
     def release_awaiting_markdown(self, capacity: int) -> int:
         """Requeue deferred enrichment only after canonical Markdown exists."""
@@ -362,6 +396,7 @@ class HFDailyCurationService:
             "missing_imports": [],
             "already_satisfied": 0,
             "released_markdown_ready": 0,
+            "retried": 0,
         }
 
         # Awaiting workflows already belong to the canary. Releasing one uses
@@ -435,6 +470,12 @@ class HFDailyCurationService:
                 .first()
             )
             if existing:
+                if (
+                    existing.status in {"failed", "partial"}
+                    and summary["retried"] < reconcile_limit
+                    and self.retry_terminal_workflow(existing)
+                ):
+                    summary["retried"] += 1
                 continue
             admin_success = {
                 kind: self.db.query(PaperCurationJob)
