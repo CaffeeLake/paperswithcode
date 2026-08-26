@@ -455,6 +455,18 @@ class Settings(BaseSettings):
     chat_pi_max_extension_files: Literal[0] = Field(default=0)
     chat_pi_max_extension_bytes: Literal[0] = Field(default=0)
     chat_pi_max_reloads_per_turn: Literal[0] = Field(default=0)
+    # External-harness migration controls remain independently fail-closed.
+    # Chat work is staging-only until a separate production authorization.
+    chat_external_pi_shadow_enabled: bool = Field(default=False)
+    chat_external_pi_admission_enabled: bool = Field(default=False)
+    chat_external_pi_worker_url: str = Field(default="", max_length=1000)
+    chat_external_pi_worker_token: str = Field(default="", repr=False)
+    chat_external_pi_worker_contract_version: str = Field(default="", max_length=64)
+    chat_external_pi_worker_max_sessions: int = Field(default=8, ge=1, le=32)
+    chat_remote_workspace_tools_enabled: bool = Field(default=False)
+    chat_safe_cli_fast_path_enabled: bool = Field(default=False)
+    chat_lazy_workspace_enabled: bool = Field(default=False)
+    chat_durable_turn_dispatch_enabled: bool = Field(default=False)
     chat_modal_image_version: str = Field(default="", max_length=255)
     chat_pwc_cli_version: str = Field(default="", max_length=64)
     chat_worker_contract_version: str = Field(default="", max_length=64)

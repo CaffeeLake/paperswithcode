@@ -177,6 +177,57 @@ def test_chat_provider_policy_isolated_from_capacity(settings_factory):
     )
 
 
+def test_external_pi_migration_switches_are_independent_and_fail_closed(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    assert settings.chat_external_pi_shadow_enabled is False
+    assert settings.chat_external_pi_admission_enabled is False
+    assert settings.chat_remote_workspace_tools_enabled is False
+    assert settings.chat_safe_cli_fast_path_enabled is False
+    assert settings.chat_lazy_workspace_enabled is False
+    assert settings.chat_durable_turn_dispatch_enabled is False
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "s" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+
+    settings.chat_external_pi_admission_enabled = True
+    with pytest.raises(RuntimeError, match="external Pi admission requires"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    settings.chat_external_pi_admission_enabled = False
+    settings.chat_safe_cli_fast_path_enabled = True
+    with pytest.raises(
+        RuntimeError, match="safe CLI fast path requires remote workspace tools"
+    ):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
+def test_external_pi_shadow_can_be_armed_without_changing_chat_admission(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_shadow_enabled = True
+
+    with pytest.raises(RuntimeError, match="external Pi worker endpoint"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "s" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+    assert settings.chat_external_pi_admission_enabled is False
+
+
+def test_external_pi_migration_controls_remain_staging_only(settings_factory):
+    settings, _release = settings_factory("production")
+    settings.chat_external_pi_shadow_enabled = True
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
+
+
 def test_environment_policy_isolated_from_storage(settings_factory):
     settings, _release = settings_factory("production")
     settings.runtime_data_dir = "./invalid-runtime"

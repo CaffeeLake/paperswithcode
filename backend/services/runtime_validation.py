@@ -559,6 +559,7 @@ def validate_chat_provider_policy(
 def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     """Validate sandbox spend, capacity, alerting, and provider reserve."""
 
+    _validate_external_pi_migration_policy(settings)
     if not settings.chat_sandbox_spend_enforcement_enabled:
         raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
     configured_spend = SandboxSpendPolicy(
@@ -941,6 +942,62 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
             raise RuntimeError("Pi prewarm model does not match the qualified model")
         if not settings.chat_system_prompt_sha256:
             raise RuntimeError("Pi prewarm requires an immutable prompt digest")
+
+
+def _validate_external_pi_migration_policy(settings: Settings) -> None:
+    """Keep each external-harness bridge independently reversible."""
+
+    switches = {
+        "shadow": settings.chat_external_pi_shadow_enabled,
+        "admission": settings.chat_external_pi_admission_enabled,
+        "remote_tools": settings.chat_remote_workspace_tools_enabled,
+        "safe_cli": settings.chat_safe_cli_fast_path_enabled,
+        "lazy_workspace": settings.chat_lazy_workspace_enabled,
+        "durable_dispatch": settings.chat_durable_turn_dispatch_enabled,
+    }
+    if settings.environment == "production" and any(switches.values()):
+        raise RuntimeError(
+            "external Pi migration controls are staging-only until production approval"
+        )
+    if any(switches.values()):
+        endpoint = urlsplit(settings.chat_external_pi_worker_url)
+        if (
+            endpoint.scheme != "http"
+            or endpoint.hostname not in {"127.0.0.1", "::1"}
+            or endpoint.port is None
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.path not in {"", "/"}
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise RuntimeError(
+                "external Pi worker endpoint must be an authenticated loopback service"
+            )
+        if (
+            len(settings.chat_external_pi_worker_token) < 32
+            or settings.chat_external_pi_worker_contract_version != "external-pi-v1"
+        ):
+            raise RuntimeError("external Pi worker identity is invalid")
+    if settings.chat_safe_cli_fast_path_enabled and not (
+        settings.chat_remote_workspace_tools_enabled
+    ):
+        raise RuntimeError("safe CLI fast path requires remote workspace tools")
+    if settings.chat_lazy_workspace_enabled and not (
+        settings.chat_remote_workspace_tools_enabled
+    ):
+        raise RuntimeError("lazy workspaces require remote workspace tools")
+    if settings.chat_external_pi_admission_enabled and not all(
+        (
+            settings.chat_remote_workspace_tools_enabled,
+            settings.chat_lazy_workspace_enabled,
+            settings.chat_durable_turn_dispatch_enabled,
+        )
+    ):
+        raise RuntimeError(
+            "external Pi admission requires remote workspace tools, lazy workspaces, "
+            "and durable turn dispatch"
+        )
 
 
 def _validate_chat_execution_identity(settings: Settings) -> None:
