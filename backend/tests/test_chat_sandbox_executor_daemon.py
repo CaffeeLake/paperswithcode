@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -653,6 +655,84 @@ def test_concurrent_cancel_cannot_reap_during_leader_exit_observation(
     thread.join(timeout=2)
 
 
+def test_unproven_process_group_returns_bounded_containment_terminal(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+        terminate_grace=0.01,
+        containment_proof_timeout=0.03,
+        process_group_probe=lambda _process_group: True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    request = {
+        "protocol": PROTOCOL,
+        "type": "exec",
+        "request_id": "request-unproven-group",
+        **IDENTITY,
+        "command": "printf $$ > unproven-leader.pid; sleep 5",
+        "timeout_ms": 2_000,
+    }
+    connection, reader = _open_operation(server.socket_path, request)
+    assert decode_response(reader.readline())["type"] == "acknowledged"
+    deadline = time.monotonic() + 1
+    while not (workspace / "unproven-leader.pid").is_file():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+    started = time.monotonic()
+    cancelled = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "cancel_execution",
+            "request_id": "request-unproven-cancel",
+            **IDENTITY,
+        },
+    )
+    terminal = decode_response(reader.readline())
+    connection.settimeout(0.5)
+    assert reader.readline() == b""
+    reader.close()
+    connection.close()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as health_connection:
+        health_connection.connect(str(server.socket_path))
+        health_connection.sendall(
+            encode_request(
+                {
+                    "protocol": PROTOCOL,
+                    "type": "health",
+                    "request_id": "request-unproven-health",
+                    "execution_id": "execution-unproven-health",
+                }
+            )
+        )
+        health_connection.shutdown(socket.SHUT_WR)
+        health = _read_frames(health_connection)
+
+    assert time.monotonic() - started < 1
+    assert terminal["status"] == "failed"
+    assert terminal["error"] == "process_containment_failed"
+    assert cancelled[-1]["status"] == "failed"
+    assert cancelled[-1]["error"] == "process_containment_failed"
+    assert health[0]["status"] == "draining"
+    record = json.loads(next((tmp_path / "state").glob("*/record.json")).read_text())
+    assert record["terminal"]["error"] == "process_containment_failed"
+    leader_pid = int((workspace / "unproven-leader.pid").read_text())
+    os.waitpid(leader_pid, 0)
+    server.shutdown()
+    thread.join(timeout=2)
+
+
 def test_attach_cursor_and_mismatch_fencing(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -827,13 +907,33 @@ def test_restart_turns_durable_acceptance_into_execution_lost(
     assert broker_entered.wait(2)
     reader.close()
     connection.close()
+    record_path = next(state_path.glob("*/record.json"))
+    running_record = json.loads(record_path.read_text())
+    running_record["phase"] = "running"
+    record_path.write_text(json.dumps(running_record))
+    prior_process = subprocess.Popen(
+        ["/bin/bash", "-lc", "sleep 1; printf old > prior-side-effect"],
+        cwd=workspace,
+        start_new_session=True,
+    )
 
+    class RecoveryBroker(_Broker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = True
+            self.operations: list[str] = []
+
+        def __call__(self, payload: dict[str, object]) -> dict[str, object]:
+            self.operations.append(str(payload["operation"]))
+            return super().__call__(payload)
+
+    recovery_broker = RecoveryBroker()
     recovered = ExecutorServer(
         socket_path=tmp_path / "recovered" / "executor.sock",
         state_path=state_path,
         workspace_root=workspace,
         worker_generation="worker-1",
-        broker_control=_Broker(),
+        broker_control=recovery_broker,
         command_preexec=None,
     )
     recovered_thread = threading.Thread(target=recovered.serve_forever, daemon=True)
@@ -849,9 +949,44 @@ def test_restart_turns_durable_acceptance_into_execution_lost(
             "offset": 0,
         },
     )
+    duplicate = _operation(recovered.socket_path, request)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as health_connection:
+        health_connection.connect(str(recovered.socket_path))
+        health_connection.sendall(
+            encode_request(
+                {
+                    "protocol": PROTOCOL,
+                    "type": "health",
+                    "request_id": "request-recovery-health",
+                    "execution_id": "execution-recovery-health",
+                }
+            )
+        )
+        health_connection.shutdown(socket.SHUT_WR)
+        health = _read_frames(health_connection)
+    rejected = _operation(
+        recovered.socket_path,
+        {
+            **request,
+            "request_id": "request-new-after-recovery",
+            "turn_id": "turn-new",
+            "execution_id": "execution-new",
+            "tool_call_id": "tool-new",
+            "command": "printf bad > recovery-overlap",
+        },
+    )
 
     assert attached[-1]["status"] == "failed"
     assert attached[-1]["error"] == "execution_lost"
+    assert duplicate[-1]["error"] == "execution_lost"
+    assert health[0]["status"] == "draining"
+    assert rejected[-1]["error"] == "executor_containment_failure"
+    assert recovery_broker.operations == ["status", "clear"]
+    assert recovery_broker.active is False
+    assert prior_process.poll() is None
+    assert not (workspace / "recovery-overlap").exists()
+    os.killpg(prior_process.pid, signal.SIGKILL)
+    prior_process.wait()
     assert not (workspace / "must-not-run").exists()
     recovered.shutdown()
     recovered_thread.join(timeout=2)
@@ -1225,6 +1360,65 @@ def test_malformed_or_uncorrelated_frames_execute_nothing(tmp_path: Path) -> Non
     thread.join(timeout=2)
 
 
+def test_client_disconnect_during_response_is_only_a_transport_loss(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    thread_exceptions: list[BaseException] = []
+    monkeypatch.setattr(
+        threading,
+        "excepthook",
+        lambda args: thread_exceptions.append(args.exc_value),
+    )
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.connect(str(server.socket_path))
+    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    connection.sendall(
+        encode_request(
+            {
+                "protocol": PROTOCOL,
+                "type": "health",
+                "request_id": "request-reset-health",
+                "execution_id": "execution-reset-health",
+            }
+        )
+    )
+    connection.close()
+    time.sleep(0.05)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as health_connection:
+        health_connection.connect(str(server.socket_path))
+        health_connection.sendall(
+            encode_request(
+                {
+                    "protocol": PROTOCOL,
+                    "type": "health",
+                    "request_id": "request-after-reset",
+                    "execution_id": "execution-after-reset",
+                }
+            )
+        )
+        health_connection.shutdown(socket.SHUT_WR)
+        health = _read_frames(health_connection)
+
+    assert thread_exceptions == []
+    assert health[0]["status"] == "ok"
+    server.shutdown()
+    thread.join(timeout=2)
+
+
 def test_only_one_command_runs_at_a_time_in_the_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1430,6 +1624,63 @@ def test_acceptance_write_failure_leaves_no_attachable_hanging_execution(
     assert retry[-1]["status"] == "failed"
     assert retry[-1]["error"] == "executor_containment_failure"
     assert not (workspace / "acceptance-side-effect").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+def test_workspace_binding_persistence_failure_is_typed_and_drains(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_replace = os.replace
+
+    def fail_workspace_replace(source: str | bytes, target: str | bytes) -> None:
+        if Path(target).name == "workspace.json":
+            raise OSError("synthetic workspace persistence failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_workspace_replace)
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+
+    responses = _operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "ensure_workspace",
+            "request_id": "request-workspace-persistence",
+            **IDENTITY,
+        },
+    )
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as health_connection:
+        health_connection.connect(str(server.socket_path))
+        health_connection.sendall(
+            encode_request(
+                {
+                    "protocol": PROTOCOL,
+                    "type": "health",
+                    "request_id": "request-workspace-persistence-health",
+                    "execution_id": "execution-workspace-persistence-health",
+                }
+            )
+        )
+        health_connection.shutdown(socket.SHUT_WR)
+        health = _read_frames(health_connection)
+
+    assert responses[-1]["status"] == "failed"
+    assert responses[-1]["error"] == "executor_containment_failure"
+    assert health[0]["status"] == "draining"
+    assert not (tmp_path / "state" / "workspace.json").exists()
     server.shutdown()
     thread.join(timeout=2)
 

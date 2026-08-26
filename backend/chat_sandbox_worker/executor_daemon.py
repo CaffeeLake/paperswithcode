@@ -152,9 +152,14 @@ class _Execution:
     process: subprocess.Popen[bytes] | None = None
     process_group: int | None = None
     process_group_contained: bool = False
+    process_containment_failed: bool = False
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     captured_bytes: int = 0
     persistence_failed: bool = False
+
+
+class _ContainmentFailure(RuntimeError):
+    """An internal durability failure requires fail-closed admission."""
 
 
 class ExecutorServer:
@@ -175,6 +180,8 @@ class ExecutorServer:
         capture_limit: int = MAX_CAPTURE_BYTES,
         read_chunk_size: int = MAX_OUTPUT_CHUNK_BYTES,
         terminate_grace: float = TERMINATE_GRACE_SECONDS,
+        containment_proof_timeout: float = TERMINATE_GRACE_SECONDS,
+        process_group_probe: Callable[[int], bool] | None = None,
     ) -> None:
         self.socket_path = socket_path
         self.state_path = state_path
@@ -192,6 +199,10 @@ class ExecutorServer:
             raise ValueError("Invalid executor read chunk size")
         self.read_chunk_size = read_chunk_size
         self.terminate_grace = terminate_grace
+        self.containment_proof_timeout = containment_proof_timeout
+        self.process_group_probe = (
+            process_group_probe or self._process_group_has_live_member
+        )
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._contained = threading.Event()
@@ -242,67 +253,133 @@ class ExecutorServer:
                 execution.cancel.set()
 
     def _handle_connection(self, connection: socket.socket) -> None:
-        with connection, connection.makefile("rb", buffering=0) as reader:
+        with connection:
             try:
-                first = reader.readline(MAX_FRAME_BYTES + 1)
-                if first.startswith(EXECUTOR_BOOTSTRAP_PREFIX):
-                    bootstrap = self._decode_bootstrap(first)
-                    request_line = reader.readline(MAX_FRAME_BYTES + 1)
-                else:
-                    bootstrap = None
-                    request_line = first
-                request = decode_request(request_line)
-                if request["type"] == "health":
-                    self._send_health(connection, request)
+                reader = connection.makefile("rb", buffering=0)
+            except OSError:
+                return
+            with reader:
+                try:
+                    first = reader.readline(MAX_FRAME_BYTES + 1)
+                    if first.startswith(EXECUTOR_BOOTSTRAP_PREFIX):
+                        bootstrap_line = first
+                        request_line = reader.readline(MAX_FRAME_BYTES + 1)
+                    else:
+                        bootstrap_line = None
+                        request_line = first
+                except OSError:
                     return
-                if bootstrap is None:
-                    return
-                self._correlate_bootstrap(bootstrap, request)
-                operation = request["type"]
-                if self._contained.is_set():
-                    self._ack(connection, request)
-                    self._send_terminal(
-                        connection,
-                        request,
-                        {
-                            "status": "failed",
-                            "exit_code": None,
-                            "error": "executor_containment_failure",
-                        },
+                try:
+                    bootstrap = (
+                        self._decode_bootstrap(bootstrap_line)
+                        if bootstrap_line is not None
+                        else None
                     )
+                    request = decode_request(request_line)
+                    if request["type"] != "health":
+                        if bootstrap is None:
+                            return
+                        self._correlate_bootstrap(bootstrap, request)
+                except ProtocolError:
                     return
-                if operation != "ensure_workspace" and not self._bind_workspace(
-                    request
+                try:
+                    self._dispatch_request(connection, request, bootstrap)
+                except _ContainmentFailure:
+                    try:
+                        self._ack(connection, request)
+                        self._send_terminal(
+                            connection,
+                            request,
+                            {
+                                "status": "failed",
+                                "exit_code": None,
+                                "error": "executor_containment_failure",
+                            },
+                        )
+                    except (
+                        BrokenPipeError,
+                        ConnectionAbortedError,
+                        ConnectionResetError,
+                    ):
+                        return
+                except (
+                    BrokenPipeError,
+                    ConnectionAbortedError,
+                    ConnectionResetError,
                 ):
-                    self._ack(connection, request)
-                    self._send_terminal(
-                        connection,
-                        request,
-                        {
-                            "status": "failed",
-                            "exit_code": None,
-                            "error": "workspace_generation_mismatch",
-                        },
-                    )
                     return
+
+    def _dispatch_request(
+        self,
+        connection: socket.socket,
+        request: dict[str, object],
+        bootstrap: dict[str, object] | None,
+    ) -> None:
+        if request["type"] == "health":
+            self._send_health(connection, request)
+            return
+        assert bootstrap is not None
+        operation = request["type"]
+        if self._contained.is_set():
+            if self._can_retrieve_contained_execution(request):
                 if operation == "exec":
                     self._exec(connection, request, bootstrap)
-                elif operation == "attach_execution":
+                else:
                     self._attach(connection, request)
-                elif operation == "cancel_execution":
-                    self._cancel(connection, request)
-                elif operation == "ensure_workspace":
-                    self._ensure_workspace(connection, request)
-                elif operation == "read_file":
-                    self._read_file(connection, request)
-            except (
-                BrokenPipeError,
-                ConnectionResetError,
-                OSError,
-                ProtocolError,
-                ValueError,
-            ):
                 return
+            self._ack(connection, request)
+            self._send_terminal(
+                connection,
+                request,
+                {
+                    "status": "failed",
+                    "exit_code": None,
+                    "error": "executor_containment_failure",
+                },
+            )
+            return
+        if operation != "ensure_workspace" and not self._bind_workspace(request):
+            self._ack(connection, request)
+            self._send_terminal(
+                connection,
+                request,
+                {
+                    "status": "failed",
+                    "exit_code": None,
+                    "error": "workspace_generation_mismatch",
+                },
+            )
+            return
+        if operation == "exec":
+            self._exec(connection, request, bootstrap)
+        elif operation == "attach_execution":
+            self._attach(connection, request)
+        elif operation == "cancel_execution":
+            self._cancel(connection, request)
+        elif operation == "ensure_workspace":
+            self._ensure_workspace(connection, request)
+        elif operation == "read_file":
+            self._read_file(connection, request)
+
+    def _can_retrieve_contained_execution(self, request: dict[str, object]) -> bool:
+        operation = request["type"]
+        if operation not in {"exec", "attach_execution"}:
+            return False
+        key = (str(request["turn_id"]), str(request["tool_call_id"]))
+        with self._lock:
+            execution = self._executions.get(key)
+        if (
+            execution is None
+            or execution.terminal is None
+            or any(
+                execution.identity[field] != request[field]
+                for field in _OPERATION_FIELDS
+            )
+        ):
+            return False
+        return operation == "attach_execution" or (
+            execution.fingerprint == self._fingerprint(request)
+        )
 
     def _decode_bootstrap(self, line: bytes) -> dict[str, object]:
         if len(line) > 64 * 1024 or not line.endswith(b"\n"):
@@ -415,15 +492,19 @@ class ExecutorServer:
         requested = (str(request["workspace_id"]), int(request["workspace_generation"]))
         with self._lock:
             if self._workspace is None:
+                try:
+                    _atomic_json(
+                        self.state_path / "workspace.json",
+                        {
+                            "workspace_id": requested[0],
+                            "workspace_generation": requested[1],
+                            "worker_generation": self.worker_generation,
+                        },
+                    )
+                except OSError as error:
+                    self._contained.set()
+                    raise _ContainmentFailure from error
                 self._workspace = requested
-                _atomic_json(
-                    self.state_path / "workspace.json",
-                    {
-                        "workspace_id": requested[0],
-                        "workspace_generation": requested[1],
-                        "worker_generation": self.worker_generation,
-                    },
-                )
             return self._workspace == requested
 
     def _fingerprint(self, request: dict[str, object]) -> str:
@@ -606,13 +687,24 @@ class ExecutorServer:
                     except (OSError, ValueError, subprocess.SubprocessError):
                         process = execution.process
                         if process is not None:
-                            self._terminate(execution)
-                        outcome = ("failed", None, "execution_start_failed")
+                            contained = self._terminate(execution)
+                        else:
+                            contained = True
+                        outcome = (
+                            ("failed", None, "execution_start_failed")
+                            if contained
+                            else ("failed", None, "process_containment_failed")
+                        )
             finally:
                 try:
                     process = execution.process
                     if outcome is None and process is not None:
-                        self._terminate(execution)
+                        if not self._terminate(execution):
+                            outcome = (
+                                "failed",
+                                None,
+                                "process_containment_failed",
+                            )
                 finally:
                     cleanup_proven = not install_attempted
                     try:
@@ -659,6 +751,19 @@ class ExecutorServer:
             and response.get("active") is False
         )
 
+    def _prove_recovered_broker_inactive(self, execution: _Execution) -> bool:
+        try:
+            response = self.broker_control({"operation": "status"})
+        except (OSError, RuntimeError, ValueError):
+            response = None
+        if (
+            isinstance(response, dict)
+            and response.get("ok") is True
+            and response.get("active") is False
+        ):
+            return True
+        return self._clear_or_prove_inactive(execution)
+
     def _capture(
         self, execution: _Execution, process: subprocess.Popen[bytes], timeout: float
     ) -> tuple[str, int | None, str | None]:
@@ -671,7 +776,11 @@ class ExecutorServer:
         while True:
             if execution.cancel.is_set() or time.monotonic() >= deadline:
                 timed_out = not execution.cancel.is_set()
-                self._terminate(execution)
+                if not self._terminate(execution):
+                    selector.close()
+                    process.stdout.close()
+                    process.stderr.close()
+                    return "failed", None, "process_containment_failed"
             for key, _ in selector.select(0.02 if selector.get_map() else 0):
                 stream: BinaryIO = key.fileobj
                 data = os.read(stream.fileno(), self.read_chunk_size)
@@ -712,17 +821,19 @@ class ExecutorServer:
                 process is None
                 or process_group is None
                 or not self._leader_exited(process)
-                or self._process_group_has_live_member(process_group)
+                or self.process_group_probe(process_group)
             ):
                 return False
             process.wait()
             execution.process_group_contained = True
             return True
 
-    def _terminate(self, execution: _Execution) -> None:
+    def _terminate(self, execution: _Execution) -> bool:
         with execution.termination_lock:
             if execution.process_group_contained:
-                return
+                return True
+            if execution.process_containment_failed:
+                return False
             process = execution.process
             process_group = execution.process_group
             if process is None or process_group is None:
@@ -738,13 +849,16 @@ class ExecutorServer:
                 os.killpg(process_group, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            containment_deadline = time.monotonic() + max(self.terminate_grace, 0.25)
-            while self._process_group_has_live_member(process_group):
+            containment_deadline = time.monotonic() + self.containment_proof_timeout
+            while self.process_group_probe(process_group):
                 if time.monotonic() >= containment_deadline:
                     self._contained.set()
+                    execution.process_containment_failed = True
+                    return False
                 time.sleep(0.005)
             process.wait()
             execution.process_group_contained = True
+            return True
 
     @staticmethod
     def _process_group_has_live_member(process_group: int) -> bool:
@@ -957,6 +1071,7 @@ class ExecutorServer:
             if value["phase"] == "terminal" and not output_corrupt:
                 execution.terminal = value["terminal"]
             else:
+                uncertain_execution = value["phase"] in {"accepted", "running"}
                 terminal = {
                     "status": "failed",
                     "exit_code": None,
@@ -971,6 +1086,11 @@ class ExecutorServer:
                     self._contained.set()
                     continue
                 execution.terminal = terminal
+                if uncertain_execution:
+                    self._prove_recovered_broker_inactive(execution)
+                    # Accepted/running v1 evidence carries no durable PGID, so
+                    # prior process-group absence cannot be proven after restart.
+                    self._contained.set()
             self._executions[
                 (str(identity["turn_id"]), str(identity["tool_call_id"]))
             ] = execution
