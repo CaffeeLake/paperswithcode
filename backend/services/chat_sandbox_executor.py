@@ -92,12 +92,12 @@ class ExecutorTransportError(RuntimeError):
 
 
 class ExecutorExecutionLost(RuntimeError):
-    """An accepted Exec has uncertain completion and must never be retried."""
+    """An Exec with uncertain delivery or completion must never be retried."""
 
     code = "execution_lost"
 
     def __init__(self) -> None:
-        super().__init__("Accepted sandbox execution was lost")
+        super().__init__("Sandbox execution delivery or completion is uncertain")
 
 
 class ExecutorOperationError(RuntimeError):

@@ -279,6 +279,9 @@ def test_exec_disconnect_after_ack_is_typed_lost_and_is_not_retried():
         asyncio.run(client.exec(_context(), command="pwc task list", timeout_ms=1000))
 
     assert exc_info.value.code == "execution_lost"
+    assert (
+        str(exc_info.value) == "Sandbox execution delivery or completion is uncertain"
+    )
     assert len(provider.calls) == 1
     assert len(process.stdin.writes) == 1
 
