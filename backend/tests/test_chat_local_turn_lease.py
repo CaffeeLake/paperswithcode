@@ -301,6 +301,66 @@ def test_slow_terminal_keeps_heartbeat_live_until_transaction_returns(
     assert orchestrator.lease_heartbeat_task is None
 
 
+@pytest.mark.parametrize("terminal_path", ["preparation_failure", "generic_failure"])
+def test_cancelled_terminal_waits_for_transaction_without_orphan_or_duplicate(
+    monkeypatch, terminal_path
+):
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_heartbeat_seconds": 0.01,
+        }
+    )
+    started = threading.Event()
+    release = threading.Event()
+    terminal_calls: list[str] = []
+    heartbeats: list[TurnLeaseClaim] = []
+
+    def blocked_terminal(path):
+        terminal_calls.append(path)
+        started.set()
+        assert release.wait(timeout=1)
+
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_heartbeat_local_turn",
+        lambda _settings, current: heartbeats.append(current.durable_claim),
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+
+    async def exercise():
+        orchestrator.lease_heartbeat_task = asyncio.create_task(
+            orchestrator._heartbeat_durable_turn()
+        )
+        terminal = asyncio.create_task(
+            orchestrator._persist_terminal_with_lease(blocked_terminal, terminal_path)
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        terminal.cancel()
+        await asyncio.sleep(0.025)
+        first_count = len(heartbeats)
+        assert first_count >= 1
+        assert not terminal.done()
+        terminal.cancel()
+        await asyncio.sleep(0.025)
+        assert len(heartbeats) > first_count
+        assert not terminal.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await terminal
+        stopped_at = len(heartbeats)
+        await asyncio.sleep(0.025)
+        assert len(heartbeats) == stopped_at
+
+    asyncio.run(exercise())
+
+    assert terminal_calls == [terminal_path]
+    assert orchestrator.lease_heartbeat_task is None
+
+
 def test_stale_claim_never_prepares_or_dispatches(monkeypatch):
     settings = get_settings().model_copy(
         update={"chat_durable_turn_dispatch_enabled": True}

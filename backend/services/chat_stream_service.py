@@ -1470,7 +1470,6 @@ class ChatStreamOrchestrator:
                     self.settings,
                     self.admission,
                     "interrupted",
-                    shield=True,
                 )
             else:
                 await self._persist_terminal_with_lease(
@@ -1481,7 +1480,6 @@ class ChatStreamOrchestrator:
                     "interrupted",
                     True,
                     self.projection.completed_blocks(),
-                    shield=True,
                 )
             self.terminal = "interrupted"
             self.trace.finish(
@@ -1632,19 +1630,18 @@ class ChatStreamOrchestrator:
         self,
         function: Callable[..., None],
         *args: object,
-        shield: bool = False,
     ) -> None:
         persistence = asyncio.create_task(asyncio.to_thread(function, *args))
+        cancellation: asyncio.CancelledError | None = None
         try:
-            if shield:
-                await asyncio.shield(persistence)
-            else:
-                await persistence
-        except asyncio.CancelledError:
-            if shield:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await persistence
-            raise
+            while True:
+                try:
+                    await asyncio.shield(persistence)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            if cancellation is not None:
+                raise cancellation
         finally:
             await self._stop_lease_heartbeat()
 
@@ -2160,7 +2157,6 @@ class ChatStreamOrchestrator:
                     self.settings,
                     self.admission,
                     "interrupted",
-                    shield=True,
                 )
             else:
                 await self._persist_terminal_with_lease(
@@ -2171,7 +2167,6 @@ class ChatStreamOrchestrator:
                     "interrupted",
                     True,
                     self.projection.completed_blocks(),
-                    shield=True,
                 )
             self.terminal = "interrupted"
             self.trace.finish(
