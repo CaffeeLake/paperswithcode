@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { toolNameDigest } from "../src/mcp_app_registry.js";
 
 import {
   compareShadowState,
   projectShadowState,
+  restoreShadowTranscript,
   type ExternalShadowRequest,
 } from "../src/external_shadow.js";
 import { handleExternalFrame } from "../src/external_worker.js";
@@ -15,7 +21,7 @@ const request: ExternalShadowRequest = {
   agent_session_id: "20000000-0000-4000-8000-000000000001",
   current_leaf_id: "entry-1",
   expected_prompt_sha256: "caebbfd4c48e98a97a0c0162ac34efec70d452e823114c2f882d586934169454",
-  expected_tool_names_sha256: "654bf373a312fb2825c0afbc75ce871cad185cacdbdf10ca3dd4875efddf3b65",
+  expected_tool_names_sha256: toolNameDigest(["read", "bash", "pwc__search"]),
   transcript_entries: [
     {
       type: "session",
@@ -42,22 +48,57 @@ test("external shadow projection is content-free and stable", () => {
     current_leaf_id: "entry-1",
     entry_count: 2,
     prompt_sha256: "caebbfd4c48e98a97a0c0162ac34efec70d452e823114c2f882d586934169454",
-    tool_names_sha256: "654bf373a312fb2825c0afbc75ce871cad185cacdbdf10ca3dd4875efddf3b65",
+    tool_names_sha256: toolNameDigest(profile.tool_names),
   });
   assert.doesNotMatch(JSON.stringify(projection), /trusted system prompt|role/);
 });
 
-test("external worker shadow endpoint cannot dispatch model or tool work", () => {
+test("external shadow restores native Pi sessions in isolated temporary roots", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "pwc-pi-native-fixture-"));
+  try {
+    const agentSessionId = "30000000-0000-4000-8000-000000000001";
+    const manager = SessionManager.create("/workspace", fixtureRoot, { id: agentSessionId });
+    const header = manager.getHeader();
+    assert(header);
+    const nativeRequest = {
+      ...request,
+      request_id: "native-restore",
+      agent_session_id: agentSessionId,
+      current_leaf_id: null,
+      transcript_entries: [header as unknown as Record<string, unknown>],
+    };
+
+    const [first, second] = await Promise.all([
+      restoreShadowTranscript(nativeRequest),
+      restoreShadowTranscript({ ...nativeRequest, request_id: "native-restore-2" }),
+    ]);
+
+    assert.deepEqual(first, {
+      agent_session_id: agentSessionId,
+      current_leaf_id: null,
+      entry_count: 1,
+    });
+    assert.deepEqual(second, first);
+    assert.doesNotMatch(JSON.stringify(first), /workspace|pwc-pi-native-fixture/);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("external worker shadow endpoint cannot dispatch model or tool work", async () => {
   assert.deepEqual(
-    handleExternalFrame({ type: "shadow_compare", ...request }, profile),
+    await handleExternalFrame({ type: "shadow_compare", ...request }, profile),
     { type: "shadow_projection", ...projectShadowState(request, profile) },
   );
-  assert.throws(
-    () => handleExternalFrame({ type: "run_turn", ...request }, profile),
+  await assert.rejects(
+    handleExternalFrame({ type: "run_turn", ...request }, profile),
     /shadow_compare/,
   );
-  assert.throws(
-    () => handleExternalFrame({ type: "shadow_compare", ...request, provider_token: "secret" }, profile),
+  await assert.rejects(
+    handleExternalFrame(
+      { type: "shadow_compare", ...request, provider_token: "secret" },
+      profile,
+    ),
     /keys/,
   );
 });

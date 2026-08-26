@@ -81,7 +81,10 @@ export function createExternalShadowServer(options: ExternalShadowServerOptions)
       json(
         response,
         200,
-        handleExternalFrame(JSON.parse(body.toString("utf8")) as unknown, options.profile),
+        await handleExternalFrame(
+          JSON.parse(body.toString("utf8")) as unknown,
+          options.profile,
+        ),
       );
     } catch (error) {
       const status = error instanceof Error && error.message === "request_too_large" ? 413 : 400;

@@ -1,5 +1,6 @@
 import {
   projectShadowState,
+  restoreShadowTranscript,
   type ExternalShadowRequest,
   type ExternalShadowProjection,
   type ExternalWorkerProfile,
@@ -16,10 +17,10 @@ export interface ExternalShadowResult extends ExternalShadowProjection {
   type: "shadow_projection";
 }
 
-export function handleExternalFrame(
+export async function handleExternalFrame(
   frame: unknown,
   profile: ExternalWorkerProfile,
-): ExternalShadowResult {
+): Promise<ExternalShadowResult> {
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
     throw new Error("External worker frame must be a shadow_compare object");
   }
@@ -36,7 +37,9 @@ export function handleExternalFrame(
     throw new Error("External worker shadow_compare keys are invalid");
   }
   const { type: _type, ...request } = value;
-  const projection = projectShadowState(request as unknown as ExternalShadowFrame, profile);
+  const shadowRequest = request as unknown as ExternalShadowFrame;
+  await restoreShadowTranscript(shadowRequest);
+  const projection = projectShadowState(shadowRequest, profile);
   return { type: "shadow_projection", ...projection };
 }
 

@@ -51,7 +51,7 @@ class ExternalPiShadowRequest(BaseModel):
 
     @property
     def tool_names_sha256(self) -> str:
-        canonical = json.dumps(sorted(self.tool_names), separators=(",", ":"))
+        canonical = ",".join(sorted(self.tool_names))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     def wire_payload(self) -> dict[str, object]:

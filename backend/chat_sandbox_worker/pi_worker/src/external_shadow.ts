@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { toolNameDigest } from "./mcp_app_registry.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -39,6 +44,12 @@ export interface ExternalShadowComparison {
   mismatches: string[];
 }
 
+export interface RestoredShadowTranscript {
+  agent_session_id: string;
+  current_leaf_id: string | null;
+  entry_count: number;
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -49,7 +60,7 @@ function requireIdentifier(value: string, name: string): void {
   }
 }
 
-function validateRequest(request: ExternalShadowRequest, profile: ExternalWorkerProfile): void {
+function validateRequestEnvelope(request: ExternalShadowRequest): void {
   if (request.protocol_version !== 1) throw new Error("External shadow protocol version is invalid");
   requireIdentifier(request.request_id, "request id");
   if (!UUID_PATTERN.test(request.chat_session_id) || !UUID_PATTERN.test(request.agent_session_id)) {
@@ -58,12 +69,8 @@ function validateRequest(request: ExternalShadowRequest, profile: ExternalWorker
   if (
     !SHA256_PATTERN.test(request.expected_prompt_sha256)
     || !SHA256_PATTERN.test(request.expected_tool_names_sha256)
-    || Buffer.byteLength(profile.prompt) > MAX_PROMPT_BYTES
-    || profile.tool_names.length > MAX_TOOL_NAMES
-    || profile.tool_names.some((name) => !name || name.length > 128 || /[\r\n\0]/u.test(name))
-    || new Set(profile.tool_names).size !== profile.tool_names.length
   ) {
-    throw new Error("External shadow worker profile is invalid");
+    throw new Error("External shadow expected profile is invalid");
   }
   if (!request.transcript_entries.length || request.transcript_entries.length > MAX_TRANSCRIPT_ENTRIES) {
     throw new Error("External shadow transcript count is invalid");
@@ -96,11 +103,60 @@ function validateRequest(request: ExternalShadowRequest, profile: ExternalWorker
   }
 }
 
+function validateProfile(profile: ExternalWorkerProfile): void {
+  if (
+    Buffer.byteLength(profile.prompt) > MAX_PROMPT_BYTES
+    || profile.tool_names.length > MAX_TOOL_NAMES
+    || profile.tool_names.some((name) => !name || name.length > 128 || /[\r\n\0]/u.test(name))
+    || new Set(profile.tool_names).size !== profile.tool_names.length
+  ) {
+    throw new Error("External shadow worker profile is invalid");
+  }
+}
+
+export async function restoreShadowTranscript(
+  request: ExternalShadowRequest,
+): Promise<RestoredShadowTranscript> {
+  validateRequestEnvelope(request);
+  const root = await mkdtemp(path.join(os.tmpdir(), "pwc-external-pi-shadow-"));
+  try {
+    const sessionDirectory = path.join(root, "sessions");
+    const workspaceDirectory = path.join(root, "workspace");
+    await Promise.all([
+      mkdir(sessionDirectory, { mode: 0o700 }),
+      mkdir(workspaceDirectory, { mode: 0o700 }),
+    ]);
+    const sessionFile = path.join(sessionDirectory, `${request.agent_session_id}.jsonl`);
+    await writeFile(
+      sessionFile,
+      `${request.transcript_entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      { mode: 0o600 },
+    );
+    const manager = SessionManager.open(sessionFile, sessionDirectory, workspaceDirectory);
+    const restored = {
+      agent_session_id: manager.getSessionId(),
+      current_leaf_id: manager.getLeafId(),
+      entry_count: manager.getEntries().length + 1,
+    };
+    if (
+      restored.agent_session_id !== request.agent_session_id
+      || restored.current_leaf_id !== request.current_leaf_id
+      || restored.entry_count !== request.transcript_entries.length
+    ) {
+      throw new Error("External shadow native transcript restore mismatched");
+    }
+    return restored;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 export function projectShadowState(
   request: ExternalShadowRequest,
   profile: ExternalWorkerProfile,
 ): ExternalShadowProjection {
-  validateRequest(request, profile);
+  validateRequestEnvelope(request);
+  validateProfile(profile);
   return {
     protocol_version: 1,
     request_id: request.request_id,
@@ -109,7 +165,7 @@ export function projectShadowState(
     current_leaf_id: request.current_leaf_id,
     entry_count: request.transcript_entries.length,
     prompt_sha256: sha256(profile.prompt),
-    tool_names_sha256: sha256(JSON.stringify([...profile.tool_names].sort())),
+    tool_names_sha256: toolNameDigest(profile.tool_names),
   };
 }
 

@@ -3,6 +3,7 @@ import { once } from "node:events";
 import test from "node:test";
 
 import { createExternalShadowServer } from "../src/external_server.js";
+import { toolNameDigest } from "../src/mcp_app_registry.js";
 
 test("external shadow HTTP service authenticates and exposes no run endpoint", async () => {
   const server = createExternalShadowServer({
@@ -23,7 +24,7 @@ test("external shadow HTTP service authenticates and exposes no run endpoint", a
     agent_session_id: "20000000-0000-4000-8000-000000000001",
     current_leaf_id: null,
     expected_prompt_sha256: "bbc5e661e106c6dcd8dc6dd186454c2fcba3c710fb4d8e71a60c93eaf077f073",
-    expected_tool_names_sha256: "3a87bcb5517248a73eee218976ecfac440d67b0a68bc103113066e91c3304b87",
+    expected_tool_names_sha256: toolNameDigest(["bash", "read"]),
     transcript_entries: [{
       type: "session", id: "20000000-0000-4000-8000-000000000001", version: 3,
     }],
