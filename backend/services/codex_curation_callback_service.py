@@ -23,11 +23,15 @@ from backend.models.database import (
     PaperMethodEvidence,
     PaperMethodExclusion,
     PaperRepository,
+    PaperCurationWorkflow,
     PaperTask,
+    HfArtifact,
+    PaperHfArtifact,
     Repository,
     Task,
     TaskDataset,
     TaskDatasetMetric,
+    TrendingModelCandidate,
 )
 from backend.services.benchmark_gap_service import BenchmarkGapService
 from backend.services.codex_add_evals_service import (
@@ -39,6 +43,9 @@ from backend.services.evaluation_service import EvaluationService
 from backend.services.paper_association_service import PaperAssociationService
 from backend.services.paper_method_link_service import upsert_evidence_links
 from backend.services.paper_service import PaperService
+from backend.services.trending_model_resolution_service import (
+    TrendingModelResolutionService,
+)
 
 
 class CodexCurationPaperNotFoundError(LookupError):
@@ -96,9 +103,75 @@ class CodexCurationCallbackService:
         )
 
     def context(self, row, settings: Settings) -> dict[str, Any]:
+        if getattr(row, "kind", None) == "resolve-model-paper":
+            candidate = self.db.get(TrendingModelCandidate, row.candidate_id)
+            if candidate is None:
+                raise CodexCurationPaperNotFoundError(
+                    "Trending model candidate not found"
+                )
+            paper_candidates = (
+                self.db.query(Paper)
+                .join(PaperHfArtifact, PaperHfArtifact.paper_id == Paper.id)
+                .join(HfArtifact, HfArtifact.id == PaperHfArtifact.hf_artifact_id)
+                .filter(
+                    HfArtifact.kind == "model",
+                    HfArtifact.repo_id == candidate.repo_id,
+                    Paper.is_latest_version,
+                )
+                .order_by(Paper.id)
+                .all()
+            )
+            revision = candidate.readme_revision or "main"
+            return {
+                "job": self.job_service.serialize(row, settings).model_dump(
+                    mode="json"
+                ),
+                "candidate": {
+                    "id": str(candidate.id),
+                    "repo_id": candidate.repo_id,
+                    "author": candidate.author,
+                    "featured_publisher": candidate.featured_publisher,
+                    "trending_score": float(candidate.trending_score or 0),
+                    "readme_sha": candidate.readme_sha,
+                    "readme_revision": candidate.readme_revision,
+                    "model_url": f"https://huggingface.co/{candidate.repo_id}",
+                    "model_card_url": (
+                        f"https://huggingface.co/{candidate.repo_id}/raw/"
+                        f"{revision}/README.md"
+                    ),
+                },
+                "paper_candidates": [
+                    {
+                        "id": paper.id,
+                        "title": paper.title,
+                        "arxiv_id": paper.arxiv_id,
+                        "source_url": paper.source_url,
+                    }
+                    for paper in paper_candidates
+                ],
+            }
         paper = self.db.get(Paper, row.paper_id)
         if paper is None:
             raise CodexCurationPaperNotFoundError("Paper not found")
+        source_candidate = None
+        if getattr(row, "parent_workflow_id", None) is not None:
+            workflow = self.db.get(PaperCurationWorkflow, row.parent_workflow_id)
+            if workflow is not None and workflow.source_candidate_id is not None:
+                candidate = self.db.get(
+                    TrendingModelCandidate, workflow.source_candidate_id
+                )
+                if candidate is not None:
+                    revision = candidate.readme_revision or "main"
+                    source_candidate = {
+                        "id": str(candidate.id),
+                        "repo_id": candidate.repo_id,
+                        "readme_sha": candidate.readme_sha,
+                        "readme_revision": candidate.readme_revision,
+                        "model_card_url": (
+                            f"https://huggingface.co/{candidate.repo_id}/raw/"
+                            f"{revision}/README.md"
+                        ),
+                    }
         repository_rows = (
             self.db.query(Repository, PaperRepository.is_official, Repository.source)
             .join(PaperRepository, PaperRepository.repository_id == Repository.id)
@@ -147,6 +220,7 @@ class CodexCurationCallbackService:
         ]
         return {
             "job": self.job_service.serialize(row, settings).model_dump(mode="json"),
+            "source_candidate": source_candidate,
             "paper": {
                 "id": paper.id,
                 "title": paper.title,
@@ -361,6 +435,42 @@ class CodexCurationCallbackService:
         return list(grouped.values())
 
     def apply(self, row, body: ApplyMutationRequest) -> dict[str, Any]:
+        if row.kind == "resolve-model-paper":
+            try:
+                if hasattr(self.db, "refresh"):
+                    self.db.refresh(row, with_for_update=True)
+                self._validate_mutation(row, body)
+                assert body.resolve_model_paper is not None
+                result = TrendingModelResolutionService(self.db).apply(
+                    row.candidate_id,
+                    body.resolve_model_paper,
+                    commit=False,
+                )
+                now = datetime.now(UTC)
+                row.submitted_at = now
+                row.applied_at = now
+                row.proposal = body.model_dump(mode="json")
+                row.validation_summary = {
+                    "status": "accepted",
+                    "validator_version": "trending-model-policy-v1",
+                    "post_write_verification": "passed",
+                }
+                row.mutation_result = result
+                self.db.commit()
+                return dict(result)
+            except Exception as exc:
+                self.db.rollback()
+                rejected = self.db.get(type(row), row.id)
+                if rejected is not None:
+                    rejected.proposal = body.model_dump(mode="json")
+                    rejected.validation_summary = {
+                        "status": "rejected",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:2_000],
+                    }
+                    rejected.submitted_at = datetime.now(UTC)
+                    self.db.commit()
+                raise
         gap_service = BenchmarkGapService(self.db)
         gap_paper = self.db.get(Paper, row.paper_id) if body.benchmark_gaps else None
         accepted_gaps, rejected_gaps = gap_service.validate(
@@ -697,6 +807,21 @@ class CodexCurationCallbackService:
             raise CodexCurationMutationClosedError(
                 "This job may no longer apply mutations"
             )
+        if row.kind == "resolve-model-paper":
+            if (
+                body.resolve_model_paper is None
+                or body.enrich is not None
+                or body.evaluations
+                or body.evaluation_removals
+                or body.benchmark_gaps
+                or body.validation_evidence
+            ):
+                raise ValueError(
+                    "Resolution jobs accept only model resolution payloads"
+                )
+            return
+        if body.resolve_model_paper is not None:
+            raise ValueError("Model resolution is allowed only for resolution jobs")
         if row.kind == "add-evals":
             if body.enrich is not None:
                 raise CodexCurationEnrichmentNotAllowedError(

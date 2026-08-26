@@ -3430,8 +3430,8 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
         "PWC_CODEX_JOBS_NAMESPACE": "nielsr",
         "PWC_CODEX_JOBS_OPENAI_API_KEY": "openai-secret",
         "PWC_CODEX_JOBS_TOKEN": "hf-secret",
-        "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6"),
-        "PWC_CODEX_JOBS_IMAGE_REVISION": ("1d85149040996dbb4ea0805f4c034a80ad214bdf"),
+        "PWC_CODEX_JOBS_IMAGE": ("hf.co/spaces/nielsr/pwc-codex-curator-070e6b144a39"),
+        "PWC_CODEX_JOBS_IMAGE_REVISION": ("1d8e260e30e3e938fd30ee2bc7da259ccac24946"),
         "PWC_CODEX_JOBS_CLI_VERSION": "0.75.0",
         "PWC_CODEX_JOBS_MODEL": "gpt-5.6-luna",
         "PWC_CODEX_JOBS_REASONING_EFFORT": "medium",
@@ -3516,7 +3516,7 @@ def test_production_codex_only_updates_app_and_cron_environments(
         )
         assert (
             configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE_REVISION"])
-            == "1d85149040996dbb4ea0805f4c034a80ad214bdf"
+            == "1d8e260e30e3e938fd30ee2bc7da259ccac24946"
         )
 
 
@@ -3567,11 +3567,11 @@ def test_production_codex_image_only_updates_no_other_values(
     assert configure_host_env.decoded_value(cron_lines["CRON_ONLY"]) == "keep"
     for lines in (app_lines, cron_lines):
         assert configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE"]) == (
-            "hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6"
+            "hf.co/spaces/nielsr/pwc-codex-curator-070e6b144a39"
         )
         assert (
             configure_host_env.decoded_value(lines["PWC_CODEX_JOBS_IMAGE_REVISION"])
-            == "1d85149040996dbb4ea0805f4c034a80ad214bdf"
+            == "1d8e260e30e3e938fd30ee2bc7da259ccac24946"
         )
 
 

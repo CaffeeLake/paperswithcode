@@ -401,6 +401,24 @@ sudo pwc-cron enqueue_hf_daily_paper_curation
 sudo pwc-cron enqueue_hf_daily_paper_curation --status
 ```
 
+Trending-model discovery is a separate hourly lane. It reads the global Hub
+top 50 through the installed `hf` CLI, deterministically skips obvious model
+conversions, and queues at most ten new or changed substantive releases per
+cycle. Each accepted release runs the normal enrich-paper then add-evals
+workflow; benchmark matching remains restricted to the existing catalog.
+
+```bash
+sudo pwc-cron enqueue_hf_trending_model_curation --dry-run --max-queued 10
+sudo pwc-cron enqueue_hf_trending_model_curation --max-queued 10
+sudo pwc-cron enqueue_hf_trending_model_curation --status
+```
+
+The first command is the release canary discovery pass and makes no database
+changes. The scheduled command runs at minute 42, shares the daily curation
+health/token guardrails, and prioritizes trending work behind only overdue
+daily workflows. Model-card revisions are pinned; a changed README is curated
+again, while rejected repackaging stays durable until the card changes.
+
 It scans the exact rolling seven-day Hugging Face daily cohorts, records missing
 imports, creates one durable parent workflow per paper, and uses the shared
 admin/scheduled queue. Each workflow runs `enrich-paper` before `add-evals`.
@@ -420,8 +438,8 @@ Configuration is fail-closed. Production direct apply requires all of:
 - pinned model `gpt-5.6-luna`, medium reasoning, and Codex CLI version.
 
 The production image is the public, content-versioned Docker Space
-`hf.co/spaces/nielsr/pwc-codex-curator-d5db656657e6`, pinned to Hub revision
-`1d85149040996dbb4ea0805f4c034a80ad214bdf`. The dispatcher reads the Space
+`hf.co/spaces/nielsr/pwc-codex-curator-070e6b144a39`, pinned to Hub revision
+`1d8e260e30e3e938fd30ee2bc7da259ccac24946`. The dispatcher reads the Space
 revision before every launch and pauses daily dispatch if it differs. Never
 update a versioned curator Space in place: publish a new Space whose suffix is
 the first 12 characters of the runner SHA-256, record its exact Hub revision,
@@ -446,7 +464,7 @@ the active release, apply the protected environment through the same qualified
 path with `--refresh-environment` instead.
 
 The current image probe is recorded at
-`https://huggingface.co/jobs/nielsr/6a8c62317c5c7dd3792375ee`; its command
+`https://huggingface.co/jobs/nielsr/6a8eff6b984507d9db4e5caa`; its command
 checks the Codex version, PyPDF2 version, full runner SHA-256, exact model, and
 scoped callback-token inheritance. The public Space avoids Docker Hub and does
 not require personal GitHub Packages access.

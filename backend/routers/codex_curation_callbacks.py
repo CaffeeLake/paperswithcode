@@ -361,6 +361,10 @@ def apply_mutation(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except CodexCurationEnrichmentRequiredError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except (LookupError, RuntimeError, ValueError) as error:
+        if getattr(row, "kind", None) == "resolve-model-paper":
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        raise
 
 
 @router.post("/{job_id}/trace/preapply")

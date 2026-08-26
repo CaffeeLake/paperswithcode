@@ -20,7 +20,9 @@ class SyncArtificialAnalysisJob(CronJobBase):
         leaderboard = fetch_artificial_analysis_leaderboard()
         session = db_manager.session_local()
         try:
-            discovery = run_discovery(session, persist=not self.dry_run)
+            discovery = run_discovery(
+                session, persist=not self.dry_run, leaderboard=leaderboard
+            )
             self.logger.info("artificial_analysis_discovery %s", discovery.to_dict())
             stats = ArtificialAnalysisSyncService(session).sync(
                 leaderboard,

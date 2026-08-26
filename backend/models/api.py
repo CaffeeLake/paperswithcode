@@ -11,7 +11,7 @@ to our database schema. The main differences from the original API:
 from datetime import date, datetime
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.models.chat import (
     ChatAvailabilityResponse as ChatAvailabilityResponse,
@@ -2672,6 +2672,72 @@ class EvaluationRemovalRequest(BaseModel):
     evidence: list[dict] = Field(min_length=1, max_length=20)
 
 
+class ExternalPaperProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_url: str
+    title: str = Field(min_length=1, max_length=1_000)
+    abstract: str = Field(min_length=1, max_length=20_000)
+    date_published: date
+
+    _normalize_source_url = field_validator("source_url", mode="before")(
+        normalize_public_url
+    )
+
+
+class ModelReleaseProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_name: str = Field(min_length=1, max_length=500)
+    publisher: str = Field(min_length=1, max_length=255)
+    is_open: bool
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+
+
+class ResolveModelPaperMutation(BaseModel):
+    """Typed result from an untrusted model-card resolution job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+    reason: str = Field(min_length=1, max_length=4_000)
+    novelty_kind: Literal[
+        "new_weights", "new_method", "new_release", "repackaging", "uncertain"
+    ]
+    evidence_urls: list[str] = Field(min_length=1, max_length=20)
+    existing_paper_id: int | None = Field(default=None, gt=0)
+    arxiv_id: str | None = Field(default=None, pattern=r"^\d{4}\.\d{4,5}(?:v\d+)?$")
+    external_paper: ExternalPaperProposal | None = None
+    model_release: ModelReleaseProposal | None = None
+
+    @field_validator("evidence_urls", mode="before")
+    @classmethod
+    def normalize_evidence_urls(cls, values):
+        return [normalize_public_url(value) for value in values]
+
+    @model_validator(mode="after")
+    def validate_decision_shape(self):
+        identities = sum(
+            value is not None
+            for value in (
+                self.existing_paper_id,
+                self.arxiv_id,
+                self.external_paper,
+            )
+        )
+        if self.decision == "reject":
+            if identities or self.model_release is not None:
+                raise ValueError("rejection cannot include a paper mutation")
+            return self
+        if identities != 1:
+            raise ValueError("acceptance requires exactly one paper identity")
+        if self.model_release is None:
+            raise ValueError("acceptance requires model_release")
+        if self.novelty_kind in {"repackaging", "uncertain"}:
+            raise ValueError("accepted release must establish substantive novelty")
+        return self
+
+
 class ApplyMutationRequest(BaseModel):
     evaluations: list[EvaluationCreateRequest] = Field(default_factory=list)
     evaluation_removals: list[EvaluationRemovalRequest] = Field(
@@ -2680,6 +2746,7 @@ class ApplyMutationRequest(BaseModel):
     enrich: EnrichPaperMutation | None = None
     benchmark_gaps: list[dict] = Field(default_factory=list, max_length=30)
     validation_evidence: list[dict] = Field(default_factory=list, max_length=200)
+    resolve_model_paper: ResolveModelPaperMutation | None = None
 
 
 class PromoteBenchmarkCandidateRequest(BaseModel):

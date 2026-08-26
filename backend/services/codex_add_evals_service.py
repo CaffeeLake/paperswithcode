@@ -26,10 +26,12 @@ from backend.config import Settings
 from backend.models.database import (
     BenchmarkCurationCandidate,
     BenchmarkCurationEvidence,
+    ModelRelease,
     Paper,
     PaperCurationJob,
     PaperCurationSchedulerState,
     PaperCurationWorkflow,
+    TrendingModelCandidate,
 )
 from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
 from backend.utils.urls import get_paper_route_identifier
@@ -37,7 +39,7 @@ from jobs.curation_failure_codes import AWAITING_MARKDOWN, parse_failure_code
 
 logger = logging.getLogger(__name__)
 
-JobKind = Literal["add-evals", "enrich-paper"]
+JobKind = Literal["add-evals", "enrich-paper", "resolve-model-paper"]
 JobStatus = Literal[
     "queued", "dispatching", "running", "completed", "failed", "canceled"
 ]
@@ -48,6 +50,7 @@ CURATOR_BOOTSTRAP_PATHS = (
     ".agents/skills/add-evals/SKILL.md",
     ".agents/skills/enrich-paper/SKILL.md",
     ".agents/skills/remote-paper-curation/SKILL.md",
+    ".agents/skills/resolve-model-paper/SKILL.md",
     "jobs/curation_api.py",
     "jobs/curation_failure_codes.py",
     "jobs/schemas/curation_proposal.schema.json",
@@ -57,9 +60,10 @@ CURATOR_BOOTSTRAP_PATHS = (
 
 class CodexPaperJob(BaseModel):
     id: uuid.UUID
-    paper_id: int
-    paper_route: str
-    paper_title: str
+    paper_id: int | None
+    candidate_id: uuid.UUID | None = None
+    paper_route: str | None
+    paper_title: str | None
     requested_by: str
     kind: JobKind
     status: JobStatus
@@ -137,7 +141,13 @@ def _is_source_evidence_failure(error: str | None) -> bool:
 
 def _curator_skill_digest(kind: JobKind) -> str:
     root = Path(__file__).parents[2]
-    skill_name = "enrich-paper" if kind == "enrich-paper" else "add-evals"
+    skill_name = (
+        "resolve-model-paper"
+        if kind == "resolve-model-paper"
+        else "enrich-paper"
+        if kind == "enrich-paper"
+        else "add-evals"
+    )
     paths = [
         root / ".agents/skills/remote-paper-curation/SKILL.md",
         root / f".agents/skills/{skill_name}/SKILL.md",
@@ -270,7 +280,8 @@ class CodexPaperJobService:
     def serialize(row: PaperCurationJob, settings: Settings) -> CodexPaperJob:
         return CodexPaperJob(
             id=row.id,
-            paper_id=int(row.paper_id),
+            paper_id=int(row.paper_id) if row.paper_id is not None else None,
+            candidate_id=getattr(row, "candidate_id", None),
             paper_route=row.paper_route,
             paper_title=row.paper_title,
             requested_by=row.requested_by,
@@ -388,6 +399,131 @@ class CodexPaperJobService:
             db.refresh(row)
         return self.serialize(row, settings)
 
+    def enqueue_resolution(
+        self,
+        db: Session,
+        *,
+        candidate: TrendingModelCandidate,
+        requested_by: str,
+        settings: Settings,
+        dispatch: bool = True,
+        commit: bool = True,
+        retry_of_id: uuid.UUID | None = None,
+    ) -> CodexPaperJob:
+        repository_sha = _git_revision()
+        row = PaperCurationJob(
+            id=uuid.uuid4(),
+            kind="resolve-model-paper",
+            paper_id=None,
+            candidate_id=candidate.id,
+            paper_route=None,
+            paper_title=None,
+            requested_by=requested_by,
+            status="queued",
+            trigger="hf-trending-cron",
+            cohort_date=_now().date(),
+            policy_version="hf-trending-v1",
+            priority=25,
+            repository_sha=repository_sha if len(repository_sha) == 40 else None,
+            skill_sha256=_curator_skill_digest("resolve-model-paper"),
+            bootstrap_bundle=(
+                _curator_bootstrap_bundle(repository_sha)
+                if len(repository_sha) == 40
+                else None
+            ),
+            model=settings.codex_jobs_model,
+            reasoning_effort=settings.codex_jobs_reasoning_effort,
+            codex_cli_version=settings.codex_jobs_cli_version,
+            validator_version="trending-model-policy-v1",
+            retry_of_id=retry_of_id,
+        )
+        candidate.status = "queued"
+        db.add(row)
+        if commit:
+            db.commit()
+            db.refresh(row)
+        else:
+            db.flush()
+        if dispatch:
+            self.dispatch_next(db, settings)
+        if commit:
+            db.refresh(row)
+        return self.serialize(row, settings)
+
+    def enqueue_resolved_candidate_workflow(
+        self,
+        db: Session,
+        candidate: TrendingModelCandidate,
+        settings: Settings,
+        *,
+        dispatch: bool = True,
+    ) -> bool:
+        """Start the standard enrich -> add-evals workflow for one resolved card."""
+        if candidate.status != "resolved" or candidate.model_release_id is None:
+            return False
+        revision = candidate.readme_revision or candidate.readme_sha
+        existing = (
+            db.query(PaperCurationWorkflow)
+            .filter(
+                PaperCurationWorkflow.source_candidate_id == candidate.id,
+                PaperCurationWorkflow.source_revision == revision,
+                PaperCurationWorkflow.policy_version == "hf-trending-v1",
+            )
+            .first()
+        )
+        if existing is not None:
+            return False
+        release = db.get(ModelRelease, candidate.model_release_id)
+        if release is None or release.paper_id is None:
+            return False
+        active = (
+            db.query(PaperCurationWorkflow)
+            .filter(
+                PaperCurationWorkflow.paper_id == release.paper_id,
+                PaperCurationWorkflow.status.in_({"queued", "running", "deferred"}),
+            )
+            .first()
+        )
+        if active is not None:
+            return False
+        paper = db.get(Paper, release.paper_id)
+        if paper is None:
+            return False
+        workflow = PaperCurationWorkflow(
+            id=uuid.uuid4(),
+            paper_id=paper.id,
+            source_candidate_id=candidate.id,
+            source_revision=revision,
+            cohort_date=_now().date(),
+            cohort_order=0,
+            policy_version="hf-trending-v1",
+            status="queued",
+        )
+        db.add(workflow)
+        db.flush()
+        self.enqueue(
+            db,
+            kind="enrich-paper",
+            paper_id=paper.id,
+            paper_route=get_paper_route_identifier(
+                paper.source, paper.arxiv_id, paper.id
+            ),
+            paper_title=paper.title,
+            requested_by="hf-trending-cron",
+            settings=settings,
+            trigger="hf-trending-cron",
+            parent_workflow_id=workflow.id,
+            cohort_date=workflow.cohort_date,
+            policy_version=workflow.policy_version,
+            priority=25,
+            dispatch=False,
+            commit=False,
+        )
+        db.commit()
+        if dispatch:
+            self.dispatch_next(db, settings)
+        return True
+
     def dispatch_next(self, db: Session, settings: Settings) -> None:
         """Fill configured shared capacity while reserving one slot for admin work."""
         if not settings.codex_jobs_enabled:
@@ -400,7 +536,9 @@ class CodexPaperJobService:
             )
             if len(active) >= settings.codex_jobs_max_active:
                 return
-            scheduled_active = sum(item.trigger == "hf-daily-cron" for item in active)
+            scheduled_active = sum(
+                item.trigger in {"hf-daily-cron", "hf-trending-cron"} for item in active
+            )
             scheduler_state = db.get(PaperCurationSchedulerState, 1)
             usage_allowed = self._scheduled_usage_allowed(db, scheduler_state)
             scheduled_allowed = bool(
@@ -443,7 +581,7 @@ class CodexPaperJobService:
                 PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
             )
             .filter(
-                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
                 PaperCurationJob.status.in_(ACTIVE_STATUSES),
                 PaperCurationWorkflow.created_at < cutoff,
             )
@@ -456,7 +594,7 @@ class CodexPaperJobService:
                 PaperCurationWorkflow.id == PaperCurationJob.parent_workflow_id,
             )
             .filter(
-                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
                 PaperCurationJob.status == "queued",
             )
         )
@@ -473,6 +611,21 @@ class CodexPaperJobService:
             )
             if overdue is not None:
                 return overdue
+        trending = (
+            db.query(PaperCurationJob)
+            .filter(
+                PaperCurationJob.trigger == "hf-trending-cron",
+                PaperCurationJob.status == "queued",
+            )
+            .order_by(
+                PaperCurationJob.priority,
+                PaperCurationJob.created_at,
+                PaperCurationJob.id,
+            )
+            .first()
+        )
+        if trending is not None:
+            return trending
         return base.order_by(
             PaperCurationJob.priority,
             PaperCurationJob.cohort_date.desc().nullslast(),
@@ -489,7 +642,7 @@ class CodexPaperJobService:
         rows = (
             db.query(PaperCurationJob)
             .filter(
-                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
                 PaperCurationJob.finished_at >= now - timedelta(days=8),
             )
             .all()
@@ -560,6 +713,10 @@ class CodexPaperJobService:
                 callback_token.encode()
             ).hexdigest()
             row.attempt_count += 1
+            if row.kind == "resolve-model-paper" and row.candidate_id is not None:
+                candidate = db.get(TrendingModelCandidate, row.candidate_id)
+                if candidate is not None:
+                    candidate.status = "resolving"
             db.commit()
             image = self._verified_job_image(db, settings, row)
             image_name = image.rsplit("/", 1)[-1]
@@ -583,6 +740,12 @@ class CodexPaperJobService:
             row.status = "failed"
             row.error = _launch_error(exc)
             row.finished_at = _now()
+            if row.kind == "resolve-model-paper" and row.candidate_id is not None:
+                candidate = db.get(TrendingModelCandidate, row.candidate_id)
+                if candidate is not None:
+                    candidate.status = "failed"
+                    candidate.rejection_reason = row.error
+                    candidate.processed_at = _now()
             db.commit()
             self._advance_workflow(db, row, settings)
 
@@ -633,7 +796,7 @@ class CodexPaperJobService:
                 time.sleep(2**attempt)
         if observed == expected:
             return image
-        if row.trigger == "hf-daily-cron":
+        if row.trigger in {"hf-daily-cron", "hf-trending-cron"}:
             state = db.get(PaperCurationSchedulerState, 1)
             if state is not None:
                 state.paused_at = _now()
@@ -687,7 +850,12 @@ class CodexPaperJobService:
                     "product": "paperswithcode",
                     "workflow": "paper-curation",
                     "pwc_job_id": str(row.id),
-                    "paper_id": str(row.paper_id),
+                    "paper_id": str(row.paper_id) if row.paper_id is not None else "",
+                    "candidate_id": (
+                        str(row.candidate_id)
+                        if getattr(row, "candidate_id", None) is not None
+                        else ""
+                    ),
                     "kind": row.kind,
                 },
                 namespace=settings.codex_jobs_namespace,
@@ -844,7 +1012,7 @@ class CodexPaperJobService:
         oldest_scheduled = (
             db.query(func.min(PaperCurationJob.created_at))
             .filter(
-                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
                 PaperCurationJob.status == "queued",
             )
             .scalar()
@@ -897,24 +1065,37 @@ class CodexPaperJobService:
     ) -> CodexPaperJob:
         if row.status not in TERMINAL_STATUSES:
             return self.serialize(row, settings)
-        retried = self.enqueue(
-            db,
-            kind=row.kind,
-            paper_id=row.paper_id,
-            paper_route=row.paper_route,
-            paper_title=row.paper_title,
-            requested_by="admin-retry",
-            settings=settings,
-            trigger=row.trigger,
-            parent_workflow_id=row.parent_workflow_id,
-            cohort_date=row.cohort_date,
-            policy_version=row.policy_version,
-            priority=(0 if row.trigger == "admin" else row.priority)
-            if priority is None
-            else priority,
-            retry_of_id=row.id,
-            dispatch=False,
-        )
+        if row.kind == "resolve-model-paper":
+            candidate = db.get(TrendingModelCandidate, row.candidate_id)
+            if candidate is None:
+                raise LookupError("Trending model candidate no longer exists")
+            retried = self.enqueue_resolution(
+                db,
+                candidate=candidate,
+                requested_by="admin-retry",
+                settings=settings,
+                retry_of_id=row.id,
+                dispatch=False,
+            )
+        else:
+            retried = self.enqueue(
+                db,
+                kind=row.kind,
+                paper_id=row.paper_id,
+                paper_route=row.paper_route,
+                paper_title=row.paper_title,
+                requested_by="admin-retry",
+                settings=settings,
+                trigger=row.trigger,
+                parent_workflow_id=row.parent_workflow_id,
+                cohort_date=row.cohort_date,
+                policy_version=row.policy_version,
+                priority=(0 if row.trigger == "admin" else row.priority)
+                if priority is None
+                else priority,
+                retry_of_id=row.id,
+                dispatch=False,
+            )
         if row.parent_workflow_id is not None:
             workflow = db.get(PaperCurationWorkflow, row.parent_workflow_id)
             if workflow is not None:
@@ -1067,13 +1248,29 @@ class CodexPaperJobService:
         row.error = completion_error[:4_000] if completion_error else None
         row.finished_at = _now()
         db.commit()
+        candidate_id = getattr(row, "candidate_id", None)
+        if getattr(row, "kind", None) == "resolve-model-paper" and candidate_id:
+            candidate = db.get(TrendingModelCandidate, candidate_id)
+            if candidate is not None:
+                if row.status == "completed":
+                    self.enqueue_resolved_candidate_workflow(
+                        db, candidate, settings, dispatch=False
+                    )
+                elif candidate.status not in {"resolved", "rejected"}:
+                    candidate.status = "failed"
+                    candidate.rejection_reason = row.error
+                    candidate.processed_at = _now()
+                    db.commit()
         self._advance_workflow(db, row, settings)
         self._evaluate_scheduled_health(db, row)
         self.dispatch_next(db, settings)
         return self.serialize(row, settings)
 
     def _evaluate_scheduled_health(self, db: Session, row: PaperCurationJob) -> None:
-        if getattr(row, "trigger", "admin") != "hf-daily-cron":
+        if getattr(row, "trigger", "admin") not in {
+            "hf-daily-cron",
+            "hf-trending-cron",
+        }:
             return
         state = db.get(PaperCurationSchedulerState, 1)
         if state is None:
@@ -1091,7 +1288,7 @@ class CodexPaperJobService:
         recent = (
             db.query(PaperCurationJob)
             .filter(
-                PaperCurationJob.trigger == "hf-daily-cron",
+                PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
                 PaperCurationJob.status.in_({"completed", "failed"}),
                 *(
                     [PaperCurationJob.finished_at > state.acknowledged_at]
@@ -1143,13 +1340,13 @@ class CodexPaperJobService:
                     paper_id=row.paper_id,
                     paper_route=row.paper_route,
                     paper_title=row.paper_title,
-                    requested_by="hf-daily-cron",
+                    requested_by=row.requested_by,
                     settings=settings,
-                    trigger="hf-daily-cron",
+                    trigger=row.trigger,
                     parent_workflow_id=workflow.id,
                     cohort_date=workflow.cohort_date,
                     policy_version=workflow.policy_version,
-                    priority=100,
+                    priority=row.priority,
                     dispatch=False,
                 )
             elif workflow.evals_satisfied_by_job_id is not None:

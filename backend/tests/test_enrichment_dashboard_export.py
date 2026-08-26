@@ -15,8 +15,18 @@ class Result:
 
 
 class FakeDB:
-    def __init__(self, jobs, evaluations, gaps):
-        self.results = iter([Result(jobs), Result(evaluations), Result(gaps)])
+    def __init__(
+        self, jobs, evaluations, gaps, trending_models=None, trending_decisions=None
+    ):
+        self.results = iter(
+            [
+                Result(jobs),
+                Result(evaluations),
+                Result(gaps),
+                Result(trending_models or []),
+                Result(trending_decisions or []),
+            ]
+        )
 
     def execute(self, *_args, **_kwargs):
         return next(self.results)
@@ -88,6 +98,8 @@ def test_snapshot_groups_jobs_and_deduplicates_gap_paper_pairs(tmp_path):
         }
     ]
     assert len(snapshot["benchmark_gaps"]) == 1
+    assert snapshot["trending_models"] == []
+    assert snapshot["trending_model_decisions"] == []
 
 
 def test_write_snapshot_creates_json(tmp_path):

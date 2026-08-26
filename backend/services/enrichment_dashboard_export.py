@@ -57,7 +57,8 @@ def build_snapshot(
         SELECT id, paper_id, paper_title, kind, status, trigger, created_at,
                started_at, finished_at, applied_at, mutation_result, error
         FROM paper_curation_jobs
-        WHERE trigger = 'hf-daily-cron'
+        WHERE trigger IN ('hf-daily-cron', 'hf-trending-cron')
+          AND paper_id IS NOT NULL
           AND created_at >= :start_ts AND created_at < :end_ts
         ORDER BY created_at, id
         """,
@@ -95,6 +96,37 @@ def build_snapshot(
         JOIN papers p ON p.id = e.paper_id
         WHERE e.created_at >= :start_ts AND e.created_at < :end_ts
         ORDER BY e.created_at, c.canonical_name, p.id
+        """,
+        params,
+    )
+    trending_models = _rows(
+        db,
+        """
+        SELECT c.repo_id, c.author, c.status, c.rejection_reason,
+               c.featured_publisher, c.trending_score, c.readme_revision,
+               c.first_seen_at, c.processed_at, r.canonical_name,
+               r.publisher, r.is_open, r.paper_id, p.title AS paper_title
+        FROM trending_model_candidates c
+        LEFT JOIN model_releases r ON r.id = c.model_release_id
+        LEFT JOIN papers p ON p.id = r.paper_id
+        WHERE COALESCE(c.processed_at, c.first_seen_at) >= :start_ts
+          AND COALESCE(c.processed_at, c.first_seen_at) < :end_ts
+        ORDER BY COALESCE(c.processed_at, c.first_seen_at), c.repo_id
+        """,
+        params,
+    )
+    trending_model_decisions = _rows(
+        db,
+        """
+        SELECT c.repo_id, c.author, c.readme_revision, c.status AS candidate_status,
+               j.id AS job_id, j.status AS job_status, j.model, j.proposal,
+               j.validation_summary, j.mutation_result, j.error, j.trace_uri,
+               j.created_at, j.started_at, j.finished_at, j.applied_at
+        FROM paper_curation_jobs j
+        JOIN trending_model_candidates c ON c.id = j.candidate_id
+        WHERE j.kind = 'resolve-model-paper'
+          AND j.created_at >= :start_ts AND j.created_at < :end_ts
+        ORDER BY j.created_at, j.id
         """,
         params,
     )
@@ -136,6 +168,7 @@ def build_snapshot(
                     "paper_id": row["paper_id"],
                     "title": row["paper_title"],
                     "job_id": str(row["id"]),
+                    "trigger": row.get("trigger"),
                     "status": row["status"],
                     "mutation_status": result.get("status"),
                     "error": row.get("error"),
@@ -169,6 +202,8 @@ def build_snapshot(
         "papers": papers,
         "evaluations": clean(evaluations),
         "benchmark_gaps": clean(list(unique_gaps.values())),
+        "trending_models": clean(trending_models),
+        "trending_model_decisions": clean(trending_model_decisions),
     }
 
 

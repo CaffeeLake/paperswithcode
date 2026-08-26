@@ -121,9 +121,15 @@ class Paper(Base):
     # need these because they have no reliable arxiv_id. ArXiv rows usually
     # derive artifacts from arxiv_id, but retain curated URLs when an external
     # release is later canonicalized onto an ArXiv paper.
-    hf_models: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
-    hf_datasets: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
-    hf_spaces: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
+    hf_models: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(Text).with_variant(JSON(), "sqlite"), nullable=True
+    )
+    hf_datasets: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(Text).with_variant(JSON(), "sqlite"), nullable=True
+    )
+    hf_spaces: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(Text).with_variant(JSON(), "sqlite"), nullable=True
+    )
 
     # Composite trending score (GitHub star velocity + Hugging Face artifact
     # trending). Computed by the calculate_paper_trending_scores cron and only
@@ -739,6 +745,161 @@ class PaperHfArtifact(Base):
     )
 
 
+class ModelRelease(Base):
+    """Canonical model identity shared by papers, Hub artifacts, and providers."""
+
+    __tablename__ = "model_releases"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    paper_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=True
+    )
+    canonical_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    publisher: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    canonical_source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    aliases: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    is_open: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "paper_id", "canonical_name", name="uq_model_release_paper_name"
+        ),
+        Index("idx_model_releases_paper", "paper_id"),
+        Index("idx_model_releases_publisher", "publisher"),
+    )
+
+
+class ModelReleaseArtifact(Base):
+    """Attach all official Hub repositories for a canonical model release."""
+
+    __tablename__ = "model_release_artifacts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    model_release_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("model_releases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    hf_artifact_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("hf_artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "model_release_id",
+            "hf_artifact_id",
+            name="uq_model_release_artifact",
+        ),
+        Index("idx_model_release_artifacts_hf", "hf_artifact_id"),
+    )
+
+
+class ModelProviderAlias(Base):
+    """Provider-specific model IDs resolved onto canonical releases."""
+
+    __tablename__ = "model_provider_aliases"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    model_release_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("model_releases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    alias: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("provider", "alias", name="uq_model_provider_alias"),
+        Index("idx_model_provider_alias_release", "model_release_id"),
+    )
+
+
+class TrendingModelCandidate(Base):
+    """Latest discovery and curation state for one Hugging Face model repo."""
+
+    __tablename__ = "trending_model_candidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    repo_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    author: Mapped[str] = mapped_column(String(255), nullable=False)
+    readme_sha: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    readme_revision: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="discovered", server_default="discovered"
+    )
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    featured_publisher: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    trending_score: Mapped[Optional[float]] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    model_release_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("model_releases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('discovered', 'rejected', 'queued', 'resolving', 'resolved', 'failed')",
+            name="trending_model_candidates_status_check",
+        ),
+        Index("idx_trending_model_candidates_status", "status", "last_seen_at"),
+        Index("idx_trending_model_candidates_release", "model_release_id"),
+    )
+
+
+class TrendingModelCurationState(Base):
+    """Durable rollout gate for autonomous trending-model curation."""
+
+    __tablename__ = "trending_model_curation_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    discovery_dry_run_completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    canary_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    canary_candidate_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'")
+    )
+    canary_released_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ProjectPage(Base):
     """
     Project pages showcasing paper work - normalized without direct paper reference.
@@ -815,11 +976,16 @@ class PaperCurationJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    paper_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    paper_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=True
     )
-    paper_route: Mapped[str] = mapped_column(String(255), nullable=False)
-    paper_title: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("trending_model_candidates.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    paper_route: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    paper_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -930,8 +1096,13 @@ class PaperCurationJob(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('add-evals', 'enrich-paper')",
+            "kind IN ('add-evals', 'enrich-paper', 'resolve-model-paper')",
             name="paper_curation_jobs_kind_check",
+        ),
+        CheckConstraint(
+            "(kind = 'resolve-model-paper' AND candidate_id IS NOT NULL AND paper_id IS NULL) "
+            "OR (kind <> 'resolve-model-paper' AND candidate_id IS NULL AND paper_id IS NOT NULL)",
+            name="paper_curation_jobs_scope_check",
         ),
         CheckConstraint(
             "status IN ('queued', 'dispatching', 'running', 'completed', 'failed', 'canceled')",
@@ -942,11 +1113,12 @@ class PaperCurationJob(Base):
             name="paper_curation_jobs_thumbnail_status_check",
         ),
         CheckConstraint(
-            "trigger IN ('admin', 'hf-daily-cron', 'benchmark-promotion')",
+            "trigger IN ('admin', 'hf-daily-cron', 'hf-trending-cron', 'benchmark-promotion')",
             name="paper_curation_jobs_trigger_check",
         ),
         Index("idx_paper_curation_jobs_queue", "status", "created_at"),
         Index("idx_paper_curation_jobs_paper", "paper_id", "created_at"),
+        Index("idx_paper_curation_jobs_candidate", "candidate_id", "created_at"),
         Index("idx_paper_curation_jobs_workflow", "parent_workflow_id", "created_at"),
         Index(
             "idx_paper_curation_jobs_dispatch",
@@ -970,6 +1142,15 @@ class PaperCurationJob(Base):
             "thumbnail_status",
             "thumbnail_requested_at",
         ),
+        Index(
+            "uq_active_trending_model_resolution",
+            "candidate_id",
+            "policy_version",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'resolve-model-paper' AND status IN ('queued', 'dispatching', 'running')"
+            ),
+        ),
     )
 
 
@@ -979,6 +1160,12 @@ class PaperCurationWorkflow(Base):
     __tablename__ = "paper_curation_workflows"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    source_candidate_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("trending_model_candidates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_revision: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     paper_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
     )
@@ -1036,6 +1223,14 @@ class PaperCurationWorkflow(Base):
             "paper_id",
             unique=True,
             postgresql_where=text("status IN ('queued', 'running', 'deferred')"),
+        ),
+        Index(
+            "uq_paper_curation_workflow_candidate_revision",
+            "source_candidate_id",
+            "source_revision",
+            "policy_version",
+            unique=True,
+            postgresql_where=text("source_candidate_id IS NOT NULL"),
         ),
     )
 

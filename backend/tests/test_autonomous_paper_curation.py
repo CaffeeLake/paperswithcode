@@ -1035,7 +1035,7 @@ def test_overdue_dispatch_reserves_only_one_slot_before_newest_first():
     oldest_overdue = object()
     newest = object()
     first_slot = _DispatchDatabase(None, oldest_overdue)
-    remaining_slot = _DispatchDatabase(object(), newest)
+    remaining_slot = _DispatchDatabase(object(), None, newest)
 
     assert CodexPaperJobService._next_scheduled_row(first_slot) is oldest_overdue
     assert CodexPaperJobService._next_scheduled_row(remaining_slot) is newest
@@ -1044,6 +1044,13 @@ def test_overdue_dispatch_reserves_only_one_slot_before_newest_first():
         for ordering in remaining_slot.orderings
         for value in ordering
     )
+
+
+def test_trending_resolution_precedes_non_overdue_daily_work():
+    trending = object()
+    database = _DispatchDatabase(object(), trending)
+
+    assert CodexPaperJobService._next_scheduled_row(database) is trending
 
 
 def test_newest_first_fallback_when_no_overdue_workflow_exists():

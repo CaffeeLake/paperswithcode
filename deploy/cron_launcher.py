@@ -238,6 +238,15 @@ COMMANDS: dict[str, Job] = {
             "workflows and the shared bounded curation queue"
         ),
     ),
+    "enqueue_hf_trending_model_curation": job(
+        "-m",
+        "backend.scripts.enqueue_hf_trending_model_curation",
+        timeout="30m",
+        idempotency=(
+            "reconcile the global HF trending-model feed into pinned, bounded "
+            "model-resolution and paper-curation workflows"
+        ),
+    ),
     "export_enrichment_dashboard": job(
         "-m",
         "backend.scripts.export_enrichment_dashboard",
