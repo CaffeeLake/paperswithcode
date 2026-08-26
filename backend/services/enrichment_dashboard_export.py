@@ -153,7 +153,7 @@ def build_snapshot(
             stats["enrichment_jobs"] += 1
             if row["status"] == "failed":
                 stats["enrichment_failed"] += 1
-            elif row.get("mutation_result", {}).get("status") == "no_changes":
+            elif (row.get("mutation_result") or {}).get("status") == "no_changes":
                 stats["enrichment_noops"] += 1
             elif row["status"] == "completed":
                 stats["enrichment_applied"] += 1

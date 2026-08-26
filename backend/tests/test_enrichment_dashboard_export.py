@@ -140,3 +140,30 @@ def test_snapshot_serializes_trending_decision_job_uuid(tmp_path):
     write_snapshot(snapshot, path)
 
     assert str(job_id) in path.read_text()
+
+
+def test_snapshot_handles_in_progress_enrichment_without_mutation_result():
+    timestamp = datetime(2026, 8, 26, 15, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        FakeDB(
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "paper_id": 1,
+                    "paper_title": "Paper",
+                    "kind": "enrich-paper",
+                    "status": "running",
+                    "trigger": "hf-trending-cron",
+                    "created_at": timestamp,
+                    "mutation_result": None,
+                    "error": None,
+                }
+            ],
+            [],
+            [],
+        ),
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+    )
+
+    assert snapshot["papers"][0]["mutation_status"] is None
