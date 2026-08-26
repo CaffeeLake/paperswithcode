@@ -1120,6 +1120,7 @@ class _ChatSchemaDB:
         include_latency_columns: bool = True,
         include_qualification_columns: bool = True,
         include_reader_context_columns: bool = True,
+        include_artifact_foundation: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
@@ -1129,6 +1130,7 @@ class _ChatSchemaDB:
         self.include_latency_columns = include_latency_columns
         self.include_qualification_columns = include_qualification_columns
         self.include_reader_context_columns = include_reader_context_columns
+        self.include_artifact_foundation = include_artifact_foundation
 
     def execute(self, statement):
         sql = str(statement)
@@ -1154,6 +1156,8 @@ class _ChatSchemaDB:
                 "chat_openrouter_provider_calls",
                 "chat_openrouter_credential_audit",
             )
+            if self.include_artifact_foundation:
+                names += ("chat_artifacts", "chat_latex_paper_versions")
             return _ChatSchemaResult(rows=[(name, name) for name in names])
         if "information_schema.columns" in sql:
             rows = [
@@ -1200,6 +1204,13 @@ class _ChatSchemaDB:
                         ("chat_messages", "primary_paper_context"),
                         ("chat_messages", "viewer_context"),
                         ("chat_messages", "paper_selection"),
+                    ]
+                )
+            if self.include_artifact_foundation:
+                rows.extend(
+                    [
+                        ("chat_artifacts", "source_head_version_id"),
+                        ("chat_artifacts", "preview_head_version_id"),
                     ]
                 )
             if self.include_edit_columns:
@@ -1270,6 +1281,15 @@ class _ChatSchemaDB:
         if "chat_shares_messages_array_check" in sql:
             return _ChatSchemaResult(
                 first=(1,) if self.include_share_constraint else None
+            )
+        if "chat_artifacts_source_head_version_fkey" in sql:
+            return _ChatSchemaResult(
+                rows=[
+                    ("chat_artifacts_preview_head_version_fkey",),
+                    ("chat_artifacts_source_head_version_fkey",),
+                ]
+                if self.include_artifact_foundation
+                else []
             )
         raise AssertionError(f"Unexpected schema validation query: {sql}")
 
@@ -1353,6 +1373,14 @@ def test_chat_schema_requires_reader_context_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
         validate_chat_schema(
             _ChatSchemaDB("off", include_reader_context_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
+
+
+def test_chat_schema_requires_artifact_foundation():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_artifact_foundation=False),
             Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
         )
 

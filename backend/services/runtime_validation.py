@@ -1057,6 +1057,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
         "chat_title_budget_events",
         "chat_turn_capabilities",
         "chat_turn_latency",
+        "chat_artifacts",
+        "chat_latex_paper_versions",
     }
     pi_tables = {
         "chat_pi_sessions",
@@ -1103,6 +1105,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ('chat_title_budget_events'),
                     ('chat_turn_capabilities'),
                     ('chat_turn_latency'),
+                    ('chat_artifacts'),
+                    ('chat_latex_paper_versions'),
                     ('chat_openrouter_credentials'),
                     ('chat_openrouter_monthly_usage'),
                     ('chat_openrouter_provider_calls'),
@@ -1135,6 +1139,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_messages", "langfuse_trace_id"),
         ("chat_shares", "snapshot_version"),
         ("chat_shares", "messages"),
+        ("chat_artifacts", "source_head_version_id"),
+        ("chat_artifacts", "preview_head_version_id"),
         ("chat_sandbox_leases", "worker_generation"),
         ("chat_sandbox_leases", "egress_policy_digest"),
         ("chat_sandbox_pool", "modal_sandbox_id"),
@@ -1249,6 +1255,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_messages', 'agent_resume_boundary_id'),
                 ('chat_shares', 'snapshot_version'),
                 ('chat_shares', 'messages'),
+                ('chat_artifacts', 'source_head_version_id'),
+                ('chat_artifacts', 'preview_head_version_id'),
                 ('chat_sandbox_leases', 'worker_generation'),
                 ('chat_sandbox_leases', 'egress_policy_digest'),
                 ('chat_sandbox_pool', 'modal_sandbox_id'),
@@ -1331,4 +1339,24 @@ def validate_chat_schema(db, settings: Settings) -> None:
             """)
     ).first()
     if share_snapshot_constraint is None:
+        raise RuntimeError("required chat sandbox schema is missing")
+    artifact_head_constraints = set(
+        db.execute(
+            text("""
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = 'chat_artifacts'::regclass
+                  AND confrelid = 'chat_latex_paper_versions'::regclass
+                  AND contype = 'f'
+                  AND conname IN (
+                      'chat_artifacts_source_head_version_fkey',
+                      'chat_artifacts_preview_head_version_fkey'
+                  )
+                """)
+        ).all()
+    )
+    if artifact_head_constraints != {
+        ("chat_artifacts_source_head_version_fkey",),
+        ("chat_artifacts_preview_head_version_fkey",),
+    }:
         raise RuntimeError("required chat sandbox schema is missing")

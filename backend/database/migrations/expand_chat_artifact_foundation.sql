@@ -67,7 +67,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_latex_paper_versions_message
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chat_artifacts_source_head_version_fkey'
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'chat_artifacts'::regclass
+          AND conname = 'chat_artifacts_source_head_version_fkey'
     ) THEN
         ALTER TABLE chat_artifacts
             ADD CONSTRAINT chat_artifacts_source_head_version_fkey
@@ -75,7 +78,10 @@ BEGIN
             ON DELETE SET NULL;
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chat_artifacts_preview_head_version_fkey'
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'chat_artifacts'::regclass
+          AND conname = 'chat_artifacts_preview_head_version_fkey'
     ) THEN
         ALTER TABLE chat_artifacts
             ADD CONSTRAINT chat_artifacts_preview_head_version_fkey

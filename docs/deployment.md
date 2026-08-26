@@ -185,7 +185,8 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `add_chat_sandbox_spend_cap.sql`, `add_chat_web_search.sql`, and
    `add_chat_hf_catalog.sql`, `add_chat_reasoning_effort.sql`, and
    `add_chat_ttft_profiles.sql`, `add_chat_sandbox_egress_policy.sql`,
-   `add_chat_artifacts.sql`, and `add_chat_warm_assignment_race.sql` as
+   `add_chat_artifacts.sql`, `expand_chat_artifact_foundation.sql`, and
+   `add_chat_warm_assignment_race.sql` as
    PostgreSQL superuser with
    `search_path=staging,public`. The guarded migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
@@ -490,6 +491,11 @@ compatible with the shared ORM, complete OpenRouter reasoning accounting, own
 new objects with `paperswithcode_user`, and deny staging writes. Apply them in
 that order after the base chat/OpenRouter tables exist and before opening
 production admission.
+
+Chat session reads also require the common typed-artifact foundation even when
+paper authoring is disabled. Apply `add_chat_artifacts.sql` and then
+`expand_chat_artifact_foundation.sql` with `search_path=public` before deploying
+an ORM release that includes the artifact models.
 
 Enabled immutable chat releases derive inline paper mentions and the bounded
 read-only Hugging Face catalog capability from the release manifest in both
