@@ -679,10 +679,8 @@ class ExecutorServer:
                     selector.unregister(stream)
                     continue
                 self._append_output(execution, str(key.data), data)
-            if (
-                not selector.get_map()
-                and (execution.process_group_contained or self._leader_exited(process))
-                and self._reap_inactive_process_group(execution)
+            if not selector.get_map() and self._reap_exited_inactive_process_group(
+                execution
             ):
                 break
             if not selector.get_map():
@@ -704,7 +702,7 @@ class ExecutorServer:
             is not None
         )
 
-    def _reap_inactive_process_group(self, execution: _Execution) -> bool:
+    def _reap_exited_inactive_process_group(self, execution: _Execution) -> bool:
         with execution.termination_lock:
             if execution.process_group_contained:
                 return True
@@ -713,6 +711,7 @@ class ExecutorServer:
             if (
                 process is None
                 or process_group is None
+                or not self._leader_exited(process)
                 or self._process_group_has_live_member(process_group)
             ):
                 return False

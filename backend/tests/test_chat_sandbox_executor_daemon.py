@@ -567,6 +567,92 @@ def test_shutdown_contains_group_after_leader_already_exited(tmp_path: Path) -> 
     thread.join(timeout=2)
 
 
+def test_concurrent_cancel_cannot_reap_during_leader_exit_observation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    waitid_entered = threading.Event()
+    release_waitid = threading.Event()
+    thread_exceptions: list[BaseException] = []
+    real_waitid = os.waitid
+
+    def controlled_waitid(id_type: int, process_id: int, options: int):
+        waitid_entered.set()
+        assert release_waitid.wait(2)
+        return real_waitid(id_type, process_id, options)
+
+    def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+        thread_exceptions.append(args.exc_value)
+
+    monkeypatch.setattr(os, "waitid", controlled_waitid)
+    monkeypatch.setattr(threading, "excepthook", capture_thread_exception)
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="worker-1",
+        broker_control=_Broker(),
+        command_preexec=None,
+        terminate_grace=0.01,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    connection, reader = _open_operation(
+        server.socket_path,
+        {
+            "protocol": PROTOCOL,
+            "type": "exec",
+            "request_id": "request-cancel-observation-race",
+            **IDENTITY,
+            "command": _write_exited_leader_command(workspace),
+            "timeout_ms": 2_000,
+        },
+    )
+    assert decode_response(reader.readline())["type"] == "acknowledged"
+    assert waitid_entered.wait(1)
+    leader_pid = int((workspace / "leader.pid").read_text())
+    cancelled: list[dict[str, object]] = []
+    cancel_thread = threading.Thread(
+        target=lambda: cancelled.extend(
+            _operation(
+                server.socket_path,
+                {
+                    "protocol": PROTOCOL,
+                    "type": "cancel_execution",
+                    "request_id": "request-cancel-observation",
+                    **IDENTITY,
+                },
+            )
+        )
+    )
+    cancel_thread.start()
+    reap_deadline = time.monotonic() + 0.3
+    while Path(f"/proc/{leader_pid}").exists() and time.monotonic() < reap_deadline:
+        time.sleep(0.005)
+    release_waitid.set()
+
+    terminal = decode_response(reader.readline())
+    cancel_thread.join(timeout=2)
+    descendant_pid = int((workspace / "descendant.pid").read_text())
+    descendant_stat = Path(f"/proc/{descendant_pid}/stat")
+    if descendant_stat.exists():
+        assert descendant_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    reader.close()
+    connection.close()
+
+    assert not cancel_thread.is_alive()
+    assert terminal["status"] == "cancelled"
+    assert cancelled[-1]["status"] == "cancelled"
+    assert all(frame.get("error") != "execution_lost" for frame in cancelled)
+    assert thread_exceptions == []
+    time.sleep(0.55)
+    assert not (workspace / "after-exited-leader").exists()
+    server.shutdown()
+    thread.join(timeout=2)
+
+
 def test_attach_cursor_and_mismatch_fencing(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
