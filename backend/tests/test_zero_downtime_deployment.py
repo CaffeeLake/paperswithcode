@@ -839,6 +839,46 @@ def test_shadow_candidate_is_drained_on_automatic_rollback(
     assert (root / "current").resolve() == old
 
 
+def test_automatic_rollback_reports_unproven_candidate_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    phases: list[str] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **_values: phases.append(phase),
+    )
+    monkeypatch.setattr(deploy_cli, "prepare_candidate_if_enabled", lambda *_args: True)
+
+    def unproven_cleanup(_environment, slot, release_id):
+        assert (slot, release_id) == ("green", "candidate")
+        raise deploy_cli.ExternalPiSlotError("worker did not prove graceful drain")
+
+    monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", unproven_cleanup)
+    smokes = iter((OSError("candidate failed"), None))
+
+    def smoke(*_args):
+        result = next(smokes)
+        if result:
+            raise result
+
+    monkeypatch.setattr(deploy_cli, "smoke_public", smoke)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {"accepting_chat_turns": True},
+    )
+
+    with pytest.raises(deploy_cli.DeployError, match="candidate drain failed"):
+        deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
+
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+    assert phases[-1] == "automatic-rollback-candidate-drain-failed"
+    assert "automatic-rollback-complete" not in phases
+
+
 def test_draining_previous_slot_is_undrained_and_reused_for_rollback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1167,6 +1207,21 @@ def test_interrupted_cutover_recovers_from_every_mutation_boundary(
         lambda *args, **kwargs: {"accepting_chat_turns": True},
     )
     smokes: list[Path] = []
+    lifecycle_events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "stop_slot_if_enabled",
+        lambda environment, slot, release_id: lifecycle_events.append(
+            ("stop", slot, release_id)
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "prepare_candidate_if_enabled",
+        lambda environment, slot, release_id: lifecycle_events.append(
+            ("prepare", slot, release_id)
+        ),
+    )
     monkeypatch.setattr(
         deploy_cli,
         "smoke_public",
@@ -1179,3 +1234,44 @@ def test_interrupted_cutover_recovers_from_every_mutation_boundary(
     assert (root / "current").resolve() == old
     assert (root / "previous").resolve() == older
     assert smokes == [old]
+    assert lifecycle_events == [
+        ("stop", "green", "candidate"),
+        ("prepare", "blue", "old"),
+    ]
+
+
+def test_interrupted_candidate_recovery_does_not_abandon_unproven_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_cli, "RELEASES", tmp_path)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_journal",
+        lambda _environment: {
+            "phase": "candidate-preparing",
+            "candidate_slot": "green",
+            "candidate_release": candidate.name,
+        },
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "stop_slot_if_enabled",
+        lambda *_args: (_ for _ in ()).throw(
+            deploy_cli.ExternalPiSlotError("worker did not prove graceful drain")
+        ),
+    )
+    phases: list[str] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **_values: phases.append(phase),
+    )
+
+    with pytest.raises(deploy_cli.ExternalPiSlotError, match="prove graceful drain"):
+        deploy_cli._recover_interrupted_activation("staging")
+
+    assert phases == []
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+    assert (root / "previous").resolve() == older

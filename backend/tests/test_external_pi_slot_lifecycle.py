@@ -265,6 +265,7 @@ def test_maximum_configured_drain_can_finish_and_releases_durable_ownership(
                 json.dumps(
                     {
                         "release_id": "release-green",
+                        "worker_id": "staging-green",
                         "state": "offline",
                         "drained": True,
                     }
@@ -278,6 +279,7 @@ def test_maximum_configured_drain_can_finish_and_releases_durable_ownership(
     assert seen["timeout"] == 315
     assert lifecycle.slot_status("staging", "green") == {
         "release_id": "release-green",
+        "worker_id": "staging-green",
         "state": "offline",
         "drained": True,
     }
@@ -307,17 +309,27 @@ def test_stop_without_durable_drain_evidence_leaves_worker_running(
         )
     )
     commands: list[list[str]] = []
-    monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda command, **_kwargs: commands.append(command),
-    )
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1] == "show":
+            return SimpleNamespace(returncode=0, stdout="active\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
 
     with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
         lifecycle.stop_slot("staging", "blue", "release-blue")
 
     assert commands == [
-        ["systemctl", "stop", "paperswithcode-staging-external-pi@blue.service"]
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@blue.service"],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi-worker@blue.service",
+        ],
     ]
 
 
@@ -344,22 +356,9 @@ def test_drain_stop_timeout_rejects_invalid_protected_bounds(
         lifecycle.drain_stop_timeout_seconds("staging")
 
 
-@pytest.mark.parametrize(
-    "initial_status",
-    [
-        None,
-        {
-            "release_id": "release-green",
-            "worker_id": "staging-green",
-            "state": "starting",
-            "registered": False,
-        },
-    ],
-)
 def test_candidate_failure_before_registration_stops_worker_after_supervisor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    initial_status: dict | None,
 ):
     (tmp_path / "staging.env").write_text(
         "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=300\n"
@@ -367,8 +366,17 @@ def test_candidate_failure_before_registration_stops_worker_after_supervisor(
     )
     monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
     monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
-    if initial_status is not None:
-        (tmp_path / "staging-green.json").write_text(json.dumps(initial_status))
+    (tmp_path / "staging-green.json").write_text(
+        json.dumps(
+            {
+                "release_id": "release-green",
+                "worker_id": "staging-green",
+                "state": "starting",
+                "registered": False,
+                "generation": None,
+            }
+        )
+    )
     commands: list[tuple[list[str], bool, float | None]] = []
     monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
     monkeypatch.setattr(
@@ -500,20 +508,23 @@ def test_candidate_failure_without_durable_drain_proof_leaves_worker_running(
 
     def successful_stop(command, **_kwargs):
         commands.append(command)
-        if post_stop_state is None:
-            status.unlink()
-        else:
-            status.write_text(
-                json.dumps(
-                    {
-                        "release_id": "release-green",
-                        "worker_id": "staging-green",
-                        "state": post_stop_state,
-                        "registered": True,
-                        "generation": 4,
-                    }
+        if command[1] == "show":
+            return SimpleNamespace(returncode=0, stdout="active\n")
+        if "external-pi@" in command[-1]:
+            if post_stop_state is None:
+                status.unlink()
+            else:
+                status.write_text(
+                    json.dumps(
+                        {
+                            "release_id": "release-green",
+                            "worker_id": "staging-green",
+                            "state": post_stop_state,
+                            "registered": True,
+                            "generation": 4,
+                        }
+                    )
                 )
-            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(lifecycle.subprocess, "run", successful_stop)
@@ -522,7 +533,14 @@ def test_candidate_failure_without_durable_drain_proof_leaves_worker_running(
         lifecycle.prepare_candidate("staging", "green", "release-green")
 
     assert commands == [
-        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"]
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi-worker@green.service",
+        ],
     ]
 
 
@@ -556,25 +574,79 @@ def test_candidate_cleanup_leaves_worker_running_if_supervisor_stop_fails(
     ]
 
 
-def test_recovery_stop_ignores_a_stale_status_from_the_previous_release(
+@pytest.mark.parametrize(
+    "status_value",
+    [
+        None,
+        "not-json",
+        {
+            "release_id": "new-candidate",
+            "worker_id": "staging-green",
+            "state": "starting",
+            "registered": False,
+        },
+        {
+            "release_id": "new-candidate",
+            "worker_id": "staging-blue",
+            "state": "offline",
+            "drained": True,
+        },
+        {
+            "release_id": "previous-release",
+            "worker_id": "staging-green",
+            "state": "offline",
+            "drained": True,
+        },
+    ],
+)
+def test_stop_without_exact_status_proof_leaves_active_worker_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_value: dict | str | None,
+):
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    if status_value is not None:
+        (tmp_path / "staging-green.json").write_text(
+            status_value if isinstance(status_value, str) else json.dumps(status_value)
+        )
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1] == "show":
+            return SimpleNamespace(returncode=0, stdout="active\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "green", "new-candidate")
+
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi-worker@green.service",
+        ],
+    ]
+
+
+def test_stop_without_status_proof_accepts_exact_inactive_worker_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
-    (tmp_path / "staging-green.json").write_text(
-        json.dumps(
-            {
-                "release_id": "previous-release",
-                "state": "offline",
-                "drained": True,
-            }
-        )
-    )
     commands: list[list[str]] = []
-    monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda command, **_kwargs: commands.append(command),
-    )
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1] == "show":
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
 
     lifecycle.stop_slot("staging", "green", "new-candidate")
 
@@ -582,7 +654,9 @@ def test_recovery_stop_ignores_a_stale_status_from_the_previous_release(
         ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
         [
             "systemctl",
-            "stop",
+            "show",
+            "--property=ActiveState",
+            "--value",
             "paperswithcode-staging-external-pi-worker@green.service",
         ],
     ]

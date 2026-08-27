@@ -310,13 +310,12 @@ def _never_registered(
     release_id: str,
     worker_id: str,
 ) -> bool:
-    if not status:
-        return True
     return (
         status.get("release_id") == release_id
         and status.get("worker_id") == worker_id
         and status.get("state") == "starting"
         and status.get("registered") is False
+        and "generation" in status
         and status.get("generation") is None
     )
 
@@ -330,6 +329,7 @@ def _worker_stop_is_safe(
 ) -> bool:
     if (
         current.get("release_id") == release_id
+        and current.get("worker_id") == worker_id
         and current.get("state") == "offline"
         and current.get("drained") is True
     ):
@@ -343,6 +343,25 @@ def _worker_stop_is_safe(
         release_id=release_id,
         worker_id=worker_id,
     )
+
+
+def _worker_is_inactive(environment: str, slot: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                "--property=ActiveState",
+                "--value",
+                _worker_unit(environment, slot),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "inactive"
 
 
 def stop_slot(
@@ -371,20 +390,8 @@ def stop_slot(
             ["systemctl", "stop", _worker_unit(environment, slot)], check=True
         )
         return
-    if previous.get("release_id") != release_id:
-        if previous.get("state") == "offline" and previous.get("drained") is True:
-            subprocess.run(
-                ["systemctl", "stop", _worker_unit(environment, slot)], check=True
-            )
-            return
-        if value.get("state") == "offline" and value.get("drained") is True:
-            subprocess.run(
-                ["systemctl", "stop", _worker_unit(environment, slot)], check=True
-            )
-            return
-        raise ExternalPiSlotError(
-            f"external Pi stale worker did not prove graceful drain: {value!r}"
-        )
+    if _worker_is_inactive(environment, slot):
+        return
     raise ExternalPiSlotError(
         f"external Pi worker did not prove graceful drain: {value!r}"
     )
