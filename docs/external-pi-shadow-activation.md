@@ -79,6 +79,15 @@ lazy workspace false. Production invocation fails. A failed refresh restores
 the prior protected environment; the normal deployment refresh owns service
 and pointer rollback.
 
+The CLI converts normal `SIGTERM` and `SIGINT` delivery on its main thread into
+a transaction interruption. This runs the same temporary-unit `finally` stop
+and protected-environment rollback used for other failures, then restores the
+process's prior signal handlers. `SIGKILL`, host power loss, and kernel failure
+cannot run in-process cleanup. After one of those events, run the guarded
+`disable` command before retrying enable; disable checks both supervisor and
+worker units in both slots even when the flags already read false/false, and
+leaves the configuration fail closed until all units prove inactive.
+
 Disable is qualification-independent but still exact-release guarded, including
 when the protected flags already read false/false so orphan units cannot be
 skipped. The guard

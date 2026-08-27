@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import secrets
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -47,6 +50,36 @@ REPORT_MAX_DURATION_MS = 10 * 60 * 1000
 
 class ShadowActivationError(RuntimeError):
     """The operator request did not prove a safe staging shadow transition."""
+
+
+class ShadowActivationInterrupted(BaseException):
+    """A normal process signal interrupted the guarded activation transaction."""
+
+    def __init__(self, signal_number: int):
+        super().__init__(
+            f"external Pi activation interrupted by signal {signal_number}"
+        )
+        self.signal_number = signal_number
+
+
+@contextlib.contextmanager
+def activation_signal_context():
+    """Turn normal CLI termination signals into exceptions during the transaction."""
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("activation signal handlers require the main thread")
+    watched = (signal.SIGTERM, signal.SIGINT)
+    previous = {number: signal.getsignal(number) for number in watched}
+
+    def interrupt(signal_number, _frame):
+        raise ShadowActivationInterrupted(signal_number)
+
+    try:
+        for number in watched:
+            signal.signal(number, interrupt)
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,15 +580,16 @@ def main() -> int:
             stop=stop_slot,
         )
 
-    result = apply_staging_shadow_activation(
-        environment=args.environment,
-        expected_release_id=args.release_id,
-        report_path=args.report,
-        enabled=args.mode == "enable",
-        qualify=qualify if args.mode == "enable" else None,
-        deactivate=deactivate if args.mode == "disable" else None,
-        refresh=refresh,
-    )
+    with activation_signal_context():
+        result = apply_staging_shadow_activation(
+            environment=args.environment,
+            expected_release_id=args.release_id,
+            report_path=args.report,
+            enabled=args.mode == "enable",
+            qualify=qualify if args.mode == "enable" else None,
+            deactivate=deactivate if args.mode == "disable" else None,
+            refresh=refresh,
+        )
     print(json.dumps(result, sort_keys=True))
     return 0
 

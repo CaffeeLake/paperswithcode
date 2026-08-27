@@ -175,9 +175,9 @@ class ExternalPiWorkerStatus(BaseModel):
     instance_id: uuid.UUID
     release_id: str = Field(min_length=1, max_length=255)
     state: str = Field(pattern=r"^(ready|draining)$")
-    active_sessions: int = Field(ge=0, le=32)
-    maximum_sessions: int = Field(ge=1, le=32)
-    worker_generation: int | None = Field(default=None, ge=1)
+    active_sessions: int = Field(ge=0, le=32, strict=True)
+    maximum_sessions: int = Field(ge=1, le=32, strict=True)
+    worker_generation: int | None = Field(default=None, ge=1, strict=True)
     operation_counters: ExternalPiOperationCounters
     capability_evidence: ExternalPiCapabilityEvidence
 

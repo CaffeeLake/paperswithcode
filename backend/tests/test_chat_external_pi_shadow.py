@@ -1,5 +1,5 @@
-import hashlib
 import asyncio
+import hashlib
 import uuid
 
 import httpx
@@ -9,8 +9,8 @@ from backend.services.chat_external_pi_shadow import (
     ExternalPiShadowClient,
     ExternalPiShadowRequest,
     ExternalPiWorkerControlClient,
-    ExternalPiWorkerStatus,
     ExternalPiWorkerControlRejected,
+    ExternalPiWorkerStatus,
     ExternalPiWorkerUnavailable,
     native_jsonl_transcript_digest,
 )
@@ -219,6 +219,58 @@ def test_external_pi_worker_status_rejects_unexpected_or_oversized_capacity():
                 base_url="http://worker.internal",
                 token="secret",
                 http=http,
+            ).status()
+
+    with pytest.raises(RuntimeError, match="invalid response"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("active_sessions", False),
+        ("active_sessions", "0"),
+        ("maximum_sessions", False),
+        ("maximum_sessions", "8"),
+        ("worker_generation", True),
+        ("worker_generation", "3"),
+    ],
+)
+def test_external_pi_worker_status_rejects_coerced_identity_capacity_types(
+    field, value
+):
+    payload = {
+        "protocol": "external-pi-v1",
+        "worker_id": "worker-1",
+        "instance_id": "10000000-0000-4000-8000-000000000001",
+        "release_id": "release-a",
+        "state": "ready",
+        "active_sessions": 0,
+        "maximum_sessions": 8,
+        "worker_generation": 3,
+        "operation_counters": {
+            "shadow_requests": 1,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+        "capability_evidence": {
+            "provider_credentials_present": False,
+            "modal_credentials_present": False,
+            "registered_tool_count": 0,
+        },
+    }
+    payload[field] = value
+
+    async def handler(_request):
+        return httpx.Response(200, json=payload)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await ExternalPiWorkerControlClient(
+                base_url="http://worker.internal", token="secret", http=http
             ).status()
 
     with pytest.raises(RuntimeError, match="invalid response"):

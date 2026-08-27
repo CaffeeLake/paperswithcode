@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import signal
 import stat
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -11,11 +14,21 @@ from deploy.external_pi_shadow_activation import (
     QualificationEvidence,
     ShadowActivationError,
     _validate_report,
+    activation_signal_context,
     apply_staging_shadow_activation,
     deactivate_external_pi_slots,
     refresh_command,
     run_temporary_shadow_qualification,
 )
+
+
+def _wait_for(path: Path) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {path}")
 
 
 def _release(root: Path, release_id: str = "release-a") -> Path:
@@ -270,8 +283,9 @@ def test_temporary_qualification_always_drains_and_stops_on_failure(tmp_path: Pa
             release_id="release-a",
             report_path=tmp_path / "report.json",
             start=lambda *_args: events.append("start"),
-            authenticated=lambda *_args: events.append("authenticated")
-            or next(generations),
+            authenticated=lambda *_args: (
+                events.append("authenticated") or next(generations)
+            ),
             expire_and_restart=lambda *_args: events.append("restart") or 5,
             stale_probe=lambda *_args: True,
             qualify=lambda *_args: (_ for _ in ()).throw(
@@ -496,3 +510,147 @@ def test_report_rejects_identity_replay_and_boolean_integers(
             _evidence(),
             now_unix_ms=int(time.time() * 1000),
         )
+
+
+def test_real_sigterm_runs_temporary_unit_cleanup(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    original = (
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    (config / "staging.env").write_text(original)
+    script = r"""
+import sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    activation_signal_context, apply_staging_shadow_activation,
+    run_temporary_shadow_qualification,
+)
+root = Path(sys.argv[1])
+events = root / "events"
+generations = iter((4, 6))
+def record(value):
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(value + "\n")
+def qualify(release_id, _sha, report_path):
+    return run_temporary_shadow_qualification(
+        environment="staging", slot="blue", release_id=release_id,
+        report_path=report_path,
+        start=lambda *_args: record("start"),
+        authenticated=lambda *_args: next(generations),
+        expire_and_restart=lambda *_args: 5,
+        stale_probe=lambda *_args: True,
+        stop=lambda *_args: record("stop"),
+        qualify=lambda *_args: (
+            (root / "ready").write_text("ready", encoding="utf-8"),
+            time.sleep(30),
+        ),
+    )
+with activation_signal_context():
+    apply_staging_shadow_activation(
+        environment="staging", expected_release_id="release-a",
+        report_path=root / "report.json", enabled=True, app_root=root,
+        config_root=root / "config", qualify=qualify, deactivate=None,
+        refresh=lambda _sha: None,
+    )
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "ready")
+    process.terminate()
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 1
+    assert "ShadowActivationInterrupted" in stderr
+    assert (tmp_path / "events").read_text().splitlines() == [
+        "start",
+        "stop",
+        "start",
+        "stop",
+    ]
+    assert (config / "staging.env").read_text() == original
+    assert not (config / "external-pi-worker.env").exists()
+
+
+def test_activation_signal_context_restores_prior_handlers():
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+
+    with activation_signal_context():
+        assert signal.getsignal(signal.SIGTERM) != previous_term
+        assert signal.getsignal(signal.SIGINT) != previous_int
+
+    assert signal.getsignal(signal.SIGTERM) == previous_term
+    assert signal.getsignal(signal.SIGINT) == previous_int
+
+
+def test_real_sigterm_during_refresh_restores_false_flags(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    original = (
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    (config / "staging.env").write_text(original)
+    script = r"""
+import json, sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    QualificationEvidence, activation_signal_context,
+    apply_staging_shadow_activation,
+)
+root = Path(sys.argv[1]); config = root / "config"
+evidence = QualificationEvidence("staging-blue", 4, 5, 6, True, True, "n" * 32)
+names = (
+    "linear_history", "branching_history", "tool_history",
+    "eight_isolated_sessions", "capacity_no_queue",
+    "restart_after_lease_expiry", "stale_generation_fencing",
+    "drain_recovery", "zero_external_work",
+)
+def qualify(_release, _sha, destination):
+    destination.write_text(json.dumps({
+        "release_id": "release-a", "worker_id": evidence.worker_id,
+        "worker_generation": evidence.recovery_generation,
+        "qualification_nonce": evidence.nonce,
+        "qualified_at_unix_ms": int(time.time() * 1000), "passed": True,
+        "case_count": 9, "duration_ms": 1,
+        "external_work_counts": {"shadow_requests": 20, "model_calls": 0,
+            "tool_calls": 0, "provider_calls": 0, "modal_calls": 0,
+            "billing_events": 0},
+        "cases": [{"name": name, "passed": True, "count": 1,
+            "duration_ms": 1, "failure_code": None} for name in names],
+    }), encoding="utf-8")
+    return evidence
+def refresh(_sha):
+    (root / "ready").write_text("ready", encoding="utf-8")
+    time.sleep(30)
+with activation_signal_context():
+    apply_staging_shadow_activation(
+        environment="staging", expected_release_id="release-a",
+        report_path=root / "report.json", enabled=True, app_root=root,
+        config_root=config, qualify=qualify, deactivate=None, refresh=refresh,
+    )
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "ready")
+    process.terminate()
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 1
+    assert "ShadowActivationInterrupted" in stderr
+    assert (config / "staging.env").read_text() == original
+    assert not (config / "external-pi-worker.env").exists()

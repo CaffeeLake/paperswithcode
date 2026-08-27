@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -36,7 +35,7 @@ def prove_stale_generation_fenced(
         or stale_generation >= current_generation
     ):
         raise RuntimeError("durable external Pi worker identity is invalid")
-    stale = ExternalWorkerClaim(worker_id, uuid.UUID(int=0), stale_generation)
+    stale = ExternalWorkerClaim(worker_id, row.instance_id, stale_generation)
     try:
         repository.heartbeat(
             db,

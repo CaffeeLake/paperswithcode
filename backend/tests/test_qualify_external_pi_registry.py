@@ -1,3 +1,4 @@
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,10 @@ from backend.services.chat_external_worker_registry import StaleWorkerClaim
 class _Repository:
     def __init__(self, *, generation: int = 5, reject: bool = True):
         self.row = SimpleNamespace(
-            release_id="release-a", generation=generation, state="ready"
+            instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+            release_id="release-a",
+            generation=generation,
+            state="ready",
         )
         self.reject = reject
         self.claim = None
@@ -36,6 +40,7 @@ def test_durable_probe_submits_the_real_stale_generation_claim():
         current_generation=5,
     )
     assert repository.claim.worker_id == "staging-blue"
+    assert repository.claim.instance_id == repository.row.instance_id
     assert repository.claim.generation == 4
 
 
