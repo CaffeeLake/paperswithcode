@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -23,6 +24,18 @@ STATUS_ROOT = Path(
 SLOT_PORTS = {"blue": 8766, "green": 8767}
 MAXIMUM_SESSIONS = 8
 CONTRACT_VERSION = "external-pi-v1"
+DRAIN_SECONDS_MINIMUM = 5
+DRAIN_SECONDS_MAXIMUM = 300
+DRAIN_POLL_SECONDS_MINIMUM = 0.1
+DRAIN_POLL_SECONDS_MAXIMUM = 5.0
+NODE_TERMINATION_OVERHEAD_SECONDS = 5
+SYSTEMCTL_COMPLETION_OVERHEAD_SECONDS = 5
+MAXIMUM_DRAIN_STOP_TIMEOUT_SECONDS = (
+    DRAIN_SECONDS_MAXIMUM
+    + DRAIN_POLL_SECONDS_MAXIMUM
+    + NODE_TERMINATION_OVERHEAD_SECONDS
+    + SYSTEMCTL_COMPLETION_OVERHEAD_SECONDS
+)
 
 _SUPERVISOR_PROTECTED_KEYS = (
     "PWC_DB_HOST",
@@ -179,6 +192,45 @@ def slot_status(environment: str, slot: str) -> dict:
     return _read_status(environment, slot)
 
 
+def _protected_staging_values() -> dict[str, str]:
+    path = CONFIG_ROOT / "staging.env"
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, raw = line.partition("=")
+        if separator:
+            values[key] = raw.strip().strip("\"'")
+    return values
+
+
+def drain_stop_timeout_seconds(environment: str) -> float:
+    """Bound systemctl by the protected drain contract plus fixed teardown time."""
+    if environment != "staging":
+        raise ValueError("external Pi drain lifecycle is staging-only")
+    values = _protected_staging_values()
+    raw_drain = values.get("PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS", "60")
+    raw_poll = values.get("PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS", "1")
+    try:
+        drain_seconds = int(raw_drain)
+        poll_seconds = float(raw_poll)
+    except ValueError as error:
+        raise ValueError("external Pi drain configuration must be numeric") from error
+    if not DRAIN_SECONDS_MINIMUM <= drain_seconds <= DRAIN_SECONDS_MAXIMUM:
+        raise ValueError("external Pi drain seconds are outside protected bounds")
+    if (
+        not math.isfinite(poll_seconds)
+        or not DRAIN_POLL_SECONDS_MINIMUM <= poll_seconds <= DRAIN_POLL_SECONDS_MAXIMUM
+    ):
+        raise ValueError("external Pi drain polling is outside protected bounds")
+    return (
+        drain_seconds
+        + poll_seconds
+        + NODE_TERMINATION_OVERHEAD_SECONDS
+        + SYSTEMCTL_COMPLETION_OVERHEAD_SECONDS
+    )
+
+
 def start_slot(environment: str, slot: str) -> None:
     _status_path(environment, slot).unlink(missing_ok=True)
     subprocess.run(["systemctl", "start", _unit(environment, slot)], check=True)
@@ -216,9 +268,8 @@ def stop_slot(
     environment: str,
     slot: str,
     release_id: str,
-    *,
-    timeout_seconds: float = 65,
 ) -> None:
+    timeout_seconds = drain_stop_timeout_seconds(environment)
     previous = _read_status(environment, slot)
     try:
         subprocess.run(
@@ -251,6 +302,7 @@ def stop_slot(
 
 
 def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
+    stop_timeout_seconds = drain_stop_timeout_seconds(environment)
     try:
         start_slot(environment, slot)
         first_generation = qualify_candidate(environment, slot, release_id)
@@ -272,7 +324,7 @@ def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
         subprocess.run(
             ["systemctl", "stop", _unit(environment, slot)],
             check=False,
-            timeout=65,
+            timeout=stop_timeout_seconds,
         )
         raise
 
@@ -280,14 +332,12 @@ def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
 def _configured_enabled(environment: str) -> bool:
     if environment != "staging":
         return False
-    path = CONFIG_ROOT / "staging.env"
-    if not path.is_file():
-        return False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.partition("=")
-        if key == "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED" and separator:
-            return value.strip().strip("\"'").lower() == "true"
-    return False
+    return (
+        _protected_staging_values()
+        .get("PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false")
+        .lower()
+        == "true"
+    )
 
 
 def prepare_candidate_if_enabled(environment: str, slot: str, release_id: str) -> bool:

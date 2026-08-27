@@ -202,22 +202,111 @@ def test_drain_timeout_fails_the_slot_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=300\n"
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=5\n"
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", config)
     (tmp_path / "staging-blue.json").write_text(
         json.dumps({"release_id": "release-blue", "state": "ready"})
     )
+    seen: dict[str, float] = {}
 
-    def timeout(*_args, **_kwargs):
-        raise lifecycle.subprocess.TimeoutExpired("systemctl", 65)
+    def timeout(*_args, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        raise lifecycle.subprocess.TimeoutExpired("systemctl", kwargs["timeout"])
 
     monkeypatch.setattr(lifecycle.subprocess, "run", timeout)
     with pytest.raises(lifecycle.ExternalPiSlotError, match="drain timed out"):
         lifecycle.stop_slot("staging", "blue", "release-blue")
+    assert seen["timeout"] == 315
+
+
+def test_maximum_configured_drain_can_finish_and_releases_durable_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    status_root = tmp_path / "status"
+    status_root.mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=300\n"
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=5\n"
+    )
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", status_root)
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", config)
+    status = status_root / "staging-green.json"
+    status.write_text(
+        json.dumps(
+            {
+                "release_id": "release-green",
+                "state": "ready",
+                "drained": False,
+            }
+        )
+    )
+    seen: dict[str, float] = {}
+
+    def stop(_command, *, check, timeout):
+        assert check is True
+        seen["timeout"] = timeout
+        status.write_text(
+            json.dumps(
+                {
+                    "release_id": "release-green",
+                    "state": "offline",
+                    "drained": True,
+                }
+            )
+        )
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", stop)
+
+    lifecycle.stop_slot("staging", "green", "release-green")
+
+    assert seen["timeout"] == 315
+    assert lifecycle.slot_status("staging", "green") == {
+        "release_id": "release-green",
+        "state": "offline",
+        "drained": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=4\n",
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=301\n",
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=sixty\n",
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=0\n",
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=6\n",
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=nan\n",
+    ],
+)
+def test_drain_stop_timeout_rejects_invalid_protected_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contents: str,
+):
+    (tmp_path / "staging.env").write_text(contents)
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="drain"):
+        lifecycle.drain_stop_timeout_seconds("staging")
 
 
 def test_candidate_failure_stops_the_failed_unit(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    commands: list[tuple[list[str], bool]] = []
+    (tmp_path / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=300\n"
+        "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=5\n"
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    commands: list[tuple[list[str], bool, float]] = []
     monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
     monkeypatch.setattr(
         lifecycle,
@@ -229,7 +318,7 @@ def test_candidate_failure_stops_the_failed_unit(
     monkeypatch.setattr(
         lifecycle.subprocess,
         "run",
-        lambda command, *, check, timeout: commands.append((command, check)),
+        lambda command, *, check, timeout: commands.append((command, check, timeout)),
     )
 
     with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate unavailable"):
@@ -239,6 +328,7 @@ def test_candidate_failure_stops_the_failed_unit(
         (
             ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
             False,
+            315,
         )
     ]
 
@@ -356,6 +446,13 @@ def test_systemd_template_is_staging_slot_scoped_and_loopback_launcher_owned():
     assert "paperswithcode-production" not in unit
     assert "ReadOnlyPaths=/srv/paperswithcode" in unit
     assert "KillMode=mixed" in unit
+    timeout_line = next(
+        line for line in unit.splitlines() if line.startswith("TimeoutStopSec=")
+    )
+    assert (
+        int(timeout_line.partition("=")[2])
+        > lifecycle.MAXIMUM_DRAIN_STOP_TIMEOUT_SECONDS
+    )
 
 
 def test_deployment_status_reports_shadow_unit_and_durable_evidence(
