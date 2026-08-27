@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -127,14 +128,15 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
     events = []
     units = {"worker": "inactive", "supervisor": "inactive"}
 
-    def qualify(release_id, _git_sha, report_path):
+    def qualify(release_id, _git_sha, report_path, leave_recovery_running):
         values = dict(
             line.split("=", 1)
             for line in staging.read_text().splitlines()
             if "=" in line
         )
-        assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "false"
-        assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "false"
+        expected = "true" if leave_recovery_running else "false"
+        assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == expected
+        assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == expected
 
         def start(*_args):
             assert units == {"worker": "inactive", "supervisor": "inactive"}
@@ -175,6 +177,7 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
             stale_probe=stale,
             qualify=write_report,
             stop=stop,
+            leave_recovery_running=leave_recovery_running,
         )
 
     result = apply_staging_shadow_activation(
@@ -194,7 +197,7 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
     )
     assert result == {"release_id": "release-a", "enabled": True}
     assert refreshed == ["a" * 40]
-    assert events == [
+    lifecycle_events = [
         "temporary-start",
         "authenticated",
         "lease-expiry-restart",
@@ -205,7 +208,8 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
         "qualified",
         "temporary-stop",
     ]
-    assert units == {"worker": "inactive", "supervisor": "inactive"}
+    assert events == lifecycle_events + lifecycle_events[:-1]
+    assert units == {"worker": "active", "supervisor": "active"}
     assert values["PWC_DB_NAME"] == "pwc"
     assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "true"
     assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "true"
@@ -220,6 +224,129 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
         assert values[key] == "false"
     assert worker.read_text() == (f"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN={'t' * 32}\n")
     assert stat.S_IMODE(worker.stat().st_mode) == 0o640
+
+
+def test_guard_binds_accepted_report_to_final_active_worker(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    report = tmp_path / "report.json"
+    active_slot = "blue"
+    qualified = []
+
+    def qualify(release_id, _git_sha, destination, _leave_recovery_running):
+        evidence = QualificationEvidence(
+            f"staging-{active_slot}", 4, 5, 6, True, True, f"{active_slot}-nonce" * 4
+        )
+        qualified.append(evidence.worker_id)
+        _report(destination, release_id=release_id, evidence=evidence)
+        return evidence
+
+    def refresh(_sha):
+        nonlocal active_slot
+        active_slot = "green"
+
+    apply_staging_shadow_activation(
+        environment="staging",
+        expected_release_id="release-a",
+        report_path=report,
+        enabled=True,
+        app_root=tmp_path,
+        config_root=config,
+        qualify=qualify,
+        deactivate=lambda *_args: None,
+        refresh=refresh,
+    )
+
+    accepted = json.loads(report.read_text())
+    assert qualified == ["staging-blue", "staging-green"]
+    assert accepted["worker_id"] == "staging-green"
+    assert accepted["qualification_nonce"] == "green-nonce" * 4
+
+
+def test_final_active_qualification_failure_disables_and_refreshes(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    staging = config / "staging.env"
+    staging.write_text(
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    report = tmp_path / "report.json"
+    calls = 0
+    events = []
+
+    def qualify(release_id, _git_sha, destination, _leave_recovery_running):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("final qualification failed")
+        evidence = _evidence()
+        _report(destination, release_id=release_id, evidence=evidence)
+        return evidence
+
+    def refresh(_sha):
+        events.append("refresh")
+
+    def deactivate(*_args):
+        assert "SHADOW_ENABLED=true" in staging.read_text()
+        events.append("deactivate")
+
+    with pytest.raises(RuntimeError, match="final qualification failed"):
+        apply_staging_shadow_activation(
+            environment="staging",
+            expected_release_id="release-a",
+            report_path=report,
+            enabled=True,
+            app_root=tmp_path,
+            config_root=config,
+            qualify=qualify,
+            deactivate=deactivate,
+            refresh=refresh,
+        )
+
+    assert events == ["refresh", "deactivate", "refresh"]
+    assert "SHADOW_ENABLED=false" in staging.read_text()
+
+
+def test_installed_flat_layout_direct_helper_loads_lifecycle_modules(tmp_path: Path):
+    installed = tmp_path / "paperswithcode-deploy"
+    shutil.copytree(Path(__file__).parents[2] / "deploy", installed)
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(installed)
+
+    direct = subprocess.run(
+        [sys.executable, str(installed / "external_pi_shadow_activation.py"), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import external_pi_shadow_activation as helper; "
+            "assert helper._lifecycle_modules()[0].__name__ == "
+            "'external_pi_slot_lifecycle'",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert direct.returncode == 0, direct.stderr
+    assert "{staging,production}" in direct.stdout
+    assert result.returncode == 0, result.stderr
 
 
 def test_guard_refuses_production_wrong_release_or_failed_qualification(tmp_path: Path):
@@ -258,7 +385,7 @@ def test_failed_refresh_restores_the_complete_prior_environment(tmp_path: Path):
     staging.write_text(original)
     report = tmp_path / "report.json"
 
-    def qualify(_release, _sha, destination):
+    def qualify(_release, _sha, destination, _leave_recovery_running):
         evidence = _evidence()
         _report(destination, evidence=evidence)
         return evidence
@@ -469,7 +596,7 @@ def test_enable_restores_flags_and_token_on_refresh_base_exception(tmp_path: Pat
     staging.write_text(original)
     report = tmp_path / "report.json"
 
-    def qualify(_release, _sha, destination):
+    def qualify(_release, _sha, destination, _leave_recovery_running):
         evidence = _evidence()
         _report(destination, evidence=evidence)
         return evidence
@@ -541,7 +668,7 @@ generations = iter((4, 6))
 def record(value):
     with events.open("a", encoding="utf-8") as handle:
         handle.write(value + "\n")
-def qualify(release_id, _sha, report_path):
+def qualify(release_id, _sha, report_path, _leave_recovery_running):
     return run_temporary_shadow_qualification(
         environment="staging", slot="blue", release_id=release_id,
         report_path=report_path,
@@ -772,7 +899,7 @@ names = (
     "restart_after_lease_expiry", "stale_generation_fencing",
     "drain_recovery", "zero_external_work",
 )
-def qualify(_release, _sha, destination):
+def qualify(_release, _sha, destination, _leave_recovery_running):
     destination.write_text(json.dumps({
         "release_id": "release-a", "worker_id": evidence.worker_id,
         "worker_generation": evidence.recovery_generation,

@@ -40,8 +40,8 @@ uv run --env-file /etc/paperswithcode/staging.env \
   --report /var/lib/paperswithcode/staging/external-pi-shadow-qualification.json
 ```
 
-The guard supplies the active slot's actual worker ID, port, and immutable
-prompt path. The command refuses production and a release other than the exact staging
+The guard supplies each slot's actual worker ID, port, and immutable prompt
+path. The command refuses production and a release other than the exact staging
 `current`. It submits linear, branching, tool-history, and eight concurrent
 isolated native JSONL trees. It compares current leaf, entry count, canonical
 transcript digest, system-prompt digest, and registered-tool-name digest. It
@@ -69,15 +69,22 @@ sudo /usr/bin/python3 \
 ```
 
 The guard first bootstraps the content-free qualification while both flags stay
-false. It always proves drain and stops the temporary units, then checks every
-required successful case, validates the exact identity/nonce/freshness and live
-content-free evidence, creates or preserves the
-mode-0640 token-only worker environment, and refreshes that exact git SHA. It
-sets shadow and supervisor together. It explicitly forces external admission,
-the sandbox executor, remote workspace tools, remote Bash, remote Read, and
-lazy workspace false. Production invocation fails. A failed refresh restores
-the prior protected environment; the normal deployment refresh owns service
-and pointer rollback.
+false. It proves drain and stops those temporary units, then checks every
+required successful case and creates or preserves the mode-0640 token-only
+worker environment. It sets shadow and supervisor together and refreshes that
+exact git SHA. Because the refresh switches to the other deployment slot, the
+guard then repeats the complete lifecycle and content-free qualification
+against the resulting final active worker. The accepted report is replaced and
+bound to that final worker's exact identity, recovery generation, single-use
+nonce, and freshness timestamp; its final recovery worker remains live only
+after report validation succeeds. External admission, the sandbox executor,
+remote workspace tools, remote Bash, remote Read, and lazy workspace are forced
+false throughout. Production invocation fails. A failed initial refresh
+restores the prior protected environment; a failed final-active qualification
+exact-evidence drains both slots, writes both lifecycle flags false, and
+refreshes fail closed. If exact drain cannot be proven, the helper preserves
+the enabled lifecycle configuration and requires guarded disable rather than
+abandoning a worker.
 
 The CLI converts normal `SIGTERM` and `SIGINT` delivery on its main thread into
 a transaction interruption. This runs the same temporary-unit `finally` stop

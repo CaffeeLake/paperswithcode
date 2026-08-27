@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import json
 import os
 import secrets
@@ -66,6 +67,17 @@ class ShadowActivationRecoveryRequired(ShadowActivationError):
     """An interrupted partial disable requires an explicit guarded retry."""
 
 
+def _lifecycle_modules():
+    """Load lifecycle modules from either source or installed flat layout."""
+    if __package__ in {None, ""}:
+        lifecycle = importlib.import_module("external_pi_slot_lifecycle")
+        runtime = importlib.import_module("runtime")
+    else:
+        lifecycle = importlib.import_module("deploy.external_pi_slot_lifecycle")
+        runtime = importlib.import_module("deploy.runtime")
+    return lifecycle, runtime
+
+
 @contextlib.contextmanager
 def activation_signal_context():
     """Turn normal CLI termination signals into exceptions during the transaction."""
@@ -95,6 +107,20 @@ def activation_signal_context():
                 signal.signal(number, handler)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
+
+
+@contextlib.contextmanager
+def _activation_signals_blocked():
+    """Defer normal termination while publishing an already-proven safe state."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    watched = (signal.SIGTERM, signal.SIGINT)
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,28 +190,26 @@ def run_temporary_shadow_qualification(
     expire_and_restart: Callable[[str, str, str, int], int] | None = None,
     stale_probe: Callable[[str, int, int], bool] | None = None,
     stop: Callable[[str, str, str], None] | None = None,
+    leave_recovery_running: bool = False,
 ) -> QualificationEvidence:
-    """Start a flags-off candidate and always perform its proven drain/stop."""
+    """Qualify one slot, stopping it unless its final recovery must remain live."""
 
     if environment != "staging":
         raise ShadowActivationError("temporary shadow qualification is staging-only")
     if slot not in {"blue", "green"}:
         raise ShadowActivationError("temporary shadow qualification slot is invalid")
     if start is None or authenticated is None or stop is None:
-        from deploy.external_pi_slot_lifecycle import (
-            qualify_candidate,
-            restart_supervisor_after_lease_expiry,
-            start_slot,
-            stop_slot,
+        lifecycle, _runtime = _lifecycle_modules()
+        start = start or lifecycle.start_slot
+        authenticated = authenticated or lifecycle.qualify_candidate
+        expire_and_restart = (
+            expire_and_restart or lifecycle.restart_supervisor_after_lease_expiry
         )
-
-        start = start or start_slot
-        authenticated = authenticated or qualify_candidate
-        expire_and_restart = expire_and_restart or restart_supervisor_after_lease_expiry
-        stop = stop or stop_slot
+        stop = stop or lifecycle.stop_slot
     if expire_and_restart is None or stale_probe is None:
         raise ShadowActivationError("qualification lifecycle probes are required")
     cleanup_owned = False
+    qualified = False
     try:
         cleanup_owned = True
         start(environment, slot)
@@ -213,9 +237,10 @@ def run_temporary_shadow_qualification(
             nonce=secrets.token_urlsafe(32),
         )
         qualify(evidence, report_path)
+        qualified = True
         return evidence
     finally:
-        if cleanup_owned:
+        if cleanup_owned and not (qualified and leave_recovery_running):
             stop(environment, slot, release_id)
 
 
@@ -382,7 +407,7 @@ def apply_staging_shadow_activation(
     enabled: bool,
     app_root: Path = APP_ROOT,
     config_root: Path = CONFIG_ROOT,
-    qualify: Callable[[str, str, Path], QualificationEvidence] | None,
+    qualify: Callable[[str, str, Path, bool], QualificationEvidence] | None,
     deactivate: Callable[[str, str], None] | None,
     refresh: Callable[[str], None],
 ) -> dict[str, object]:
@@ -421,6 +446,7 @@ def apply_staging_shadow_activation(
     values.update({key: "false" for key in INERT_FLAGS})
     rendered = "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
     proven_stopped = False
+    refresh_complete = False
     try:
         if not enabled:
             if deactivate is None:
@@ -437,7 +463,7 @@ def apply_staging_shadow_activation(
                     "enabled bootstrap requires an integrated qualification"
                 )
             report_path.unlink(missing_ok=True)
-            evidence = qualify(current_release_id, git_sha, report_path)
+            evidence = qualify(current_release_id, git_sha, report_path, False)
             _validate_report(report_path, current_release_id, evidence)
             values.update({key: "true" for key in SHADOW_FLAGS})
             rendered = "".join(
@@ -445,7 +471,40 @@ def apply_staging_shadow_activation(
             )
             _atomic_write(staging_path, rendered.encode(), 0o640)
         refresh(git_sha)
+        refresh_complete = True
+        if enabled:
+            report_path.unlink(missing_ok=True)
+            final_evidence = qualify(current_release_id, git_sha, report_path, True)
+            _validate_report(report_path, current_release_id, final_evidence)
     except BaseException as error:
+        if enabled and refresh_complete:
+            if deactivate is None:
+                raise ShadowActivationRecoveryRequired(
+                    "final active worker qualification failed while lifecycle "
+                    "remains enabled; guarded disable is required"
+                ) from error
+            try:
+                deactivate(current_release_id, git_sha)
+            except BaseException as cleanup_error:
+                raise ShadowActivationRecoveryRequired(
+                    "final active worker qualification failed and exact-evidence "
+                    "deactivation did not complete; guarded disable is required"
+                ) from cleanup_error
+            with _activation_signals_blocked():
+                values.update({key: "false" for key in SHADOW_FLAGS})
+                rendered = "".join(
+                    f"{key}={value}\n" for key, value in sorted(values.items())
+                )
+                _atomic_write(staging_path, rendered.encode(), 0o640)
+                _ensure_token_only_environment(worker_path, token)
+                try:
+                    refresh(git_sha)
+                except BaseException as refresh_error:
+                    raise ShadowActivationError(
+                        "final active worker qualification failed; external Pi units "
+                        "were proven stopped and flags remain disabled after refresh failure"
+                    ) from refresh_error
+            raise
         if not enabled and not proven_stopped:
             _atomic_write(staging_path, original, 0o640)
             if original_worker is None:
@@ -506,14 +565,18 @@ def main() -> int:
             raise ShadowActivationError("staging active slot is invalid")
         return slot
 
-    def qualify(release_id: str, _sha: str, report_path: Path) -> QualificationEvidence:
+    def qualify(
+        release_id: str,
+        _sha: str,
+        report_path: Path,
+        leave_recovery_running: bool,
+    ) -> QualificationEvidence:
         slot = active_slot()
-        from deploy.external_pi_slot_lifecycle import resolve_external_pi_slot
-        from deploy.runtime import runtime_id
+        lifecycle, runtime = _lifecycle_modules()
 
-        resolved = resolve_external_pi_slot("staging", slot)
+        resolved = lifecycle.resolve_external_pi_slot("staging", slot)
         release = (APP_ROOT / "environments/staging/current").resolve(strict=True)
-        python = APP_ROOT / "runtimes" / runtime_id(release) / "bin/python"
+        python = APP_ROOT / "runtimes" / runtime.runtime_id(release) / "bin/python"
 
         def stale_probe(worker_id: str, stale: int, current: int) -> bool:
             subprocess.run(
@@ -589,19 +652,17 @@ def main() -> int:
             report_path=report_path,
             qualify=command,
             stale_probe=stale_probe,
+            leave_recovery_running=leave_recovery_running,
         )
 
     def deactivate(release_id: str, _sha: str) -> None:
-        from deploy.external_pi_slot_lifecycle import (
-            resolve_external_pi_slot,
-            stop_slot,
-        )
+        lifecycle, _runtime = _lifecycle_modules()
 
         deactivate_external_pi_slots(
             release_id,
             active_slot=active_slot(),
-            resolve=resolve_external_pi_slot,
-            stop=stop_slot,
+            resolve=lifecycle.resolve_external_pi_slot,
+            stop=lifecycle.stop_slot,
         )
 
     with activation_signal_context():
@@ -611,7 +672,7 @@ def main() -> int:
             report_path=args.report,
             enabled=args.mode == "enable",
             qualify=qualify if args.mode == "enable" else None,
-            deactivate=deactivate if args.mode == "disable" else None,
+            deactivate=deactivate,
             refresh=refresh,
         )
     print(json.dumps(result, sort_keys=True))
