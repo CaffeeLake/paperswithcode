@@ -306,6 +306,10 @@ sudo python deploy/configure_host_env.py \
 sudo pwc-deploy staging <exact-current-sha> --refresh-environment
 
 uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.qualify_chat_durable_dispatch \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm QUALIFY_STAGING_DURABLE_DISPATCH
+uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_soak \
   --release-dir /srv/paperswithcode/environments/staging/current \
   --confirm QUALIFY_STAGING_CHAT_SOAK
@@ -318,8 +322,12 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 
 Complete the authenticated staging turn-ownership matrix for new turns,
 follow-ups, cancellation, edit/retry, and resume before treating the bridge as
-qualified. On any failed gate, disable only the bridge and refresh the same
-exact SHA through the immutable deployment path:
+qualified. The durable-dispatch command must report all seven scenarios passed,
+all six schema audit booleans true, and `cleanup.clean=true`; it never calls a
+model, provider, sandbox, or user-visible chat route. Any non-zero exit, failed
+scenario, false audit boolean, or incomplete cleanup is a rollback gate. On any
+failed gate, disable only the bridge and refresh the same exact SHA through the
+immutable deployment path:
 
 ```bash
 sudo python deploy/configure_host_env.py \
