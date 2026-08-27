@@ -74,8 +74,13 @@ def activation_signal_context():
     watched = (signal.SIGTERM, signal.SIGINT)
     previous = {number: signal.getsignal(number) for number in watched}
     original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    interrupted = False
 
     def interrupt(signal_number, _frame):
+        nonlocal interrupted
+        if interrupted:
+            return
+        interrupted = True
         signal.pthread_sigmask(signal.SIG_BLOCK, watched)
         raise ShadowActivationInterrupted(signal_number)
 

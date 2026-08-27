@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import stat
 import subprocess
@@ -13,6 +14,7 @@ import pytest
 from deploy.external_pi_shadow_activation import (
     QualificationEvidence,
     ShadowActivationError,
+    ShadowActivationInterrupted,
     _validate_report,
     activation_signal_context,
     apply_staging_shadow_activation,
@@ -29,6 +31,11 @@ def _wait_for(path: Path) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"timed out waiting for {path}")
+
+
+def _send_signal_burst(process: subprocess.Popen, order: tuple[int, int]) -> None:
+    for number in order:
+        os.kill(process.pid, number)
 
 
 def _release(root: Path, release_id: str = "release-a") -> Path:
@@ -591,6 +598,37 @@ def test_activation_signal_context_restores_prior_handlers():
     assert signal.getsignal(signal.SIGINT) == previous_int
 
 
+def test_activation_signal_latches_are_independent_across_nested_and_serial_contexts():
+    previous = {
+        number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)
+    }
+
+    with activation_signal_context():
+        outer = signal.getsignal(signal.SIGTERM)
+        with activation_signal_context():
+            inner = signal.getsignal(signal.SIGTERM)
+            assert inner is not outer
+            with pytest.raises(ShadowActivationInterrupted):
+                inner(signal.SIGTERM, None)
+            assert inner(signal.SIGINT, None) is None
+        assert signal.getsignal(signal.SIGTERM) is outer
+        with pytest.raises(ShadowActivationInterrupted):
+            outer(signal.SIGINT, None)
+        assert outer(signal.SIGTERM, None) is None
+
+    for number, handler in previous.items():
+        assert signal.getsignal(number) == handler
+
+    with activation_signal_context():
+        serial = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(ShadowActivationInterrupted):
+            serial(signal.SIGTERM, None)
+        assert serial(signal.SIGINT, None) is None
+
+    for number, handler in previous.items():
+        assert signal.getsignal(number) == handler
+
+
 def test_real_sigterm_during_start_still_stops_owned_units(tmp_path: Path):
     script = r"""
 import sys, time
@@ -636,7 +674,73 @@ with activation_signal_context():
     ]
 
 
-def test_real_sigterm_during_refresh_restores_false_flags(tmp_path: Path):
+@pytest.mark.parametrize(
+    "order",
+    [(signal.SIGTERM, signal.SIGINT), (signal.SIGINT, signal.SIGTERM)],
+)
+def test_real_burst_during_start_enters_and_completes_cleanup_once(
+    tmp_path: Path, order: tuple[int, int]
+):
+    script = r"""
+import sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    ShadowActivationInterrupted, activation_signal_context,
+    run_temporary_shadow_qualification,
+)
+root = Path(sys.argv[1]); events = root / "events"
+def record(value):
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(value + "\n")
+def start(*_args):
+    record("partially-started")
+    (root / "ready").write_text("ready", encoding="utf-8")
+    time.sleep(30)
+def stop(*_args):
+    record("cleanup-enter")
+    time.sleep(.1)
+    record("cleanup-complete")
+try:
+    with activation_signal_context():
+        run_temporary_shadow_qualification(
+            environment="staging", slot="blue", release_id="release-a",
+            report_path=root / "report.json", start=start,
+            authenticated=lambda *_args: 4,
+            expire_and_restart=lambda *_args: 5,
+            stale_probe=lambda *_args: True,
+            qualify=lambda *_args: None,
+            stop=stop,
+        )
+except ShadowActivationInterrupted:
+    record("interruption")
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "ready")
+    _send_signal_burst(process, order)
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 0, stderr
+    assert (tmp_path / "events").read_text().splitlines() == [
+        "partially-started",
+        "cleanup-enter",
+        "cleanup-complete",
+        "interruption",
+    ]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [(signal.SIGTERM, signal.SIGINT), (signal.SIGINT, signal.SIGTERM)],
+)
+def test_real_burst_during_refresh_restores_false_flags(
+    tmp_path: Path, order: tuple[int, int]
+):
     _release(tmp_path)
     config = tmp_path / "config"
     config.mkdir()
@@ -650,7 +754,7 @@ import json, sys, time
 from pathlib import Path
 import deploy.external_pi_shadow_activation as activation
 from deploy.external_pi_shadow_activation import (
-    QualificationEvidence, activation_signal_context,
+    QualificationEvidence, ShadowActivationInterrupted, activation_signal_context,
     apply_staging_shadow_activation,
 )
 root = Path(sys.argv[1]); config = root / "config"
@@ -685,12 +789,15 @@ def qualify(_release, _sha, destination):
 def refresh(_sha):
     (root / "ready").write_text("ready", encoding="utf-8")
     time.sleep(30)
-with activation_signal_context():
-    apply_staging_shadow_activation(
-        environment="staging", expected_release_id="release-a",
-        report_path=root / "report.json", enabled=True, app_root=root,
-        config_root=config, qualify=qualify, deactivate=None, refresh=refresh,
-    )
+try:
+    with activation_signal_context():
+        apply_staging_shadow_activation(
+            environment="staging", expected_release_id="release-a",
+            report_path=root / "report.json", enabled=True, app_root=root,
+            config_root=config, qualify=qualify, deactivate=None, refresh=refresh,
+        )
+except ShadowActivationInterrupted:
+    (root / "interruption").write_text("one", encoding="utf-8")
 """
     process = subprocess.Popen(
         [sys.executable, "-c", script, str(tmp_path)],
@@ -700,18 +807,23 @@ with activation_signal_context():
         text=True,
     )
     _wait_for(tmp_path / "ready")
-    process.terminate()
-    _wait_for(tmp_path / "rollback")
-    process.send_signal(signal.SIGINT)
+    _send_signal_burst(process, order)
     _, stderr = process.communicate(timeout=5)
 
-    assert process.returncode != 0
-    assert "ShadowActivationInterrupted" in stderr or "KeyboardInterrupt" in stderr
+    assert process.returncode == 0, stderr
+    assert (tmp_path / "interruption").read_text() == "one"
+    assert (tmp_path / "rollback").is_file()
     assert (config / "staging.env").read_text() == original
     assert not (config / "external-pi-worker.env").exists()
 
 
-def test_real_sigterm_during_disable_preserves_true_recovery_state(tmp_path: Path):
+@pytest.mark.parametrize(
+    "order",
+    [(signal.SIGTERM, signal.SIGINT), (signal.SIGINT, signal.SIGTERM)],
+)
+def test_real_burst_during_disable_preserves_true_recovery_state(
+    tmp_path: Path, order: tuple[int, int]
+):
     _release(tmp_path)
     config = tmp_path / "config"
     config.mkdir()
@@ -724,20 +836,24 @@ def test_real_sigterm_during_disable_preserves_true_recovery_state(tmp_path: Pat
 import sys, time
 from pathlib import Path
 from deploy.external_pi_shadow_activation import (
-    activation_signal_context, apply_staging_shadow_activation,
+    ShadowActivationRecoveryRequired, activation_signal_context,
+    apply_staging_shadow_activation,
 )
 root = Path(sys.argv[1])
 def deactivate(*_args):
     (root / "partial-stop").write_text("partial", encoding="utf-8")
     (root / "ready").write_text("ready", encoding="utf-8")
     time.sleep(30)
-with activation_signal_context():
-    apply_staging_shadow_activation(
-        environment="staging", expected_release_id="release-a",
-        report_path=root / "unused.json", enabled=False, app_root=root,
-        config_root=root / "config", qualify=None, deactivate=deactivate,
-        refresh=lambda _sha: (root / "refreshed").write_text("bad", encoding="utf-8"),
-    )
+try:
+    with activation_signal_context():
+        apply_staging_shadow_activation(
+            environment="staging", expected_release_id="release-a",
+            report_path=root / "unused.json", enabled=False, app_root=root,
+            config_root=root / "config", qualify=None, deactivate=deactivate,
+            refresh=lambda _sha: (root / "refreshed").write_text("bad", encoding="utf-8"),
+        )
+except ShadowActivationRecoveryRequired:
+    (root / "recovery-required").write_text("one", encoding="utf-8")
 """
     process = subprocess.Popen(
         [sys.executable, "-c", script, str(tmp_path)],
@@ -747,27 +863,36 @@ with activation_signal_context():
         text=True,
     )
     _wait_for(tmp_path / "ready")
-    process.terminate()
+    _send_signal_burst(process, order)
     _, stderr = process.communicate(timeout=5)
 
-    assert process.returncode == 1
-    assert "ShadowActivationRecoveryRequired" in stderr
+    assert process.returncode == 0, stderr
+    assert (tmp_path / "recovery-required").read_text() == "one"
     assert (tmp_path / "partial-stop").is_file()
     assert not (tmp_path / "refreshed").exists()
     assert (config / "staging.env").read_text() == original
     assert not (config / "external-pi-worker.env").exists()
 
 
-def test_real_signal_during_handler_restoration_restores_all_handlers(tmp_path: Path):
+@pytest.mark.parametrize(
+    "order",
+    [(signal.SIGTERM, signal.SIGINT), (signal.SIGINT, signal.SIGTERM)],
+)
+def test_real_burst_during_handler_restoration_restores_all_handlers(
+    tmp_path: Path, order: tuple[int, int]
+):
     script = r"""
 import signal, sys, time
 from pathlib import Path
 import deploy.external_pi_shadow_activation as activation
 root = Path(sys.argv[1])
+def record(value):
+    with (root / "events").open("a", encoding="utf-8") as handle:
+        handle.write(value + "\n")
 def prior_term(_number, _frame):
-    (root / "delivered").write_text("term", encoding="utf-8")
+    record("term")
 def prior_int(_number, _frame):
-    (root / "delivered").write_text("int", encoding="utf-8")
+    record("int")
 signal.signal(signal.SIGTERM, prior_term)
 signal.signal(signal.SIGINT, prior_int)
 real_signal = activation.signal.signal
@@ -791,9 +916,9 @@ assert signal.getsignal(signal.SIGINT) is prior_int
         text=True,
     )
     _wait_for(tmp_path / "restoring")
-    process.terminate()
+    _send_signal_burst(process, order)
     _, stderr = process.communicate(timeout=5)
 
     assert process.returncode == 0, stderr
-    assert (tmp_path / "delivered").read_text() == "term"
+    assert sorted((tmp_path / "events").read_text().splitlines()) == ["int", "term"]
     assert (tmp_path / "restored").is_file()

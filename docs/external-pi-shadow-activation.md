@@ -84,8 +84,10 @@ a transaction interruption. This runs the same temporary-unit `finally` stop
 and protected-environment rollback used for other failures, then restores the
 process's prior signal handlers. Cleanup ownership is recorded before either
 side-effecting unit start. The first watched signal blocks both watched signals
-until rollback/unit cleanup completes and both prior handlers are restored, so
-a repeated termination cannot interrupt the safe-state transition.
+until rollback/unit cleanup completes and both prior handlers are restored. A
+per-transaction latch also ignores a second callback that CPython queued before
+the first handler could apply that mask, so a termination burst cannot
+interrupt the safe-state transition.
 
 An interruption during disable preserves the prior lifecycle configuration and
 raises an explicit recovery-required error because only some units may have
