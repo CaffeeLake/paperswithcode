@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +14,12 @@ import pytest
 import deploy.cli as deploy_cli
 import deploy.external_pi_runtime as runtime_module
 from deploy.external_pi_runtime import (
+    RETAIN_ALL_RUNTIMES,
     cleanup_external_pi_runtimes,
     external_pi_runtime_id,
     external_pi_runtime_manifest,
     prepare_external_pi_runtime,
+    run_bounded_command,
 )
 from deploy.release import atomic_symlink
 
@@ -182,6 +186,90 @@ def test_runtime_construction_rejects_insufficient_capacity_before_build(
     assert runner.calls == []
 
 
+@pytest.mark.parametrize("growth", ["bytes", "directories"])
+def test_live_build_bound_terminates_the_complete_growing_process_group(
+    tmp_path: Path, growth: str
+):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    child_code = (
+        "import pathlib,sys,time\n"
+        "root=pathlib.Path(sys.argv[1])\n"
+        "growth=sys.argv[2]\n"
+        "i=0\n"
+        "while True:\n"
+        " p=root/f'entry-{i}'\n"
+        " p.mkdir() if growth == 'directories' else p.write_bytes(b'x'*4096)\n"
+        " i+=1\n"
+        " time.sleep(0.002)\n"
+    )
+    parent_code = (
+        "import pathlib,subprocess,sys,time\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[3],sys.argv[1],sys.argv[2]])\n"
+        "pathlib.Path(sys.argv[1],'child.pid').write_text(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+
+    with pytest.raises(ValueError, match="live construction bound"):
+        run_bounded_command(
+            [sys.executable, "-c", parent_code, str(root), growth, child_code],
+            root=root,
+            max_bytes=8 * 1024,
+            max_inodes=12,
+            timeout=5,
+            poll_seconds=0.005,
+        )
+
+    child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
+    for _ in range(20):
+        if not Path(f"/proc/{child_pid}").exists():
+            break
+        time.sleep(0.01)
+    child_status = Path(f"/proc/{child_pid}/stat")
+    assert not child_status.exists() or child_status.read_text().split()[2] == "Z"
+    count = sum(1 for _ in root.rglob("*"))
+    time.sleep(0.03)
+    assert sum(1 for _ in root.rglob("*")) == count
+
+
+def test_live_npm_growth_breach_removes_the_temporary_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    archive = tmp_path / "growing-node.tar.xz"
+    prefix = "node-v22.19.0-linux-x64"
+    node_script = (
+        b"#!/usr/bin/python3\n"
+        b"import pathlib,sys,time\n"
+        b"if '--version' in sys.argv:\n print('v22.19.0'); raise SystemExit\n"
+        b"root=pathlib.Path.cwd()/'node_modules'\nroot.mkdir(exist_ok=True)\n"
+        b"i=0\n"
+        b"while True:\n (root/f'growth-{i}').write_bytes(b'x'*4096); i+=1; time.sleep(.002)\n"
+    )
+    with tarfile.open(archive, "w:xz") as bundle:
+        for relative, content, mode in (
+            ("bin/node", node_script, 0o755),
+            ("lib/node_modules/npm/bin/npm-cli.js", b"npm cli\n", 0o644),
+        ):
+            info = tarfile.TarInfo(f"{prefix}/{relative}")
+            info.size = len(content)
+            info.mode = mode
+            bundle.addfile(info, io.BytesIO(content))
+    monkeypatch.setattr(
+        runtime_module,
+        "PI_NODE_SHA256",
+        hashlib.sha256(archive.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(runtime_module, "MAX_RUNTIME_BYTES", 32 * 1024)
+    release = release_fixture(tmp_path)
+    runtimes = tmp_path / "runtimes"
+
+    with pytest.raises(ValueError, match="live construction bound"):
+        prepare_external_pi_runtime(release, runtimes, node_archive=archive)
+
+    assert not (runtimes / external_pi_runtime_id(release)).exists()
+    assert not list(runtimes.glob(".*.new-*"))
+
+
 def test_runtime_is_strictly_validated_and_reused(
     tmp_path: Path, pinned_node_archive: Path
 ):
@@ -321,4 +409,80 @@ def test_cleanup_protection_includes_current_previous_and_prepared_releases(
     monkeypatch.setattr(runtime_module, "PI_NODE_VERSION", "23.0.0")
     monkeypatch.setattr(runtime_module, "PI_NODE_SHA256", "f" * 64)
 
-    assert deploy_cli.protected_external_pi_runtime_ids() == expected
+    assert deploy_cli.protected_external_pi_runtime_ids() == {
+        *expected,
+        RETAIN_ALL_RUNTIMES,
+    }
+
+
+def test_cleanup_uses_packaged_runtime_descriptors_across_identity_schema_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    environments = tmp_path / "environments"
+    releases = {
+        name: release_fixture(tmp_path, name)
+        for name in ("active", "previous", "prepared")
+    }
+    recorded = {name: f"{index:064x}" for index, name in enumerate(releases, start=1)}
+    for name, release in releases.items():
+        manifest_path = release / "release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["external_pi_runtime"] = {
+            "identity_schema": 1,
+            "runtime_id": recorded[name],
+            "contract": "external-pi-v1",
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    root = environments / "staging"
+    (root / "slots/blue").mkdir(parents=True)
+    (root / "slots/green").mkdir()
+    atomic_symlink(releases["active"], root / "current")
+    atomic_symlink(releases["previous"], root / "previous")
+    atomic_symlink(releases["prepared"], root / "slots/green/release")
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS", ("staging",))
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS_ROOT", environments)
+    monkeypatch.setattr(runtime_module, "CONTRACT", "external-pi-v2")
+    monkeypatch.setattr(
+        runtime_module,
+        "PROMPT_INPUTS",
+        (*runtime_module.PROMPT_INPUTS, Path("new-required-prompt-input")),
+    )
+
+    assert deploy_cli.protected_external_pi_runtime_ids() == set(recorded.values())
+
+
+def test_packaged_descriptor_reuses_historical_runtime_after_schema_change(
+    tmp_path: Path,
+    pinned_node_archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    release = release_fixture(tmp_path)
+    runtimes = tmp_path / "runtimes"
+    runtime, _ = prepare_external_pi_runtime(
+        release,
+        runtimes,
+        runner=PackageRunner(),
+        node_archive=pinned_node_archive,
+        python_binary=tmp_path / "python",
+    )
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["external_pi_runtime"] = {
+        "identity_schema": 1,
+        "runtime_id": runtime.name,
+        "contract": "external-pi-v1",
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(runtime_module, "CONTRACT", "external-pi-v2")
+    monkeypatch.setattr(
+        runtime_module,
+        "PROMPT_INPUTS",
+        (*runtime_module.PROMPT_INPUTS, Path("new-required-prompt-input")),
+    )
+
+    reused, created = prepare_external_pi_runtime(
+        release, runtimes, node_archive=tmp_path / "unused-node-archive"
+    )
+
+    assert reused == runtime
+    assert created is False

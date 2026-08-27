@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 from backend.chat_sandbox_worker.contract import PI_NODE_SHA256, PI_NODE_VERSION
@@ -23,6 +25,8 @@ except ModuleNotFoundError:
     from runtime import make_tree_readonly  # type: ignore[no-redef]
 
 CONTRACT = "external-pi-v1"
+IDENTITY_SCHEMA = 1
+RETAIN_ALL_RUNTIMES = "__retain_all_external_pi_runtimes__"
 ENTRY_POINT = "app/dist/src/external_http_main.js"
 WORKER_ROOT = Path("backend/chat_sandbox_worker/pi_worker")
 PYTHON_BINARY = Path(os.environ.get("PWC_DEPLOY_PYTHON", "/usr/bin/python3"))
@@ -112,6 +116,41 @@ def external_pi_runtime_id(release: Path) -> str:
     return digest.hexdigest()
 
 
+def external_pi_runtime_descriptor(release: Path) -> dict[str, object]:
+    """Return the durable release descriptor for this identity schema."""
+
+    return {
+        "identity_schema": IDENTITY_SCHEMA,
+        "runtime_id": external_pi_runtime_id(release),
+        "contract": CONTRACT,
+    }
+
+
+def recorded_external_pi_runtime_descriptor(release: Path) -> dict | None:
+    """Read an opaque packaged descriptor without today's identity rules."""
+    manifest = json.loads((release / "release.json").read_text(encoding="utf-8"))
+    descriptor = manifest.get("external_pi_runtime")
+    if descriptor is None:
+        return None
+    if (
+        not isinstance(descriptor, dict)
+        or set(descriptor) != {"identity_schema", "runtime_id", "contract"}
+        or not isinstance(descriptor["identity_schema"], int)
+        or descriptor["identity_schema"] < 1
+        or not isinstance(descriptor["runtime_id"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", descriptor["runtime_id"])
+        or not isinstance(descriptor["contract"], str)
+        or not descriptor["contract"]
+    ):
+        raise ValueError("release external Pi runtime descriptor is invalid")
+    return descriptor
+
+
+def recorded_external_pi_runtime_id(release: Path) -> str | None:
+    descriptor = recorded_external_pi_runtime_descriptor(release)
+    return str(descriptor["runtime_id"]) if descriptor is not None else None
+
+
 def _source_release(release: Path) -> str:
     value = json.loads((release / "release.json").read_text(encoding="utf-8"))
     source_release = value.get("release_id")
@@ -151,24 +190,119 @@ def _runtime_files(runtime: Path) -> dict[str, str]:
     return files
 
 
-def _require_tree_bounds(root: Path) -> None:
-    file_count = 0
+def _tree_usage(root: Path) -> tuple[int, int]:
+    inode_count = 1
     total_bytes = 0
     pending = [root]
     while pending:
         directory = pending.pop()
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                metadata = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(metadata.st_mode):
-                    pending.append(Path(entry.path))
-                    continue
-                file_count += 1
-                total_bytes += metadata.st_size
-                if file_count > MAX_RUNTIME_FILES or total_bytes > MAX_RUNTIME_BYTES:
-                    raise ValueError(
-                        "external Pi runtime exceeds its construction bounds"
-                    )
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    inode_count += 1
+                    total_bytes += metadata.st_size
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(Path(entry.path))
+        except FileNotFoundError:
+            continue
+    return total_bytes, inode_count
+
+
+def _require_tree_bounds(root: Path) -> None:
+    total_bytes, inode_count = _tree_usage(root)
+    if inode_count > MAX_RUNTIME_FILES or total_bytes > MAX_RUNTIME_BYTES:
+        raise ValueError("external Pi runtime exceeds its construction bounds")
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def run_bounded_command(
+    command: list[str],
+    *,
+    root: Path,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+    capture_output: bool = False,
+    text: bool = False,
+    timeout: float = BUILD_TIMEOUT_SECONDS,
+    max_bytes: int | None = None,
+    max_inodes: int | None = None,
+    poll_seconds: float = 0.05,
+) -> subprocess.CompletedProcess:
+    """Run one build process group under live aggregate tree bounds."""
+
+    byte_limit = MAX_RUNTIME_BYTES if max_bytes is None else max_bytes
+    inode_limit = MAX_RUNTIME_FILES if max_inodes is None else max_inodes
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        text=text,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while process.poll() is None:
+            total_bytes, inode_count = _tree_usage(root)
+            if total_bytes > byte_limit or inode_count > inode_limit:
+                _terminate_process_group(process)
+                raise ValueError("external Pi live construction bound exceeded")
+            if time.monotonic() >= deadline:
+                _terminate_process_group(process)
+                raise subprocess.TimeoutExpired(command, timeout)
+            time.sleep(poll_seconds)
+        stdout, stderr = process.communicate()
+        total_bytes, inode_count = _tree_usage(root)
+        if total_bytes > byte_limit or inode_count > inode_limit:
+            raise ValueError("external Pi live construction bound exceeded")
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    completed = subprocess.CompletedProcess(
+        command, process.returncode, stdout=stdout, stderr=stderr
+    )
+    if check and process.returncode:
+        raise subprocess.CalledProcessError(
+            process.returncode, command, output=stdout, stderr=stderr
+        )
+    return completed
+
+
+def _run_build_command(
+    runner,
+    command: list[str],
+    *,
+    root: Path,
+    **kwargs,
+):
+    if runner is subprocess.run:
+        return run_bounded_command(command, root=root, **kwargs)
+    result = runner(command, **kwargs)
+    _require_tree_bounds(root)
+    return result
 
 
 def _require_readonly(runtime: Path) -> None:
@@ -184,6 +318,7 @@ def external_pi_runtime_manifest(
     *,
     expected_id: str | None = None,
     expected_node: tuple[str, str] | None = None,
+    expected_contract: str | None = None,
 ) -> dict:
     """Strictly validate and return one published external Pi runtime manifest."""
 
@@ -198,7 +333,7 @@ def external_pi_runtime_manifest(
     }:
         raise ValueError("external Pi runtime manifest has an unexpected schema")
     if (
-        value["contract"] != CONTRACT
+        value["contract"] != (expected_contract or CONTRACT)
         or value["runtime_id"] != (expected_id or runtime.name)
         or value["entry_point"] != ENTRY_POINT
         or not isinstance(value["source_release"], str)
@@ -253,16 +388,33 @@ def prepare_external_pi_runtime(
 ) -> tuple[Path, bool]:
     """Build in a bounded temporary tree and publish by atomic rename."""
 
-    identifier = external_pi_runtime_id(release)
+    recorded_descriptor = recorded_external_pi_runtime_descriptor(release)
     node_version, node_sha256 = _node_contract(release)
-    if (node_version, node_sha256) != (PI_NODE_VERSION, PI_NODE_SHA256):
-        raise ValueError("release Node contract does not match deployment tooling")
-    target = runtimes_root / identifier
+    if recorded_descriptor is not None:
+        identifier = str(recorded_descriptor["runtime_id"])
+        target = runtimes_root / identifier
+    else:
+        identifier = external_pi_runtime_id(release)
+        target = runtimes_root / identifier
     if target.exists():
         external_pi_runtime_manifest(
-            target, expected_id=identifier, expected_node=(node_version, node_sha256)
+            target,
+            expected_id=identifier,
+            expected_node=(node_version, node_sha256),
+            expected_contract=(
+                str(recorded_descriptor["contract"])
+                if recorded_descriptor is not None
+                else CONTRACT
+            ),
         )
         return target, False
+    calculated_identifier = external_pi_runtime_id(release)
+    if recorded_descriptor is not None and identifier != calculated_identifier:
+        raise ValueError(
+            "recorded external Pi runtime is missing and cannot be rebuilt"
+        )
+    if (node_version, node_sha256) != (PI_NODE_VERSION, PI_NODE_SHA256):
+        raise ValueError("release Node contract does not match deployment tooling")
     runtimes_root.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(runtimes_root).free < MIN_FREE_BYTES:
         raise ValueError("external Pi runtime root has insufficient free space")
@@ -366,7 +518,8 @@ def prepare_external_pi_runtime(
             "check": True,
             "timeout": BUILD_TIMEOUT_SECONDS,
         }
-        runner(
+        _run_build_command(
+            runner,
             [
                 *npm_command,
                 "ci",
@@ -374,21 +527,31 @@ def prepare_external_pi_runtime(
                 "--no-audit",
                 "--no-fund",
             ],
+            root=temporary,
             **common,
         )
-        _require_tree_bounds(temporary)
-        runner([*npm_command, "run", "build"], **common)
-        _require_tree_bounds(temporary)
-        runner([*npm_command, "prune", "--omit=dev", "--ignore-scripts"], **common)
-        _require_tree_bounds(temporary)
+        _run_build_command(
+            runner,
+            [*npm_command, "run", "build"],
+            root=temporary,
+            **common,
+        )
+        _run_build_command(
+            runner,
+            [*npm_command, "prune", "--omit=dev", "--ignore-scripts"],
+            root=temporary,
+            **common,
+        )
         prompt_environment = environment.copy()
         prompt_environment["PYTHONPATH"] = str(release)
-        runner(
+        _run_build_command(
+            runner,
             [
                 str(python_binary),
                 str(release / "backend/chat_sandbox_worker/render_pi_prompt_asset.py"),
                 str(temporary / "assets/pi-system-prompt.txt"),
             ],
+            root=temporary,
             cwd=release,
             env=prompt_environment,
             check=True,
@@ -446,7 +609,7 @@ def cleanup_external_pi_runtimes(
     """Remove only complete, unreferenced external Pi runtime directories."""
 
     removed: list[str] = []
-    if not runtimes_root.is_dir():
+    if RETAIN_ALL_RUNTIMES in protected_ids or not runtimes_root.is_dir():
         return removed
     for path in sorted(runtimes_root.iterdir()):
         if (

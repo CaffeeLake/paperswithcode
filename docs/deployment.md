@@ -45,7 +45,14 @@ uses a temporary directory, exact locked dependencies, a production
 TypeScript build, production-dependency pruning, and an atomic rename.
 `runtime.json` records contract `external-pi-v1`, source release, entry point,
 Node identity, and a strict file-digest inventory. Reuse rejects mutable,
-missing, extra, or digest-mismatched files.
+missing, extra, or digest-mismatched files. The staging `release.json` records
+the selected runtime ID, contract, and identity-schema version so cleanup and
+rollback never recalculate a historical identity with newer packaging rules.
+While any protected pre-descriptor release remains, cleanup conservatively
+retains the full external Pi namespace rather than guessing its identity.
+Dependency installation, build, pruning, and prompt rendering run in isolated
+process groups under a live aggregate byte and inode monitor; a breach stops
+the complete group and discards the temporary runtime.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
 Staging connects as `pwc_staging`, can select catalog rows, and can write only

@@ -38,9 +38,12 @@ try:
         runtime_id,
     )
     from deploy.external_pi_runtime import (
+        RETAIN_ALL_RUNTIMES,
         cleanup_external_pi_runtimes,
+        external_pi_runtime_descriptor,
         external_pi_runtime_id,
         prepare_external_pi_runtime,
+        recorded_external_pi_runtime_id,
     )
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
@@ -60,9 +63,12 @@ except ModuleNotFoundError:
         runtime_id,
     )
     from external_pi_runtime import (  # type: ignore[no-redef]
+        RETAIN_ALL_RUNTIMES,
         cleanup_external_pi_runtimes,
+        external_pi_runtime_descriptor,
         external_pi_runtime_id,
         prepare_external_pi_runtime,
+        recorded_external_pi_runtime_id,
     )
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
@@ -464,17 +470,21 @@ def prepare_release(sha: str, environment: str) -> Path:
         descriptor = _chat_descriptor_from_source(
             source, environment, chat_enabled=expected_features["chat"]
         )
-        (source / "release.json").write_text(
-            json.dumps(
-                build_manifest(
-                    sha,
-                    environment,
-                    chat_descriptor=descriptor,
-                    production_chat_enabled=production_chat_enabled,
-                ),
-                indent=2,
-            )
-            + "\n",
+        manifest = build_manifest(
+            sha,
+            environment,
+            chat_descriptor=descriptor,
+            production_chat_enabled=production_chat_enabled,
+        )
+        manifest_path = source / "release.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if environment == "staging":
+            manifest["external_pi_runtime"] = external_pi_runtime_descriptor(source)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
             encoding="utf-8",
         )
         validate_manifest(source, environment)
@@ -1425,12 +1435,20 @@ def protected_runtime_ids() -> set[str]:
 
 def protected_external_pi_runtime_ids() -> set[str]:
     protected: set[str] = set()
+    has_legacy_release = False
     for release in protected_release_paths():
+        recorded = recorded_external_pi_runtime_id(release)
+        if recorded is not None:
+            protected.add(recorded)
+            continue
+        has_legacy_release = True
         try:
             protected.add(external_pi_runtime_id(release))
         except ValueError:
             # Older protected releases predate the external Pi package inputs.
             continue
+    if has_legacy_release:
+        protected.add(RETAIN_ALL_RUNTIMES)
     return protected
 
 
@@ -1467,6 +1485,7 @@ def cleanup_command(args: argparse.Namespace) -> int:
             if RUNTIMES.is_dir()
             else []
         )
+        protected_external_runtimes = protected_external_pi_runtime_ids()
         print(
             json.dumps(
                 {
@@ -1477,7 +1496,8 @@ def cleanup_command(args: argparse.Namespace) -> int:
                         for path in EXTERNAL_PI_RUNTIMES.iterdir()
                         if path.is_dir()
                         and not path.name.startswith(".")
-                        and path.name not in protected_external_pi_runtime_ids()
+                        and RETAIN_ALL_RUNTIMES not in protected_external_runtimes
+                        and path.name not in protected_external_runtimes
                     ]
                     if EXTERNAL_PI_RUNTIMES.is_dir()
                     else [],
