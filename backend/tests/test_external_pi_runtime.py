@@ -232,6 +232,40 @@ def test_live_build_bound_terminates_the_complete_growing_process_group(
     assert sum(1 for _ in root.rglob("*")) == count
 
 
+def test_live_bound_tracks_descendants_after_the_direct_parent_exits(tmp_path: Path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    child_code = (
+        "import pathlib,sys,time\n"
+        "root=pathlib.Path(sys.argv[1])\n"
+        "time.sleep(.05)\n"
+        "i=0\n"
+        "while True:\n"
+        " (root/f'growth-{i}').write_bytes(b'x'*4096)\n"
+        " i+=1\n"
+        " time.sleep(.002)\n"
+    )
+    parent_code = (
+        "import pathlib,subprocess,sys\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]])\n"
+        "pathlib.Path(sys.argv[1],'child.pid').write_text(str(child.pid))\n"
+    )
+
+    with pytest.raises(ValueError, match="live construction bound"):
+        run_bounded_command(
+            [sys.executable, "-c", parent_code, str(root), child_code],
+            root=root,
+            max_bytes=16 * 1024,
+            max_inodes=30,
+            timeout=5,
+            poll_seconds=0.005,
+        )
+
+    child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
+    child_status = Path(f"/proc/{child_pid}/stat")
+    assert not child_status.exists() or child_status.read_text().split()[2] == "Z"
+
+
 def test_live_npm_growth_breach_removes_the_temporary_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -239,11 +273,12 @@ def test_live_npm_growth_breach_removes_the_temporary_runtime(
     prefix = "node-v22.19.0-linux-x64"
     node_script = (
         b"#!/usr/bin/python3\n"
-        b"import pathlib,sys,time\n"
+        b"import pathlib,subprocess,sys\n"
         b"if '--version' in sys.argv:\n print('v22.19.0'); raise SystemExit\n"
-        b"root=pathlib.Path.cwd()/'node_modules'\nroot.mkdir(exist_ok=True)\n"
-        b"i=0\n"
-        b"while True:\n (root/f'growth-{i}').write_bytes(b'x'*4096); i+=1; time.sleep(.002)\n"
+        b"code=\"import pathlib,sys,time\\nroot=pathlib.Path(sys.argv[1])/'node_modules'\\n"
+        b"root.mkdir(exist_ok=True)\\ntime.sleep(.05)\\ni=0\\nwhile True:\\n "
+        b"(root/f'growth-{i}').write_bytes(b'x'*4096); i+=1; time.sleep(.002)\"\n"
+        b"subprocess.Popen([sys.executable,'-c',code,str(pathlib.Path.cwd())])\n"
     )
     with tarfile.open(archive, "w:xz") as bundle:
         for relative, content, mode in (
@@ -449,6 +484,32 @@ def test_cleanup_uses_packaged_runtime_descriptors_across_identity_schema_change
     )
 
     assert deploy_cli.protected_external_pi_runtime_ids() == set(recorded.values())
+
+
+def test_descriptorless_production_releases_do_not_disable_staging_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    environments = tmp_path / "environments"
+    staging = release_fixture(tmp_path, "staging-active")
+    staging_manifest_path = staging / "release.json"
+    staging_manifest = json.loads(staging_manifest_path.read_text(encoding="utf-8"))
+    staging_manifest["external_pi_runtime"] = {
+        "identity_schema": 1,
+        "runtime_id": "a" * 64,
+        "contract": "external-pi-v1",
+    }
+    staging_manifest_path.write_text(json.dumps(staging_manifest), encoding="utf-8")
+    production = release_fixture(tmp_path, "production-active")
+    for environment, release in (("staging", staging), ("production", production)):
+        root = environments / environment
+        (root / "slots/blue").mkdir(parents=True)
+        (root / "slots/green").mkdir()
+        atomic_symlink(release, root / "current")
+        atomic_symlink(release, root / "slots/blue/release")
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS", ("production", "staging"))
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS_ROOT", environments)
+
+    assert deploy_cli.protected_external_pi_runtime_ids() == {"a" * 64}
 
 
 def test_packaged_descriptor_reuses_historical_runtime_after_schema_change(

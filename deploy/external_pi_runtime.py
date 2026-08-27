@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from backend.chat_sandbox_worker.contract import PI_NODE_SHA256, PI_NODE_VERSION
@@ -218,22 +220,166 @@ def _require_tree_bounds(root: Path) -> None:
         raise ValueError("external Pi runtime exceeds its construction bounds")
 
 
-def _terminate_process_group(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
+@dataclass(frozen=True)
+class _ProcessGroupIdentity:
+    pgid: int
+    session_id: int
+    started_after: int
+    leader_start_time: int | None
+    leader_pidfd: int | None
+
+
+def _open_pidfd(pid: int) -> int | None:
+    native = getattr(os, "pidfd_open", None)
+    if native is not None:
+        try:
+            return native(pid)
+        except ProcessLookupError:
+            return None
+    libc = ctypes.CDLL(None, use_errno=True)
     try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
+        pidfd_open = libc.pidfd_open
+    except AttributeError:
+        return None
+    pidfd_open.argtypes = (ctypes.c_int, ctypes.c_uint)
+    pidfd_open.restype = ctypes.c_int
+    descriptor = pidfd_open(pid, 0)
+    if descriptor >= 0:
+        return descriptor
+    error = ctypes.get_errno()
+    if error == 3:
+        return None
+    raise OSError(error, os.strerror(error))
+
+
+def _proc_identity(pid: int) -> tuple[str, int, int, int] | None:
     try:
-        process.wait(timeout=1)
+        value = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    fields = value[value.rfind(")") + 2 :].split()
+    return fields[0], int(fields[2]), int(fields[3]), int(fields[19])
+
+
+def _process_group_identity(
+    process: subprocess.Popen, started_after: int
+) -> _ProcessGroupIdentity:
+    leader_pidfd = _open_pidfd(process.pid)
+    identity = _proc_identity(process.pid)
+    if identity is None:
+        return _ProcessGroupIdentity(
+            process.pid, process.pid, started_after, None, leader_pidfd
+        )
+    _state, pgid, session_id, start_time = identity
+    if pgid != process.pid or session_id != process.pid:
+        if leader_pidfd is not None:
+            os.close(leader_pidfd)
+        raise RuntimeError("bounded subprocess did not create an isolated session")
+    return _ProcessGroupIdentity(
+        pgid,
+        session_id,
+        max(started_after, start_time),
+        start_time,
+        leader_pidfd,
+    )
+
+
+def _process_group_members(identity: _ProcessGroupIdentity) -> list[int]:
+    current_leader = _proc_identity(identity.pgid)
+    if (
+        current_leader is not None
+        and identity.leader_start_time is not None
+        and current_leader[3] != identity.leader_start_time
+    ):
+        return []
+    members: list[int] = []
+    for path in Path("/proc").iterdir():
+        if not path.name.isdigit():
+            continue
+        process_identity = _proc_identity(int(path.name))
+        if process_identity is None:
+            continue
+        state, pgid, session_id, start_time = process_identity
+        if (
+            state not in {"Z", "X"}
+            and pgid == identity.pgid
+            and session_id == identity.session_id
+            and start_time >= identity.started_after
+        ):
+            members.append(int(path.name))
+    return members
+
+
+def _terminate_process_group(
+    process: subprocess.Popen, identity: _ProcessGroupIdentity
+) -> None:
+    members = _process_group_members(identity)
+    if members:
+        _signal_process_group(identity, members, signal.SIGTERM)
+    deadline = time.monotonic() + 1
+    while members and time.monotonic() < deadline:
+        process.poll()
+        time.sleep(0.01)
+        members = _process_group_members(identity)
+    if members:
+        _signal_process_group(identity, members, signal.SIGKILL)
+    kill_deadline = time.monotonic() + 1
+    while _process_group_members(identity) and time.monotonic() < kill_deadline:
+        process.poll()
+        time.sleep(0.01)
+    if _process_group_members(identity):
+        raise RuntimeError("bounded subprocess group did not terminate")
+    try:
+        process.wait(timeout=0)
     except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+        process.kill()
+        process.wait()
+
+
+def _signal_process_group(
+    identity: _ProcessGroupIdentity, members: list[int], signal_number: int
+) -> None:
+    for pid in members:
+        pidfd = _open_pidfd(pid)
+        if pidfd is None:
+            continue
+        process_identity = _proc_identity(pid)
+        try:
+            if process_identity is None:
+                continue
+            state, pgid, session_id, start_time = process_identity
+            if not (
+                state not in {"Z", "X"}
+                and pgid == identity.pgid
+                and session_id == identity.session_id
+                and start_time >= identity.started_after
+            ):
+                continue
+            native = getattr(signal, "pidfd_send_signal", None)
+            if native is not None:
+                try:
+                    native(pidfd, signal_number)
+                except ProcessLookupError:
+                    pass
+                continue
+            libc = ctypes.CDLL(None, use_errno=True)
+            pidfd_send_signal = libc.pidfd_send_signal
+            pidfd_send_signal.argtypes = (
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_uint,
+            )
+            pidfd_send_signal.restype = ctypes.c_int
+            if pidfd_send_signal(pidfd, signal_number, None, 0) < 0:
+                error = ctypes.get_errno()
+                if error != 3:
+                    raise OSError(error, os.strerror(error))
+        finally:
+            try:
+                os.close(pidfd)
+            except OSError:
+                pass
 
 
 def run_bounded_command(
@@ -254,6 +400,9 @@ def run_bounded_command(
 
     byte_limit = MAX_RUNTIME_BYTES if max_bytes is None else max_bytes
     inode_limit = MAX_RUNTIME_FILES if max_inodes is None else max_inodes
+    clock_ticks = int(os.sysconf("SC_CLK_TCK"))
+    uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    started_after = max(0, int(uptime * clock_ticks) - 1)
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -263,15 +412,17 @@ def run_bounded_command(
         text=text,
         start_new_session=True,
     )
+    group_identity = _process_group_identity(process, started_after)
     deadline = time.monotonic() + timeout
     try:
-        while process.poll() is None:
+        while _process_group_members(group_identity):
+            process.poll()
             total_bytes, inode_count = _tree_usage(root)
             if total_bytes > byte_limit or inode_count > inode_limit:
-                _terminate_process_group(process)
+                _terminate_process_group(process, group_identity)
                 raise ValueError("external Pi live construction bound exceeded")
             if time.monotonic() >= deadline:
-                _terminate_process_group(process)
+                _terminate_process_group(process, group_identity)
                 raise subprocess.TimeoutExpired(command, timeout)
             time.sleep(poll_seconds)
         stdout, stderr = process.communicate()
@@ -279,8 +430,11 @@ def run_bounded_command(
         if total_bytes > byte_limit or inode_count > inode_limit:
             raise ValueError("external Pi live construction bound exceeded")
     except BaseException:
-        _terminate_process_group(process)
+        _terminate_process_group(process, group_identity)
         raise
+    finally:
+        if group_identity.leader_pidfd is not None:
+            os.close(group_identity.leader_pidfd)
     completed = subprocess.CompletedProcess(
         command, process.returncode, stdout=stdout, stderr=stderr
     )

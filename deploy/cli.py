@@ -1415,12 +1415,18 @@ def rollback_after_failed_activation(
 def protected_release_paths() -> set[Path]:
     protected = set()
     for environment in ENVIRONMENTS:
-        pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
-        protected.update(path for path in (pointers.current, pointers.previous) if path)
-        for slot in ("blue", "green"):
-            release = _slot_release(environment, slot)
-            if release:
-                protected.add(release)
+        protected.update(protected_environment_release_paths(environment))
+    return protected
+
+
+def protected_environment_release_paths(environment: str) -> set[Path]:
+    protected = set()
+    pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
+    protected.update(path for path in (pointers.current, pointers.previous) if path)
+    for slot in ("blue", "green"):
+        release = _slot_release(environment, slot)
+        if release:
+            protected.add(release)
     return protected
 
 
@@ -1436,7 +1442,7 @@ def protected_runtime_ids() -> set[str]:
 def protected_external_pi_runtime_ids() -> set[str]:
     protected: set[str] = set()
     has_legacy_release = False
-    for release in protected_release_paths():
+    for release in protected_environment_release_paths("staging"):
         recorded = recorded_external_pi_runtime_id(release)
         if recorded is not None:
             protected.add(recorded)

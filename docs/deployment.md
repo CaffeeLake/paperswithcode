@@ -48,11 +48,15 @@ Node identity, and a strict file-digest inventory. Reuse rejects mutable,
 missing, extra, or digest-mismatched files. The staging `release.json` records
 the selected runtime ID, contract, and identity-schema version so cleanup and
 rollback never recalculate a historical identity with newer packaging rules.
-While any protected pre-descriptor release remains, cleanup conservatively
-retains the full external Pi namespace rather than guessing its identity.
+Only protected staging releases participate in external Pi retention. While
+any protected pre-descriptor staging release remains, cleanup conservatively
+retains the full external Pi namespace rather than guessing its identity;
+descriptor-less production releases do not disable staging cleanup.
 Dependency installation, build, pruning, and prompt rendering run in isolated
-process groups under a live aggregate byte and inode monitor; a breach stops
-the complete group and discards the temporary runtime.
+process sessions under a live aggregate byte and inode monitor. Monitoring
+continues until the complete session exits even when the direct parent exits
+first. A breach stops verified session members through PID handles, fences PID
+and process-group reuse, and discards the temporary runtime.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
 Staging connects as `pwc_staging`, can select catalog rows, and can write only
