@@ -49,8 +49,11 @@ class ChatTurnAdmissionCoordinator:
         hf_user_id: str,
         request_id: str,
         requested_session_id: uuid.UUID | None,
+        now: datetime | None = None,
     ) -> DurableAdmissionPreflight:
-        now = datetime.now(UTC)
+        now = now or datetime.now(UTC)
+        if now.tzinfo is None:
+            raise ValueError("Durable admission timestamp is invalid")
         self.repository.lock_admission_authority(self.db, hf_user_id=hf_user_id)
         reconciled_expired_count = self._reconcile_expired_claims(
             hf_user_id=hf_user_id, now=now

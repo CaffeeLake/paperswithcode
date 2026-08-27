@@ -55,7 +55,7 @@ class RunConfig:
 
 PROFILES = {
     "bridge-smoke": LoadProfile(
-        "bridge-smoke", 2, 1.0, "durable-bridge", "bridge_smoke"
+        "bridge-smoke", 2, 2.0, "durable-bridge", "bridge_smoke"
     ),
     "steady-10": LoadProfile("steady-10", 10, 1.0, "stream", "steady_10"),
     "steady-25": LoadProfile("steady-25", 25, 2.0, "stream", "steady_25"),

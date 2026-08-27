@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from locust import HttpUser, User, between, events, task
 from locust.exception import StopUser
+from locust.runners import LocalRunner
 from requests.exceptions import RequestException
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -31,7 +32,10 @@ from backend.loadtests.chat_core import (
     load_run_config,
     validate_runtime_shape,
 )
-from backend.loadtests.durable_bridge_probe import run_durable_bridge_probe
+from backend.loadtests.durable_bridge_probe import (
+    TwoPartyOverlapGate,
+    run_durable_bridge_probe,
+)
 from backend.scripts.qualify_chat_durable_dispatch import (
     CONFIRMATION as QUALIFICATION_CONFIRMATION,
 )
@@ -53,6 +57,7 @@ ACTIVE_STAGING_RELEASE = Path("/srv/paperswithcode/environments/staging/current"
 IMMUTABLE_RELEASE_ROOT = Path("/srv/paperswithcode/releases")
 _credential_counter = itertools.count()
 _identity_nonce = uuid.uuid4().hex
+_bridge_overlap_gate = TwoPartyOverlapGate()
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +136,10 @@ def _validate_runtime(environment, **_kwargs) -> None:
         users=getattr(environment.parsed_options, "num_users", None),
         spawn_rate=getattr(environment.parsed_options, "spawn_rate", None),
     )
+    if CONFIG.profile.cohort == "durable-bridge" and not isinstance(
+        environment.runner, LocalRunner
+    ):
+        raise RunRefused("durable bridge requires one process-local Locust runner")
 
 
 class StagingBridgeUser(User):
@@ -157,11 +166,12 @@ class StagingBridgeUser(User):
                 worker_contract_version=runtime.worker_contract_version,
                 schema_audit=runtime.schema_audit,
                 opaque_identity=self.opaque_identity,
+                overlap_gate=_bridge_overlap_gate,
             )
             for metric in result.metrics:
                 _record(self, metric)
         except RunRefused:
-            for name in ("admission", "ownership", "terminal"):
+            for name in ("admission", "ownership", "overlap", "terminal"):
                 _record(self, Metric(f"bridge.{name}", _elapsed_ms(started), False))
             _record(self, Metric("bridge.cleanup", _elapsed_ms(started), True))
         raise StopUser()

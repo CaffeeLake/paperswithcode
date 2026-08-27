@@ -539,10 +539,10 @@ def test_safe_cli_exact_single_command_passes_terminal_contract() -> None:
 
 
 def test_runtime_shape_validates_users_and_spawn_rate() -> None:
-    validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=1.0)
+    validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=2.0)
 
     with pytest.raises(RunRefused, match="spawn rate"):
-        validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=2.0)
+        validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=1.0)
 
 
 @pytest.mark.parametrize("profile_name", ["safe-cli", "general-bash", "reconnect"])

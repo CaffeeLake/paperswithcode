@@ -33,13 +33,18 @@ prompts, responses, account IDs, session IDs, or cookies in profile names,
 metric names, exceptions, terminal output, or saved reports.
 
 The two-user `bridge-smoke` profile is a release-bound, no-provider PostgreSQL
-probe. Each Locust user creates one opaque synthetic owner and one uniquely
-identified session/turn, exercises durable admission, fenced ownership, and a
-terminal write through the application coordinator/repository, then deletes and
-verifies only those exact row IDs. It never creates a message or invokes a
-provider, model, sandbox, or tool. It validates the active immutable staging
-release, live worker contract, enabled bridge, staging search path/role/schema,
-and protected runtime-file metadata before writing. There are no global sweeps.
+probe. It requires exact durable capacity `2`, users `2`, spawn rate `2.0`, and a
+single Locust process so both users share one process-local overlap gate. Each
+Locust user creates one opaque synthetic owner and one uniquely identified
+session/turn, exercises durable admission and fenced ownership, and commits a
+`running` claim. Neither probe can terminalize until both committed claims have
+reached the gate. Each then writes a terminal state through the application
+coordinator/repository and deletes and verifies only its exact row IDs. It never
+creates a message or invokes a provider, model, sandbox, or tool. It validates
+the active immutable staging release, live worker contract, enabled bridge,
+staging search path/role/schema, and protected runtime-file metadata before
+writing. It refuses before creating probe rows if any expired durable claim is
+awaiting normal reconciliation. There are no global sweeps.
 
 `connection-only` describes a future SSE subscription-connection cohort and is
 definition-only until that public endpoint exists. The separately named
@@ -81,15 +86,20 @@ cd -- "$release"
 
 uv run --env-file /etc/paperswithcode/staging.env --with 'locust>=2.40,<3' \
   locust -f backend/loadtests/locustfile.py --headless \
-  --host https://staging.paperswithcode.co --users 2 --spawn-rate 1 \
+  --host https://staging.paperswithcode.co --users 2 --spawn-rate 2.0 \
   --run-time 30s
 ```
 
-For the no-provider bridge checkpoint, use only `bridge-smoke` and set spend to
-`0`. Use `availability-connectivity` only for the more limited HTTP availability
-check. Do not run a live profile from a developer checkout or connect this
-harness to staging until the controller has deployed the exact reviewed commit
-and activated the bridge.
+For the no-provider bridge checkpoint, use only `bridge-smoke`, set spend to
+`0`, and run Locust in its default single-process local-runner mode. Use
+`--users 2 --spawn-rate 2.0` exactly. A passing smoke requires two successful
+`bridge.overlap` observations plus successful cleanup; this proves that two
+distinct probes held concurrently committed `running` claims without invoking a
+provider. Any expired durable claim must first be handled by normal
+reconciliation. Use `availability-connectivity` only for the more limited HTTP
+availability check. Do not run a live profile from a developer checkout or
+connect this harness to staging until the controller has deployed the exact
+reviewed commit and activated the bridge.
 Provider profiles additionally require the fixed direct-OpenAI model above and
 `PWC_LOADTEST_MAX_SPEND_USD` equal to the authoritative
 `PWC_CHAT_OPENAI_DAILY_BUDGET_USD` value. Never copy that value out to a
@@ -109,7 +119,8 @@ fixed-cardinality `CHAT` measurements:
 - `chat.overload`
 - `chat.safe_cli_command` and `chat.safe_cli_contract` (one exact reviewed command,
   no other tool call, and a successful terminal)
-- `bridge.admission`, `bridge.ownership`, `bridge.terminal`, and `bridge.cleanup`
+- `bridge.admission`, `bridge.ownership`, `bridge.overlap`, `bridge.terminal`,
+  and `bridge.cleanup`
 
 HTTP refusal bodies are inspected only for typed codes. Error messages and SSE
 content never become metric labels. A resumed stream is parsed and bounded until
