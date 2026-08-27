@@ -50,8 +50,9 @@ def _qualification_fixture(tmp_path: Path, *, install_runtime: bool = True):
         _write_executable(
             runtime_python,
             "#!/bin/sh\n"
-            "printf '%s|%s|%s\\n' \"$PWC_RELEASE_ID\" "
-            '"$PWC_CHAT_WORKER_CONTRACT_VERSION" "$*" >> "$COMMAND_LOG"\n',
+            "printf '%s|%s|%s|%s|%s\\n' \"$PWC_RELEASE_ID\" "
+            '"$PWC_CHAT_WORKER_CONTRACT_VERSION" "$PWD" "$0" "$*" '
+            '>> "$COMMAND_LOG"\n',
         )
 
     env_file = tmp_path / "etc/paperswithcode/staging.env"
@@ -71,12 +72,18 @@ def _qualification_fixture(tmp_path: Path, *, install_runtime: bool = True):
         "set -eu\n"
         "while [ $# -gt 0 ]; do\n"
         '  case "$1" in\n'
+        "    --uid=*) uid=${1#*=} ;;\n"
+        "    --gid=*) gid=${1#*=} ;;\n"
+        "    --working-directory=*) working=${1#*=} ;;\n"
         "    --property=EnvironmentFile=*) env_file=${1#*=EnvironmentFile=} ;;\n"
-        "    --) shift; break ;;\n"
+        "    --) separator=yes; shift; break ;;\n"
         "    /*) break ;;\n"
         "  esac\n"
         "  shift\n"
         "done\n"
+        'printf \'%s|%s|%s|%s|%s|%s\\n\' "$uid" "$gid" "$working" '
+        '"$env_file" "$separator" "$*" >> "$SYSTEMD_LOG"\n'
+        'cd -- "$working"\n'
         'set -a\n. "$env_file"\nset +a\nexec "$@"\n',
     )
     _write_executable(
@@ -97,14 +104,10 @@ def _qualification_fixture(tmp_path: Path, *, install_runtime: bool = True):
 
 
 def _adapt_qualification_block(block: str, app: Path, env_file: Path):
-    block = block.split(
-        "uv run --env-file /etc/paperswithcode/staging.env python \\\n"
-        "  -m backend.scripts.qualify_chat_soak",
-        1,
-    )[0]
     block = block.replace("/srv/paperswithcode", str(app))
     block = block.replace("/etc/paperswithcode/staging.env", str(env_file))
     block = block.replace(f"{app}/.venv/bin/python", sys.executable)
+    block = block.replace("<durable-bridge-activation-time>", "2026-08-27T00:00:00Z")
     return block
 
 
@@ -119,6 +122,8 @@ def test_durable_qualification_uses_one_installed_runtime_after_environment_file
     )
     command = _adapt_qualification_block(block, app, env_file)
     before = sorted(path.relative_to(release) for path in release.rglob("*"))
+    systemd_log = tmp_path / "systemd.log"
+    control_log = tmp_path / "control.log"
     result = subprocess.run(
         ["bash", "-eu", "-o", "pipefail", "-c", command],
         check=False,
@@ -127,20 +132,51 @@ def test_durable_qualification_uses_one_installed_runtime_after_environment_file
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "COMMAND_LOG": str(log),
+            "SYSTEMD_LOG": str(systemd_log),
+            "CONTROL_LOG": str(control_log),
         },
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    expected_identity = f"{sha[:12]}-staging|102|"
-    assert len(calls) == 2
+    runtime_python = (
+        app
+        / "runtimes"
+        / hashlib.sha256((release / "uv.lock").read_bytes()).hexdigest()
+        / "bin/python"
+    )
+    expected_identity = f"{sha[:12]}-staging|102|{release}|{runtime_python}|"
+    assert len(calls) == 4
     assert all(call.startswith(expected_identity) for call in calls)
     assert calls[0].endswith("--audit-disabled-only")
     assert calls[1].endswith("--qualify-enabled-only")
-    assert all(
-        "backend.scripts.qualify_chat_durable_dispatch" in call for call in calls
+    assert "backend.scripts.qualify_chat_durable_dispatch" in calls[0]
+    assert "backend.scripts.qualify_chat_durable_dispatch" in calls[1]
+    assert calls[2].endswith(
+        "-m backend.scripts.qualify_chat_soak "
+        f"--release-dir {release} --confirm QUALIFY_STAGING_CHAT_SOAK"
     )
+    assert calls[3].endswith(
+        "-m backend.scripts.audit_chat_soak --started-at 2026-08-27T00:00:00Z "
+        f"--release-dir {release} --confirm AUDIT_STAGING_CHAT_SOAK"
+    )
+    transient_calls = systemd_log.read_text(encoding="utf-8").splitlines()
+    assert len(transient_calls) == 4
+    transient_prefix = f"pwc-staging|pwc-staging|{release}|{env_file}|yes|"
+    assert all(call.startswith(transient_prefix) for call in transient_calls)
+    assert all(
+        f"/usr/bin/env PWC_RELEASE_ID={sha[:12]}-staging "
+        f"PWC_CHAT_WORKER_CONTRACT_VERSION=102 {runtime_python} -m " in call
+        for call in transient_calls
+    )
+    assert control_log.read_text(encoding="utf-8").splitlines() == [
+        (
+            f"configure|--legacy-env {env_file} "
+            "--staging-chat-durable-dispatch-enable-only"
+        ),
+        f"deploy|staging {sha} --refresh-environment",
+    ]
     assert sorted(path.relative_to(release) for path in release.rglob("*")) == before
     assert not (release / ".venv").exists()
 
@@ -171,6 +207,7 @@ def test_durable_qualification_refuses_a_missing_or_wrong_installed_runtime(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "COMMAND_LOG": str(log),
+            "SYSTEMD_LOG": str(tmp_path / "systemd.log"),
         },
         capture_output=True,
         text=True,
@@ -272,7 +309,11 @@ def test_bridge_smoke_refuses_a_manifest_release_name_mismatch(tmp_path: Path):
     manifest = json.loads((release / "release.json").read_text(encoding="utf-8"))
     manifest["release_id"] = "b" * 12 + "-staging"
     (release / "release.json").write_text(json.dumps(manifest), encoding="utf-8")
-    _write_executable(fake_bin / "uv", "#!/bin/sh\nexit 99\n")
+    uv_marker = tmp_path / "uv-invoked"
+    _write_executable(
+        fake_bin / "uv",
+        '#!/bin/sh\nprintf invoked > "$UV_MARKER"\nexit 99\n',
+    )
     block = _bash_block(
         ROOT / "backend/loadtests/README.md",
         "## Invocation",
@@ -284,9 +325,14 @@ def test_bridge_smoke_refuses_a_manifest_release_name_mismatch(tmp_path: Path):
         ["bash", "-eu", "-o", "pipefail", "-c", block],
         check=False,
         cwd=tmp_path,
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "UV_MARKER": str(uv_marker),
+        },
         capture_output=True,
         text=True,
     )
     assert result.returncode != 0
     assert not log.exists()
+    assert not uv_marker.exists()

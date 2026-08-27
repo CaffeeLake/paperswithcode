@@ -343,10 +343,44 @@ test -x "$runtime_python" || {
   exit 1
 }
 
-run_durable_qualification() {
-  case "$1" in
-    --audit-disabled-only|--qualify-enabled-only) ;;
-    *) echo "invalid durable qualification mode" >&2; return 1 ;;
+run_staging_chat_gate() {
+  case "${1-}" in
+    audit-disabled)
+      test "$#" -eq 1 || return 1
+      gate_module=backend.scripts.qualify_chat_durable_dispatch
+      gate_args=(
+        --release-dir "$staging_release"
+        --confirm QUALIFY_STAGING_DURABLE_DISPATCH
+        --audit-disabled-only
+      )
+      ;;
+    qualify-enabled)
+      test "$#" -eq 1 || return 1
+      gate_module=backend.scripts.qualify_chat_durable_dispatch
+      gate_args=(
+        --release-dir "$staging_release"
+        --confirm QUALIFY_STAGING_DURABLE_DISPATCH
+        --qualify-enabled-only
+      )
+      ;;
+    soak)
+      test "$#" -eq 1 || return 1
+      gate_module=backend.scripts.qualify_chat_soak
+      gate_args=(
+        --release-dir "$staging_release"
+        --confirm QUALIFY_STAGING_CHAT_SOAK
+      )
+      ;;
+    soak-audit)
+      test "$#" -eq 2 || return 1
+      gate_module=backend.scripts.audit_chat_soak
+      gate_args=(
+        --started-at "$2"
+        --release-dir "$staging_release"
+        --confirm AUDIT_STAGING_CHAT_SOAK
+      )
+      ;;
+    *) echo "invalid staging chat gate" >&2; return 1 ;;
   esac
   sudo systemd-run --quiet --wait --pipe --collect \
     --uid=pwc-staging --gid=pwc-staging \
@@ -355,12 +389,10 @@ run_durable_qualification() {
     -- /usr/bin/env \
     PWC_RELEASE_ID="$staging_release_id" \
     PWC_CHAT_WORKER_CONTRACT_VERSION="$staging_worker_contract" \
-    "$runtime_python" -m backend.scripts.qualify_chat_durable_dispatch \
-    --release-dir "$staging_release" \
-    --confirm QUALIFY_STAGING_DURABLE_DISPATCH "$1"
+    "$runtime_python" -m "$gate_module" "${gate_args[@]}"
 }
 
-run_durable_qualification --audit-disabled-only || exit 1
+run_staging_chat_gate audit-disabled || exit 1
 
 sudo /srv/paperswithcode/.venv/bin/python \
   "$staging_release/deploy/configure_host_env.py" \
@@ -376,16 +408,9 @@ print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
 ' "$refreshed_release/release.json")" || exit 1
 test "$refreshed_sha" = "$staging_sha" || exit 1
 cd -- "$refreshed_release" || exit 1
-run_durable_qualification --qualify-enabled-only || exit 1
-uv run --env-file /etc/paperswithcode/staging.env python \
-  -m backend.scripts.qualify_chat_soak \
-  --release-dir "$refreshed_release" \
-  --confirm QUALIFY_STAGING_CHAT_SOAK
-uv run --env-file /etc/paperswithcode/staging.env python \
-  -m backend.scripts.audit_chat_soak \
-  --started-at <durable-bridge-activation-time> \
-  --release-dir "$refreshed_release" \
-  --confirm AUDIT_STAGING_CHAT_SOAK
+run_staging_chat_gate qualify-enabled || exit 1
+run_staging_chat_gate soak || exit 1
+run_staging_chat_gate soak-audit '<durable-bridge-activation-time>' || exit 1
 ```
 
 The disabled-state audit must emit `mode=disabled_schema_audit`,
