@@ -55,17 +55,18 @@ def markdown_key(arxiv_id: str) -> str:
 
 
 def external_pdf_url(paper: Paper) -> str | None:
-    explicit = str(paper.conference_url_pdf or "").strip()
-    if explicit:
-        return explicit
     source_url = str(paper.source_url or "").strip()
-    if not source_url:
-        return None
-    parsed = urlsplit(source_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    pdf_marker = f"{parsed.path}?{parsed.query}".lower()
-    return source_url if ".pdf" in pdf_marker or "/pdf" in parsed.path.lower() else None
+    if source_url:
+        parsed = urlsplit(source_url)
+        pdf_marker = f"{parsed.path}?{parsed.query}".lower()
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc
+            and (".pdf" in pdf_marker or "/pdf" in parsed.path.lower())
+        ):
+            return source_url
+    explicit = str(paper.conference_url_pdf or "").strip()
+    return explicit or None
 
 
 def paper_manifest_entry(paper: Paper) -> dict[str, object] | None:

@@ -522,7 +522,7 @@ def test_arxiv_identity_and_markdown_key():
     assert MODULE.normalize_arxiv_id("hep-th/9901001") is None
 
 
-def test_external_manifest_entry_prefers_explicit_pdf_then_pdf_source_url():
+def test_external_manifest_entry_prefers_pdf_source_url_then_explicit_pdf():
     explicit = SimpleNamespace(
         id=109743,
         source="external",
@@ -540,6 +540,15 @@ def test_external_manifest_entry_prefers_explicit_pdf_then_pdf_source_url():
         title="Source PDF",
         source_url="https://openreview.net/pdf?id=abc",
         conference_url_pdf=None,
+    )
+    both = SimpleNamespace(
+        id=109746,
+        source="external",
+        arxiv_id=None,
+        version="v1",
+        title="Canonical source PDF",
+        source_url="https://example.com/canonical.pdf",
+        conference_url_pdf="https://example.com/conference-copy.pdf",
     )
     html_only = SimpleNamespace(
         id=109745,
@@ -564,6 +573,7 @@ def test_external_manifest_entry_prefers_explicit_pdf_then_pdf_source_url():
         "output_key": "external/109743.md",
     }
     assert MODULE.paper_manifest_entry(source_only)["pdf_url"] == source_only.source_url
+    assert MODULE.paper_manifest_entry(both)["pdf_url"] == both.source_url
     assert MODULE.paper_manifest_entry(html_only) is None
 
 
