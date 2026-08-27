@@ -3319,20 +3319,28 @@ def test_staging_chat_durable_dispatch_mode_is_narrow_and_staging_only(
         "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED=false\n"
         "PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER=huggingface\n"
     )
-    (config_root / "staging.env").write_text(staging_lines, encoding="utf-8")
-    (config_root / "production.env").write_text(
-        "PRODUCTION=untouched\n", encoding="utf-8"
-    )
-    written = {}
+    staging_path = config_root / "staging.env"
+    staging_path.write_text(staging_lines, encoding="utf-8")
+    staging_path.chmod(0o600)
+    production_path = config_root / "production.env"
+    production_bytes = b"# production bytes must remain exact\nPRODUCTION=untouched\n"
+    production_path.write_bytes(production_bytes)
+    real_chown = os.chown
+    chown_requests = []
+    group_requests = []
+
+    def apply_test_identity(path: Path, uid: int, gid: int) -> None:
+        chown_requests.append((path, uid, gid))
+        real_chown(path, os.getuid(), os.getgid())
+
+    def test_group(group: str) -> SimpleNamespace:
+        group_requests.append(group)
+        return SimpleNamespace(gr_name=group, gr_gid=os.getgid())
+
     monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
     monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        configure_host_env,
-        "write_env",
-        lambda path, lines, group: written.update(
-            {"path": path, "lines": lines, "group": group}
-        ),
-    )
+    monkeypatch.setattr(configure_host_env.grp, "getgrnam", test_group)
+    monkeypatch.setattr(configure_host_env.os, "chown", apply_test_identity)
     mode = (
         "--staging-chat-durable-dispatch-enable-only"
         if enabled
@@ -3345,24 +3353,32 @@ def test_staging_chat_durable_dispatch_mode_is_narrow_and_staging_only(
     )
 
     assert configure_host_env.main() == 0
-    assert written["path"] == config_root / "staging.env"
-    assert written["group"] == "pwc-staging"
-    assert {
-        key: configure_host_env.decoded_value(value)
-        for key, value in written["lines"].items()
-    } == {
-        "UNRELATED": "preserved",
-        "PWC_CHAT_MAX_CONCURRENCY": "2",
-        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED": "true",
-        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "true",
-        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "false",
-        "PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER": "huggingface",
-        "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false",
-    }
     assert capsys.readouterr().out == (
         f"{'enabled' if enabled else 'disabled'} staging chat durable dispatch; "
         "no service was restarted\n"
     )
+    assert staging_path.read_text(encoding="utf-8") == (
+        "PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER=huggingface\n"
+        f"PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED={'true' if enabled else 'false'}\n"
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED=true\n"
+        "PWC_CHAT_MAX_CONCURRENCY=2\n"
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED=false\n"
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED=true\n"
+        "UNRELATED=preserved\n"
+    )
+    assert chown_requests == [
+        (
+            staging_path.with_name(f".staging.env.new-{os.getpid()}"),
+            0,
+            os.getgid(),
+        )
+    ]
+    assert group_requests == ["pwc-staging"]
+    assert staging_path.stat().st_uid == os.getuid()
+    assert staging_path.stat().st_gid == os.getgid()
+    assert staging_path.stat().st_mode & 0o777 == 0o640
+    assert config_root.stat().st_mode & 0o777 == 0o711
+    assert production_path.read_bytes() == production_bytes
 
 
 # Production break caught: the protected bridge can be mixed with another mode
