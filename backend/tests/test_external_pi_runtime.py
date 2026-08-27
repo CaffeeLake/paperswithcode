@@ -57,7 +57,16 @@ def release_fixture(root: Path, name: str = "release-a") -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{relative}\n", encoding="utf-8")
     (release / "release.json").write_text(
-        json.dumps({"release_id": name}), encoding="utf-8"
+        json.dumps(
+            {
+                "release_id": name,
+                "chat_runtime": {
+                    "pi_node_version": runtime_module.PI_NODE_VERSION,
+                    "pi_node_sha256": runtime_module.PI_NODE_SHA256,
+                },
+            }
+        ),
+        encoding="utf-8",
     )
     return release
 
@@ -86,10 +95,13 @@ def pinned_node_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 class PackageRunner:
     def __init__(self, *, fail_build: bool = False) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.call_details: list[tuple[tuple[str, ...], dict]] = []
         self.fail_build = fail_build
 
     def __call__(self, command, **kwargs):
-        self.calls.append(tuple(str(value) for value in command))
+        normalized = tuple(str(value) for value in command)
+        self.calls.append(normalized)
+        self.call_details.append((normalized, kwargs))
         if command[-1] == "--version":
             return SimpleNamespace(stdout="v22.19.0\n")
         cwd = Path(kwargs.get("cwd", "."))
@@ -135,6 +147,8 @@ def test_failed_build_is_atomic_and_leaves_no_runtime(
 ):
     release = release_fixture(tmp_path)
     runtimes = tmp_path / "runtimes"
+    current = tmp_path / "current"
+    current.symlink_to(release)
 
     with pytest.raises(RuntimeError, match="build failed"):
         prepare_external_pi_runtime(
@@ -147,6 +161,25 @@ def test_failed_build_is_atomic_and_leaves_no_runtime(
 
     assert not (runtimes / external_pi_runtime_id(release)).exists()
     assert not list(runtimes.glob(".*.new-*"))
+    assert current.resolve() == release
+
+
+def test_runtime_construction_rejects_insufficient_capacity_before_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        runtime_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=runtime_module.MIN_FREE_BYTES - 1),
+    )
+    runner = PackageRunner()
+
+    with pytest.raises(ValueError, match="insufficient free space"):
+        prepare_external_pi_runtime(
+            release_fixture(tmp_path), tmp_path / "runtimes", runner=runner
+        )
+
+    assert runner.calls == []
 
 
 def test_runtime_is_strictly_validated_and_reused(
@@ -175,6 +208,20 @@ def test_runtime_is_strictly_validated_and_reused(
         for call in runner.calls
         if "ci" in call or "prune" in call
     )
+    build_environment = next(
+        kwargs for command, kwargs in runner.call_details if "ci" in command
+    )["env"]
+    assert "NODE_OPTIONS" not in build_environment
+    assert set(build_environment) == {
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "npm_config_cache",
+        "npm_config_userconfig",
+        "npm_config_globalconfig",
+        "npm_config_update_notifier",
+    }
 
     reused, created = prepare_external_pi_runtime(
         release,
@@ -270,7 +317,8 @@ def test_cleanup_protection_includes_current_previous_and_prepared_releases(
     atomic_symlink(releases["prepared"], root / "slots/green/release")
     monkeypatch.setattr(deploy_cli, "ENVIRONMENTS", ("staging",))
     monkeypatch.setattr(deploy_cli, "ENVIRONMENTS_ROOT", environments)
+    expected = {external_pi_runtime_id(release) for release in releases.values()}
+    monkeypatch.setattr(runtime_module, "PI_NODE_VERSION", "23.0.0")
+    monkeypatch.setattr(runtime_module, "PI_NODE_SHA256", "f" * 64)
 
-    assert deploy_cli.protected_external_pi_runtime_ids() == {
-        external_pi_runtime_id(release) for release in releases.values()
-    }
+    assert deploy_cli.protected_external_pi_runtime_ids() == expected

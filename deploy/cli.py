@@ -40,6 +40,7 @@ try:
     from deploy.external_pi_runtime import (
         cleanup_external_pi_runtimes,
         external_pi_runtime_id,
+        prepare_external_pi_runtime,
     )
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
@@ -61,6 +62,7 @@ except ModuleNotFoundError:
     from external_pi_runtime import (  # type: ignore[no-redef]
         cleanup_external_pi_runtimes,
         external_pi_runtime_id,
+        prepare_external_pi_runtime,
     )
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
@@ -1549,6 +1551,12 @@ def deploy(args: argparse.Namespace) -> int:
             )
             return 0
         runtime, runtime_built = prepare_runtime(release, RUNTIMES)
+        external_pi_runtime = None
+        external_pi_runtime_built = False
+        if args.environment == "staging":
+            external_pi_runtime, external_pi_runtime_built = (
+                prepare_external_pi_runtime(release, EXTERNAL_PI_RUNTIMES)
+            )
         current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
         print(
             json.dumps(
@@ -1561,6 +1569,10 @@ def deploy(args: argparse.Namespace) -> int:
                     "candidate_sha": sha,
                     "candidate_runtime": runtime.name,
                     "runtime_built": runtime_built,
+                    "external_pi_runtime": (
+                        external_pi_runtime.name if external_pi_runtime else None
+                    ),
+                    "external_pi_runtime_built": external_pi_runtime_built,
                     "features": validate_manifest(release, args.environment)[
                         "backend_features"
                     ],
@@ -1681,6 +1693,8 @@ def rollback(args: argparse.Namespace) -> int:
         validate_manifest(pointers.previous, args.environment)
         target = pointers.previous
         runtime, _ = prepare_runtime(target, RUNTIMES)
+        if args.environment == "staging":
+            prepare_external_pi_runtime(target, EXTERNAL_PI_RUNTIMES)
         result = activate_slot(target, args.environment, runtime)
         log_event(
             "rollback",
