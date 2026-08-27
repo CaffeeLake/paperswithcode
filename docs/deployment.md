@@ -305,18 +305,20 @@ sudo python deploy/configure_host_env.py \
   --staging-chat-durable-dispatch-enable-only
 sudo pwc-deploy staging <exact-current-sha> --refresh-environment
 
+staging_release="$(readlink -f /srv/paperswithcode/environments/staging/current)"
+cd "$staging_release"
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_durable_dispatch \
-  --release-dir /srv/paperswithcode/environments/staging/current \
+  --release-dir "$staging_release" \
   --confirm QUALIFY_STAGING_DURABLE_DISPATCH
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_soak \
-  --release-dir /srv/paperswithcode/environments/staging/current \
+  --release-dir "$staging_release" \
   --confirm QUALIFY_STAGING_CHAT_SOAK
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.audit_chat_soak \
   --started-at <durable-bridge-activation-time> \
-  --release-dir /srv/paperswithcode/environments/staging/current \
+  --release-dir "$staging_release" \
   --confirm AUDIT_STAGING_CHAT_SOAK
 ```
 

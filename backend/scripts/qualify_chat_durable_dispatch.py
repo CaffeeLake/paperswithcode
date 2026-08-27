@@ -8,13 +8,14 @@ import json
 import statistics
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
@@ -39,10 +40,145 @@ EXPECTED_OUTCOMES = {
     "terminal_write": "completed",
     "expiry_interruption": "lease_expired",
 }
+EXPECTED_INDEX_DEFINITIONS = {
+    "idx_chat_turn_jobs_claim": {
+        "columns": ["state", "admitted_at", "turn_id"],
+        "predicate": None,
+        "unique": False,
+        "valid": True,
+        "ready": True,
+    },
+    "idx_chat_turn_jobs_expiry": {
+        "columns": ["state", "lease_expires_at"],
+        "predicate": None,
+        "unique": False,
+        "valid": True,
+        "ready": True,
+    },
+    "uq_chat_turn_jobs_nonterminal_owner": {
+        "columns": ["hf_user_id"],
+        "predicate": (
+            "state::text = ANY (ARRAY['admitted'::character varying, "
+            "'leased'::character varying, 'running'::character varying, "
+            "'waiting_model'::character varying, "
+            "'waiting_tool'::character varying, "
+            "'cancelling'::character varying]::text[])"
+        ),
+        "unique": True,
+        "valid": True,
+        "ready": True,
+    },
+}
+EXPECTED_CONSTRAINT_DEFINITIONS = {
+    "chat_turn_jobs_pkey": {
+        "kind": "p",
+        "validated": True,
+        "definition": "PRIMARY KEY (turn_id)",
+    },
+    "chat_turn_jobs_request_id_key": {
+        "kind": "u",
+        "validated": True,
+        "definition": "UNIQUE (request_id)",
+    },
+    "chat_turn_jobs_chat_session_id_fkey": {
+        "kind": "f",
+        "validated": True,
+        "definition": (
+            "FOREIGN KEY (chat_session_id) REFERENCES "
+            "chat_sessions(id) ON DELETE CASCADE"
+        ),
+        "reference_schema": "staging",
+    },
+    "chat_turn_jobs_revision_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": "CHECK (revision > 0)",
+    },
+    "chat_turn_jobs_worker_generation_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": "CHECK (worker_generation IS NULL OR worker_generation > 0)",
+    },
+    "chat_turn_jobs_lease_generation_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": "CHECK (lease_generation IS NULL OR lease_generation > 0)",
+    },
+    "chat_turn_jobs_state_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": (
+            "CHECK (state::text = ANY (ARRAY['admitted'::character varying, "
+            "'leased'::character varying, 'running'::character varying, "
+            "'waiting_model'::character varying, "
+            "'waiting_tool'::character varying, "
+            "'cancelling'::character varying, 'completed'::character varying, "
+            "'failed'::character varying, "
+            "'interrupted'::character varying]::text[]))"
+        ),
+    },
+    "chat_turn_jobs_lease_fields_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": (
+            "CHECK (state::text = 'admitted'::text AND worker_id IS NULL "
+            "AND worker_generation IS NULL AND lease_generation IS NULL "
+            "AND lease_expires_at IS NULL OR (state::text = ANY "
+            "(ARRAY['leased'::character varying, 'running'::character varying, "
+            "'waiting_model'::character varying, "
+            "'waiting_tool'::character varying, "
+            "'cancelling'::character varying]::text[])) AND worker_id IS NOT NULL "
+            "AND worker_generation IS NOT NULL AND lease_generation IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL OR (state::text = ANY "
+            "(ARRAY['completed'::character varying, 'failed'::character varying, "
+            "'interrupted'::character varying]::text[])) AND worker_id IS NOT NULL "
+            "AND worker_generation IS NOT NULL AND lease_generation IS NOT NULL "
+            "AND lease_expires_at IS NULL)"
+        ),
+    },
+    "chat_turn_jobs_terminal_timestamp_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": (
+            "CHECK ((state::text = ANY (ARRAY['completed'::character varying, "
+            "'failed'::character varying, "
+            "'interrupted'::character varying]::text[])) = "
+            "(terminal_at IS NOT NULL))"
+        ),
+    },
+    "chat_turn_jobs_failure_code_check": {
+        "kind": "c",
+        "validated": True,
+        "definition": (
+            "CHECK (failure_code IS NULL OR failure_code::text ~ "
+            "'^[a-z0-9][a-z0-9_]{0,63}$'::text)"
+        ),
+    },
+}
 
 
 class QualificationRefused(RuntimeError):
     """The operator context is unsafe for durable-dispatch qualification."""
+
+
+class QualificationRunFailed(RuntimeError):
+    """A sanitized failed workload outcome with its aggregate cleanup result."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        passed: int,
+        timing_ms: dict[str, int | float | None],
+        cleanup: dict[str, bool | int],
+        schema_audit: SchemaAudit,
+    ):
+        super().__init__(code)
+        self.code = code
+        self.passed = passed
+        self.timing_ms = timing_ms
+        self.cleanup = cleanup
+        self.schema_audit = schema_audit
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,10 +191,64 @@ class SchemaAudit:
     constraints: bool
 
 
+def _definition_matches(
+    actual: object, expected: Mapping[str, object], *, definition_field: str
+) -> bool:
+    if not isinstance(actual, Mapping) or set(actual) != set(expected):
+        return False
+    for field, expected_value in expected.items():
+        actual_value = actual[field]
+        if field == definition_field and isinstance(expected_value, str):
+            if not isinstance(actual_value, str):
+                return False
+            if " ".join(actual_value.split()) != " ".join(expected_value.split()):
+                return False
+        elif actual_value != expected_value:
+            return False
+    return True
+
+
+def audit_postgresql_definitions(
+    *, indexes: object, constraints: object
+) -> tuple[bool, bool]:
+    """Compare material catalog definitions, tolerating whitespace only."""
+
+    indexes_match = isinstance(indexes, Mapping) and set(indexes) == set(
+        EXPECTED_INDEX_DEFINITIONS
+    )
+    if indexes_match:
+        indexes_match = all(
+            _definition_matches(indexes[name], expected, definition_field="predicate")
+            for name, expected in EXPECTED_INDEX_DEFINITIONS.items()
+        )
+    constraints_match = isinstance(constraints, Mapping) and set(constraints) == set(
+        EXPECTED_CONSTRAINT_DEFINITIONS
+    )
+    if constraints_match:
+        constraints_match = all(
+            _definition_matches(
+                constraints[name], expected, definition_field="definition"
+            )
+            for name, expected in EXPECTED_CONSTRAINT_DEFINITIONS.items()
+        )
+    return indexes_match, constraints_match
+
+
 def validate_schema_audit(audit: SchemaAudit) -> None:
     for name, valid in asdict(audit).items():
         if not valid:
             raise QualificationRefused(f"PostgreSQL {name} contract mismatch")
+
+
+def _summarize_timings(values: list[float]) -> dict[str, int | float | None]:
+    if not values:
+        return {"count": 0, "min": None, "p50": None, "max": None}
+    return {
+        "count": len(values),
+        "min": min(values),
+        "p50": statistics.median(values),
+        "max": max(values),
+    }
 
 
 def inspect_postgresql_contract(db: Session) -> SchemaAudit:
@@ -107,30 +297,47 @@ def inspect_postgresql_contract(db: Session) -> SchemaAudit:
             ), table_info AS (
                 SELECT oid, relowner, relacl FROM pg_class
                 WHERE oid = to_regclass('staging.chat_turn_jobs')
-            ), required_constraints(name, kind) AS (
-                VALUES
-                    ('chat_turn_jobs_pkey','p'),
-                    ('chat_turn_jobs_request_id_key','u'),
-                    ('chat_turn_jobs_chat_session_id_fkey','f'),
-                    ('chat_turn_jobs_revision_check','c'),
-                    ('chat_turn_jobs_worker_generation_check','c'),
-                    ('chat_turn_jobs_lease_generation_check','c'),
-                    ('chat_turn_jobs_state_check','c'),
-                    ('chat_turn_jobs_lease_fields_check','c'),
-                    ('chat_turn_jobs_terminal_timestamp_check','c'),
-                    ('chat_turn_jobs_failure_code_check','c')
-            ), actual_constraints AS (
-                SELECT conname AS name, contype::text AS kind, convalidated
-                FROM pg_constraint
-                WHERE conrelid = to_regclass('staging.chat_turn_jobs')
-            ), required_indexes(name, fragment, unique_required, partial_required) AS (
-                VALUES
-                    ('idx_chat_turn_jobs_claim',
-                     '(state, admitted_at, turn_id)',false,false),
-                    ('idx_chat_turn_jobs_expiry',
-                     '(state, lease_expires_at)',false,false),
-                    ('uq_chat_turn_jobs_nonterminal_owner',
-                     '(hf_user_id)',true,true)
+            ), index_contracts AS (
+                SELECT c.relname AS name,
+                       ARRAY(
+                           SELECT pg_get_indexdef(i.indexrelid, position, true)
+                           FROM generate_series(1, i.indnkeyatts) position
+                           ORDER BY position
+                       ) AS columns,
+                       pg_get_expr(i.indpred, i.indrelid, true) AS predicate,
+                       i.indisunique AS is_unique,
+                       i.indisvalid AS valid,
+                       i.indisready AS ready
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE i.indrelid = to_regclass('staging.chat_turn_jobs')
+                  AND c.relname IN (
+                      'idx_chat_turn_jobs_claim',
+                      'idx_chat_turn_jobs_expiry',
+                      'uq_chat_turn_jobs_nonterminal_owner'
+                  )
+            ), constraint_contracts AS (
+                SELECT conname AS name,
+                       contype::text AS kind,
+                       convalidated AS validated,
+                       pg_get_constraintdef(pc.oid, true) AS definition,
+                       rn.nspname AS reference_schema
+                FROM pg_constraint pc
+                LEFT JOIN pg_class rc ON rc.oid = pc.confrelid
+                LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+                WHERE pc.conrelid = to_regclass('staging.chat_turn_jobs')
+                  AND pc.conname IN (
+                      'chat_turn_jobs_pkey',
+                      'chat_turn_jobs_request_id_key',
+                      'chat_turn_jobs_chat_session_id_fkey',
+                      'chat_turn_jobs_revision_check',
+                      'chat_turn_jobs_worker_generation_check',
+                      'chat_turn_jobs_lease_generation_check',
+                      'chat_turn_jobs_state_check',
+                      'chat_turn_jobs_lease_fields_check',
+                      'chat_turn_jobs_terminal_timestamp_check',
+                      'chat_turn_jobs_failure_code_check'
+                  )
             )
             SELECT
                 current_schema() = 'staging'
@@ -152,31 +359,48 @@ def inspect_postgresql_contract(db: Session) -> SchemaAudit:
                         WHERE a.grantee = 0 AND a.privilege_type IN
                             ('SELECT','INSERT','UPDATE','DELETE')
                     ) AS privileges,
-                NOT EXISTS (
-                    SELECT FROM required_indexes r
-                    LEFT JOIN pg_indexes i ON i.schemaname = 'staging'
-                        AND i.tablename = 'chat_turn_jobs' AND i.indexname = r.name
-                    LEFT JOIN pg_class c
-                        ON c.oid = to_regclass(i.schemaname || '.' || i.indexname)
-                    LEFT JOIN pg_index x ON x.indexrelid = c.oid
-                    WHERE i.indexname IS NULL
-                       OR i.indexdef NOT LIKE '%' || r.fragment || '%'
-                       OR x.indisunique <> r.unique_required
-                       OR (x.indpred IS NOT NULL) <> r.partial_required
-                ) AS indexes,
-                NOT EXISTS (
-                    SELECT FROM required_constraints r
-                    LEFT JOIN actual_constraints a USING (name)
-                    WHERE a.name IS NULL OR a.kind <> r.kind OR NOT a.convalidated
-                ) AS constraints
+                coalesce(
+                    (SELECT jsonb_object_agg(
+                        name,
+                        jsonb_build_object(
+                            'columns', columns,
+                            'predicate', predicate,
+                            'unique', is_unique,
+                            'valid', valid,
+                            'ready', ready
+                        )
+                    ) FROM index_contracts),
+                    '{}'::jsonb
+                ) AS index_definitions,
+                coalesce(
+                    (SELECT jsonb_object_agg(
+                        name,
+                        jsonb_strip_nulls(jsonb_build_object(
+                            'kind', kind,
+                            'validated', validated,
+                            'definition', definition,
+                            'reference_schema', reference_schema
+                        ))
+                    ) FROM constraint_contracts),
+                    '{}'::jsonb
+                ) AS constraint_definitions
             """
             )
         )
         .mappings()
         .one()
     )
+    indexes, constraints = audit_postgresql_definitions(
+        indexes=row["index_definitions"],
+        constraints=row["constraint_definitions"],
+    )
     return SchemaAudit(
-        **{name: bool(row[name]) for name in SchemaAudit.__annotations__}
+        schema=bool(row["schema"]),
+        role=bool(row["role"]),
+        owner=bool(row["owner"]),
+        privileges=bool(row["privileges"]),
+        indexes=indexes,
+        constraints=constraints,
     )
 
 
@@ -276,6 +500,7 @@ def run_qualification(
                 turn_ids.append(turn_id)
             return result
 
+        failure_code: str | None = None
         try:
             db.add_all(sessions)
             db.commit()
@@ -396,38 +621,61 @@ def run_qualification(
             )
 
             def expiry() -> str:
-                interrupted = repository.interrupt_expired(
-                    db, now=now + timedelta(seconds=2), limit=1
+                job = repository.interrupt_exact_expired(
+                    db,
+                    turn_id=expiry_claim.turn_id,
+                    now=now + timedelta(seconds=2),
                 )
-                if interrupted != 1:
-                    return "expiry_count_mismatch"
-                job = repository.load_by_turn(db, expiry_claim.turn_id)
-                return job.failure_code if job is not None else "missing"
+                return job.failure_code
 
             scenario("expiry_interruption", expiry)
             db.commit()
+        except Exception as error:
+            failure_code = (
+                "database_failure"
+                if isinstance(error, SQLAlchemyError)
+                else "runtime_failure"
+            )
         finally:
-            db.rollback()
-            deleted_jobs = db.execute(
-                delete(ChatTurnJob).where(ChatTurnJob.turn_id.in_(turn_ids))
-            ).rowcount
-            deleted_sessions = db.execute(
-                delete(ChatSession).where(ChatSession.id.in_(session_ids))
-            ).rowcount
-            db.commit()
-            remaining_jobs = db.scalar(
-                select(ChatTurnJob.turn_id)
-                .where(ChatTurnJob.turn_id.in_(turn_ids))
-                .limit(1)
-            )
-            remaining_sessions = db.scalar(
-                select(ChatSession.id).where(ChatSession.id.in_(session_ids)).limit(1)
-            )
-            cleanup = {
-                "clean": remaining_jobs is None and remaining_sessions is None,
-                "jobs_deleted": deleted_jobs,
-                "sessions_deleted": deleted_sessions,
-            }
+            try:
+                db.rollback()
+                deleted_jobs = db.execute(
+                    delete(ChatTurnJob).where(ChatTurnJob.turn_id.in_(turn_ids))
+                ).rowcount
+                deleted_sessions = db.execute(
+                    delete(ChatSession).where(ChatSession.id.in_(session_ids))
+                ).rowcount
+                db.commit()
+                remaining_jobs = db.scalar(
+                    select(ChatTurnJob.turn_id)
+                    .where(ChatTurnJob.turn_id.in_(turn_ids))
+                    .limit(1)
+                )
+                remaining_sessions = db.scalar(
+                    select(ChatSession.id)
+                    .where(ChatSession.id.in_(session_ids))
+                    .limit(1)
+                )
+                cleanup = {
+                    "clean": remaining_jobs is None and remaining_sessions is None,
+                    "jobs_deleted": deleted_jobs,
+                    "sessions_deleted": deleted_sessions,
+                }
+            except Exception:
+                failure_code = "cleanup_failure"
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+    if failure_code is not None:
+        raise QualificationRunFailed(
+            code=failure_code,
+            passed=len(outcomes),
+            timing_ms=_summarize_timings(timings),
+            cleanup=cleanup,
+            schema_audit=schema_audit,
+        ) from None
 
     return {
         "release": {
@@ -436,46 +684,127 @@ def run_qualification(
         },
         "scenarios": {"requested": 7, "passed": len(outcomes), "failed": 0},
         "outcomes": outcomes,
-        "timing_ms": {
-            "count": len(timings),
-            "min": min(timings),
-            "p50": statistics.median(timings),
-            "max": max(timings),
-        },
+        "timing_ms": _summarize_timings(timings),
         "cleanup": cleanup,
         "schema_audit": asdict(schema_audit),
     }
 
 
-def main() -> int:
-    args = parser().parse_args()
-    release_dir = args.release_dir.resolve(strict=True)
-    manifest = validate_manifest(release_dir, "staging")
-    runtime = manifest.get("chat_runtime")
-    if not isinstance(runtime, dict):
-        raise QualificationRefused("release has no durable chat contract")
-    worker_contract_version = runtime.get("worker_contract_version")
-    if not isinstance(worker_contract_version, str) or not worker_contract_version:
-        raise QualificationRefused("release worker contract is missing")
-    environment = get_settings()
-    validate_operator_context(
-        confirmation=args.confirm,
-        environment=environment,
-        release_id=manifest["release_id"],
-        worker_contract_version=worker_contract_version,
-    )
-    with db_manager.session_local() as db:
-        audit = inspect_postgresql_contract(db)
-    report = run_qualification(
-        session_factory=db_manager.session_local,
-        release_id=manifest["release_id"],
-        worker_contract_version=worker_contract_version,
-        schema_audit=audit,
-    )
-    if not report["cleanup"]["clean"]:
-        raise RuntimeError("durable qualification cleanup failed")
+def _failure_report(
+    *,
+    release_id: str,
+    worker_contract_version: str,
+    code: str,
+    passed: int,
+    timing_ms: dict[str, int | float | None],
+    cleanup: dict[str, bool | int],
+    schema_audit: SchemaAudit,
+) -> dict[str, Any]:
+    return {
+        "release": {
+            "release_id": release_id,
+            "worker_contract_version": worker_contract_version,
+        },
+        "scenarios": {
+            "requested": len(EXPECTED_OUTCOMES),
+            "passed": passed,
+            "failed": 1,
+        },
+        "outcomes": {"qualification": code},
+        "timing_ms": timing_ms,
+        "cleanup": cleanup,
+        "schema_audit": asdict(schema_audit),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    release_id = "unavailable"
+    worker_contract_version = "unavailable"
+    empty_audit = SchemaAudit(*(False for _ in range(6)))
+    empty_cleanup: dict[str, bool | int] = {
+        "clean": True,
+        "jobs_deleted": 0,
+        "sessions_deleted": 0,
+    }
+    empty_timing = _summarize_timings([])
+    audit = empty_audit
+    try:
+        release_dir = args.release_dir.resolve(strict=True)
+        manifest = validate_manifest(release_dir, "staging")
+        release_id = manifest["release_id"]
+        runtime = manifest.get("chat_runtime")
+        if not isinstance(runtime, dict):
+            raise QualificationRefused("release has no durable chat contract")
+        contract = runtime.get("worker_contract_version")
+        if not isinstance(contract, str) or not contract:
+            raise QualificationRefused("release worker contract is missing")
+        worker_contract_version = contract
+        environment = get_settings()
+        validate_operator_context(
+            confirmation=args.confirm,
+            environment=environment,
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+        )
+        with db_manager.session_local() as db:
+            audit = inspect_postgresql_contract(db)
+        report = run_qualification(
+            session_factory=db_manager.session_local,
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            schema_audit=audit,
+        )
+        if not report["cleanup"]["clean"]:
+            raise QualificationRunFailed(
+                code="cleanup_failure",
+                passed=len(EXPECTED_OUTCOMES),
+                timing_ms=report["timing_ms"],
+                cleanup=report["cleanup"],
+                schema_audit=audit,
+            )
+    except QualificationRunFailed as error:
+        report = _failure_report(
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            code=error.code,
+            passed=error.passed,
+            timing_ms=error.timing_ms,
+            cleanup=error.cleanup,
+            schema_audit=error.schema_audit,
+        )
+    except (QualificationRefused, FileNotFoundError, ValueError):
+        report = _failure_report(
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            code="qualification_refused",
+            passed=0,
+            timing_ms=empty_timing,
+            cleanup=empty_cleanup,
+            schema_audit=audit,
+        )
+    except SQLAlchemyError:
+        report = _failure_report(
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            code="database_failure",
+            passed=0,
+            timing_ms=empty_timing,
+            cleanup=empty_cleanup,
+            schema_audit=empty_audit,
+        )
+    except Exception:
+        report = _failure_report(
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            code="runtime_failure",
+            passed=0,
+            timing_ms=empty_timing,
+            cleanup=empty_cleanup,
+            schema_audit=empty_audit,
+        )
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-    return 0
+    return 0 if report["scenarios"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":
