@@ -172,3 +172,51 @@ reviewed phase requires all of the following:
 
 Until then, `PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED`, executor, remote tool,
 remote Bash/Read, and lazy workspace controls remain false in every environment.
+
+## Staging 100-user overload baseline
+
+After activation, the separate external Pi load harness may measure the active
+single worker's overload behavior without enabling admission or external work.
+Resolve `current` and `active`, require `active/release` to be the exact current
+immutable release, and map blue to `http://127.0.0.1:8766` or green to
+`http://127.0.0.1:8767`. Then run from that release only:
+
+```bash
+release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+active="$(readlink -e /srv/paperswithcode/environments/staging/active)" || exit 1
+case "$release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "staging current is not an immutable release" >&2; exit 1 ;;
+esac
+case "$active" in
+  /srv/paperswithcode/environments/staging/slots/blue)
+    slot=blue; worker_url=http://127.0.0.1:8766 ;;
+  /srv/paperswithcode/environments/staging/slots/green)
+    slot=green; worker_url=http://127.0.0.1:8767 ;;
+  *) echo "staging active slot is invalid" >&2; exit 1 ;;
+esac
+test "$(readlink -e "$active/release")" = "$release" || exit 1
+report=/var/lib/paperswithcode/staging/external-pi-100-user-baseline.json
+cd -- "$release" || exit 1
+
+PWC_EXTERNAL_PI_BASELINE_CONFIRM=RUN_EXTERNAL_PI_SHADOW_BASELINE \
+PWC_EXTERNAL_PI_BASELINE_PROFILE=single-worker-overload-baseline \
+PWC_EXTERNAL_PI_BASELINE_USERS=100 \
+PWC_EXTERNAL_PI_BASELINE_SPAWN_RATE=100 \
+PWC_EXTERNAL_PI_BASELINE_SLOT="$slot" \
+PWC_EXTERNAL_PI_BASELINE_WORKER_URL="$worker_url" \
+PWC_EXTERNAL_PI_BASELINE_TOKEN_FILE=/etc/paperswithcode/external-pi-worker.env \
+PWC_EXTERNAL_PI_BASELINE_REPORT="$report" \
+uv run --isolated --with 'locust>=2.40,<3' \
+  locust -f backend/loadtests/external_pi_shadow_locustfile.py --headless \
+  --host "$worker_url" --users 100 --spawn-rate 100 --run-time 30s
+```
+
+Use the default single-process local runner. The retained mode-0600 report is
+content-free and records only bounded classifications, latencies, identities,
+counters, and verdicts. The run costs zero provider/Modal spend and is not a
+TTFT measurement because it performs no generation. With the current
+eight-session cap, `capacity_target_passed=false` is expected until scale-out;
+the command succeeds when `safety_passed=true`, proving safe fail-fast overload
+rather than claiming that one worker served 100 simultaneous chats. External
+admission and every executor/remote-tool flag remain false.

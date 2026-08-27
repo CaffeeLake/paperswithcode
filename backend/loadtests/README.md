@@ -147,3 +147,49 @@ HTTP refusal bodies are inspected only for typed codes. Error messages and SSE
 content never become metric labels. A resumed stream is parsed and bounded until
 `done`; malformed, truncated, transport-failed, or explicit error streams emit
 `chat.stream_error` and cannot pass after the first replay event.
+
+## External Pi single-worker overload baseline
+
+This is a separate, staging-only safety baseline for the already-active external
+Pi shadow worker. It does not change the two-user ceiling above. Resolve the
+active slot and immutable staging release first, derive that slot's fixed
+loopback endpoint, and run one local Locust process from that exact release:
+
+```bash
+release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+active="$(readlink -e /srv/paperswithcode/environments/staging/active)" || exit 1
+case "$release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "staging current is not an immutable release" >&2; exit 1 ;;
+esac
+case "$active" in
+  /srv/paperswithcode/environments/staging/slots/blue)
+    slot=blue; worker_url=http://127.0.0.1:8766 ;;
+  /srv/paperswithcode/environments/staging/slots/green)
+    slot=green; worker_url=http://127.0.0.1:8767 ;;
+  *) echo "staging active slot is invalid" >&2; exit 1 ;;
+esac
+test "$(readlink -e "$active/release")" = "$release" || exit 1
+report=/var/lib/paperswithcode/staging/external-pi-100-user-baseline.json
+cd -- "$release" || exit 1
+
+PWC_EXTERNAL_PI_BASELINE_CONFIRM=RUN_EXTERNAL_PI_SHADOW_BASELINE \
+PWC_EXTERNAL_PI_BASELINE_PROFILE=single-worker-overload-baseline \
+PWC_EXTERNAL_PI_BASELINE_USERS=100 \
+PWC_EXTERNAL_PI_BASELINE_SPAWN_RATE=100 \
+PWC_EXTERNAL_PI_BASELINE_SLOT="$slot" \
+PWC_EXTERNAL_PI_BASELINE_WORKER_URL="$worker_url" \
+PWC_EXTERNAL_PI_BASELINE_TOKEN_FILE=/etc/paperswithcode/external-pi-worker.env \
+PWC_EXTERNAL_PI_BASELINE_REPORT="$report" \
+uv run --isolated --with 'locust>=2.40,<3' \
+  locust -f backend/loadtests/external_pi_shadow_locustfile.py --headless \
+  --host "$worker_url" --users 100 --spawn-rate 100 --run-time 30s
+```
+
+The retained mode-0600 report is content-free. The workload restores only
+synthetic native transcript structure, invokes no model, provider, tool, or
+Modal runtime, and costs zero provider/Modal spend. It does not measure TTFT.
+For the current worker capped at eight sessions, `safety_passed=true` with
+`capacity_target_passed=false` proves bounded fail-fast overload behavior; the
+false capacity verdict is expected until separately reviewed scale-out exists
+and does not itself fail this safety-baseline command.
