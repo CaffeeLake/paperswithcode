@@ -14,13 +14,13 @@ from urllib.parse import quote
 
 from locust import HttpUser, between, events, task
 from locust.exception import StopUser
+from requests.exceptions import RequestException
 
 from backend.loadtests.chat_core import (
+    BoundedSSEStream,
     Metric,
     RunRefused,
     SSEParseError,
-    SSEParser,
-    StreamMetricTracker,
     build_turn_request,
     classify_refusal_bytes,
     load_run_config,
@@ -114,18 +114,15 @@ class StagingChatUser(HttpUser):
             self._consume_stream(response, started)
 
     def _consume_stream(self, response, started: float) -> None:
-        parser = SSEParser(max_event_bytes=max(4096, CONFIG.max_output_chars * 2))
-        tracker = StreamMetricTracker()
-        output_chars = 0
-        terminal = False
+        stream = BoundedSSEStream(max_output_chars=CONFIG.max_output_chars)
         session_id: str | None = None
         try:
-            for chunk in response.iter_content(chunk_size=4096):
-                for event in parser.feed(chunk):
-                    for metric in tracker.observe(
-                        event, elapsed_ms=_elapsed_ms(started)
-                    ):
-                        _record(self, metric)
+            chunk_size = 1 if CONFIG.profile.cohort == "reconnect" else 4096
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                batch = stream.feed(chunk, elapsed_ms=_elapsed_ms(started))
+                for metric in batch.metrics:
+                    _record(self, metric)
+                for event in batch.events:
                     event_type = event.get("type")
                     if event_type == "stream_start":
                         raw_session_id = event.get("session_id")
@@ -136,32 +133,27 @@ class StagingChatUser(HttpUser):
                             response.close()
                             self._resume(session_id)
                             return
-                    if event_type in {"answer_delta", "reasoning_delta"}:
-                        text = event.get("text")
-                        output_chars += len(text) if isinstance(text, str) else 0
-                        if output_chars > CONFIG.max_output_chars:
-                            raise SSEParseError(
-                                "stream output exceeded configured bound"
-                            )
-                    if event_type in {"done", "error"}:
-                        terminal = True
-                        return
-            for event in parser.close():
-                for metric in tracker.observe(event, elapsed_ms=_elapsed_ms(started)):
-                    _record(self, metric)
-                terminal = event.get("type") in {"done", "error"}
-        except SSEParseError:
+                if stream.finished:
+                    return
+            batch = stream.close(elapsed_ms=_elapsed_ms(started))
+            for metric in batch.metrics:
+                _record(self, metric)
+        except (SSEParseError, RequestException):
             _record_refusal(self, "stream_error", started)
             return
-        if not terminal:
+        if not stream.finished:
             _record_refusal(self, "stream_error", started)
 
     def _resume(self, session_id: str | None) -> None:
+        started = time.perf_counter()
         if not session_id:
             _record(self, Metric("chat.reconnect", 0, False))
+            _record_refusal(self, "stream_error", started)
             return
-        started = time.perf_counter()
-        parser = SSEParser(max_event_bytes=max(4096, CONFIG.max_output_chars * 2))
+        stream = BoundedSSEStream(
+            max_output_chars=CONFIG.max_output_chars,
+            replay=True,
+        )
         with self.client.get(
             f"/api/v1/chat/sessions/{quote(session_id, safe='')}/stream",
             headers={"Accept": "text/event-stream"},
@@ -172,16 +164,22 @@ class StagingChatUser(HttpUser):
             if response.status_code != 200:
                 response.failure("reconnect failed")
                 _record(self, Metric("chat.reconnect", _elapsed_ms(started), False))
+                _record_refusal(self, "stream_error", started)
                 return
             response.success()
-            for chunk in response.iter_content(chunk_size=4096):
-                events_seen = parser.feed(chunk)
-                if events_seen:
-                    _record(
-                        self,
-                        StreamMetricTracker.reconnect(
-                            elapsed_ms=_elapsed_ms(started), replayed=True
-                        ),
-                    )
-                    return
-            _record(self, Metric("chat.reconnect", _elapsed_ms(started), False))
+            _record(self, Metric("chat.reconnect", _elapsed_ms(started), True))
+            try:
+                for chunk in response.iter_content(chunk_size=4096):
+                    batch = stream.feed(chunk, elapsed_ms=_elapsed_ms(started))
+                    for metric in batch.metrics:
+                        _record(self, metric)
+                    if stream.finished:
+                        return
+                batch = stream.close(elapsed_ms=_elapsed_ms(started))
+                for metric in batch.metrics:
+                    _record(self, metric)
+            except (SSEParseError, RequestException):
+                _record_refusal(self, "stream_error", started)
+                return
+            if not stream.finished:
+                _record_refusal(self, "stream_error", started)

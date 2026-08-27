@@ -7,6 +7,7 @@ import pytest
 from backend.loadtests.chat_core import (
     CONFIRMATION,
     PROFILES,
+    BoundedSSEStream,
     RunRefused,
     SSEParseError,
     SSEParser,
@@ -118,6 +119,57 @@ def test_bridge_smoke_is_bounded_and_connection_only() -> None:
     assert config.max_spend_usd == 0
     assert config.max_prompt_chars == 128
     assert config.max_output_chars == 4096
+    assert config.protected_spend_cap_usd is None
+
+
+def _provider_environment(**overrides: str) -> dict[str, str]:
+    return _valid_environment(
+        PWC_LOADTEST_PROFILE="safe-cli",
+        PWC_LOADTEST_MAX_SPEND_USD="1.25",
+        **overrides,
+    )
+
+
+def test_provider_profile_refuses_missing_protected_daily_spend_cap() -> None:
+    with pytest.raises(RunRefused, match="protected daily spend cap is required"):
+        load_run_config(_provider_environment())
+
+
+@pytest.mark.parametrize("value", ["not-money", "nan", "0", "-1"])
+def test_provider_profile_refuses_malformed_protected_daily_spend_cap(
+    value: str,
+) -> None:
+    with pytest.raises(RunRefused, match="protected daily spend cap is invalid"):
+        load_run_config(_provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD=value))
+
+
+def test_provider_profile_refuses_mismatched_protected_daily_spend_cap() -> None:
+    with pytest.raises(RunRefused, match="does not match declared envelope"):
+        load_run_config(_provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD="2.50"))
+
+
+def test_provider_profile_accepts_exact_protected_daily_spend_cap() -> None:
+    config = load_run_config(
+        _provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD="1.25")
+    )
+
+    assert config.max_spend_usd == 1.25
+    assert config.protected_spend_cap_usd == 1.25
+
+
+def test_provider_profile_requires_all_loaded_provider_caps_to_align() -> None:
+    with pytest.raises(RunRefused, match="does not match declared envelope"):
+        load_run_config(
+            _provider_environment(
+                PWC_CHAT_OPENAI_DAILY_BUDGET_USD="1.25",
+                PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD="2.00",
+            )
+        )
+
+
+def test_connection_only_profile_refuses_nonzero_spend_envelope() -> None:
+    with pytest.raises(RunRefused, match="zero spend envelope"):
+        load_run_config(_valid_environment(PWC_LOADTEST_MAX_SPEND_USD="0.01"))
 
 
 def test_profiles_define_every_requested_content_free_cohort() -> None:
@@ -220,7 +272,7 @@ def test_http_refusal_bytes_are_bounded_and_content_free() -> None:
     assert classify_refusal_bytes(b"not-json", max_bytes=128) == "stream_error"
 
 
-def test_tracker_records_stream_error_and_reconnect_replay_metrics() -> None:
+def test_tracker_records_stream_error_metric() -> None:
     tracker = StreamMetricTracker()
 
     assert [
@@ -229,10 +281,49 @@ def test_tracker_records_stream_error_and_reconnect_replay_metrics() -> None:
             {"type": "error", "code": "provider_error"}, elapsed_ms=50
         )
     ] == ["chat.first_event", "chat.stream_error"]
-    assert (
-        tracker.reconnect(elapsed_ms=30, replayed=True).name == "chat.reconnect_replay"
+
+
+def test_replayed_stream_start_followed_by_parse_failure_cannot_pass() -> None:
+    stream = BoundedSSEStream(max_output_chars=128, replay=True)
+
+    batch = stream.feed(
+        b'data: {"type":"stream_start","session_id":"synthetic"}\n\n',
+        elapsed_ms=11,
     )
-    assert tracker.reconnect(elapsed_ms=31, replayed=False).name == "chat.reconnect"
+    assert [metric.name for metric in batch.metrics] == ["chat.first_replay"]
+
+    with pytest.raises(SSEParseError, match="valid JSON"):
+        stream.feed(b"data: not-json\n\n", elapsed_ms=19)
+
+    assert stream.successful_terminal is False
+
+
+def test_valid_replay_consumes_through_terminal_with_separate_metrics() -> None:
+    stream = BoundedSSEStream(max_output_chars=128, replay=True)
+
+    first = stream.feed(b'data: {"type":"stream_start"}\n\n', elapsed_ms=7)
+    middle = stream.feed(b'data: {"type":"answer_delta","text":"RE', elapsed_ms=15)
+    assert middle.metrics == []
+    terminal = stream.feed(b'ADY"}\n\ndata: {"type":"done"}\n\n', elapsed_ms=31)
+    tail = stream.close(elapsed_ms=31)
+
+    assert [(metric.name, metric.elapsed_ms) for metric in first.metrics] == [
+        ("chat.first_replay", 7)
+    ]
+    assert [(metric.name, metric.elapsed_ms) for metric in terminal.metrics] == [
+        ("chat.terminal", 31)
+    ]
+    assert tail.metrics == []
+    assert stream.successful_terminal is True
+
+
+def test_replay_without_terminal_is_not_successful() -> None:
+    stream = BoundedSSEStream(max_output_chars=128, replay=True)
+    stream.feed(b'data: {"type":"stream_start"}\n\n', elapsed_ms=5)
+
+    stream.close(elapsed_ms=8)
+
+    assert stream.successful_terminal is False
 
 
 def test_connection_only_profile_cannot_construct_an_admitted_turn() -> None:

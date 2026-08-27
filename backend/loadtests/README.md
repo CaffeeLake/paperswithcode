@@ -16,13 +16,18 @@ The harness fails closed unless all of these are set:
   `pwc_staging_session` values created only for synthetic load-test owners
 - explicit `PWC_LOADTEST_MAX_USERS`, `PWC_LOADTEST_MAX_SPEND_USD`,
   `PWC_LOADTEST_MAX_PROMPT_CHARS`, and `PWC_LOADTEST_MAX_OUTPUT_CHARS`
+- for every provider-backed profile, the protected server circuit already
+  loaded as `PWC_CHAT_OPENAI_DAILY_BUDGET_USD` and/or
+  `PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD`
 
 The checkpoint hard ceiling is two users. Every user runs once, prompts are
 fixed and bounded, web search is disabled, and streamed text is discarded after
-counting characters. The declared spend envelope does not replace the staging
-server's protected spend cap: check that cap before any provider profile. Never
-put prompts, responses, account IDs, session IDs, or cookies in profile names,
-metric names, exceptions, terminal output, or saved reports.
+counting characters. Provider profiles require the declared spend envelope to
+exactly equal every loaded protected provider daily cap; otherwise the harness
+refuses to start. This makes the server circuit, rather than an unenforceable
+client estimate, the actual upper bound. Connection-only profiles require zero
+spend. Never put prompts, responses, account IDs, session IDs, or cookies in
+profile names, metric names, exceptions, terminal output, or saved reports.
 
 The two-user `bridge-smoke` and `connection-only` profiles call only the public,
 content-free `/api/v1/chat/availability` endpoint. They perform no admission,
@@ -73,10 +78,12 @@ fixed-cardinality `CHAT` measurements:
 
 - `chat.admission` and `chat.first_event`
 - `chat.terminal`
-- `chat.reconnect` or `chat.reconnect_replay`
+- `chat.reconnect` and `chat.first_replay`
 - `chat.stream_error`
 - `chat.account_busy`
 - `chat.overload`
 
 HTTP refusal bodies are inspected only for typed codes. Error messages and SSE
-content never become metric labels.
+content never become metric labels. A resumed stream is parsed and bounded until
+`done`; malformed, truncated, transport-failed, or explicit error streams emit
+`chat.stream_error` and cannot pass after the first replay event.

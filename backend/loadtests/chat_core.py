@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 STAGING_ORIGIN = "https://staging.paperswithcode.co"
@@ -13,6 +14,10 @@ CONFIRMATION = "RUN_BOUNDED_STAGING_CHAT_LOAD"
 MAX_CHECKPOINT_USERS = 2
 MAX_PROMPT_CHARS = 1024
 MAX_OUTPUT_CHARS = 64 * 1024
+PROTECTED_DAILY_SPEND_CAPS = (
+    "PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+    "PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD",
+)
 
 
 class RunRefused(ValueError):
@@ -36,6 +41,7 @@ class RunConfig:
     synthetic_cookies: tuple[str, ...]
     max_users: int
     max_spend_usd: float
+    protected_spend_cap_usd: float | None
     max_prompt_chars: int
     max_output_chars: int
 
@@ -154,8 +160,32 @@ def load_run_config(environment: Mapping[str, str]) -> RunConfig:
         raise RunRefused("spend envelope must be finite")
     if max_spend_usd < 0 or max_spend_usd > 10:
         raise RunRefused("spend envelope must be between 0 and 10 USD")
-    if profile.cohort != "connection-only" and max_spend_usd <= 0:
-        raise RunRefused("stream profiles require a positive spend envelope")
+    protected_spend_cap_usd: float | None = None
+    if profile.cohort == "connection-only":
+        if max_spend_usd != 0:
+            raise RunRefused("connection-only profiles require a zero spend envelope")
+    else:
+        if max_spend_usd <= 0:
+            raise RunRefused("stream profiles require a positive spend envelope")
+        loaded_caps = [
+            environment[name]
+            for name in PROTECTED_DAILY_SPEND_CAPS
+            if name in environment
+        ]
+        if not loaded_caps:
+            raise RunRefused("protected daily spend cap is required")
+        try:
+            declared_spend = Decimal(raw_spend)
+            protected_caps = [Decimal(raw_cap.strip()) for raw_cap in loaded_caps]
+        except (InvalidOperation, AttributeError) as error:
+            raise RunRefused("protected daily spend cap is invalid") from error
+        if any(not cap.is_finite() or cap <= 0 for cap in protected_caps):
+            raise RunRefused("protected daily spend cap is invalid")
+        if any(cap != declared_spend for cap in protected_caps):
+            raise RunRefused(
+                "protected daily spend cap does not match declared envelope"
+            )
+        protected_spend_cap_usd = float(declared_spend)
 
     max_prompt_chars = _positive_int(
         _required(environment, "PWC_LOADTEST_MAX_PROMPT_CHARS", "prompt bound"),
@@ -173,6 +203,7 @@ def load_run_config(environment: Mapping[str, str]) -> RunConfig:
         synthetic_cookies=synthetic_cookies,
         max_users=max_users,
         max_spend_usd=max_spend_usd,
+        protected_spend_cap_usd=protected_spend_cap_usd,
         max_prompt_chars=max_prompt_chars,
         max_output_chars=max_output_chars,
     )
@@ -333,16 +364,23 @@ class Metric:
 class StreamMetricTracker:
     """Derive explicit milestones; never infer terminal time from HTTP timing."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        first_event_name: str = "chat.first_event",
+        record_admission: bool = True,
+    ) -> None:
         self._saw_event = False
+        self._first_event_name = first_event_name
+        self._record_admission = record_admission
 
     def observe(self, event: Mapping[str, Any], *, elapsed_ms: int) -> list[Metric]:
         metrics: list[Metric] = []
         if not self._saw_event:
             self._saw_event = True
-            metrics.append(Metric("chat.first_event", elapsed_ms, True))
+            metrics.append(Metric(self._first_event_name, elapsed_ms, True))
         classification = classify_event(event)
-        if classification == "admission":
+        if classification == "admission" and self._record_admission:
             metrics.append(Metric("chat.admission", elapsed_ms, True))
         elif classification == "terminal":
             metrics.append(Metric("chat.terminal", elapsed_ms, True))
@@ -350,7 +388,57 @@ class StreamMetricTracker:
             metrics.append(Metric(f"chat.{classification}", elapsed_ms, False))
         return metrics
 
-    @staticmethod
-    def reconnect(*, elapsed_ms: int, replayed: bool) -> Metric:
-        name = "chat.reconnect_replay" if replayed else "chat.reconnect"
-        return Metric(name, elapsed_ms, True)
+
+@dataclass(frozen=True)
+class StreamBatch:
+    events: list[dict[str, Any]]
+    metrics: list[Metric]
+
+
+class BoundedSSEStream:
+    """Apply identical parsing, output, and terminal rules to an SSE stream."""
+
+    def __init__(self, *, max_output_chars: int, replay: bool = False) -> None:
+        self._parser = SSEParser(max_event_bytes=max(4096, max_output_chars * 2))
+        self._tracker = StreamMetricTracker(
+            first_event_name="chat.first_replay" if replay else "chat.first_event",
+            record_admission=not replay,
+        )
+        self._maximum_output = max_output_chars
+        self._output_chars = 0
+        self._finished = False
+        self._successful_terminal = False
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    @property
+    def successful_terminal(self) -> bool:
+        return self._successful_terminal
+
+    def feed(self, chunk: bytes, *, elapsed_ms: int) -> StreamBatch:
+        if self._finished:
+            raise SSEParseError("SSE event arrived after terminal event")
+        return self._observe(self._parser.feed(chunk), elapsed_ms=elapsed_ms)
+
+    def close(self, *, elapsed_ms: int) -> StreamBatch:
+        if self._finished:
+            return StreamBatch([], [])
+        return self._observe(self._parser.close(), elapsed_ms=elapsed_ms)
+
+    def _observe(self, events: list[dict[str, Any]], *, elapsed_ms: int) -> StreamBatch:
+        metrics: list[Metric] = []
+        for event in events:
+            metrics.extend(self._tracker.observe(event, elapsed_ms=elapsed_ms))
+            event_type = event.get("type")
+            if event_type in {"answer_delta", "reasoning_delta"}:
+                text = event.get("text")
+                self._output_chars += len(text) if isinstance(text, str) else 0
+                if self._output_chars > self._maximum_output:
+                    raise SSEParseError("stream output exceeded configured bound")
+            if event_type in {"done", "error"}:
+                self._finished = True
+                self._successful_terminal = event_type == "done"
+                break
+        return StreamBatch(events, metrics)
