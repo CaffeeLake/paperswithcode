@@ -156,7 +156,7 @@ def test_eval_preflight_manifests_model_card_blog_project_and_readme(monkeypatch
     }
 
 
-def test_preflight_still_requires_markdown_when_hf_detail_completes_links(
+def test_preflight_accepts_official_links_when_markdown_is_not_ready(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -180,7 +180,8 @@ def test_preflight_still_requires_markdown_when_hf_detail_completes_links(
 
     result = url_preflight.extract_candidates(_context(project_page=False), fetch=fetch)
 
-    assert result["awaiting_markdown"] is True
+    assert result["awaiting_markdown"] is False
+    assert result["complete"] is True
     assert fetched == [
         "https://huggingface.co/api/papers/2608.00042",
         "https://huggingface.co/papers/2608.00042.md",
@@ -265,6 +266,53 @@ def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
     assert not any("/pdf/" in url for url in fetched)
 
 
+def test_preflight_does_not_fetch_pdf_when_hf_markdown_is_available(monkeypatch):
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+    fetched = []
+
+    def fetch(url: str, _limit: int):
+        fetched.append(url)
+        if "/api/papers/" in url:
+            return b"{}", url
+        if url.endswith(".md"):
+            return b"# Complete paper\n", url
+        raise AssertionError("PDF is a last-resort source")
+
+    result = url_preflight.extract_candidates(_context(project_page=False), fetch=fetch)
+
+    assert result["complete"] is True
+    assert not any("/pdf/" in url for url in fetched)
+
+
+def test_preflight_skips_pdf_when_official_repository_is_available(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+
+    fetched = []
+
+    def fetch(url: str, _limit: int):
+        fetched.append(url)
+        if "/api/papers/" in url:
+            return b"{}", url
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+
+    result = url_preflight.extract_candidates(_context(project_page=False), fetch=fetch)
+
+    assert result["complete"] is True
+    assert result["awaiting_markdown"] is False
+    assert {error["source"] for error in result["errors"]} == {"hf_markdown"}
+    assert not any("/pdf/" in url for url in fetched)
+
+
 def test_preflight_marks_missing_public_and_ocr_markdown_as_awaiting(monkeypatch):
     monkeypatch.setenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV, "hf-test")
     monkeypatch.setattr(
@@ -279,10 +327,10 @@ def test_preflight_marks_missing_public_and_ocr_markdown_as_awaiting(monkeypatch
     def unavailable_ocr(*_args, **_kwargs):
         raise urllib.error.HTTPError("bucket", 404, "not found", {}, None)
 
+    context = _context(project_page=False)
+    context["paper"]["repositories"] = []
     result = url_preflight.extract_candidates(
-        _context(project_page=False),
-        fetch=unavailable,
-        fetch_ocr_markdown=unavailable_ocr,
+        context, fetch=unavailable, fetch_ocr_markdown=unavailable_ocr
     )
 
     assert result["awaiting_markdown"] is True
@@ -1390,6 +1438,27 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
     assert len(accepted) == 1
     assert rejected == []
 
+    queried_source = {
+        **valid,
+        "evidence": [
+            {
+                **valid["evidence"][0],
+                "source_kind": "paper_source",
+                "source_url": "https://example.com/report?id=1",
+            }
+        ],
+    }
+    accepted, rejected = BenchmarkGapService(Database()).validate(
+        [queried_source],
+        paper=SimpleNamespace(
+            source_url="https://example.com/report?id=1",
+            arxiv_id=None,
+        ),
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
+
     eprint_evidence = {
         **valid,
         "evidence": [
@@ -1412,6 +1481,55 @@ def test_benchmark_gap_validation_isolates_malformed_entries():
     assert accepted[0]["evidence"][0]["source_url"] == (
         "https://arxiv.org/html/2608.00042"
     )
+
+    repository_evidence = {
+        **valid,
+        "evidence": [
+            {
+                **valid["evidence"][0],
+                "source_kind": "github_readme",
+                "source_url": (
+                    "https://raw.githubusercontent.com/example/model/main/README.md"
+                ),
+                "supports": ["ExampleBench results in Table 3"],
+            }
+        ],
+    }
+    accepted, rejected = BenchmarkGapService(Database()).validate(
+        [repository_evidence],
+        paper=SimpleNamespace(
+            source_url="https://example.com/release",
+            arxiv_id=None,
+        ),
+        source_documents=[
+            {"kind": "github_readme", "url": "https://github.com/example/model"}
+        ],
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
+
+    mismatched_kind = {
+        **repository_evidence,
+        "evidence": [
+            {**repository_evidence["evidence"][0], "source_kind": "paper_pdf"}
+        ],
+    }
+    accepted, rejected = BenchmarkGapService(Database()).validate(
+        [mismatched_kind],
+        paper=SimpleNamespace(
+            source_url="https://example.com/release",
+            arxiv_id=None,
+        ),
+        source_documents=[
+            {"kind": "github_readme", "url": "https://github.com/example/model"}
+        ],
+    )
+
+    assert accepted == []
+    assert rejected == [
+        {"index": 0, "error": "evidence source kind does not match scoped source"}
+    ]
 
 
 def test_benchmark_gap_rejects_server_owned_fields():

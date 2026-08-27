@@ -54,6 +54,7 @@ from backend.services.trending_model_resolution_service import (
     TrendingModelResolutionService,
     model_family_key,
 )
+from backend.utils.source_urls import source_url_identity
 
 
 class CodexCurationPaperNotFoundError(LookupError):
@@ -587,12 +588,28 @@ class CodexCurationCallbackService:
                     self.db.commit()
                 raise
         gap_service = BenchmarkGapService(self.db)
-        gap_paper = self.db.get(Paper, row.paper_id) if body.benchmark_gaps else None
-        accepted_gaps, rejected_gaps = gap_service.validate(
-            body.benchmark_gaps, paper=gap_paper
-        )
+        accepted_gaps: list[dict] = []
+        rejected_gaps: list[dict] = []
         before_state: dict[str, Any] = {"paper_id": row.paper_id}
         try:
+            gap_paper = (
+                self.db.get(Paper, row.paper_id) if body.benchmark_gaps else None
+            )
+            source_documents = (getattr(row, "url_candidates", None) or {}).get(
+                "source_documents"
+            ) or []
+            accepted_gaps, rejected_gaps = gap_service.validate(
+                body.benchmark_gaps,
+                paper=gap_paper,
+                source_documents=source_documents,
+            )
+            if rejected_gaps and getattr(row, "trigger", "admin") != "admin":
+                details = "; ".join(
+                    f"#{item['index']}: {item['error']}" for item in rejected_gaps
+                )
+                raise ValueError(
+                    f"Scheduled benchmark gap validation failed: {details}"
+                )
             if hasattr(self.db, "refresh"):
                 self.db.refresh(row, with_for_update=True)
             self._validate_mutation(row, body)
@@ -1031,14 +1048,14 @@ class CodexCurationCallbackService:
             "source_documents"
         ) or []
         expected = {
-            item.get("url")
+            source_url_identity(item.get("url"))
             for item in documents
             if isinstance(item, dict) and item.get("url")
         }
         if not expected:
             return
         supplied = {
-            item.get("url")
+            source_url_identity(item.get("url"))
             for item in body.source_coverage
             if isinstance(item, dict) and item.get("url")
         }
@@ -1049,7 +1066,7 @@ class CodexCurationCallbackService:
                 f"source: {', '.join(missing)}"
             )
         for item in body.source_coverage:
-            if item.get("url") not in expected:
+            if source_url_identity(item.get("url")) not in expected:
                 continue
             if item.get("status") not in {"inspected", "unavailable"}:
                 raise ValueError("Source coverage has an invalid inspection status")

@@ -540,6 +540,53 @@ def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
     assert database.commits == 2
 
 
+def test_rejected_scheduled_benchmark_gap_keeps_job_open_for_correction(
+    monkeypatch,
+):
+    row = SimpleNamespace(
+        id=42,
+        kind="add-evals",
+        status="running",
+        trigger="hf-trending-cron",
+        submitted_at=None,
+        applied_at=None,
+        paper_id=42,
+        url_candidates={"source_documents": []},
+    )
+
+    class Database(_MutationDatabase):
+        def get(self, model, _key):
+            return row if model is type(row) else SimpleNamespace(id=42)
+
+    class Gaps:
+        def __init__(self, _db):
+            pass
+
+        def validate(self, _gaps, **_kwargs):
+            return [], [{"index": 0, "error": "evidence source URL is not scoped"}]
+
+    monkeypatch.setattr(
+        "backend.services.codex_curation_callback_service.BenchmarkGapService", Gaps
+    )
+    database = Database()
+    service = _service(database, SimpleNamespace())
+
+    with pytest.raises(ValueError, match="benchmark gap"):
+        service.apply(
+            row,
+            ApplyMutationRequest(
+                evaluations=[],
+                benchmark_gaps=[{"reasoning": "A proposed gap"}],
+            ),
+        )
+
+    assert row.submitted_at is None
+    assert row.validation_summary["retryable"] is True
+    assert row.validation_summary["benchmark_gaps_rejected"] == [
+        {"index": 0, "error": "evidence source URL is not scoped"}
+    ]
+
+
 def test_all_evaluation_paper_ids_are_checked_before_the_first_write():
     database = _MutationDatabase()
 

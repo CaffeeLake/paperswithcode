@@ -44,6 +44,13 @@ class TrendingModelResolutionScopeError(RuntimeError):
     """A remote resolver selected a paper outside its callback context."""
 
 
+_EXTERNAL_DERIVATIVE_PATTERN = re.compile(
+    r"(?:^|[-_/.\s])(?:workflows?|uncensored|abliterat(?:ed|ions?)?|"
+    r"(?:latent[-_\s]*)?upscalers?)(?:$|[-_/.\s])",
+    re.IGNORECASE,
+)
+
+
 def model_family_key(value: str) -> str:
     """Normalize model-family names while ignoring parameter-size variants."""
     name = value.rsplit("/", 1)[-1].casefold()
@@ -238,6 +245,10 @@ class TrendingModelResolutionService:
             return paper
         external = mutation.external_paper
         assert external is not None
+        if _EXTERNAL_DERIVATIVE_PATTERN.search(candidate.repo_id):
+            raise ValueError(
+                "Obvious derivative repositories cannot create an external paper"
+            )
         if external.source_url.rstrip("/") not in {
             url.rstrip("/") for url in mutation.evidence_urls
         }:

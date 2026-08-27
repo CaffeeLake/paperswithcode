@@ -63,6 +63,7 @@ from backend.services.trending_model_resolution_service import (
     TrendingModelResolutionScopeError,
     TrendingModelResolutionService,
 )
+from backend.utils.source_urls import source_url_identity
 
 
 @compiles(BigInteger, "sqlite")
@@ -114,6 +115,27 @@ def test_discovery_uses_hf_cli_global_top_fifty():
     ]
     assert models[0].repo_id == "Qwen/Qwen3.8-Flash-Next"
     assert models[0].featured_publisher is True
+
+
+def test_source_url_identity_preserves_distinct_legacy_and_namespaced_sources():
+    assert source_url_identity("https://arxiv.org/abs/cs/0301001") == (
+        "arxiv:cs/0301001"
+    )
+    assert source_url_identity("https://arxiv.org/abs/cs/0301002") != (
+        source_url_identity("https://arxiv.org/abs/cs/0301001")
+    )
+    assert source_url_identity("https://huggingface.co/spaces/org/demo-a") != (
+        source_url_identity("https://huggingface.co/spaces/org/demo-b")
+    )
+    assert source_url_identity("https://github.com/org/repo/tree/main/examples") != (
+        source_url_identity("https://github.com/org/repo")
+    )
+    assert source_url_identity("https://example.com/report?id=1") != (
+        source_url_identity("https://example.com/report?id=2")
+    )
+    assert source_url_identity("https://example.com:8443/report") != (
+        source_url_identity("https://example.com/report")
+    )
 
 
 def test_discovery_prefers_hf_cli_from_running_virtualenv(tmp_path, monkeypatch):
@@ -590,6 +612,47 @@ def test_resolution_rejection_is_durable_and_creates_no_catalog_rows():
 
     assert result["status"] == "rejected"
     assert db.query(ModelRelease).count() == 0
+    assert db.query(Paper).count() == 0
+
+
+def test_resolution_rejects_obvious_derivative_before_creating_external_paper():
+    db = _resolution_session()
+    candidate = TrendingModelCandidate(
+        repo_id="community/ComfyUI-Model-Latent-Upscaler",
+        author="community",
+        readme_sha="c" * 64,
+        status="resolving",
+    )
+    db.add(candidate)
+    db.commit()
+
+    with pytest.raises(ValueError, match="derivative"):
+        TrendingModelResolutionService(db).apply(
+            candidate.id,
+            ResolveModelPaperMutation.model_validate(
+                {
+                    "decision": "accept",
+                    "reason": "A workflow repository with benchmark screenshots.",
+                    "novelty_kind": "new_weights",
+                    "evidence_urls": [
+                        "https://huggingface.co/community/ComfyUI-Model-Latent-Upscaler"
+                    ],
+                    "external_paper": {
+                        "source_url": "https://huggingface.co/community/ComfyUI-Model-Latent-Upscaler",
+                        "title": "ComfyUI Model Latent Upscaler",
+                        "abstract": "A derivative upscaling workflow.",
+                        "date_published": "2026-08-27",
+                    },
+                    "model_release": {
+                        "canonical_name": "Model Latent Upscaler",
+                        "publisher": "community",
+                        "is_open": True,
+                        "aliases": [],
+                    },
+                }
+            ),
+        )
+
     assert db.query(Paper).count() == 0
 
 
@@ -1737,6 +1800,42 @@ def test_trending_eval_requires_coverage_for_every_authoritative_source():
                             "detail": "Exact configured leaderboard already has this lane.",
                         }
                     ],
+                },
+            ]
+        ),
+    )
+
+
+def test_trending_source_coverage_accepts_equivalent_repository_urls():
+    row = SimpleNamespace(
+        trigger="hf-trending-cron",
+        url_candidates={
+            "source_documents": [
+                {
+                    "kind": "github_readme",
+                    "url": "https://github.com/Example/Model",
+                },
+                {
+                    "kind": "model_card",
+                    "url": "https://huggingface.co/Org/Model/raw/abc123/README.md",
+                },
+            ]
+        },
+    )
+
+    CodexCurationCallbackService._validate_trending_source_coverage(
+        row,
+        ApplyMutationRequest(
+            source_coverage=[
+                {
+                    "url": "https://raw.githubusercontent.com/Example/Model/main/README.md",
+                    "status": "inspected",
+                    "benchmark_outcomes": [],
+                },
+                {
+                    "url": "https://huggingface.co/Org/Model",
+                    "status": "inspected",
+                    "benchmark_outcomes": [],
                 },
             ]
         ),
