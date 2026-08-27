@@ -15,7 +15,7 @@ import uuid
 import httpx
 
 from backend.config import Settings, get_settings
-from backend.scripts.qualify_latex_compiler_space import (
+from backend.services.latex_compiler_qualification_service import (
     QualificationCase,
     qualification_cases,
     report,

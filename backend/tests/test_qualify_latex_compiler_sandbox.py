@@ -2,7 +2,9 @@ from __future__ import annotations
 
 
 def test_qualification_cases_cover_the_required_hostile_boundaries() -> None:
-    from backend.scripts.qualify_latex_compiler_space import qualification_cases
+    from backend.services.latex_compiler_qualification_service import (
+        qualification_cases,
+    )
 
     names = {case.name for case in qualification_cases()}
 
@@ -21,7 +23,10 @@ def test_qualification_cases_cover_the_required_hostile_boundaries() -> None:
 
 
 def test_qualification_report_is_bounded_and_never_contains_case_source() -> None:
-    from backend.scripts.qualify_latex_compiler_space import QualificationCase, report
+    from backend.services.latex_compiler_qualification_service import (
+        QualificationCase,
+        report,
+    )
 
     case = QualificationCase(
         name="secret-case", bundle=b"private manuscript source", expected="failed"
@@ -39,7 +44,9 @@ def test_qualification_report_is_bounded_and_never_contains_case_source() -> Non
 
 def test_sandbox_qualification_uses_the_transport_contract() -> None:
     from backend.scripts.qualify_latex_compiler_sandbox import run_case
-    from backend.scripts.qualify_latex_compiler_space import QualificationCase
+    from backend.services.latex_compiler_qualification_service import (
+        QualificationCase,
+    )
     from latex_compiler_contract import CompilerJobState, CompilerStatus
 
     class Compiler:

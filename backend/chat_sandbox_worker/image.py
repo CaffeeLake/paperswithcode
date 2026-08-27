@@ -20,6 +20,8 @@ from backend.chat_sandbox_worker.contract import (
     POSTERLY_CHROMIUM_REVISION,
     POSTERLY_PLAYWRIGHT_VERSION,
     POSTERLY_SOURCE_COMMIT,
+    PWC_CLI_INSTALLER_SHA256,
+    PWC_CLI_SOURCE_COMMIT,
     PWC_CLI_VERSION,
     RESTRICTED_HF_CLI_VERSION,
     SDK_VERSION,
@@ -28,7 +30,6 @@ from backend.chat_sandbox_worker.contract import (
 BACKEND = Path(__file__).resolve().parents[1]
 REPOSITORY = Path(__file__).resolve().parents[2]
 WORKER = Path(__file__).resolve().parent
-STANDALONE = REPOSITORY / "standalone_cli"
 RESTRICTED_HF = REPOSITORY / "restricted_hf_cli"
 S2_CLI = REPOSITORY / "s2_cli"
 
@@ -73,6 +74,9 @@ image = (
         "test -r /opt/posterly/LICENSE && test -r /opt/posterly/NOTICE.md && test -r /opt/posterly/SKILL.md",
     )
     .run_commands(
+        "mkdir -p /opt/pwc",
+        f"curl -fsSLo /opt/pwc/install-pwc.py https://raw.githubusercontent.com/huggingface/pwc-cli/{PWC_CLI_SOURCE_COMMIT}/standalone_cli/install.py",
+        f"echo '{PWC_CLI_INSTALLER_SHA256}  /opt/pwc/install-pwc.py' | sha256sum -c -",
         "groupadd --system pwc-broker && useradd --system --gid pwc-broker --home-dir /var/empty/pwc-broker pwc-broker",
         "groupadd --system pwc-chat && useradd --system --gid pwc-chat --create-home --home-dir /home/pwc-chat pwc-chat",
         "mkdir -p /opt/pwc/backend/chat_sandbox_worker /workspace /home/pwc-chat/.claude /var/empty/pwc-broker",
@@ -120,7 +124,6 @@ image = (
         copy=True,
     )
     .add_local_file(RESTRICTED_HF / "bin" / "hf", "/opt/pwc/restricted-hf", copy=True)
-    .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
         "cd /opt/pwc/backend/chat_sandbox_worker/pi_worker && npm ci --ignore-scripts && npm run build && npm prune --omit=dev --ignore-scripts",

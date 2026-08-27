@@ -3381,6 +3381,13 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     assert '"chmod -R a+rX /opt/pwc/backend"' in source
     assert '"chmod -R a+rX /opt/pwc/restricted_hf_cli"' in source
     assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
+    assert "PWC_CLI_SOURCE_COMMIT" in source
+    assert "PWC_CLI_INSTALLER_SHA256" in source
+    assert "raw.githubusercontent.com/huggingface/pwc-cli/" in source
+    assert "sha256sum -c -" in source
+    assert source.index('"mkdir -p /opt/pwc"') < source.index(
+        "raw.githubusercontent.com/huggingface/pwc-cli/"
+    )
     assert '"runuser -u pwc-chat -- hf --help >/dev/null"' in source
     assert '"python -m pip install --no-deps /opt/pwc/s2_cli"' in source
     assert "runuser -u pwc-chat -- hf version" in source

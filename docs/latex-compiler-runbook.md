@@ -7,7 +7,7 @@ credentials.
 
 ## Current qualification decision
 
-**Do not enable paper compilation.** The private Docker Space remains
+**Do not enable paper compilation.** The per-job Sandbox deployment remains
 unqualified, so `PWC_CHAT_LATEX_COMPILER_JOBS_ENABLED=false` is the required
 staging state.
 
@@ -16,14 +16,13 @@ Evidence captured on 2026-08-25:
 - The authenticated Hub identity is `nielsr`, but `hf spaces list --author
   nielsr --search pwc` returned only public curator Spaces; no existing private
   compiler Space was available to inspect.
-- The staging example deliberately leaves the compiler URL, private-Space
-  token, and signing key empty. No configured endpoint or public-key secret is
-  available for a live request.
-- The pinned Space image runs as an unprivileged user with a minimal
-  environment and no application credentials, but its Docker Space deployment
-  does not establish a per-job network boundary. A compiler compromise could
-  make outbound requests with the manuscript it received. Serialized execution
-  does not solve this confidentiality risk.
+- The then-current staging example left the compiler URL, private-Space token,
+  and signing key empty, so no endpoint was available for a live request.
+- The compiler image ran as an unprivileged user with a minimal environment and
+  no application credentials, but the rejected long-lived Docker Space
+  deployment did not establish a per-job network boundary. A compiler
+  compromise could have made outbound requests with the manuscript it received.
+  Serialized execution did not solve this confidentiality risk.
 
 Consequently, a long-lived Docker Space is not adequate evidence for the
 privacy boundary. The application factory now selects only the per-job Hugging
@@ -34,14 +33,17 @@ compiler's public signing key, and starts the compiler only after a fresh,
 unprivileged user/network/PID namespace has no default route. If that preflight
 cannot run, the submission fails before any manuscript bytes are sent.
 
+The rejected long-lived Docker Space deployment, direct HTTP client, deployment
+script, and Space-specific settings have been removed. The compiler image under
+`latex_compiler_space/` is retained only as the OCI runtime launched inside each
+per-job Sandbox.
+
 The required external staging inputs remain intentionally blank in the release
 example: an operator-approved private namespace, an immutable compiler image
 digest, a protected Sandbox-only credential, and the exact
 `sandbox-netns-v1` egress-policy attestation. Do not derive these from the
-authenticated developer identity, reuse a Space credential, or invent a
-target. The legacy `LatexCompilerClient` and Space settings remain only for
-rollback-era direct compatibility; `compiler_transport_from_settings` never
-selects them. `qualify_latex_compiler_space` now refuses to run.
+authenticated developer identity, reuse an unrelated credential, or invent a
+target.
 
 ## Kill switch
 

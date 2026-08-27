@@ -518,10 +518,6 @@ class Settings(BaseSettings):
     chat_latex_compiler_hf_sandbox_egress_policy_attestation: str = Field(
         default="", max_length=128
     )
-    # Legacy private-Space settings remain readable for rollback-era direct
-    # clients, but the application factory never selects that transport.
-    chat_latex_compiler_url: str = Field(default="", max_length=1000)
-    chat_latex_compiler_hf_token: str = Field(default="")
     chat_latex_compiler_signing_private_key: str = Field(default="")
     chat_artifact_shared_preview_enabled: bool = Field(default=False)
     chat_artifact_storage_backend: Literal["local", "hf_bucket"] = Field(
