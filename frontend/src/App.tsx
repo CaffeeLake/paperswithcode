@@ -244,7 +244,7 @@ const Shell: React.FC = () => {
           <React.Suspense fallback={<RouteFallback />}>
             <Routes>
               <Route
-                path="/pdf/:arxivId"
+                path="/pdf/:paperId"
                 element={isNativePdfReaderEnabled() ? <PaperReaderView /> : <NotFound />}
               />
             </Routes>

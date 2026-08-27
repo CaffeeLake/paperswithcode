@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,8 @@ from PIL import Image
 
 _MODERN_ARXIV_ID = re.compile(r"^(?P<base>\d{4}\.\d{4,5})(?:v\d+)?$")
 _EXTERNAL_PAPER_ID = re.compile(r"^[1-9]\d{0,19}$")
+PAPER_PDF_MAX_BYTES = 150 * 1024 * 1024
+PAPER_PDF_CHUNK_BYTES = 1024 * 1024
 
 
 _PAPER_ASSET_NAME = re.compile(
@@ -70,6 +73,42 @@ def paper_asset_bucket_key(
     if resolved_source == "external":
         return f"external/{normalized}/images/{filename}"
     return f"{normalized[:4]}/{normalized}/images/{filename}"
+
+
+def stream_external_paper_pdf(
+    paper_id: str,
+    *,
+    bucket_id: str,
+    token: str | None,
+) -> tuple[Iterator[bytes], int]:
+    """Open one validated archived external PDF as bounded chunks."""
+    _, normalized = normalize_markdown_paper_id(paper_id, "external")
+    if not bucket_id.strip():
+        raise ValueError("PWC_PAPER_MARKDOWN_HF_BUCKET_ID is not configured")
+
+    key = f"external/{normalized}/paper.pdf"
+    path = f"hf://buckets/{bucket_id.strip()}/{key}"
+    filesystem = HfFileSystem(token=token)
+    try:
+        size = int(filesystem.info(path)["size"])
+        with filesystem.open(path, "rb", block_size=0) as handle:
+            magic = handle.read(5)
+    except (EntryNotFoundError, FileNotFoundError, KeyError, TypeError) as error:
+        raise ValueError(f"Paper PDF was not found: {key}") from error
+    if size < 5 or size > PAPER_PDF_MAX_BYTES or magic != b"%PDF-":
+        raise ValueError("Archived paper PDF is invalid")
+
+    def chunks() -> Iterator[bytes]:
+        remaining = size
+        with filesystem.open(path, "rb", block_size=0) as handle:
+            while remaining:
+                chunk = handle.read(min(PAPER_PDF_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return chunks(), size
 
 
 def read_paper_asset(
