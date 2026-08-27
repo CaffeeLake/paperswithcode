@@ -2996,6 +2996,15 @@ def test_staging_chat_pool_toggle_is_narrow_and_bounded():
     }
 
 
+# Production break caught: the durable bridge toggle mutates capacity, worker,
+# executor, workspace, or provider controls along with its single feature flag.
+@pytest.mark.parametrize("enabled", [True, False])
+def test_staging_chat_durable_dispatch_toggle_is_single_key(enabled: bool):
+    assert configure_host_env.staging_chat_durable_dispatch_values(enabled=enabled) == {
+        "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false"
+    }
+
+
 def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():
     assert configure_host_env.staging_chat_pi_prewarm_values(enabled=True) == {
         "PWC_CHAT_PI_PREWARM_ENABLED": "true",
@@ -3287,6 +3296,116 @@ def test_staging_chat_pi_prewarm_mode_preserves_other_configuration(
     assert configure_host_env.decoded_value(
         written["lines"]["PWC_CHAT_PI_PREWARM_ENABLED"]
     ) == ("true" if enabled else "false")
+
+
+# Production break caught: a staging durable toggle targets production, changes
+# unrelated feature/capacity lines, uses the wrong ownership, or prints a broad claim.
+@pytest.mark.parametrize("enabled", [True, False])
+def test_staging_chat_durable_dispatch_mode_is_narrow_and_staging_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    enabled: bool,
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    staging_lines = (
+        "UNRELATED=preserved\n"
+        "PWC_CHAT_MAX_CONCURRENCY=2\n"
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED=true\n"
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED=true\n"
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED=false\n"
+        "PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER=huggingface\n"
+    )
+    (config_root / "staging.env").write_text(staging_lines, encoding="utf-8")
+    (config_root / "production.env").write_text(
+        "PRODUCTION=untouched\n", encoding="utf-8"
+    )
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    mode = (
+        "--staging-chat-durable-dispatch-enable-only"
+        if enabled
+        else "--staging-chat-durable-dispatch-disable-only"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["configure_host_env.py", "--legacy-env", str(source), mode],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == config_root / "staging.env"
+    assert written["group"] == "pwc-staging"
+    assert {
+        key: configure_host_env.decoded_value(value)
+        for key, value in written["lines"].items()
+    } == {
+        "UNRELATED": "preserved",
+        "PWC_CHAT_MAX_CONCURRENCY": "2",
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "true",
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "false",
+        "PWC_CHAT_DEEPSEEK_V4_FLASH_PROVIDER": "huggingface",
+        "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false",
+    }
+    assert capsys.readouterr().out == (
+        f"{'enabled' if enabled else 'disabled'} staging chat durable dispatch; "
+        "no service was restarted\n"
+    )
+
+
+# Production break caught: the protected bridge can be mixed with another mode
+# or can accept a production confirmation, widening its staging-only authority.
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--staging-chat-capacity-only"],
+        ["--staging-chat-durable-dispatch-disable-only"],
+        ["--confirm", "DEPLOY_PRODUCTION"],
+    ],
+)
+def test_staging_chat_durable_dispatch_mode_must_run_alone_without_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra_args: list[str],
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "staging.env").write_text("KEEP=value\n", encoding="utf-8")
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--staging-chat-durable-dispatch-enable-only",
+            *extra_args,
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        configure_host_env.main()
+    assert (config_root / "staging.env").read_text(encoding="utf-8") == "KEEP=value\n"
+    assert "staging durable dispatch enable/disable must run alone" in (
+        capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize("enabled", [True, False])

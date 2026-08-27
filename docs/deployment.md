@@ -287,6 +287,47 @@ Before any non-zero rollout, deploy two distinct zero-percent bridge commits so
 both `current` and `previous` understand `modal_cli`. Then run the operator-only
 infrastructure qualification from the selected immutable release:
 
+The durable-turn compatibility bridge is a separate, reversible staging-only
+checkpoint. The guarded `add_chat_turn_jobs.sql` migration must already be
+applied with `search_path=staging,public`, and its schema, ownership, grants,
+production-role revocation, and indexes must be audited before enabling the
+bridge. Keep staging capacity at exactly two
+(`PWC_CHAT_MAX_CONCURRENCY=2`) throughout enablement, qualification, and
+rollback; this toggle must not change capacity, external-worker, executor,
+workspace, or provider switches.
+
+Enable only the bridge, refresh the active immutable release by its exact SHA,
+then qualify and audit that same release:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-chat-durable-dispatch-enable-only
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.qualify_chat_soak \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm QUALIFY_STAGING_CHAT_SOAK
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.audit_chat_soak \
+  --started-at <durable-bridge-activation-time> \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm AUDIT_STAGING_CHAT_SOAK
+```
+
+Complete the authenticated staging turn-ownership matrix for new turns,
+follow-ups, cancellation, edit/retry, and resume before treating the bridge as
+qualified. On any failed gate, disable only the bridge and refresh the same
+exact SHA through the immutable deployment path:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-chat-durable-dispatch-disable-only
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+```
+
 Pi prewarming and blank-pool admission are independent protected staging
 controls. Toggle Pi prewarming without changing admission, then refresh the
 exact active release through the immutable deployment path:

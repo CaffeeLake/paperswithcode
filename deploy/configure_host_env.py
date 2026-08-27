@@ -695,6 +695,12 @@ def staging_chat_pool_values(*, enabled: bool) -> dict[str, str]:
     return values
 
 
+def staging_chat_durable_dispatch_values(*, enabled: bool) -> dict[str, str]:
+    """Toggle only the staging durable-turn compatibility bridge."""
+
+    return {"PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false"}
+
+
 # Must match Settings.chat_deepseek_v4_flash_route when Hugging Face is selected.
 STAGING_DEEPSEEK_PREWARM_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
 
@@ -1123,6 +1129,12 @@ def main() -> int:
     parser.add_argument("--staging-chat-alerts-only", action="store_true")
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
+    parser.add_argument(
+        "--staging-chat-durable-dispatch-enable-only", action="store_true"
+    )
+    parser.add_argument(
+        "--staging-chat-durable-dispatch-disable-only", action="store_true"
+    )
     parser.add_argument("--staging-chat-pi-prewarm-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
     parser.add_argument("--staging-chat-routing-enable-only", action="store_true")
@@ -1193,6 +1205,44 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    durable_dispatch_modes = (
+        args.staging_chat_durable_dispatch_enable_only,
+        args.staging_chat_durable_dispatch_disable_only,
+    )
+    if any(durable_dispatch_modes):
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "staging_chat_durable_dispatch_enable_only",
+                "staging_chat_durable_dispatch_disable_only",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            sum(durable_dispatch_modes) != 1
+            or other_modes
+            or args.confirm is not None
+            or args.codex_jobs_namespace
+            or args.modal_profile
+        ):
+            parser.error(
+                "staging durable dispatch enable/disable must run alone "
+                "without --confirm"
+            )
+        enabled = args.staging_chat_durable_dispatch_enable_only
+        staging = assign(
+            read_lines(CONFIG_ROOT / "staging.env"),
+            staging_chat_durable_dispatch_values(enabled=enabled),
+        )
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print(
+            f"{'enabled' if enabled else 'disabled'} staging chat durable dispatch; "
+            "no service was restarted"
+        )
+        return 0
     if args.production_codex_image_only:
         selected_modes = [
             value
