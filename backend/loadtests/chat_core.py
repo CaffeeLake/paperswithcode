@@ -22,6 +22,7 @@ MAX_PROTECTED_ENV_BYTES = 1024 * 1024
 QUALIFIED_PROVIDER_MODELS = {
     "gpt-5.6-luna@openai": "PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
 }
+SAFE_CLI_COMMAND = "pwc paper info 1706.03762"
 
 
 class RunRefused(ValueError):
@@ -36,6 +37,7 @@ class LoadProfile:
     cohort: str
     metric_label: str
     same_account: bool = False
+    executable: bool = True
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ class RunConfig:
 
 PROFILES = {
     "bridge-smoke": LoadProfile(
-        "bridge-smoke", 2, 1.0, "connection-only", "bridge_smoke"
+        "bridge-smoke", 2, 1.0, "durable-bridge", "bridge_smoke"
     ),
     "steady-10": LoadProfile("steady-10", 10, 1.0, "stream", "steady_10"),
     "steady-25": LoadProfile("steady-25", 25, 2.0, "stream", "steady_25"),
@@ -73,12 +75,23 @@ PROFILES = {
     "general-bash": LoadProfile("general-bash", 2, 1.0, "stream", "general_bash"),
     "overload": LoadProfile("overload", 3, 3.0, "stream", "overload"),
     "connection-only": LoadProfile(
-        "connection-only", 2, 1.0, "connection-only", "connection_only"
+        "connection-only",
+        2,
+        1.0,
+        "sse-connection",
+        "connection_only",
+        executable=False,
+    ),
+    "availability-connectivity": LoadProfile(
+        "availability-connectivity", 2, 1.0, "availability", "availability_connectivity"
     ),
 }
 
 _PROMPTS = {
-    "safe-cli": "Reply with READY only. Do not call tools.",
+    "safe-cli": (
+        "Run exactly this read-only command exactly once: "
+        f"`{SAFE_CLI_COMMAND}`. Do not run any other command."
+    ),
     "general-bash": "Run `printf loadtest-ready` once, then report only the exit code.",
     "reconnect": "Reply with READY only. Do not call tools.",
     "same-account-contention": "Reply with READY only. Do not call tools.",
@@ -206,9 +219,9 @@ def load_run_config(
         profile = PROFILES[profile_name]
     except KeyError as error:
         raise RunRefused("profile selection is not recognized") from error
-    if profile.users > MAX_CHECKPOINT_USERS:
+    if not profile.executable or profile.users > MAX_CHECKPOINT_USERS:
         raise RunRefused(
-            f"profile {profile.name} is definition-only above the two-user checkpoint"
+            f"profile {profile.name} is definition-only at this checkpoint"
         )
 
     raw_cookies = _required(
@@ -255,11 +268,11 @@ def load_run_config(
         raise RunRefused("spend envelope must be between 0 and 10 USD")
     protected_spend_cap_usd: float | None = None
     initial_model: str | None = None
-    if profile.cohort == "connection-only":
+    if profile.cohort in {"durable-bridge", "availability", "sse-connection"}:
         if max_spend_usd != 0:
-            raise RunRefused("connection-only profiles require a zero spend envelope")
+            raise RunRefused("model-free profiles require a zero spend envelope")
         if environment.get("PWC_LOADTEST_MODEL", "").strip():
-            raise RunRefused("connection-only profile must be model-free")
+            raise RunRefused("model-free profile cannot select a model")
     else:
         if max_spend_usd <= 0:
             raise RunRefused("stream profiles require a positive spend envelope")
@@ -319,8 +332,8 @@ def build_turn_request(
 ) -> dict[str, object]:
     """Build one bounded synthetic turn for executable future profiles."""
 
-    if profile.cohort == "connection-only":
-        raise RunRefused("connection-only profile does not admit chat turns")
+    if profile.cohort in {"durable-bridge", "availability", "sse-connection"}:
+        raise RunRefused("profile does not admit chat turns")
     if initial_model not in QUALIFIED_PROVIDER_MODELS:
         raise RunRefused("provider model is not supported by this checkpoint")
     prompt = _PROMPTS.get(profile.name, _PROMPTS["stream"])
@@ -467,6 +480,68 @@ class Metric:
     name: str
     elapsed_ms: int
     success: bool
+
+
+def validate_runtime_shape(
+    profile: LoadProfile, *, users: int | None, spawn_rate: float | None
+) -> None:
+    """Require Locust's effective shape to exactly match the named profile."""
+
+    if users != profile.users:
+        raise RunRefused(f"Locust users must equal profile size {profile.users}")
+    if spawn_rate is None or not math.isclose(
+        spawn_rate, profile.spawn_rate, rel_tol=0, abs_tol=1e-9
+    ):
+        raise RunRefused(
+            f"Locust spawn rate must equal profile rate {profile.spawn_rate}"
+        )
+
+
+class ProfileObservationTracker:
+    """Verify profile-specific behavior with fixed-cardinality metrics."""
+
+    def __init__(self, profile: LoadProfile) -> None:
+        self._safe_cli = profile.name == "safe-cli"
+        self._observed = False
+        self._invalid_tool = False
+        self._observed_ids: set[str] = set()
+        self._finished = False
+
+    def observe(self, event: Mapping[str, Any], *, elapsed_ms: int) -> list[Metric]:
+        if not self._safe_cli or self._finished:
+            return []
+        event_type = event.get("type")
+        arguments = event.get("args", event.get("input"))
+        if event_type in {"tool_call", "tool_call_arguments_done"}:
+            event_id = event.get("id")
+            identity = (
+                event_id if isinstance(event_id, str) else f"anonymous-{id(event)}"
+            )
+            if identity not in self._observed_ids:
+                self._observed_ids.add(identity)
+                exact = (
+                    event.get("name") == "Bash"
+                    and isinstance(arguments, Mapping)
+                    and arguments.get("command") == SAFE_CLI_COMMAND
+                )
+                if exact and not self._observed:
+                    self._observed = True
+                    return [Metric("chat.safe_cli_command", elapsed_ms, True)]
+                self._invalid_tool = True
+        if event_type in {"done", "error"}:
+            self._finished = True
+            metrics: list[Metric] = []
+            if not self._observed:
+                metrics.append(Metric("chat.safe_cli_command", elapsed_ms, False))
+            metrics.append(
+                Metric(
+                    "chat.safe_cli_contract",
+                    elapsed_ms,
+                    self._observed and not self._invalid_tool and event_type == "done",
+                )
+            )
+            return metrics
+        return []
 
 
 class StreamMetricTracker:

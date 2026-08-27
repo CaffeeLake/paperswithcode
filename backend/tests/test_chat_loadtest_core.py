@@ -9,7 +9,10 @@ import pytest
 from backend.loadtests.chat_core import (
     CONFIRMATION,
     PROFILES,
+    SAFE_CLI_COMMAND,
     BoundedSSEStream,
+    Metric,
+    ProfileObservationTracker,
     RunRefused,
     SSEParseError,
     SSEParser,
@@ -20,6 +23,7 @@ from backend.loadtests.chat_core import (
     classify_refusal_bytes,
     load_run_config,
     read_authoritative_budget,
+    validate_runtime_shape,
 )
 
 
@@ -112,12 +116,12 @@ def test_independent_account_profile_refuses_duplicate_synthetic_cookies() -> No
         load_run_config(_valid_environment(PWC_LOADTEST_SYNTHETIC_COOKIES=duplicate))
 
 
-def test_bridge_smoke_is_bounded_and_connection_only() -> None:
+def test_bridge_smoke_is_bounded_and_exercises_durable_bridge() -> None:
     config = load_run_config(_valid_environment())
 
     assert config.profile.name == "bridge-smoke"
     assert config.profile.users == 2
-    assert config.profile.cohort == "connection-only"
+    assert config.profile.cohort == "durable-bridge"
     assert config.max_users == 2
     assert config.max_spend_usd == 0
     assert config.max_prompt_chars == 128
@@ -279,13 +283,26 @@ def test_provider_profile_accepts_exact_authoritative_cap_and_model(
 
 
 def test_connection_only_profile_refuses_model_selection() -> None:
-    with pytest.raises(RunRefused, match="connection-only profile must be model-free"):
+    with pytest.raises(RunRefused, match="model-free profile"):
         load_run_config(_valid_environment(PWC_LOADTEST_MODEL="gpt-5.6-luna@openai"))
 
 
 def test_connection_only_profile_refuses_nonzero_spend_envelope() -> None:
     with pytest.raises(RunRefused, match="zero spend envelope"):
         load_run_config(_valid_environment(PWC_LOADTEST_MAX_SPEND_USD="0.01"))
+
+
+def test_connection_only_profile_is_definition_only_until_subscription_exists() -> None:
+    with pytest.raises(RunRefused, match="definition-only"):
+        load_run_config(_valid_environment(PWC_LOADTEST_PROFILE="connection-only"))
+
+
+def test_availability_connectivity_is_honestly_named_and_executable() -> None:
+    config = load_run_config(
+        _valid_environment(PWC_LOADTEST_PROFILE="availability-connectivity")
+    )
+
+    assert config.profile.cohort == "availability"
 
 
 def test_profiles_define_every_requested_content_free_cohort() -> None:
@@ -302,6 +319,7 @@ def test_profiles_define_every_requested_content_free_cohort() -> None:
         "general-bash",
         "overload",
         "connection-only",
+        "availability-connectivity",
     }
     assert {
         PROFILES[name].users
@@ -449,6 +467,82 @@ def test_connection_only_profile_cannot_construct_an_admitted_turn() -> None:
             client_message_id="synthetic-request",
             max_prompt_chars=128,
         )
+
+
+def test_safe_cli_prompt_requests_one_exact_read_only_command() -> None:
+    body = build_turn_request(
+        PROFILES["safe-cli"],
+        client_message_id="synthetic-request",
+        max_prompt_chars=256,
+        initial_model="gpt-5.6-luna@openai",
+    )
+
+    assert SAFE_CLI_COMMAND == "pwc paper info 1706.03762"
+    assert body["message"].count(SAFE_CLI_COMMAND) == 1
+    assert "exactly once" in body["message"]
+
+
+def test_safe_cli_observation_requires_the_exact_tool_command() -> None:
+    tracker = ProfileObservationTracker(PROFILES["safe-cli"])
+
+    assert (
+        tracker.observe(
+            {
+                "type": "tool_call",
+                "id": "wrong",
+                "name": "Bash",
+                "input": {"command": "pwc search attention"},
+            },
+            elapsed_ms=8,
+        )
+        == []
+    )
+    observed = tracker.observe(
+        {
+            "type": "tool_call",
+            "id": "exact",
+            "name": "Bash",
+            "input": {"command": SAFE_CLI_COMMAND},
+        },
+        elapsed_ms=13,
+    )
+    terminal = tracker.observe({"type": "done"}, elapsed_ms=21)
+
+    assert observed == [Metric("chat.safe_cli_command", 13, True)]
+    assert terminal == [Metric("chat.safe_cli_contract", 21, False)]
+
+
+def test_safe_cli_terminal_without_exact_command_is_a_fixed_failure() -> None:
+    tracker = ProfileObservationTracker(PROFILES["safe-cli"])
+
+    assert tracker.observe({"type": "done"}, elapsed_ms=21) == [
+        Metric("chat.safe_cli_command", 21, False),
+        Metric("chat.safe_cli_contract", 21, False),
+    ]
+
+
+def test_safe_cli_exact_single_command_passes_terminal_contract() -> None:
+    tracker = ProfileObservationTracker(PROFILES["safe-cli"])
+    tracker.observe(
+        {
+            "type": "tool_call",
+            "id": "exact",
+            "name": "Bash",
+            "args": {"command": SAFE_CLI_COMMAND},
+        },
+        elapsed_ms=9,
+    )
+
+    assert tracker.observe({"type": "done"}, elapsed_ms=18) == [
+        Metric("chat.safe_cli_contract", 18, True)
+    ]
+
+
+def test_runtime_shape_validates_users_and_spawn_rate() -> None:
+    validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=1.0)
+
+    with pytest.raises(RunRefused, match="spawn rate"):
+        validate_runtime_shape(PROFILES["bridge-smoke"], users=2, spawn_rate=2.0)
 
 
 @pytest.mark.parametrize("profile_name", ["safe-cli", "general-bash", "reconnect"])

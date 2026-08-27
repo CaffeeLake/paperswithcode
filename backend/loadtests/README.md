@@ -28,26 +28,34 @@ its value must exactly equal the declared spend envelope; caller-supplied
 `PWC_CHAT_*` variables are ignored. This makes the server circuit, rather than
 an unenforceable client estimate, the actual upper bound. The exact reviewed
 model is sent as `initial_model`, so the audited provider is the provider under
-load. Connection-only profiles are model-free and require zero spend. Never put
+load. No-provider profiles are model-free and require zero spend. Never put
 prompts, responses, account IDs, session IDs, or cookies in profile names,
 metric names, exceptions, terminal output, or saved reports.
 
-The two-user `bridge-smoke` and `connection-only` profiles call only the public,
-content-free `/api/v1/chat/availability` endpoint. They perform no admission,
-provider, model, or sandbox work. Consequently they can qualify connectivity
-and harness refusal gates, but they do **not** prove admitted durable turns or
-the bridge itself. A controller must use release-scoped database qualification
-for that no-provider bridge evidence.
+The two-user `bridge-smoke` profile is a release-bound, no-provider PostgreSQL
+probe. Each Locust user creates one opaque synthetic owner and one uniquely
+identified session/turn, exercises durable admission, fenced ownership, and a
+terminal write through the application coordinator/repository, then deletes and
+verifies only those exact row IDs. It never creates a message or invokes a
+provider, model, sandbox, or tool. It validates the active immutable staging
+release, live worker contract, enabled bridge, staging search path/role/schema,
+and protected runtime-file metadata before writing. There are no global sweeps.
+
+`connection-only` describes a future SSE subscription-connection cohort and is
+definition-only until that public endpoint exists. The separately named
+`availability-connectivity` profile checks only the public, content-free
+`/api/v1/chat/availability` endpoint and makes no SSE or admission claim.
 
 ## Profiles
 
 | Profile | Users | Cohort | Checkpoint status |
 |---|---:|---|---|
-| `bridge-smoke` | 2 | connection only | permitted |
-| `connection-only` | 2 | connection only | permitted |
+| `bridge-smoke` | 2 | durable PostgreSQL bridge | permitted |
+| `availability-connectivity` | 2 | HTTP availability | permitted |
+| `connection-only` | 2 | future SSE subscription | definition only |
 | `same-account-contention` | 2 | one synthetic account | future provider run |
 | `reconnect` | 2 | disconnect/resume | future provider run |
-| `safe-cli` | 2 | no-tool prompt | future provider run |
+| `safe-cli` | 2 | exact `pwc paper info 1706.03762` command | future provider run |
 | `general-bash` | 2 | bounded shell prompt | future provider run |
 | `steady-10` / `steady-25` / `steady-50` / `steady-100` | named | steady | definition only |
 | `burst` | 25 | burst | definition only |
@@ -58,9 +66,10 @@ capacity qualification must deliberately change and review the source ceiling.
 
 ## Invocation
 
-Do not add Locust to `pyproject.toml`, source the protected runtime file, or run
-from a checkout. Resolve and enter the exact active immutable staging release,
-then run Locust ephemerally after exporting only the load-test envelope above:
+Do not add Locust to `pyproject.toml`, source the protected runtime file into a
+shell, or run from a checkout. Resolve and enter the exact active immutable
+staging release, then let `uv` load `/etc/paperswithcode/staging.env` directly
+while preserving the explicitly exported load-test envelope above:
 
 ```bash
 release="$(readlink -f /srv/paperswithcode/environments/staging/current)"
@@ -70,16 +79,17 @@ case "$release" in
 esac
 cd -- "$release"
 
-uv run --with 'locust>=2.40,<3' \
+uv run --env-file /etc/paperswithcode/staging.env --with 'locust>=2.40,<3' \
   locust -f backend/loadtests/locustfile.py --headless \
   --host https://staging.paperswithcode.co --users 2 --spawn-rate 1 \
   --run-time 30s
 ```
 
-For the no-provider checkpoint, use only `bridge-smoke` or `connection-only`,
-set spend to `0`, and do not infer chat admission from the result. Do not run a
-live profile from a developer checkout or connect this harness to staging until
-the controller has deployed the exact reviewed commit and activated the bridge.
+For the no-provider bridge checkpoint, use only `bridge-smoke` and set spend to
+`0`. Use `availability-connectivity` only for the more limited HTTP availability
+check. Do not run a live profile from a developer checkout or connect this
+harness to staging until the controller has deployed the exact reviewed commit
+and activated the bridge.
 Provider profiles additionally require the fixed direct-OpenAI model above and
 `PWC_LOADTEST_MAX_SPEND_USD` equal to the authoritative
 `PWC_CHAT_OPENAI_DAILY_BUDGET_USD` value. Never copy that value out to a
@@ -97,6 +107,9 @@ fixed-cardinality `CHAT` measurements:
 - `chat.stream_error`
 - `chat.account_busy`
 - `chat.overload`
+- `chat.safe_cli_command` and `chat.safe_cli_contract` (one exact reviewed command,
+  no other tool call, and a successful terminal)
+- `bridge.admission`, `bridge.ownership`, `bridge.terminal`, and `bridge.cleanup`
 
 HTTP refusal bodies are inspected only for typed codes. Error messages and SSE
 content never become metric labels. A resumed stream is parsed and bounded until
