@@ -185,8 +185,10 @@ def _prompt(context: dict) -> str:
         )
     elif KIND == "add-evals":
         rules.append(
-            "Search configured leaderboards for every benchmark found in the source; the taxonomy command returns only tasks and methods. "
+            "Inspect every entry in /tmp/url_candidates.json source_documents, including the pinned model card, official release blog or paper source, project pages, and official GitHub README. "
+            "Search configured leaderboards for every benchmark found across those sources; the taxonomy command returns only tasks and methods. "
             "Include benchmark_gaps (an empty array is required when none qualify). "
+            "Include source_coverage for every source_documents URL and account for every benchmark label as evaluation, already_present, benchmark_gap, not_paper_native, or not_applicable. "
             "Include evaluation_removals and validation_evidence arrays; existing-row updates, duplicate merges, and removals require exact before-state and primary-paper evidence. "
             "Add only introduced-model, paper-native results using existing exact task/dataset/metric configurations; never comparator rows. "
             "Normalize source percentages to a configured 0-1 metric (for example 91.9 becomes 0.919), and keep only the best introduced-model lane for each configured leaderboard."

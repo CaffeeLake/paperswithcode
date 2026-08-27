@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend.models.database import PaperCurationJob
+from backend.models.database import Paper, PaperCurationJob
 from backend.services.paper_thumbnail_service import regenerate_paper_thumbnail
 
 TERMINAL_THUMBNAIL_STATUSES = {"succeeded", "failed"}
@@ -35,6 +35,27 @@ def queue_thumbnail(row: PaperCurationJob) -> None:
     row.thumbnail_generated_height = None
     row.thumbnail_warnings = None
     row.thumbnail_error = None
+
+
+def queue_missing_paper_thumbnail(
+    db: Session, row: PaperCurationJob, paper: Paper | None
+) -> bool:
+    """Queue one missing paper thumbnail without duplicating active work."""
+    if paper is None or paper.thumbnail_url:
+        return False
+    active = (
+        db.query(PaperCurationJob.id)
+        .filter(
+            PaperCurationJob.paper_id == paper.id,
+            PaperCurationJob.id != row.id,
+            PaperCurationJob.thumbnail_status.in_({"queued", "processing"}),
+        )
+        .first()
+    )
+    if active is not None:
+        return False
+    queue_thumbnail(row)
+    return True
 
 
 def serialize_thumbnail(row: PaperCurationJob) -> dict:

@@ -19,6 +19,7 @@ from backend.models.database import (
     HfArtifact,
     Method,
     Metric,
+    ModelProviderAlias,
     ModelRelease,
     Paper,
     PaperCurationWorkflow,
@@ -41,6 +42,7 @@ from backend.services.codex_add_evals_service import (
     codex_paper_job_service,
 )
 from backend.services.curation_thumbnail_queue_service import (
+    queue_missing_paper_thumbnail,
     queue_thumbnail,
     serialize_thumbnail,
 )
@@ -120,9 +122,9 @@ class CodexCurationCallbackService:
             db, paper_service.get_paper_by_id
         )
 
-    def _resolution_paper_candidates(
+    def _resolution_candidates(
         self, candidate: TrendingModelCandidate
-    ) -> list[Paper]:
+    ) -> tuple[list[Paper], set[int]]:
         exact_candidates = (
             self.db.query(Paper)
             .join(PaperHfArtifact, PaperHfArtifact.paper_id == Paper.id)
@@ -176,7 +178,20 @@ class CodexCurationCallbackService:
             if paper.id not in seen_paper_ids:
                 candidates.append(paper)
                 seen_paper_ids.add(paper.id)
-        return candidates
+        return candidates, {
+            paper.id for paper in [*exact_candidates, *family_candidates]
+        }
+
+    def _resolution_paper_candidates(
+        self, candidate: TrendingModelCandidate
+    ) -> list[Paper]:
+        return self._resolution_candidates(candidate)[0]
+
+    def _allowed_resolution_paper_ids(
+        self, candidate: TrendingModelCandidate
+    ) -> set[int]:
+        """Allow exact and same-family matches, never publisher-only siblings."""
+        return self._resolution_candidates(candidate)[1]
 
     def context(self, row, settings: Settings) -> dict[str, Any]:
         if getattr(row, "kind", None) == "resolve-model-paper":
@@ -227,6 +242,11 @@ class CodexCurationCallbackService:
                 )
                 if candidate is not None:
                     revision = candidate.readme_revision or "main"
+                    release = (
+                        self.db.get(ModelRelease, candidate.model_release_id)
+                        if candidate.model_release_id is not None
+                        else None
+                    )
                     source_candidate = {
                         "id": str(candidate.id),
                         "repo_id": candidate.repo_id,
@@ -235,6 +255,16 @@ class CodexCurationCallbackService:
                         "model_card_url": (
                             f"https://huggingface.co/{candidate.repo_id}/raw/"
                             f"{revision}/README.md"
+                        ),
+                        "model_release": (
+                            {
+                                "id": int(release.id),
+                                "paper_id": int(release.paper_id),
+                                "canonical_name": release.canonical_name,
+                                "aliases": list(release.aliases or []),
+                            }
+                            if release is not None and release.paper_id is not None
+                            else None
                         ),
                     }
         repository_rows = (
@@ -513,10 +543,7 @@ class CodexCurationCallbackService:
                         raise CodexCurationPaperNotFoundError(
                             "Trending model candidate not found"
                         )
-                    allowed_paper_ids = {
-                        paper.id
-                        for paper in self._resolution_paper_candidates(candidate)
-                    }
+                    allowed_paper_ids = self._allowed_resolution_paper_ids(candidate)
                 result = TrendingModelResolutionService(self.db).apply(
                     row.candidate_id,
                     body.resolve_model_paper,
@@ -535,12 +562,7 @@ class CodexCurationCallbackService:
                 row.mutation_result = result
                 if result["status"] == "resolved":
                     paper = self.db.get(Paper, result["paper_id"])
-                    if (
-                        paper is not None
-                        and paper.source == "external"
-                        and not paper.thumbnail_url
-                    ):
-                        queue_thumbnail(row)
+                    queue_missing_paper_thumbnail(self.db, row, paper)
                 self.db.commit()
                 return dict(result)
             except Exception as exc:
@@ -932,6 +954,8 @@ class CodexCurationCallbackService:
                 raise CodexCurationEvaluationPaperMismatchError(
                     "Evaluation paper does not match job"
                 )
+            self._validate_trending_model_ownership(row, body)
+            self._validate_trending_source_coverage(row, body)
             for removal in body.evaluation_removals:
                 existing = self.db.get(Evaluation, removal.evaluation_id)
                 if existing is None or existing.paper_id != row.paper_id:
@@ -949,6 +973,88 @@ class CodexCurationCallbackService:
             )
         if body.enrich is None:
             raise CodexCurationEnrichmentRequiredError("Enrichment payload is required")
+
+    @staticmethod
+    def _model_identity_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.rsplit("/", 1)[-1].casefold())
+
+    def _validate_trending_model_ownership(
+        self, row, body: ApplyMutationRequest
+    ) -> None:
+        """Keep one trending release's model lanes on its canonical paper."""
+        if (
+            getattr(row, "trigger", None) != "hf-trending-cron"
+            or getattr(row, "parent_workflow_id", None) is None
+        ):
+            return
+        workflow = self.db.get(PaperCurationWorkflow, row.parent_workflow_id)
+        if workflow is None or workflow.source_candidate_id is None:
+            raise ValueError("Trending evaluation job has no source model candidate")
+        candidate = self.db.get(TrendingModelCandidate, workflow.source_candidate_id)
+        if candidate is None or candidate.model_release_id is None:
+            raise ValueError("Trending evaluation job has no resolved model release")
+        release = self.db.get(ModelRelease, candidate.model_release_id)
+        if release is None or release.paper_id != row.paper_id:
+            raise ValueError("Resolved model release does not belong to the job paper")
+        provider_aliases = (
+            self.db.query(ModelProviderAlias)
+            .filter(ModelProviderAlias.model_release_id == release.id)
+            .all()
+        )
+        identities = {
+            self._model_identity_key(value)
+            for value in (
+                release.canonical_name,
+                *(release.aliases or []),
+                candidate.repo_id,
+                *(alias.alias for alias in provider_aliases),
+            )
+            if value
+        }
+        identities.discard("")
+        for evaluation in body.evaluations:
+            model_key = self._model_identity_key(evaluation.model_name)
+            if not any(
+                model_key == identity or model_key.startswith(identity)
+                for identity in identities
+            ):
+                raise ValueError(
+                    f"Evaluation model {evaluation.model_name!r} does not belong "
+                    "to the resolved model release"
+                )
+
+    @staticmethod
+    def _validate_trending_source_coverage(row, body: ApplyMutationRequest) -> None:
+        if getattr(row, "trigger", None) != "hf-trending-cron":
+            return
+        documents = (getattr(row, "url_candidates", None) or {}).get(
+            "source_documents"
+        ) or []
+        expected = {
+            item.get("url")
+            for item in documents
+            if isinstance(item, dict) and item.get("url")
+        }
+        if not expected:
+            return
+        supplied = {
+            item.get("url")
+            for item in body.source_coverage
+            if isinstance(item, dict) and item.get("url")
+        }
+        missing = sorted(expected - supplied)
+        if missing:
+            raise ValueError(
+                "Evaluation proposal did not account for every authoritative "
+                f"source: {', '.join(missing)}"
+            )
+        for item in body.source_coverage:
+            if item.get("url") not in expected:
+                continue
+            if item.get("status") not in {"inspected", "unavailable"}:
+                raise ValueError("Source coverage has an invalid inspection status")
+            if not isinstance(item.get("benchmark_outcomes"), list):
+                raise ValueError("Source coverage must include benchmark outcomes")
 
     def _validate_scheduled_policy(
         self, row, body: ApplyMutationRequest

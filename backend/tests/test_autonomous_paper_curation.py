@@ -126,6 +126,36 @@ def test_preflight_reuses_complete_importer_links_but_verifies_markdown(
     assert all("hf_api" in item["source_layers"][0] for item in result["candidates"])
 
 
+def test_eval_preflight_manifests_model_card_blog_project_and_readme(monkeypatch):
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+    context = _context()
+    context["paper"]["source_url"] = "https://example.com/official-blog"
+    context["source_candidate"] = {
+        "repo_id": "org/model",
+        "model_card_url": "https://huggingface.co/org/model/raw/revision/README.md",
+    }
+
+    result = url_preflight.extract_candidates(
+        context,
+        fetch=lambda url, _limit: (b"# Paper\n", url),
+    )
+
+    assert {(item["kind"], item["url"]) for item in result["source_documents"]} == {
+        ("paper_source", "https://example.com/official-blog"),
+        (
+            "model_card",
+            "https://huggingface.co/org/model/raw/revision/README.md",
+        ),
+        ("github_readme", "https://github.com/example/project"),
+        ("project_page", "https://example.github.io/project"),
+        ("paper_markdown", "https://huggingface.co/papers/2608.00042.md"),
+    }
+
+
 def test_preflight_still_requires_markdown_when_hf_detail_completes_links(
     monkeypatch,
 ):

@@ -345,6 +345,31 @@ def extract_candidates(
 
     check_liveness()
 
+    source_documents: list[dict[str, str]] = []
+    seen_documents: set[str] = set()
+
+    def document(kind: str, url: str | None) -> None:
+        if not url or url in seen_documents:
+            return
+        normalized = url.strip()
+        if not normalized.startswith(("http://", "https://")):
+            return
+        seen_documents.add(normalized)
+        source_documents.append({"kind": kind, "url": normalized})
+
+    document("paper_source", paper.get("source_url"))
+    source_candidate = context.get("source_candidate") or {}
+    document("model_card", source_candidate.get("model_card_url"))
+    for repository in paper.get("repositories") or []:
+        if repository.get("is_official"):
+            document("github_readme", repository.get("url"))
+    for project_page in paper.get("project_pages") or []:
+        if project_page.get("is_official"):
+            document("project_page", project_page.get("url"))
+    for source in sources:
+        if source.get("source") in {"hf_markdown", "ocr_markdown"}:
+            document("paper_markdown", source.get("url"))
+
     return {
         "schema_version": "url-candidates.v1",
         "paper_id": paper["id"],
@@ -354,6 +379,7 @@ def extract_candidates(
         and not (hf_markdown_available or ocr_markdown_available),
         "candidates": list(candidates.values())[:50],
         "sources": sources[:20],
+        "source_documents": source_documents[:20],
         "errors": errors[:20],
     }
 

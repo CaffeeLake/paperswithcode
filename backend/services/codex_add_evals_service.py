@@ -33,7 +33,10 @@ from backend.models.database import (
     PaperCurationWorkflow,
     TrendingModelCandidate,
 )
-from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
+from backend.services.curation_thumbnail_queue_service import (
+    queue_missing_paper_thumbnail,
+    serialize_thumbnail,
+)
 from backend.utils.urls import get_paper_route_identifier
 from jobs.curation_failure_codes import AWAITING_MARKDOWN, parse_failure_code
 
@@ -388,11 +391,12 @@ class CodexPaperJobService:
             retry_of_id=retry_of_id,
         )
         db.add(row)
+        db.flush()
+        if trigger in {"hf-daily-cron", "hf-trending-cron"}:
+            queue_missing_paper_thumbnail(db, row, db.get(Paper, paper_id))
         if commit:
             db.commit()
             db.refresh(row)
-        else:
-            db.flush()
         if dispatch:
             self.dispatch_next(db, settings)
         if commit:

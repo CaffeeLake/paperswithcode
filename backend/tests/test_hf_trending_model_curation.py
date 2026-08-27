@@ -954,7 +954,7 @@ def test_scheduled_resolution_gets_one_validation_correction_attempt(monkeypatch
     db.commit()
     service = CodexCurationCallbackService(db)
     monkeypatch.setattr(
-        service, "_resolution_paper_candidates", lambda _candidate: [paper]
+        service, "_allowed_resolution_paper_ids", lambda _candidate: {paper.id}
     )
     body = ApplyMutationRequest.model_validate(
         {
@@ -1095,7 +1095,7 @@ def test_callback_applies_resolution_and_records_job_result():
     ("paper_source", "thumbnail_url", "expected_thumbnail_status"),
     [
         ("external", None, "queued"),
-        ("arxiv", None, None),
+        ("arxiv", None, "queued"),
         ("external", "https://example.com/thumbnail.jpg", None),
     ],
 )
@@ -1134,7 +1134,7 @@ def test_callback_atomically_queues_thumbnail_for_external_resolution(
     db.commit()
     service = CodexCurationCallbackService(db)
     monkeypatch.setattr(
-        service, "_resolution_paper_candidates", lambda _candidate: [paper]
+        service, "_allowed_resolution_paper_ids", lambda _candidate: {paper.id}
     )
 
     result = service.apply(
@@ -1467,7 +1467,7 @@ def test_rollout_freezes_canary_until_full_workflow_succeeds(monkeypatch):
     assert db.query(TrendingModelCandidate).count() == 1
 
 
-def test_resolved_candidate_enqueues_existing_two_stage_workflow(monkeypatch):
+def test_resolved_candidate_enqueues_workflow_and_missing_thumbnail(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -1526,5 +1526,218 @@ def test_resolved_candidate_enqueues_existing_two_stage_workflow(monkeypatch):
     assert job.kind == "enrich-paper"
     assert job.trigger == "hf-trending-cron"
     assert job.priority == 25
-    assert job.thumbnail_status is None
-    assert job.thumbnail_requested_at is None
+    assert job.thumbnail_status == "queued"
+    assert job.thumbnail_requested_at is not None
+
+
+def test_resolution_scope_excludes_publisher_only_sibling():
+    db = _resolution_session()
+    exact = Paper(
+        title="Exact model report",
+        source="external",
+        source_url="https://example.com/exact",
+        version="v1",
+        is_latest_version=True,
+    )
+    sibling = Paper(
+        title="Older publisher report",
+        source="external",
+        source_url="https://example.com/sibling",
+        version="v1",
+        is_latest_version=True,
+    )
+    artifact = HfArtifact(
+        kind="model",
+        repo_id="org/GLM-5.3-Flash",
+        url="https://huggingface.co/org/GLM-5.3-Flash",
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="org/GLM-5.3-Flash",
+        author="org",
+        status="resolving",
+    )
+    db.add_all([exact, sibling, artifact, candidate])
+    db.flush()
+    db.add_all(
+        [
+            PaperHfArtifact(paper_id=exact.id, hf_artifact_id=artifact.id),
+            ModelRelease(
+                paper_id=sibling.id,
+                canonical_name="GLM-5",
+                publisher="org",
+                aliases=["org/GLM-5"],
+            ),
+        ]
+    )
+    db.commit()
+
+    service = CodexCurationCallbackService(db)
+
+    assert service._allowed_resolution_paper_ids(candidate) == {exact.id}
+
+
+def test_trending_eval_ownership_rejects_sibling_model_name():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Paper.__table__,
+            ModelRelease.__table__,
+            ModelProviderAlias.__table__,
+            TrendingModelCandidate.__table__,
+            PaperCurationWorkflow.__table__,
+        ],
+    )
+    db = Session(engine)
+    paper = Paper(
+        title="GLM-5.3-Flash",
+        source="external",
+        source_url="https://example.com/glm-5.3-flash",
+        version="v1",
+        is_latest_version=True,
+    )
+    db.add(paper)
+    db.flush()
+    release = ModelRelease(
+        paper_id=paper.id,
+        canonical_name="GLM-5.3-Flash",
+        publisher="zai-org",
+        aliases=["zai-org/GLM-5.3-Flash"],
+    )
+    db.add(release)
+    db.flush()
+    db.add(
+        ModelProviderAlias(
+            model_release_id=release.id,
+            provider="artificial-analysis",
+            alias="glm-flash-aa",
+        )
+    )
+    candidate = TrendingModelCandidate(
+        repo_id="zai-org/GLM-5.3-Flash",
+        author="zai-org",
+        status="resolved",
+        model_release_id=release.id,
+    )
+    db.add(candidate)
+    db.flush()
+    workflow = PaperCurationWorkflow(
+        id=uuid.uuid4(),
+        paper_id=paper.id,
+        source_candidate_id=candidate.id,
+        cohort_date=datetime.now(UTC).date(),
+        cohort_order=0,
+        policy_version="hf-trending-v1",
+        status="running",
+    )
+    db.add(workflow)
+    db.commit()
+    row = SimpleNamespace(
+        paper_id=paper.id,
+        parent_workflow_id=workflow.id,
+        trigger="hf-trending-cron",
+    )
+    service = CodexCurationCallbackService(db)
+
+    with pytest.raises(
+        ValueError, match="does not belong to the resolved model release"
+    ):
+        service._validate_trending_model_ownership(
+            row,
+            ApplyMutationRequest(
+                evaluations=[
+                    {
+                        "paper_id": paper.id,
+                        "task_id": 1,
+                        "dataset_id": 1,
+                        "model_name": "GLM-5.3",
+                        "metrics": {"Score": 0.8},
+                        "best_metric": "Score",
+                        "source_url": "https://example.com/source",
+                    }
+                ]
+            ),
+        )
+
+    service._validate_trending_model_ownership(
+        row,
+        ApplyMutationRequest(
+            evaluations=[
+                {
+                    "paper_id": paper.id,
+                    "task_id": 1,
+                    "dataset_id": 1,
+                    "model_name": "GLM-5.3-Flash (Thinking)",
+                    "metrics": {"Score": 0.8},
+                    "best_metric": "Score",
+                    "source_url": "https://example.com/source",
+                }
+            ]
+        ),
+    )
+    service._validate_trending_model_ownership(
+        row,
+        ApplyMutationRequest(
+            evaluations=[
+                {
+                    "paper_id": paper.id,
+                    "task_id": 1,
+                    "dataset_id": 1,
+                    "model_name": "glm-flash-aa",
+                    "metrics": {"Score": 0.8},
+                    "best_metric": "Score",
+                    "source_url": "https://artificialanalysis.ai/models/glm-flash-aa",
+                }
+            ]
+        ),
+    )
+
+
+def test_trending_eval_requires_coverage_for_every_authoritative_source():
+    row = SimpleNamespace(
+        trigger="hf-trending-cron",
+        url_candidates={
+            "source_documents": [
+                {"kind": "model_card", "url": "https://example.com/card"},
+                {"kind": "paper_source", "url": "https://example.com/blog"},
+            ]
+        },
+    )
+
+    with pytest.raises(ValueError, match="every authoritative source"):
+        CodexCurationCallbackService._validate_trending_source_coverage(
+            row,
+            ApplyMutationRequest(
+                source_coverage=[
+                    {
+                        "url": "https://example.com/card",
+                        "status": "inspected",
+                        "benchmark_outcomes": [],
+                    }
+                ]
+            ),
+        )
+
+    CodexCurationCallbackService._validate_trending_source_coverage(
+        row,
+        ApplyMutationRequest(
+            source_coverage=[
+                {
+                    "url": "https://example.com/card",
+                    "status": "inspected",
+                    "benchmark_outcomes": [],
+                },
+                {
+                    "url": "https://example.com/blog",
+                    "status": "inspected",
+                    "benchmark_outcomes": [
+                        {
+                            "benchmark": "MMLU-Pro",
+                            "disposition": "already_present",
+                            "detail": "Exact configured leaderboard already has this lane.",
+                        }
+                    ],
+                },
+            ]
+        ),
+    )

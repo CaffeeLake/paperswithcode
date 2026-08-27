@@ -2751,6 +2751,7 @@ class ApplyMutationRequest(BaseModel):
     enrich: EnrichPaperMutation | None = None
     benchmark_gaps: list[dict] = Field(default_factory=list, max_length=30)
     validation_evidence: list[dict] = Field(default_factory=list, max_length=200)
+    source_coverage: list[dict] = Field(default_factory=list, max_length=50)
     resolve_model_paper: ResolveModelPaperMutation | None = None
 
 
