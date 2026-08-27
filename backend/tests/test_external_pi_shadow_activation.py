@@ -591,6 +591,51 @@ def test_activation_signal_context_restores_prior_handlers():
     assert signal.getsignal(signal.SIGINT) == previous_int
 
 
+def test_real_sigterm_during_start_still_stops_owned_units(tmp_path: Path):
+    script = r"""
+import sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    activation_signal_context, run_temporary_shadow_qualification,
+)
+root = Path(sys.argv[1]); events = root / "events"
+def record(value):
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(value + "\n")
+def start(*_args):
+    record("partially-started")
+    (root / "ready").write_text("ready", encoding="utf-8")
+    time.sleep(30)
+with activation_signal_context():
+    run_temporary_shadow_qualification(
+        environment="staging", slot="blue", release_id="release-a",
+        report_path=root / "report.json", start=start,
+        authenticated=lambda *_args: 4,
+        expire_and_restart=lambda *_args: 5,
+        stale_probe=lambda *_args: True,
+        qualify=lambda *_args: None,
+        stop=lambda *_args: record("stop"),
+    )
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "ready")
+    process.terminate()
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 1
+    assert "ShadowActivationInterrupted" in stderr
+    assert (tmp_path / "events").read_text().splitlines() == [
+        "partially-started",
+        "stop",
+    ]
+
+
 def test_real_sigterm_during_refresh_restores_false_flags(tmp_path: Path):
     _release(tmp_path)
     config = tmp_path / "config"
@@ -603,11 +648,19 @@ def test_real_sigterm_during_refresh_restores_false_flags(tmp_path: Path):
     script = r"""
 import json, sys, time
 from pathlib import Path
+import deploy.external_pi_shadow_activation as activation
 from deploy.external_pi_shadow_activation import (
     QualificationEvidence, activation_signal_context,
     apply_staging_shadow_activation,
 )
 root = Path(sys.argv[1]); config = root / "config"
+original_atomic_write = activation._atomic_write
+def slow_rollback(path, content, mode):
+    if path.name == "staging.env" and (root / "ready").exists() and b"SHADOW_ENABLED=false" in content:
+        (root / "rollback").write_text("rollback", encoding="utf-8")
+        time.sleep(1)
+    return original_atomic_write(path, content, mode)
+activation._atomic_write = slow_rollback
 evidence = QualificationEvidence("staging-blue", 4, 5, 6, True, True, "n" * 32)
 names = (
     "linear_history", "branching_history", "tool_history",
@@ -648,9 +701,99 @@ with activation_signal_context():
     )
     _wait_for(tmp_path / "ready")
     process.terminate()
+    _wait_for(tmp_path / "rollback")
+    process.send_signal(signal.SIGINT)
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode != 0
+    assert "ShadowActivationInterrupted" in stderr or "KeyboardInterrupt" in stderr
+    assert (config / "staging.env").read_text() == original
+    assert not (config / "external-pi-worker.env").exists()
+
+
+def test_real_sigterm_during_disable_preserves_true_recovery_state(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    original = (
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=true\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=true\n"
+    )
+    (config / "staging.env").write_text(original)
+    script = r"""
+import sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    activation_signal_context, apply_staging_shadow_activation,
+)
+root = Path(sys.argv[1])
+def deactivate(*_args):
+    (root / "partial-stop").write_text("partial", encoding="utf-8")
+    (root / "ready").write_text("ready", encoding="utf-8")
+    time.sleep(30)
+with activation_signal_context():
+    apply_staging_shadow_activation(
+        environment="staging", expected_release_id="release-a",
+        report_path=root / "unused.json", enabled=False, app_root=root,
+        config_root=root / "config", qualify=None, deactivate=deactivate,
+        refresh=lambda _sha: (root / "refreshed").write_text("bad", encoding="utf-8"),
+    )
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "ready")
+    process.terminate()
     _, stderr = process.communicate(timeout=5)
 
     assert process.returncode == 1
-    assert "ShadowActivationInterrupted" in stderr
+    assert "ShadowActivationRecoveryRequired" in stderr
+    assert (tmp_path / "partial-stop").is_file()
+    assert not (tmp_path / "refreshed").exists()
     assert (config / "staging.env").read_text() == original
     assert not (config / "external-pi-worker.env").exists()
+
+
+def test_real_signal_during_handler_restoration_restores_all_handlers(tmp_path: Path):
+    script = r"""
+import signal, sys, time
+from pathlib import Path
+import deploy.external_pi_shadow_activation as activation
+root = Path(sys.argv[1])
+def prior_term(_number, _frame):
+    (root / "delivered").write_text("term", encoding="utf-8")
+def prior_int(_number, _frame):
+    (root / "delivered").write_text("int", encoding="utf-8")
+signal.signal(signal.SIGTERM, prior_term)
+signal.signal(signal.SIGINT, prior_int)
+real_signal = activation.signal.signal
+def slow_restore(number, handler):
+    if number == signal.SIGTERM and handler is prior_term:
+        (root / "restoring").write_text("restoring", encoding="utf-8")
+        time.sleep(1)
+    return real_signal(number, handler)
+activation.signal.signal = slow_restore
+with activation.activation_signal_context():
+    pass
+assert signal.getsignal(signal.SIGTERM) is prior_term
+assert signal.getsignal(signal.SIGINT) is prior_int
+(root / "restored").write_text("restored", encoding="utf-8")
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(tmp_path / "restoring")
+    process.terminate()
+    _, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 0, stderr
+    assert (tmp_path / "delivered").read_text() == "term"
+    assert (tmp_path / "restored").is_file()

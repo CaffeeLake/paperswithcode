@@ -62,6 +62,10 @@ class ShadowActivationInterrupted(BaseException):
         self.signal_number = signal_number
 
 
+class ShadowActivationRecoveryRequired(ShadowActivationError):
+    """An interrupted partial disable requires an explicit guarded retry."""
+
+
 @contextlib.contextmanager
 def activation_signal_context():
     """Turn normal CLI termination signals into exceptions during the transaction."""
@@ -69,8 +73,10 @@ def activation_signal_context():
         raise RuntimeError("activation signal handlers require the main thread")
     watched = (signal.SIGTERM, signal.SIGINT)
     previous = {number: signal.getsignal(number) for number in watched}
+    original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
     def interrupt(signal_number, _frame):
+        signal.pthread_sigmask(signal.SIG_BLOCK, watched)
         raise ShadowActivationInterrupted(signal_number)
 
     try:
@@ -78,8 +84,12 @@ def activation_signal_context():
             signal.signal(number, interrupt)
         yield
     finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+        signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+        try:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,10 +180,10 @@ def run_temporary_shadow_qualification(
         stop = stop or stop_slot
     if expire_and_restart is None or stale_probe is None:
         raise ShadowActivationError("qualification lifecycle probes are required")
-    started = False
+    cleanup_owned = False
     try:
+        cleanup_owned = True
         start(environment, slot)
-        started = True
         initial = authenticated(environment, slot, release_id)
         restarted = expire_and_restart(environment, slot, release_id, initial)
         if restarted <= initial:
@@ -184,9 +194,7 @@ def run_temporary_shadow_qualification(
         if stale_fenced is not True:
             raise ShadowActivationError("stale generation was not durably fenced")
         stop(environment, slot, release_id)
-        started = False
         start(environment, slot)
-        started = True
         recovery = authenticated(environment, slot, release_id)
         if recovery <= restarted:
             raise ShadowActivationError("drain recovery did not advance generation")
@@ -202,7 +210,7 @@ def run_temporary_shadow_qualification(
         qualify(evidence, report_path)
         return evidence
     finally:
-        if started:
+        if cleanup_owned:
             stop(environment, slot, release_id)
 
 
@@ -408,14 +416,14 @@ def apply_staging_shadow_activation(
     values.update({key: "false" for key in INERT_FLAGS})
     rendered = "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
     proven_stopped = False
-    if not enabled:
-        if deactivate is None:
-            raise ShadowActivationError(
-                "disabled shadow lifecycle requires integrated proven stop"
-            )
-        deactivate(current_release_id, git_sha)
-        proven_stopped = True
     try:
+        if not enabled:
+            if deactivate is None:
+                raise ShadowActivationError(
+                    "disabled shadow lifecycle requires integrated proven stop"
+                )
+            deactivate(current_release_id, git_sha)
+            proven_stopped = True
         _ensure_token_only_environment(worker_path, token)
         _atomic_write(staging_path, rendered.encode(), 0o640)
         if enabled:
@@ -433,6 +441,17 @@ def apply_staging_shadow_activation(
             _atomic_write(staging_path, rendered.encode(), 0o640)
         refresh(git_sha)
     except BaseException as error:
+        if not enabled and not proven_stopped:
+            _atomic_write(staging_path, original, 0o640)
+            if original_worker is None:
+                worker_path.unlink(missing_ok=True)
+            else:
+                _atomic_write(worker_path, original_worker, 0o640)
+            raise ShadowActivationRecoveryRequired(
+                "external Pi disable was interrupted before all units proved "
+                "inactive; prior lifecycle flags were preserved and guarded "
+                "disable must be retried"
+            ) from error
         if proven_stopped:
             _atomic_write(staging_path, rendered.encode(), 0o640)
             _ensure_token_only_environment(worker_path, token)
