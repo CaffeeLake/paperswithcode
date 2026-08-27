@@ -16,7 +16,7 @@ VALUES (
      ORDER BY is_latest_version DESC, id DESC LIMIT 1),
     NULL,
     'DFlash: Block Diffusion for Flash Speculative Decoding',
-    'https://github.com/No-Shift-Dev/DFlash',
+    'https://github.com/z-lab/dflash',
     NULL,
     'User-provided comparison graphic'
 )
