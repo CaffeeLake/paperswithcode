@@ -28,6 +28,8 @@ EXPECTED_USERS = 100
 EXPECTED_SPAWN_RATE = 100.0
 EXPECTED_MAXIMUM_SESSIONS = 8
 NO_QUEUE_MAX_MS = 5_000
+MAX_REPORT_DURATION_MS = 60_000
+MAX_REPORT_COUNTER = 1_000_000
 ALLOWED_SLOT_ENDPOINTS = {
     "blue": "http://127.0.0.1:8766",
     "green": "http://127.0.0.1:8767",
@@ -67,9 +69,12 @@ class BaselineObservation:
     latency_ms: int
 
     def __post_init__(self):
-        if type(self.latency_ms) is not int or self.latency_ms < 0:
+        if (
+            type(self.latency_ms) is not int
+            or not 0 <= self.latency_ms <= MAX_REPORT_DURATION_MS
+        ):
             raise ValueError(
-                "external Pi baseline latency must be a non-negative integer"
+                "external Pi baseline latency is outside bounded report range"
             )
 
 
@@ -77,29 +82,31 @@ class ExternalPiBaselineReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     profile: str
-    expected_users: int = Field(ge=1)
+    expected_users: int = Field(ge=EXPECTED_USERS, le=EXPECTED_USERS)
     release_id: str
     worker_id: str
     instance_id: str
-    worker_generation: int = Field(ge=1)
-    maximum_sessions: int = Field(ge=1)
-    observations: int = Field(ge=0)
-    compatible: int = Field(ge=0)
-    capacity: int = Field(ge=0)
-    error: int = Field(ge=0)
-    latency_p50_ms: int = Field(ge=0)
-    latency_p95_ms: int = Field(ge=0)
-    latency_p99_ms: int = Field(ge=0)
-    capacity_max_ms: int = Field(ge=0)
-    shadow_requests_delta: int
-    model_calls: int = Field(ge=0)
-    tool_calls: int = Field(ge=0)
-    provider_calls: int = Field(ge=0)
-    modal_calls: int = Field(ge=0)
-    billing_events: int = Field(ge=0)
+    worker_generation: int = Field(ge=1, le=MAX_REPORT_COUNTER)
+    maximum_sessions: int = Field(
+        ge=EXPECTED_MAXIMUM_SESSIONS, le=EXPECTED_MAXIMUM_SESSIONS
+    )
+    observations: int = Field(ge=0, le=EXPECTED_USERS)
+    compatible: int = Field(ge=0, le=EXPECTED_USERS)
+    capacity: int = Field(ge=0, le=EXPECTED_USERS)
+    error: int = Field(ge=0, le=EXPECTED_USERS)
+    latency_p50_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
+    latency_p95_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
+    latency_p99_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
+    capacity_max_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
+    shadow_requests_delta: int = Field(ge=-MAX_REPORT_COUNTER, le=MAX_REPORT_COUNTER)
+    model_calls: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    tool_calls: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    provider_calls: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    modal_calls: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    billing_events: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     provider_credentials_present: bool
     modal_credentials_present: bool
-    registered_tool_count: int = Field(ge=0)
+    registered_tool_count: int = Field(ge=0, le=128)
     safety_passed: bool
     capacity_target_passed: bool
 
@@ -352,6 +359,25 @@ def _safe_capabilities(status: ExternalPiWorkerStatus) -> bool:
     )
 
 
+def _status_has_bounded_report_values(status: ExternalPiWorkerStatus) -> bool:
+    counters = status.operation_counters
+    return (
+        status.worker_generation is not None
+        and status.worker_generation <= MAX_REPORT_COUNTER
+        and all(
+            value <= MAX_REPORT_COUNTER
+            for value in (
+                counters.shadow_requests,
+                counters.model_calls,
+                counters.tool_calls,
+                counters.provider_calls,
+                counters.modal_calls,
+                counters.billing_events,
+            )
+        )
+    )
+
+
 def _publish_external_pi_baseline_report(
     report: ExternalPiBaselineReport, path: Path
 ) -> None:
@@ -401,6 +427,10 @@ def finalize_external_pi_baseline(
     observations = tracker.observations
     if len(observations) != EXPECTED_USERS:
         raise RunRefused("external Pi baseline requires exactly 100 observations")
+    if not _status_has_bounded_report_values(
+        before
+    ) or not _status_has_bounded_report_values(after):
+        raise RunRefused("external Pi baseline worker exceeded bounded report values")
     compatible = sum(item.classification == "compatible" for item in observations)
     capacity = sum(item.classification == "capacity" for item in observations)
     errors = sum(item.classification == "error" for item in observations)

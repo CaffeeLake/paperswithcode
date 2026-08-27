@@ -40,7 +40,7 @@ _before: ExternalPiWorkerStatus | None = None
 _tracker = ExternalPiBaselineTracker()
 
 
-def _status(config: ExternalPiBaselineConfig) -> ExternalPiWorkerStatus:
+def _read_status(config: ExternalPiBaselineConfig) -> ExternalPiWorkerStatus | None:
     try:
         response = httpx.get(
             f"{config.worker_url}/v1/status",
@@ -49,8 +49,15 @@ def _status(config: ExternalPiBaselineConfig) -> ExternalPiWorkerStatus:
         )
         response.raise_for_status()
         return ExternalPiWorkerStatus.model_validate(response.json())
-    except (httpx.HTTPError, ValueError) as exc:
-        raise RunRefused("external Pi baseline worker status is invalid") from exc
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def _status(config: ExternalPiBaselineConfig) -> ExternalPiWorkerStatus:
+    status = _read_status(config)
+    if status is None:
+        raise RunRefused("external Pi baseline worker status is invalid")
+    return status
 
 
 def _elapsed_ms(started: float) -> int:

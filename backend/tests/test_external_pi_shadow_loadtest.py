@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from backend.loadtests.external_pi_shadow_core import (
+    MAX_REPORT_COUNTER,
+    MAX_REPORT_DURATION_MS,
     BaselineObservation,
     ExternalPiBaselineTracker,
     RunRefused,
@@ -488,3 +490,134 @@ def test_external_pi_baseline_locust_adapter_import_is_quiet(capsys, recwarn):
     assert captured.out == ""
     assert captured.err == ""
     assert not recwarn, [str(warning.message) for warning in recwarn]
+
+
+def test_external_pi_baseline_status_failure_drops_protected_http_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    if importlib.util.find_spec("locust") is None:
+        return
+    import httpx
+
+    adapter = importlib.import_module("backend.loadtests.external_pi_shadow_locustfile")
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    request = httpx.Request(
+        "GET",
+        f"{config.worker_url}/v1/status",
+        headers={"Authorization": f"Bearer {config.token}"},
+    )
+    response = httpx.Response(503, request=request)
+    protected_error = httpx.HTTPStatusError(
+        "protected transport failure", request=request, response=response
+    )
+
+    def fail_status(*_args, **_kwargs):
+        raise protected_error
+
+    monkeypatch.setattr(adapter.httpx, "get", fail_status)
+    with pytest.raises(RunRefused, match="worker status is invalid") as captured:
+        adapter._status(config)
+
+    chain: list[BaseException] = []
+    pending: list[BaseException] = [captured.value]
+    while pending:
+        error = pending.pop()
+        chain.append(error)
+        if error.__cause__ is not None:
+            pending.append(error.__cause__)
+        if error.__context__ is not None and error.__context__ not in pending:
+            pending.append(error.__context__)
+    assert chain == [captured.value]
+    assert all(not isinstance(error, httpx.HTTPError) for error in chain)
+    assert config.token not in " ".join(repr(error) for error in chain)
+
+
+def test_external_pi_baseline_duration_has_a_literal_report_bound():
+    assert BaselineObservation("compatible", MAX_REPORT_DURATION_MS).latency_ms == (
+        MAX_REPORT_DURATION_MS
+    )
+
+    with pytest.raises(ValueError, match="bounded report range"):
+        BaselineObservation("compatible", MAX_REPORT_DURATION_MS + 1)
+
+
+@pytest.mark.parametrize(
+    ("after_updates", "field"),
+    [
+        ({"worker_generation": MAX_REPORT_COUNTER + 1}, "worker_generation"),
+        (
+            {
+                "operation_counters": {
+                    **_worker_status().operation_counters.model_dump(),
+                    "shadow_requests": MAX_REPORT_COUNTER + 1,
+                }
+            },
+            "shadow_requests",
+        ),
+        (
+            {
+                "operation_counters": {
+                    **_worker_status().operation_counters.model_dump(),
+                    "shadow_requests": 120,
+                    "provider_calls": MAX_REPORT_COUNTER + 1,
+                }
+            },
+            "provider_calls",
+        ),
+    ],
+)
+def test_external_pi_baseline_refuses_unbounded_worker_report_counters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_updates: dict[str, object],
+    field: str,
+):
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    after = _worker_status(**after_updates)
+
+    with pytest.raises(RunRefused, match="bounded report values"):
+        finalize_external_pi_baseline(
+            config=config,
+            before=_worker_status(),
+            after=after,
+            tracker=_tracker(compatible=8, capacity=92),
+        )
+
+    assert not config.report_path.exists(), field
+
+
+def test_external_pi_baseline_accepts_literal_maximum_worker_report_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    before = _worker_status(
+        worker_generation=MAX_REPORT_COUNTER,
+        operation_counters={
+            **_worker_status().operation_counters.model_dump(),
+            "shadow_requests": MAX_REPORT_COUNTER - 100,
+        },
+    )
+    after = _worker_status(
+        worker_generation=MAX_REPORT_COUNTER,
+        operation_counters={
+            **_worker_status().operation_counters.model_dump(),
+            "shadow_requests": MAX_REPORT_COUNTER,
+        },
+    )
+
+    report = finalize_external_pi_baseline(
+        config=config,
+        before=before,
+        after=after,
+        tracker=_tracker(compatible=8, capacity=92),
+    )
+
+    assert report.worker_generation == MAX_REPORT_COUNTER
+    assert report.shadow_requests_delta == 100
+    assert report.safety_passed is True
