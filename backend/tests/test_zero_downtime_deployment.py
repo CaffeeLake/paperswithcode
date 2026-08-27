@@ -718,6 +718,65 @@ def test_initial_slot_bridge_qualifies_shadow_before_activation(
     ]
 
 
+def test_active_slot_qualify_only_prepares_external_pi_before_reporting_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    release = tmp_path / "candidate"
+    release.mkdir()
+    runtime = tmp_path / "runtime"
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_prepare_slot",
+        lambda environment, slot, candidate, python_runtime: events.append(
+            ("backend", environment, slot, candidate, python_runtime)
+        )
+        or {"ready": True},
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "validate_manifest",
+        lambda candidate, environment: {"release_id": "candidate-staging"},
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "prepare_candidate_if_enabled",
+        lambda environment, slot, release_id: events.append(
+            ("shadow", environment, slot, release_id)
+        ),
+    )
+
+    result = deploy_cli._prepare_qualified_slot("staging", "green", release, runtime)
+
+    assert result == {"ready": True}
+    assert events == [
+        ("backend", "staging", "green", release, runtime),
+        ("shadow", "staging", "green", "candidate-staging"),
+    ]
+
+
+def test_active_slot_qualify_only_rejects_flag_mismatch_before_backend_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        deploy_cli,
+        "external_pi_lifecycle_enabled",
+        lambda _environment: (_ for _ in ()).throw(
+            deploy_cli.ExternalPiSlotError("flags disagree")
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "_prepare_slot",
+        lambda *_args: pytest.fail("backend candidate mutated before flag validation"),
+    )
+
+    with pytest.raises(deploy_cli.ExternalPiSlotError, match="flags disagree"):
+        deploy_cli._prepare_qualified_slot(
+            "staging", "green", tmp_path / "release", tmp_path / "runtime"
+        )
+
+
 def test_shadow_candidate_is_drained_on_automatic_rollback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -47,6 +47,7 @@ try:
     )
     from deploy.external_pi_slot_lifecycle import (
         ExternalPiSlotError,
+        lifecycle_enabled as external_pi_lifecycle_enabled,
         prepare_candidate_if_enabled,
         slot_status as external_pi_slot_status,
         stop_slot_if_enabled,
@@ -78,6 +79,7 @@ except ModuleNotFoundError:
     )
     from external_pi_slot_lifecycle import (  # type: ignore[no-redef]
         ExternalPiSlotError,
+        lifecycle_enabled as external_pi_lifecycle_enabled,
         prepare_candidate_if_enabled,
         slot_status as external_pi_slot_status,
         stop_slot_if_enabled,
@@ -1096,6 +1098,23 @@ def _prepare_or_reuse_slot(
     return status_value
 
 
+def _prepare_qualified_slot(
+    environment: str,
+    slot: str,
+    release: Path,
+    runtime: Path,
+) -> dict:
+    """Prepare both backend and guarded external Pi candidate lifecycles."""
+    external_pi_lifecycle_enabled(environment)
+    status_value = _prepare_slot(environment, slot, release, runtime)
+    prepare_candidate_if_enabled(
+        environment,
+        slot,
+        validate_manifest(release, environment)["release_id"],
+    )
+    return status_value
+
+
 def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> None:
     pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
     if pointers.current != release:
@@ -1105,6 +1124,7 @@ def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> N
     if _active_slot(environment) is not None:
         raise DeployError("the slot bridge is already prepared")
     slot = "blue"
+    external_pi_lifecycle_enabled(environment)
     _write_journal(
         environment,
         "candidate-preparing",
@@ -1236,6 +1256,7 @@ def activate_slot(
     preserved_previous = original_previous if refresh_environment else old_release
     candidate_manifest = validate_manifest(release, environment)
     active_manifest = validate_manifest(old_release, environment)
+    external_pi_lifecycle_enabled(environment)
     validate_rolling_compatibility(active_manifest, candidate_manifest)
     _write_journal(
         environment,
@@ -1700,7 +1721,7 @@ def deploy(args: argparse.Namespace) -> int:
                     validate_manifest(active_release, args.environment),
                     validate_manifest(release, args.environment),
                 )
-                _prepare_slot(args.environment, inactive, release, runtime)
+                _prepare_qualified_slot(args.environment, inactive, release, runtime)
                 _write_journal(
                     args.environment,
                     "candidate-prepared",
@@ -1936,8 +1957,11 @@ def status(_: argparse.Namespace) -> int:
                 slot_item["deployment"] = live
             if environment == "staging":
                 slot_item["external_pi_shadow"] = {
-                    "service": _systemctl_state(
+                    "supervisor": _systemctl_state(
                         f"paperswithcode-staging-external-pi@{slot}.service"
+                    ),
+                    "worker": _systemctl_state(
+                        f"paperswithcode-staging-external-pi-worker@{slot}.service"
                     ),
                     "lifecycle": external_pi_slot_status(environment, slot) or None,
                 }

@@ -76,7 +76,12 @@ def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("run through sudo")
     install_uv()
-    for user in ("pwc-production", "pwc-staging", "pwc-cron"):
+    for user in (
+        "pwc-production",
+        "pwc-staging",
+        "pwc-cron",
+        "pwc-external-pi",
+    ):
         ensure_user(user)
     for path in (
         APP_ROOT,
@@ -86,6 +91,15 @@ def main() -> int:
     ):
         ensure_dir(path, "root", "root", 0o755)
     ensure_dir(CONFIG_ROOT, "root", "root", 0o711)
+    worker_environment = CONFIG_ROOT / "external-pi-worker.env"
+    if not worker_environment.exists():
+        worker_environment.write_text("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=\n")
+    os.chown(
+        worker_environment,
+        0,
+        grp.getgrnam("pwc-external-pi").gr_gid,
+    )
+    worker_environment.chmod(0o640)
     for path in (
         APP_ROOT / "releases",
         APP_ROOT / "runtimes",
@@ -192,6 +206,7 @@ def main() -> int:
         "paperswithcode-staging-backend@.service",
         "paperswithcode-staging-backend@.socket",
         "paperswithcode-staging-external-pi@.service",
+        "paperswithcode-staging-external-pi-worker@.service",
         "paperswithcode-production-backend@.service",
         "paperswithcode-production-backend@.socket",
         "pwc-postgres-backup.service",

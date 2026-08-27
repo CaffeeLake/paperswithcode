@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
+import subprocess
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +13,7 @@ import pytest
 import deploy.external_pi_slot_lifecycle as lifecycle
 import deploy.external_pi_slot_launcher as launcher
 import deploy.cli as deploy_cli
+import deploy.external_pi_worker_launcher as worker_launcher
 
 
 def _release(root: Path, slot: str, runtime_id: str = "a" * 64) -> Path:
@@ -140,6 +144,7 @@ def test_child_environments_are_strictly_scrubbed(tmp_path: Path):
         "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS",
         "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS",
         "PWC_EXTERNAL_PI_STATUS_PATH",
+        "PWC_EXTERNAL_PI_WORKER_ID",
     }
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "http://127.0.0.1:8767"
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
@@ -249,18 +254,22 @@ def test_maximum_configured_drain_can_finish_and_releases_durable_ownership(
     )
     seen: dict[str, float] = {}
 
-    def stop(_command, *, check, timeout):
+    commands: list[list[str]] = []
+
+    def stop(command, *, check, timeout=None):
         assert check is True
-        seen["timeout"] = timeout
-        status.write_text(
-            json.dumps(
-                {
-                    "release_id": "release-green",
-                    "state": "offline",
-                    "drained": True,
-                }
+        commands.append(command)
+        if "external-pi@" in command[-1]:
+            seen["timeout"] = timeout
+            status.write_text(
+                json.dumps(
+                    {
+                        "release_id": "release-green",
+                        "state": "offline",
+                        "drained": True,
+                    }
+                )
             )
-        )
 
     monkeypatch.setattr(lifecycle.subprocess, "run", stop)
 
@@ -272,6 +281,33 @@ def test_maximum_configured_drain_can_finish_and_releases_durable_ownership(
         "state": "offline",
         "drained": True,
     }
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
+        [
+            "systemctl",
+            "stop",
+            "paperswithcode-staging-external-pi-worker@green.service",
+        ],
+    ]
+
+
+def test_stop_without_durable_drain_evidence_leaves_worker_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@blue.service"]
+    ]
 
 
 @pytest.mark.parametrize(
@@ -306,7 +342,7 @@ def test_candidate_failure_stops_the_failed_unit(
         "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=5\n"
     )
     monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
-    commands: list[tuple[list[str], bool, float]] = []
+    commands: list[tuple[list[str], bool, float | None]] = []
     monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
     monkeypatch.setattr(
         lifecycle,
@@ -315,11 +351,12 @@ def test_candidate_failure_stops_the_failed_unit(
             lifecycle.ExternalPiSlotError("candidate unavailable")
         ),
     )
-    monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda command, *, check, timeout: commands.append((command, check, timeout)),
-    )
+
+    def successful_stop(command, *, check, timeout=None):
+        commands.append((command, check, timeout))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", successful_stop)
 
     with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate unavailable"):
         lifecycle.prepare_candidate("staging", "green", "release-green")
@@ -329,7 +366,46 @@ def test_candidate_failure_stops_the_failed_unit(
             ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
             False,
             315,
-        )
+        ),
+        (
+            [
+                "systemctl",
+                "stop",
+                "paperswithcode-staging-external-pi-worker@green.service",
+            ],
+            False,
+            None,
+        ),
+    ]
+
+
+def test_candidate_cleanup_leaves_worker_running_if_supervisor_stop_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "staging.env").write_text("")
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "qualify_candidate",
+        lambda *_args: (_ for _ in ()).throw(
+            lifecycle.ExternalPiSlotError("candidate unavailable")
+        ),
+    )
+    commands: list[list[str]] = []
+
+    def failed_stop(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", failed_stop)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate unavailable"):
+        lifecycle.prepare_candidate("staging", "green", "release-green")
+
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"]
     ]
 
 
@@ -356,7 +432,12 @@ def test_recovery_stop_ignores_a_stale_status_from_the_previous_release(
     lifecycle.stop_slot("staging", "green", "new-candidate")
 
     assert commands == [
-        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"]
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
+        [
+            "systemctl",
+            "stop",
+            "paperswithcode-staging-external-pi-worker@green.service",
+        ],
     ]
 
 
@@ -429,25 +510,228 @@ def test_launcher_execs_release_python_with_only_scrubbed_settings(
         "-m",
         "backend.scripts.run_external_pi_slot",
     ]
-    assert executed["environment"]["PWC_EXTERNAL_PI_PORT"] == "8766"
-    assert executed["environment"]["PWC_EXTERNAL_PI_TOOL_NAMES"] == "[]"
+    assert executed["environment"]["PWC_EXTERNAL_PI_WORKER_ID"] == "staging-blue"
+    assert "PWC_EXTERNAL_PI_PORT" not in executed["environment"]
     assert "PWC_HF_TOKEN" not in executed["environment"]
     assert "OPENAI_API_KEY" not in executed["environment"]
 
 
-def test_systemd_template_is_staging_slot_scoped_and_loopback_launcher_owned():
-    unit = (
+def test_worker_launcher_execs_node_with_only_dedicated_worker_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolved = lifecycle.ExternalPiSlot(
+        slot="blue",
+        port=8766,
+        worker_id="staging-blue",
+        release=tmp_path / "release",
+        release_id="release-blue",
+        runtime=tmp_path / "runtime",
+        node=tmp_path / "runtime/node/bin/node",
+        entry_point=tmp_path / "runtime/app/dist/src/external_http_main.js",
+        prompt=tmp_path / "runtime/assets/pi-system-prompt.txt",
+        status_path=tmp_path / "status.json",
+    )
+    monkeypatch.setattr(
+        worker_launcher, "resolve_external_pi_slot", lambda *_args: resolved
+    )
+    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "t" * 32)
+    monkeypatch.setenv("PWC_DB_PASSWORD", "must-not-leak")
+    monkeypatch.setenv("PWC_OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setattr(worker_launcher.os, "chdir", lambda _path: None)
+    executed: dict = {}
+
+    def execve(executable, arguments, environment):
+        executed.update(
+            executable=executable, arguments=arguments, environment=environment
+        )
+        raise RuntimeError("exec")
+
+    monkeypatch.setattr(worker_launcher.os, "execve", execve)
+    monkeypatch.setattr(
+        worker_launcher.sys, "argv", ["worker-launcher", "staging", "blue"]
+    )
+
+    with pytest.raises(RuntimeError, match="exec"):
+        worker_launcher.main()
+
+    assert executed["executable"] == str(resolved.node)
+    assert executed["arguments"] == [str(resolved.node), str(resolved.entry_point)]
+    assert set(executed["environment"]) == {
+        "PWC_EXTERNAL_PI_HOST",
+        "PWC_EXTERNAL_PI_PORT",
+        "PWC_EXTERNAL_PI_TOKEN",
+        "PWC_EXTERNAL_PI_MAX_SESSIONS",
+        "PWC_EXTERNAL_PI_WORKER_ID",
+        "PWC_EXTERNAL_PI_INSTANCE_ID",
+        "PWC_EXTERNAL_PI_RELEASE_ID",
+        "PWC_EXTERNAL_PI_PROMPT_PATH",
+        "PWC_EXTERNAL_PI_TOOL_NAMES",
+    }
+    assert "PWC_DB_PASSWORD" not in executed["environment"]
+
+
+@pytest.mark.parametrize(
+    ("shadow", "supervisor", "expected"),
+    [("false", "false", False), ("true", "true", True)],
+)
+def test_shadow_and_supervisor_flags_must_agree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shadow: str,
+    supervisor: str,
+    expected: bool,
+):
+    (tmp_path / "staging.env").write_text(
+        f"PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED={shadow}\n"
+        f"PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED={supervisor}\n"
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    assert lifecycle.lifecycle_enabled("staging") is expected
+    assert lifecycle.lifecycle_enabled("production") is False
+
+
+@pytest.mark.parametrize(
+    ("shadow", "supervisor"), [("true", "false"), ("false", "true")]
+)
+def test_mismatched_shadow_and_supervisor_flags_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shadow: str,
+    supervisor: str,
+):
+    (tmp_path / "staging.env").write_text(
+        f"PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED={shadow}\n"
+        f"PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED={supervisor}\n"
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="flags disagree"):
+        lifecycle.prepare_candidate_if_enabled("staging", "blue", "release")
+
+
+def test_distinct_worker_uid_cannot_read_supervisor_process_secrets():
+    if os.geteuid() != 0:
+        pytest.skip("cross-UID process boundary test requires root")
+    supervisor_identity = pwd.getpwnam("pwc-staging")
+    worker_identity = pwd.getpwnam("nobody")
+    system_python = "/usr/bin/python3"
+
+    def become(identity):
+        def switch():
+            os.setgid(identity.pw_gid)
+            os.setuid(identity.pw_uid)
+
+        return switch
+
+    supervisor = subprocess.Popen(
+        [system_python, "-c", "import time; time.sleep(30)"],
+        env={"PWC_DB_PASSWORD": "supervisor-secret"},
+        preexec_fn=become(supervisor_identity),
+    )
+    try:
+        probe = subprocess.run(
+            [
+                system_python,
+                "-c",
+                (
+                    "import pathlib,sys; p=pathlib.Path('/proc')/sys.argv[1]/'environ'; "
+                    "\ntry: print(p.read_bytes().decode())\n"
+                    "except PermissionError: print('permission-denied')"
+                ),
+                str(supervisor.pid),
+            ],
+            env={"PWC_EXTERNAL_PI_TOKEN": "worker-only"},
+            preexec_fn=become(worker_identity),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    finally:
+        supervisor.terminate()
+        supervisor.wait(timeout=5)
+
+    assert probe.stdout.strip() == "permission-denied"
+    assert "supervisor-secret" not in probe.stdout
+
+
+def test_lifecycle_starts_worker_before_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    events: list[object] = []
+    monkeypatch.setattr(
+        lifecycle,
+        "sync_worker_environment",
+        lambda environment: events.append(("sync", environment)),
+    )
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda command, **_kwargs: events.append(command),
+    )
+
+    lifecycle.start_slot("staging", "blue")
+
+    assert events == [
+        ("sync", "staging"),
+        [
+            "systemctl",
+            "start",
+            "paperswithcode-staging-external-pi-worker@blue.service",
+        ],
+        ["systemctl", "start", "paperswithcode-staging-external-pi@blue.service"],
+    ]
+
+
+def test_dedicated_worker_environment_contains_only_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=" + "t" * 32 + "\n"
+        "PWC_DB_PASSWORD=must-not-leak\n"
+        "PWC_OPENAI_API_KEY=must-not-leak\n"
+    )
+    worker_environment = tmp_path / "external-pi-worker.env"
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "WORKER_CONFIG", worker_environment)
+    monkeypatch.setattr(
+        lifecycle.grp, "getgrnam", lambda _name: SimpleNamespace(gr_gid=1234)
+    )
+    ownership: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        lifecycle.os,
+        "chown",
+        lambda _path, user, group: ownership.append((user, group)),
+    )
+
+    lifecycle.sync_worker_environment("staging")
+
+    assert worker_environment.read_text() == (
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=" + "t" * 32 + "\n"
+    )
+    assert worker_environment.stat().st_mode & 0o777 == 0o640
+    assert ownership == [(0, 1234)]
+
+
+def test_systemd_templates_split_worker_and_supervisor_credentials():
+    supervisor = (
         Path(__file__).parents[2]
         / "deploy/systemd/paperswithcode-staging-external-pi@.service"
     ).read_text()
+    worker = (
+        Path(__file__).parents[2]
+        / "deploy/systemd/paperswithcode-staging-external-pi-worker@.service"
+    ).read_text()
 
-    assert "external_pi_slot_launcher.py staging %i" in unit
-    assert "EnvironmentFile=/etc/paperswithcode/staging.env" in unit
-    assert "paperswithcode-production" not in unit
-    assert "ReadOnlyPaths=/srv/paperswithcode" in unit
-    assert "KillMode=mixed" in unit
+    assert "User=pwc-staging" in supervisor
+    assert "EnvironmentFile=/etc/paperswithcode/staging.env" in supervisor
+    assert "external_pi_slot_launcher.py staging %i" in supervisor
+    assert "User=pwc-external-pi" in worker
+    assert "EnvironmentFile=/etc/paperswithcode/external-pi-worker.env" in worker
+    assert "external_pi_worker_launcher.py staging %i" in worker
+    assert "staging.env" not in worker
+    assert "ProtectProc=invisible" in worker
     timeout_line = next(
-        line for line in unit.splitlines() if line.startswith("TimeoutStopSec=")
+        line for line in supervisor.splitlines() if line.startswith("TimeoutStopSec=")
     )
     assert (
         int(timeout_line.partition("=")[2])
@@ -494,7 +778,8 @@ def test_deployment_status_reports_shadow_unit_and_durable_evidence(
     value = json.loads(capsys.readouterr().out)
     shadow = value["environments"]["staging"]["slots"]["blue"]["external_pi_shadow"]
     assert shadow == {
-        "service": "active",
+        "supervisor": "active",
+        "worker": "active",
         "lifecycle": {
             "worker_id": "staging-blue",
             "generation": 7,

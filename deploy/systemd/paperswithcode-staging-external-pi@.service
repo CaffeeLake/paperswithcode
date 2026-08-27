@@ -1,5 +1,5 @@
 [Unit]
-Description=Papers With Code staging external Pi shadow worker (%i)
+Description=Papers With Code staging external Pi durable supervisor (%i)
 After=network-online.target postgresql.service postgresql@16-main.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -16,7 +16,6 @@ RestartSec=3
 TimeoutStartSec=75
 TimeoutStopSec=330
 KillSignal=SIGTERM
-KillMode=mixed
 SyslogIdentifier=paperswithcode-staging-external-pi-%i
 NoNewPrivileges=true
 PrivateTmp=true

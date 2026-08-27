@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import grp
 import json
 import math
 import os
@@ -21,6 +22,8 @@ CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode
 STATUS_ROOT = Path(
     os.environ.get("PWC_EXTERNAL_PI_STATUS_ROOT", "/run/paperswithcode/external-pi")
 )
+WORKER_CONFIG = CONFIG_ROOT / "external-pi-worker.env"
+WORKER_USER = "pwc-external-pi"
 SLOT_PORTS = {"blue": 8766, "green": 8767}
 MAXIMUM_SESSIONS = 8
 CONTRACT_VERSION = "external-pi-v1"
@@ -161,15 +164,22 @@ def supervisor_environment(
                 "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS", "1"
             ),
             "PWC_EXTERNAL_PI_STATUS_PATH": str(resolved.status_path),
+            "PWC_EXTERNAL_PI_WORKER_ID": resolved.worker_id,
         }
     )
     return values
 
 
-def _unit(environment: str, slot: str) -> str:
+def _supervisor_unit(environment: str, slot: str) -> str:
     if environment != "staging" or slot not in SLOT_PORTS:
         raise ValueError("external Pi slot lifecycle is staging-only")
     return f"paperswithcode-staging-external-pi@{slot}.service"
+
+
+def _worker_unit(environment: str, slot: str) -> str:
+    if environment != "staging" or slot not in SLOT_PORTS:
+        raise ValueError("external Pi slot lifecycle is staging-only")
+    return f"paperswithcode-staging-external-pi-worker@{slot}.service"
 
 
 def _status_path(environment: str, slot: str) -> Path:
@@ -231,9 +241,39 @@ def drain_stop_timeout_seconds(environment: str) -> float:
     )
 
 
+def sync_worker_environment(environment: str) -> None:
+    """Publish only the worker token to the dedicated protected environment."""
+    if environment != "staging":
+        raise ValueError("external Pi worker environment is staging-only")
+    token = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "")
+    if len(token) < 32 or "\n" in token or "\r" in token:
+        raise ValueError("external Pi worker token is missing or invalid")
+    temporary = WORKER_CONFIG.with_name(f".{WORKER_CONFIG.name}.new-{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o640)
+            handle.write(f"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN={token}\n")
+        os.chown(temporary, 0, grp.getgrnam(WORKER_USER).gr_gid)
+        os.replace(temporary, WORKER_CONFIG)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def start_slot(environment: str, slot: str) -> None:
     _status_path(environment, slot).unlink(missing_ok=True)
-    subprocess.run(["systemctl", "start", _unit(environment, slot)], check=True)
+    sync_worker_environment(environment)
+    subprocess.run(["systemctl", "start", _worker_unit(environment, slot)], check=True)
+    try:
+        subprocess.run(
+            ["systemctl", "start", _supervisor_unit(environment, slot)], check=True
+        )
+    except (OSError, subprocess.CalledProcessError):
+        subprocess.run(
+            ["systemctl", "stop", _worker_unit(environment, slot)], check=False
+        )
+        raise
 
 
 def qualify_candidate(
@@ -273,24 +313,27 @@ def stop_slot(
     previous = _read_status(environment, slot)
     try:
         subprocess.run(
-            ["systemctl", "stop", _unit(environment, slot)],
+            ["systemctl", "stop", _supervisor_unit(environment, slot)],
             check=True,
             timeout=timeout_seconds,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise ExternalPiSlotError("external Pi worker drain timed out") from error
-    if not previous:
-        return
+    value = _read_status(environment, slot)
     if previous.get("release_id") != release_id:
         if previous.get("state") == "offline" and previous.get("drained") is True:
+            subprocess.run(
+                ["systemctl", "stop", _worker_unit(environment, slot)], check=True
+            )
             return
-        value = _read_status(environment, slot)
         if value.get("state") == "offline" and value.get("drained") is True:
+            subprocess.run(
+                ["systemctl", "stop", _worker_unit(environment, slot)], check=True
+            )
             return
         raise ExternalPiSlotError(
             f"external Pi stale worker did not prove graceful drain: {value!r}"
         )
-    value = _read_status(environment, slot)
     if not (
         value.get("release_id") == release_id
         and value.get("state") == "offline"
@@ -299,6 +342,7 @@ def stop_slot(
         raise ExternalPiSlotError(
             f"external Pi worker did not prove graceful drain: {value!r}"
         )
+    subprocess.run(["systemctl", "stop", _worker_unit(environment, slot)], check=True)
 
 
 def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
@@ -321,34 +365,45 @@ def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ):
-        subprocess.run(
-            ["systemctl", "stop", _unit(environment, slot)],
+        cleanup = subprocess.run(
+            ["systemctl", "stop", _supervisor_unit(environment, slot)],
             check=False,
             timeout=stop_timeout_seconds,
         )
+        if cleanup.returncode == 0:
+            subprocess.run(
+                ["systemctl", "stop", _worker_unit(environment, slot)], check=False
+            )
         raise
 
 
-def _configured_enabled(environment: str) -> bool:
+def lifecycle_enabled(environment: str) -> bool:
     if environment != "staging":
         return False
-    return (
-        _protected_staging_values()
-        .get("PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false")
-        .lower()
-        == "true"
-    )
+    values = _protected_staging_values()
+    raw_shadow = values.get("PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED", "false").lower()
+    raw_supervisor = values.get(
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false"
+    ).lower()
+    if raw_shadow not in {"true", "false"} or raw_supervisor not in {
+        "true",
+        "false",
+    }:
+        raise ExternalPiSlotError("external Pi lifecycle flags must be boolean")
+    if raw_shadow != raw_supervisor:
+        raise ExternalPiSlotError("external Pi shadow and supervisor flags disagree")
+    return raw_shadow == "true"
 
 
 def prepare_candidate_if_enabled(environment: str, slot: str, release_id: str) -> bool:
-    if not _configured_enabled(environment):
+    if not lifecycle_enabled(environment):
         return False
     prepare_candidate(environment, slot, release_id)
     return True
 
 
 def stop_slot_if_enabled(environment: str, slot: str, release_id: str) -> bool:
-    if not _configured_enabled(environment):
+    if not lifecycle_enabled(environment):
         return False
     stop_slot(environment, slot, release_id)
     return True
