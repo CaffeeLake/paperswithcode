@@ -305,8 +305,8 @@ sudo python deploy/configure_host_env.py \
   --staging-chat-durable-dispatch-enable-only
 sudo pwc-deploy staging <exact-current-sha> --refresh-environment
 
-staging_release="$(readlink -f /srv/paperswithcode/environments/staging/current)"
-cd "$staging_release"
+staging_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" &&
+  cd -- "$staging_release" || exit 1
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_durable_dispatch \
   --release-dir "$staging_release" \

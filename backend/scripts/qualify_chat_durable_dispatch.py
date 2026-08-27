@@ -43,6 +43,7 @@ EXPECTED_OUTCOMES = {
 EXPECTED_INDEX_DEFINITIONS = {
     "idx_chat_turn_jobs_claim": {
         "columns": ["state", "admitted_at", "turn_id"],
+        "included_columns": [],
         "predicate": None,
         "unique": False,
         "valid": True,
@@ -50,6 +51,7 @@ EXPECTED_INDEX_DEFINITIONS = {
     },
     "idx_chat_turn_jobs_expiry": {
         "columns": ["state", "lease_expires_at"],
+        "included_columns": [],
         "predicate": None,
         "unique": False,
         "valid": True,
@@ -57,6 +59,7 @@ EXPECTED_INDEX_DEFINITIONS = {
     },
     "uq_chat_turn_jobs_nonterminal_owner": {
         "columns": ["hf_user_id"],
+        "included_columns": [],
         "predicate": (
             "state::text = ANY (ARRAY['admitted'::character varying, "
             "'leased'::character varying, 'running'::character varying, "
@@ -304,6 +307,13 @@ def inspect_postgresql_contract(db: Session) -> SchemaAudit:
                            FROM generate_series(1, i.indnkeyatts) position
                            ORDER BY position
                        ) AS columns,
+                       ARRAY(
+                           SELECT pg_get_indexdef(i.indexrelid, position, true)
+                           FROM generate_series(
+                               i.indnkeyatts + 1, i.indnatts
+                           ) position
+                           ORDER BY position
+                       ) AS included_columns,
                        pg_get_expr(i.indpred, i.indrelid, true) AS predicate,
                        i.indisunique AS is_unique,
                        i.indisvalid AS valid,
@@ -364,6 +374,7 @@ def inspect_postgresql_contract(db: Session) -> SchemaAudit:
                         name,
                         jsonb_build_object(
                             'columns', columns,
+                            'included_columns', included_columns,
                             'predicate', predicate,
                             'unique', is_unique,
                             'valid', valid,

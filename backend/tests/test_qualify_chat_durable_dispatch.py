@@ -102,6 +102,7 @@ def _valid_definition_snapshot():
     indexes = {
         "idx_chat_turn_jobs_claim": {
             "columns": ["state", "admitted_at", "turn_id"],
+            "included_columns": [],
             "predicate": None,
             "unique": False,
             "valid": True,
@@ -109,6 +110,7 @@ def _valid_definition_snapshot():
         },
         "idx_chat_turn_jobs_expiry": {
             "columns": ["state", "lease_expires_at"],
+            "included_columns": [],
             "predicate": None,
             "unique": False,
             "valid": True,
@@ -116,6 +118,7 @@ def _valid_definition_snapshot():
         },
         "uq_chat_turn_jobs_nonterminal_owner": {
             "columns": ["hf_user_id"],
+            "included_columns": [],
             "predicate": (
                 "state::text = ANY (ARRAY['admitted'::character varying, "
                 "'leased'::character varying, 'running'::character varying, "
@@ -234,6 +237,7 @@ def test_schema_audit_refuses_each_postgresql_contract_mismatch(field):
         ("idx_chat_turn_jobs_expiry", "columns", ["lease_expires_at", "state"]),
         ("uq_chat_turn_jobs_nonterminal_owner", "predicate", "state = 'running'"),
         ("uq_chat_turn_jobs_nonterminal_owner", "unique", False),
+        ("idx_chat_turn_jobs_claim", "included_columns", ["worker_id"]),
         ("idx_chat_turn_jobs_claim", "valid", False),
         ("idx_chat_turn_jobs_expiry", "ready", False),
     ],
