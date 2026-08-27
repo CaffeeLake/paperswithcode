@@ -57,7 +57,9 @@ def _qualification_fixture(tmp_path: Path, *, install_runtime: bool = True):
     env_file = tmp_path / "etc/paperswithcode/staging.env"
     env_file.parent.mkdir(parents=True)
     env_file.write_text(
-        "PWC_RELEASE_ID=stale-release\nPWC_CHAT_WORKER_CONTRACT_VERSION=3\n",
+        "PWC_RELEASE_ID=stale-release\n"
+        "PWC_CHAT_WORKER_CONTRACT_VERSION=3\n"
+        "PWC_LOADTEST_ENV_MARKER=loaded\n",
         encoding="utf-8",
     )
     fake_bin = tmp_path / "bin"
@@ -77,10 +79,20 @@ def _qualification_fixture(tmp_path: Path, *, install_runtime: bool = True):
         "done\n"
         'set -a\n. "$env_file"\nset +a\nexec "$@"\n',
     )
-    _write_executable(fake_bin / "pwc-deploy", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "pwc-deploy",
+        "#!/bin/sh\n"
+        '[ -z "${CONTROL_LOG:-}" ] || printf \'deploy|%s\\n\' "$*" >> "$CONTROL_LOG"\n',
+    )
     configure = release / "deploy/configure_host_env.py"
     configure.parent.mkdir()
-    configure.write_text("pass\n", encoding="utf-8")
+    configure.write_text(
+        "import os, sys\n"
+        "if log := os.environ.get('CONTROL_LOG'):\n"
+        "    with open(log, 'a', encoding='utf-8') as output:\n"
+        "        output.write('configure|' + ' '.join(sys.argv[1:]) + '\\n')\n",
+        encoding="utf-8",
+    )
     return app, release, env_file, fake_bin, log, sha
 
 
@@ -173,9 +185,22 @@ def test_bridge_smoke_uses_isolated_uv_with_exact_manifest_identity(tmp_path: Pa
     app, release, env_file, fake_bin, log, sha = _qualification_fixture(tmp_path)
     _write_executable(
         fake_bin / "uv",
-        "#!/bin/sh\n"
-        "printf '%s|%s|%s\\n' \"$PWC_RELEASE_ID\" "
-        '"$PWC_CHAT_WORKER_CONTRACT_VERSION" "$*" >> "$COMMAND_LOG"\n',
+        "#!/bin/bash\n"
+        "set -eu\n"
+        "caller_release=${PWC_RELEASE_ID-}\n"
+        "caller_worker=${PWC_CHAT_WORKER_CONTRACT_VERSION-}\n"
+        'args=("$@")\n'
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = --env-file ]; then env_file=$2; break; fi\n'
+        "  shift\n"
+        "done\n"
+        'set -a\n. "$env_file"\nset +a\n'
+        '[ -z "$caller_release" ] || PWC_RELEASE_ID=$caller_release\n'
+        '[ -z "$caller_worker" ] || '
+        "PWC_CHAT_WORKER_CONTRACT_VERSION=$caller_worker\n"
+        "printf '%s|%s|%s|%s\\n' \"$PWC_RELEASE_ID\" "
+        '"$PWC_CHAT_WORKER_CONTRACT_VERSION" "$PWC_LOADTEST_ENV_MARKER" '
+        '"${args[*]}" >> "$COMMAND_LOG"\n',
     )
     block = _bash_block(
         ROOT / "backend/loadtests/README.md",
@@ -192,20 +217,52 @@ def test_bridge_smoke_uses_isolated_uv_with_exact_manifest_identity(tmp_path: Pa
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "COMMAND_LOG": str(log),
-            "PWC_RELEASE_ID": "stale-release",
-            "PWC_CHAT_WORKER_CONTRACT_VERSION": "3",
         },
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     call = log.read_text(encoding="utf-8").strip()
-    assert call.startswith(f"{sha[:12]}-staging|102|")
+    assert call.startswith(f"{sha[:12]}-staging|102|loaded|")
     assert "--isolated --env-file" in call
     assert "--with locust>=2.40,<3" in call
     assert "--users 2 --spawn-rate 2.0" in call
     assert "--processes" not in call
     assert "https://paperswithcode.co" not in call
+    assert not (release / ".venv").exists()
+
+
+def test_durable_rollback_is_self_contained_in_a_fresh_shell(tmp_path: Path):
+    """Catch a failed rollback that leaves the staging bridge enabled."""
+    app, release, env_file, fake_bin, _log, sha = _qualification_fixture(tmp_path)
+    control_log = tmp_path / "control.log"
+    block = _bash_block(ROOT / "docs/deployment.md", "Any non-zero exit")
+    block = block.replace("/srv/paperswithcode", str(app))
+    block = block.replace("/etc/paperswithcode/staging.env", str(env_file))
+    block = block.replace(f"{app}/.venv/bin/python", sys.executable)
+    before = sorted(path.relative_to(release) for path in release.rglob("*"))
+    result = subprocess.run(
+        ["bash", "-eu", "-o", "pipefail", "-c", block],
+        check=False,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CONTROL_LOG": str(control_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = control_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        (
+            f"configure|--legacy-env {env_file} "
+            "--staging-chat-durable-dispatch-disable-only"
+        ),
+        f"deploy|staging {sha} --refresh-environment",
+    ]
+    assert sorted(path.relative_to(release) for path in release.rglob("*")) == before
     assert not (release / ".venv").exists()
 
 

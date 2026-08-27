@@ -409,24 +409,44 @@ exact disable helper, and refresh the same exact SHA through the immutable
 deployment path:
 
 ```bash
+rollback_root=/srv/paperswithcode/releases
 rollback_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
-test "$rollback_release" = "$staging_release" || exit 1
 case "$rollback_release" in
-  /srv/paperswithcode/releases/????????????-staging) ;;
+  "$rollback_root"/????????????-staging) ;;
   *) echo "rollback release is not immutable staging" >&2; exit 1 ;;
 esac
-rollback_sha="$(/srv/paperswithcode/.venv/bin/python -c '
-import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
-' "$rollback_release/release.json")" || exit 1
-test "$rollback_sha" = "$staging_sha" || exit 1
+readarray -t rollback_identity < <(/srv/paperswithcode/.venv/bin/python -c '
+import json, re, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+sha = manifest.get("git_sha")
+assert isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
+assert manifest.get("release_id") == f"{sha[:12]}-staging"
+runtime = manifest.get("chat_runtime")
+assert isinstance(runtime, dict)
+worker = runtime.get("worker_contract_version")
+assert isinstance(worker, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", worker)
+print(sha)
+print(manifest["release_id"])
+print(worker)
+' "$rollback_release/release.json") || exit 1
+test "${#rollback_identity[@]}" -eq 3 || exit 1
+rollback_sha="${rollback_identity[0]}"
+rollback_release_id="${rollback_identity[1]}"
+rollback_worker_contract="${rollback_identity[2]}"
+test "$(basename -- "$rollback_release")" = "$rollback_release_id" || exit 1
+test -n "$rollback_worker_contract" || exit 1
 sudo /srv/paperswithcode/.venv/bin/python \
   "$rollback_release/deploy/configure_host_env.py" \
   --legacy-env /etc/paperswithcode/staging.env \
   --staging-chat-durable-dispatch-disable-only || exit 1
 sudo pwc-deploy staging "$rollback_sha" --refresh-environment || exit 1
-test "$(readlink -e /srv/paperswithcode/environments/staging/current)" = \
-  "$rollback_release" || exit 1
+rollback_refreshed="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+test "$rollback_refreshed" = "$rollback_release" || exit 1
+rollback_refreshed_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
+' "$rollback_refreshed/release.json")" || exit 1
+test "$rollback_refreshed_sha" = "$rollback_sha" || exit 1
 ```
 
 Pi prewarming and blank-pool admission are independent protected staging
