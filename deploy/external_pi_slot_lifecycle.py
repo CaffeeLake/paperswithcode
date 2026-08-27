@@ -304,6 +304,47 @@ def qualify_candidate(
     raise ExternalPiSlotError(f"external Pi candidate qualification failed: {last!r}")
 
 
+def _never_registered(
+    status: dict,
+    *,
+    release_id: str,
+    worker_id: str,
+) -> bool:
+    if not status:
+        return True
+    return (
+        status.get("release_id") == release_id
+        and status.get("worker_id") == worker_id
+        and status.get("state") == "starting"
+        and status.get("registered") is False
+        and status.get("generation") is None
+    )
+
+
+def _worker_stop_is_safe(
+    previous: dict,
+    current: dict,
+    *,
+    release_id: str,
+    worker_id: str,
+) -> bool:
+    if (
+        current.get("release_id") == release_id
+        and current.get("state") == "offline"
+        and current.get("drained") is True
+    ):
+        return True
+    return _never_registered(
+        previous,
+        release_id=release_id,
+        worker_id=worker_id,
+    ) and _never_registered(
+        current,
+        release_id=release_id,
+        worker_id=worker_id,
+    )
+
+
 def stop_slot(
     environment: str,
     slot: str,
@@ -320,6 +361,16 @@ def stop_slot(
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise ExternalPiSlotError("external Pi worker drain timed out") from error
     value = _read_status(environment, slot)
+    if _worker_stop_is_safe(
+        previous,
+        value,
+        release_id=release_id,
+        worker_id=f"staging-{slot}",
+    ):
+        subprocess.run(
+            ["systemctl", "stop", _worker_unit(environment, slot)], check=True
+        )
+        return
     if previous.get("release_id") != release_id:
         if previous.get("state") == "offline" and previous.get("drained") is True:
             subprocess.run(
@@ -334,19 +385,12 @@ def stop_slot(
         raise ExternalPiSlotError(
             f"external Pi stale worker did not prove graceful drain: {value!r}"
         )
-    if not (
-        value.get("release_id") == release_id
-        and value.get("state") == "offline"
-        and value.get("drained") is True
-    ):
-        raise ExternalPiSlotError(
-            f"external Pi worker did not prove graceful drain: {value!r}"
-        )
-    subprocess.run(["systemctl", "stop", _worker_unit(environment, slot)], check=True)
+    raise ExternalPiSlotError(
+        f"external Pi worker did not prove graceful drain: {value!r}"
+    )
 
 
 def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
-    stop_timeout_seconds = drain_stop_timeout_seconds(environment)
     try:
         start_slot(environment, slot)
         first_generation = qualify_candidate(environment, slot, release_id)
@@ -365,15 +409,12 @@ def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ):
-        cleanup = subprocess.run(
-            ["systemctl", "stop", _supervisor_unit(environment, slot)],
-            check=False,
-            timeout=stop_timeout_seconds,
-        )
-        if cleanup.returncode == 0:
-            subprocess.run(
-                ["systemctl", "stop", _worker_unit(environment, slot)], check=False
-            )
+        try:
+            stop_slot(environment, slot, release_id)
+        except (ExternalPiSlotError, OSError, ValueError) as cleanup_error:
+            raise ExternalPiSlotError(
+                f"external Pi candidate cleanup failed: {cleanup_error}"
+            ) from cleanup_error
         raise
 
 

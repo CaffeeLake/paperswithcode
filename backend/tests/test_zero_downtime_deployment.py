@@ -593,6 +593,35 @@ def test_candidate_failure_leaves_live_activation_unchanged(
     assert (root / "previous").resolve() == older
 
 
+def test_shadow_cleanup_failure_is_reported_before_candidate_prepared_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    phases: list[str] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **_values: phases.append(phase),
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "prepare_candidate_if_enabled",
+        lambda *_args: (_ for _ in ()).throw(
+            deploy_cli.ExternalPiSlotError("candidate cleanup failed")
+        ),
+    )
+
+    with pytest.raises(
+        deploy_cli.ExternalPiSlotError, match="candidate cleanup failed"
+    ):
+        deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
+
+    assert phases == ["candidate-preparing"]
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+    assert (root / "previous").resolve() == older
+
+
 def test_slot_rollback_qualifies_previous_as_one_complete_activation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

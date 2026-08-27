@@ -295,6 +295,17 @@ def test_stop_without_durable_drain_evidence_leaves_worker_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    (tmp_path / "staging-blue.json").write_text(
+        json.dumps(
+            {
+                "release_id": "release-blue",
+                "worker_id": "staging-blue",
+                "state": "ready",
+                "registered": True,
+                "generation": 3,
+            }
+        )
+    )
     commands: list[list[str]] = []
     monkeypatch.setattr(
         lifecycle.subprocess,
@@ -333,15 +344,31 @@ def test_drain_stop_timeout_rejects_invalid_protected_bounds(
         lifecycle.drain_stop_timeout_seconds("staging")
 
 
-def test_candidate_failure_stops_the_failed_unit(
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        None,
+        {
+            "release_id": "release-green",
+            "worker_id": "staging-green",
+            "state": "starting",
+            "registered": False,
+        },
+    ],
+)
+def test_candidate_failure_before_registration_stops_worker_after_supervisor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initial_status: dict | None,
 ):
     (tmp_path / "staging.env").write_text(
         "PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS=300\n"
         "PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS=5\n"
     )
     monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    if initial_status is not None:
+        (tmp_path / "staging-green.json").write_text(json.dumps(initial_status))
     commands: list[tuple[list[str], bool, float | None]] = []
     monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
     monkeypatch.setattr(
@@ -364,7 +391,7 @@ def test_candidate_failure_stops_the_failed_unit(
     assert commands == [
         (
             ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
-            False,
+            True,
             315,
         ),
         (
@@ -373,9 +400,129 @@ def test_candidate_failure_stops_the_failed_unit(
                 "stop",
                 "paperswithcode-staging-external-pi-worker@green.service",
             ],
-            False,
+            True,
             None,
         ),
+    ]
+
+
+def test_candidate_failure_stops_registered_worker_after_durable_offline_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "staging.env").write_text("")
+    status = tmp_path / "staging-green.json"
+    status.write_text(
+        json.dumps(
+            {
+                "release_id": "release-green",
+                "worker_id": "staging-green",
+                "state": "ready",
+                "registered": True,
+                "generation": 4,
+            }
+        )
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "qualify_candidate",
+        lambda *_args: (_ for _ in ()).throw(
+            lifecycle.ExternalPiSlotError("candidate unavailable")
+        ),
+    )
+    commands: list[list[str]] = []
+
+    def stop(command, **_kwargs):
+        commands.append(command)
+        if "external-pi@" in command[-1]:
+            status.write_text(
+                json.dumps(
+                    {
+                        "release_id": "release-green",
+                        "worker_id": "staging-green",
+                        "state": "offline",
+                        "registered": False,
+                        "generation": 4,
+                        "drained": True,
+                    }
+                )
+            )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", stop)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate unavailable"):
+        lifecycle.prepare_candidate("staging", "green", "release-green")
+
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"],
+        [
+            "systemctl",
+            "stop",
+            "paperswithcode-staging-external-pi-worker@green.service",
+        ],
+    ]
+
+
+@pytest.mark.parametrize("post_stop_state", [None, "ready", "failed"])
+def test_candidate_failure_without_durable_drain_proof_leaves_worker_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    post_stop_state: str | None,
+):
+    (tmp_path / "staging.env").write_text("")
+    status = tmp_path / "staging-green.json"
+    status.write_text(
+        json.dumps(
+            {
+                "release_id": "release-green",
+                "worker_id": "staging-green",
+                "state": "ready",
+                "registered": True,
+                "generation": 4,
+            }
+        )
+    )
+    monkeypatch.setattr(lifecycle, "CONFIG_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "STATUS_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "start_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "qualify_candidate",
+        lambda *_args: (_ for _ in ()).throw(
+            lifecycle.ExternalPiSlotError("candidate unavailable")
+        ),
+    )
+    commands: list[list[str]] = []
+
+    def successful_stop(command, **_kwargs):
+        commands.append(command)
+        if post_stop_state is None:
+            status.unlink()
+        else:
+            status.write_text(
+                json.dumps(
+                    {
+                        "release_id": "release-green",
+                        "worker_id": "staging-green",
+                        "state": post_stop_state,
+                        "registered": True,
+                        "generation": 4,
+                    }
+                )
+            )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", successful_stop)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.prepare_candidate("staging", "green", "release-green")
+
+    assert commands == [
+        ["systemctl", "stop", "paperswithcode-staging-external-pi@green.service"]
     ]
 
 
@@ -397,11 +544,11 @@ def test_candidate_cleanup_leaves_worker_running_if_supervisor_stop_fails(
 
     def failed_stop(command, **_kwargs):
         commands.append(command)
-        return SimpleNamespace(returncode=1)
+        raise lifecycle.subprocess.CalledProcessError(1, command)
 
     monkeypatch.setattr(lifecycle.subprocess, "run", failed_stop)
 
-    with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate unavailable"):
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="candidate cleanup failed"):
         lifecycle.prepare_candidate("staging", "green", "release-green")
 
     assert commands == [
