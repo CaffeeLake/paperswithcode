@@ -16,18 +16,21 @@ The harness fails closed unless all of these are set:
   `pwc_staging_session` values created only for synthetic load-test owners
 - explicit `PWC_LOADTEST_MAX_USERS`, `PWC_LOADTEST_MAX_SPEND_USD`,
   `PWC_LOADTEST_MAX_PROMPT_CHARS`, and `PWC_LOADTEST_MAX_OUTPUT_CHARS`
-- for every provider-backed profile, the protected server circuit already
-  loaded as `PWC_CHAT_OPENAI_DAILY_BUDGET_USD` and/or
-  `PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD`
+- for every provider-backed profile,
+  `PWC_LOADTEST_MODEL=gpt-5.6-luna@openai`
 
 The checkpoint hard ceiling is two users. Every user runs once, prompts are
 fixed and bounded, web search is disabled, and streamed text is discarded after
-counting characters. Provider profiles require the declared spend envelope to
-exactly equal every loaded protected provider daily cap; otherwise the harness
-refuses to start. This makes the server circuit, rather than an unenforceable
-client estimate, the actual upper bound. Connection-only profiles require zero
-spend. Never put prompts, responses, account IDs, session IDs, or cookies in
-profile names, metric names, exceptions, terminal output, or saved reports.
+counting characters. Provider profiles read only the direct-OpenAI daily budget
+number from the root-owned regular file that is not group/world writable at
+`/etc/paperswithcode/staging.env`. The required key must occur exactly once and
+its value must exactly equal the declared spend envelope; caller-supplied
+`PWC_CHAT_*` variables are ignored. This makes the server circuit, rather than
+an unenforceable client estimate, the actual upper bound. The exact reviewed
+model is sent as `initial_model`, so the audited provider is the provider under
+load. Connection-only profiles are model-free and require zero spend. Never put
+prompts, responses, account IDs, session IDs, or cookies in profile names,
+metric names, exceptions, terminal output, or saved reports.
 
 The two-user `bridge-smoke` and `connection-only` profiles call only the public,
 content-free `/api/v1/chat/availability` endpoint. They perform no admission,
@@ -55,11 +58,19 @@ capacity qualification must deliberately change and review the source ceiling.
 
 ## Invocation
 
-Do not add Locust to `pyproject.toml`. Run it ephemerally, from the repository
-root, after exporting the complete envelope above:
+Do not add Locust to `pyproject.toml`, source the protected runtime file, or run
+from a checkout. Resolve and enter the exact active immutable staging release,
+then run Locust ephemerally after exporting only the load-test envelope above:
 
 ```bash
-uv run --env-file backend/keys.env --with 'locust>=2.40,<3' \
+release="$(readlink -f /srv/paperswithcode/environments/staging/current)"
+case "$release" in
+  /srv/paperswithcode/releases/*) ;;
+  *) echo "staging current is not an immutable release" >&2; exit 1 ;;
+esac
+cd -- "$release"
+
+uv run --with 'locust>=2.40,<3' \
   locust -f backend/loadtests/locustfile.py --headless \
   --host https://staging.paperswithcode.co --users 2 --spawn-rate 1 \
   --run-time 30s
@@ -69,6 +80,10 @@ For the no-provider checkpoint, use only `bridge-smoke` or `connection-only`,
 set spend to `0`, and do not infer chat admission from the result. Do not run a
 live profile from a developer checkout or connect this harness to staging until
 the controller has deployed the exact reviewed commit and activated the bridge.
+Provider profiles additionally require the fixed direct-OpenAI model above and
+`PWC_LOADTEST_MAX_SPEND_USD` equal to the authoritative
+`PWC_CHAT_OPENAI_DAILY_BUDGET_USD` value. Never copy that value out to a
+caller-controlled `PWC_CHAT_*` variable; the harness reads it itself.
 
 ## Metrics
 

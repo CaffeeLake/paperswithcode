@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from backend.loadtests.chat_core import (
     classify_refusal,
     classify_refusal_bytes,
     load_run_config,
+    read_authoritative_budget,
 )
 
 
@@ -123,48 +126,161 @@ def test_bridge_smoke_is_bounded_and_connection_only() -> None:
 
 
 def _provider_environment(**overrides: str) -> dict[str, str]:
-    return _valid_environment(
+    environment = _valid_environment(
         PWC_LOADTEST_PROFILE="safe-cli",
         PWC_LOADTEST_MAX_SPEND_USD="1.25",
-        **overrides,
+        PWC_LOADTEST_MODEL="gpt-5.6-luna@openai",
+    )
+    environment.update(overrides)
+    return environment
+
+
+def _budget_file(tmp_path: Path, content: str) -> Path:
+    path = tmp_path / "staging.env"
+    path.write_text(content)
+    path.chmod(0o600)
+    return path
+
+
+def _load_provider_config(path: Path, **environment: str):
+    return load_run_config(
+        _provider_environment(**environment),
+        budget_path=path,
+        expected_budget_path=path,
+        expected_budget_owner_uid=os.getuid(),
     )
 
 
-def test_provider_profile_refuses_missing_protected_daily_spend_cap() -> None:
-    with pytest.raises(RunRefused, match="protected daily spend cap is required"):
-        load_run_config(_provider_environment())
+def test_provider_profile_refuses_missing_reviewed_model(tmp_path: Path) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+    environment = _provider_environment()
+    environment.pop("PWC_LOADTEST_MODEL")
+
+    with pytest.raises(RunRefused, match="reviewed provider model is required"):
+        load_run_config(
+            environment,
+            budget_path=path,
+            expected_budget_path=path,
+            expected_budget_owner_uid=os.getuid(),
+        )
 
 
-@pytest.mark.parametrize("value", ["not-money", "nan", "0", "-1"])
-def test_provider_profile_refuses_malformed_protected_daily_spend_cap(
-    value: str,
+def test_provider_profile_refuses_unsupported_model(tmp_path: Path) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+
+    with pytest.raises(RunRefused, match="provider model is not supported"):
+        _load_provider_config(path, PWC_LOADTEST_MODEL="gpt-unknown")
+
+
+def test_provider_profile_refuses_missing_authoritative_budget_file() -> None:
+    missing = Path("/definitely/missing/staging.env")
+    with pytest.raises(RunRefused, match="authoritative staging budget file"):
+        load_run_config(
+            _provider_environment(),
+            budget_path=missing,
+            expected_budget_path=missing,
+            expected_budget_owner_uid=os.getuid(),
+        )
+
+
+def test_authoritative_budget_refuses_wrong_expected_path(tmp_path: Path) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+
+    with pytest.raises(RunRefused, match="exact protected staging runtime path"):
+        read_authoritative_budget(
+            path,
+            expected_path=tmp_path / "different.env",
+            expected_owner_uid=os.getuid(),
+            required_key="PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+        )
+
+
+def test_authoritative_budget_refuses_insecure_mode(tmp_path: Path) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+    path.chmod(0o620)
+
+    with pytest.raises(RunRefused, match="protected staging runtime file metadata"):
+        read_authoritative_budget(
+            path,
+            expected_path=path,
+            expected_owner_uid=os.getuid(),
+            required_key="PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+        )
+
+
+def test_authoritative_budget_refuses_unexpected_owner(tmp_path: Path) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+
+    with pytest.raises(RunRefused, match="protected staging runtime file metadata"):
+        read_authoritative_budget(
+            path,
+            expected_path=path,
+            expected_owner_uid=os.getuid() + 1,
+            required_key="PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+        )
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("PWC_OTHER=1\n", "exactly once"),
+        (
+            "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n"
+            + "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n",
+            "exactly once",
+        ),
+        ("PWC_CHAT_OPENAI_DAILY_BUDGET_USD=not-money\n", "finite and positive"),
+        ("PWC_CHAT_OPENAI_DAILY_BUDGET_USD=nan\n", "finite and positive"),
+        ("PWC_CHAT_OPENAI_DAILY_BUDGET_USD=0\n", "finite and positive"),
+    ],
+)
+def test_authoritative_budget_refuses_missing_duplicate_or_malformed_key(
+    tmp_path: Path, content: str, message: str
 ) -> None:
-    with pytest.raises(RunRefused, match="protected daily spend cap is invalid"):
-        load_run_config(_provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD=value))
+    path = _budget_file(tmp_path, content)
+
+    with pytest.raises(RunRefused, match=message):
+        read_authoritative_budget(
+            path,
+            expected_path=path,
+            expected_owner_uid=os.getuid(),
+            required_key="PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+        )
 
 
-def test_provider_profile_refuses_mismatched_protected_daily_spend_cap() -> None:
+def test_caller_supplied_budget_environment_cannot_replace_file(
+    tmp_path: Path,
+) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=2.50\n")
+
     with pytest.raises(RunRefused, match="does not match declared envelope"):
-        load_run_config(_provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD="2.50"))
+        _load_provider_config(path, PWC_CHAT_OPENAI_DAILY_BUDGET_USD="1.25")
 
 
-def test_provider_profile_accepts_exact_protected_daily_spend_cap() -> None:
-    config = load_run_config(
-        _provider_environment(PWC_CHAT_OPENAI_DAILY_BUDGET_USD="1.25")
-    )
+def test_provider_profile_refuses_mismatched_authoritative_cap(
+    tmp_path: Path,
+) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=2.50\n")
+
+    with pytest.raises(RunRefused, match="does not match declared envelope"):
+        _load_provider_config(path)
+
+
+def test_provider_profile_accepts_exact_authoritative_cap_and_model(
+    tmp_path: Path,
+) -> None:
+    path = _budget_file(tmp_path, "PWC_CHAT_OPENAI_DAILY_BUDGET_USD=1.25\n")
+
+    config = _load_provider_config(path)
 
     assert config.max_spend_usd == 1.25
     assert config.protected_spend_cap_usd == 1.25
+    assert config.initial_model == "gpt-5.6-luna@openai"
 
 
-def test_provider_profile_requires_all_loaded_provider_caps_to_align() -> None:
-    with pytest.raises(RunRefused, match="does not match declared envelope"):
-        load_run_config(
-            _provider_environment(
-                PWC_CHAT_OPENAI_DAILY_BUDGET_USD="1.25",
-                PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD="2.00",
-            )
-        )
+def test_connection_only_profile_refuses_model_selection() -> None:
+    with pytest.raises(RunRefused, match="connection-only profile must be model-free"):
+        load_run_config(_valid_environment(PWC_LOADTEST_MODEL="gpt-5.6-luna@openai"))
 
 
 def test_connection_only_profile_refuses_nonzero_spend_envelope() -> None:
@@ -343,12 +459,14 @@ def test_executable_profile_request_is_bounded_and_disables_search(
         PROFILES[profile_name],
         client_message_id="synthetic-request",
         max_prompt_chars=128,
+        initial_model="gpt-5.6-luna@openai",
     )
 
     assert 0 < len(body["message"]) <= 128
     assert body["client_message_id"] == "synthetic-request"
     assert body["session_id"] is None
     assert body["web_search_enabled"] is False
+    assert body["initial_model"] == "gpt-5.6-luna@openai"
 
 
 def test_executable_profile_refuses_a_prompt_bound_below_its_fixture() -> None:
@@ -357,4 +475,5 @@ def test_executable_profile_refuses_a_prompt_bound_below_its_fixture() -> None:
             PROFILES["general-bash"],
             client_message_id="synthetic-request",
             max_prompt_chars=4,
+            initial_model="gpt-5.6-luna@openai",
         )

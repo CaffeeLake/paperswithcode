@@ -17,6 +17,7 @@ from locust.exception import StopUser
 from requests.exceptions import RequestException
 
 from backend.loadtests.chat_core import (
+    STAGING_RUNTIME_ENV_PATH,
     BoundedSSEStream,
     Metric,
     RunRefused,
@@ -26,7 +27,12 @@ from backend.loadtests.chat_core import (
     load_run_config,
 )
 
-CONFIG = load_run_config(os.environ)
+CONFIG = load_run_config(
+    os.environ,
+    budget_path=STAGING_RUNTIME_ENV_PATH,
+    expected_budget_path=STAGING_RUNTIME_ENV_PATH,
+    expected_budget_owner_uid=0,
+)
 _credential_counter = itertools.count()
 
 
@@ -96,6 +102,7 @@ class StagingChatUser(HttpUser):
             CONFIG.profile,
             client_message_id=f"load-{uuid.uuid4()}",
             max_prompt_chars=CONFIG.max_prompt_chars,
+            initial_model=CONFIG.initial_model,
         )
         with self.client.post(
             "/api/v1/chat/stream",

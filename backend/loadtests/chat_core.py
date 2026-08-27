@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
 STAGING_ORIGIN = "https://staging.paperswithcode.co"
+STAGING_RUNTIME_ENV_PATH = Path("/etc/paperswithcode/staging.env")
 CONFIRMATION = "RUN_BOUNDED_STAGING_CHAT_LOAD"
 MAX_CHECKPOINT_USERS = 2
 MAX_PROMPT_CHARS = 1024
 MAX_OUTPUT_CHARS = 64 * 1024
-PROTECTED_DAILY_SPEND_CAPS = (
-    "PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
-    "PWC_CHAT_OPENROUTER_DAILY_BUDGET_USD",
-)
+MAX_PROTECTED_ENV_BYTES = 1024 * 1024
+QUALIFIED_PROVIDER_MODELS = {
+    "gpt-5.6-luna@openai": "PWC_CHAT_OPENAI_DAILY_BUDGET_USD",
+}
 
 
 class RunRefused(ValueError):
@@ -42,6 +46,7 @@ class RunConfig:
     max_users: int
     max_spend_usd: float
     protected_spend_cap_usd: float | None
+    initial_model: str | None
     max_prompt_chars: int
     max_output_chars: int
 
@@ -99,7 +104,95 @@ def _positive_int(raw: str, description: str, *, maximum: int) -> int:
     return value
 
 
-def load_run_config(environment: Mapping[str, str]) -> RunConfig:
+@dataclass(frozen=True)
+class ProtectedBudget:
+    key: str
+    usd: Decimal
+
+
+def read_authoritative_budget(
+    path: Path,
+    *,
+    expected_path: Path,
+    expected_owner_uid: int,
+    required_key: str,
+) -> ProtectedBudget:
+    """Read one nonsecret budget from an exact, protected runtime env file."""
+
+    if path != expected_path:
+        raise RunRefused("budget must use the exact protected staging runtime path")
+    try:
+        before = path.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RunRefused("authoritative staging budget file is unavailable") from error
+    try:
+        opened = os.fstat(descriptor)
+        secure_metadata = (
+            stat.S_ISREG(before.st_mode)
+            and stat.S_ISREG(opened.st_mode)
+            and (before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino)
+            and opened.st_uid == expected_owner_uid
+            and opened.st_mode & 0o022 == 0
+        )
+        if not secure_metadata:
+            raise RunRefused("protected staging runtime file metadata is invalid")
+        total_bytes = 0
+        pending = bytearray()
+        values: list[str] = []
+        while True:
+            chunk = os.read(descriptor, 4096)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_PROTECTED_ENV_BYTES:
+                raise RunRefused("protected staging runtime file is too large")
+            pending.extend(chunk)
+            while b"\n" in pending:
+                raw_line, _, remainder = pending.partition(b"\n")
+                pending = bytearray(remainder)
+                _collect_budget_value(raw_line, required_key, values)
+        if pending:
+            _collect_budget_value(bytes(pending), required_key, values)
+    except OSError as error:
+        raise RunRefused("authoritative staging budget file is unreadable") from error
+    finally:
+        os.close(descriptor)
+    if len(values) != 1:
+        raise RunRefused("protected daily budget key must occur exactly once")
+    try:
+        budget = Decimal(values[0])
+    except InvalidOperation as error:
+        raise RunRefused(
+            "protected daily budget must be finite and positive"
+        ) from error
+    if not budget.is_finite() or budget <= 0:
+        raise RunRefused("protected daily budget must be finite and positive")
+    return ProtectedBudget(required_key, budget)
+
+
+def _collect_budget_value(
+    raw_line: bytes, required_key: str, values: list[str]
+) -> None:
+    try:
+        line = raw_line.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise RunRefused("protected staging runtime file is invalid") from error
+    if not line or line.startswith("#") or "=" not in line:
+        return
+    name, value = line.split("=", 1)
+    if name.strip() == required_key:
+        values.append(value.strip())
+
+
+def load_run_config(
+    environment: Mapping[str, str],
+    *,
+    budget_path: Path | None = None,
+    expected_budget_path: Path | None = None,
+    expected_budget_owner_uid: int = 0,
+) -> RunConfig:
     """Validate the complete fail-closed operator envelope from environment."""
 
     host = _required(environment, "PWC_LOADTEST_HOST", "host")
@@ -161,31 +254,38 @@ def load_run_config(environment: Mapping[str, str]) -> RunConfig:
     if max_spend_usd < 0 or max_spend_usd > 10:
         raise RunRefused("spend envelope must be between 0 and 10 USD")
     protected_spend_cap_usd: float | None = None
+    initial_model: str | None = None
     if profile.cohort == "connection-only":
         if max_spend_usd != 0:
             raise RunRefused("connection-only profiles require a zero spend envelope")
+        if environment.get("PWC_LOADTEST_MODEL", "").strip():
+            raise RunRefused("connection-only profile must be model-free")
     else:
         if max_spend_usd <= 0:
             raise RunRefused("stream profiles require a positive spend envelope")
-        loaded_caps = [
-            environment[name]
-            for name in PROTECTED_DAILY_SPEND_CAPS
-            if name in environment
-        ]
-        if not loaded_caps:
-            raise RunRefused("protected daily spend cap is required")
+        initial_model = _required(
+            environment, "PWC_LOADTEST_MODEL", "reviewed provider model"
+        )
         try:
-            declared_spend = Decimal(raw_spend)
-            protected_caps = [Decimal(raw_cap.strip()) for raw_cap in loaded_caps]
-        except (InvalidOperation, AttributeError) as error:
-            raise RunRefused("protected daily spend cap is invalid") from error
-        if any(not cap.is_finite() or cap <= 0 for cap in protected_caps):
-            raise RunRefused("protected daily spend cap is invalid")
-        if any(cap != declared_spend for cap in protected_caps):
+            required_budget_key = QUALIFIED_PROVIDER_MODELS[initial_model]
+        except KeyError as error:
+            raise RunRefused(
+                "provider model is not supported by this checkpoint"
+            ) from error
+        if budget_path is None or expected_budget_path is None:
+            raise RunRefused("authoritative staging budget file is required")
+        protected_budget = read_authoritative_budget(
+            budget_path,
+            expected_path=expected_budget_path,
+            expected_owner_uid=expected_budget_owner_uid,
+            required_key=required_budget_key,
+        )
+        declared_spend = Decimal(raw_spend)
+        if protected_budget.usd != declared_spend:
             raise RunRefused(
                 "protected daily spend cap does not match declared envelope"
             )
-        protected_spend_cap_usd = float(declared_spend)
+        protected_spend_cap_usd = float(protected_budget.usd)
 
     max_prompt_chars = _positive_int(
         _required(environment, "PWC_LOADTEST_MAX_PROMPT_CHARS", "prompt bound"),
@@ -204,18 +304,25 @@ def load_run_config(environment: Mapping[str, str]) -> RunConfig:
         max_users=max_users,
         max_spend_usd=max_spend_usd,
         protected_spend_cap_usd=protected_spend_cap_usd,
+        initial_model=initial_model,
         max_prompt_chars=max_prompt_chars,
         max_output_chars=max_output_chars,
     )
 
 
 def build_turn_request(
-    profile: LoadProfile, *, client_message_id: str, max_prompt_chars: int
+    profile: LoadProfile,
+    *,
+    client_message_id: str,
+    max_prompt_chars: int,
+    initial_model: str | None = None,
 ) -> dict[str, object]:
     """Build one bounded synthetic turn for executable future profiles."""
 
     if profile.cohort == "connection-only":
         raise RunRefused("connection-only profile does not admit chat turns")
+    if initial_model not in QUALIFIED_PROVIDER_MODELS:
+        raise RunRefused("provider model is not supported by this checkpoint")
     prompt = _PROMPTS.get(profile.name, _PROMPTS["stream"])
     if len(prompt) > max_prompt_chars:
         raise RunRefused("profile prompt fixture exceeds the configured prompt bound")
@@ -225,6 +332,7 @@ def build_turn_request(
         "client_message_id": client_message_id,
         "web_search_enabled": False,
         "reasoning_effort": "low",
+        "initial_model": initial_model,
     }
 
 
