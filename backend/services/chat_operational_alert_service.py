@@ -61,14 +61,18 @@ class ProviderHealth:
 
 
 def provider_health(db: Session, settings: Settings, now: datetime) -> ProviderHealth:
-    """Count terminal DeepSeek turns without reading transcript content."""
+    """Count terminal Hugging Face turns without reading transcript content."""
 
     start = now - timedelta(seconds=settings.chat_provider_alert_window_seconds)
+    provider_route = next(
+        choice["route"]
+        for choice in settings.chat_model_choices
+        if choice["provider"] == "huggingface"
+    )
     terminal = ChatMessageRecord.status.in_(("complete", "error", "interrupted"))
     scope = (
         ChatMessageRecord.role == "user",
-        ChatMessageRecord.model_route
-        == settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"],
+        ChatMessageRecord.model_route == provider_route,
         ChatMessageRecord.created_at >= start,
         ChatMessageRecord.created_at <= now,
         terminal,

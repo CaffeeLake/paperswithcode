@@ -53,6 +53,26 @@ def test_provider_health_counts_only_content_free_aggregates():
     )
 
 
+def test_production_provider_health_scopes_the_discovered_glm_route():
+    class FakeSession:
+        statements = []
+
+        def scalar(self, statement):
+            self.statements.append(
+                str(statement.compile(compile_kwargs={"literal_binds": True}))
+            )
+            return 0
+
+    db = FakeSession()
+    settings = Settings(environment="production")
+
+    provider_health(db, settings, datetime(2026, 8, 27, 12, tzinfo=UTC))
+
+    assert len(db.statements) == 2
+    assert all("zai-org/GLM-5.3-Flash:fastest" in sql for sql in db.statements)
+    assert all("DeepSeek-V4-Flash" not in sql for sql in db.statements)
+
+
 def test_provider_transition_requires_sustained_failure_and_clean_recovery():
     now = datetime(2026, 8, 6, 12, tzinfo=UTC)
     settings = Settings(

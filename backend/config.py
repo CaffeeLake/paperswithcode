@@ -285,6 +285,7 @@ class Settings(BaseSettings):
     # registry. They are never exposed in current model discovery.
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
+    chat_glm_5_3_flash_route: str = Field(default="zai-org/GLM-5.3-Flash:fastest")
     # Staging-only Hugging Face Inference Providers route. Pin a live provider;
     # `:fastest` hops across backends.
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:baseten")
@@ -723,7 +724,16 @@ class Settings(BaseSettings):
                 else "openrouter_funded"
             ),
         }
-        choices = (deepseek,)
+        glm = {
+            "id": "zai-org/GLM-5.3-Flash",
+            "label": "GLM-5.3-Flash",
+            "route": self.chat_glm_5_3_flash_route,
+            "provider": "huggingface",
+            "provider_model": self.chat_glm_5_3_flash_route,
+            "protocol": "anthropic-messages",
+            "funding_mode": "hf_user_billed",
+        }
+        choices = (glm,) if self.environment == "production" else (deepseek,)
         if self.environment == "production" and self.chat_openai_direct_enabled:
             choices = (
                 {
@@ -735,7 +745,7 @@ class Settings(BaseSettings):
                     "protocol": "openai-responses",
                     "funding_mode": "openai_funded",
                 },
-                deepseek,
+                glm,
             )
         if self.environment == "staging":
             choices = choices + (
@@ -822,9 +832,15 @@ class Settings(BaseSettings):
     @property
     def chat_model_routes(self) -> dict[str, str]:
         routes = {choice["id"]: choice["route"] for choice in self.chat_model_choices}
-        canonical_route = routes.get("deepseek-ai/DeepSeek-V4-Flash-0731")
-        if canonical_route is None:
-            return routes
+        routes.setdefault(
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            (
+                self.chat_deepseek_v4_flash_route
+                if self.chat_deepseek_v4_flash_provider == "huggingface"
+                else self.chat_deepseek_v4_flash_openrouter_route
+            ),
+        )
+        canonical_route = routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
         # Existing sessions keep their persisted selected-model IDs but move to
         # the sole qualified route. These aliases are intentionally absent from
         # discovery and frontend defaults.
@@ -847,6 +863,10 @@ class Settings(BaseSettings):
         providers = {
             choice["id"]: choice["provider"] for choice in self.chat_model_registry
         }
+        providers.setdefault(
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            self.chat_deepseek_v4_flash_provider,
+        )
         canonical_provider = providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
         for legacy_model in (
             "google/gemma-4-31B-it",
@@ -865,6 +885,7 @@ class Settings(BaseSettings):
     @property
     def chat_model_labels(self) -> dict[str, str]:
         labels = {choice["id"]: choice["label"] for choice in self.chat_model_registry}
+        labels.setdefault("deepseek-ai/DeepSeek-V4-Flash-0731", "DeepSeek V4 Flash")
         if self.environment == "staging":
             labels["openai/gpt-5.6-luna"] = "GPT-5.6 Luna (Legacy OpenRouter)"
         return labels
@@ -876,6 +897,10 @@ class Settings(BaseSettings):
         }
         protocols.setdefault(self.chat_glm_route, "anthropic-messages")
         protocols.setdefault(self.chat_gemma_route, "anthropic-messages")
+        protocols.setdefault(self.chat_deepseek_v4_flash_route, "anthropic-messages")
+        protocols.setdefault(
+            self.chat_deepseek_v4_flash_openrouter_route, "anthropic-messages"
+        )
         return protocols
 
     @property
@@ -886,6 +911,13 @@ class Settings(BaseSettings):
         }
         models.setdefault(self.chat_glm_route, self.chat_glm_route)
         models.setdefault(self.chat_gemma_route, self.chat_gemma_route)
+        models.setdefault(
+            self.chat_deepseek_v4_flash_route, self.chat_deepseek_v4_flash_route
+        )
+        models.setdefault(
+            self.chat_deepseek_v4_flash_openrouter_route,
+            self.chat_deepseek_v4_flash_openrouter_route,
+        )
         return models
 
     @property
@@ -896,6 +928,10 @@ class Settings(BaseSettings):
         }
         modes.setdefault(self.chat_glm_route, "openrouter_funded")
         modes.setdefault(self.chat_gemma_route, "openrouter_funded")
+        modes.setdefault(self.chat_deepseek_v4_flash_route, "hf_user_billed")
+        modes.setdefault(
+            self.chat_deepseek_v4_flash_openrouter_route, "openrouter_funded"
+        )
         return modes
 
     @property
@@ -928,7 +964,7 @@ class Settings(BaseSettings):
             return self.chat_openai_luna_route
         if self.chat_alternative_model_enabled:
             return self.chat_alternative_model
-        return self.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        return self.chat_model_choices[0]["route"]
 
     # GitHub API configuration
     github_token: str = Field(

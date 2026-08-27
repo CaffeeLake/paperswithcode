@@ -1433,7 +1433,7 @@ def test_stream_boundary_normalizer_repairs_nested_and_extra_reasoning_events():
 def test_model_registry_exposes_stable_ids_not_provider_routes():
     production = Settings(environment="production")
     assert [choice["id"] for choice in production.chat_model_choices] == [
-        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "zai-org/GLM-5.3-Flash",
     ]
     staging = Settings(
         environment="staging", chat_openrouter_server_funded_enabled=True
@@ -1443,8 +1443,8 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "moonshotai/Kimi-K3",
         "gpt-5.6-luna@openrouter",
     ]
-    assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+    assert production.chat_model_routes["zai-org/GLM-5.3-Flash"] == (
+        "zai-org/GLM-5.3-Flash:fastest"
     )
     for legacy_id in (
         "google/gemma-4-31B-it",
@@ -1459,19 +1459,16 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
             production.chat_model_routes[legacy_id]
             == production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
         )
-    assert (
-        production.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
-        == "huggingface"
-    )
+    assert production.chat_model_providers["zai-org/GLM-5.3-Flash"] == "huggingface"
     assert production.chat_effective_pi_prewarm_model == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+        "zai-org/GLM-5.3-Flash:fastest"
     )
     production_direct = Settings(
         environment="production", chat_openai_direct_enabled=True
     )
     assert [choice["id"] for choice in production_direct.chat_model_choices] == [
         "gpt-5.6-luna@openai",
-        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "zai-org/GLM-5.3-Flash",
     ]
     assert production_direct.chat_model_choices[0]["label"] == "GPT-5.6 Luna"
     assert production_direct.chat_model_providers["gpt-5.6-luna@openai"] == "openai"
@@ -1529,7 +1526,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         == "openrouter"
     )
     assert openrouter.chat_effective_pi_prewarm_model == (
-        "deepseek/deepseek-v4-flash-0731"
+        "zai-org/GLM-5.3-Flash:fastest"
     )
     assert "deepseek/deepseek-v4-flash-0731" in openrouter.chat_openrouter_routes
     assert openrouter.chat_route_providers[production.chat_deepseek_v4_flash_route] == (
