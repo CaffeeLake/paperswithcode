@@ -1,0 +1,377 @@
+"""Build immutable external Pi runtimes from one release's locked inputs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+import tarfile
+import tempfile
+from pathlib import Path
+
+from backend.chat_sandbox_worker.contract import PI_NODE_SHA256, PI_NODE_VERSION
+
+try:
+    from deploy.release import sha256_file
+    from deploy.runtime import make_tree_readonly
+except ModuleNotFoundError:
+    from release import sha256_file  # type: ignore[no-redef]
+    from runtime import make_tree_readonly  # type: ignore[no-redef]
+
+CONTRACT = "external-pi-v1"
+ENTRY_POINT = "app/dist/src/external_http_main.js"
+WORKER_ROOT = Path("backend/chat_sandbox_worker/pi_worker")
+PYTHON_BINARY = Path(os.environ.get("PWC_DEPLOY_PYTHON", "/usr/bin/python3"))
+CURL_BINARY = Path(os.environ.get("PWC_DEPLOY_CURL", "/usr/bin/curl"))
+NODE_ARCHIVE_URL = (
+    f"https://nodejs.org/dist/v{PI_NODE_VERSION}/"
+    f"node-v{PI_NODE_VERSION}-linux-x64.tar.xz"
+)
+BUILD_TIMEOUT_SECONDS = 300
+MAX_RUNTIME_FILES = 100_000
+MAX_RUNTIME_BYTES = 2 * 1024**3
+MAX_NODE_ARCHIVE_BYTES = 128 * 1024**2
+
+PROMPT_INPUTS = (
+    Path("backend/__init__.py"),
+    Path("backend/chat_execution_policy.py"),
+    Path("backend/chat_sandbox_worker/__init__.py"),
+    Path("backend/chat_sandbox_worker/render_pi_prompt_asset.py"),
+    Path("backend/chat_sandbox_worker/prompt.py"),
+    Path("backend/chat_sandbox_worker/PAPER_AUTHORING_PROMPT.md"),
+    Path("backend/chat_sandbox_worker/PAPER_AUTHORING.md"),
+    Path("backend/chat_sandbox_worker/PWC_CLI_SKILL.md"),
+    Path("backend/chat_sandbox_worker/HF_CLI_SKILL.md"),
+    Path("backend/chat_sandbox_worker/S2_CLI_SKILL.md"),
+    Path("backend/chat_sandbox_worker/TASK_CATALOG.md"),
+    Path("backend/chat_sandbox_worker/METHOD_CATALOG.md"),
+)
+
+
+def _identity_inputs(release: Path) -> list[Path]:
+    worker = release / WORKER_ROOT
+    typescript_inputs = [
+        path.relative_to(release)
+        for tree in ("src", "test")
+        for path in sorted((worker / tree).glob("**/*.ts"))
+    ]
+    if not typescript_inputs:
+        raise ValueError("external Pi TypeScript build inputs are missing")
+    paths = [
+        WORKER_ROOT / "package.json",
+        WORKER_ROOT / "package-lock.json",
+        WORKER_ROOT / "tsconfig.json",
+        *typescript_inputs,
+        *PROMPT_INPUTS,
+    ]
+    for relative in paths:
+        if not (release / relative).is_file():
+            raise ValueError(f"external Pi runtime input is missing: {relative}")
+    return paths
+
+
+def external_pi_runtime_id(release: Path) -> str:
+    """Return a stable content identity for all external Pi build inputs."""
+
+    digest = hashlib.sha256()
+    for label, value in (
+        ("contract", CONTRACT),
+        ("node_version", PI_NODE_VERSION),
+        ("node_distribution_sha256", PI_NODE_SHA256),
+    ):
+        digest.update(label.encode() + b"\0" + value.encode() + b"\0")
+    for relative in _identity_inputs(release):
+        digest.update(relative.as_posix().encode() + b"\0")
+        with (release / relative).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _source_release(release: Path) -> str:
+    value = json.loads((release / "release.json").read_text(encoding="utf-8"))
+    source_release = value.get("release_id")
+    if not isinstance(source_release, str) or not source_release:
+        raise ValueError("release manifest has no release identity")
+    return source_release
+
+
+def _path_digest(path: Path) -> str:
+    if path.is_symlink():
+        return hashlib.sha256(b"symlink\0" + os.readlink(path).encode()).hexdigest()
+    return sha256_file(path)
+
+
+def _runtime_files(runtime: Path) -> dict[str, str]:
+    files: dict[str, str] = {}
+    total_bytes = 0
+    for path in sorted(runtime.rglob("*")):
+        relative = path.relative_to(runtime).as_posix()
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if relative == "runtime.json":
+            continue
+        if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+            raise ValueError(f"external Pi runtime contains a special file: {relative}")
+        if path.is_symlink():
+            target = (path.parent / os.readlink(path)).resolve()
+            if target != runtime.resolve() and runtime.resolve() not in target.parents:
+                raise ValueError(f"external Pi runtime symlink escapes: {relative}")
+            total_bytes += len(os.readlink(path).encode())
+        else:
+            total_bytes += metadata.st_size
+        files[relative] = _path_digest(path)
+        if len(files) > MAX_RUNTIME_FILES or total_bytes > MAX_RUNTIME_BYTES:
+            raise ValueError("external Pi runtime exceeds its construction bounds")
+    return files
+
+
+def _require_readonly(runtime: Path) -> None:
+    for path in (runtime, *runtime.rglob("*")):
+        if not path.is_symlink() and path.stat().st_mode & 0o222:
+            raise ValueError(
+                f"external Pi runtime input is mutable: {path.relative_to(runtime)}"
+            )
+
+
+def external_pi_runtime_manifest(
+    runtime: Path, *, expected_id: str | None = None
+) -> dict:
+    """Strictly validate and return one published external Pi runtime manifest."""
+
+    value = json.loads((runtime / "runtime.json").read_text(encoding="utf-8"))
+    if set(value) != {
+        "contract",
+        "runtime_id",
+        "source_release",
+        "entry_point",
+        "node",
+        "files",
+    }:
+        raise ValueError("external Pi runtime manifest has an unexpected schema")
+    if (
+        value["contract"] != CONTRACT
+        or value["runtime_id"] != (expected_id or runtime.name)
+        or value["entry_point"] != ENTRY_POINT
+        or not isinstance(value["source_release"], str)
+        or not value["source_release"]
+    ):
+        raise ValueError("external Pi runtime manifest identity is invalid")
+    node = value["node"]
+    if not isinstance(node, dict) or set(node) != {
+        "version",
+        "distribution_sha256",
+        "executable",
+        "executable_sha256",
+    }:
+        raise ValueError("external Pi Node manifest has an unexpected schema")
+    if (
+        node["version"] != PI_NODE_VERSION
+        or node["distribution_sha256"] != PI_NODE_SHA256
+        or node["executable"] != "node/bin/node"
+    ):
+        raise ValueError("external Pi Node identity is invalid")
+    declared_files = value["files"]
+    if not isinstance(declared_files, dict) or any(
+        not isinstance(path, str) or not isinstance(digest, str)
+        for path, digest in declared_files.items()
+    ):
+        raise ValueError("external Pi runtime file inventory is invalid")
+    actual_files = _runtime_files(runtime)
+    if actual_files != declared_files:
+        raise ValueError("external Pi runtime file inventory does not match")
+    if node["executable_sha256"] != actual_files.get("node/bin/node"):
+        raise ValueError("external Pi Node executable digest does not match")
+    if (
+        ENTRY_POINT not in actual_files
+        or "assets/pi-system-prompt.txt" not in actual_files
+    ):
+        raise ValueError("external Pi executable inputs are missing")
+    _require_readonly(runtime)
+    return value
+
+
+def prepare_external_pi_runtime(
+    release: Path,
+    runtimes_root: Path,
+    *,
+    runner=subprocess.run,
+    node_archive: Path | None = None,
+    python_binary: Path = PYTHON_BINARY,
+) -> tuple[Path, bool]:
+    """Build in a bounded temporary tree and publish by atomic rename."""
+
+    identifier = external_pi_runtime_id(release)
+    target = runtimes_root / identifier
+    if target.exists():
+        external_pi_runtime_manifest(target)
+        return target, False
+    runtimes_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{identifier}.new-", dir=runtimes_root))
+    try:
+        archive = node_archive or temporary / ".node.tar.xz"
+        if node_archive is None:
+            runner(
+                [
+                    str(CURL_BINARY),
+                    "-fsSLo",
+                    str(archive),
+                    "--max-filesize",
+                    str(MAX_NODE_ARCHIVE_BYTES),
+                    NODE_ARCHIVE_URL,
+                ],
+                check=True,
+                timeout=BUILD_TIMEOUT_SECONDS,
+            )
+        if archive.stat().st_size > MAX_NODE_ARCHIVE_BYTES:
+            raise ValueError("external Pi Node archive exceeds its size bound")
+        if sha256_file(archive) != PI_NODE_SHA256:
+            raise ValueError("external Pi Node archive digest does not match")
+        extracted = temporary / ".node-extract"
+        extracted.mkdir()
+        expected_node_root = f"node-v{PI_NODE_VERSION}-linux-x64"
+        with tarfile.open(archive, mode="r:xz") as bundle:
+            members = bundle.getmembers()
+            if (
+                len(members) > MAX_RUNTIME_FILES
+                or sum(member.size for member in members) > MAX_RUNTIME_BYTES
+            ):
+                raise ValueError("external Pi Node archive exceeds extraction bounds")
+            if any(
+                Path(member.name).parts[:1] != (expected_node_root,)
+                for member in members
+            ):
+                raise ValueError("external Pi Node archive layout is invalid")
+            bundle.extractall(extracted, filter="data")
+        extracted_root = extracted / expected_node_root
+        if (
+            not (extracted_root / "bin/node").is_file()
+            or not (extracted_root / "lib/node_modules/npm/bin/npm-cli.js").is_file()
+        ):
+            raise ValueError("external Pi Node archive layout is invalid")
+        os.replace(extracted_root, temporary / "node")
+        shutil.rmtree(extracted)
+        if node_archive is None:
+            archive.unlink()
+
+        node_binary = temporary / "node/bin/node"
+        version = runner(
+            [str(node_binary), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=BUILD_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        if version != f"v{PI_NODE_VERSION}":
+            raise ValueError(
+                "external Pi Node version does not match the pinned contract"
+            )
+
+        app = temporary / "app"
+        worker = release / WORKER_ROOT
+        app.mkdir()
+        for name in ("package.json", "package-lock.json", "tsconfig.json"):
+            shutil.copy2(worker / name, app / name)
+        shutil.copytree(worker / "src", app / "src")
+        shutil.copytree(worker / "test", app / "test")
+        (temporary / "assets").mkdir()
+
+        environment = os.environ.copy()
+        environment["PATH"] = f"{temporary / 'node/bin'}:/usr/bin:/bin"
+        npm_command = [
+            str(node_binary),
+            str(temporary / "node/lib/node_modules/npm/bin/npm-cli.js"),
+        ]
+        common = {
+            "cwd": app,
+            "env": environment,
+            "check": True,
+            "timeout": BUILD_TIMEOUT_SECONDS,
+        }
+        runner(
+            [
+                *npm_command,
+                "ci",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+            ],
+            **common,
+        )
+        runner([*npm_command, "run", "build"], **common)
+        runner([*npm_command, "prune", "--omit=dev", "--ignore-scripts"], **common)
+        prompt_environment = environment.copy()
+        prompt_environment["PYTHONPATH"] = str(release)
+        runner(
+            [
+                str(python_binary),
+                str(release / "backend/chat_sandbox_worker/render_pi_prompt_asset.py"),
+                str(temporary / "assets/pi-system-prompt.txt"),
+            ],
+            cwd=release,
+            env=prompt_environment,
+            check=True,
+            timeout=BUILD_TIMEOUT_SECONDS,
+        )
+
+        shutil.rmtree(app / "src")
+        shutil.rmtree(app / "test")
+        shutil.rmtree(app / "dist/test", ignore_errors=True)
+        (app / "tsconfig.json").unlink()
+        files = _runtime_files(temporary)
+        node_digest = files["node/bin/node"]
+        (temporary / "runtime.json").write_text(
+            json.dumps(
+                {
+                    "contract": CONTRACT,
+                    "runtime_id": identifier,
+                    "source_release": _source_release(release),
+                    "entry_point": ENTRY_POINT,
+                    "node": {
+                        "version": PI_NODE_VERSION,
+                        "distribution_sha256": PI_NODE_SHA256,
+                        "executable": "node/bin/node",
+                        "executable_sha256": node_digest,
+                    },
+                    "files": files,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        make_tree_readonly(temporary)
+        external_pi_runtime_manifest(temporary, expected_id=identifier)
+        try:
+            os.replace(temporary, target)
+        except FileExistsError:
+            external_pi_runtime_manifest(target)
+            return target, False
+        return target, True
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def cleanup_external_pi_runtimes(
+    runtimes_root: Path, protected_ids: set[str]
+) -> list[str]:
+    """Remove only complete, unreferenced external Pi runtime directories."""
+
+    removed: list[str] = []
+    if not runtimes_root.is_dir():
+        return removed
+    for path in sorted(runtimes_root.iterdir()):
+        if (
+            path.is_dir()
+            and not path.name.startswith(".")
+            and path.name not in protected_ids
+        ):
+            shutil.rmtree(path)
+            removed.append(path.name)
+    return removed

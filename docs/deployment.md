@@ -13,6 +13,7 @@ rollback target.
   .venv
   runtime-lock.sha256
   runtimes/<uv-lock-sha256>/
+  runtimes/external-pi/<content-id>/
   releases/<sha12>-<environment>/
   environments/{production,staging}/
     current
@@ -35,6 +36,16 @@ whose ID is the release's `uv.lock` SHA-256. The legacy shared `.venv` and
 fixed-port services remain a migration fallback until both environments have
 passed a slot rollback window. Public staging is static and gated to
 allowlisted project contributors and admins; it never runs Vite or HMR.
+
+The shadow-only external Pi worker is packaged independently under
+`runtimes/external-pi`. Its identity covers the package manifest, lockfile,
+TypeScript build inputs, canonical prompt inputs, and pinned Node 22.19.0
+distribution contract. Packaging does not activate worker traffic. A build
+uses a temporary directory, exact locked dependencies, a production
+TypeScript build, production-dependency pruning, and an atomic rename.
+`runtime.json` records contract `external-pi-v1`, source release, entry point,
+Node identity, and a strict file-digest inventory. Reuse rejects mutable,
+missing, extra, or digest-mismatched files.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
 Staging connects as `pwc_staging`, can select catalog rows, and can write only
@@ -875,7 +886,9 @@ sudo pwc-cleanup --confirm CLEAN_RELEASES
 ```
 
 The cleanup command takes the same host mutation lock as deploy, rollback, and
-reaping. Never remove a release or runtime directory by hand.
+reaping. External Pi cleanup is limited to its own namespace and protects
+content identities derived from active (`current`), rollback (`previous`), and
+prepared slot releases. Never remove a release or runtime directory by hand.
 
 ## Invariants
 

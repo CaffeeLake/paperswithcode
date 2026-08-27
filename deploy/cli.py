@@ -37,6 +37,10 @@ try:
         prepare_runtime,
         runtime_id,
     )
+    from deploy.external_pi_runtime import (
+        cleanup_external_pi_runtimes,
+        external_pi_runtime_id,
+    )
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
         ENVIRONMENTS,
@@ -54,11 +58,16 @@ except ModuleNotFoundError:
         prepare_runtime,
         runtime_id,
     )
+    from external_pi_runtime import (  # type: ignore[no-redef]
+        cleanup_external_pi_runtimes,
+        external_pi_runtime_id,
+    )
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
 REPOSITORY = Path(os.environ.get("PWC_DEPLOY_REPOSITORY", APP_ROOT / "repository.git"))
 RELEASES = APP_ROOT / "releases"
 RUNTIMES = APP_ROOT / "runtimes"
+EXTERNAL_PI_RUNTIMES = RUNTIMES / "external-pi"
 ENVIRONMENTS_ROOT = APP_ROOT / "environments"
 VENV = APP_ROOT / ".venv"
 PYTHON_RUNTIME = APP_ROOT / "python-runtime"
@@ -1412,6 +1421,21 @@ def protected_runtime_ids() -> set[str]:
     return protected
 
 
+def protected_external_pi_runtime_ids() -> set[str]:
+    protected: set[str] = set()
+    for release in protected_release_paths():
+        try:
+            protected.add(external_pi_runtime_id(release))
+        except ValueError:
+            # Older protected releases predate the external Pi package inputs.
+            continue
+    return protected
+
+
+def _protected_python_runtime_ids() -> set[str]:
+    return protected_runtime_ids() | {EXTERNAL_PI_RUNTIMES.name}
+
+
 def cleanup_releases() -> None:
     protected = protected_release_paths()
     for release in RELEASES.iterdir():
@@ -1436,7 +1460,7 @@ def cleanup_command(args: argparse.Namespace) -> int:
                 for path in RUNTIMES.iterdir()
                 if path.is_dir()
                 and not path.name.startswith(".")
-                and path.name not in protected_runtime_ids()
+                and path.name not in _protected_python_runtime_ids()
             ]
             if RUNTIMES.is_dir()
             else []
@@ -1446,13 +1470,25 @@ def cleanup_command(args: argparse.Namespace) -> int:
                 {
                     "remove_releases": [path.name for path in targets],
                     "remove_runtimes": runtime_targets,
+                    "remove_external_pi_runtimes": [
+                        path.name
+                        for path in EXTERNAL_PI_RUNTIMES.iterdir()
+                        if path.is_dir()
+                        and not path.name.startswith(".")
+                        and path.name not in protected_external_pi_runtime_ids()
+                    ]
+                    if EXTERNAL_PI_RUNTIMES.is_dir()
+                    else [],
                 },
                 indent=2,
             )
         )
         for path in targets:
             shutil.rmtree(path)
-        cleanup_runtimes(RUNTIMES, protected_runtime_ids())
+        cleanup_runtimes(RUNTIMES, _protected_python_runtime_ids())
+        cleanup_external_pi_runtimes(
+            EXTERNAL_PI_RUNTIMES, protected_external_pi_runtime_ids()
+        )
     return 0
 
 
@@ -1597,7 +1633,10 @@ def deploy(args: argparse.Namespace) -> int:
             raise
         if result == "success":
             cleanup_releases()
-            cleanup_runtimes(RUNTIMES, protected_runtime_ids())
+            cleanup_runtimes(RUNTIMES, _protected_python_runtime_ids())
+            cleanup_external_pi_runtimes(
+                EXTERNAL_PI_RUNTIMES, protected_external_pi_runtime_ids()
+            )
         log_event(
             "deploy",
             args.environment,
@@ -1697,7 +1736,10 @@ def reap(args: argparse.Namespace) -> int:
             previous_release=pointers.previous.name if pointers.previous else None,
         )
         cleanup_releases()
-        cleanup_runtimes(RUNTIMES, protected_runtime_ids())
+        cleanup_runtimes(RUNTIMES, _protected_python_runtime_ids())
+        cleanup_external_pi_runtimes(
+            EXTERNAL_PI_RUNTIMES, protected_external_pi_runtime_ids()
+        )
     print(f"reaped drained {args.environment}/{draining} slot")
     return 0
 
