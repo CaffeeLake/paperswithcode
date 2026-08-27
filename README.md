@@ -252,7 +252,6 @@ uv run
 - **[.github/workflows/scripts/README.md](.github/workflows/scripts/README.md)** – Cron job guide
 
 ### Key Scripts
-- **[setup_ssl.sh](setup_ssl.sh)** - Automated SSL certificate setup
 - **[check_services.sh](check_services.sh)** - Delegate to read-only `pwc-status`
 - **[deploy/](deploy/)** - Immutable release, rollback, nginx, and smoke tooling
 
