@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import signal
+import subprocess
 import sys
 import tarfile
 import time
@@ -251,19 +254,141 @@ def test_live_bound_tracks_descendants_after_the_direct_parent_exits(tmp_path: P
         "pathlib.Path(sys.argv[1],'child.pid').write_text(str(child.pid))\n"
     )
 
-    with pytest.raises(ValueError, match="live construction bound"):
+    run_bounded_command(
+        [sys.executable, "-c", parent_code, str(root), child_code],
+        root=root,
+        max_bytes=16 * 1024,
+        max_inodes=30,
+        timeout=5,
+        poll_seconds=0.005,
+    )
+
+    child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
+    time.sleep(0.1)
+    assert not Path(f"/proc/{child_pid}").exists()
+    assert not list(root.glob("growth-*"))
+
+
+def test_bounded_command_contains_a_regrouped_child_after_parent_exit(tmp_path: Path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    child_code = (
+        "import os,pathlib,sys,time\n"
+        "os.setpgrp()\n"
+        "root=pathlib.Path(sys.argv[1])\n"
+        "time.sleep(.1)\n"
+        "i=0\n"
+        "while True:\n"
+        " (root/f'escaped-{i}').write_bytes(b'x'*4096)\n"
+        " i+=1\n"
+        " time.sleep(.002)\n"
+    )
+    parent_code = (
+        "import pathlib,subprocess,sys\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]])\n"
+        "pathlib.Path(sys.argv[1],'child.pid').write_text(str(child.pid))\n"
+    )
+    child_pid = None
+    try:
         run_bounded_command(
             [sys.executable, "-c", parent_code, str(root), child_code],
             root=root,
             max_bytes=16 * 1024,
             max_inodes=30,
-            timeout=5,
+            timeout=2,
+            poll_seconds=0.005,
+        )
+        child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
+        time.sleep(0.2)
+
+        assert not Path(f"/proc/{child_pid}").exists()
+        assert not list(root.glob("escaped-*"))
+    finally:
+        if child_pid is not None and Path(f"/proc/{child_pid}").exists():
+            os.kill(child_pid, signal.SIGKILL)
+
+
+def test_bounded_command_contains_a_double_forked_session(tmp_path: Path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    daemon_code = (
+        "import os,pathlib,sys,time\n"
+        "if os.fork(): raise SystemExit\n"
+        "os.setsid()\n"
+        "if os.fork(): raise SystemExit\n"
+        "root=pathlib.Path(sys.argv[1])\n"
+        "(root/'daemon.pid').write_text(str(os.getpid()))\n"
+        "time.sleep(.1)\n"
+        "i=0\n"
+        "while True:\n"
+        " (root/f'daemon-growth-{i}').write_bytes(b'x'*4096)\n"
+        " i+=1\n"
+        " time.sleep(.002)\n"
+    )
+    parent_code = (
+        "import pathlib,subprocess,sys,time\n"
+        "root=pathlib.Path(sys.argv[1])\n"
+        "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]])\n"
+        "while not (root/'daemon.pid').exists(): time.sleep(.005)\n"
+    )
+
+    run_bounded_command(
+        [sys.executable, "-c", parent_code, str(root), daemon_code],
+        root=root,
+        max_bytes=16 * 1024,
+        max_inodes=30,
+        timeout=2,
+        poll_seconds=0.005,
+    )
+    daemon_pid = int((root / "daemon.pid").read_text(encoding="utf-8"))
+    time.sleep(0.2)
+
+    assert not Path(f"/proc/{daemon_pid}").exists()
+    assert not list(root.glob("daemon-growth-*"))
+
+
+def test_bounded_command_timeout_reaps_a_regrouped_child(tmp_path: Path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    child_code = "import os,time\nos.setpgrp()\ntime.sleep(30)\n"
+    parent_code = (
+        "import pathlib,subprocess,sys,time\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[2]])\n"
+        "pathlib.Path(sys.argv[1],'child.pid').write_text(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bounded_command(
+            [sys.executable, "-c", parent_code, str(root), child_code],
+            root=root,
+            timeout=0.1,
             poll_seconds=0.005,
         )
 
     child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
-    child_status = Path(f"/proc/{child_pid}/stat")
-    assert not child_status.exists() or child_status.read_text().split()[2] == "Z"
+    assert not Path(f"/proc/{child_pid}").exists()
+
+
+def test_bounded_command_restores_the_process_subreaper_state(tmp_path: Path):
+    original = runtime_module._get_child_subreaper()
+    try:
+        run_bounded_command(
+            [sys.executable, "-c", "pass"],
+            root=tmp_path,
+            timeout=2,
+        )
+        assert runtime_module._get_child_subreaper() is original
+
+        runtime_module._set_child_subreaper(True)
+        run_bounded_command(
+            [sys.executable, "-c", "pass"],
+            root=tmp_path,
+            timeout=2,
+        )
+        assert runtime_module._get_child_subreaper() is True
+    finally:
+        runtime_module._set_child_subreaper(original)
 
 
 def test_live_npm_growth_breach_removes_the_temporary_runtime(

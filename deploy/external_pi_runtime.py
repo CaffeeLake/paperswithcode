@@ -13,7 +13,9 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -220,13 +222,64 @@ def _require_tree_bounds(root: Path) -> None:
         raise ValueError("external Pi runtime exceeds its construction bounds")
 
 
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
+_SUBREAPER_LOCK = threading.RLock()
+
+
 @dataclass(frozen=True)
-class _ProcessGroupIdentity:
-    pgid: int
+class _ProcessIdentity:
+    pid: int
+    state: str
+    parent_pid: int
+    group_id: int
     session_id: int
+    start_time: int
+
+
+@dataclass
+class _DescendantTracker:
+    owner_pid: int
     started_after: int
-    leader_start_time: int | None
-    leader_pidfd: int | None
+    baseline_children: dict[int, int]
+    identities: dict[int, int]
+
+    def refresh(self) -> dict[int, _ProcessIdentity]:
+        snapshot = _process_snapshot()
+        self.identities = {
+            pid: start_time
+            for pid, start_time in self.identities.items()
+            if pid in snapshot and snapshot[pid].start_time == start_time
+        }
+        known = set(self.identities)
+        changed = True
+        while changed:
+            changed = False
+            for process in snapshot.values():
+                if process.pid in known or process.start_time < self.started_after:
+                    continue
+                adopted = (
+                    process.parent_pid == self.owner_pid
+                    and self.baseline_children.get(process.pid) != process.start_time
+                )
+                if process.parent_pid in known or adopted:
+                    self.identities[process.pid] = process.start_time
+                    known.add(process.pid)
+                    changed = True
+        return {pid: snapshot[pid] for pid in known if pid in snapshot}
+
+    def reap(self, leader_pid: int) -> None:
+        for process in self.refresh().values():
+            if (
+                process.pid == leader_pid
+                or process.parent_pid != self.owner_pid
+                or process.state not in {"Z", "X"}
+            ):
+                continue
+            try:
+                os.waitpid(process.pid, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
+                pass
 
 
 def _open_pidfd(pid: int) -> int | None:
@@ -252,83 +305,100 @@ def _open_pidfd(pid: int) -> int | None:
     raise OSError(error, os.strerror(error))
 
 
-def _proc_identity(pid: int) -> tuple[str, int, int, int] | None:
+def _proc_identity(pid: int) -> _ProcessIdentity | None:
     try:
         value = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except (FileNotFoundError, ProcessLookupError):
         return None
     fields = value[value.rfind(")") + 2 :].split()
-    return fields[0], int(fields[2]), int(fields[3]), int(fields[19])
-
-
-def _process_group_identity(
-    process: subprocess.Popen, started_after: int
-) -> _ProcessGroupIdentity:
-    leader_pidfd = _open_pidfd(process.pid)
-    identity = _proc_identity(process.pid)
-    if identity is None:
-        return _ProcessGroupIdentity(
-            process.pid, process.pid, started_after, None, leader_pidfd
-        )
-    _state, pgid, session_id, start_time = identity
-    if pgid != process.pid or session_id != process.pid:
-        if leader_pidfd is not None:
-            os.close(leader_pidfd)
-        raise RuntimeError("bounded subprocess did not create an isolated session")
-    return _ProcessGroupIdentity(
-        pgid,
-        session_id,
-        max(started_after, start_time),
-        start_time,
-        leader_pidfd,
+    return _ProcessIdentity(
+        pid,
+        fields[0],
+        int(fields[1]),
+        int(fields[2]),
+        int(fields[3]),
+        int(fields[19]),
     )
 
 
-def _process_group_members(identity: _ProcessGroupIdentity) -> list[int]:
-    current_leader = _proc_identity(identity.pgid)
-    if (
-        current_leader is not None
-        and identity.leader_start_time is not None
-        and current_leader[3] != identity.leader_start_time
-    ):
-        return []
-    members: list[int] = []
+def _process_snapshot() -> dict[int, _ProcessIdentity]:
+    snapshot: dict[int, _ProcessIdentity] = {}
     for path in Path("/proc").iterdir():
         if not path.name.isdigit():
             continue
-        process_identity = _proc_identity(int(path.name))
-        if process_identity is None:
-            continue
-        state, pgid, session_id, start_time = process_identity
-        if (
-            state not in {"Z", "X"}
-            and pgid == identity.pgid
-            and session_id == identity.session_id
-            and start_time >= identity.started_after
-        ):
-            members.append(int(path.name))
-    return members
+        identity = _proc_identity(int(path.name))
+        if identity is not None:
+            snapshot[identity.pid] = identity
+    return snapshot
 
 
-def _terminate_process_group(
-    process: subprocess.Popen, identity: _ProcessGroupIdentity
+def _direct_children(parent_pid: int) -> dict[int, int]:
+    return {
+        process.pid: process.start_time
+        for process in _process_snapshot().values()
+        if process.parent_pid == parent_pid
+    }
+
+
+def _get_child_subreaper() -> bool:
+    value = ctypes.c_int()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return bool(value.value)
+
+
+def _set_child_subreaper(enabled: bool) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+@contextmanager
+def _scoped_child_subreaper():
+    with _SUBREAPER_LOCK:
+        previous = _get_child_subreaper()
+        if not previous:
+            _set_child_subreaper(True)
+        try:
+            yield
+        finally:
+            if not previous:
+                _set_child_subreaper(False)
+
+
+def _live_processes(
+    processes: dict[int, _ProcessIdentity],
+) -> list[_ProcessIdentity]:
+    return [
+        process for process in processes.values() if process.state not in {"Z", "X"}
+    ]
+
+
+def _terminate_descendants(
+    process: subprocess.Popen, tracker: _DescendantTracker
 ) -> None:
-    members = _process_group_members(identity)
+    members = _live_processes(tracker.refresh())
     if members:
-        _signal_process_group(identity, members, signal.SIGTERM)
+        _signal_processes(members, signal.SIGTERM)
     deadline = time.monotonic() + 1
     while members and time.monotonic() < deadline:
         process.poll()
+        tracker.reap(process.pid)
         time.sleep(0.01)
-        members = _process_group_members(identity)
+        members = _live_processes(tracker.refresh())
     if members:
-        _signal_process_group(identity, members, signal.SIGKILL)
+        _signal_processes(members, signal.SIGKILL)
     kill_deadline = time.monotonic() + 1
-    while _process_group_members(identity) and time.monotonic() < kill_deadline:
+    while tracker.refresh() and time.monotonic() < kill_deadline:
         process.poll()
+        tracker.reap(process.pid)
         time.sleep(0.01)
-    if _process_group_members(identity):
-        raise RuntimeError("bounded subprocess group did not terminate")
+    tracker.reap(process.pid)
+    if tracker.refresh():
+        raise RuntimeError("bounded subprocess descendants did not terminate")
     try:
         process.wait(timeout=0)
     except subprocess.TimeoutExpired:
@@ -336,24 +406,16 @@ def _terminate_process_group(
         process.wait()
 
 
-def _signal_process_group(
-    identity: _ProcessGroupIdentity, members: list[int], signal_number: int
-) -> None:
-    for pid in members:
-        pidfd = _open_pidfd(pid)
+def _signal_processes(processes: list[_ProcessIdentity], signal_number: int) -> None:
+    for process in processes:
+        pidfd = _open_pidfd(process.pid)
         if pidfd is None:
             continue
-        process_identity = _proc_identity(pid)
+        current = _proc_identity(process.pid)
         try:
-            if process_identity is None:
+            if current is None or current.start_time != process.start_time:
                 continue
-            state, pgid, session_id, start_time = process_identity
-            if not (
-                state not in {"Z", "X"}
-                and pgid == identity.pgid
-                and session_id == identity.session_id
-                and start_time >= identity.started_after
-            ):
+            if current.state in {"Z", "X"}:
                 continue
             native = getattr(signal, "pidfd_send_signal", None)
             if native is not None:
@@ -396,45 +458,55 @@ def run_bounded_command(
     max_inodes: int | None = None,
     poll_seconds: float = 0.05,
 ) -> subprocess.CompletedProcess:
-    """Run one build process group under live aggregate tree bounds."""
+    """Run one build descendant tree under live aggregate filesystem bounds."""
 
     byte_limit = MAX_RUNTIME_BYTES if max_bytes is None else max_bytes
     inode_limit = MAX_RUNTIME_FILES if max_inodes is None else max_inodes
     clock_ticks = int(os.sysconf("SC_CLK_TCK"))
     uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
     started_after = max(0, int(uptime * clock_ticks) - 1)
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE if capture_output else None,
-        stderr=subprocess.PIPE if capture_output else None,
-        text=text,
-        start_new_session=True,
-    )
-    group_identity = _process_group_identity(process, started_after)
-    deadline = time.monotonic() + timeout
-    try:
-        while _process_group_members(group_identity):
-            process.poll()
+    owner_pid = os.getpid()
+    with _scoped_child_subreaper():
+        baseline_children = _direct_children(owner_pid)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
+            text=text,
+            start_new_session=True,
+        )
+        leader = _proc_identity(process.pid)
+        tracker = _DescendantTracker(
+            owner_pid,
+            started_after,
+            baseline_children,
+            {leader.pid: leader.start_time} if leader is not None else {},
+        )
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                tracker.reap(process.pid)
+                tracker.refresh()
+                total_bytes, inode_count = _tree_usage(root)
+                if total_bytes > byte_limit or inode_count > inode_limit:
+                    _terminate_descendants(process, tracker)
+                    raise ValueError("external Pi live construction bound exceeded")
+                if time.monotonic() >= deadline:
+                    _terminate_descendants(process, tracker)
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(poll_seconds)
+            tracker.reap(process.pid)
+            if tracker.refresh():
+                _terminate_descendants(process, tracker)
+            stdout, stderr = process.communicate()
             total_bytes, inode_count = _tree_usage(root)
             if total_bytes > byte_limit or inode_count > inode_limit:
-                _terminate_process_group(process, group_identity)
                 raise ValueError("external Pi live construction bound exceeded")
-            if time.monotonic() >= deadline:
-                _terminate_process_group(process, group_identity)
-                raise subprocess.TimeoutExpired(command, timeout)
-            time.sleep(poll_seconds)
-        stdout, stderr = process.communicate()
-        total_bytes, inode_count = _tree_usage(root)
-        if total_bytes > byte_limit or inode_count > inode_limit:
-            raise ValueError("external Pi live construction bound exceeded")
-    except BaseException:
-        _terminate_process_group(process, group_identity)
-        raise
-    finally:
-        if group_identity.leader_pidfd is not None:
-            os.close(group_identity.leader_pidfd)
+        except BaseException:
+            _terminate_descendants(process, tracker)
+            raise
     completed = subprocess.CompletedProcess(
         command, process.returncode, stdout=stdout, stderr=stderr
     )
