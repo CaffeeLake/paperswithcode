@@ -446,6 +446,7 @@ def apply_staging_shadow_activation(
     values.update({key: "false" for key in INERT_FLAGS})
     rendered = "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
     proven_stopped = False
+    refresh_started = False
     refresh_complete = False
     try:
         if not enabled:
@@ -470,6 +471,7 @@ def apply_staging_shadow_activation(
                 f"{key}={value}\n" for key, value in sorted(values.items())
             )
             _atomic_write(staging_path, rendered.encode(), 0o640)
+        refresh_started = True
         refresh(git_sha)
         refresh_complete = True
         if enabled:
@@ -477,20 +479,27 @@ def apply_staging_shadow_activation(
             final_evidence = qualify(current_release_id, git_sha, report_path, True)
             _validate_report(report_path, current_release_id, final_evidence)
     except BaseException as error:
-        if enabled and refresh_complete:
+        # A handled termination signal may arrive after refresh side effects but
+        # before the call returns and ``refresh_complete`` can be published.
+        # Conservatively inspect/drain both slots for that case; ordinary deploy
+        # failures retain the deploy command's own pointer/service rollback.
+        if enabled and (
+            refresh_complete
+            or (refresh_started and isinstance(error, ShadowActivationInterrupted))
+        ):
             if deactivate is None:
                 raise ShadowActivationRecoveryRequired(
                     "final active worker qualification failed while lifecycle "
                     "remains enabled; guarded disable is required"
                 ) from error
-            try:
-                deactivate(current_release_id, git_sha)
-            except BaseException as cleanup_error:
-                raise ShadowActivationRecoveryRequired(
-                    "final active worker qualification failed and exact-evidence "
-                    "deactivation did not complete; guarded disable is required"
-                ) from cleanup_error
             with _activation_signals_blocked():
+                try:
+                    deactivate(current_release_id, git_sha)
+                except BaseException as cleanup_error:
+                    raise ShadowActivationRecoveryRequired(
+                        "final active worker qualification failed and exact-evidence "
+                        "deactivation did not complete; guarded disable is required"
+                    ) from cleanup_error
                 values.update({key: "false" for key in SHADOW_FLAGS})
                 rendered = "".join(
                     f"{key}={value}\n" for key, value in sorted(values.items())

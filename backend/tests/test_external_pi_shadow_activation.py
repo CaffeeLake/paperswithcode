@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from deploy.external_pi_shadow_activation import (
+    INERT_FLAGS,
     QualificationEvidence,
     ShadowActivationError,
     ShadowActivationInterrupted,
@@ -32,6 +33,14 @@ def _wait_for(path: Path) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"timed out waiting for {path}")
+
+
+def _env_values(path: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in path.read_text().splitlines()
+        if line and not line.startswith("#")
+    )
 
 
 def _send_signal_burst(process: subprocess.Popen, order: tuple[int, int]) -> None:
@@ -885,6 +894,7 @@ from deploy.external_pi_shadow_activation import (
     apply_staging_shadow_activation,
 )
 root = Path(sys.argv[1]); config = root / "config"
+refresh_calls = 0
 original_atomic_write = activation._atomic_write
 def slow_rollback(path, content, mode):
     if path.name == "staging.env" and (root / "ready").exists() and b"SHADOW_ENABLED=false" in content:
@@ -913,7 +923,16 @@ def qualify(_release, _sha, destination, _leave_recovery_running):
             "duration_ms": 1, "failure_code": None} for name in names],
     }), encoding="utf-8")
     return evidence
+def deactivate(*_args):
+    (root / "deactivated").write_text("one", encoding="utf-8")
+    (root / "worker-state").write_text("inactive", encoding="utf-8")
 def refresh(_sha):
+    global refresh_calls
+    refresh_calls += 1
+    if refresh_calls > 1:
+        (root / "disabled-refresh").write_text("one", encoding="utf-8")
+        return
+    (root / "worker-state").write_text("active", encoding="utf-8")
     (root / "ready").write_text("ready", encoding="utf-8")
     time.sleep(30)
 try:
@@ -921,7 +940,7 @@ try:
         apply_staging_shadow_activation(
             environment="staging", expected_release_id="release-a",
             report_path=root / "report.json", enabled=True, app_root=root,
-            config_root=config, qualify=qualify, deactivate=None, refresh=refresh,
+            config_root=config, qualify=qualify, deactivate=deactivate, refresh=refresh,
         )
 except ShadowActivationInterrupted:
     (root / "interruption").write_text("one", encoding="utf-8")
@@ -939,9 +958,96 @@ except ShadowActivationInterrupted:
 
     assert process.returncode == 0, stderr
     assert (tmp_path / "interruption").read_text() == "one"
+    assert (tmp_path / "deactivated").read_text() == "one"
+    assert (tmp_path / "worker-state").read_text() == "inactive"
+    assert (tmp_path / "disabled-refresh").read_text() == "one"
     assert (tmp_path / "rollback").is_file()
-    assert (config / "staging.env").read_text() == original
-    assert not (config / "external-pi-worker.env").exists()
+    values = _env_values(config / "staging.env")
+    assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "false"
+    assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "false"
+    assert all(values[key] == "false" for key in INERT_FLAGS)
+    assert (config / "external-pi-worker.env").is_file()
+
+
+def test_sigterm_after_deactivation_publishes_false_flags_before_delivery(
+    tmp_path: Path,
+):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    script = r"""
+import json, os, signal, sys, time
+from pathlib import Path
+from deploy.external_pi_shadow_activation import (
+    QualificationEvidence, ShadowActivationInterrupted, activation_signal_context,
+    apply_staging_shadow_activation,
+)
+root = Path(sys.argv[1]); calls = 0
+evidence = QualificationEvidence("staging-blue", 4, 5, 6, True, True, "n" * 32)
+names = (
+    "linear_history", "branching_history", "tool_history",
+    "eight_isolated_sessions", "capacity_no_queue",
+    "restart_after_lease_expiry", "stale_generation_fencing",
+    "drain_recovery", "zero_external_work",
+)
+def qualify(_release, _sha, destination, _leave_recovery_running):
+    global calls
+    calls += 1
+    if calls == 2:
+        raise RuntimeError("final qualification failed")
+    destination.write_text(json.dumps({
+        "release_id": "release-a", "worker_id": evidence.worker_id,
+        "worker_generation": evidence.recovery_generation,
+        "qualification_nonce": evidence.nonce,
+        "qualified_at_unix_ms": int(time.time() * 1000), "passed": True,
+        "case_count": 9, "duration_ms": 1,
+        "external_work_counts": {"shadow_requests": 20, "model_calls": 0,
+            "tool_calls": 0, "provider_calls": 0, "modal_calls": 0,
+            "billing_events": 0},
+        "cases": [{"name": name, "passed": True, "count": 1,
+            "duration_ms": 1, "failure_code": None} for name in names],
+    }), encoding="utf-8")
+    return evidence
+def deactivate(*_args):
+    (root / "worker-state").write_text("inactive", encoding="utf-8")
+    os.kill(os.getpid(), signal.SIGTERM)
+def refresh(_sha):
+    with (root / "refreshes").open("a", encoding="utf-8") as handle:
+        handle.write("refresh\n")
+try:
+    with activation_signal_context():
+        apply_staging_shadow_activation(
+            environment="staging", expected_release_id="release-a",
+            report_path=root / "report.json", enabled=True, app_root=root,
+            config_root=root / "config", qualify=qualify,
+            deactivate=deactivate, refresh=refresh,
+        )
+except ShadowActivationInterrupted:
+    (root / "interruption").write_text("one", encoding="utf-8")
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+    assert process.returncode == 0, process.stderr
+    assert (tmp_path / "interruption").read_text() == "one"
+    assert (tmp_path / "worker-state").read_text() == "inactive"
+    assert (tmp_path / "refreshes").read_text().splitlines() == [
+        "refresh",
+        "refresh",
+    ]
+    values = _env_values(config / "staging.env")
+    assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "false"
+    assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "false"
 
 
 @pytest.mark.parametrize(
