@@ -391,6 +391,61 @@ def test_bounded_command_restores_the_process_subreaper_state(tmp_path: Path):
         runtime_module._set_child_subreaper(original)
 
 
+def test_bounded_command_does_not_kill_an_unrelated_preexisting_child_lineage(
+    tmp_path: Path,
+):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    trigger = tmp_path / "fork-now"
+    grandchild_pid_path = tmp_path / "unrelated-grandchild.pid"
+    unrelated_code = (
+        "import os,pathlib,sys,time\n"
+        "trigger=pathlib.Path(sys.argv[1])\n"
+        "pid_path=pathlib.Path(sys.argv[2])\n"
+        "while not trigger.exists(): time.sleep(.005)\n"
+        "pid=os.fork()\n"
+        "if pid:\n"
+        " pid_path.write_text(str(pid))\n"
+        " raise SystemExit\n"
+        "time.sleep(30)\n"
+    )
+    bounded_code = (
+        "import pathlib,sys,time\n"
+        "trigger=pathlib.Path(sys.argv[1])\n"
+        "pid_path=pathlib.Path(sys.argv[2])\n"
+        "trigger.touch()\n"
+        "while not pid_path.exists(): time.sleep(.005)\n"
+        "time.sleep(.1)\n"
+    )
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", unrelated_code, str(trigger), str(grandchild_pid_path)]
+    )
+    grandchild_pid = None
+    try:
+        run_bounded_command(
+            [
+                sys.executable,
+                "-c",
+                bounded_code,
+                str(trigger),
+                str(grandchild_pid_path),
+            ],
+            root=root,
+            timeout=2,
+            poll_seconds=0.005,
+        )
+        assert unrelated.wait(timeout=1) == 0
+        grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8"))
+
+        assert Path(f"/proc/{grandchild_pid}").exists()
+    finally:
+        if unrelated.poll() is None:
+            unrelated.kill()
+            unrelated.wait()
+        if grandchild_pid is not None and Path(f"/proc/{grandchild_pid}").exists():
+            os.kill(grandchild_pid, signal.SIGKILL)
+
+
 def test_live_npm_growth_breach_removes_the_temporary_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

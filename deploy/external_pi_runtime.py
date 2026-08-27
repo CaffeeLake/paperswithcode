@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import json
 import os
+import pickle
 import re
 import signal
 import shutil
@@ -13,7 +14,6 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -224,7 +224,6 @@ def _require_tree_bounds(root: Path) -> None:
 
 PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
-_SUBREAPER_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -358,15 +357,14 @@ def _set_child_subreaper(enabled: bool) -> None:
 
 @contextmanager
 def _scoped_child_subreaper():
-    with _SUBREAPER_LOCK:
-        previous = _get_child_subreaper()
+    previous = _get_child_subreaper()
+    if not previous:
+        _set_child_subreaper(True)
+    try:
+        yield
+    finally:
         if not previous:
-            _set_child_subreaper(True)
-        try:
-            yield
-        finally:
-            if not previous:
-                _set_child_subreaper(False)
+            _set_child_subreaper(False)
 
 
 def _live_processes(
@@ -444,7 +442,7 @@ def _signal_processes(processes: list[_ProcessIdentity], signal_number: int) -> 
                 pass
 
 
-def run_bounded_command(
+def _run_bounded_command_in_supervisor(
     command: list[str],
     *,
     root: Path,
@@ -458,8 +456,6 @@ def run_bounded_command(
     max_inodes: int | None = None,
     poll_seconds: float = 0.05,
 ) -> subprocess.CompletedProcess:
-    """Run one build descendant tree under live aggregate filesystem bounds."""
-
     byte_limit = MAX_RUNTIME_BYTES if max_bytes is None else max_bytes
     inode_limit = MAX_RUNTIME_FILES if max_inodes is None else max_inodes
     clock_ticks = int(os.sysconf("SC_CLK_TCK"))
@@ -515,6 +511,85 @@ def run_bounded_command(
             process.returncode, command, output=stdout, stderr=stderr
         )
     return completed
+
+
+def _interrupt_command_supervisor(_signal_number, _frame) -> None:
+    raise InterruptedError("bounded command supervisor interrupted")
+
+
+def run_bounded_command(
+    command: list[str],
+    *,
+    root: Path,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+    capture_output: bool = False,
+    text: bool = False,
+    timeout: float = BUILD_TIMEOUT_SECONDS,
+    max_bytes: int | None = None,
+    max_inodes: int | None = None,
+    poll_seconds: float = 0.05,
+) -> subprocess.CompletedProcess:
+    """Run one build tree in a dedicated subreaper under live filesystem bounds."""
+
+    read_descriptor, write_descriptor = os.pipe()
+    supervisor_pid = os.fork()
+    if supervisor_pid == 0:
+        os.close(read_descriptor)
+        signal.signal(signal.SIGTERM, _interrupt_command_supervisor)
+        try:
+            try:
+                outcome = (
+                    "result",
+                    _run_bounded_command_in_supervisor(
+                        command,
+                        root=root,
+                        cwd=cwd,
+                        env=env,
+                        check=check,
+                        capture_output=capture_output,
+                        text=text,
+                        timeout=timeout,
+                        max_bytes=max_bytes,
+                        max_inodes=max_inodes,
+                        poll_seconds=poll_seconds,
+                    ),
+                )
+            except Exception as error:
+                outcome = ("error", error)
+            try:
+                payload = pickle.dumps(outcome)
+            except Exception as error:
+                payload = pickle.dumps(
+                    (
+                        "error",
+                        RuntimeError(f"bounded command supervisor failed: {error}"),
+                    )
+                )
+            with os.fdopen(write_descriptor, "wb") as pipe:
+                pipe.write(payload)
+        finally:
+            os._exit(0)
+
+    os.close(write_descriptor)
+    try:
+        with os.fdopen(read_descriptor, "rb") as pipe:
+            outcome = pickle.load(pipe)
+    except BaseException:
+        try:
+            os.kill(supervisor_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        os.waitpid(supervisor_pid, 0)
+        raise
+    _pid, status = os.waitpid(supervisor_pid, 0)
+    if not os.WIFEXITED(status) or os.WEXITSTATUS(status):
+        raise RuntimeError("bounded command supervisor exited unexpectedly")
+    kind, value = outcome
+    if kind == "error":
+        raise value
+    return value
 
 
 def _run_build_command(

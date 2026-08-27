@@ -53,13 +53,13 @@ any protected pre-descriptor staging release remains, cleanup conservatively
 retains the full external Pi namespace rather than guessing its identity;
 descriptor-less production releases do not disable staging cleanup.
 Dependency installation, build, pruning, and prompt rendering run under a live
-aggregate byte and inode monitor. The deploy process temporarily becomes a
-Linux child subreaper and tracks descendants by PID and process start time, so
-containment survives process-group changes, new sessions, double forks, and an
-early direct-parent exit. Direct-parent completion, a bound breach, or timeout
-stops revalidated descendants through PID handles and reaps them before the
-runner returns. The previous process-level subreaper state is then restored,
-and failed builds discard the temporary runtime.
+aggregate byte and inode monitor. A dedicated supervisor child becomes a Linux
+child subreaper and tracks only the launched build lineage by PID and process
+start time, so containment survives process-group changes, new sessions, double
+forks, and an early direct-parent exit without adopting unrelated deploy-process
+children. Direct-parent completion, a bound breach, or timeout stops revalidated
+descendants through PID handles and reaps them before the runner returns. The
+one-shot supervisor then exits, and failed builds discard the temporary runtime.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
 Staging connects as `pwc_staging`, can select catalog rows, and can write only
