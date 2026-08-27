@@ -7,6 +7,7 @@ import grp
 import json
 import math
 import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -323,39 +324,94 @@ def restart_supervisor_after_lease_expiry(
     release_id: str,
     initial_generation: int,
 ) -> int:
-    """Crash only the supervisor and prove takeover after its durable lease expires."""
+    """Run the crash/takeover transaction without termination-signal gaps."""
+    watched = {signal.SIGTERM, signal.SIGINT}
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+    try:
+        return _restart_supervisor_after_lease_expiry(
+            environment, slot, release_id, initial_generation
+        )
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _restart_supervisor_after_lease_expiry(
+    environment: str,
+    slot: str,
+    release_id: str,
+    initial_generation: int,
+) -> int:
+    """Crash only the supervisor and prove takeover after its durable lease expires.
+
+    This helper is used before qualification sends any shadow requests, so a
+    fully expired lease is also sufficient to stop both owned units if the
+    supervisor cannot be recovered for the normal graceful drain path.
+    """
     lease_seconds = protected_lease_seconds(environment)
+    supervisor_unit = _supervisor_unit(environment, slot)
     subprocess.run(
         [
             "systemctl",
             "kill",
             "--kill-whom=main",
             "--signal=KILL",
-            _supervisor_unit(environment, slot),
+            supervisor_unit,
         ],
         check=True,
     )
-    deadline = time.monotonic() + lease_seconds + 70
-    last: dict = {}
-    while time.monotonic() < deadline:
-        last = _read_status(environment, slot)
-        generation = last.get("generation")
-        if (
-            last.get("release_id") == release_id
-            and last.get("worker_id") == f"staging-{slot}"
-            and last.get("state") == "ready"
-            and last.get("authenticated") is True
-            and last.get("registered") is True
-            and type(generation) is int
-            and generation > initial_generation
-            and type(last.get("heartbeats")) is int
-            and last["heartbeats"] >= 1
-        ):
-            return generation
-        time.sleep(0.25)
-    raise ExternalPiSlotError(
-        f"external Pi lease-expiry restart did not advance generation: {last!r}"
-    )
+    # Restart=on-failure would otherwise reconnect the same live Node instance
+    # immediately and renew its existing claim forever.  Cancel that scheduled
+    # restart, leave the Node worker alive, and start a new supervisor only after
+    # the last possible heartbeat lease has expired.
+    subprocess.run(["systemctl", "stop", supervisor_unit], check=True)
+    takeover_at = time.monotonic() + lease_seconds + 1
+
+    def recover_takeover() -> int:
+        remaining = takeover_at - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        subprocess.run(["systemctl", "start", supervisor_unit], check=True)
+        deadline = time.monotonic() + 70
+        last: dict = {}
+        while time.monotonic() < deadline:
+            last = _read_status(environment, slot)
+            generation = last.get("generation")
+            if (
+                last.get("release_id") == release_id
+                and last.get("worker_id") == f"staging-{slot}"
+                and last.get("state") == "ready"
+                and last.get("authenticated") is True
+                and last.get("registered") is True
+                and type(generation) is int
+                and generation > initial_generation
+                and type(last.get("heartbeats")) is int
+                and last["heartbeats"] >= 1
+            ):
+                return generation
+            time.sleep(0.25)
+        raise ExternalPiSlotError(
+            f"external Pi lease-expiry restart did not advance generation: {last!r}"
+        )
+
+    try:
+        return recover_takeover()
+    except BaseException:
+        try:
+            recover_takeover()
+        except BaseException as recovery_error:
+            # A recovery start can commit a fresh lease before status
+            # observation fails. Stop that supervisor first, then wait a
+            # complete lease from this stop before directly stopping Node.
+            subprocess.run(["systemctl", "stop", supervisor_unit], check=True)
+            time.sleep(lease_seconds + 1)
+            subprocess.run(
+                ["systemctl", "stop", _worker_unit(environment, slot)], check=True
+            )
+            raise ExternalPiSlotError(
+                "external Pi supervisor takeover failed; the expired, "
+                "request-free qualification worker was stopped"
+            ) from recovery_error
+        raise
 
 
 def _never_registered(
