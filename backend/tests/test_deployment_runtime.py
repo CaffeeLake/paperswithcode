@@ -455,6 +455,39 @@ def test_slot_launcher_enables_chat_catalog_features(
     assert os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] == "true"
 
 
+@pytest.mark.parametrize(
+    ("slot", "url"),
+    (("blue", "http://127.0.0.1:8766"), ("green", "http://127.0.0.1:8767")),
+)
+def test_staging_slot_launcher_binds_external_pi_loopback_identity(
+    monkeypatch: pytest.MonkeyPatch, slot: str, url: str
+):
+    for key in (
+        "PWC_CHAT_EXTERNAL_PI_WORKER_URL",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    slot_launcher.configure_external_pi_slot("staging", slot)
+
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == url
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION"] == (
+        "external-pi-v1"
+    )
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
+
+
+def test_production_slot_launcher_does_not_bind_external_pi_worker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_URL", "preserved")
+
+    slot_launcher.configure_external_pi_slot("production", "blue")
+
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "preserved"
+
+
 def test_production_chat_accepts_bounded_hf_catalog_policy(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")

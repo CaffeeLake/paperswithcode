@@ -15,6 +15,7 @@ except ModuleNotFoundError:
     from runtime import runtime_id, runtime_manifest  # type: ignore[no-redef]
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
+EXTERNAL_PI_SLOT_PORTS = {"blue": 8766, "green": 8767}
 
 
 def resolve_slot(environment: str, slot: str) -> tuple[Path, Path, dict]:
@@ -116,6 +117,23 @@ def configure_release(manifest: dict, release: Path) -> None:
     os.environ.update(values)
 
 
+def configure_external_pi_slot(environment: str, slot: str) -> None:
+    """Bind a staging backend slot to its authenticated loopback worker."""
+    if environment != "staging":
+        return
+    try:
+        port = EXTERNAL_PI_SLOT_PORTS[slot]
+    except KeyError as error:
+        raise ValueError("invalid deployment slot") from error
+    os.environ.update(
+        {
+            "PWC_CHAT_EXTERNAL_PI_WORKER_URL": f"http://127.0.0.1:{port}",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": "external-pi-v1",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "8",
+        }
+    )
+
+
 def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit("usage: slot_launcher.py ENVIRONMENT SLOT")
@@ -135,6 +153,7 @@ def main() -> None:
         }
     )
     configure_release(manifest, release)
+    configure_external_pi_slot(environment, slot)
     python = runtime / "bin" / "python"
     os.chdir(release)
     os.execv(
