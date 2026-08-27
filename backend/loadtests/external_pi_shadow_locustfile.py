@@ -31,6 +31,7 @@ from backend.loadtests.external_pi_shadow_core import (
     classify_external_pi_baseline_response,
     finalize_external_pi_baseline,
     load_external_pi_baseline_config,
+    validate_external_pi_baseline_topology,
 )
 from backend.services.chat_external_pi_shadow import ExternalPiWorkerStatus
 
@@ -46,6 +47,8 @@ def _read_status(config: ExternalPiBaselineConfig) -> ExternalPiWorkerStatus | N
             f"{config.worker_url}/v1/status",
             headers={"Authorization": f"Bearer {config.token}"},
             timeout=5.0,
+            follow_redirects=False,
+            trust_env=False,
         )
         response.raise_for_status()
         return ExternalPiWorkerStatus.model_validate(response.json())
@@ -78,6 +81,7 @@ def _start(environment, **_kwargs) -> None:
             "external Pi baseline requires exactly 100 users at spawn rate 100.0"
         )
     config = load_external_pi_baseline_config(os.environ)
+    validate_external_pi_baseline_topology(config)
     if environment.host != config.worker_url:
         raise RunRefused(
             "external Pi baseline requires the active staging worker endpoint"
@@ -115,6 +119,10 @@ class ExternalPiShadowBaselineUser(HttpUser):
     host = None
     wait_time = between(0, 0)
 
+    def on_start(self) -> None:
+        self.client.trust_env = False
+        self.client.proxies.clear()
+
     @task
     def run_once(self) -> None:
         config = _config
@@ -134,6 +142,7 @@ class ExternalPiShadowBaselineUser(HttpUser):
                 name="external_pi.error",
                 catch_response=True,
                 timeout=10.0,
+                allow_redirects=False,
             ) as response:
                 try:
                     payload = response.json()
@@ -164,10 +173,13 @@ def _stop(environment, **_kwargs) -> None:
     if _config is None or _before is None:
         return
     try:
+        validate_external_pi_baseline_topology(_config)
+        after = _status(_config)
+        validate_external_pi_baseline_topology(_config)
         report = finalize_external_pi_baseline(
             config=_config,
             before=_before,
-            after=_status(_config),
+            after=after,
             tracker=_tracker,
         )
     except (OSError, RunRefused, ValueError):

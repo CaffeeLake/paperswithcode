@@ -172,6 +172,81 @@ def _path_within(path: Path, root: Path) -> bool:
     return True
 
 
+def _resolve_external_pi_baseline_topology(slot: str, worker_url: str):
+    if slot not in ALLOWED_SLOT_ENDPOINTS or worker_url != ALLOWED_SLOT_ENDPOINTS[slot]:
+        raise RunRefused(
+            "external Pi baseline requires the active staging worker endpoint"
+        )
+    staging_root = APP_ROOT / "environments/staging"
+    current_link = staging_root / "current"
+    active_link = staging_root / "active"
+    expected_active = staging_root / "slots" / slot
+    try:
+        current = current_link.resolve(strict=True)
+        active = active_link.resolve(strict=True)
+        expected_active = expected_active.resolve(strict=True)
+        active_release = (active_link / "release").resolve(strict=True)
+        expected_active_release = (expected_active / "release").resolve(strict=True)
+    except OSError as exc:
+        raise RunRefused(
+            "external Pi baseline requires the exact active immutable staging release"
+        ) from exc
+    if (
+        not current_link.is_symlink()
+        or not active_link.is_symlink()
+        or not _IMMUTABLE_RELEASE.fullmatch(current.name)
+        or current.parent != APP_ROOT / "releases"
+        or active != expected_active
+        or active_release != current
+        or expected_active_release != current
+        or SOURCE_ROOT.resolve() != current
+    ):
+        raise RunRefused(
+            "external Pi baseline requires the exact active immutable staging release"
+        )
+    try:
+        resolved = resolve_external_pi_slot("staging", slot)
+    except (OSError, ValueError) as exc:
+        raise RunRefused(
+            "external Pi baseline could not resolve the active staging slot"
+        ) from exc
+    if (
+        resolved.release.resolve() != current
+        or resolved.release_id != current.name
+        or resolved.slot != slot
+        or resolved.worker_id != f"staging-{slot}"
+        or worker_url != f"http://127.0.0.1:{resolved.port}"
+        or resolved.prompt.parent.parent != resolved.runtime
+    ):
+        raise RunRefused(
+            "external Pi baseline requires the exact active immutable staging release"
+        )
+    return resolved
+
+
+def validate_external_pi_baseline_topology(config: ExternalPiBaselineConfig) -> None:
+    """Revalidate that the run remains bound to its exact active staging slot."""
+
+    try:
+        resolved = _resolve_external_pi_baseline_topology(
+            config.slot, config.worker_url
+        )
+    except RunRefused:
+        raise RunRefused(
+            "external Pi baseline requires the exact active immutable staging topology"
+        ) from None
+    if (
+        resolved.release != config.release
+        or resolved.release_id != config.release_id
+        or resolved.worker_id != config.worker_id
+        or resolved.runtime != config.runtime
+        or resolved.prompt != config.prompt_path
+    ):
+        raise RunRefused(
+            "external Pi baseline requires the exact active immutable staging topology"
+        )
+
+
 def load_external_pi_baseline_config(
     environ: Mapping[str, str],
 ) -> ExternalPiBaselineConfig:
@@ -195,51 +270,7 @@ def load_external_pi_baseline_config(
 
     slot = _required(environ, "PWC_EXTERNAL_PI_BASELINE_SLOT")
     worker_url = _required(environ, "PWC_EXTERNAL_PI_BASELINE_WORKER_URL")
-    if slot not in ALLOWED_SLOT_ENDPOINTS or worker_url != ALLOWED_SLOT_ENDPOINTS[slot]:
-        raise RunRefused(
-            "external Pi baseline requires the active staging worker endpoint"
-        )
-
-    staging_root = APP_ROOT / "environments/staging"
-    current_link = staging_root / "current"
-    active_link = staging_root / "active"
-    try:
-        current = current_link.resolve(strict=True)
-        active = active_link.resolve(strict=True)
-        expected_active = (staging_root / "slots" / slot).resolve(strict=True)
-    except OSError as exc:
-        raise RunRefused(
-            "external Pi baseline requires the exact active immutable staging release"
-        ) from exc
-    if (
-        not current_link.is_symlink()
-        or not active_link.is_symlink()
-        or not _IMMUTABLE_RELEASE.fullmatch(current.name)
-        or current.parent != APP_ROOT / "releases"
-        or active != expected_active
-        or SOURCE_ROOT.resolve() != current
-    ):
-        raise RunRefused(
-            "external Pi baseline requires the exact active immutable staging release"
-        )
-
-    try:
-        resolved = resolve_external_pi_slot("staging", slot)
-    except (OSError, ValueError) as exc:
-        raise RunRefused(
-            "external Pi baseline could not resolve the active staging slot"
-        ) from exc
-    if (
-        resolved.release.resolve() != current
-        or resolved.release_id != current.name
-        or resolved.slot != slot
-        or resolved.worker_id != f"staging-{slot}"
-        or worker_url != f"http://127.0.0.1:{resolved.port}"
-        or resolved.prompt.parent.parent != resolved.runtime
-    ):
-        raise RunRefused(
-            "external Pi baseline requires the exact active immutable staging release"
-        )
+    resolved = _resolve_external_pi_baseline_topology(slot, worker_url)
     try:
         prompt = resolved.prompt.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:

@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from backend.loadtests.external_pi_shadow_core import (
     classify_external_pi_baseline_response,
     finalize_external_pi_baseline,
     load_external_pi_baseline_config,
+    validate_external_pi_baseline_topology,
 )
 from backend.services.chat_external_pi_shadow import ExternalPiWorkerStatus
 from deploy.external_pi_slot_lifecycle import ExternalPiSlot
@@ -621,3 +623,171 @@ def test_external_pi_baseline_accepts_literal_maximum_worker_report_counter(
     assert report.worker_generation == MAX_REPORT_COUNTER
     assert report.shadow_requests_delta == 100
     assert report.safety_passed is True
+
+
+def test_external_pi_baseline_status_bypasses_proxies_and_redirects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_shadow_locustfile")
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    captured: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return _worker_status().model_dump(mode="json")
+
+    def get(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(adapter.httpx, "get", get)
+
+    assert adapter._status(config) == _worker_status()
+    assert captured["trust_env"] is False
+    assert captured["follow_redirects"] is False
+
+
+def test_external_pi_baseline_user_posts_once_without_proxy_or_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_shadow_locustfile")
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+
+    class Response:
+        status_code = 503
+
+        def __init__(self):
+            self.request_meta = {"name": "external_pi.error"}
+            self.succeeded = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def json(self):
+            return {"code": "shadow_capacity"}
+
+        def success(self):
+            self.succeeded = True
+
+        def failure(self, _message):
+            self.succeeded = False
+
+    class Client:
+        def __init__(self):
+            self.trust_env = True
+            self.proxies = {"http": "http://proxy.invalid"}
+            self.calls: list[dict[str, object]] = []
+            self.response = Response()
+
+        def post(self, path, **kwargs):
+            self.calls.append({"path": path, **kwargs})
+            return self.response
+
+    client = Client()
+    user = object.__new__(adapter.ExternalPiShadowBaselineUser)
+    user.client = client
+    monkeypatch.setattr(adapter, "_config", config)
+    monkeypatch.setattr(adapter, "_tracker", ExternalPiBaselineTracker())
+    monkeypatch.setattr(adapter, "_ordinals", iter(range(100)))
+
+    user.on_start()
+    with pytest.raises(adapter.StopUser):
+        user.run_once()
+
+    assert client.trust_env is False
+    assert client.proxies == {}
+    assert len(client.calls) == 1
+    assert client.calls[0]["allow_redirects"] is False
+    assert client.response.request_meta["name"] == "external_pi.capacity"
+    assert client.response.succeeded is True
+    assert len(adapter._tracker.observations) == 1
+    assert adapter._tracker.observations[0].classification == "capacity"
+
+
+@pytest.mark.parametrize("changed_pointer", ["current", "active"])
+def test_external_pi_baseline_topology_revalidation_refuses_pointer_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_pointer: str,
+):
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    staging = tmp_path / "srv/paperswithcode/environments/staging"
+    pointer = staging / changed_pointer
+    pointer.unlink()
+    if changed_pointer == "current":
+        replacement = tmp_path / "srv/paperswithcode/releases/fedcba987654-staging"
+        replacement.mkdir()
+    else:
+        replacement = staging / "slots/green"
+        replacement.mkdir()
+        replacement.joinpath("release").symlink_to(config.release)
+    pointer.symlink_to(replacement)
+
+    with pytest.raises(RunRefused, match="exact active immutable staging topology"):
+        validate_external_pi_baseline_topology(config)
+
+
+def test_external_pi_baseline_adapter_stop_revalidates_before_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_shadow_locustfile")
+    config = load_external_pi_baseline_config(
+        _baseline_environment(tmp_path, monkeypatch)
+    )
+    before = _worker_status()
+    events: list[str] = []
+    monkeypatch.setattr(adapter, "_config", config)
+    monkeypatch.setattr(adapter, "_before", before)
+    monkeypatch.setattr(
+        adapter,
+        "validate_external_pi_baseline_topology",
+        lambda _config: events.append("topology"),
+    )
+    monkeypatch.setattr(
+        adapter, "_status", lambda _config: events.append("status") or before
+    )
+    monkeypatch.setattr(
+        adapter,
+        "finalize_external_pi_baseline",
+        lambda **_kwargs: (
+            events.append("report") or SimpleNamespace(safety_passed=True)
+        ),
+    )
+    environment = SimpleNamespace(process_exit_code=None)
+
+    adapter._stop(environment)
+
+    assert events == ["topology", "status", "topology", "report"]
+    assert environment.process_exit_code == 0
+
+    events.clear()
+
+    def changed_topology(_config):
+        events.append("topology")
+        raise RunRefused("topology changed")
+
+    monkeypatch.setattr(
+        adapter, "validate_external_pi_baseline_topology", changed_topology
+    )
+    adapter._stop(environment)
+
+    assert events == ["topology"]
+    assert environment.process_exit_code == 1
