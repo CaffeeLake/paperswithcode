@@ -25,6 +25,15 @@ def test_asset_key_is_scoped_to_a_modern_arxiv_identity():
     )
 
 
+def test_external_asset_key_is_scoped_to_the_catalog_paper_id():
+    assert (
+        paper_markdown_service.paper_asset_bucket_key(
+            "109743", "0123456789abcdef.webp", source="external"
+        )
+        == "external/109743/images/0123456789abcdef.webp"
+    )
+
+
 def test_asset_reader_is_bounded_and_validates_image(monkeypatch):
     data = _webp_bytes()
     reads: list[int] = []
@@ -77,3 +86,21 @@ def test_public_asset_route_is_immutable_and_anonymous(monkeypatch):
     assert response.content == data
     assert response.headers["content-type"] == "image/webp"
     assert "immutable" in response.headers["cache-control"]
+
+
+def test_public_external_asset_route_uses_external_identity(monkeypatch):
+    data = _webp_bytes()
+    seen = {}
+
+    def fake_read(paper_id, filename, **kwargs):
+        seen.update(paper_id=paper_id, filename=filename, **kwargs)
+        return data, "image/webp"
+
+    monkeypatch.setattr(paper_assets, "read_paper_asset", fake_read)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/paper-assets/external/109743/0123456789abcdef.webp")
+
+    assert response.status_code == 200
+    assert seen["paper_id"] == "109743"
+    assert seen["source"] == "external"

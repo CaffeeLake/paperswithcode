@@ -15,10 +15,11 @@ ASSET_CACHE_HEADERS = {
 MISSING_ASSET_HEADERS = {"Cache-Control": "no-store"}
 
 
-@router.get("/{prefix}/{arxiv_id}/{filename}")
-def get_paper_asset(prefix: str, arxiv_id: str, filename: str) -> Response:
+@router.get("/{prefix}/{paper_id}/{filename}")
+def get_paper_asset(prefix: str, paper_id: str, filename: str) -> Response:
     settings = get_settings()
-    if prefix != arxiv_id[:4]:
+    source = "external" if prefix == "external" else "arxiv"
+    if source == "arxiv" and prefix != paper_id[:4]:
         raise HTTPException(
             status_code=404,
             detail="Paper asset not found",
@@ -26,8 +27,9 @@ def get_paper_asset(prefix: str, arxiv_id: str, filename: str) -> Response:
         )
     try:
         data, media_type = read_paper_asset(
-            arxiv_id,
+            paper_id,
             filename,
+            source=source,
             bucket_id=settings.paper_markdown_hf_bucket_id,
             token=settings.hf_token,
             max_bytes=settings.paper_markdown_image_max_bytes,

@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -30,6 +32,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from PIL import Image
@@ -41,6 +44,7 @@ MODEL_REVISION = os.environ.get(
 )
 MAX_PAGES = int(os.environ.get("PWC_MARKDOWN_MAX_PAGES", "30"))
 USER_AGENT = "paperswithcode-paper-markdown/1.0 (https://paperswithcode.co)"
+MAX_PDF_BYTES = 150 * 1024 * 1024
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
 MARKDOWN_IMAGE = re.compile(r"(!\[[^\]]*\]\()(?P<source>[^)\s]+)(\))")
@@ -177,9 +181,14 @@ class BucketContentStore:
         shard_id = Path(manifest_key).stem
         result_key = f"_jobs/results/{run_id}/{shard_id}.jsonl"
         progress_key = f"_jobs/progress/{run_id}/{shard_id}.json"
-        status_keys = [f"_jobs/status/{entry['arxiv_id']}.json" for entry in entries]
+        status_keys = [
+            f"_jobs/status/{entry_paper_key(entry)}.json" for entry in entries
+        ]
         output_keys = [str(entry["output_key"]) for entry in entries]
-        existing = self.existing([result_key, progress_key, *status_keys, *output_keys])
+        pdf_keys = [str(entry["pdf_key"]) for entry in entries if entry.get("pdf_key")]
+        existing = self.existing(
+            [result_key, progress_key, *status_keys, *output_keys, *pdf_keys]
+        )
         preserved_outputs = existing.intersection(output_keys)
         for key in preserved_outputs:
             # process() only needs existence to preserve a canonical object.
@@ -310,6 +319,111 @@ def download_pdf(arxiv_id: str, version: str) -> tuple[bytes, str]:
     raise RuntimeError("arxiv_version_candidates_exhausted")
 
 
+def normalize_external_pdf_url(value: str) -> str:
+    """Resolve common repository viewer URLs to their downloadable object."""
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("invalid_external_pdf_url")
+    if parsed.username or parsed.password:
+        raise ValueError("invalid_external_pdf_url")
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("invalid_external_pdf_url")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise ValueError("invalid_external_pdf_url")
+    parts = parsed.path.split("/")
+    if hostname == "github.com" and len(parts) >= 6 and parts[3] == "blob":
+        path = "/".join(["", parts[1], parts[2], *parts[4:]])
+        return urlunsplit(
+            ("https", "raw.githubusercontent.com", path, parsed.query, "")
+        )
+    if hostname == "huggingface.co" and "/blob/" in parsed.path:
+        return urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path.replace("/blob/", "/resolve/", 1),
+                parsed.query,
+                "",
+            )
+        )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+
+
+def validate_external_pdf_network_target(value: str) -> str:
+    normalized = normalize_external_pdf_url(value)
+    parsed = urlsplit(normalized)
+    assert parsed.hostname is not None
+    try:
+        addresses = socket.getaddrinfo(
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as error:
+        raise ValueError("invalid_external_pdf_url") from error
+    if not addresses:
+        raise ValueError("invalid_external_pdf_url")
+    for address in addresses:
+        try:
+            resolved = ipaddress.ip_address(address[4][0])
+        except ValueError as error:
+            raise ValueError("invalid_external_pdf_url") from error
+        if not resolved.is_global:
+            raise ValueError("invalid_external_pdf_url")
+    return normalized
+
+
+def download_external_pdf(pdf_url: str) -> bytes:
+    url = validate_external_pdf_network_target(pdf_url)
+
+    def validate_request(request: httpx.Request) -> None:
+        validate_external_pdf_network_target(str(request.url))
+
+    with httpx.Client(
+        headers={"User-Agent": USER_AGENT},
+        timeout=180,
+        follow_redirects=True,
+        event_hooks={"request": [validate_request]},
+    ) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > MAX_PDF_BYTES:
+                        raise ValueError("invalid_pdf")
+                except ValueError as error:
+                    raise ValueError("invalid_pdf") from error
+
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                if len(data) + len(chunk) > MAX_PDF_BYTES:
+                    raise ValueError("invalid_pdf")
+                data.extend(chunk)
+
+    result = bytes(data)
+    if not result.startswith(b"%PDF-"):
+        raise ValueError("invalid_pdf")
+    return result
+
+
+def entry_paper_key(entry: dict[str, object]) -> str:
+    return str(entry.get("paper_key") or entry["arxiv_id"])
+
+
+def download_pdf_for_entry(entry: dict[str, object]) -> tuple[bytes, str]:
+    version = str(entry.get("version") or "v1")
+    if entry.get("source") == "external":
+        return download_external_pdf(str(entry["pdf_url"])), version
+    return download_pdf(str(entry["arxiv_id"]), version)
+
+
 def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, bytes]]:
     output.mkdir(parents=True, exist_ok=True)
     env = {
@@ -353,7 +467,7 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, byt
 
 
 def canonicalize_assets(
-    arxiv_id: str,
+    paper_key: str,
     body: str,
     assets: dict[str, bytes],
     *,
@@ -380,7 +494,12 @@ def canonicalize_assets(
         if extension is None:
             raise ValueError("unsupported_extracted_image")
         filename = f"{hashlib.sha256(data).hexdigest()[:16]}{extension}"
-        key = f"{arxiv_id[:4]}/{arxiv_id}/images/{filename}"
+        asset_prefix = (
+            paper_key
+            if paper_key.startswith("external/")
+            else f"{paper_key[:4]}/{paper_key}"
+        )
+        key = f"{asset_prefix}/images/{filename}"
         url = f"https://paperswithcode.co/paper-assets/{key}"
         source_to_url[Path(source_name).name] = url
         canonical_assets[key] = data
@@ -418,10 +537,11 @@ def publish(
     processed_pages: int | None = None,
     allow_missing_images: bool = False,
 ) -> dict:
-    arxiv_id = str(entry["arxiv_id"])
+    paper_key = entry_paper_key(entry)
+    arxiv_id = entry.get("arxiv_id")
     version = str(entry["version"])
     body, canonical_assets, asset_keys, omitted_sources = canonicalize_assets(
-        arxiv_id,
+        paper_key,
         body,
         assets,
         allow_missing_images=allow_missing_images,
@@ -434,14 +554,24 @@ def publish(
             f"{body}"
         )
     if page_count and processed_pages and page_count > processed_pages:
+        complete_pdf_url = (
+            str(entry["pdf_url"])
+            if entry.get("source") == "external"
+            else f"https://arxiv.org/pdf/{arxiv_id}{version}.pdf"
+        )
         body = (
             f"> **Truncated rendition:** This Markdown contains the first "
             f"{processed_pages} of {page_count} pages. Read the complete paper "
-            f"at https://arxiv.org/pdf/{arxiv_id}{version}.pdf.\n\n{body}"
+            f"at {complete_pdf_url}.\n\n{body}"
         )
+    source_url = (
+        str(entry.get("source_url") or entry["pdf_url"])
+        if entry.get("source") == "external"
+        else f"https://arxiv.org/abs/{arxiv_id}{version}"
+    )
     markdown = (
         f"Title: {str(entry['title']).strip()}\n\n"
-        f"URL Source: https://arxiv.org/abs/{arxiv_id}{version}\n\n"
+        f"URL Source: {source_url}\n\n"
         f"Markdown Content:\n\n{body.strip()}\n"
     ).encode()
     if len(markdown) < 120 or len(markdown) > 64 * 1024 * 1024:
@@ -461,7 +591,11 @@ def publish(
     if output.read_bytes() != markdown:
         raise ValueError("markdown_verification_failed")
     return {
+        "paper_key": paper_key,
+        "paper_id": entry.get("paper_id"),
+        "source": entry.get("source", "arxiv"),
         "arxiv_id": arxiv_id,
+        "pdf_key": entry.get("pdf_key"),
         "status": "succeeded",
         "page_count": page_count,
         "processed_page_count": processed_pages,
@@ -489,15 +623,32 @@ def process(
     from pypdf import PdfReader
 
     started = time.monotonic()
-    arxiv_id = str(entry["arxiv_id"])
+    paper_key = entry_paper_key(entry)
     version = str(entry["version"])
     output = content_root / str(entry["output_key"])
     if output.exists():
-        return {"arxiv_id": arxiv_id, "status": "already_exists"}
+        return {
+            "paper_key": paper_key,
+            "paper_id": entry.get("paper_id"),
+            "source": entry.get("source", "arxiv"),
+            "arxiv_id": entry.get("arxiv_id"),
+            "status": "already_exists",
+        }
 
-    paper_dir = run_root / arxiv_id
-    pdf_data, resolved_version = download_pdf(arxiv_id, version)
+    paper_dir = run_root / paper_key
+    archived_pdf = (
+        content_root / str(entry["pdf_key"]) if entry.get("pdf_key") else None
+    )
+    downloaded_pdf = False
+    if archived_pdf is not None and archived_pdf.exists():
+        pdf_data = archived_pdf.read_bytes()
+        resolved_version = version
+    else:
+        pdf_data, resolved_version = download_pdf_for_entry(entry)
+        downloaded_pdf = True
     page_count = len(PdfReader(BytesIO(pdf_data), strict=True).pages)
+    if downloaded_pdf and archived_pdf is not None:
+        atomic_write(archived_pdf, pdf_data)
     processed_pages = min(page_count, MAX_PAGES)
     pdf_path = paper_dir / "paper.pdf"
     atomic_write(pdf_path, pdf_data)
@@ -523,8 +674,8 @@ def process(
     }
 
 
-def _prior_status(content_root: Path, arxiv_id: str) -> dict:
-    path = content_root / "_jobs" / "status" / f"{arxiv_id}.json"
+def _prior_status(content_root: Path, paper_key: str) -> dict:
+    path = content_root / "_jobs" / "status" / f"{paper_key}.json"
     if not path.exists():
         return {}
     try:
@@ -757,7 +908,7 @@ def main() -> None:
     completed: dict[str, dict] = {}
     if result_path.exists():
         completed = {
-            item["arxiv_id"]: item
+            str(item.get("paper_key") or item["arxiv_id"]): item
             for item in map(json.loads, result_path.read_text().splitlines())
         }
 
@@ -802,11 +953,12 @@ def main() -> None:
         )
         upload_checkpoint([progress_key])
         for entry in entries:
-            if entry["arxiv_id"] in completed:
+            paper_key = entry_paper_key(entry)
+            if paper_key in completed:
                 continue
             if _TERMINATION_REQUESTED or time.monotonic() >= deadline:
                 break
-            prior = _prior_status(content_root, str(entry["arxiv_id"]))
+            prior = _prior_status(content_root, paper_key)
             attempt_count = max(0, int(prior.get("attempt_count") or 0)) + 1
             allow_missing_images = should_omit_missing_images(prior, attempt_count)
             attempted_at = datetime.now(UTC)
@@ -814,10 +966,10 @@ def main() -> None:
             failure = None
             try:
                 if args.stub_root:
-                    body = (args.stub_root / f"{entry['arxiv_id']}.md").read_text(
+                    body = (args.stub_root / f"{paper_key}.md").read_text(
                         encoding="utf-8"
                     )
-                    asset_dir = args.stub_root / str(entry["arxiv_id"])
+                    asset_dir = args.stub_root / paper_key
                     assets = (
                         {
                             path.name: path.read_bytes()
@@ -848,7 +1000,10 @@ def main() -> None:
             except Exception as error:  # noqa: BLE001 - isolate failures per paper
                 failure = error
                 result = {
-                    "arxiv_id": entry["arxiv_id"],
+                    "paper_key": paper_key,
+                    "paper_id": entry.get("paper_id"),
+                    "source": entry.get("source", "arxiv"),
+                    "arxiv_id": entry.get("arxiv_id"),
                     "status": "failed",
                     "error": str(error)[:1000],
                     "requested_version": entry["version"],
@@ -864,7 +1019,7 @@ def main() -> None:
                 attempted_at=attempted_at,
             )
             results.append(result)
-            status_key = f"_jobs/status/{entry['arxiv_id']}.json"
+            status_key = f"_jobs/status/{paper_key}.json"
             atomic_write(
                 content_root / status_key,
                 json.dumps(result, sort_keys=True, indent=2).encode(),
@@ -892,6 +1047,9 @@ def main() -> None:
                 ).encode(),
             )
             published_keys = [status_key, result_key, progress_key]
+            pdf_key = entry.get("pdf_key")
+            if pdf_key and (content_root / str(pdf_key)).is_file():
+                published_keys.append(str(pdf_key))
             if result.get("status") == "succeeded":
                 published_keys.extend(
                     str(key) for key in result.get("asset_keys") or []
@@ -907,7 +1065,10 @@ def main() -> None:
             "failed"
             if fatal_error
             else "completed"
-            if len({item.get("arxiv_id") for item in results}) >= len(entries)
+            if len(
+                {str(item.get("paper_key") or item.get("arxiv_id")) for item in results}
+            )
+            >= len(entries)
             else "partial"
         )
         atomic_write(

@@ -10,6 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from huggingface_hub import HfApi, HfFileSystem, Volume
 from huggingface_hub.errors import HfHubHTTPError
@@ -51,6 +52,66 @@ def normalize_arxiv_id(value: str | None) -> str | None:
 
 def markdown_key(arxiv_id: str) -> str:
     return f"{arxiv_id[:4]}/{arxiv_id}.md"
+
+
+def external_pdf_url(paper: Paper) -> str | None:
+    explicit = str(paper.conference_url_pdf or "").strip()
+    if explicit:
+        return explicit
+    source_url = str(paper.source_url or "").strip()
+    if not source_url:
+        return None
+    parsed = urlsplit(source_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    pdf_marker = f"{parsed.path}?{parsed.query}".lower()
+    return source_url if ".pdf" in pdf_marker or "/pdf" in parsed.path.lower() else None
+
+
+def paper_manifest_entry(paper: Paper) -> dict[str, object] | None:
+    source = str(paper.source or "arxiv")
+    version = str(paper.version or "v1")
+    if not version.startswith("v"):
+        version = f"v{version}"
+    if source == "arxiv":
+        arxiv_id = normalize_arxiv_id(paper.arxiv_id)
+        if arxiv_id is None:
+            return None
+        return {
+            "paper_key": arxiv_id,
+            "paper_id": str(paper.id),
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "version": version,
+            "title": paper.title,
+            "source_url": None,
+            "pdf_url": None,
+            "pdf_key": None,
+            "output_key": markdown_key(arxiv_id),
+        }
+    if source != "external":
+        return None
+    pdf_url = external_pdf_url(paper)
+    if pdf_url is None:
+        return None
+    paper_id = str(paper.id)
+    paper_key = f"external/{paper_id}"
+    return {
+        "paper_key": paper_key,
+        "paper_id": paper_id,
+        "source": "external",
+        "arxiv_id": None,
+        "version": version,
+        "title": paper.title,
+        "source_url": str(paper.source_url or pdf_url),
+        "pdf_url": pdf_url,
+        "pdf_key": f"{paper_key}/paper.pdf",
+        "output_key": f"{paper_key}.md",
+    }
+
+
+def entry_paper_key(entry: dict[str, object]) -> str:
+    return str(entry.get("paper_key") or entry["arxiv_id"])
 
 
 def chunks[T](values: list[T], size: int) -> list[list[T]]:
@@ -189,8 +250,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
         with db_manager.session_local() as db:
             query = select(Paper).where(
                 Paper.is_latest_version,
-                Paper.source == "arxiv",
-                Paper.arxiv_id.is_not(None),
+                Paper.source.in_(("arxiv", "external")),
             )
             if not self.full:
                 query = query.where(
@@ -202,18 +262,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
             rows = db.execute(query).scalars()
             papers: dict[str, dict[str, object]] = {}
             for paper in rows:
-                arxiv_id = normalize_arxiv_id(paper.arxiv_id)
-                if arxiv_id is None:
+                entry = paper_manifest_entry(paper)
+                if entry is None:
                     continue
-                version = str(paper.version or "v1")
-                if not version.startswith("v"):
-                    version = f"v{version}"
-                papers[arxiv_id] = {
-                    "arxiv_id": arxiv_id,
-                    "version": version,
-                    "title": paper.title,
-                    "output_key": markdown_key(arxiv_id),
-                }
+                papers[entry_paper_key(entry)] = entry
             return list(papers.values())
 
     def _existing_paths(self, bucket: str, paths: list[str]) -> dict[str, object]:
@@ -529,8 +581,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 if job_labels(job).get("job_type") == "volume_probe"
                 and job_stage(job) == "COMPLETED"
             ),
-            key=lambda job: utc_datetime(getattr(job, "finished_at", None))
-            or datetime.min.replace(tzinfo=UTC),
+            key=lambda job: (
+                utc_datetime(getattr(job, "finished_at", None))
+                or datetime.min.replace(tzinfo=UTC)
+            ),
             reverse=True,
         )
         for job in probes:
@@ -838,7 +892,9 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
         missing = [item for item in papers if str(item["output_key"]) not in canonical]
         remaining, upstream_available = self._copy_upstream(missing)
-        status_paths = [f"_jobs/status/{item['arxiv_id']}.json" for item in remaining]
+        status_paths = [
+            f"_jobs/status/{entry_paper_key(item)}.json" for item in remaining
+        ]
         status_records = self._status_records(status_paths)
         dispositions = {
             path: status_disposition(payload)
@@ -846,7 +902,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
         }
         candidates = []
         for item in remaining:
-            status_path = f"_jobs/status/{item['arxiv_id']}.json"
+            status_path = f"_jobs/status/{entry_paper_key(item)}.json"
             disposition = dispositions.get(status_path)
             if disposition is None or disposition == "retryable_due":
                 candidates.append({**item, "retry": disposition == "retryable_due"})
