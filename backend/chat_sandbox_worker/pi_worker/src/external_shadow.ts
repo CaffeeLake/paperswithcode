@@ -20,6 +20,7 @@ export interface ExternalShadowRequest {
   current_leaf_id: string | null;
   expected_prompt_sha256: string;
   expected_tool_names_sha256: string;
+  expected_transcript_sha256: string;
   transcript_entries: Record<string, unknown>[];
 }
 
@@ -35,6 +36,7 @@ export interface ExternalShadowProjection {
   agent_session_id: string;
   current_leaf_id: string | null;
   entry_count: number;
+  transcript_sha256: string;
   prompt_sha256: string;
   tool_names_sha256: string;
 }
@@ -54,6 +56,32 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null) return '["null"]';
+  if (typeof value === "string") return `["string",${JSON.stringify(value)}]`;
+  if (typeof value === "boolean") return `["boolean",${JSON.stringify(value)}]`;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("External shadow transcript JSON is invalid");
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new Error("External shadow transcript integer is unsafe");
+    }
+    const bytes = Buffer.allocUnsafe(8);
+    bytes.writeDoubleBE(value);
+    return `["number","${bytes.toString("hex")}"]`;
+  }
+  if (Array.isArray(value)) return `["array",[${value.map(canonicalJson).join(",")}]]`;
+  if (value && typeof value === "object") {
+    return `["object",[${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+      .map(([key, item]) => `[${JSON.stringify(key)},${canonicalJson(item)}]`).join(",")}]]`;
+  }
+  throw new Error("External shadow transcript JSON is invalid");
+}
+
+export function nativeJsonlTranscriptDigest(entries: Record<string, unknown>[]): string {
+  return sha256(entries.map((entry) => `${canonicalJson(entry)}\n`).join(""));
+}
+
 function requireIdentifier(value: string, name: string): void {
   if (!value || value.length > 200 || /[\r\n\0]/u.test(value)) {
     throw new Error(`External shadow ${name} is invalid`);
@@ -69,6 +97,7 @@ function validateRequestEnvelope(request: ExternalShadowRequest): void {
   if (
     !SHA256_PATTERN.test(request.expected_prompt_sha256)
     || !SHA256_PATTERN.test(request.expected_tool_names_sha256)
+    || !SHA256_PATTERN.test(request.expected_transcript_sha256)
   ) {
     throw new Error("External shadow expected profile is invalid");
   }
@@ -164,6 +193,7 @@ export function projectShadowState(
     agent_session_id: request.agent_session_id,
     current_leaf_id: request.current_leaf_id,
     entry_count: request.transcript_entries.length,
+    transcript_sha256: nativeJsonlTranscriptDigest(request.transcript_entries),
     prompt_sha256: sha256(profile.prompt),
     tool_names_sha256: toolNameDigest(profile.tool_names),
   };
@@ -175,6 +205,7 @@ const COMPATIBILITY_FIELDS: (keyof ExternalShadowProjection)[] = [
   "agent_session_id",
   "current_leaf_id",
   "entry_count",
+  "transcript_sha256",
   "prompt_sha256",
   "tool_names_sha256",
 ];

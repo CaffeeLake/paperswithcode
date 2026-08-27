@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""Guarded staging-only external Pi shadow activation and rollback helper."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import secrets
+import subprocess
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+
+APP_ROOT = Path("/srv/paperswithcode")
+CONFIG_ROOT = Path("/etc/paperswithcode")
+
+SHADOW_FLAGS = {
+    "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED",
+    "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED",
+}
+INERT_FLAGS = {
+    "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED",
+    "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED",
+    "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED",
+    "PWC_CHAT_REMOTE_BASH_ENABLED",
+    "PWC_CHAT_REMOTE_READ_ENABLED",
+    "PWC_CHAT_LAZY_WORKSPACE_ENABLED",
+}
+REQUIRED_CASES = {
+    "linear_history",
+    "branching_history",
+    "tool_history",
+    "eight_isolated_sessions",
+    "capacity_no_queue",
+    "restart_after_lease_expiry",
+    "stale_generation_fencing",
+    "drain_recovery",
+    "zero_external_work",
+}
+TOKEN_KEY = "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"
+
+
+class ShadowActivationError(RuntimeError):
+    """The operator request did not prove a safe staging shadow transition."""
+
+
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ShadowActivationError("protected environment is malformed")
+        key, value = line.split("=", 1)
+        if not key or key in values:
+            raise ShadowActivationError("protected environment is malformed")
+        values[key] = value
+    return values
+
+
+def _atomic_write(path: Path, content: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _ensure_token_only_environment(path: Path, token: str) -> None:
+    existing = _read_env(path)
+    if set(existing) - {TOKEN_KEY}:
+        raise ShadowActivationError("external Pi worker environment is not token-only")
+    existing_token = existing.get(TOKEN_KEY)
+    if existing_token and existing_token != token:
+        raise ShadowActivationError("external Pi worker token environments disagree")
+    if len(token) < 32 or any(character in token for character in "\r\n\0"):
+        raise ShadowActivationError("external Pi worker token is invalid")
+    _atomic_write(path, f"{TOKEN_KEY}={token}\n".encode(), 0o640)
+
+
+def run_temporary_shadow_qualification(
+    *,
+    environment: str,
+    slot: str,
+    release_id: str,
+    report_path: Path,
+    start: Callable[[str, str], None] | None = None,
+    authenticated: Callable[[str, str, str], int] | None = None,
+    qualify: Callable[[int, Path], None],
+    stop: Callable[[str, str, str], None] | None = None,
+) -> None:
+    """Start a flags-off candidate and always perform its proven drain/stop."""
+
+    if environment != "staging":
+        raise ShadowActivationError("temporary shadow qualification is staging-only")
+    if slot not in {"blue", "green"}:
+        raise ShadowActivationError("temporary shadow qualification slot is invalid")
+    if start is None or authenticated is None or stop is None:
+        from deploy.external_pi_slot_lifecycle import (
+            qualify_candidate,
+            start_slot,
+            stop_slot,
+        )
+
+        start = start or start_slot
+        authenticated = authenticated or qualify_candidate
+        stop = stop or stop_slot
+    started = False
+    try:
+        start(environment, slot)
+        started = True
+        generation = authenticated(environment, slot, release_id)
+        qualify(generation, report_path)
+    finally:
+        if started:
+            stop(environment, slot, release_id)
+
+
+def _validate_report(path: Path, release_id: str) -> None:
+    if not path.is_file():
+        raise ShadowActivationError("successful qualification report is required")
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ShadowActivationError(
+            "successful qualification report is invalid"
+        ) from error
+    if not isinstance(report, dict):
+        raise ShadowActivationError("successful qualification report is invalid")
+    cases = report.get("cases")
+    counts = report.get("external_work_counts")
+    if (
+        set(report)
+        != {
+            "release_id",
+            "worker_id",
+            "worker_generation",
+            "passed",
+            "case_count",
+            "duration_ms",
+            "external_work_counts",
+            "cases",
+        }
+        or report.get("release_id") != release_id
+        or not isinstance(report.get("worker_id"), str)
+        or not isinstance(report.get("worker_generation"), int)
+        or report["worker_generation"] < 1
+        or report.get("passed") is not True
+        or report.get("case_count") != len(REQUIRED_CASES)
+        or not isinstance(cases, list)
+        or len(cases) != len(REQUIRED_CASES)
+        or not all(
+            isinstance(case, dict)
+            and set(case) == {"name", "passed", "count", "duration_ms", "failure_code"}
+            for case in cases
+        )
+        or {case.get("name") for case in cases if isinstance(case, dict)}
+        != REQUIRED_CASES
+        or any(
+            case.get("passed") is not True
+            or case.get("failure_code") is not None
+            or not isinstance(case.get("count"), int)
+            or case["count"] < 0
+            or not isinstance(case.get("duration_ms"), int)
+            or case["duration_ms"] < 0
+            for case in cases
+            if isinstance(case, dict)
+        )
+        or not isinstance(counts, dict)
+        or set(counts)
+        != {
+            "model_calls",
+            "tool_calls",
+            "provider_calls",
+            "modal_calls",
+            "billing_events",
+        }
+        or any(type(value) is not int or value != 0 for value in counts.values())
+    ):
+        raise ShadowActivationError("successful qualification is not proven")
+
+
+def _current_release(app_root: Path) -> tuple[str, str]:
+    current = app_root / "environments/staging/current"
+    if not current.is_symlink():
+        raise ShadowActivationError("exact current release is unavailable")
+    try:
+        manifest = json.loads(
+            (current.resolve(strict=True) / "release.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise ShadowActivationError("exact current release is invalid") from error
+    release_id, git_sha = manifest.get("release_id"), manifest.get("git_sha")
+    if (
+        not isinstance(release_id, str)
+        or not release_id
+        or not isinstance(git_sha, str)
+        or len(git_sha) != 40
+        or any(character not in "0123456789abcdef" for character in git_sha)
+    ):
+        raise ShadowActivationError("exact current release is invalid")
+    return release_id, git_sha
+
+
+def apply_staging_shadow_activation(
+    *,
+    environment: str,
+    expected_release_id: str,
+    report_path: Path,
+    enabled: bool,
+    app_root: Path = APP_ROOT,
+    config_root: Path = CONFIG_ROOT,
+    qualify: Callable[[str, str, Path], None] | None,
+    deactivate: Callable[[str, str], None] | None,
+    refresh: Callable[[str], None],
+) -> dict[str, object]:
+    if environment != "staging":
+        raise ShadowActivationError("external Pi shadow activation is staging-only")
+    current_release_id, git_sha = _current_release(app_root)
+    if current_release_id != expected_release_id:
+        raise ShadowActivationError("expected release is not the exact current release")
+    staging_path = config_root / "staging.env"
+    if not staging_path.is_file():
+        raise ShadowActivationError("protected staging environment is missing")
+    original = staging_path.read_bytes()
+    worker_path = config_root / "external-pi-worker.env"
+    original_worker = worker_path.read_bytes() if worker_path.is_file() else None
+    values = _read_env(staging_path)
+    lifecycle_values = {key: values.get(key, "false").lower() for key in SHADOW_FLAGS}
+    if (
+        set(lifecycle_values.values()) - {"true", "false"}
+        or len(set(lifecycle_values.values())) != 1
+    ):
+        raise ShadowActivationError(
+            "shadow and supervisor flags are invalid or disagree"
+        )
+    if enabled and set(lifecycle_values.values()) != {"false"}:
+        raise ShadowActivationError("bootstrap requires shadow lifecycle flags false")
+    worker_values = _read_env(worker_path)
+    if set(worker_values) - {TOKEN_KEY}:
+        raise ShadowActivationError("external Pi worker environment is not token-only")
+    staging_token = values.get(TOKEN_KEY, "")
+    worker_token = worker_values.get(TOKEN_KEY, "")
+    if staging_token and worker_token and staging_token != worker_token:
+        raise ShadowActivationError("external Pi worker token environments disagree")
+    token = staging_token or worker_token or secrets.token_urlsafe(48)
+    values[TOKEN_KEY] = token
+    values.update({key: "false" for key in SHADOW_FLAGS})
+    values.update({key: "false" for key in INERT_FLAGS})
+    rendered = "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
+    proven_stopped = False
+    if not enabled and set(lifecycle_values.values()) == {"true"}:
+        if deactivate is None:
+            raise ShadowActivationError(
+                "enabled shadow lifecycle requires integrated proven stop"
+            )
+        deactivate(current_release_id, git_sha)
+        proven_stopped = True
+    try:
+        _ensure_token_only_environment(worker_path, token)
+        _atomic_write(staging_path, rendered.encode(), 0o640)
+        if enabled:
+            if qualify is None:
+                raise ShadowActivationError(
+                    "enabled bootstrap requires an integrated qualification"
+                )
+            qualify(current_release_id, git_sha, report_path)
+            _validate_report(report_path, current_release_id)
+            values.update({key: "true" for key in SHADOW_FLAGS})
+            rendered = "".join(
+                f"{key}={value}\n" for key, value in sorted(values.items())
+            )
+            _atomic_write(staging_path, rendered.encode(), 0o640)
+        refresh(git_sha)
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        if proven_stopped:
+            _atomic_write(staging_path, rendered.encode(), 0o640)
+            _ensure_token_only_environment(worker_path, token)
+            raise ShadowActivationError(
+                "external Pi units were proven stopped; flags remain disabled "
+                "after refresh failure"
+            )
+        _atomic_write(staging_path, original, 0o640)
+        if original_worker is None:
+            worker_path.unlink(missing_ok=True)
+        else:
+            _atomic_write(worker_path, original_worker, 0o640)
+        raise
+    return {"release_id": current_release_id, "enabled": enabled}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("environment", choices=("staging", "production"))
+    parser.add_argument("mode", choices=("enable", "disable"))
+    parser.add_argument("--release-id", required=True)
+    parser.add_argument("--report", type=Path, default=Path("/dev/null"))
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error("run through sudo")
+
+    def refresh(sha: str) -> None:
+        subprocess.run(
+            [
+                "pwc-deploy",
+                args.environment,
+                "--source",
+                sha,
+                "--refresh-environment",
+            ],
+            check=True,
+        )
+
+    def active_slot() -> str:
+        active = APP_ROOT / "environments/staging/active"
+        if not active.is_symlink():
+            raise ShadowActivationError("staging active slot is unavailable")
+        target = active.resolve(strict=False)
+        slots = APP_ROOT / "environments/staging/slots"
+        slot = next(
+            (
+                name
+                for name in ("blue", "green")
+                if target == (slots / name).resolve(strict=False)
+            ),
+            None,
+        )
+        if slot is None:
+            raise ShadowActivationError("staging active slot is invalid")
+        return slot
+
+    def qualify(release_id: str, _sha: str, report_path: Path) -> None:
+        slot = active_slot()
+        from deploy.external_pi_slot_lifecycle import resolve_external_pi_slot
+        from deploy.runtime import runtime_id
+
+        resolved = resolve_external_pi_slot("staging", slot)
+        release = (APP_ROOT / "environments/staging/current").resolve(strict=True)
+        python = APP_ROOT / "runtimes" / runtime_id(release) / "bin/python"
+
+        def command(_generation: int, destination: Path) -> None:
+            subprocess.run(
+                [
+                    str(python),
+                    "-m",
+                    "backend.scripts.qualify_external_pi_shadow",
+                    "--environment",
+                    "staging",
+                    "--app-root",
+                    str(APP_ROOT),
+                    "--release-dir",
+                    str(release),
+                    "--worker-url",
+                    f"http://127.0.0.1:{resolved.port}",
+                    "--worker-id",
+                    resolved.worker_id,
+                    "--token-file",
+                    str(CONFIG_ROOT / "external-pi-worker.env"),
+                    "--prompt-file",
+                    str(resolved.prompt),
+                    "--report",
+                    str(destination),
+                ],
+                cwd=release,
+                check=True,
+            )
+
+        run_temporary_shadow_qualification(
+            environment="staging",
+            slot=slot,
+            release_id=release_id,
+            report_path=report_path,
+            qualify=command,
+        )
+
+    def deactivate(release_id: str, _sha: str) -> None:
+        from deploy.external_pi_slot_lifecycle import (
+            resolve_external_pi_slot,
+            stop_slot,
+        )
+
+        stopped_current = False
+        for slot in dict.fromkeys((active_slot(), "green", "blue")):
+            try:
+                resolved = resolve_external_pi_slot("staging", slot)
+            except (OSError, ValueError):
+                continue
+            stop_slot("staging", slot, resolved.release_id)
+            if resolved.release_id == release_id:
+                stopped_current = True
+        if not stopped_current:
+            raise ShadowActivationError(
+                "exact current external Pi units were not stopped"
+            )
+
+    result = apply_staging_shadow_activation(
+        environment=args.environment,
+        expected_release_id=args.release_id,
+        report_path=args.report,
+        enabled=args.mode == "enable",
+        qualify=qualify if args.mode == "enable" else None,
+        deactivate=deactivate if args.mode == "disable" else None,
+        refresh=refresh,
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

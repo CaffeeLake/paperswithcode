@@ -31,6 +31,7 @@ export async function handleExternalFrame(
   const keys = new Set([
     "type", "protocol_version", "request_id", "chat_session_id", "agent_session_id",
     "current_leaf_id", "expected_prompt_sha256", "expected_tool_names_sha256",
+    "expected_transcript_sha256",
     "transcript_entries",
   ]);
   if (Object.keys(value).length !== keys.size || Object.keys(value).some((key) => !keys.has(key))) {

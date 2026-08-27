@@ -12,6 +12,7 @@ from backend.services.chat_external_pi_shadow import (
     ExternalPiWorkerStatus,
     ExternalPiWorkerControlRejected,
     ExternalPiWorkerUnavailable,
+    native_jsonl_transcript_digest,
 )
 
 
@@ -41,6 +42,7 @@ def test_external_pi_shadow_uses_authenticated_content_free_projection():
         assert "prompt" not in payload
         assert "tool_names" not in payload
         assert payload["expected_prompt_sha256"] == request.prompt_sha256
+        assert payload["expected_transcript_sha256"] == request.transcript_sha256
         return httpx.Response(
             200,
             json={
@@ -51,6 +53,7 @@ def test_external_pi_shadow_uses_authenticated_content_free_projection():
                 "agent_session_id": str(request.agent_session_id),
                 "current_leaf_id": "entry-1",
                 "entry_count": 2,
+                "transcript_sha256": request.transcript_sha256,
                 "prompt_sha256": hashlib.sha256(request.prompt.encode()).hexdigest(),
                 "tool_names_sha256": request.tool_names_sha256,
             },
@@ -68,6 +71,17 @@ def test_external_pi_shadow_uses_authenticated_content_free_projection():
 
     assert projection.compatible_with(request)
     assert "trusted system prompt" not in projection.model_dump_json()
+
+
+def test_native_jsonl_transcript_digest_has_a_cross_language_canonical_fixture():
+    entries = (
+        {"z": [True, None, {"b": "snowman ☃", "a": -7}, 1e-7, -0.0], "a": 1},
+        {"type": "message", "parentId": None, "id": "leaf"},
+    )
+
+    assert native_jsonl_transcript_digest(entries) == (
+        "8ed089f4bbf59e0fa6ab60ae26e77f9e27566e441445082d8c2a406e0da909fe"
+    )
 
 
 def test_external_pi_shadow_rejects_unexpected_worker_response_fields():

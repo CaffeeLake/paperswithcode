@@ -4,11 +4,58 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import struct
 import uuid
 from dataclasses import dataclass, field
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+
+def _canonical_json(value: object) -> str:
+    if value is None:
+        return '["null"]'
+    if isinstance(value, bool):
+        return f'["boolean",{str(value).lower()}]'
+    if isinstance(value, str):
+        return f'["string",{json.dumps(value, ensure_ascii=False)}]'
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not -(2**53 - 1) <= value <= 2**53 - 1:
+            raise ValueError("External Pi shadow transcript integer is unsafe")
+        return f'["number","{struct.pack(">d", float(value)).hex()}"]'
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("External Pi shadow transcript JSON is invalid")
+        return f'["number","{struct.pack(">d", value).hex()}"]'
+    if isinstance(value, (list, tuple)):
+        return '["array",[' + ",".join(_canonical_json(item) for item in value) + "]]"
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("External Pi shadow transcript key is invalid")
+        items = sorted(value.items(), key=lambda item: item[0].encode())
+        return (
+            '["object",['
+            + ",".join(
+                f"[{json.dumps(key, ensure_ascii=False)},{_canonical_json(item)}]"
+                for key, item in items
+            )
+            + "]]"
+        )
+    raise ValueError("External Pi shadow transcript JSON is invalid")
+
+
+def native_jsonl_transcript_digest(
+    entries: tuple[dict[str, object], ...],
+) -> str:
+    """Digest native entries after recursively key-sorted JSONL serialization."""
+
+    digest = hashlib.sha256()
+    for entry in entries:
+        line = _canonical_json(entry)
+        digest.update(line.encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 class ExternalPiShadowRequest(BaseModel):
@@ -54,6 +101,10 @@ class ExternalPiShadowRequest(BaseModel):
         canonical = ",".join(sorted(self.tool_names))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
+    @property
+    def transcript_sha256(self) -> str:
+        return native_jsonl_transcript_digest(self.transcript_entries)
+
     def wire_payload(self) -> dict[str, object]:
         return {
             "type": "shadow_compare",
@@ -64,6 +115,7 @@ class ExternalPiShadowRequest(BaseModel):
             "current_leaf_id": self.current_leaf_id,
             "expected_prompt_sha256": self.prompt_sha256,
             "expected_tool_names_sha256": self.tool_names_sha256,
+            "expected_transcript_sha256": self.transcript_sha256,
             "transcript_entries": list(self.transcript_entries),
         }
 
@@ -78,6 +130,7 @@ class ExternalPiShadowProjection(BaseModel):
     agent_session_id: uuid.UUID
     current_leaf_id: str | None = Field(default=None, max_length=255)
     entry_count: int = Field(ge=1, le=2_000)
+    transcript_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     tool_names_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -89,6 +142,7 @@ class ExternalPiShadowProjection(BaseModel):
             and self.agent_session_id == request.agent_session_id
             and self.current_leaf_id == request.current_leaf_id
             and self.entry_count == len(request.transcript_entries)
+            and self.transcript_sha256 == request.transcript_sha256
             and self.prompt_sha256 == request.prompt_sha256
             and self.tool_names_sha256 == request.tool_names_sha256
         )
@@ -117,6 +171,10 @@ class ExternalPiWorkerUnavailable(RuntimeError):
     """The worker could not be reached or returned a transient server failure."""
 
 
+class ExternalPiShadowCapacity(RuntimeError):
+    """The worker rejected shadow work immediately at its fixed capacity."""
+
+
 class ExternalPiWorkerControlRejected(RuntimeError):
     """The worker rejected the request or violated the control contract."""
 
@@ -138,8 +196,17 @@ class ExternalPiShadowClient:
                 json=request.wire_payload(),
                 timeout=self.timeout_seconds,
             )
+            if response.status_code == 503:
+                try:
+                    code = response.json().get("code")
+                except (ValueError, AttributeError):
+                    code = None
+                if code == "shadow_capacity":
+                    raise ExternalPiShadowCapacity("External Pi shadow is at capacity")
             response.raise_for_status()
             projection = ExternalPiShadowProjection.model_validate(response.json())
+        except ExternalPiShadowCapacity:
+            raise
         except (httpx.HTTPError, ValueError, ValidationError) as error:
             raise RuntimeError(
                 "External Pi shadow returned an invalid response"

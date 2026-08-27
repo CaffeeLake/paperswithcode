@@ -28,6 +28,7 @@ test("external shadow HTTP service authenticates and exposes no run endpoint", a
     current_leaf_id: null,
     expected_prompt_sha256: "bbc5e661e106c6dcd8dc6dd186454c2fcba3c710fb4d8e71a60c93eaf077f073",
     expected_tool_names_sha256: toolNameDigest(["bash", "read"]),
+    expected_transcript_sha256: "04ec741c240dd09ab5ca2495141ac79893266747fd5c0bf966aa463e6fe69b5a",
     transcript_entries: [{
       type: "session", id: "20000000-0000-4000-8000-000000000001", version: 3,
     }],

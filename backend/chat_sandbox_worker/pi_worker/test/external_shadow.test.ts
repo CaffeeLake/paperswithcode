@@ -8,6 +8,7 @@ import { toolNameDigest } from "../src/mcp_app_registry.js";
 
 import {
   compareShadowState,
+  nativeJsonlTranscriptDigest,
   projectShadowState,
   restoreShadowTranscript,
   type ExternalShadowRequest,
@@ -22,6 +23,7 @@ const request: ExternalShadowRequest = {
   current_leaf_id: "entry-1",
   expected_prompt_sha256: "caebbfd4c48e98a97a0c0162ac34efec70d452e823114c2f882d586934169454",
   expected_tool_names_sha256: toolNameDigest(["read", "bash", "pwc__search"]),
+  expected_transcript_sha256: "249e19f00a7663d62ecb737447a5f683f9aac4e2ed615169dab13580fccad663",
   transcript_entries: [
     {
       type: "session",
@@ -47,10 +49,21 @@ test("external shadow projection is content-free and stable", () => {
     agent_session_id: "20000000-0000-4000-8000-000000000001",
     current_leaf_id: "entry-1",
     entry_count: 2,
+    transcript_sha256: request.expected_transcript_sha256,
     prompt_sha256: "caebbfd4c48e98a97a0c0162ac34efec70d452e823114c2f882d586934169454",
     tool_names_sha256: toolNameDigest(profile.tool_names),
   });
   assert.doesNotMatch(JSON.stringify(projection), /trusted system prompt|role/);
+});
+
+test("native JSONL transcript digest matches the Python canonical fixture", () => {
+  assert.equal(
+    nativeJsonlTranscriptDigest([
+      { z: [true, null, { b: "snowman ☃", a: -7 }, 1e-7, -0], a: 1 },
+      { type: "message", parentId: null, id: "leaf" },
+    ]),
+    "8ed089f4bbf59e0fa6ab60ae26e77f9e27566e441445082d8c2a406e0da909fe",
+  );
 });
 
 test("external shadow restores native Pi sessions in isolated temporary roots", async () => {
