@@ -191,6 +191,7 @@ def main() -> int:
         "paperswithcode-backend@.service",
         "paperswithcode-staging-backend@.service",
         "paperswithcode-staging-backend@.socket",
+        "paperswithcode-staging-external-pi@.service",
         "paperswithcode-production-backend@.service",
         "paperswithcode-production-backend@.socket",
         "pwc-postgres-backup.service",

@@ -1,0 +1,26 @@
+[Unit]
+Description=Papers With Code staging external Pi shadow worker (%i)
+After=network-online.target postgresql.service postgresql@16-main.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pwc-staging
+Group=pwc-staging
+WorkingDirectory=/srv/paperswithcode/environments/staging/slots/%i/release
+EnvironmentFile=/etc/paperswithcode/staging.env
+ExecStart=/usr/bin/python3 /usr/local/lib/paperswithcode-deploy/external_pi_slot_launcher.py staging %i
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=75
+TimeoutStopSec=75
+KillSignal=SIGTERM
+KillMode=mixed
+SyslogIdentifier=paperswithcode-staging-external-pi-%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/paperswithcode
+ReadWritePaths=/var/lib/paperswithcode/staging /run/paperswithcode/external-pi

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -25,6 +25,15 @@ class StopWaiter(Protocol):
 
 class Sleeper(Protocol):
     async def __call__(self, seconds: float) -> None: ...
+
+
+class LifecycleObserver(Protocol):
+    def __call__(
+        self,
+        event: Literal["registered", "heartbeat", "drained"],
+        claim: ExternalWorkerClaim,
+        heartbeats: int,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +68,7 @@ class ChatExternalPiSupervisorRuntime:
     heartbeat_interval_seconds: float
     startup_timeout_seconds: float
     drain_poll_seconds: float
+    observe: LifecycleObserver | None = None
 
     async def _transaction(self, operation):
         with self.session_factory() as db:
@@ -85,6 +95,8 @@ class ChatExternalPiSupervisorRuntime:
                 claim: ExternalWorkerClaim = await self._transaction(
                     lambda db: self.supervisor.register(db, now=registration_now)
                 )
+                if self.observe is not None:
+                    self.observe("registered", claim, 0)
                 break
             except (ExternalPiWorkerUnavailable, OperationalError) as error:
                 remaining = self.startup_timeout_seconds - (
@@ -129,6 +141,8 @@ class ChatExternalPiSupervisorRuntime:
                 )
                 last_heartbeat_at = heartbeat_started_at
                 heartbeats += 1
+                if self.observe is not None:
+                    self.observe("heartbeat", claim, heartbeats)
             except (ExternalPiWorkerUnavailable, OperationalError) as error:
                 if (
                     self.monotonic() - last_heartbeat_at
@@ -167,6 +181,8 @@ class ChatExternalPiSupervisorRuntime:
                 OperationalError,
             ) as error:
                 await self._wait_for_drain_retry(deadline=drain_deadline, error=error)
+        if self.observe is not None:
+            self.observe("drained", claim, heartbeats)
         return ExternalPiSupervisorRunResult(
             registrations=1,
             heartbeats=heartbeats,

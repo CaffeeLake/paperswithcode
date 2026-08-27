@@ -80,6 +80,7 @@ def test_runtime_registers_heartbeats_and_gracefully_drains():
         datetime(2026, 8, 26, 12, tzinfo=UTC) + timedelta(seconds=value)
         for value in range(10)
     )
+    observe = Mock()
     runtime = ChatExternalPiSupervisorRuntime(
         supervisor=supervisor,
         session_factory=session_factory,
@@ -90,6 +91,7 @@ def test_runtime_registers_heartbeats_and_gracefully_drains():
         heartbeat_interval_seconds=5,
         startup_timeout_seconds=30,
         drain_poll_seconds=1,
+        observe=observe,
     )
 
     result = asyncio.run(runtime.run())
@@ -99,6 +101,11 @@ def test_runtime_registers_heartbeats_and_gracefully_drains():
     assert result.drained is True
     assert len(sessions) == 4
     assert all(session.commit.call_count == 1 for session in sessions)
+    assert observe.call_args_list == [
+        (("registered", claim, 0),),
+        (("heartbeat", claim, 1),),
+        (("drained", claim, 1),),
+    ]
 
 
 def test_runtime_recovers_from_a_transient_startup_failure():

@@ -45,6 +45,12 @@ try:
         prepare_external_pi_runtime,
         recorded_external_pi_runtime_id,
     )
+    from deploy.external_pi_slot_lifecycle import (
+        ExternalPiSlotError,
+        prepare_candidate_if_enabled,
+        slot_status as external_pi_slot_status,
+        stop_slot_if_enabled,
+    )
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
         ENVIRONMENTS,
@@ -69,6 +75,12 @@ except ModuleNotFoundError:
         external_pi_runtime_id,
         prepare_external_pi_runtime,
         recorded_external_pi_runtime_id,
+    )
+    from external_pi_slot_lifecycle import (  # type: ignore[no-redef]
+        ExternalPiSlotError,
+        prepare_candidate_if_enabled,
+        slot_status as external_pi_slot_status,
+        stop_slot_if_enabled,
     )
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
@@ -912,7 +924,28 @@ def _recover_interrupted_activation(environment: str) -> None:
     """Conservatively restore the old slot if cutover smoke was interrupted."""
 
     journal = _journal(environment)
-    if not journal or journal.get("phase") not in {
+    if not journal:
+        return
+    if journal.get("phase") in {"candidate-preparing", "candidate-prepared"}:
+        candidate_slot = journal.get("candidate_slot")
+        candidate_release_name = journal.get("candidate_release")
+        if candidate_slot not in {"blue", "green"} or not isinstance(
+            candidate_release_name, str
+        ):
+            raise DeployError("activation journal cannot identify its candidate")
+        candidate_release = RELEASES / candidate_release_name
+        candidate_manifest = validate_manifest(candidate_release, environment)
+        stop_slot_if_enabled(
+            environment, candidate_slot, candidate_manifest["release_id"]
+        )
+        _write_journal(
+            environment,
+            "candidate-abandoned",
+            candidate_slot=candidate_slot,
+            candidate_release=candidate_release_name,
+        )
+        return
+    if journal.get("phase") not in {
         "previous-update-pending",
         "current-update-pending",
         "active-switch-pending",
@@ -950,6 +983,18 @@ def _recover_interrupted_activation(environment: str) -> None:
     else:
         (root / "previous").unlink(missing_ok=True)
     _unix_json(environment, old_slot, "/internal/undrain", method="POST")
+    candidate_slot = "green" if old_slot == "blue" else "blue"
+    candidate_release = _slot_release(environment, candidate_slot)
+    if candidate_release is not None:
+        candidate_manifest = validate_manifest(candidate_release, environment)
+        stop_slot_if_enabled(
+            environment, candidate_slot, candidate_manifest["release_id"]
+        )
+    prepare_candidate_if_enabled(
+        environment,
+        old_slot,
+        validate_manifest(old_release, environment)["release_id"],
+    )
     smoke_public(
         old_release,
         environment,
@@ -1068,6 +1113,11 @@ def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> N
         legacy_current=release.name,
     )
     _prepare_slot(environment, slot, release, runtime)
+    prepare_candidate_if_enabled(
+        environment,
+        slot,
+        validate_manifest(release, environment)["release_id"],
+    )
     _write_journal(
         environment,
         "candidate-prepared",
@@ -1199,6 +1249,9 @@ def activate_slot(
         _prepare_slot(environment, inactive, release, runtime)
     else:
         _prepare_or_reuse_slot(environment, inactive, release, runtime)
+    prepare_candidate_if_enabled(
+        environment, inactive, candidate_manifest["release_id"]
+    )
     _write_journal(
         environment,
         "candidate-prepared",
@@ -1281,7 +1334,13 @@ def activate_slot(
     )
     try:
         smoke_public(release, environment, candidate_manifest["release_id"])
-    except (DeployError, subprocess.CalledProcessError, OSError) as exc:
+        stop_slot_if_enabled(environment, active, active_manifest["release_id"])
+    except (
+        DeployError,
+        ExternalPiSlotError,
+        subprocess.CalledProcessError,
+        OSError,
+    ) as exc:
         _write_journal(
             environment,
             "automatic-rollback-in-progress",
@@ -1298,7 +1357,26 @@ def activate_slot(
         else:
             (root / "previous").unlink(missing_ok=True)
         _unix_json(environment, active, "/internal/undrain", method="POST")
+        candidate_drain_error = None
+        try:
+            stop_slot_if_enabled(
+                environment, inactive, candidate_manifest["release_id"]
+            )
+        except ExternalPiSlotError as error:
+            candidate_drain_error = error
+        prepare_candidate_if_enabled(environment, active, active_manifest["release_id"])
         smoke_public(old_release, environment, active_manifest["release_id"])
+        if candidate_drain_error is not None:
+            _write_journal(
+                environment,
+                "automatic-rollback-candidate-drain-failed",
+                active_slot=active,
+                restored_release=old_release.name,
+                failed_release=release.name,
+            )
+            raise DeployError(
+                "prior activation was restored but candidate drain failed"
+            ) from candidate_drain_error
         _write_journal(
             environment,
             "automatic-rollback-complete",
@@ -1856,6 +1934,13 @@ def status(_: argparse.Namespace) -> int:
             )
             if live:
                 slot_item["deployment"] = live
+            if environment == "staging":
+                slot_item["external_pi_shadow"] = {
+                    "service": _systemctl_state(
+                        f"paperswithcode-staging-external-pi@{slot}.service"
+                    ),
+                    "lifecycle": external_pi_slot_status(environment, slot) or None,
+                }
             item["slots"][slot] = slot_item
         journal = ENVIRONMENTS_ROOT / environment / "activation-journal.json"
         item["activation_journal"] = (

@@ -140,6 +140,7 @@ def main() -> int:
         for unit in (
             "paperswithcode-staging-backend@.service",
             "paperswithcode-staging-backend@.socket",
+            "paperswithcode-staging-external-pi@.service",
             "paperswithcode-production-backend@.service",
             "paperswithcode-production-backend@.socket",
             "pwc-curation-thumbnails.service",
@@ -148,6 +149,14 @@ def main() -> int:
             "pwc-chat-alert-monitor.timer",
         ):
             shutil.copy2(INSTALL_ROOT / "systemd" / unit, SYSTEMD_ROOT / unit)
+        shutil.copy2(
+            INSTALL_ROOT / "systemd" / "paperswithcode-tmpfiles.conf",
+            "/etc/tmpfiles.d/paperswithcode.conf",
+        )
+        subprocess.run(
+            ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paperswithcode.conf"],
+            check=True,
+        )
         subprocess.run(["systemctl", "daemon-reload"], check=True)
         if backup.exists():
             shutil.rmtree(backup)
