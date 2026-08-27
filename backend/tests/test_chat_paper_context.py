@@ -28,7 +28,6 @@ from backend.services.chat_paper_context_service import (
     PreparedPaper,
     _bounded_info,
 )
-from backend.services.paper_service import PaperService
 
 
 def _request(message: str, mentions: list[dict]) -> ChatRequest:
@@ -154,45 +153,6 @@ def test_effective_prompt_escapes_untrusted_paper_metadata(monkeypatch):
     )[0]
     assert "</paper_info>" not in paper_info
     assert "&lt;/paper_info&gt;" in paper_info
-
-
-def test_external_paper_context_reads_markdown_by_catalog_id(monkeypatch):
-    seen = {}
-    service = ChatPaperContextService(
-        SimpleNamespace(), Settings(paper_markdown_hf_bucket_id="owner/content")
-    )
-    paper = SimpleNamespace(
-        id="109743",
-        arxiv_id=None,
-        title="External report",
-        source="external",
-        url_abs="https://example.com/report.pdf",
-        source_url="https://example.com/report.pdf",
-    )
-    row = SimpleNamespace(
-        version="v1", updated_at=SimpleNamespace(isoformat=lambda: "updated")
-    )
-    monkeypatch.setattr(PaperService, "get_linked_hf_artifact_urls", lambda *_args: {})
-    monkeypatch.setattr(
-        "backend.services.chat_paper_context_service._bounded_info",
-        lambda *_args: '{"title":"External report"}',
-    )
-
-    def fake_read(identifier, **kwargs):
-        seen.update(identifier=identifier, **kwargs)
-        return "# External report", False
-
-    monkeypatch.setattr(
-        "backend.services.chat_paper_context_service.read_paper_markdown_bounded",
-        fake_read,
-    )
-
-    prepared = service._load(paper, row)
-
-    assert prepared.content_available is True
-    assert prepared.markdown == "# External report"
-    assert seen["identifier"] == "109743"
-    assert seen["source"] == "external"
 
 
 def test_info_serializer_is_deterministic_bounded_and_reports_omissions():

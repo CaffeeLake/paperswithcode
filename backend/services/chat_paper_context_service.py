@@ -26,8 +26,8 @@ from backend.models.chat import (
     ViewerContextRequest,
     normalize_paper_selection_text,
 )
-from backend.models.database import ChatMessageRecord, ChatSession
 from backend.models.database import Paper as DBPaper
+from backend.models.database import ChatMessageRecord, ChatSession
 from backend.services.chat_edit_service import INACTIVE_STATUSES
 from backend.services.chat_session_service import ChatServiceError
 from backend.services.paper_markdown_service import read_paper_markdown_bounded
@@ -332,12 +332,10 @@ class ChatPaperContextService:
         markdown = ""
         truncated = False
         available = False
-        markdown_id = paper.arxiv_id if paper.source == "arxiv" else str(paper.id)
-        if markdown_id:
+        if paper.source == "arxiv" and paper.arxiv_id:
             try:
                 markdown, truncated = read_paper_markdown_bounded(
-                    markdown_id,
-                    source=paper.source,
+                    paper.arxiv_id,
                     bucket_id=self.settings.paper_markdown_hf_bucket_id,
                     token=self.settings.hf_token or None,
                     max_bytes=MARKDOWN_LIMIT_BYTES,
