@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import time
 import uuid
@@ -31,6 +32,9 @@ from backend.services.chat_turn_job_repository import (
 from deploy.release import validate_manifest
 
 CONFIRMATION = "QUALIFY_STAGING_DURABLE_DISPATCH"
+RELEASE_ROOT = Path("/srv/paperswithcode/releases")
+ACTIVE_STAGING_RELEASE = Path("/srv/paperswithcode/environments/staging/current")
+_STAGING_RELEASE_NAME = re.compile(r"^[0-9a-f]{12}-staging$")
 EXPECTED_OUTCOMES = {
     "idempotent_admission": "replayed",
     "same_owner_contention": "account_busy",
@@ -259,6 +263,7 @@ def inspect_postgresql_contract(db: Session) -> SchemaAudit:
 
     if db.bind is None or db.bind.dialect.name != "postgresql":
         raise QualificationRefused("qualification requires PostgreSQL")
+    db.execute(text("SET TRANSACTION READ ONLY"))
     row = (
         db.execute(
             text(
@@ -421,10 +426,38 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
+    modes = result.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--audit-disabled-only",
+        action="store_true",
+        help="audit the active staging schema only while durable dispatch is disabled",
+    )
+    modes.add_argument(
+        "--qualify-enabled-only",
+        action="store_true",
+        help="run the normal qualification only while durable dispatch is enabled",
+    )
     return result
 
 
-def validate_operator_context(
+def resolve_active_staging_release(requested_release: Path) -> Path:
+    """Require the exact active immutable staging release directory."""
+
+    release_root = RELEASE_ROOT.resolve(strict=True)
+    active_release = ACTIVE_STAGING_RELEASE.resolve(strict=True)
+    requested_release = requested_release.resolve(strict=True)
+    if (
+        requested_release != active_release
+        or requested_release.parent != release_root
+        or _STAGING_RELEASE_NAME.fullmatch(requested_release.name) is None
+    ):
+        raise QualificationRefused(
+            "audit requires the exact active immutable staging release"
+        )
+    return requested_release
+
+
+def _validate_shared_operator_context(
     *,
     confirmation: str,
     environment: Settings,
@@ -439,10 +472,42 @@ def validate_operator_context(
         raise QualificationRefused("live and immutable release identities differ")
     if environment.chat_worker_contract_version != worker_contract_version:
         raise QualificationRefused("live and immutable worker contracts differ")
-    if not environment.chat_durable_turn_dispatch_enabled:
-        raise QualificationRefused("durable dispatch bridge is disabled")
     if environment.db_search_path.split(",", 1)[0].strip() != "staging":
         raise QualificationRefused("qualification requires the staging search path")
+
+
+def validate_operator_context(
+    *,
+    confirmation: str,
+    environment: Settings,
+    release_id: str,
+    worker_contract_version: str,
+) -> None:
+    _validate_shared_operator_context(
+        confirmation=confirmation,
+        environment=environment,
+        release_id=release_id,
+        worker_contract_version=worker_contract_version,
+    )
+    if not environment.chat_durable_turn_dispatch_enabled:
+        raise QualificationRefused("durable dispatch bridge is disabled")
+
+
+def validate_disabled_audit_context(
+    *,
+    confirmation: str,
+    environment: Settings,
+    release_id: str,
+    worker_contract_version: str,
+) -> None:
+    _validate_shared_operator_context(
+        confirmation=confirmation,
+        environment=environment,
+        release_id=release_id,
+        worker_contract_version=worker_contract_version,
+    )
+    if environment.chat_durable_turn_dispatch_enabled:
+        raise QualificationRefused("disabled-state audit requires a disabled bridge")
 
 
 def run_qualification(
@@ -728,8 +793,27 @@ def _failure_report(
     }
 
 
+def _disabled_audit_report(
+    *,
+    release_id: str,
+    worker_contract_version: str,
+    schema_audit: SchemaAudit,
+    passed: bool,
+) -> dict[str, Any]:
+    return {
+        "mode": "disabled_schema_audit",
+        "release": {
+            "release_id": release_id,
+            "worker_contract_version": worker_contract_version,
+        },
+        "schema_audit": asdict(schema_audit),
+        "status": {"passed": passed},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    disabled_audit = args.audit_disabled_only
     release_id = "unavailable"
     worker_contract_version = "unavailable"
     empty_audit = SchemaAudit(*(False for _ in range(6)))
@@ -740,8 +824,31 @@ def main(argv: list[str] | None = None) -> int:
     }
     empty_timing = _summarize_timings([])
     audit = empty_audit
+
+    def failure_report(code: str, schema_audit: SchemaAudit) -> dict[str, Any]:
+        if disabled_audit:
+            return _disabled_audit_report(
+                release_id=release_id,
+                worker_contract_version=worker_contract_version,
+                schema_audit=schema_audit,
+                passed=False,
+            )
+        return _failure_report(
+            release_id=release_id,
+            worker_contract_version=worker_contract_version,
+            code=code,
+            passed=0,
+            timing_ms=empty_timing,
+            cleanup=empty_cleanup,
+            schema_audit=schema_audit,
+        )
+
     try:
-        release_dir = args.release_dir.resolve(strict=True)
+        release_dir = (
+            resolve_active_staging_release(args.release_dir)
+            if disabled_audit
+            else args.release_dir.resolve(strict=True)
+        )
         manifest = validate_manifest(release_dir, "staging")
         release_id = manifest["release_id"]
         runtime = manifest.get("chat_runtime")
@@ -752,7 +859,12 @@ def main(argv: list[str] | None = None) -> int:
             raise QualificationRefused("release worker contract is missing")
         worker_contract_version = contract
         environment = get_settings()
-        validate_operator_context(
+        context_validator = (
+            validate_disabled_audit_context
+            if disabled_audit
+            else validate_operator_context
+        )
+        context_validator(
             confirmation=args.confirm,
             environment=environment,
             release_id=release_id,
@@ -760,20 +872,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         with db_manager.session_local() as db:
             audit = inspect_postgresql_contract(db)
-        report = run_qualification(
-            session_factory=db_manager.session_local,
-            release_id=release_id,
-            worker_contract_version=worker_contract_version,
-            schema_audit=audit,
-        )
-        if not report["cleanup"]["clean"]:
-            raise QualificationRunFailed(
-                code="cleanup_failure",
-                passed=len(EXPECTED_OUTCOMES),
-                timing_ms=report["timing_ms"],
-                cleanup=report["cleanup"],
+        if disabled_audit:
+            validate_schema_audit(audit)
+            report = _disabled_audit_report(
+                release_id=release_id,
+                worker_contract_version=worker_contract_version,
+                schema_audit=audit,
+                passed=True,
+            )
+        else:
+            report = run_qualification(
+                session_factory=db_manager.session_local,
+                release_id=release_id,
+                worker_contract_version=worker_contract_version,
                 schema_audit=audit,
             )
+            if not report["cleanup"]["clean"]:
+                raise QualificationRunFailed(
+                    code="cleanup_failure",
+                    passed=len(EXPECTED_OUTCOMES),
+                    timing_ms=report["timing_ms"],
+                    cleanup=report["cleanup"],
+                    schema_audit=audit,
+                )
     except QualificationRunFailed as error:
         report = _failure_report(
             release_id=release_id,
@@ -785,36 +906,14 @@ def main(argv: list[str] | None = None) -> int:
             schema_audit=error.schema_audit,
         )
     except (QualificationRefused, FileNotFoundError, ValueError):
-        report = _failure_report(
-            release_id=release_id,
-            worker_contract_version=worker_contract_version,
-            code="qualification_refused",
-            passed=0,
-            timing_ms=empty_timing,
-            cleanup=empty_cleanup,
-            schema_audit=audit,
-        )
+        report = failure_report("qualification_refused", audit)
     except SQLAlchemyError:
-        report = _failure_report(
-            release_id=release_id,
-            worker_contract_version=worker_contract_version,
-            code="database_failure",
-            passed=0,
-            timing_ms=empty_timing,
-            cleanup=empty_cleanup,
-            schema_audit=empty_audit,
-        )
+        report = failure_report("database_failure", empty_audit)
     except Exception:
-        report = _failure_report(
-            release_id=release_id,
-            worker_contract_version=worker_contract_version,
-            code="runtime_failure",
-            passed=0,
-            timing_ms=empty_timing,
-            cleanup=empty_cleanup,
-            schema_audit=empty_audit,
-        )
+        report = failure_report("runtime_failure", empty_audit)
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    if disabled_audit:
+        return 0 if report["status"]["passed"] else 1
     return 0 if report["scenarios"]["failed"] == 0 else 1
 
 

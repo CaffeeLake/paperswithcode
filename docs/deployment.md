@@ -296,31 +296,74 @@ bridge. Keep staging capacity at exactly two
 rollback; this toggle must not change capacity, external-worker, executor,
 workspace, or provider switches.
 
-Enable only the bridge, refresh the active immutable release by its exact SHA,
-then qualify and audit that same release:
+Resolve and validate the active immutable staging release before any protected
+configuration write. Audit the schema while the bridge is still disabled, then
+enable only through that exact release's helper, refresh its exact SHA, and
+verify that `current` still resolves to the audited release before normal
+qualification:
 
 ```bash
-sudo python deploy/configure_host_env.py \
-  --legacy-env /etc/paperswithcode/staging.env \
-  --staging-chat-durable-dispatch-enable-only
-sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+release_root=/srv/paperswithcode/releases
+staging_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+case "$staging_release" in
+  "$release_root"/????????????-staging) ;;
+  *) echo "active staging release is not immutable" >&2; exit 1 ;;
+esac
+cd -- "$staging_release" || exit 1
+staging_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, re, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+sha = manifest.get("git_sha")
+assert isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
+assert manifest.get("release_id") == f"{sha[:12]}-staging"
+print(sha)
+' "$staging_release/release.json")" || exit 1
 
-staging_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" &&
-  cd -- "$staging_release" || exit 1
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_durable_dispatch \
   --release-dir "$staging_release" \
-  --confirm QUALIFY_STAGING_DURABLE_DISPATCH
+  --confirm QUALIFY_STAGING_DURABLE_DISPATCH \
+  --audit-disabled-only || exit 1
+
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$staging_release/deploy/configure_host_env.py" \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-chat-durable-dispatch-enable-only || exit 1
+sudo pwc-deploy staging "$staging_sha" --refresh-environment || exit 1
+
+refreshed_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+test "$refreshed_release" = "$staging_release" || exit 1
+refreshed_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
+' "$refreshed_release/release.json")" || exit 1
+test "$refreshed_sha" = "$staging_sha" || exit 1
+cd -- "$refreshed_release" || exit 1
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.qualify_chat_durable_dispatch \
+  --release-dir "$refreshed_release" \
+  --confirm QUALIFY_STAGING_DURABLE_DISPATCH \
+  --qualify-enabled-only || exit 1
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_soak \
-  --release-dir "$staging_release" \
+  --release-dir "$refreshed_release" \
   --confirm QUALIFY_STAGING_CHAT_SOAK
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.audit_chat_soak \
   --started-at <durable-bridge-activation-time> \
-  --release-dir "$staging_release" \
+  --release-dir "$refreshed_release" \
   --confirm AUDIT_STAGING_CHAT_SOAK
 ```
+
+The disabled-state audit must emit `mode=disabled_schema_audit`,
+`status.passed=true`, and all six schema audit booleans as true before the
+enable helper is run. It performs no inserts, updates, deletes, model/provider
+calls, tool calls, or sandbox work. `--audit-disabled-only` refuses an enabled
+bridge; `--qualify-enabled-only` refuses a disabled bridge. Both modes require
+the exact staging confirmation, live immutable release and worker contract,
+staging search path, and complete PostgreSQL schema/role/owner/grant/index/
+constraint contract. The catalog inspection runs in a database-enforced
+read-only transaction.
 
 Complete the authenticated staging turn-ownership matrix for new turns,
 follow-ups, cancellation, edit/retry, and resume before treating the bridge as
@@ -328,14 +371,29 @@ qualified. The durable-dispatch command must report all seven scenarios passed,
 all six schema audit booleans true, and `cleanup.clean=true`; it never calls a
 model, provider, sandbox, or user-visible chat route. Any non-zero exit, failed
 scenario, false audit boolean, or incomplete cleanup is a rollback gate. On any
-failed gate, disable only the bridge and refresh the same exact SHA through the
-immutable deployment path:
+failed gate, resolve and verify the still-active audited release, invoke its
+exact disable helper, and refresh the same exact SHA through the immutable
+deployment path:
 
 ```bash
-sudo python deploy/configure_host_env.py \
+rollback_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+test "$rollback_release" = "$staging_release" || exit 1
+case "$rollback_release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "rollback release is not immutable staging" >&2; exit 1 ;;
+esac
+rollback_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
+' "$rollback_release/release.json")" || exit 1
+test "$rollback_sha" = "$staging_sha" || exit 1
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$rollback_release/deploy/configure_host_env.py" \
   --legacy-env /etc/paperswithcode/staging.env \
-  --staging-chat-durable-dispatch-disable-only
-sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+  --staging-chat-durable-dispatch-disable-only || exit 1
+sudo pwc-deploy staging "$rollback_sha" --refresh-environment || exit 1
+test "$(readlink -e /srv/paperswithcode/environments/staging/current)" = \
+  "$rollback_release" || exit 1
 ```
 
 Pi prewarming and blank-pool admission are independent protected staging

@@ -483,7 +483,280 @@ def test_cli_requires_release_directory_and_exact_confirmation(tmp_path):
     assert arguments.confirm == CONFIRMATION
 
 
+def test_cli_modes_are_mutually_exclusive(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        parser().parse_args(
+            [
+                "--release-dir",
+                str(tmp_path),
+                "--confirm",
+                CONFIRMATION,
+                "--audit-disabled-only",
+                "--qualify-enabled-only",
+            ]
+        )
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def _install_active_staging_release(tmp_path, monkeypatch):
+    release_root = tmp_path / "releases"
+    release_root.mkdir()
+    release = release_root / f"{'a' * 12}-staging"
+    release.mkdir()
+    environments = tmp_path / "environments" / "staging"
+    environments.mkdir(parents=True)
+    active = environments / "current"
+    active.symlink_to(release)
+    monkeypatch.setattr(durable_script, "RELEASE_ROOT", release_root, raising=False)
+    monkeypatch.setattr(durable_script, "ACTIVE_STAGING_RELEASE", active, raising=False)
+    return release
+
+
+def test_disabled_schema_audit_cli_is_read_only_and_content_free(
+    tmp_path, monkeypatch, capsys
+):
+    release = _install_active_staging_release(tmp_path, monkeypatch)
+    release_id = f"{'a' * 12}-staging"
+    manifest = {
+        "release_id": release_id,
+        "chat_runtime": {"worker_contract_version": "worker-v1"},
+    }
+    factory = _session_factory()
+    with factory() as db:
+        db.add(
+            ChatSession(
+                id=uuid.uuid4(),
+                hf_user_id="unrelated-owner",
+                hf_username="unrelated-owner",
+                selected_model="qualification",
+            )
+        )
+        db.commit()
+        before = db.query(ChatSession).count()
+
+    monkeypatch.setattr(durable_script, "validate_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(
+        durable_script,
+        "get_settings",
+        lambda: _settings(
+            release_id=release_id,
+            chat_durable_turn_dispatch_enabled=False,
+        ),
+    )
+    monkeypatch.setattr(durable_script.db_manager, "_session_local", factory)
+    monkeypatch.setattr(
+        durable_script, "inspect_postgresql_contract", lambda _db: _valid_audit()
+    )
+    monkeypatch.setattr(
+        durable_script,
+        "run_qualification",
+        lambda **_kwargs: pytest.fail("read-only audit started qualification workload"),
+    )
+
+    exit_code = durable_script.main(
+        [
+            "--release-dir",
+            str(release),
+            "--confirm",
+            CONFIRMATION,
+            "--audit-disabled-only",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert exit_code == 0
+    assert captured.err == ""
+    assert report == {
+        "mode": "disabled_schema_audit",
+        "release": {
+            "release_id": release_id,
+            "worker_contract_version": "worker-v1",
+        },
+        "schema_audit": {
+            "schema": True,
+            "role": True,
+            "owner": True,
+            "privileges": True,
+            "indexes": True,
+            "constraints": True,
+        },
+        "status": {"passed": True},
+    }
+    assert re.search(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", captured.out) is None
+    with factory() as db:
+        assert db.query(ChatSession).count() == before
+        assert db.query(ChatTurnJob).count() == 0
+
+
+def test_disabled_schema_audit_cli_refuses_enabled_bridge_before_database(
+    tmp_path, monkeypatch, capsys
+):
+    release = _install_active_staging_release(tmp_path, monkeypatch)
+    release_id = f"{'a' * 12}-staging"
+    manifest = {
+        "release_id": release_id,
+        "chat_runtime": {"worker_contract_version": "worker-v1"},
+    }
+    monkeypatch.setattr(durable_script, "validate_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(
+        durable_script, "get_settings", lambda: _settings(release_id=release_id)
+    )
+    monkeypatch.setattr(
+        durable_script,
+        "inspect_postgresql_contract",
+        lambda _db: pytest.fail("enabled bridge reached disabled-state audit"),
+    )
+
+    exit_code = durable_script.main(
+        [
+            "--release-dir",
+            str(release),
+            "--confirm",
+            CONFIRMATION,
+            "--audit-disabled-only",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["mode"] == "disabled_schema_audit"
+    assert report["status"] == {"passed": False}
+    assert all(value is False for value in report["schema_audit"].values())
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "settings_updates"),
+    [
+        ("wrong", {}),
+        (CONFIRMATION, {"environment": "production"}),
+        (CONFIRMATION, {"release_id": "different-staging"}),
+        (CONFIRMATION, {"chat_worker_contract_version": "worker-v2"}),
+        (CONFIRMATION, {"db_search_path": "public"}),
+    ],
+)
+def test_disabled_schema_audit_cli_refuses_every_unsafe_operator_context(
+    tmp_path, monkeypatch, capsys, confirmation, settings_updates
+):
+    release = _install_active_staging_release(tmp_path, monkeypatch)
+    release_id = f"{'a' * 12}-staging"
+    manifest = {
+        "release_id": release_id,
+        "chat_runtime": {"worker_contract_version": "worker-v1"},
+    }
+    settings_values = {
+        "release_id": release_id,
+        "chat_durable_turn_dispatch_enabled": False,
+    }
+    settings_values.update(settings_updates)
+    monkeypatch.setattr(durable_script, "validate_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(
+        durable_script,
+        "get_settings",
+        lambda: _settings(**settings_values),
+    )
+    monkeypatch.setattr(
+        durable_script,
+        "inspect_postgresql_contract",
+        lambda _db: pytest.fail("unsafe operator context reached database audit"),
+    )
+
+    exit_code = durable_script.main(
+        [
+            "--release-dir",
+            str(release),
+            "--confirm",
+            confirmation,
+            "--audit-disabled-only",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["status"] == {"passed": False}
+
+
+@pytest.mark.parametrize(
+    "field", ["schema", "role", "owner", "privileges", "indexes", "constraints"]
+)
+def test_disabled_schema_audit_cli_refuses_each_contract_mismatch(
+    tmp_path, monkeypatch, capsys, field
+):
+    release = _install_active_staging_release(tmp_path, monkeypatch)
+    release_id = f"{'a' * 12}-staging"
+    manifest = {
+        "release_id": release_id,
+        "chat_runtime": {"worker_contract_version": "worker-v1"},
+    }
+    factory = _session_factory()
+    monkeypatch.setattr(durable_script, "validate_manifest", lambda *_args: manifest)
+    monkeypatch.setattr(
+        durable_script,
+        "get_settings",
+        lambda: _settings(
+            release_id=release_id,
+            chat_durable_turn_dispatch_enabled=False,
+        ),
+    )
+    monkeypatch.setattr(durable_script.db_manager, "_session_local", factory)
+    monkeypatch.setattr(
+        durable_script,
+        "inspect_postgresql_contract",
+        lambda _db: _valid_audit(**{field: False}),
+    )
+
+    exit_code = durable_script.main(
+        [
+            "--release-dir",
+            str(release),
+            "--confirm",
+            CONFIRMATION,
+            "--audit-disabled-only",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["status"] == {"passed": False}
+    assert report["schema_audit"][field] is False
+
+
+def test_disabled_schema_audit_cli_refuses_nonactive_release_before_database(
+    tmp_path, monkeypatch, capsys
+):
+    active_release = _install_active_staging_release(tmp_path, monkeypatch)
+    other_release = active_release.parent / f"{'b' * 12}-staging"
+    other_release.mkdir()
+    monkeypatch.setattr(
+        durable_script,
+        "validate_manifest",
+        lambda *_args: pytest.fail("non-active release reached manifest validation"),
+    )
+    monkeypatch.setattr(
+        durable_script,
+        "get_settings",
+        lambda: pytest.fail("non-active release reached runtime settings"),
+    )
+
+    exit_code = durable_script.main(
+        [
+            "--release-dir",
+            str(other_release),
+            "--confirm",
+            CONFIRMATION,
+            "--audit-disabled-only",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["mode"] == "disabled_schema_audit"
+    assert report["status"] == {"passed": False}
+
+
 def test_postgresql_catalog_boundary_maps_only_aggregate_audit_booleans():
+    statements = []
+
     class Result:
         def mappings(self):
             return self
@@ -508,10 +781,13 @@ def test_postgresql_catalog_boundary_maps_only_aggregate_audit_booleans():
     class Database:
         bind = Bind()
 
-        def execute(self, _statement):
+        def execute(self, statement):
+            statements.append(str(statement).strip())
             return Result()
 
     assert inspect_postgresql_contract(Database()) == _valid_audit()
+    assert statements[0] == "SET TRANSACTION READ ONLY"
+    assert len(statements) == 2
 
 
 def test_catalog_audit_refuses_a_non_postgresql_database():
