@@ -29,6 +29,19 @@ def _status(*, state="ready", active=0, generation=None):
         active_sessions=active,
         maximum_sessions=8,
         worker_generation=generation,
+        operation_counters={
+            "shadow_requests": 0,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+        capability_evidence={
+            "provider_credentials_present": False,
+            "modal_credentials_present": False,
+            "registered_tool_count": 0,
+        },
     )
 
 

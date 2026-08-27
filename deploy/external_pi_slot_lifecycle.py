@@ -241,6 +241,19 @@ def drain_stop_timeout_seconds(environment: str) -> float:
     )
 
 
+def protected_lease_seconds(environment: str) -> int:
+    if environment != "staging":
+        raise ValueError("external Pi lease lifecycle is staging-only")
+    raw = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_LEASE_SECONDS", "30")
+    try:
+        lease_seconds = int(raw)
+    except ValueError as error:
+        raise ValueError("external Pi lease configuration must be numeric") from error
+    if not 5 <= lease_seconds <= 60:
+        raise ValueError("external Pi lease seconds are outside protected bounds")
+    return lease_seconds
+
+
 def sync_worker_environment(environment: str) -> None:
     """Publish only the worker token to the dedicated protected environment."""
     if environment != "staging":
@@ -302,6 +315,47 @@ def qualify_candidate(
             return generation
         time.sleep(0.25)
     raise ExternalPiSlotError(f"external Pi candidate qualification failed: {last!r}")
+
+
+def restart_supervisor_after_lease_expiry(
+    environment: str,
+    slot: str,
+    release_id: str,
+    initial_generation: int,
+) -> int:
+    """Crash only the supervisor and prove takeover after its durable lease expires."""
+    lease_seconds = protected_lease_seconds(environment)
+    subprocess.run(
+        [
+            "systemctl",
+            "kill",
+            "--kill-whom=main",
+            "--signal=KILL",
+            _supervisor_unit(environment, slot),
+        ],
+        check=True,
+    )
+    deadline = time.monotonic() + lease_seconds + 70
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = _read_status(environment, slot)
+        generation = last.get("generation")
+        if (
+            last.get("release_id") == release_id
+            and last.get("worker_id") == f"staging-{slot}"
+            and last.get("state") == "ready"
+            and last.get("authenticated") is True
+            and last.get("registered") is True
+            and type(generation) is int
+            and generation > initial_generation
+            and type(last.get("heartbeats")) is int
+            and last["heartbeats"] >= 1
+        ):
+            return generation
+        time.sleep(0.25)
+    raise ExternalPiSlotError(
+        f"external Pi lease-expiry restart did not advance generation: {last!r}"
+    )
 
 
 def _never_registered(

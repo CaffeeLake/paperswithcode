@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import deploy.external_pi_slot_lifecycle as lifecycle
-import deploy.external_pi_slot_launcher as launcher
 import deploy.cli as deploy_cli
+import deploy.external_pi_slot_launcher as launcher
+import deploy.external_pi_slot_lifecycle as lifecycle
 import deploy.external_pi_worker_launcher as worker_launcher
 
 
@@ -201,6 +201,59 @@ def test_qualification_proves_drain_and_restart_generation(
 
     assert lifecycle.prepare_candidate("staging", "green", "release-green") == 5
     assert calls == [("start", "green"), ("stop", "green"), ("start", "green")]
+
+
+def test_lease_expiry_restart_ignores_stale_status_until_generation_advances(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    statuses = iter(
+        (
+            {
+                "release_id": "release-blue",
+                "worker_id": "staging-blue",
+                "state": "ready",
+                "authenticated": True,
+                "registered": True,
+                "generation": 4,
+                "heartbeats": 2,
+            },
+            {
+                "release_id": "release-blue",
+                "worker_id": "staging-blue",
+                "state": "ready",
+                "authenticated": True,
+                "registered": True,
+                "generation": 5,
+                "heartbeats": 1,
+            },
+        )
+    )
+    commands = []
+    monkeypatch.setattr(lifecycle, "protected_lease_seconds", lambda _env: 30)
+    monkeypatch.setattr(lifecycle, "_read_status", lambda *_args: next(statuses))
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(lifecycle.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    assert (
+        lifecycle.restart_supervisor_after_lease_expiry(
+            "staging", "blue", "release-blue", 4
+        )
+        == 5
+    )
+    assert commands == [
+        [
+            "systemctl",
+            "kill",
+            "--kill-whom=main",
+            "--signal=KILL",
+            "paperswithcode-staging-external-pi@blue.service",
+        ]
+    ]
 
 
 def test_drain_timeout_fails_the_slot_lifecycle(

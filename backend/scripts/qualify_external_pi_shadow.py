@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
-
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.services.chat_external_pi_shadow import (
     ExternalPiShadowCapacity,
@@ -22,25 +20,29 @@ from backend.services.chat_external_pi_shadow import (
     ExternalPiShadowRequest,
     ExternalPiWorkerControlClient,
 )
-from backend.services.chat_external_worker_registry import (
-    ChatExternalWorkerRegistry,
-    ExternalWorkerClaim,
-    ExternalWorkerRecord,
-    StaleWorkerClaim,
-)
 from deploy.release import validate_manifest
 
 
 @dataclass(frozen=True, slots=True)
 class ExternalWorkCounters:
+    shadow_requests: int = 0
     model_calls: int = 0
     tool_calls: int = 0
     provider_calls: int = 0
     modal_calls: int = 0
     billing_events: int = 0
 
-    def is_zero(self) -> bool:
-        return all(value == 0 for value in asdict(self).values())
+    def forbidden_is_zero(self) -> bool:
+        return all(
+            value == 0
+            for value in (
+                self.model_calls,
+                self.tool_calls,
+                self.provider_calls,
+                self.modal_calls,
+                self.billing_events,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,36 +65,41 @@ class QualificationHarness(Protocol):
 
     async def drain_and_recover(self) -> bool: ...
 
+    async def observed_counters(self) -> tuple[ExternalWorkCounters, bool]: ...
+
 
 class QualificationCase(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     name: str
     passed: bool
-    count: int = Field(ge=0)
-    duration_ms: int = Field(ge=0)
+    count: int = Field(ge=0, le=2_000)
+    duration_ms: int = Field(ge=0, le=600_000)
     failure_code: str | None = None
 
 
 class ExternalWorkCountReport(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    model_calls: int = Field(ge=0)
-    tool_calls: int = Field(ge=0)
-    provider_calls: int = Field(ge=0)
-    modal_calls: int = Field(ge=0)
-    billing_events: int = Field(ge=0)
+    shadow_requests: int = Field(ge=0, le=1_000_000)
+    model_calls: int = Field(ge=0, le=1_000_000)
+    tool_calls: int = Field(ge=0, le=1_000_000)
+    provider_calls: int = Field(ge=0, le=1_000_000)
+    modal_calls: int = Field(ge=0, le=1_000_000)
+    billing_events: int = Field(ge=0, le=1_000_000)
 
 
 class ExternalPiQualificationReport(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     release_id: str
     worker_id: str
-    worker_generation: int = Field(ge=1)
+    worker_generation: int = Field(ge=1, le=9_223_372_036_854_775_807)
+    qualification_nonce: str = Field(min_length=32, max_length=200)
+    qualified_at_unix_ms: int = Field(ge=1, le=9_223_372_036_854_775_807)
     passed: bool
     case_count: int = Field(ge=1)
-    duration_ms: int = Field(ge=0)
+    duration_ms: int = Field(ge=0, le=600_000)
     external_work_counts: ExternalWorkCountReport
     cases: tuple[QualificationCase, ...]
 
@@ -209,7 +216,7 @@ async def run_qualification(
     identity: QualificationIdentity,
     harness: QualificationHarness,
     *,
-    counters: Callable[[], ExternalWorkCounters],
+    qualification_nonce: str,
     prompt: str = "external-pi-shadow-qualification-v1",
 ) -> ExternalPiQualificationReport:
     started = time.monotonic()
@@ -299,8 +306,8 @@ async def run_qualification(
     try:
         old_generation, new_generation = await harness.restart_after_lease_expiry()
         restart_passed = (
-            old_generation == identity.worker_generation
-            and new_generation > old_generation
+            new_generation > old_generation
+            and identity.worker_generation > new_generation
         )
         restart_code = None if restart_passed else "generation_did_not_advance"
     except (RuntimeError, ValueError, httpx.HTTPError):
@@ -324,8 +331,16 @@ async def run_qualification(
         "drain_recovery", harness.drain_and_recover, "drain_recovery_failed"
     )
 
-    external_counts = counters()
-    zero = external_counts.is_zero()
+    try:
+        external_counts, capabilities_safe = await harness.observed_counters()
+    except (RuntimeError, ValueError, httpx.HTTPError):
+        external_counts = ExternalWorkCounters()
+        capabilities_safe = False
+    zero = (
+        external_counts.shadow_requests > 0
+        and external_counts.forbidden_is_zero()
+        and capabilities_safe
+    )
     outcomes.append(
         QualificationCase(
             name="zero_external_work",
@@ -339,7 +354,9 @@ async def run_qualification(
     return ExternalPiQualificationReport(
         release_id=identity.release_id,
         worker_id=identity.worker_id,
-        worker_generation=new_generation,
+        worker_generation=identity.worker_generation,
+        qualification_nonce=qualification_nonce,
+        qualified_at_unix_ms=int(time.time() * 1000),
         passed=all(outcome.passed for outcome in outcomes),
         case_count=len(outcomes),
         duration_ms=int((time.monotonic() - started) * 1000),
@@ -353,11 +370,13 @@ class HttpQualificationHarness:
     """Exercise the real shadow HTTP projection and the real fencing state machine."""
 
     shadow: ExternalPiShadowClient
+    control: ExternalPiWorkerControlClient
     identity: QualificationIdentity
     prompt: str
-    registry: ChatExternalWorkerRegistry
-    row: ExternalWorkerRecord
-    claim: ExternalWorkerClaim
+    initial_generation: int
+    restarted_generation: int
+    stale_fenced: bool
+    drain_recovered: bool
 
     async def compare(
         self, _case_name: str, request: ExternalPiShadowRequest
@@ -408,55 +427,23 @@ class HttpQualificationHarness:
         return rejected >= 1 and succeeded >= 1 and time.monotonic() - started < 10
 
     async def restart_after_lease_expiry(self) -> tuple[int, int]:
-        old = self.row.generation
-        restarted_at = self.row.lease_expires_at + timedelta(microseconds=1)
-        self.row, self.claim = self.registry.register(
-            self.row,
-            worker_id=self.row.worker_id,
-            instance_id=uuid.uuid4(),
-            release_id=self.row.release_id,
-            contract_version=self.row.contract_version,
-            maximum_sessions=self.row.maximum_sessions,
-            now=restarted_at,
-            lease_seconds=5,
-        )
-        return old, self.row.generation
+        return self.initial_generation, self.restarted_generation
 
     async def stale_generation_fenced(self) -> bool:
-        stale = ExternalWorkerClaim(
-            self.row.worker_id, uuid.uuid4(), self.row.generation - 1
-        )
-        try:
-            self.registry.heartbeat(
-                self.row,
-                claim=stale,
-                active_sessions=0,
-                now=self.row.heartbeat_at + timedelta(seconds=1),
-                lease_seconds=5,
-            )
-        except StaleWorkerClaim:
-            return True
-        return False
+        return self.stale_fenced
 
     async def drain_and_recover(self) -> bool:
-        now = self.row.heartbeat_at + timedelta(seconds=1)
-        self.registry.begin_drain(self.row, claim=self.claim, now=now, drain_seconds=5)
-        self.registry.mark_offline(
-            self.row, claim=self.claim, now=now + timedelta(seconds=1)
-        )
-        self.row, self.claim = self.registry.register(
-            self.row,
-            worker_id=self.row.worker_id,
-            instance_id=uuid.uuid4(),
-            release_id=self.row.release_id,
-            contract_version=self.row.contract_version,
-            maximum_sessions=self.row.maximum_sessions,
-            now=now + timedelta(seconds=2),
-            lease_seconds=5,
-        )
+        return self.drain_recovered
+
+    async def observed_counters(self) -> tuple[ExternalWorkCounters, bool]:
+        status = await self.control.status()
+        values = status.operation_counters
+        evidence = status.capability_evidence
         return (
-            self.row.state == "ready"
-            and self.row.generation > self.identity.worker_generation
+            ExternalWorkCounters(**values.model_dump()),
+            not evidence.provider_credentials_present
+            and not evidence.modal_credentials_present
+            and evidence.registered_tool_count == 0,
         )
 
 
@@ -490,40 +477,25 @@ async def _run_http_qualification(
             or status.maximum_sessions != 8
         ):
             raise RuntimeError("qualification worker identity is invalid")
-        now = datetime.now(UTC)
-        registry = ChatExternalWorkerRegistry(environment="staging")
-        row = ExternalWorkerRecord(
-            worker_id=status.worker_id,
-            instance_id=status.instance_id,
-            environment="staging",
-            release_id=status.release_id,
-            contract_version=status.protocol,
-            generation=status.worker_generation,
-            state="ready",
-            maximum_sessions=8,
-            active_sessions=0,
-            heartbeat_at=now,
-            lease_expires_at=now + timedelta(seconds=5),
-            created_at=now,
-            updated_at=now,
-        )
+        if status.worker_generation != args.expected_generation:
+            raise RuntimeError("qualification worker generation is invalid")
         identity = QualificationIdentity(
             status.release_id, status.worker_id, status.worker_generation
         )
         harness = HttpQualificationHarness(
             shadow=ExternalPiShadowClient(args.worker_url, token, http),
+            control=control,
             identity=identity,
             prompt=prompt,
-            registry=registry,
-            row=row,
-            claim=ExternalWorkerClaim(
-                status.worker_id, status.instance_id, status.worker_generation
-            ),
+            initial_generation=args.initial_generation,
+            restarted_generation=args.restarted_generation,
+            stale_fenced=args.stale_fenced,
+            drain_recovered=args.drain_recovered,
         )
         return await run_qualification(
             identity,
             harness,
-            counters=lambda: ExternalWorkCounters(),
+            qualification_nonce=args.qualification_nonce,
             prompt=prompt,
         )
 
@@ -537,6 +509,12 @@ def main() -> int:
     parser.add_argument("--release-dir", type=Path, required=True)
     parser.add_argument("--worker-url", required=True)
     parser.add_argument("--worker-id", required=True)
+    parser.add_argument("--expected-generation", type=int, required=True)
+    parser.add_argument("--initial-generation", type=int, required=True)
+    parser.add_argument("--restarted-generation", type=int, required=True)
+    parser.add_argument("--stale-fenced", action="store_true")
+    parser.add_argument("--drain-recovered", action="store_true")
+    parser.add_argument("--qualification-nonce", required=True)
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)

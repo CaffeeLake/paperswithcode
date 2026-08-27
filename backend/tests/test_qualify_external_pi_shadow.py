@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 
 from backend.scripts.qualify_external_pi_shadow import (
     ExternalWorkCounters,
@@ -45,14 +44,17 @@ class _Harness:
     async def drain_and_recover(self):
         return True
 
+    async def observed_counters(self):
+        return ExternalWorkCounters(shadow_requests=20), True
+
 
 def test_qualification_covers_native_trees_concurrency_and_lifecycle_content_free():
     harness = _Harness()
     report = asyncio.run(
         run_qualification(
-            QualificationIdentity("release-a", "worker-a", 4),
+            QualificationIdentity("release-a", "worker-a", 6),
             harness,
-            counters=lambda: ExternalWorkCounters(),
+            qualification_nonce="n" * 32,
         )
     )
 
@@ -71,11 +73,13 @@ def test_qualification_covers_native_trees_concurrency_and_lifecycle_content_fre
     assert all(case.passed and case.failure_code is None for case in report.cases)
     assert harness.maximum_active == 8
     assert len(harness.concurrent_ids) == 8
-    assert report.worker_generation == 5
+    assert report.worker_generation == 6
     assert set(report.model_dump()) == {
         "release_id",
         "worker_id",
         "worker_generation",
+        "qualification_nonce",
+        "qualified_at_unix_ms",
         "passed",
         "case_count",
         "duration_ms",
@@ -89,11 +93,17 @@ def test_qualification_covers_native_trees_concurrency_and_lifecycle_content_fre
 
 
 def test_qualification_fails_closed_with_typed_code_when_external_work_occurs():
+    harness = _Harness()
+
+    async def observed():
+        return ExternalWorkCounters(shadow_requests=1, provider_calls=1), True
+
+    harness.observed_counters = observed
     report = asyncio.run(
         run_qualification(
-            QualificationIdentity("release-a", "worker-a", 4),
-            _Harness(),
-            counters=lambda: replace(ExternalWorkCounters(), provider_calls=1),
+            QualificationIdentity("release-a", "worker-a", 6),
+            harness,
+            qualification_nonce="n" * 32,
         )
     )
 

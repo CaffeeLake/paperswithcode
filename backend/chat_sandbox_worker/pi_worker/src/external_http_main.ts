@@ -41,4 +41,13 @@ createExternalWorkerServer({
   instanceId,
   releaseId,
   profile: { prompt: readFileSync(promptPath, "utf8"), tool_names: toolNames },
+  capabilityEvidence: {
+    provider_credentials_present: [
+      "OPENAI_API_KEY", "PWC_OPENAI_API_KEY", "PWC_OPENROUTER_API_KEY",
+      "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    ].some((key) => Boolean(process.env[key])),
+    modal_credentials_present: Boolean(
+      process.env.MODAL_TOKEN_ID || process.env.MODAL_TOKEN_SECRET,
+    ),
+  },
 }).listen(port, host);

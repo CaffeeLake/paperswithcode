@@ -91,6 +91,19 @@ test("external worker status is authenticated and drain blocks new sessions", as
       active_sessions: 0,
       maximum_sessions: 8,
       worker_generation: null,
+      operation_counters: {
+        shadow_requests: 0,
+        model_calls: 0,
+        tool_calls: 0,
+        provider_calls: 0,
+        modal_calls: 0,
+        billing_events: 0,
+      },
+      capability_evidence: {
+        provider_credentials_present: false,
+        modal_credentials_present: false,
+        registered_tool_count: 2,
+      },
     });
 
     const claim = await fetch(`${baseUrl}/v1/claim`, {
@@ -118,6 +131,48 @@ test("external worker status is authenticated and drain blocks new sessions", as
     });
     assert.equal(shadow.status, 503);
     assert.deepEqual(await shadow.json(), { code: "worker_draining" });
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("external worker status exposes observed content-free operation counters", async () => {
+  const token = "s".repeat(32);
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 8,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    capabilityEvidence: {
+      provider_credentials_present: false,
+      modal_credentials_present: false,
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const authorization = { Authorization: `Bearer ${token}` };
+  try {
+    await fetch(`http://127.0.0.1:${address.port}/v1/shadow`, {
+      method: "POST", headers: authorization, body: "{}",
+    });
+    const status = await (await fetch(`http://127.0.0.1:${address.port}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(status.operation_counters.shadow_requests, 1);
+    assert.deepEqual({ ...status.operation_counters, shadow_requests: 0 }, {
+      shadow_requests: 0, model_calls: 0, tool_calls: 0, provider_calls: 0,
+      modal_calls: 0, billing_events: 0,
+    });
+    assert.deepEqual(status.capability_evidence, {
+      provider_credentials_present: false,
+      modal_credentials_present: false,
+      registered_tool_count: 0,
+    });
   } finally {
     server.close();
     await once(server, "close");

@@ -11,6 +11,20 @@ interface ExternalWorkerServerOptions {
   instanceId: string;
   releaseId: string;
   profile: ExternalWorkerProfile;
+  operationCounters?: ExternalOperationCounters;
+  capabilityEvidence?: {
+    provider_credentials_present: boolean;
+    modal_credentials_present: boolean;
+  };
+}
+
+export interface ExternalOperationCounters {
+  shadow_requests: number;
+  model_calls: number;
+  tool_calls: number;
+  provider_calls: number;
+  modal_calls: number;
+  billing_events: number;
 }
 
 function tokenDigest(value: string): Buffer {
@@ -74,6 +88,14 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
   let active = 0;
   let state: "ready" | "draining" = "ready";
   let workerGeneration: number | null = null;
+  const operationCounters = options.operationCounters ?? {
+    shadow_requests: 0, model_calls: 0, tool_calls: 0, provider_calls: 0,
+    modal_calls: 0, billing_events: 0,
+  };
+  const capabilityEvidence = options.capabilityEvidence ?? {
+    provider_credentials_present: false,
+    modal_credentials_present: false,
+  };
   const status = () => ({
     protocol: "external-pi-v1",
     worker_id: options.workerId,
@@ -83,6 +105,11 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
     active_sessions: active,
     maximum_sessions: options.maximumConcurrent,
     worker_generation: workerGeneration,
+    operation_counters: { ...operationCounters },
+    capability_evidence: {
+      ...capabilityEvidence,
+      registered_tool_count: options.profile.tool_names.length,
+    },
   });
   return http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
@@ -141,6 +168,7 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
       return;
     }
     if (!requireAuthorization(request, response)) return;
+    operationCounters.shadow_requests += 1;
     if (state === "draining") {
       json(response, 503, { code: "worker_draining" });
       return;

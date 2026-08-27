@@ -148,6 +148,25 @@ class ExternalPiShadowProjection(BaseModel):
         )
 
 
+class ExternalPiOperationCounters(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    shadow_requests: int = Field(ge=0)
+    model_calls: int = Field(ge=0)
+    tool_calls: int = Field(ge=0)
+    provider_calls: int = Field(ge=0)
+    modal_calls: int = Field(ge=0)
+    billing_events: int = Field(ge=0)
+
+
+class ExternalPiCapabilityEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    provider_credentials_present: bool
+    modal_credentials_present: bool
+    registered_tool_count: int = Field(ge=0, le=128)
+
+
 class ExternalPiWorkerStatus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -159,6 +178,8 @@ class ExternalPiWorkerStatus(BaseModel):
     active_sessions: int = Field(ge=0, le=32)
     maximum_sessions: int = Field(ge=1, le=32)
     worker_generation: int | None = Field(default=None, ge=1)
+    operation_counters: ExternalPiOperationCounters
+    capability_evidence: ExternalPiCapabilityEvidence
 
     @model_validator(mode="after")
     def validate_capacity(self):

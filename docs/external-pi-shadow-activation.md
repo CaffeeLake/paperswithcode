@@ -12,7 +12,11 @@ and `previous` contain the inert external Pi runtime. Keep every external Pi
 flag false while publishing, and confirm both external Pi units are inactive.
 Do not start either unit manually. The guarded enable command below temporarily
 starts the exact active-slot candidate, waits for authenticated registration and
-a heartbeat, runs the qualification command with the exact release runtime, and
+a heartbeat, crashes only the supervisor, waits for its durable lease to expire,
+and proves a higher replacement generation. A staging-role database probe then
+submits the old generation to the real repository and requires it to be fenced.
+The guard performs a real drain/offline stop, starts one final recovery
+generation, runs the qualification command with the exact release runtime, and
 always drains/stops the temporary units before it changes either flag.
 
 The integrated command is equivalent to:
@@ -26,6 +30,11 @@ uv run --env-file /etc/paperswithcode/staging.env \
   --release-dir /srv/paperswithcode/environments/staging/current \
   --worker-url http://127.0.0.1:8766 \
   --worker-id staging-blue \
+  --expected-generation <recovery-generation> \
+  --initial-generation <initial-generation> \
+  --restarted-generation <lease-expiry-generation> \
+  --stale-fenced --drain-recovered \
+  --qualification-nonce <single-use-activation-nonce> \
   --token-file /etc/paperswithcode/external-pi-worker.env \
   --prompt-file <immutable-runtime>/assets/pi-system-prompt.txt \
   --report /var/lib/paperswithcode/staging/external-pi-shadow-qualification.json
@@ -39,10 +48,13 @@ transcript digest, system-prompt digest, and registered-tool-name digest. It
 also proves immediate capacity rejection without a queue, lease-expiry restart
 with a higher generation, stale-generation fencing, drain, and clean recovery.
 
-The JSON report is deliberately content-free: release and worker identity,
-case names, booleans, counts, durations, typed failure codes, and five external
-work counters only. All model, tool, provider, Modal, and billing counters must
-be exactly zero. Do not retain request bodies or temporary native sessions.
+The JSON report is deliberately content-free: exact release/worker/recovery
+generation, a single-use nonce, a bounded freshness timestamp, case names,
+booleans, bounded integer counts/durations, typed failure codes, and six
+external-work counters only. The observed shadow-request counter must be
+positive. Model, tool, provider, Modal, and billing counters must be exactly
+zero, and the live worker must report no provider/Modal credentials and zero
+registered tools. Do not retain request bodies or temporary native sessions.
 
 ## Guarded enable and disable
 
@@ -58,7 +70,8 @@ sudo /usr/bin/python3 \
 
 The guard first bootstraps the content-free qualification while both flags stay
 false. It always proves drain and stops the temporary units, then checks every
-required successful case, requires all external-work counters to be zero, creates or preserves the
+required successful case, validates the exact identity/nonce/freshness and live
+content-free evidence, creates or preserves the
 mode-0640 token-only worker environment, and refreshes that exact git SHA. It
 sets shadow and supervisor together. It explicitly forces external admission,
 the sandbox executor, remote workspace tools, remote Bash, remote Read, and
@@ -66,9 +79,13 @@ lazy workspace false. Production invocation fails. A failed refresh restores
 the prior protected environment; the normal deployment refresh owns service
 and pointer rollback.
 
-Disable is qualification-independent but still exact-release guarded. The guard
+Disable is qualification-independent but still exact-release guarded, including
+when the protected flags already read false/false so orphan units cannot be
+skipped. The guard
 keeps true/true in the protected environment while it exact-evidence drains and
-stops the current and any old-slot external units. Only after proven stop does
+stops the current and any old-slot external units. If a slot release cannot be
+resolved, both its supervisor and worker systemd units must still prove
+inactive. Only after proven stop does
 it write false/false and refresh the exact release:
 
 ```bash
@@ -91,8 +108,8 @@ The dashboard must group by exact release and worker identity and show:
   active sessions, maximum sessions, and drain result;
 - shadow case pass rate and duration, capacity rejections, projection mismatch
   codes, restart generation advances, stale-generation rejection, and recovery;
-- all five external-work counters, each with an alert threshold of greater than
-  zero;
+- the positive shadow-request counter and all five forbidden external-work
+  counters, each forbidden counter with an alert threshold above zero;
 - worker availability, authentication failures, unexpected generation changes,
   missed heartbeat/expired lease, non-zero active sessions during drain, and
   repeated qualification failures.

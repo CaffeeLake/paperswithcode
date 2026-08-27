@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import stat
+import time
 from pathlib import Path
 
 import pytest
 
 from deploy.external_pi_shadow_activation import (
+    QualificationEvidence,
     ShadowActivationError,
+    _validate_report,
     apply_staging_shadow_activation,
+    deactivate_external_pi_slots,
+    refresh_command,
     run_temporary_shadow_qualification,
 )
 
@@ -25,7 +30,18 @@ def _release(root: Path, release_id: str = "release-a") -> Path:
     return release
 
 
-def _report(path: Path, *, passed: bool = True, release_id: str = "release-a"):
+def _evidence() -> QualificationEvidence:
+    return QualificationEvidence("staging-blue", 4, 5, 6, True, True, "n" * 32)
+
+
+def _report(
+    path: Path,
+    *,
+    passed: bool = True,
+    release_id: str = "release-a",
+    evidence: QualificationEvidence | None = None,
+):
+    evidence = evidence or _evidence()
     case_names = (
         "linear_history",
         "branching_history",
@@ -41,12 +57,15 @@ def _report(path: Path, *, passed: bool = True, release_id: str = "release-a"):
         json.dumps(
             {
                 "release_id": release_id,
-                "worker_id": "staging-blue",
-                "worker_generation": 5,
+                "worker_id": evidence.worker_id,
+                "worker_generation": evidence.recovery_generation,
+                "qualification_nonce": evidence.nonce,
+                "qualified_at_unix_ms": int(time.time() * 1000),
                 "passed": passed,
                 "case_count": 9,
                 "duration_ms": 12,
                 "external_work_counts": {
+                    "shadow_requests": 20,
                     "model_calls": 0,
                     "tool_calls": 0,
                     "provider_calls": 0,
@@ -84,7 +103,6 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
     worker.write_text(f"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN={'t' * 32}\n")
     worker.chmod(0o640)
     report = tmp_path / "report.json"
-    _report(report)
     refreshed = []
     events = []
     units = {"worker": "inactive", "supervisor": "inactive"}
@@ -103,23 +121,39 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
             units.update(worker="active", supervisor="active")
             events.append("temporary-start")
 
+        generations = iter((4, 6))
+
         def authenticated(*_args):
             assert units == {"worker": "active", "supervisor": "active"}
             events.append("authenticated")
-            return 4
+            return next(generations)
+
+        def expire(*_args):
+            events.append("lease-expiry-restart")
+            return 5
+
+        def stale(*_args):
+            events.append("stale-fenced")
+            return True
 
         def stop(*_args):
             units.update(worker="inactive", supervisor="inactive")
             events.append("temporary-stop")
 
-        run_temporary_shadow_qualification(
+        def write_report(evidence, destination):
+            events.append("qualified")
+            _report(destination, evidence=evidence)
+
+        return run_temporary_shadow_qualification(
             environment="staging",
             slot="blue",
             release_id=release_id,
             report_path=report_path,
             start=start,
             authenticated=authenticated,
-            qualify=lambda *_args: None,
+            expire_and_restart=expire,
+            stale_probe=stale,
+            qualify=write_report,
             stop=stop,
         )
 
@@ -140,7 +174,17 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
     )
     assert result == {"release_id": "release-a", "enabled": True}
     assert refreshed == ["a" * 40]
-    assert events == ["temporary-start", "authenticated", "temporary-stop"]
+    assert events == [
+        "temporary-start",
+        "authenticated",
+        "lease-expiry-restart",
+        "stale-fenced",
+        "temporary-stop",
+        "temporary-start",
+        "authenticated",
+        "qualified",
+        "temporary-stop",
+    ]
     assert units == {"worker": "inactive", "supervisor": "inactive"}
     assert values["PWC_DB_NAME"] == "pwc"
     assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "true"
@@ -179,7 +223,7 @@ def test_guard_refuses_production_wrong_release_or_failed_qualification(tmp_path
                 enabled=True,
                 app_root=tmp_path,
                 config_root=config,
-                qualify=lambda *_args: None,
+                qualify=lambda *_args: _evidence(),
                 deactivate=None,
                 refresh=lambda _sha: None,
             )
@@ -193,7 +237,11 @@ def test_failed_refresh_restores_the_complete_prior_environment(tmp_path: Path):
     original = "PWC_DB_NAME=pwc\nPWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
     staging.write_text(original)
     report = tmp_path / "report.json"
-    _report(report)
+
+    def qualify(_release, _sha, destination):
+        evidence = _evidence()
+        _report(destination, evidence=evidence)
+        return evidence
 
     with pytest.raises(RuntimeError, match="refresh failed"):
         apply_staging_shadow_activation(
@@ -203,7 +251,7 @@ def test_failed_refresh_restores_the_complete_prior_environment(tmp_path: Path):
             enabled=True,
             app_root=tmp_path,
             config_root=config,
-            qualify=lambda *_args: None,
+            qualify=qualify,
             deactivate=None,
             refresh=lambda _sha: (_ for _ in ()).throw(RuntimeError("refresh failed")),
         )
@@ -213,6 +261,7 @@ def test_failed_refresh_restores_the_complete_prior_environment(tmp_path: Path):
 
 def test_temporary_qualification_always_drains_and_stops_on_failure(tmp_path: Path):
     events = []
+    generations = iter((4, 6))
 
     with pytest.raises(RuntimeError, match="qualification failed"):
         run_temporary_shadow_qualification(
@@ -221,14 +270,25 @@ def test_temporary_qualification_always_drains_and_stops_on_failure(tmp_path: Pa
             release_id="release-a",
             report_path=tmp_path / "report.json",
             start=lambda *_args: events.append("start"),
-            authenticated=lambda *_args: events.append("authenticated") or 4,
+            authenticated=lambda *_args: events.append("authenticated")
+            or next(generations),
+            expire_and_restart=lambda *_args: events.append("restart") or 5,
+            stale_probe=lambda *_args: True,
             qualify=lambda *_args: (_ for _ in ()).throw(
                 RuntimeError("qualification failed")
             ),
             stop=lambda *_args: events.append("stop"),
         )
 
-    assert events == ["start", "authenticated", "stop"]
+    assert events == [
+        "start",
+        "authenticated",
+        "restart",
+        "stop",
+        "start",
+        "authenticated",
+        "stop",
+    ]
 
 
 def test_disable_drains_active_units_before_flags_false_and_refresh(tmp_path: Path):
@@ -305,3 +365,134 @@ def test_disable_refresh_failure_stays_stopped_and_fail_closed(tmp_path: Path):
 
     assert units == {"worker": "inactive", "supervisor": "inactive"}
     assert "SHADOW_ENABLED=false" in staging.read_text()
+
+
+def test_refresh_command_uses_positional_git_sha():
+    assert refresh_command("staging", "a" * 40) == [
+        "pwc-deploy",
+        "staging",
+        "a" * 40,
+        "--refresh-environment",
+    ]
+
+
+def test_false_false_disable_still_deactivates_orphan_units(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "staging.env").write_text(
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    events = []
+
+    apply_staging_shadow_activation(
+        environment="staging",
+        expected_release_id="release-a",
+        report_path=tmp_path / "unused.json",
+        enabled=False,
+        app_root=tmp_path,
+        config_root=config,
+        qualify=None,
+        deactivate=lambda *_args: events.append("deactivate"),
+        refresh=lambda _sha: events.append("refresh"),
+    )
+
+    assert events == ["deactivate", "refresh"]
+
+
+def test_deactivation_rejects_active_unit_when_slot_resolution_fails():
+    def resolve(_environment, _slot):
+        raise ValueError("missing release pointer")
+
+    with pytest.raises(ShadowActivationError, match="blue units remain active"):
+        deactivate_external_pi_slots(
+            "release-a",
+            active_slot="blue",
+            resolve=resolve,
+            stop=lambda *_args: None,
+            unit_inactive=lambda unit: "worker@blue" in unit,
+        )
+
+
+def test_temporary_qualification_cleans_up_on_base_exception(tmp_path: Path):
+    events = []
+    generations = iter((4, 6))
+
+    with pytest.raises(KeyboardInterrupt):
+        run_temporary_shadow_qualification(
+            environment="staging",
+            slot="blue",
+            release_id="release-a",
+            report_path=tmp_path / "report.json",
+            start=lambda *_args: events.append("start"),
+            authenticated=lambda *_args: next(generations),
+            expire_and_restart=lambda *_args: 5,
+            stale_probe=lambda *_args: True,
+            qualify=lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt()),
+            stop=lambda *_args: events.append("stop"),
+        )
+
+    assert events == ["start", "stop", "start", "stop"]
+
+
+def test_enable_restores_flags_and_token_on_refresh_base_exception(tmp_path: Path):
+    _release(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    staging = config / "staging.env"
+    original = (
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=false\n"
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=false\n"
+    )
+    staging.write_text(original)
+    report = tmp_path / "report.json"
+
+    def qualify(_release, _sha, destination):
+        evidence = _evidence()
+        _report(destination, evidence=evidence)
+        return evidence
+
+    with pytest.raises(KeyboardInterrupt):
+        apply_staging_shadow_activation(
+            environment="staging",
+            expected_release_id="release-a",
+            report_path=report,
+            enabled=True,
+            app_root=tmp_path,
+            config_root=config,
+            qualify=qualify,
+            deactivate=None,
+            refresh=lambda _sha: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+
+    assert staging.read_text() == original
+    assert not (config / "external-pi-worker.env").exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        (lambda value: value.update(worker_id="wrong"), "not proven"),
+        (lambda value: value.update(worker_generation=5), "not proven"),
+        (lambda value: value.update(qualification_nonce="x" * 32), "not proven"),
+        (lambda value: value.update(qualified_at_unix_ms=1), "not proven"),
+        (lambda value: value.update(duration_ms=True), "not proven"),
+    ],
+)
+def test_report_rejects_identity_replay_and_boolean_integers(
+    tmp_path: Path, mutation, match: str
+):
+    path = tmp_path / "report.json"
+    _report(path)
+    value = json.loads(path.read_text())
+    mutation(value)
+    path.write_text(json.dumps(value))
+
+    with pytest.raises(ShadowActivationError, match=match):
+        _validate_report(
+            path,
+            "release-a",
+            _evidence(),
+            now_unix_ms=int(time.time() * 1000),
+        )
