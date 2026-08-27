@@ -310,20 +310,57 @@ case "$staging_release" in
   *) echo "active staging release is not immutable" >&2; exit 1 ;;
 esac
 cd -- "$staging_release" || exit 1
-staging_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+readarray -t staging_identity < <(/srv/paperswithcode/.venv/bin/python -c '
 import json, re, sys
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
 sha = manifest.get("git_sha")
 assert isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
 assert manifest.get("release_id") == f"{sha[:12]}-staging"
+runtime = manifest.get("chat_runtime")
+assert isinstance(runtime, dict)
+worker = runtime.get("worker_contract_version")
+assert isinstance(worker, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", worker)
 print(sha)
-' "$staging_release/release.json")" || exit 1
+print(manifest["release_id"])
+print(worker)
+' "$staging_release/release.json") || exit 1
+test "${#staging_identity[@]}" -eq 3 || exit 1
+staging_sha="${staging_identity[0]}"
+staging_release_id="${staging_identity[1]}"
+staging_worker_contract="${staging_identity[2]}"
+test "$(basename -- "$staging_release")" = "$staging_release_id" || exit 1
+runtime_id="$(sha256sum "$staging_release/uv.lock" | awk '{print $1}')" || exit 1
+case "$runtime_id" in
+  *[!0-9a-f]*|'') echo "staging runtime ID is invalid" >&2; exit 1 ;;
+esac
+test "${#runtime_id}" -eq 64 || {
+  echo "staging runtime ID is invalid" >&2
+  exit 1
+}
+runtime_python="/srv/paperswithcode/runtimes/$runtime_id/bin/python"
+test -x "$runtime_python" || {
+  echo "installed staging runtime Python is missing" >&2
+  exit 1
+}
 
-uv run --env-file /etc/paperswithcode/staging.env python \
-  -m backend.scripts.qualify_chat_durable_dispatch \
-  --release-dir "$staging_release" \
-  --confirm QUALIFY_STAGING_DURABLE_DISPATCH \
-  --audit-disabled-only || exit 1
+run_durable_qualification() {
+  case "$1" in
+    --audit-disabled-only|--qualify-enabled-only) ;;
+    *) echo "invalid durable qualification mode" >&2; return 1 ;;
+  esac
+  sudo systemd-run --quiet --wait --pipe --collect \
+    --uid=pwc-staging --gid=pwc-staging \
+    --working-directory="$staging_release" \
+    --property=EnvironmentFile=/etc/paperswithcode/staging.env \
+    -- /usr/bin/env \
+    PWC_RELEASE_ID="$staging_release_id" \
+    PWC_CHAT_WORKER_CONTRACT_VERSION="$staging_worker_contract" \
+    "$runtime_python" -m backend.scripts.qualify_chat_durable_dispatch \
+    --release-dir "$staging_release" \
+    --confirm QUALIFY_STAGING_DURABLE_DISPATCH "$1"
+}
+
+run_durable_qualification --audit-disabled-only || exit 1
 
 sudo /srv/paperswithcode/.venv/bin/python \
   "$staging_release/deploy/configure_host_env.py" \
@@ -339,11 +376,7 @@ print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
 ' "$refreshed_release/release.json")" || exit 1
 test "$refreshed_sha" = "$staging_sha" || exit 1
 cd -- "$refreshed_release" || exit 1
-uv run --env-file /etc/paperswithcode/staging.env python \
-  -m backend.scripts.qualify_chat_durable_dispatch \
-  --release-dir "$refreshed_release" \
-  --confirm QUALIFY_STAGING_DURABLE_DISPATCH \
-  --qualify-enabled-only || exit 1
+run_durable_qualification --qualify-enabled-only || exit 1
 uv run --env-file /etc/paperswithcode/staging.env python \
   -m backend.scripts.qualify_chat_soak \
   --release-dir "$refreshed_release" \

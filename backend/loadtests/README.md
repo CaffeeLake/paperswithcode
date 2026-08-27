@@ -73,18 +73,39 @@ capacity qualification must deliberately change and review the source ceiling.
 
 Do not add Locust to `pyproject.toml`, source the protected runtime file into a
 shell, or run from a checkout. Resolve and enter the exact active immutable
-staging release, then let `uv` load `/etc/paperswithcode/staging.env` directly
-while preserving the explicitly exported load-test envelope above:
+staging release, derive its public release and worker identities from the
+validated manifest, then let isolated `uv` load
+`/etc/paperswithcode/staging.env` directly while preserving the manifest
+identity and explicitly exported load-test envelope:
 
 ```bash
-release="$(readlink -f /srv/paperswithcode/environments/staging/current)"
+release_root=/srv/paperswithcode/releases
+release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
 case "$release" in
-  /srv/paperswithcode/releases/*) ;;
+  "$release_root"/????????????-staging) ;;
   *) echo "staging current is not an immutable release" >&2; exit 1 ;;
 esac
-cd -- "$release"
+readarray -t release_identity < <(/srv/paperswithcode/.venv/bin/python -c '
+import json, re, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+sha = manifest.get("git_sha")
+assert isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
+assert manifest.get("release_id") == f"{sha[:12]}-staging"
+runtime = manifest.get("chat_runtime")
+assert isinstance(runtime, dict)
+worker = runtime.get("worker_contract_version")
+assert isinstance(worker, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", worker)
+print(manifest["release_id"])
+print(worker)
+' "$release/release.json") || exit 1
+test "${#release_identity[@]}" -eq 2 || exit 1
+test "$(basename -- "$release")" = "${release_identity[0]}" || exit 1
+export PWC_RELEASE_ID="${release_identity[0]}"
+export PWC_CHAT_WORKER_CONTRACT_VERSION="${release_identity[1]}"
+cd -- "$release" || exit 1
 
-uv run --env-file /etc/paperswithcode/staging.env --with 'locust>=2.40,<3' \
+uv run --isolated --env-file /etc/paperswithcode/staging.env \
+  --with 'locust>=2.40,<3' \
   locust -f backend/loadtests/locustfile.py --headless \
   --host https://staging.paperswithcode.co --users 2 --spawn-rate 2.0 \
   --run-time 30s
