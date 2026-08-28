@@ -480,14 +480,22 @@ BEGIN
                 'GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO pwc_staging',
                 table_name
             );
-            EXECUTE format('REVOKE ALL ON %I FROM paperswithcode_user', table_name);
+            IF EXISTS (
+                SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user'
+            ) THEN
+                EXECUTE format(
+                    'REVOKE ALL ON %I FROM paperswithcode_user', table_name
+                );
+            END IF;
         ELSE
             EXECUTE format('ALTER TABLE %I OWNER TO paperswithcode_user', table_name);
             EXECUTE format(
                 'GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO paperswithcode_user',
                 table_name
             );
-            EXECUTE format('REVOKE ALL ON %I FROM pwc_staging', table_name);
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging') THEN
+                EXECUTE format('REVOKE ALL ON %I FROM pwc_staging', table_name);
+            END IF;
         END IF;
     END LOOP;
 END $$;
