@@ -4582,6 +4582,9 @@ def test_cron_status_reports_exact_production_release(
     assert status["jobs"]["sync_mmeb_v2"]["timeout"] == "30m"
     assert status["jobs"]["sync_mmeb_v3"]["timeout"] == "30m"
     assert status["jobs"]["sync_artificial_analysis"]["timeout"] == "30m"
+    assert (
+        "TTS Quality Elo" in status["jobs"]["sync_artificial_analysis"]["idempotency"]
+    )
     assert status["jobs"]["sync_programbench"]["timeout"] == "30m"
     assert status["jobs"]["sync_frontiercode"]["timeout"] == "30m"
     assert status["jobs"]["sync_coarena"]["timeout"] == "30m"

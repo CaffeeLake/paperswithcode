@@ -197,7 +197,8 @@ COMMANDS: dict[str, Job] = {
         timeout="30m",
         idempotency=(
             "index reviewed model releases and upsert Artificial Analysis "
-            "Intelligence and Agentic Index scores from validated API data"
+            "Intelligence, Agentic Index, and TTS Quality Elo scores from "
+            "validated live data"
         ),
     ),
     "sync_programbench": job(
