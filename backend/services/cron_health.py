@@ -910,6 +910,39 @@ def _paper_markdown_monitor_snapshot() -> Dict[str, Any]:
     return snapshot
 
 
+def _merge_paper_markdown_monitor_metrics(
+    work_metrics: Dict[str, Any],
+    remote: Dict[str, Any],
+) -> Dict[str, Any]:
+    metrics = dict(work_metrics)
+    summary = remote.get("summary") or {}
+    metrics["remote_monitor_available"] = bool(remote.get("available"))
+    summary_metrics = {
+        "progress_evidence_timeouts": "remote_progress_evidence_timeouts",
+        "latest_run_failed_jobs": "terminal_shard_failures",
+        "latest_run_interrupted_jobs": "interrupted_shards",
+        "oldest_active_checkpoint_age_minutes": (
+            "oldest_active_checkpoint_age_minutes"
+        ),
+        "unresolved_mount_failures": "unresolved_mount_failures",
+        "recovered_mount_failures": "recovered_mount_failures",
+    }
+    for summary_key, metric_key in summary_metrics.items():
+        if summary_key in summary:
+            metrics[metric_key] = int(summary.get(summary_key) or 0)
+    metrics.setdefault("remote_progress_evidence_timeouts", 0)
+    mode = str(metrics.get("mode") or "live")
+    budget = (remote.get("budgets") or {}).get(mode) or {}
+    blockers = remote.get("blockers") or {}
+    if mode in blockers:
+        metrics["blocker_classification"] = blockers.get(mode) or "none"
+    else:
+        metrics.setdefault("blocker_classification", "none")
+    if "next_admission_at" in budget:
+        metrics["next_admission_at"] = budget.get("next_admission_at")
+    return metrics
+
+
 def _paper_embeddings_contract(
     status: str,
     reasons: List[str],
@@ -1995,32 +2028,10 @@ def build_cron_dashboard(
         log_status = get_recent_log_status(job)
         if job.id == "paper_markdown_backfill":
             remote = _paper_markdown_monitor_snapshot()
-            metrics = dict(log_status.get("work_metrics") or {})
-            metrics["remote_monitor_available"] = bool(remote.get("available"))
-            if remote.get("available"):
-                summary = remote.get("summary") or {}
-                metrics["terminal_shard_failures"] = int(
-                    summary.get("latest_run_failed_jobs", 0) or 0
-                )
-                metrics["interrupted_shards"] = int(
-                    summary.get("latest_run_interrupted_jobs", 0) or 0
-                )
-                metrics["oldest_active_checkpoint_age_minutes"] = int(
-                    summary.get("oldest_active_checkpoint_age_minutes", 0) or 0
-                )
-                metrics["unresolved_mount_failures"] = int(
-                    summary.get("unresolved_mount_failures", 0) or 0
-                )
-                metrics["recovered_mount_failures"] = int(
-                    summary.get("recovered_mount_failures", 0) or 0
-                )
-                mode = str(metrics.get("mode") or "live")
-                budget = (remote.get("budgets") or {}).get(mode) or {}
-                metrics["blocker_classification"] = (remote.get("blockers") or {}).get(
-                    mode
-                ) or "none"
-                metrics["next_admission_at"] = budget.get("next_admission_at")
-            log_status["work_metrics"] = metrics
+            log_status["work_metrics"] = _merge_paper_markdown_monitor_metrics(
+                log_status.get("work_metrics") or {},
+                remote,
+            )
         elif job.id == "monitor_chat_operational_alerts":
             metrics = dict(log_status.get("work_metrics") or {})
             metrics.update(fetch_chat_monitor_output())

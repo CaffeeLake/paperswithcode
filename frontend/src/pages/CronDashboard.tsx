@@ -123,13 +123,14 @@ export const cronStatusRefetchInterval = (
   data: CronJobsResponse | undefined,
   autoRefresh: boolean,
 ) => {
-  if (data?.snapshot_stale || data?.refreshing) return 1000;
+  if (data?.snapshot_stale || data?.refreshing) return 5000;
   return autoRefresh ? 30000 : false;
 };
 
 const CronDashboard = () => {
   const staging = isStagingEnvironment();
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [manualRefreshPending, setManualRefreshPending] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [chatEnvironmentDraft, setChatEnvironmentDraft] = useState("");
   const [chatEnvironment, setChatEnvironment] = useState("");
@@ -137,7 +138,7 @@ const CronDashboard = () => {
   const forceCronRefresh = useRef(false);
   const { user } = useAuth();
 
-  const { data, isLoading, isFetching, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["cronStatus", user?.username],
     queryFn: () => {
       const forceRefresh = forceCronRefresh.current;
@@ -193,6 +194,9 @@ const CronDashboard = () => {
   const criticalJobs = scheduledJobs.filter((job) => job.critical);
   const otherJobs = scheduledJobs.filter((job) => !job.critical);
   const manualOperations = data?.manual_operations ?? [];
+  const refreshButtonBusy = Boolean(
+    isLoading || manualRefreshPending || data?.refreshing,
+  );
 
   const jobsByCategory = otherJobs.reduce((acc, job) => {
     if (!acc[job.category]) acc[job.category] = [];
@@ -229,12 +233,19 @@ const CronDashboard = () => {
     />
   );
 
-  const refreshAll = () => {
+  const refreshAll = async () => {
     setRefreshToken((value) => value + 1);
     forceCronRefresh.current = true;
-    void refetch();
-    void paperMarkdownJobsQuery.refetch();
-    void chatSpendQuery.refetch();
+    setManualRefreshPending(true);
+    try {
+      await Promise.all([
+        refetch(),
+        paperMarkdownJobsQuery.refetch(),
+        chatSpendQuery.refetch(),
+      ]);
+    } finally {
+      setManualRefreshPending(false);
+    }
   };
 
   return (
@@ -264,8 +275,8 @@ const CronDashboard = () => {
                 <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? "animate-spin" : ""}`} />
                 Auto-refresh {autoRefresh ? "ON" : "OFF"}
               </Button>
-              <Button variant="outline" size="sm" onClick={refreshAll} disabled={isFetching}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
+              <Button variant="outline" size="sm" onClick={() => void refreshAll()} disabled={refreshButtonBusy}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${refreshButtonBusy ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
             </div>

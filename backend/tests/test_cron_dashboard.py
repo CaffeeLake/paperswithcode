@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from backend.config import get_settings
 from backend.main import create_app
+from backend.services import cron_health
 from backend.services.cron_health import (
     _dashboard_job_summary,
     _gh_json,
@@ -1076,6 +1077,7 @@ def test_import_hf_daily_papers_failed_counter_is_broken_even_after_success():
         )
 
     assert evaluated["output_health"]["status"] == "broken"
+
     assert "1 imported paper" in evaluated["output_health"]["reason"]
 
 
@@ -1228,6 +1230,58 @@ def test_paper_markdown_monitor_snapshot_refreshes_only_a_cold_cache():
     ):
         assert _paper_markdown_monitor_snapshot() == cached
         refresh.assert_not_called()
+
+
+def test_partial_remote_monitor_evidence_preserves_confirmed_shard_failures():
+    merge_remote_metrics = getattr(
+        cron_health,
+        "_merge_paper_markdown_monitor_metrics",
+        None,
+    )
+    assert merge_remote_metrics is not None
+
+    metrics = merge_remote_metrics(
+        {"mode": "live"},
+        {
+            "available": False,
+            "summary": {
+                "progress_evidence_timeouts": 1,
+                "latest_run_failed_jobs": 1,
+                "latest_run_interrupted_jobs": 0,
+                "oldest_active_checkpoint_age_minutes": 0,
+                "unresolved_mount_failures": 1,
+                "recovered_mount_failures": 0,
+            },
+            "budgets": {},
+            "blockers": {},
+        },
+    )
+
+    assert metrics["remote_monitor_available"] is False
+    assert metrics["remote_progress_evidence_timeouts"] == 1
+    assert metrics["terminal_shard_failures"] == 1
+    assert metrics["unresolved_mount_failures"] == 1
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            _job("paper_markdown_backfill"),
+            {
+                "status": "success",
+                "last_run": datetime.now(timezone.utc),
+                "is_running": False,
+                "work_metrics": metrics,
+            },
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+
+    preserved = merge_remote_metrics(
+        {
+            "terminal_shard_failures": 2,
+            "unresolved_mount_failures": 1,
+        },
+        {"available": False, "summary": {}, "budgets": {}, "blockers": {}},
+    )
+    assert preserved["terminal_shard_failures"] == 2
+    assert preserved["unresolved_mount_failures"] == 1
 
 
 def test_embedding_no_work_is_broken_when_eligible_rows_are_missing():
