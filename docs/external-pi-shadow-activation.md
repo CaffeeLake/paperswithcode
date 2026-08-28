@@ -173,6 +173,33 @@ reviewed phase requires all of the following:
 Until then, `PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED`, executor, remote tool,
 remote Bash/Read, and lazy workspace controls remain false in every environment.
 
+## Transient 100-user fleet qualification
+
+The fleet qualifier is a separate staging-only operator checkpoint after the
+active shadow worker is healthy. It does not replace, reconfigure, or target the
+active blue/green worker. It starts fixed transient replica pairs only on
+`127.0.0.1:8780-8795`, keeps public nginx and all admission/executor/remote flags
+out of the path, and removes one exact observed generation between the healthy
+and survivor rounds. The full preflight and invocation are in
+`backend/loadtests/README.md`; the retained report is
+`/var/lib/paperswithcode/staging/external-pi-fleet-qualification.json`.
+
+Do not run it while `pwc-status staging` shows the active external Pi worker
+failed, draining, unauthenticated, unregistered, stale, or on a release other
+than exact staging `current`. Source implementation and test execution do not
+authorize repairing or mutating that degraded runtime; restore health through
+the staging deployment/activation workflow first.
+
+Every admitted shape must produce 100 compatible healthy observations and 100
+compatible survivor observations with zero capacity, protocol, or transport
+errors and zero external work. The reported latency is worst-case synthetic
+transcript restore/compatibility latency. It is not model TTFT because no prompt
+is sent for generation and no provider is called. A `resource_refused` result is
+valid safety evidence and must not be forced. On interruption or failure, use
+only the controller's exact generation-aware lifecycle cleanup described in the
+load-test runbook; never broad-kill a worker or free a port without durable
+offline/drained proof.
+
 ## Staging 100-user overload baseline
 
 After activation, the separate external Pi load harness may measure the active

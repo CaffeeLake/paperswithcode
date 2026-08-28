@@ -193,3 +193,97 @@ For the current worker capped at eight sessions, `safety_passed=true` with
 `capacity_target_passed=false` proves bounded fail-fast overload behavior; the
 false capacity verdict is expected until separately reviewed scale-out exists
 and does not itself fail this safety-baseline command.
+
+## External Pi transient fleet qualification
+
+Run this staging-only controller only after deploying the reviewed commit to
+staging and restoring the active blue/green worker to authenticated `ready`
+health. The current and requested release must be the same immutable staging
+release; external admission, sandbox executor routing, remote workspace tools,
+remote Bash/Read, and lazy workspace must all remain false. Confirm that ports
+8780-8795 have no listeners, `MemAvailable` and host CPU are within the guarded
+limits, and the active worker has zero active sessions and zero forbidden work.
+The controller repeats these checks before and after every transition.
+
+Resolve the release without sourcing a protected environment into the shell,
+then run one isolated Locust dependency in the controller process:
+
+```bash
+release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+case "$release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "staging current is not an immutable release" >&2; exit 1 ;;
+esac
+release_id="$(basename -- "$release")"
+test -z "$(ss -H -ltn '( sport >= :8780 and sport <= :8795 )')" || exit 1
+grep '^MemAvailable:' /proc/meminfo
+pwc-status staging
+cd -- "$release" || exit 1
+
+sudo uv run --isolated --env-file /etc/paperswithcode/staging.env \
+  --with 'locust>=2.40,<3' \
+  python -m backend.scripts.qualify_external_pi_fleet \
+  --environment staging --release-id "$release_id" \
+  --confirm RUN_EXTERNAL_PI_FLEET_QUALIFICATION \
+  --report /var/lib/paperswithcode/staging/external-pi-fleet-qualification.json
+```
+
+Shapes run sequentially in the fixed order 5x32, 8x16, and 16x8. An unsafe
+projected-memory or CPU check records `resource_refused`; it is never overridden.
+Each admitted shape runs exactly 100 healthy users, drains and stops one exact
+observed generation, then runs exactly 100 users against the survivors. The
+mode-0600 report is atomically replaced and contains only bounded counters,
+identities, generations, latencies, resource peaks, and cleanup evidence.
+
+`p95_ms` and `p99_ms` measure synthetic transcript compatibility/restore
+latency. They are not model time-to-first-token: the qualifier performs no
+generation and permits no model, provider, tool, Modal, or billing activity.
+
+SIGINT, SIGTERM, test failures, and partial startup use the same exact-unit
+cleanup. After a failed run, do not kill processes by pattern and do not rerun
+while any qualification unit or port remains. Inspect only the exact
+`paperswithcode-staging-external-pi-qualification@NN.service` and
+`paperswithcode-staging-external-pi-qualification-worker@NN.service` units plus
+their content-free status files under
+`/run/paperswithcode/external-pi-qualification/`. Recovery must drain the exact
+recorded generation through `deploy.external_pi_qualification_lifecycle`, wait
+for `offline`/`drained`, stop supervisor before worker, reset only those units,
+and prove the status file, listener, and process are gone. If exact drain proof
+is unavailable, leave the worker fenced for operator recovery; never force it.
+
+For each exact retained pair, obtain `index` and the allowlisted `shape` from
+that unit's `ExecStart` (the arguments contain no token), then run the same Task
+2 cleanup contract from the exact active release. Repeat only for explicitly
+inspected retained pairs:
+
+```bash
+systemctl show --property=ActiveState --property=ExecStart \
+  paperswithcode-staging-external-pi-qualification@NN.service \
+  paperswithcode-staging-external-pi-qualification-worker@NN.service
+shape=5x32  # set to the exact observed 5x32, 8x16, or 16x8 shape
+index=0     # set to the exact observed 0-15 replica index
+
+sudo uv run --env-file /etc/paperswithcode/staging.env python -c '
+import json, sys
+from backend.loadtests.external_pi_fleet_core import resolve_fleet_shape
+from deploy.external_pi_qualification_lifecycle import (
+    cleanup_replica, resolve_qualification_replica,
+)
+release_id, shape_name, raw_index = sys.argv[1:]
+shape = resolve_fleet_shape(shape_name)
+index = int(raw_index)
+replica = shape.replicas[index]
+resolved = resolve_qualification_replica(
+    "staging", release_id, index, replica.port, shape.sessions_per_worker
+)
+status = json.loads(resolved.status_path.read_text(encoding="utf-8"))
+generation = status.get("generation")
+if generation is not None and (type(generation) is not int or generation < 1):
+    raise SystemExit("invalid bounded generation evidence")
+cleanup_replica(resolved, generation=generation)
+' "$release_id" "$shape" "$index"
+```
+
+After each recovery command, require both exact units to be `not-found` and
+inactive, the corresponding status file absent, and its loopback port absent
+from `ss -H -ltn`. Do not continue to another pair if any proof fails.
