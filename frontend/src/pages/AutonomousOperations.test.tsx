@@ -55,6 +55,24 @@ describe("AutonomousOperations", () => {
     expect(document.body.textContent?.toLowerCase()).not.toContain("prompt");
   });
 
+  it("allows additional operator shutdowns while manual mode blocks re-enablement", async () => {
+    const current = snapshot();
+    vi.spyOn(operationsApi, "getAutonomousOperations").mockResolvedValue(current);
+    const mutation = vi.spyOn(operationsApi, "setAutonomousOperator").mockResolvedValue({ ...current, revision: 8 });
+    renderPage();
+    await screen.findByText("Autonomous operations");
+
+    const submissionConfirmation = screen.getByLabelText("Submission review confirmation");
+    const disableSubmission = screen.getAllByRole("button", { name: "Disable" })[0];
+    fireEvent.change(submissionConfirmation, { target: { value: "SET_OPERATOR_STATE" } });
+    expect(disableSubmission).toBeEnabled();
+    fireEvent.click(disableSubmission);
+    await waitFor(() => expect(mutation).toHaveBeenCalledWith("submissions", false, 7, "SET_OPERATOR_STATE"));
+
+    fireEvent.change(screen.getByLabelText("Chat reliability confirmation"), { target: { value: "SET_OPERATOR_STATE" } });
+    expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+  });
+
   it("sends revisioned, typed control mutations through the API client", async () => {
     const current = snapshot("healthy");
     vi.spyOn(operationsApi, "getAutonomousOperations").mockResolvedValue(current);
