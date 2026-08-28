@@ -175,6 +175,26 @@ def existing_or_random(lines: dict[str, str], key: str) -> str:
     return decoded_value(line) if line else secrets.token_urlsafe(48)
 
 
+def trending_cron_values(
+    legacy: dict[str, str],
+    current: dict[str, str],
+    *,
+    password: str,
+) -> dict[str, str]:
+    """Build the persistent minimal environment for isolated scoring jobs."""
+    return {
+        "PWC_DB_HOST": decoded_value(legacy["PWC_DB_HOST"]),
+        "PWC_DB_NAME": decoded_value(legacy["PWC_DB_NAME"]),
+        "PWC_DB_PORT": decoded_value(legacy["PWC_DB_PORT"]),
+        "PWC_TRENDING_DB_PASSWORD": password,
+        **{
+            key: decoded_value(line)
+            for key, line in current.items()
+            if key.startswith("PWC_TRENDING_PIN_")
+        },
+    }
+
+
 def shared_role_values(*sources: dict[str, str]) -> dict[str, str]:
     """Preserve one identical subject allowlist across both environments."""
 
@@ -2332,10 +2352,14 @@ def main() -> int:
     current_production = read_lines(CONFIG_ROOT / "production.env")
     current_staging = read_lines(CONFIG_ROOT / "staging.env")
     current_cron = read_lines(CONFIG_ROOT / "production-cron.env")
+    current_trending_cron = read_lines(CONFIG_ROOT / "trending-cron.env")
     staging_db_password = existing_or_random(current_staging, "PWC_DB_PASSWORD")
     staging_jwt = existing_or_random(current_staging, "PWC_JWT_SECRET")
     backup_db_password = existing_or_random(
         current_cron, "PWC_POSTGRES_BACKUP_DB_PASSWORD"
+    )
+    trending_db_password = existing_or_random(
+        current_trending_cron, "PWC_TRENDING_DB_PASSWORD"
     )
     production_jwt = decoded_value(legacy["PWC_JWT_SECRET"])
     session_private_key, session_public_key = shared_session_keys(
@@ -2494,9 +2518,27 @@ def main() -> int:
         },
     )
 
+    trending_cron = trending_cron_values(
+        legacy,
+        {
+            **{
+                key: line
+                for key, line in current_cron.items()
+                if key.startswith("PWC_TRENDING_PIN_")
+            },
+            **current_trending_cron,
+        },
+        password=trending_db_password,
+    )
+
     write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
     write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
     write_env(CONFIG_ROOT / "production-cron.env", cron, "pwc-cron")
+    write_env(
+        CONFIG_ROOT / "trending-cron.env",
+        trending_cron,
+        "pwc-cron-trending",
+    )
     production_group = grp.getgrnam("pwc-production").gr_name
     cron_user = pwd.getpwnam("pwc-cron").pw_name
     subprocess.run(

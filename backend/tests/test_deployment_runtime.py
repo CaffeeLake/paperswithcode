@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import deploy.cli as deploy_cli
 import deploy.configure_host_env as configure_host_env
+import deploy.configure_db_roles as configure_db_roles
 import deploy.configure_production_chat_application_cap as configure_production_chat_application_cap
 import deploy.configure_production_chat_budget as configure_production_chat_budget
 import deploy.configure_role_allowlists as configure_role_allowlists
@@ -157,7 +158,121 @@ def test_cron_wrapper_grants_journal_access_only_to_chat_monitor():
 
     assert 'if [ "$1" = "monitor_chat_operational_alerts" ]' in wrapper
     assert wrapper.count("SupplementaryGroups=systemd-journal") == 1
-    assert wrapper.count("cron_launcher.py") == 2
+    assert wrapper.count("cron_launcher.py") == 3
+
+
+def test_cron_wrapper_isolates_source_repairable_trending_jobs():
+    wrapper = cron_wrapper()
+    restricted_branch = wrapper.split('case "$1" in', 1)[1].split("esac", 1)[0]
+
+    assert "calculate_trending_scores|calculate_paper_trending_scores)" in wrapper
+    assert "--uid=pwc-cron-trending --gid=pwc-cron-trending" in wrapper
+    assert "EnvironmentFile=/etc/paperswithcode/trending-cron.env" in restricted_branch
+    assert "production.env" not in restricted_branch
+    assert "production-cron.env" not in restricted_branch
+    assert "SupplementaryGroups" not in restricted_branch
+
+
+def test_restricted_trending_environment_drops_broad_credentials():
+    source = {
+        "PATH": "/usr/bin",
+        "LANG": "C.UTF-8",
+        "PWC_DB_HOST": "db",
+        "PWC_DB_PORT": "5432",
+        "PWC_DB_NAME": "paperswithcode",
+        "PWC_DB_USER": "paperswithcode_user",
+        "PWC_DB_PASSWORD": "broad-secret",
+        "PWC_TRENDING_DB_PASSWORD": "restricted-secret",
+        "PWC_TRENDING_PIN_ARXIV_IDS": "2601.00001:72",
+        "PWC_GITHUB_TOKEN": "must-not-leak",
+        "OPENAI_API_KEY": "must-not-leak",
+        "PWC_CHAT_LANGFUSE_SECRET_KEY": "must-not-leak",
+    }
+
+    environment = cron_launcher.restricted_trending_environment(
+        source,
+        release_id="a" * 12 + "-production",
+    )
+
+    assert environment["PWC_DB_USER"] == "pwc_cron_trending"
+    assert environment["PWC_DB_PASSWORD"] == "restricted-secret"
+    assert environment["PWC_TRENDING_PIN_ARXIV_IDS"] == "2601.00001:72"
+    assert "PWC_TRENDING_DB_PASSWORD" not in environment
+    assert "PWC_GITHUB_TOKEN" not in environment
+    assert "OPENAI_API_KEY" not in environment
+    assert "PWC_CHAT_LANGFUSE_SECRET_KEY" not in environment
+    assert set(environment) <= cron_launcher.RESTRICTED_TRENDING_ENV_KEYS
+    assert environment["PWC_CRON_LOG_DIR"] == str(
+        cron_launcher.RESTRICTED_TRENDING_LOG_DIR
+    )
+    assert environment["PWC_CRON_LOCK_DIR"] == str(
+        cron_launcher.RESTRICTED_TRENDING_LOCK_DIR
+    )
+
+
+def test_restricted_trending_environment_fails_closed_without_role_password():
+    with pytest.raises(RuntimeError, match="PWC_TRENDING_DB_PASSWORD"):
+        cron_launcher.restricted_trending_environment(
+            {
+                "PWC_DB_HOST": "db",
+                "PWC_DB_PORT": "5432",
+                "PWC_DB_NAME": "paperswithcode",
+            },
+            release_id="a" * 12 + "-production",
+        )
+
+
+def test_trending_database_role_has_only_scoring_capabilities():
+    sql = configure_db_roles.trending_role_sql(
+        database="paperswithcode",
+        password="restricted-secret",
+    )
+
+    assert "NOINHERIT" in sql
+    assert "pg_auth_members" in sql
+    assert "EXECUTE 'REVOKE ' || granted_role" in sql
+    assert "trending role retains a role membership" in sql
+    assert "REVOKE ALL ON ALL TABLES IN SCHEMA public" in sql
+    assert "REVOKE CREATE ON SCHEMA public" in sql
+    assert (
+        "GRANT SELECT ON papers, paper_repositories, repositories, "
+        "repository_star_history, paper_hf_artifacts, hf_artifacts"
+    ) in sql
+    assert (
+        "GRANT UPDATE (trending_score, trending_score_updated_at, updated_at) "
+        "ON repositories"
+    ) in sql
+    assert (
+        "GRANT UPDATE (trending_score, github_trending_component, "
+        "hf_trending_component, trending_score_updated_at, updated_at) ON papers"
+    ) in sql
+    for taxonomy_table in ("tasks", "methods", "datasets", "metrics", "conferences"):
+        assert f"'{taxonomy_table}'" in sql
+    assert "has_table_privilege(" in sql
+    assert "taxonomy_table" in sql
+
+
+def test_trending_environment_rotation_preserves_existing_role_password():
+    current = {
+        "PWC_TRENDING_DB_PASSWORD": "PWC_TRENDING_DB_PASSWORD=stable-secret",
+        "PWC_TRENDING_PIN_ARXIV_IDS": "PWC_TRENDING_PIN_ARXIV_IDS=2601.1:72",
+    }
+    password = configure_host_env.existing_or_random(
+        current, "PWC_TRENDING_DB_PASSWORD"
+    )
+
+    values = configure_host_env.trending_cron_values(
+        {
+            "PWC_DB_HOST": "PWC_DB_HOST=localhost",
+            "PWC_DB_NAME": "PWC_DB_NAME=paperswithcode_hf",
+            "PWC_DB_PORT": "PWC_DB_PORT=5432",
+        },
+        current,
+        password=password,
+    )
+
+    assert values["PWC_TRENDING_DB_PASSWORD"] == "stable-secret"
+    assert values["PWC_TRENDING_PIN_ARXIV_IDS"] == "2601.1:72"
 
 
 @pytest.mark.parametrize(

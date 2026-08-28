@@ -979,6 +979,46 @@ def test_subprocess_executor_hides_host_workspace_with_bubblewrap(tmp_path):
     assert "must-stay-hidden" not in outcome.events_jsonl
 
 
+def test_source_repair_mounts_only_declared_files_writable(tmp_path):
+    workspace = tmp_path / "candidate"
+    allowed = workspace / "backend" / "job.py"
+    blocked = workspace / "backend" / "other.py"
+    allowed.parent.mkdir(parents=True)
+    allowed.write_text("old\n")
+    blocked.write_text("keep\n")
+    script = tmp_path / "edit.py"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "Path('/workspace/backend/job.py').write_text('new\\n')\n"
+        "try:\n"
+        " Path('/workspace/backend/other.py').write_text('bad\\n')\n"
+        "except OSError:\n"
+        " print('blocked=True')\n",
+        encoding="utf-8",
+    )
+    os.chmod(script, 0o700)
+    outcome = SubprocessCodexExecutor()(
+        command=[str(script)],
+        environment={"PATH": os.environ["PATH"]},
+        cwd=Path("/"),
+        input_text="{}",
+        output_schema={"type": "object"},
+        timeout_seconds=30,
+        max_output_bytes=1000,
+        cancellation_requested=lambda: False,
+        budget_exceeded=lambda _: False,
+        filesystem_isolation=True,
+        sandbox_executable="/usr/bin/bwrap",
+        shell=False,
+        workspace_path=workspace,
+        writable_paths=("backend/job.py",),
+    )
+    assert "blocked=True" in outcome.events_jsonl
+    assert allowed.read_text() == "new\n"
+    assert blocked.read_text() == "keep\n"
+
+
 def test_budget_gateway_caps_each_upstream_call_and_hides_upstream_key():
     received = []
     records = []

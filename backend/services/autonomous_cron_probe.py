@@ -245,9 +245,15 @@ def _throughput_state(
     data = job.get("db_metrics") or {}
     if definition.evidence_contract.throughput_source == "health_record":
         record_available = bool(
-            work.get("review_record_available") or work.get("monitor_record_available")
+            work.get("review_record_available")
+            or work.get("monitor_record_available")
+            or work.get("operator_record_available")
         )
-        record_status = work.get("review_status") or work.get("monitor_status")
+        record_status = (
+            work.get("review_status")
+            or work.get("monitor_status")
+            or work.get("operator_status")
+        )
         if not record_available:
             return FindingState.UNKNOWN, "throughput health record is unavailable"
         if record_status in {"failed", "degraded"}:
@@ -299,9 +305,15 @@ def _semantic_state(
     if definition.evidence_contract.semantic_source == "health_record":
         work = job.get("work_metrics") or {}
         record_available = bool(
-            work.get("review_record_available") or work.get("monitor_record_available")
+            work.get("review_record_available")
+            or work.get("monitor_record_available")
+            or work.get("operator_record_available")
         )
-        record_status = work.get("review_status") or work.get("monitor_status")
+        record_status = (
+            work.get("review_status")
+            or work.get("monitor_status")
+            or work.get("operator_status")
+        )
         if not record_available:
             return FindingState.UNKNOWN, "semantic health record is unavailable"
         if record_status in {"failed", "degraded"}:

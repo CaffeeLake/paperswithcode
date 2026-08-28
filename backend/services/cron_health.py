@@ -446,6 +446,37 @@ def fetch_persistent_execution(
     return None
 
 
+def fetch_autonomous_cron_output() -> Dict[str, Any]:
+    path = Path(get_settings().cron_log_dir) / "autonomous-cron-operator-health.json"
+    try:
+        raw = path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return {"operator_record_available": False}
+    if len(raw) > 16 * 1024:
+        return {"operator_record_available": False}
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"operator_record_available": False}
+    if not isinstance(payload, dict):
+        return {"operator_record_available": False}
+    status = str(payload.get("status") or "unknown")[:32]
+    healthy = status in {
+        "healthy",
+        "monitoring_only",
+        "noop",
+        "runtime_recovered",
+        "source_repaired",
+    }
+    return {
+        "operator_record_available": True,
+        "operator_status": "healthy" if healthy else "degraded",
+        "operator_completed_at": str(payload.get("completed_at") or "")[:64] or None,
+        "operator_mode": str(payload.get("mode") or "")[:16] or None,
+        "operator_reason_code": str(payload.get("reason_code") or "")[:128] or None,
+    }
+
+
 def _gh_json(args: list[str], timeout: int = 10) -> tuple[Any, Optional[str]]:
     env = os.environ.copy()
     github_token = get_settings().github_token
@@ -1706,6 +1737,26 @@ def _submission_review_contract(
     return "unknown", reasons + ["submission review output state is unknown"]
 
 
+def _autonomous_cron_contract(
+    _status: str,
+    reasons: List[str],
+    context: OutputEvaluationContext,
+) -> tuple[str, List[str]]:
+    work = context.work
+    if not work.get("operator_record_available"):
+        return "unknown", reasons + ["content-free operator record is unavailable"]
+    age = _minutes_since(work.get("operator_completed_at"), now=context.now)
+    if age is None:
+        return "unknown", reasons + ["operator completion time is unavailable"]
+    if age > 390:
+        return "broken", reasons + ["latest autonomous CRON pass is stale"]
+    if work.get("operator_status") == "healthy":
+        return "healthy", ["latest bounded autonomous CRON pass completed"]
+    return "broken", reasons + [
+        f"autonomous CRON pass reported {work.get('operator_reason_code') or 'failure'}"
+    ]
+
+
 OutputEvaluator = Callable[
     [str, List[str], OutputEvaluationContext],
     tuple[str, List[str]],
@@ -1755,6 +1806,7 @@ OUTPUT_POLICIES = {
     "curation_thumbnails": OutputPolicy(_curation_thumbnail_contract),
     "chat_alert_monitor": OutputPolicy(_chat_alert_contract),
     "submission_review": OutputPolicy(_submission_review_contract),
+    "autonomous_cron_operator": OutputPolicy(_autonomous_cron_contract),
 }
 
 
@@ -2383,10 +2435,15 @@ def _submission_review_work_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
     return {**metrics, **fetch_submission_review_output()}
 
 
+def _autonomous_cron_work_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    return {**metrics, **fetch_autonomous_cron_output()}
+
+
 WORK_METRICS_PROVIDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "paper_markdown_monitor": _paper_markdown_work_metrics,
     "chat_monitor": _chat_monitor_work_metrics,
     "submission_review": _submission_review_work_metrics,
+    "autonomous_cron": _autonomous_cron_work_metrics,
 }
 
 
@@ -2452,13 +2509,14 @@ def build_cron_dashboard(
 
     def get_recent_log_status(job: CronJobDefinition) -> Dict[str, Any]:
         max_days = max(0, min(14, job.stale_after_minutes // (24 * 60) + 1))
-        latest_status = get_cron_job_status(job.log_name, today)
+        log_directory = Path(job.log_directory) if job.log_directory else None
+        latest_status = get_cron_job_status(job.log_name, today, logs_dir=log_directory)
         if latest_status.get("exists") or max_days == 0:
             return latest_status
 
         for days_back in range(1, max_days + 1):
             date = (_utcnow() - timedelta(days=days_back)).strftime("%Y%m%d")
-            candidate = get_cron_job_status(job.log_name, date)
+            candidate = get_cron_job_status(job.log_name, date, logs_dir=log_directory)
             if candidate.get("exists"):
                 return candidate
         return latest_status

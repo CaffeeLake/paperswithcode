@@ -619,3 +619,15 @@ def test_trending_semantic_failure_uses_typed_evaluator_outcome():
     assert by_contract["durable_data_freshness"] is FindingState.HEALTHY
     assert by_contract["throughput_backlog"] is FindingState.HEALTHY
     assert by_contract["semantic_correctness"] is FindingState.DEGRADED
+
+
+def test_repairable_trending_jobs_use_isolated_runtime_evidence_paths():
+    for job_name in ("calculate_trending_scores", "calculate_paper_trending_scores"):
+        job = get_cron_job(job_name)
+        assert job is not None
+        assert job.log_directory == (
+            "/var/lib/paperswithcode/production/trending-cron-logs"
+        )
+        assert job.lock_file == (
+            f"/var/lib/paperswithcode/production/trending-cron-locks/{job_name}.lock"
+        )

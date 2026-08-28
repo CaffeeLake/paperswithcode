@@ -33,6 +33,10 @@ SYSTEMD_UNITS = (
     "autonomous/submission-review.service",
     "autonomous/submission-review.timer",
     "autonomous/submission-review-alert.service",
+    "autonomous/cron-health.service",
+    "autonomous/cron-health.timer",
+    "autonomous/cron-audit.service",
+    "autonomous/cron-audit.timer",
 )
 
 
@@ -98,9 +102,20 @@ def main() -> int:
         "pwc-production",
         "pwc-staging",
         "pwc-cron",
+        "pwc-cron-trending",
         "pwc-external-pi",
     ):
         ensure_user(user)
+    subprocess.run(
+        ["usermod", "--groups", "", "pwc-cron-trending"],
+        check=True,
+    )
+    if any(
+        "pwc-cron-trending" in group.gr_mem
+        for group in grp.getgrall()
+        if group.gr_name != "pwc-cron-trending"
+    ):
+        raise RuntimeError("pwc-cron-trending retains a supplementary group")
     for path in (
         APP_ROOT,
         APP_ROOT / "environments",
@@ -165,6 +180,11 @@ def main() -> int:
         STATE_ROOT / "production" / "cron-locks",
     ):
         ensure_dir(path, "pwc-cron", "pwc-production", 0o750)
+    for path in (
+        STATE_ROOT / "production" / "trending-cron-logs",
+        STATE_ROOT / "production" / "trending-cron-locks",
+    ):
+        ensure_dir(path, "pwc-cron-trending", "pwc-cron", 0o2770)
     ensure_dir(
         STATE_ROOT / "production" / "backups",
         "pwc-cron",
@@ -181,6 +201,18 @@ def main() -> int:
         STATE_ROOT / "autonomous-candidates",
         "pwc-cron",
         "pwc-cron",
+        0o700,
+    )
+    ensure_dir(
+        STATE_ROOT / "autonomous-source-broker",
+        "root",
+        "root",
+        0o700,
+    )
+    ensure_dir(
+        STATE_ROOT / "autonomous-retry-broker",
+        "root",
+        "root",
         0o700,
     )
     ensure_dir(
