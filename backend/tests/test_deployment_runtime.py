@@ -135,6 +135,16 @@ def test_installed_wrapper_preserves_command_parser(
     assert expected in output
 
 
+def test_rollback_parser_accepts_failed_sha_fencing():
+    sha = "a" * 40
+
+    args = deploy_cli.parser_for("pwc-rollback").parse_args(
+        ["staging", "--failed-sha", sha]
+    )
+
+    assert args.failed_sha == sha
+
+
 def test_cron_wrapper_grants_journal_access_only_to_chat_monitor():
     wrapper = cron_wrapper()
 
@@ -2902,6 +2912,35 @@ def test_manual_rollback_syncs_target_runtime_before_restart(
             "paperswithcode-backend@staging.service",
         ],
     ]
+
+
+def test_manual_rollback_failed_sha_fence_rejects_changed_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    environment_root = tmp_path / "environments"
+    root = environment_root / "staging"
+    current = tmp_path / "current"
+    previous = tmp_path / "previous"
+    current.mkdir()
+    previous.mkdir()
+    root.mkdir(parents=True)
+    atomic_symlink(current, root / "current")
+    atomic_symlink(previous, root / "previous")
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS_ROOT", environment_root)
+    monkeypatch.setattr(deploy_cli, "require_root", lambda: None)
+    monkeypatch.setattr(
+        deploy_cli,
+        "validate_manifest",
+        lambda release, *_args: {
+            "release_id": release.name,
+            "git_sha": "c" * 40,
+        },
+    )
+
+    with pytest.raises(deploy_cli.DeployError, match="target changed"):
+        deploy_cli.rollback(
+            Namespace(environment="staging", confirm="", failed_sha="b" * 40)
+        )
 
 
 def test_runtime_sync_failure_restores_previous_lock(

@@ -15,6 +15,7 @@ from pathlib import Path
 INSTALL_ROOT = Path("/usr/local/lib/paperswithcode-deploy")
 BIN_ROOT = Path("/usr/local/sbin")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
+SUDOERS_PATH = Path("/etc/sudoers.d/paperswithcode-autonomous-operations")
 COMMANDS = (
     "pwc-deploy",
     "pwc-rollback",
@@ -72,12 +73,102 @@ def cron_wrapper() -> str:
     )
 
 
+def autonomous_check_wrapper() -> str:
+    return (
+        "#!/bin/sh\n"
+        "exec /usr/bin/sudo -n /usr/bin/python3 "
+        '/usr/local/lib/paperswithcode-deploy/autonomous_check_runner.py "$@"\n'
+    )
+
+
+def autonomous_release_wrapper() -> str:
+    return (
+        "#!/bin/sh\n"
+        "exec /usr/bin/sudo -n /usr/bin/python3 "
+        '/usr/local/lib/paperswithcode-deploy/autonomous_release_bridge.py "$@"\n'
+    )
+
+
+def autonomous_sudoers() -> str:
+    root = "/usr/local/lib/paperswithcode-deploy"
+    return (
+        "pwc-cron ALL=(root) NOPASSWD: "
+        f"/usr/bin/python3 {root}/autonomous_check_runner.py *\n"
+        "pwc-cron ALL=(root) NOPASSWD: "
+        f"/usr/bin/python3 {root}/autonomous_release_bridge.py *\n"
+    )
+
+
+def autonomous_release_broker_check() -> str:
+    return """
+DO $$
+BEGIN
+    IF to_regclass('public.autonomous_release_consumption') IS NULL THEN
+        RAISE EXCEPTION 'autonomous release broker migration is not applied';
+    END IF;
+    IF (
+        SELECT tableowner <> 'postgres'
+          FROM pg_tables
+         WHERE schemaname = 'public'
+           AND tablename = 'autonomous_release_consumption'
+    ) THEN
+        RAISE EXCEPTION 'autonomous release broker table is not root-owned';
+    END IF;
+    IF has_table_privilege(
+        'paperswithcode_user',
+        'public.autonomous_release_consumption',
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+    ) OR has_table_privilege(
+        'pwc_staging',
+        'public.autonomous_release_consumption',
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+    ) THEN
+        RAISE EXCEPTION 'application roles can access release broker state';
+    END IF;
+END $$;
+""".strip()
+
+
+def verify_autonomous_release_broker_schema() -> None:
+    subprocess.run(
+        [
+            "/usr/sbin/runuser",
+            "-u",
+            "postgres",
+            "--",
+            "/usr/bin/psql",
+            "--dbname",
+            "paperswithcode_hf",
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--command",
+            autonomous_release_broker_check(),
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        env={"LANG": "C.UTF-8", "PATH": "/usr/bin:/bin"},
+    )
+
+
+def install_autonomous_sudoers() -> None:
+    temporary = SUDOERS_PATH.with_name(f".{SUDOERS_PATH.name}.new-{os.getpid()}")
+    temporary.write_text(autonomous_sudoers())
+    temporary.chmod(0o440)
+    try:
+        subprocess.run(["/usr/sbin/visudo", "-cf", str(temporary)], check=True)
+        os.replace(temporary, SUDOERS_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="install-deploy-tools")
     parser.add_argument("source", help="exact commit or ref to install")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
+    SUDOERS_PATH.unlink(missing_ok=True)
     repo = Path(__file__).resolve().parents[1]
     sha = subprocess.run(
         ["git", "rev-parse", f"{args.source}^{{commit}}"],
@@ -134,6 +225,14 @@ def main() -> int:
                 f'exec /usr/bin/python3 /usr/local/lib/paperswithcode-deploy/{module} "$@"\n'
             )
             wrapper.chmod(0o755)
+        wrapper = BIN_ROOT / "pwc-autonomous-check"
+        wrapper.write_text(autonomous_check_wrapper())
+        wrapper.chmod(0o755)
+        wrapper = BIN_ROOT / "pwc-autonomous-release"
+        wrapper.write_text(autonomous_release_wrapper())
+        wrapper.chmod(0o755)
+        verify_autonomous_release_broker_schema()
+        install_autonomous_sudoers()
         wrapper = BIN_ROOT / "pwc-cron"
         wrapper.write_text(cron_wrapper())
         wrapper.chmod(0o755)

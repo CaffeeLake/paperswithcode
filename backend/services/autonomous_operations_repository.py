@@ -306,6 +306,26 @@ class AutonomousOperationsRepository:
         """Verify that a caller's typed identity matches its immutable run."""
         self._require_run_context(db, context)
 
+    def has_published_repair(
+        self, db: Session, *, context: RunContext, sha_digest: str
+    ) -> bool:
+        """Require release promotion to reference this run's audited publication."""
+        self._require_run_context(db, context)
+        if _DIGEST.fullmatch(sha_digest) is None:
+            raise ValueError("Published repair digest is invalid")
+        return (
+            db.execute(
+                select(AutonomousAction.id).where(
+                    AutonomousAction.run_id == context.run_id,
+                    AutonomousAction.operator == context.operator.value,
+                    AutonomousAction.capability == "repair_declared_cron_source",
+                    AutonomousAction.reason_code == "published",
+                    AutonomousAction.after_digest == sha_digest,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+
     def owns_repair_lease(self, db: Session, *, context: RunContext) -> bool:
         """Check the live singleton lease against database time and run identity."""
         self._require_run_context(db, context)

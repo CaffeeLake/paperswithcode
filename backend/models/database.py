@@ -1466,7 +1466,6 @@ class CatalogMutationEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-
     __table_args__ = (
         CheckConstraint(
             "actor_role IN ('admin', 'contributor')",
@@ -4890,6 +4889,39 @@ class AutonomousAction(Base):
             name="fk_autonomous_action_run_operator",
         ),
         Index("idx_autonomous_action_run_created", "run_id", "created_at"),
+    )
+
+
+class AutonomousReleaseConsumption(Base):
+    """Root-owned, single-use authorization consumed at the release boundary."""
+
+    __tablename__ = "autonomous_release_consumption"
+
+    authorization_action_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("autonomous_action.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    consumed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('deploy','rollback')",
+            name="autonomous_release_consumption_action_check",
+        ),
+        CheckConstraint(
+            "environment IN ('staging','production')",
+            name="autonomous_release_consumption_environment_check",
+        ),
+        CheckConstraint(
+            "length(sha) = 40",
+            name="autonomous_release_consumption_sha_check",
+        ),
     )
 
 

@@ -3,6 +3,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from threading import Barrier, Event
 
@@ -202,6 +203,45 @@ def test_runs_and_actions_are_append_only(db):
     with pytest.raises(IntegrityError):
         db.execute(delete(AutonomousAction).where(AutonomousAction.id == action_id))
         db.commit()
+
+
+def test_release_sha_must_match_runs_durable_published_action(db):
+    repository = AutonomousOperationsRepository()
+    state = repository.get_control_state(db)
+    state = repository.set_manual_mode(
+        db,
+        enabled=False,
+        expected_revision=state.revision,
+        actor="admin:owner",
+        now=NOW,
+    )
+    repository.set_operator_enabled(
+        db,
+        operator=Operator.CRON_HEALTH,
+        enabled=True,
+        expected_revision=state.revision,
+        actor="admin:owner",
+        now=NOW,
+    )
+    context = _context()
+    repository.append_run(db, context=context, status="completed", now=NOW)
+    sha = "a" * 40
+    repository.append_action(
+        db,
+        context=context,
+        capability="repair_declared_cron_source",
+        reason_code="published",
+        resource_kind="source_repair",
+        resource_identifier="example_job",
+        before_digest="b" * 64,
+        after_digest=sha256(sha.encode()).hexdigest(),
+        now=NOW,
+    )
+
+    assert repository.has_published_repair(
+        db, context=context, sha_digest=sha256(sha.encode()).hexdigest()
+    )
+    assert not repository.has_published_repair(db, context=context, sha_digest="c" * 64)
 
 
 def test_control_events_and_incident_attempts_are_append_only(db):

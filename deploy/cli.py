@@ -1796,6 +1796,19 @@ def rollback(args: argparse.Namespace) -> int:
         pointers = read_pointers(root)
         if not pointers.previous or not pointers.current:
             raise DeployError("current and previous releases are required for rollback")
+        failed_sha = getattr(args, "failed_sha", None)
+        if failed_sha:
+            if len(failed_sha) != 40 or any(
+                character not in "0123456789abcdef" for character in failed_sha
+            ):
+                raise DeployError("--failed-sha requires an exact lowercase commit SHA")
+            current_sha = validate_manifest(pointers.current, args.environment)[
+                "git_sha"
+            ]
+            if current_sha != failed_sha:
+                raise DeployError(
+                    "rollback target changed since the failure was observed"
+                )
         if _active_slot(args.environment) is None:
             target = pointers.previous
             old_current = pointers.current
@@ -2006,6 +2019,7 @@ def parser_for(program: str) -> argparse.ArgumentParser:
         parser.set_defaults(handler=deploy)
     elif program.endswith("pwc-rollback"):
         parser.add_argument("environment", choices=ENVIRONMENTS)
+        parser.add_argument("--failed-sha")
         parser.add_argument("--confirm")
         parser.set_defaults(handler=rollback)
     elif program.endswith("pwc-cleanup"):
