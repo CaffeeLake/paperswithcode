@@ -380,6 +380,126 @@ def test_first_start_unit_exists_failure_does_not_clean_unowned_units(tmp_path: 
     assert resolved.status_path.read_text() == "pre-existing evidence"
 
 
+def test_worker_timeout_adopts_matching_owner_and_cleans_only_that_unit(tmp_path: Path):
+    resolved = _resolved(tmp_path)
+    commands = []
+    timed_out = False
+    worker_stopped = False
+
+    def run(command, **kwargs):
+        nonlocal timed_out, worker_stopped
+        commands.append(command)
+        if command[0] == "systemd-run":
+            timed_out = True
+            raise subprocess.TimeoutExpired(command, 75)
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification worker 03 owner test-owner\n",
+                )
+            if timed_out and not worker_stopped and command[-1] == resolved.worker_unit:
+                return subprocess.CompletedProcess(command, 0, "loaded\nactivating\n")
+            return subprocess.CompletedProcess(command, 0, "not-found\ninactive\n")
+        if command == ["systemctl", "stop", resolved.worker_unit]:
+            worker_stopped = True
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
+
+    assert ["systemctl", "stop", resolved.worker_unit] in commands
+    assert ["systemctl", "stop", resolved.supervisor_unit] not in commands
+
+
+def test_supervisor_exec_failure_adopts_matching_owner_and_requires_claim_safety(
+    tmp_path: Path,
+):
+    resolved = _resolved(tmp_path)
+    resolved.status_path.parent.mkdir(parents=True)
+    commands = []
+    supervisor_failed = False
+    supervisor_stopped = False
+
+    def run(command, **kwargs):
+        nonlocal supervisor_failed, supervisor_stopped
+        commands.append(command)
+        if (
+            command[0] == "systemd-run"
+            and f"--unit={resolved.supervisor_unit}" in command
+        ):
+            supervisor_failed = True
+            resolved.status_path.write_text(
+                json.dumps(
+                    {
+                        "release_id": resolved.release_id,
+                        "worker_id": resolved.worker_id,
+                        "state": "starting",
+                        "registered": False,
+                        "generation": None,
+                    }
+                )
+            )
+            raise subprocess.CalledProcessError(1, command)
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification supervisor 03 owner test-owner\n",
+                )
+            if (
+                supervisor_failed
+                and not supervisor_stopped
+                and command[-1] == resolved.supervisor_unit
+            ):
+                return subprocess.CompletedProcess(command, 0, "loaded\nfailed\n")
+            return subprocess.CompletedProcess(command, 0, "not-found\ninactive\n")
+        if command == ["systemctl", "stop", resolved.supervisor_unit]:
+            supervisor_stopped = True
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
+
+    supervisor_stop = commands.index(["systemctl", "stop", resolved.supervisor_unit])
+    worker_stop = commands.index(["systemctl", "stop", resolved.worker_unit])
+    assert supervisor_stop < worker_stop
+
+
+def test_non_signal_failure_never_adopts_foreign_worker_marker(tmp_path: Path):
+    resolved = _resolved(tmp_path)
+    commands = []
+    failed = False
+
+    def run(command, **kwargs):
+        nonlocal failed
+        commands.append(command)
+        if command[0] == "systemd-run":
+            failed = True
+            raise subprocess.CalledProcessError(1, command)
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification worker 03 owner foreign-owner\n",
+                )
+            output = (
+                "loaded\nactivating\n"
+                if failed and command[-1] == resolved.worker_unit
+                else "not-found\ninactive\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
+
+    assert not any(command[:2] == ["systemctl", "stop"] for command in commands)
+
+
 def test_supervisor_unit_race_leaves_owned_worker_running_without_claim_proof(
     tmp_path: Path,
 ):

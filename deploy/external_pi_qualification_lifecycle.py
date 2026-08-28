@@ -387,18 +387,17 @@ def start_replica(
             timeout=75,
         )
         owned_units.add(resolved.supervisor_unit)
-    except BaseException as startup_error:
+    except BaseException:
         attempted_unit = (
             resolved.worker_unit if not owned_units else resolved.supervisor_unit
         )
-        if isinstance(startup_error, (KeyboardInterrupt, SystemExit)):
-            role = "worker" if attempted_unit == resolved.worker_unit else "supervisor"
-            expected_owner = _unit_description(resolved, role, owner_id)
-            if (
-                _unit_state(attempted_unit, runner=runner) != ("not-found", "inactive")
-                and _unit_owner(attempted_unit, runner=runner) == expected_owner
-            ):
-                owned_units.add(attempted_unit)
+        role = "worker" if attempted_unit == resolved.worker_unit else "supervisor"
+        expected_owner = _unit_description(resolved, role, owner_id)
+        if (
+            _unit_state(attempted_unit, runner=runner) != ("not-found", "inactive")
+            and _unit_owner(attempted_unit, runner=runner) == expected_owner
+        ):
+            owned_units.add(attempted_unit)
         if owned_units:
             try:
                 cleanup_replica(
