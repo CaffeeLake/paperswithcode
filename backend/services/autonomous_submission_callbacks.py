@@ -20,6 +20,7 @@ def submission_callback_service(
         db,
         signing_secret=settings.autonomous_submission_callback_secret.encode(),
         callback_base_url=settings.autonomous_submission_callback_base_url,
+        remote_budget_usd=settings.autonomous_submission_run_budget_usd,
     )
 
 
@@ -30,9 +31,14 @@ def apply_submission_callback(
     claim_id: uuid.UUID,
     bearer_token: str,
     decision: AutonomousSubmissionDecision,
+    remote_signature: str | None = None,
+    remote_usage: str | None = None,
 ) -> None:
     if decision.claim_id != claim_id:
         raise ValueError("Callback path does not match decision scope")
     submission_callback_service(db, settings).apply_submission_decision(
-        bearer_token, decision
+        bearer_token,
+        decision,
+        remote_signature=remote_signature,
+        remote_usage=remote_usage,
     )

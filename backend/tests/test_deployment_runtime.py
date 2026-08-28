@@ -4535,10 +4535,15 @@ def test_staging_chat_latency_rollout_settings_are_preserved():
 
 def test_cron_jobs_declare_bounded_execution_contracts():
     assert cron_launcher.COMMANDS
+    read_only_jobs = {
+        "alert_submission_review_failure",
+        "export_enrichment_dashboard",
+        "monitor_chat_operational_alerts",
+    }
     for name, spec in cron_launcher.COMMANDS.items():
         assert spec.command
         assert spec.timeout in {"1m", "30m", "45m", "50m", "2h", "6h"}
-        assert spec.mutates_shared_data is (name != "monitor_chat_operational_alerts")
+        assert spec.mutates_shared_data is (name not in read_only_jobs)
         assert spec.idempotency
         assert spec.health_job
 

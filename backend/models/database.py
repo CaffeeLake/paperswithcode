@@ -4592,6 +4592,13 @@ class AutonomousSubmissionClaim(Base):
     attested_decision_digest: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
+    remote_manifest_digest: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    remote_job_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    remote_review_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     callback_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
@@ -4628,6 +4635,10 @@ class AutonomousSubmissionClaim(Base):
         CheckConstraint(
             "attested_decision_digest IS NULL OR length(attested_decision_digest) = 64",
             name="autonomous_submission_claim_attested_digest_check",
+        ),
+        CheckConstraint(
+            "remote_manifest_digest IS NULL OR length(remote_manifest_digest) = 64",
+            name="autonomous_submission_claim_remote_manifest_digest_check",
         ),
         Index(
             "idx_autonomous_submission_claim_pending_state",

@@ -43,6 +43,25 @@ def job(
 
 
 COMMANDS: dict[str, Job] = {
+    "alert_submission_review_failure": job(
+        "-m",
+        "backend.scripts.alert_autonomous_submission_failure",
+        timeout="1m",
+        idempotency=(
+            "send one content-free failure signal through the configured primary "
+            "or fallback alert route"
+        ),
+        mutates_shared_data=False,
+    ),
+    "review_submissions": job(
+        ".github/workflows/scripts/review_submissions.py",
+        "--launch-remote",
+        timeout="45m",
+        idempotency=(
+            "claim at most 25 oldest submissions once and launch one pinned "
+            "database-free remote reviewer with replay-safe callbacks"
+        ),
+    ),
     "monitor_chat_operational_alerts": job(
         "-m",
         "backend.scripts.monitor_chat_operational_alerts",

@@ -10,6 +10,7 @@ executes them from a checkout. GitHub Actions invokes the installed
 | Schedule | Script | Purpose |
 | --- | --- | --- |
 | Every minute (local systemd timer) | `.github/workflows/scripts/hourly/process_curation_thumbnails.py` | Claim remote-curation thumbnail requests and record terminal results as `pwc-cron`. |
+| Hourly with randomized delay (packaged, disabled until acceptance) | `.github/workflows/scripts/review_submissions.py` | Launch one pinned, database-free HF Job for at most 25 oldest eligible submissions. |
 | Manual dispatch only | `.github/workflows/scripts/hourly/update_hot_github_trending.py` | Staging-ready hot pipeline; production schedule remains intentionally disabled. |
 | `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh fresh and weekly official repositories concurrently using separate GitHub accounts. |
 | `15 * * * *` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
@@ -45,6 +46,62 @@ failures once with:
 ```bash
 sudo pwc-cron process_curation_thumbnails --retry-failed
 ```
+
+## Autonomous submission reviewer
+
+The packaged `submission-review.timer` invokes the immutable-release
+`pwc-cron review_submissions` allowlist once per hour with a randomized delay.
+The launcher claims at most 25 oldest pending edits, writes a private signed
+manifest under `/var/lib/paperswithcode/autonomous-submissions`, and submits
+that manifest as an encrypted secret to one pinned CPU Hugging Face Job. The
+remote worker receives no database URL or HF launch credential. It receives
+only its dedicated budget-capped OpenAI key and per-claim callback tokens.
+The configured Job image must be a Docker reference ending in an exact
+`@sha256:` digest; tags and mutable Space URLs are rejected.
+
+Keep both `PWC_AUTONOMOUS_SUBMISSION_ENABLED` and
+`PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED` false until Task 15 shadow comparison
+and acceptance drills are recorded. The dedicated HF token must only launch
+Jobs in the configured namespace; the OpenAI credential must have an external
+operator-specific spending limit no higher than the configured run budget.
+Neither credential may be shared with paper curation or interactive Codex.
+Configure distinct primary and fallback autonomous alert webhooks. A failed
+launcher pass, remote startup or timeout, missing callback, or remote cost
+limit failure makes the service fail and triggers the content-free
+`submission-review-alert.service`; alert payloads contain only environment,
+release, severity, and the runbook URL.
+
+Read-only queue preview does not claim or decide anything and remains useful in
+manual mode:
+
+```bash
+sudo pwc-cron review_submissions --dry-run
+```
+
+After acceptance, enable the timer without running the script from a checkout:
+
+```bash
+sudo systemctl enable --now submission-review.timer
+systemctl status submission-review.timer
+sudo pwc-cron status
+```
+
+Disable remotely through the admin autonomy control first; for host recovery,
+disable the timer and its configuration flag:
+
+```bash
+sudo systemctl disable --now submission-review.timer
+```
+
+Only one matching remote Job may be active. Each callback is HMAC-bound to its
+claim token, immutable snapshot, and exact decision. Exact repeats are safe;
+changed, expired, unsigned, or scope-expanding callbacks fail closed. On the
+next timer pass, a terminal Job with missing signed callbacks expires only its
+claims, exits nonzero for alerting, and can be replayed by running the same
+allowlisted command again. Verify deferred taxonomy submissions remain pending
+in their existing admin tabs. Launcher, startup, callback, timeout, image-pin,
+and capacity failures are systemd failures delivered by autonomous alerting;
+the remote provider project enforces the independent cost ceiling.
 
 ## Admin Dashboard
 

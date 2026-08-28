@@ -85,6 +85,10 @@ def autonomous_submission_decision_callback(
     claim_id: uuid.UUID,
     body: AutonomousSubmissionDecision,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    remote_signature: Optional[str] = Header(
+        default=None, alias="X-PWC-Remote-Decision"
+    ),
+    remote_usage: Optional[str] = Header(default=None, alias="X-PWC-Remote-Usage"),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ) -> Response:
@@ -99,12 +103,18 @@ def autonomous_submission_decision_callback(
             claim_id=claim_id,
             bearer_token=authorization[7:],
             decision=body,
+            remote_signature=remote_signature,
+            remote_usage=remote_usage,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AutonomousSubmissionCallbackError as exc:
         message = str(exc)
-        code = 401 if "token" in message or "scope" in message else 409
+        code = (
+            401
+            if "token" in message or "scope" in message or "signature" in message
+            else 409
+        )
         raise HTTPException(status_code=code, detail=message) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

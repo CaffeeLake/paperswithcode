@@ -247,8 +247,19 @@ def main() -> int:
             "pwc-curation-thumbnails.timer",
             "pwc-chat-alert-monitor.service",
             "pwc-chat-alert-monitor.timer",
+            "autonomous/submission-review.service",
+            "autonomous/submission-review.timer",
+            "autonomous/submission-review-alert.service",
         ):
-            shutil.copy2(INSTALL_ROOT / "systemd" / unit, SYSTEMD_ROOT / unit)
+            source = (
+                INSTALL_ROOT / unit
+                if unit.startswith("autonomous/")
+                else INSTALL_ROOT / "systemd" / unit
+            )
+            shutil.copy2(
+                source,
+                SYSTEMD_ROOT / Path(unit).name,
+            )
         shutil.copy2(
             INSTALL_ROOT / "systemd" / "paperswithcode-tmpfiles.conf",
             "/etc/tmpfiles.d/paperswithcode.conf",

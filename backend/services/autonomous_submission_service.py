@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import uuid
+import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,6 +46,14 @@ class AutonomousSubmissionDecision(BaseModel):
     evidence: list[str] = Field(min_length=1, max_length=50)
     confidence: float = Field(ge=0, le=1)
     resolved_payload: dict[str, Any] | None = None
+
+
+class RemoteSubmissionUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int = Field(ge=0, le=10_000_000)
+    output_tokens: int = Field(ge=0, le=10_000_000)
+    cost_usd: Decimal = Field(ge=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +103,7 @@ class AutonomousSubmissionService:
         callback_base_url: str,
         clock: Callable[[], datetime] | None = None,
         decision_applier: DecisionApplier | None = None,
+        remote_budget_usd: Decimal = Decimal("0"),
     ):
         if len(signing_secret) < 32:
             raise ValueError("Autonomous submission signing secret is too short")
@@ -104,6 +114,7 @@ class AutonomousSubmissionService:
         self._base_url = callback_base_url.rstrip("/")
         self._clock = clock or (lambda: datetime.now(UTC))
         self._decision_applier = decision_applier or self._apply_canonical_decision
+        self._remote_budget_usd = remote_budget_usd
 
     @staticmethod
     def _snapshot(row: PendingPaperEdit) -> dict[str, Any]:
@@ -202,6 +213,9 @@ class AutonomousSubmissionService:
             claim.completed_at = None
             claim.review_run_id = None
             claim.attested_decision_digest = None
+            claim.remote_manifest_digest = None
+            claim.remote_job_id = None
+            claim.remote_review_run_id = None
             if existing is None:
                 self.db.add(claim)
             claimed.append(
@@ -221,6 +235,28 @@ class AutonomousSubmissionService:
             )
         self.db.commit()
         return claimed
+
+    def preview_submission_queue(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 25:
+            raise ValueError("Autonomous submission preview limit is invalid")
+        rows = list(
+            self.db.scalars(
+                select(PendingPaperEdit)
+                .where(PendingPaperEdit.status == "pending")
+                .order_by(PendingPaperEdit.created_at, PendingPaperEdit.id)
+                .limit(limit)
+            )
+        )
+        return [
+            {
+                "pending_edit_id": row.id,
+                "edit_type": row.edit_type,
+                "required_decision": (
+                    "defer" if row.edit_type in HUMAN_ONLY_EDIT_TYPES else None
+                ),
+            }
+            for row in rows
+        ]
 
     def build_submission_manifest(
         self, batch: list[ClaimedSubmission]
@@ -375,6 +411,84 @@ class AutonomousSubmissionService:
         ).hexdigest()
         return hmac.compare_digest(supplied, expected)
 
+    def prepare_remote_review(
+        self, batch: list[ClaimedSubmission], manifest: dict[str, Any]
+    ) -> None:
+        """Fence claims for a database-free worker before launching it."""
+        if not self.verify_manifest(manifest):
+            raise ValueError("Remote submission manifest signature is invalid")
+        manifest_claims = {uuid.UUID(item["claim_id"]) for item in manifest["items"]}
+        if manifest_claims != {item.claim_id for item in batch}:
+            raise ValueError("Remote submission manifest scope is inconsistent")
+        manifest_digest = _digest(manifest)
+        for item in batch:
+            claim = self.db.get(AutonomousSubmissionClaim, item.claim_id)
+            if claim is None or claim.state != "claimed":
+                raise ValueError("Remote submission claim changed before launch")
+            claim.remote_manifest_digest = manifest_digest
+            claim.remote_job_id = None
+            claim.remote_review_run_id = uuid.uuid5(item.claim_id, manifest_digest)
+            claim.review_run_id = None
+            claim.attested_decision_digest = None
+        self.db.commit()
+
+    def record_remote_job(self, batch: list[ClaimedSubmission], *, job_id: str) -> None:
+        if not job_id or len(job_id) > 255:
+            raise ValueError("Remote submission Job ID is invalid")
+        for item in batch:
+            claim = self.db.get(AutonomousSubmissionClaim, item.claim_id)
+            if claim is None or claim.remote_manifest_digest is None:
+                raise ValueError("Remote submission claim changed after launch")
+            claim.remote_job_id = job_id
+        self.db.commit()
+
+    def pending_remote_job_ids(self) -> tuple[str, ...]:
+        return tuple(
+            self.db.scalars(
+                select(AutonomousSubmissionClaim.remote_job_id)
+                .where(
+                    AutonomousSubmissionClaim.state == "claimed",
+                    AutonomousSubmissionClaim.remote_job_id.is_not(None),
+                )
+                .distinct()
+                .order_by(AutonomousSubmissionClaim.remote_job_id)
+            )
+        )
+
+    def release_remote_job(self, job_id: str) -> int:
+        claims = list(
+            self.db.scalars(
+                select(AutonomousSubmissionClaim).where(
+                    AutonomousSubmissionClaim.state == "claimed",
+                    AutonomousSubmissionClaim.remote_job_id == job_id,
+                )
+            )
+        )
+        now = self._clock()
+        for claim in claims:
+            claim.expires_at = now
+            claim.review_run_id = None
+            claim.attested_decision_digest = None
+            claim.remote_manifest_digest = None
+            claim.remote_job_id = None
+            claim.remote_review_run_id = None
+        self.db.commit()
+        return len(claims)
+
+    def release_failed_remote_review(self, batch: list[ClaimedSubmission]) -> None:
+        """Expire prepared claims after launch failure so a later run can retry."""
+        now = self._clock()
+        for item in batch:
+            claim = self.db.get(AutonomousSubmissionClaim, item.claim_id)
+            if claim is not None and claim.state == "claimed":
+                claim.expires_at = now
+                claim.review_run_id = None
+                claim.attested_decision_digest = None
+                claim.remote_manifest_digest = None
+                claim.remote_job_id = None
+                claim.remote_review_run_id = None
+        self.db.commit()
+
     @staticmethod
     def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
         """Create a new private manifest without following or replacing paths."""
@@ -393,7 +507,12 @@ class AutonomousSubmissionService:
             raise
 
     def apply_submission_decision(
-        self, callback_token: str, decision: AutonomousSubmissionDecision
+        self,
+        callback_token: str,
+        decision: AutonomousSubmissionDecision,
+        *,
+        remote_signature: str | None = None,
+        remote_usage: str | None = None,
     ) -> None:
         now = self._clock()
         claim = self.db.execute(
@@ -447,6 +566,79 @@ class AutonomousSubmissionService:
                 raise AutonomousSubmissionCallbackError(
                     "External-paper enrichment is not allowed"
                 )
+        if (
+            claim.attested_decision_digest is None
+            and remote_signature is not None
+            and remote_usage is not None
+            and claim.remote_manifest_digest is not None
+            and claim.remote_review_run_id is not None
+        ):
+            try:
+                if len(remote_usage) > 4096:
+                    raise ValueError("usage header is too large")
+                usage_payload = RemoteSubmissionUsage.model_validate_json(
+                    base64.urlsafe_b64decode(remote_usage.encode()).decode()
+                )
+            except (TypeError, ValueError):
+                raise AutonomousSubmissionCallbackError(
+                    "Remote decision usage is invalid"
+                ) from None
+            if (
+                self._remote_budget_usd <= 0
+                or usage_payload.cost_usd > self._remote_budget_usd
+            ):
+                raise AutonomousSubmissionCallbackError(
+                    "Remote decision exceeded its cost limit"
+                )
+            signed_payload = {
+                "decision": decision_payload,
+                "usage": usage_payload.model_dump(mode="json"),
+            }
+            expected_signature = hmac.new(
+                callback_token.encode(), _canonical(signed_payload), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(remote_signature, expected_signature):
+                raise AutonomousSubmissionCallbackError(
+                    "Remote decision signature is invalid"
+                )
+            if self.db.get(AutonomousRun, claim.remote_review_run_id) is not None:
+                raise AutonomousSubmissionCallbackError(
+                    "Remote review run identity was already used"
+                )
+            remote_context = RunContext(
+                run_id=claim.remote_review_run_id,
+                operator=Operator.SUBMISSIONS,
+                dry_run=False,
+                manifest_revision=(
+                    f"remote-submission-v1:{claim.remote_manifest_digest}"
+                ),
+            )
+            AutonomousOperationsRepository().append_run(
+                self.db,
+                context=remote_context,
+                status="completed",
+                exit_classification="completed",
+                capability_requests=[
+                    {
+                        "capability": "review_submission",
+                        "resource_kind": "pending_edit",
+                        "resource_identifier": str(row.id),
+                        "resource_exists": True,
+                        "reason_code": decision.decision,
+                        "rationale": decision.rationale,
+                        "evidence": decision.evidence,
+                        "confidence": decision.confidence,
+                        "resolved_payload": decision.resolved_payload,
+                    }
+                ],
+                evidence_digests=[claim.snapshot_digest],
+                input_tokens=usage_payload.input_tokens,
+                output_tokens=usage_payload.output_tokens,
+                cost_usd=usage_payload.cost_usd,
+                now=now,
+            )
+            claim.review_run_id = claim.remote_review_run_id
+            claim.attested_decision_digest = decision_digest
         if claim.review_run_id is None or not hmac.compare_digest(
             claim.attested_decision_digest or "", decision_digest
         ):

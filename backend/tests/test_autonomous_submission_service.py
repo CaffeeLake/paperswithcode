@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hmac
+import base64
 import uuid
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -135,6 +137,11 @@ def postgres_engine():
             ).read_text()
             cursor.execute(migration)
             cursor.execute(migration)
+            remote_migration = (
+                MIGRATIONS / "add_autonomous_submission_remote_jobs.sql"
+            ).read_text()
+            cursor.execute(remote_migration)
+            cursor.execute(remote_migration)
         connection.commit()
     finally:
         connection.close()
@@ -204,6 +211,7 @@ def _service(db: Session, *, applied=None) -> AutonomousSubmissionService:
         callback_base_url="https://paperswithcode.co/api/v1",
         clock=lambda: NOW,
         decision_applier=applied,
+        remote_budget_usd=Decimal("5"),
     )
 
 
@@ -482,6 +490,71 @@ def test_manifest_writer_is_exclusive_private_and_refuses_symlinks(db, tmp_path)
     assert target.read_text() == "untouched"
 
 
+def test_database_free_remote_decision_requires_scoped_completion_signature(db):
+    run_id = uuid.uuid4()
+    _run(db, run_id)
+    row = _edit(db, "tasks", 1, payload={"task_ids": [7]})
+    db.commit()
+    applied = []
+    service = _service(
+        db, applied=lambda context, decision: applied.append((context, decision))
+    )
+    batch = service.claim_submission_batch(run_id, limit=1)
+    manifest = service.build_submission_manifest(batch)
+    service.prepare_remote_review(batch, manifest)
+    service.record_remote_job(batch, job_id="remote-job-1")
+    decision = AutonomousSubmissionDecision(
+        claim_id=batch[0].claim_id,
+        decision="approve",
+        rationale="The existing task identifier resolves.",
+        evidence=["submission_snapshot"],
+        confidence=0.99,
+        resolved_payload={"task_ids": [7]},
+    )
+    usage = {"input_tokens": 100, "output_tokens": 20, "cost_usd": "0.01"}
+    encoded_usage = base64.urlsafe_b64encode(
+        json.dumps(usage, sort_keys=True, separators=(",", ":")).encode()
+    ).decode()
+    canonical = json.dumps(
+        {"decision": decision.model_dump(mode="json"), "usage": usage},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    with pytest.raises(AutonomousSubmissionCallbackError, match="attested"):
+        service.apply_submission_decision(batch[0].callback_token, decision)
+    with pytest.raises(AutonomousSubmissionCallbackError, match="signature"):
+        service.apply_submission_decision(
+            batch[0].callback_token,
+            decision,
+            remote_signature="0" * 64,
+            remote_usage=encoded_usage,
+        )
+
+    signature = hmac.new(
+        batch[0].callback_token.encode(), canonical, sha256
+    ).hexdigest()
+    service.apply_submission_decision(
+        batch[0].callback_token,
+        decision,
+        remote_signature=signature,
+        remote_usage=encoded_usage,
+    )
+
+    claim = db.get(AutonomousSubmissionClaim, batch[0].claim_id)
+    review_run = db.get(AutonomousRun, claim.review_run_id)
+    assert claim.remote_job_id == "remote-job-1"
+    assert claim.state == "completed"
+    assert review_run.status == "completed"
+    assert review_run.exit_classification == "completed"
+    assert review_run.capability_requests[0]["reason_code"] == "approve"
+    assert review_run.input_tokens == 100
+    assert review_run.output_tokens == 20
+    assert review_run.cost_usd == Decimal("0.01")
+    assert applied[0][1] == decision
+    assert db.get(PendingPaperEdit, row.id).status == "pending"
+
+
 def test_human_only_must_defer_and_external_paper_cannot_request_enrichment(db):
     run_id = uuid.uuid4()
     _run(db, run_id)
@@ -587,6 +660,13 @@ def test_manual_mode_blocks_claiming_but_not_queue_visibility(db):
     with pytest.raises(ManualModeEnabled):
         _service(db).claim_submission_batch(run_id)
 
+    assert _service(db).preview_submission_queue() == [
+        {
+            "pending_edit_id": row.id,
+            "edit_type": "repositories",
+            "required_decision": None,
+        }
+    ]
     assert db.get(PendingPaperEdit, row.id).status == "pending"
     assert db.query(AutonomousSubmissionClaim).count() == 0
 

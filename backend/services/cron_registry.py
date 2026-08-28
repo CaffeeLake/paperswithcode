@@ -1270,6 +1270,27 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         workflow_jobs=("run",),
     ),
     CronJobDefinition(
+        id="review_submissions",
+        display_name="Autonomous Submission Review",
+        category="systemd",
+        schedule="hourly with up to 15 minutes randomized delay (systemd)",
+        script_path=".github/workflows/scripts/review_submissions.py",
+        log_name="review_submissions",
+        process_patterns=("review_submissions",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/review_submissions.lock"
+        ),
+        expected_runtime_minutes=45,
+        stale_after_minutes=135,
+        critical=True,
+        healthy_no_work_allowed=True,
+        scheduler="systemd",
+        schedule_policies=(SchedulePolicy.fixed(60),),
+        schedule_grace_minutes=20,
+        systemd_timer="submission-review.timer",
+        systemd_service="submission-review.service",
+    ),
+    CronJobDefinition(
         id="monitor_chat_operational_alerts",
         display_name="Chat Operational Alert Monitor",
         category="systemd",

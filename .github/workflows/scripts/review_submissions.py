@@ -7,6 +7,7 @@ the generated immutable manifest and its scoped callbacks.
 from __future__ import annotations
 
 import argparse
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,10 +21,19 @@ from backend.services.autonomous_operations_repository import (
     RunContext,
 )
 from backend.services.autonomous_submission_service import AutonomousSubmissionService
+from backend.services.autonomous_submission_job_service import (
+    AutonomousSubmissionJobError,
+    AutonomousSubmissionJobService,
+)
 
 
 def prepare_review_batch(
-    *, run_id: uuid.UUID, manifest_file: Path, limit: int = 25
+    *,
+    run_id: uuid.UUID,
+    manifest_file: Path,
+    limit: int = 25,
+    launch_remote: bool = False,
+    dry_run: bool = False,
 ) -> int:
     settings = get_settings()
     if not settings.autonomous_submission_enabled:
@@ -31,7 +41,7 @@ def prepare_review_batch(
     context = RunContext(
         run_id=run_id,
         operator=Operator.SUBMISSIONS,
-        dry_run=False,
+        dry_run=dry_run,
         manifest_revision="submission-review-v1",
     )
     with db_manager.session_local() as db:
@@ -48,10 +58,45 @@ def prepare_review_batch(
             signing_secret=settings.autonomous_submission_callback_secret.encode(),
             callback_base_url=settings.autonomous_submission_callback_base_url,
         )
+        if dry_run:
+            preview = service.preview_submission_queue(limit=limit)
+            print(
+                "AUTONOMOUS_SUBMISSION_DRY_RUN "
+                + json.dumps(preview, sort_keys=True, separators=(",", ":"))
+            )
+            return len(preview)
+        if launch_remote:
+            job_service = AutonomousSubmissionJobService(settings)
+            for job_id in service.pending_remote_job_ids():
+                status = job_service.poll(job_id)
+                if not status.terminal:
+                    raise AutonomousSubmissionJobError(
+                        f"Submission Job {job_id} is still active"
+                    )
+                pending = service.release_remote_job(job_id)
+                if pending:
+                    raise AutonomousSubmissionJobError(
+                        f"Submission Job {job_id} ended as {status.stage} "
+                        f"with {pending} unsigned or missing callbacks"
+                    )
         batch = service.claim_submission_batch(run_id, limit=limit)
         if not batch:
             return 0
-        service.write_manifest(manifest_file, service.build_submission_manifest(batch))
+        manifest = service.build_submission_manifest(batch)
+        service.write_manifest(manifest_file, manifest)
+        if launch_remote:
+            service.prepare_remote_review(batch, manifest)
+            try:
+                launched = job_service.launch(manifest)
+                service.record_remote_job(batch, job_id=launched.job_id)
+            except Exception:
+                service.release_failed_remote_review(batch)
+                raise
+            print(
+                "AUTONOMOUS_SUBMISSION_JOB "
+                f"job_id={launched.job_id} url={launched.monitoring_url}"
+            )
+            return len(batch)
         reviewed = service.review_submission_batch(
             batch,
             budget_usd=settings.autonomous_submission_run_budget_usd,
@@ -63,16 +108,24 @@ def prepare_review_batch(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-id", type=uuid.UUID, required=True)
-    parser.add_argument("--manifest-file", type=Path, required=True)
+    parser.add_argument("--run-id", type=uuid.UUID)
+    parser.add_argument("--manifest-file", type=Path)
     parser.add_argument("--limit", type=int, choices=range(1, 26), default=25)
+    parser.add_argument("--launch-remote", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    claimed = prepare_review_batch(
-        run_id=args.run_id,
-        manifest_file=args.manifest_file,
-        limit=args.limit,
+    run_id = args.run_id or uuid.uuid4()
+    manifest_file = args.manifest_file or Path(
+        f"/var/lib/paperswithcode/autonomous-submissions/{run_id}.json"
     )
-    print(f"AUTONOMOUS_SUBMISSION_REVIEW claimed={claimed} run_id={args.run_id}")
+    claimed = prepare_review_batch(
+        run_id=run_id,
+        manifest_file=manifest_file,
+        limit=args.limit,
+        launch_remote=args.launch_remote,
+        dry_run=args.dry_run,
+    )
+    print(f"AUTONOMOUS_SUBMISSION_REVIEW claimed={claimed} run_id={run_id}")
     return 0
 
 

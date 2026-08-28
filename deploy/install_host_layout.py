@@ -16,6 +16,24 @@ LOG_ROOT = Path("/var/log/paperswithcode")
 CONFIG_ROOT = Path("/etc/paperswithcode")
 REPO = Path(__file__).resolve().parents[1]
 UV_DESTINATION = Path("/usr/local/bin/uv")
+SYSTEMD_UNITS = (
+    "paperswithcode-backend@.service",
+    "paperswithcode-staging-backend@.service",
+    "paperswithcode-staging-backend@.socket",
+    "paperswithcode-staging-external-pi@.service",
+    "paperswithcode-staging-external-pi-worker@.service",
+    "paperswithcode-production-backend@.service",
+    "paperswithcode-production-backend@.socket",
+    "pwc-postgres-backup.service",
+    "pwc-postgres-backup.timer",
+    "pwc-curation-thumbnails.service",
+    "pwc-curation-thumbnails.timer",
+    "pwc-chat-alert-monitor.service",
+    "pwc-chat-alert-monitor.timer",
+    "autonomous/submission-review.service",
+    "autonomous/submission-review.timer",
+    "autonomous/submission-review-alert.service",
+)
 
 
 def ensure_user(name: str) -> None:
@@ -165,6 +183,12 @@ def main() -> int:
         "pwc-cron",
         0o700,
     )
+    ensure_dir(
+        STATE_ROOT / "autonomous-submissions",
+        "pwc-cron",
+        "pwc-cron",
+        0o700,
+    )
     for path in (
         STATE_ROOT / "staging" / "chat-agent",
         STATE_ROOT / "staging" / "chat-recovery-spool",
@@ -207,22 +231,12 @@ def main() -> int:
         )
 
     systemd = Path(__file__).resolve().parent / "systemd"
-    for name in (
-        "paperswithcode-backend@.service",
-        "paperswithcode-staging-backend@.service",
-        "paperswithcode-staging-backend@.socket",
-        "paperswithcode-staging-external-pi@.service",
-        "paperswithcode-staging-external-pi-worker@.service",
-        "paperswithcode-production-backend@.service",
-        "paperswithcode-production-backend@.socket",
-        "pwc-postgres-backup.service",
-        "pwc-postgres-backup.timer",
-        "pwc-curation-thumbnails.service",
-        "pwc-curation-thumbnails.timer",
-        "pwc-chat-alert-monitor.service",
-        "pwc-chat-alert-monitor.timer",
-    ):
-        shutil.copy2(systemd / name, Path("/etc/systemd/system") / name)
+    for name in SYSTEMD_UNITS:
+        destination = Path("/etc/systemd/system") / Path(name).name
+        source = (
+            systemd.parent / name if name.startswith("autonomous/") else systemd / name
+        )
+        shutil.copy2(source, destination)
     Path("/etc/systemd/journald.conf.d").mkdir(parents=True, exist_ok=True)
     shutil.copy2(
         systemd / "journald-paperswithcode.conf",

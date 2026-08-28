@@ -306,6 +306,55 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
                 f"{settings.environment} autonomous callbacks must target "
                 f"{expected_callback_url}"
             )
+    if settings.autonomous_submission_jobs_enabled:
+        if settings.environment != "production":
+            raise RuntimeError("autonomous submission Jobs are production-only")
+        if not settings.autonomous_submission_enabled:
+            raise RuntimeError(
+                "autonomous submission Jobs require submission callbacks"
+            )
+        if (
+            not settings.autonomous_submission_hf_namespace
+            or not settings.autonomous_submission_hf_token
+            or not settings.autonomous_submission_openai_api_key
+            or not settings.autonomous_submission_job_image
+            or not settings.autonomous_alert_slack_webhook_url
+            or not settings.autonomous_alert_fallback_webhook_url
+        ):
+            raise RuntimeError(
+                "autonomous submission Jobs require separate credentials, image, "
+                "and alert routes"
+            )
+        if settings.autonomous_submission_hf_token in {
+            settings.codex_jobs_token,
+            settings.hf_token,
+        } or settings.autonomous_submission_openai_api_key in {
+            settings.codex_jobs_openai_api_key,
+            settings.openai_api_key,
+        }:
+            raise RuntimeError(
+                "autonomous submission Jobs require separate credentials"
+            )
+        if (
+            settings.autonomous_submission_input_usd_per_million <= 0
+            or settings.autonomous_submission_cached_input_usd_per_million <= 0
+            or settings.autonomous_submission_output_usd_per_million <= 0
+        ):
+            raise RuntimeError(
+                "autonomous submission Jobs require positive pinned pricing"
+            )
+        image_is_digest = re.fullmatch(
+            r".+@sha256:[0-9a-f]{64}", settings.autonomous_submission_job_image
+        )
+        if not image_is_digest:
+            raise RuntimeError("autonomous submission Jobs require an immutable image")
+        if (
+            settings.autonomous_alert_slack_webhook_url
+            == settings.autonomous_alert_fallback_webhook_url
+        ):
+            raise RuntimeError(
+                "autonomous submission Jobs require separate alert routes"
+            )
     if settings.codex_curation_scheduler_enabled:
         if settings.environment != "production":
             raise RuntimeError("scheduled paper curation is production-only")

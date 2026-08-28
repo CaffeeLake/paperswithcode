@@ -163,6 +163,30 @@ class Settings(BaseSettings):
     autonomous_submission_run_budget_usd: Decimal = Field(
         default=Decimal("5"), gt=0, le=100
     )
+    autonomous_submission_jobs_enabled: bool = Field(default=False)
+    autonomous_submission_hf_namespace: str = Field(default="")
+    autonomous_submission_hf_token: str = Field(default="")
+    autonomous_submission_openai_api_key: str = Field(default="")
+    autonomous_submission_job_image: str = Field(default="")
+    autonomous_alert_slack_webhook_url: str = Field(default="", max_length=2000)
+    autonomous_alert_fallback_webhook_url: str = Field(default="", max_length=2000)
+    autonomous_alert_runbook_url: str = Field(default="", max_length=2000)
+    autonomous_submission_job_timeout_seconds: int = Field(
+        default=1800, ge=300, le=3600
+    )
+    autonomous_submission_codex_timeout_seconds: int = Field(
+        default=1200, ge=60, le=1800
+    )
+    autonomous_submission_max_active_jobs: int = Field(default=1, ge=1, le=1)
+    autonomous_submission_input_usd_per_million: Decimal = Field(
+        default=Decimal("0"), ge=0
+    )
+    autonomous_submission_cached_input_usd_per_million: Decimal = Field(
+        default=Decimal("0"), ge=0
+    )
+    autonomous_submission_output_usd_per_million: Decimal = Field(
+        default=Decimal("0"), ge=0
+    )
 
     # Codex curation jobs. Immutable production releases may opt in; staging
     # remains disabled because its catalog role is read-only.
