@@ -40,6 +40,15 @@ STAGING_EXCLUDED_KEYS = {
     "PWC_OPENROUTER_API_KEY",
 }
 CRON_ONLY_KEYS = {
+    "PWC_AUTONOMOUS_ALERT_FALLBACK_WEBHOOK_URL",
+    "PWC_AUTONOMOUS_ALERT_SLACK_WEBHOOK_URL",
+    "PWC_AUTONOMOUS_CODEX_API_KEY",
+    "PWC_AUTONOMOUS_CODEX_BROKER_TOKEN",
+    "PWC_AUTONOMOUS_DIGEST_WEBHOOK_URL",
+    "PWC_AUTONOMOUS_CODEX_RESERVATION_VERIFY_KEY",
+    "PWC_AUTONOMOUS_SUBMISSION_HF_TOKEN",
+    "PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED",
+    "PWC_AUTONOMOUS_SUBMISSION_OPENAI_API_KEY",
     "PWC_GITHUB_TOKEN_HOT",
     "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
 }
@@ -809,6 +818,11 @@ def cron_passthrough_credentials(
             "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
         }
     }
+    for key in CRON_ONLY_KEYS:
+        if key in legacy:
+            result[key] = legacy[key]
+        elif key in current_cron:
+            result[key] = current_cron[key]
     secondary_key = "PWC_SEMANTIC_SCHOLAR_API_KEY_2"
     if secondary_key not in result and secondary_key in current_cron:
         result[secondary_key] = current_cron[secondary_key]

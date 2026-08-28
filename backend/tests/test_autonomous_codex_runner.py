@@ -51,6 +51,7 @@ from backend.services.autonomous_operations_repository import (
     BudgetReservationUnavailable,
 )
 from backend.services.autonomous_prompt_builder import build_codex_envelope
+from backend.services.autonomous_digest_service import BudgetDecision, BudgetLimits
 
 
 NOW = datetime(2026, 8, 28, 12, tzinfo=UTC)
@@ -294,6 +295,36 @@ def test_budget_exhaustion_discards_proposed_mutations(db):
     assert result.status == "budget_exhausted"
     assert result.proposed_actions == ()
     assert db.get(AutonomousRun, result.run_id).capability_requests == []
+
+
+def test_cumulative_budget_gate_stops_before_credentials_or_executor(db):
+    executor = RecordingExecutor()
+
+    class ExhaustedBudget:
+        limits = BudgetLimits(
+            Decimal("1"), 1000, Decimal("2"), 2000, Decimal("3"), 3000
+        )
+
+        def enforce_before_run(self, _db, **_kwargs):
+            return BudgetDecision(
+                False,
+                "daily_cost_limit",
+                True,
+                Decimal("2"),
+                Decimal("2"),
+                1000,
+                1000,
+            )
+
+    result = AutonomousCodexRunner(
+        executor=executor,
+        environ=runner_env(),
+        now=lambda: NOW,
+        cumulative_budget_service=ExhaustedBudget(),
+    ).run(request(), db=db)
+
+    assert result.status == "budget_exhausted"
+    assert executor.calls == []
 
 
 def test_provider_reservation_is_durable_before_executor_and_content_free(db):
@@ -577,10 +608,20 @@ def test_expired_crash_intent_is_finalized_without_second_model_run(db):
 def test_crash_before_local_claim_reconciles_idempotent_provider_reservation(db):
     value = request()
     releases = []
+
+    class MustNotReserveAgain:
+        limits = BudgetLimits(
+            Decimal("1"), 1000, Decimal("2"), 2000, Decimal("3"), 3000
+        )
+
+        def enforce_before_run(self, _db, **_kwargs):
+            raise AssertionError("durable intent already reserved cumulative budget")
+
     runner = AutonomousCodexRunner(
         executor=RecordingExecutor(error=AssertionError("must not execute")),
         environ=runner_env(),
         now=lambda: NOW,
+        cumulative_budget_service=MustNotReserveAgain(),
     )
     pricing = runner._pricing(value.model_alias)
     runner.repository.record_execution_intent(

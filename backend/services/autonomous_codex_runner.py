@@ -24,10 +24,12 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from backend.models.database import AutonomousRun
+from backend.services.autonomous_alert_service import send_budget_threshold_alert
 from backend.services.autonomous_budget_gateway import (
     AutonomousBudgetGateway,
     GatewayConfigurationError,
 )
+from backend.services.autonomous_digest_service import AutonomousBudgetService
 from backend.services.autonomous_capabilities import (
     CAPABILITY_MANIFESTS,
     CAPABILITY_RESOURCE_KINDS,
@@ -780,6 +782,7 @@ class AutonomousCodexRunner:
         credential_broker: CredentialBroker | None = None,
         now: Callable[[], datetime] | None = None,
         working_directory: Path | None = None,
+        cumulative_budget_service: AutonomousBudgetService | None = None,
     ) -> None:
         self.executor = executor or SubprocessCodexExecutor()
         self.environ = dict(os.environ if environ is None else environ)
@@ -789,6 +792,7 @@ class AutonomousCodexRunner:
             environ=self.environ, now=self.now
         )
         self.working_directory = working_directory or Path("/")
+        self.cumulative_budget_service = cumulative_budget_service
 
     def run(
         self,
@@ -804,6 +808,23 @@ class AutonomousCodexRunner:
             return self._resume(existing, request, db)
         if cancellation_requested():
             return self._finish(request, "cancelled", "cancelled", (), self._zero(), db)
+        intent = self.repository.get_execution_intent(db, run_id=request.context.run_id)
+        if self.cumulative_budget_service is not None and intent is None:
+            budget = self.cumulative_budget_service.enforce_before_run(
+                db,
+                operator=request.context.operator,
+                requested_cost_usd=request.budget_usd,
+                requested_tokens=(self.cumulative_budget_service.limits.per_run_tokens),
+            )
+            if not budget.allowed:
+                return self._finish(
+                    request,
+                    "budget_exhausted",
+                    "budget_exhausted",
+                    (),
+                    self._zero(),
+                    db,
+                )
         try:
             executable = self._executable()
             sandbox_executable = self._sandbox_executable()
@@ -826,7 +847,6 @@ class AutonomousCodexRunner:
             concrete_model=_MODEL_ALIASES[request.model_alias][0],
             reasoning_effort=_MODEL_ALIASES[request.model_alias][1],
         )
-        intent = self.repository.get_execution_intent(db, run_id=request.context.run_id)
         recovering_unclaimed_intent = False
         if intent is not None:
             if (
@@ -1108,6 +1128,15 @@ class AutonomousCodexRunner:
             "--cd",
             "/workspace",
         ]
+
+        def budget_exceeded(events: tuple[str, ...]) -> bool:
+            usage, _usage_found = self._usage(events, pricing)
+            return usage.cost_usd > request.budget_usd or (
+                self.cumulative_budget_service is not None
+                and usage.input_tokens + usage.output_tokens
+                > self.cumulative_budget_service.limits.per_run_tokens
+            )
+
         try:
             outcome = self.executor(
                 command=command,
@@ -1118,8 +1147,7 @@ class AutonomousCodexRunner:
                 timeout_seconds=request.timeout_seconds,
                 max_output_bytes=request.max_output_bytes,
                 cancellation_requested=cancellation_requested,
-                budget_exceeded=lambda events: self._usage(events, pricing)[0].cost_usd
-                > request.budget_usd,
+                budget_exceeded=budget_exceeded,
                 filesystem_isolation=True,
                 sandbox_executable=sandbox_executable,
                 shell=False,
@@ -1679,9 +1707,11 @@ def run_codex(
     db: Session,
     cancellation_requested: CancellationCheck | None = None,
 ) -> CodexResult:
-    return AutonomousCodexRunner().run(
-        request, db=db, cancellation_requested=cancellation_requested
-    )
+    return AutonomousCodexRunner(
+        cumulative_budget_service=AutonomousBudgetService(
+            on_exhausted=send_budget_threshold_alert
+        )
+    ).run(request, db=db, cancellation_requested=cancellation_requested)
 
 
 def codex_result_schema(

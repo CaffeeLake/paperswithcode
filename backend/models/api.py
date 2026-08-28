@@ -3092,5 +3092,28 @@ class AutonomousBaselineRequest(BaseModel):
     confirmation: Literal["QUALIFY_CHAT_BASELINE"]
 
 
+class AutonomousAcceptanceEvidenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gate_code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmation: Literal["RECORD_ACCEPTANCE_EVIDENCE"]
+
+
+class AutonomousAcceptanceReadinessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator: Literal["submissions", "cron_health", "chat_reliability"]
+    ready: bool
+    passed_gates: List[str]
+    missing_gates: List[str]
+    shadow_days: int = Field(ge=0)
+    required_shadow_days: int = Field(ge=0)
+
+
+class AutonomousAcceptanceEvidenceResponse(AutonomousAcceptanceReadinessResponse):
+    evidence_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+
+
 # Resolve forward references
 Paper.model_rebuild()

@@ -4903,6 +4903,28 @@ def test_historical_semantic_scholar_key_is_cron_only_and_preserved():
     assert preserved[secondary] == f"{secondary}=old-secondary"
 
 
+def test_autonomous_credentials_are_preserved_only_in_cron_overlay():
+    keys = {
+        "PWC_AUTONOMOUS_ALERT_FALLBACK_WEBHOOK_URL",
+        "PWC_AUTONOMOUS_ALERT_SLACK_WEBHOOK_URL",
+        "PWC_AUTONOMOUS_CODEX_API_KEY",
+        "PWC_AUTONOMOUS_CODEX_BROKER_TOKEN",
+        "PWC_AUTONOMOUS_DIGEST_WEBHOOK_URL",
+        "PWC_AUTONOMOUS_CODEX_RESERVATION_VERIFY_KEY",
+        "PWC_AUTONOMOUS_SUBMISSION_HF_TOKEN",
+        "PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED",
+        "PWC_AUTONOMOUS_SUBMISSION_OPENAI_API_KEY",
+    }
+    current = {key: f"{key}=existing-{index}" for index, key in enumerate(keys)}
+    legacy = {"PWC_GITHUB_TOKEN": "PWC_GITHUB_TOKEN=github"}
+
+    cron = configure_host_env.cron_passthrough_credentials(legacy, current)
+    application = configure_host_env.without_cron_only_credentials(current)
+
+    assert keys <= cron.keys()
+    assert keys.isdisjoint(application)
+
+
 def test_staging_chat_runtime_credentials_are_preserved():
     preserved = configure_host_env.staging_runtime_passthrough(
         {

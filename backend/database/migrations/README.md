@@ -58,6 +58,11 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_chat_direct_openai.sql` | Staging-only direct-OpenAI capability mode plus per-owner funded usage reservations, exact Responses usage settlement, and unknown-cost reconciliation ledger; apply with `search_path=staging,public` before enabling the direct route |
 | `add_paper_curation_jobs.sql` | durable admin-triggered Hugging Face paper-curation Jobs |
 | `add_autonomous_paper_curation.sql` | two-stage HF daily workflows, trace provenance, scheduler state, and benchmark-gap backlog |
+| `add_autonomous_operations.sql` | Fail-closed operator controls, immutable run/action evidence, global repair lease, provider state, attempt budgets, and Codex execution accounting |
+| `add_autonomous_release_broker.sql` | Root-owned single-use exact-SHA deploy/rollback authorization consumption |
+| `add_autonomous_submission_claims.sql` + `add_autonomous_submission_remote_jobs.sql` | Existing-taxonomy submission claims, scoped callbacks, and remote HF Job lifecycle state |
+| `add_autonomous_alert_delivery.sql` | Append-only, content-free, deduplicated urgent/mobile delivery receipts |
+| `add_autonomous_acceptance_evidence.sql` | Append-only rollout gate evidence and idempotency index |
 | `add_curation_thumbnail_queue.sql` | transactionally queued, CRON-owned thumbnail work and accepted-submission state for paper-curation Jobs |
 | `add_external_resources_schema.sql` + `run_add_external_resources_schema.py` | external resources |
 | `add_trending_score.sql` + `run_add_trending_score.py` + `update_trending_view_for_ema.sql` | repository (GitHub) trending scores |

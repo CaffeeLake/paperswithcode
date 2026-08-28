@@ -1,5 +1,9 @@
 # Operations & Automation
 
+The global autonomy kill switch, operator controls, alert delivery, budgets,
+acceptance gates, and incident procedures are documented in
+[autonomous operations](autonomous-operations.md).
+
 ## Cron Job Overview
 
 Job implementations live in `.github/workflows/scripts/`, but production never

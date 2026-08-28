@@ -185,6 +185,7 @@ class Settings(BaseSettings):
     autonomous_submission_job_image: str = Field(default="")
     autonomous_alert_slack_webhook_url: str = Field(default="", max_length=2000)
     autonomous_alert_fallback_webhook_url: str = Field(default="", max_length=2000)
+    autonomous_digest_webhook_url: str = Field(default="", max_length=2000)
     autonomous_alert_runbook_url: str = Field(default="", max_length=2000)
     autonomous_submission_job_timeout_seconds: int = Field(
         default=1800, ge=300, le=3600

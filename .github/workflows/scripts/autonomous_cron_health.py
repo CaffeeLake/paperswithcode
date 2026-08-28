@@ -11,7 +11,12 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from backend.config import get_settings
 from backend.database.connection import db_manager
+from backend.services.autonomous_alert_service import (
+    AutonomousAlert,
+    AutonomousAlertService,
+)
 from backend.services.autonomous_capabilities import (
     Capability,
     ResourceKind,
@@ -36,6 +41,7 @@ from backend.services.autonomous_operations_repository import (
     RunContext,
 )
 from backend.services.autonomous_policy import AutonomousPolicy
+from backend.services.autonomous_digest_service import AutonomousDigestService
 from backend.services.autonomous_release_service import AutonomousReleaseService
 from backend.services.autonomous_source_repair import AutonomousSourceRepairService
 from backend.services.cron_dashboard_snapshot_service import (
@@ -44,6 +50,39 @@ from backend.services.cron_dashboard_snapshot_service import (
 
 
 HEALTH_FILE = "autonomous-cron-operator-health.json"
+
+
+def _deliver_daily_digest(db, digest: dict[str, object]) -> None:
+    settings = get_settings()
+    service = AutonomousAlertService(
+        primary_url=settings.autonomous_alert_slack_webhook_url,
+        fallback_url=settings.autonomous_alert_fallback_webhook_url,
+        digest_url=settings.autonomous_digest_webhook_url,
+    )
+    receipt = service.send_daily_digest(
+        db,
+        AutonomousAlert(
+            event_kind="daily_digest",
+            operator=Operator.CRON_HEALTH,
+            resource_key=f"daily_digest_{digest['day']}",
+            environment=settings.environment,
+            release_id=settings.release_id or "unknown",
+            occurred_at=datetime.now(UTC),
+            runbook_url=(
+                settings.autonomous_alert_runbook_url
+                or "https://paperswithcode.co/docs/autonomous-operations"
+            ),
+        ),
+        digest,
+    )
+    print(
+        "AUTONOMOUS_DAILY_DIGEST "
+        + json.dumps(
+            {"delivery_id": str(receipt.id), "route": receipt.delivered_route},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 def _finding(value: dict) -> HealthFinding:
@@ -117,6 +156,13 @@ def run(mode: str, *, health_file: Path) -> int:
         )
     )
     if not selected:
+        daily_digest = None
+        if mode == "daily":
+            with db_manager.session_local() as db:
+                daily_digest = AutonomousDigestService().build_daily_digest(
+                    db, datetime.now(UTC).date()
+                )
+                _deliver_daily_digest(db, daily_digest)
         _atomic_json(
             health_file,
             {
@@ -126,6 +172,7 @@ def run(mode: str, *, health_file: Path) -> int:
                 "completed_at": datetime.now(UTC).isoformat(),
                 "job": None,
                 "reason_code": "healthy",
+                **({"daily_digest": daily_digest} if daily_digest is not None else {}),
             },
         )
         return 0
@@ -138,6 +185,7 @@ def run(mode: str, *, health_file: Path) -> int:
         f"cron-operator-v1:{mode}",
     )
     contracts = build_cron_repair_contracts()
+    daily_digest = None
     with db_manager.session_local() as db:
         repository = AutonomousOperationsRepository()
         policy = AutonomousPolicy(repository)
@@ -153,10 +201,49 @@ def run(mode: str, *, health_file: Path) -> int:
                 if value["job_name"] == job_name
             )
 
+        settings = get_settings()
+        alert_service = AutonomousAlertService(
+            primary_url=settings.autonomous_alert_slack_webhook_url,
+            fallback_url=settings.autonomous_alert_fallback_webhook_url,
+            digest_url=settings.autonomous_digest_webhook_url,
+        )
+
         def alert(event: dict[str, object]) -> None:
+            reason = str(event.get("reason_code", "operator_failure"))
+            event_kind = (
+                "rollback"
+                if "rollback" in reason or reason == "production_verification_failed"
+                else "budget_threshold"
+                if "budget" in reason
+                else "operator_failure"
+            )
+            receipt = alert_service.send_autonomous_alert(
+                db,
+                AutonomousAlert(
+                    event_kind=event_kind,
+                    operator=Operator.CRON_HEALTH,
+                    resource_key=str(event.get("job") or "cron_health"),
+                    environment=settings.environment,
+                    release_id=settings.release_id or "unknown",
+                    occurred_at=datetime.now(UTC),
+                    runbook_url=(
+                        settings.autonomous_alert_runbook_url
+                        or "https://paperswithcode.co/docs/autonomous-operations"
+                    ),
+                ),
+            )
             print(
                 "AUTONOMOUS_CRON_ALERT "
-                + json.dumps(event, sort_keys=True, separators=(",", ":"))
+                + json.dumps(
+                    {
+                        "delivery_id": str(receipt.id),
+                        "event_kind": receipt.event_kind,
+                        "route": receipt.delivered_route,
+                        "severity": receipt.severity,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             )
 
         def repair(
@@ -228,6 +315,11 @@ def run(mode: str, *, health_file: Path) -> int:
             alert=alert,
             contracts=contracts,
         ).handle_cron_findings(context, selected)
+        if mode == "daily":
+            daily_digest = AutonomousDigestService().build_daily_digest(
+                db, datetime.now(UTC).date()
+            )
+            _deliver_daily_digest(db, daily_digest)
 
     monitoring_only = outcome.reason_code in {
         "manual_mode",
@@ -249,6 +341,7 @@ def run(mode: str, *, health_file: Path) -> int:
             "published_sha": outcome.published_sha,
             "rollback_performed": outcome.rollback_performed,
             "run_id": str(run_id),
+            **({"daily_digest": daily_digest} if daily_digest is not None else {}),
         },
     )
     return (

@@ -298,7 +298,9 @@ CREATE TABLE IF NOT EXISTS autonomous_control_event (
     after_digest VARCHAR(64) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT autonomous_control_event_kind_check CHECK (
-        event_kind IN ('manual_mode','operator_enabled','chat_baseline')
+        event_kind IN (
+            'manual_mode','operator_enabled','chat_baseline','acceptance_evidence'
+        )
     ),
     CONSTRAINT autonomous_control_event_digest_check CHECK (
         length(before_digest) = 64 AND length(after_digest) = 64
@@ -307,6 +309,9 @@ CREATE TABLE IF NOT EXISTS autonomous_control_event (
 
 CREATE INDEX IF NOT EXISTS idx_autonomous_control_event_created
     ON autonomous_control_event (created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_autonomous_acceptance_evidence
+    ON autonomous_control_event (target, after_digest)
+    WHERE event_kind = 'acceptance_evidence';
 
 CREATE TABLE IF NOT EXISTS autonomous_repair_lease (
     singleton_key VARCHAR(32) PRIMARY KEY,
