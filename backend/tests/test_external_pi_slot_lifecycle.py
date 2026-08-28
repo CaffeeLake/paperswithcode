@@ -592,6 +592,13 @@ def test_stop_without_durable_drain_evidence_leaves_worker_running(
             "--value",
             "paperswithcode-staging-external-pi-worker@blue.service",
         ],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi@blue.service",
+        ],
     ]
 
 
@@ -803,6 +810,13 @@ def test_candidate_failure_without_durable_drain_proof_leaves_worker_running(
             "--value",
             "paperswithcode-staging-external-pi-worker@green.service",
         ],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi@green.service",
+        ],
     ]
 
 
@@ -892,6 +906,13 @@ def test_stop_without_exact_status_proof_leaves_active_worker_running(
             "--property=ActiveState",
             "--value",
             "paperswithcode-staging-external-pi-worker@green.service",
+        ],
+        [
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            "paperswithcode-staging-external-pi@green.service",
         ],
     ]
 
@@ -1361,9 +1382,73 @@ def test_lifecycle_bounds_active_worker_status_body(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
 
     with pytest.raises(lifecycle.ExternalPiSlotError, match="status is unavailable"):
-        lifecycle._restart_zero_session_worker_if_active("staging", "blue")
+        lifecycle._stop_proven_orphaned_worker_if_active("staging", "blue")
 
     assert read_sizes == [65_537]
+
+
+def test_stop_slot_cleans_exact_orphan_with_authenticated_zero_session_proof(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(lifecycle, "drain_stop_timeout_seconds", lambda _env: 10)
+    monkeypatch.setattr(
+        lifecycle,
+        "_read_status",
+        lambda *_args: {
+            "release_id": "release-blue",
+            "worker_id": "staging-blue",
+            "state": "failed",
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_protected_staging_values",
+        lambda: {"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "t" * 32},
+    )
+    commands: list[list[str]] = []
+    worker_active = True
+
+    def run(command, **_kwargs):
+        nonlocal worker_active
+        commands.append(command)
+        if command[:2] == ["systemctl", "show"]:
+            if command[-1] == "paperswithcode-staging-external-pi@blue.service":
+                return subprocess.CompletedProcess(command, 0, stdout="inactive\n")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="active\n" if worker_active else "inactive\n"
+            )
+        if command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]:
+            worker_active = False
+        return subprocess.CompletedProcess(command, 0)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size=-1):
+            return json.dumps(
+                {
+                    "protocol": "external-pi-v1",
+                    "worker_id": "staging-blue",
+                    "state": "draining",
+                    "active_sessions": 0,
+                    "maximum_sessions": 8,
+                }
+            ).encode()
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert [
+        "systemctl",
+        "stop",
+        "paperswithcode-staging-external-pi-worker@blue.service",
+    ] in commands
 
 
 def test_dedicated_worker_environment_contains_only_the_token(

@@ -278,8 +278,10 @@ def sync_worker_environment(environment: str) -> None:
         raise
 
 
-def _restart_zero_session_worker_if_active(environment: str, slot: str) -> None:
-    if _worker_is_inactive(environment, slot):
+def _stop_proven_orphaned_worker_if_active(
+    environment: str, slot: str, *, worker_active_proven: bool = False
+) -> None:
+    if not worker_active_proven and _worker_is_inactive(environment, slot):
         return
     if not _supervisor_is_inactive(environment, slot):
         raise ExternalPiSlotError("external Pi supervisor is still active")
@@ -322,7 +324,7 @@ def _restart_zero_session_worker_if_active(environment: str, slot: str) -> None:
 def start_slot(environment: str, slot: str) -> None:
     _status_path(environment, slot).unlink(missing_ok=True)
     sync_worker_environment(environment)
-    _restart_zero_session_worker_if_active(environment, slot)
+    _stop_proven_orphaned_worker_if_active(environment, slot)
     subprocess.run(["systemctl", "start", _worker_unit(environment, slot)], check=True)
     try:
         subprocess.run(
@@ -555,9 +557,14 @@ def stop_slot(
         return
     if _worker_is_inactive(environment, slot):
         return
-    raise ExternalPiSlotError(
-        f"external Pi worker did not prove graceful drain: {value!r}"
-    )
+    try:
+        _stop_proven_orphaned_worker_if_active(
+            environment, slot, worker_active_proven=True
+        )
+    except ExternalPiSlotError as error:
+        raise ExternalPiSlotError(
+            "external Pi worker did not prove graceful drain"
+        ) from error
 
 
 def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
