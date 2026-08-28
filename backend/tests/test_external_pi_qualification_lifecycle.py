@@ -249,12 +249,32 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
         output = "not-found\ninactive\n" if command[:2] == ["systemctl", "show"] else ""
         return subprocess.CompletedProcess(command, 0, output)
 
-    lifecycle.start_replica(resolved, runner=run)
+    lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
 
-    worker, supervisor = commands
+    assert [command for command, _ in commands[:2]] == [
+        [
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--value",
+            resolved.supervisor_unit,
+        ],
+        [
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--value",
+            resolved.worker_unit,
+        ],
+    ]
+    worker, supervisor = commands[2:]
     assert worker[0] == [
         "systemd-run",
         "--quiet",
+        "--service-type=exec",
+        "--description=Papers With Code staging external Pi qualification worker 03 owner test-owner",
         f"--unit={resolved.worker_unit}",
         "--collect",
         "--uid=pwc-external-pi",
@@ -283,6 +303,8 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
     assert supervisor[0] == [
         "systemd-run",
         "--quiet",
+        "--service-type=exec",
+        "--description=Papers With Code staging external Pi qualification supervisor 03 owner test-owner",
         f"--unit={resolved.supervisor_unit}",
         "--collect",
         "--uid=pwc-staging",
@@ -308,33 +330,225 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
         "8783",
         "16",
     ]
-    assert all(kwargs == {"check": True, "timeout": 75} for _, kwargs in commands)
+    assert all(kwargs == {"check": True, "timeout": 75} for _, kwargs in commands[2:])
 
 
-def test_partial_start_and_signal_interruption_use_exact_cleanup_path(tmp_path: Path):
+@pytest.mark.parametrize("occupied", ["worker", "supervisor"])
+def test_start_refuses_existing_exact_unit_even_when_port_is_free(
+    tmp_path: Path, occupied: str
+):
     resolved = _resolved(tmp_path)
+    resolved.status_path.parent.mkdir(parents=True)
+    resolved.status_path.write_text("pre-existing evidence")
     commands = []
 
     def run(command, **kwargs):
+        commands.append(command)
+        occupied_unit = (
+            resolved.worker_unit if occupied == "worker" else resolved.supervisor_unit
+        )
+        output = (
+            "loaded\nactive\n"
+            if command[-1] == occupied_unit
+            else "not-found\ninactive\n"
+        )
+        return subprocess.CompletedProcess(command, 0, output)
+
+    with pytest.raises(lifecycle.QualificationLifecycleError, match="already exists"):
+        lifecycle.start_replica(resolved, runner=run)
+
+    assert len(commands) == 2
+    assert resolved.status_path.read_text() == "pre-existing evidence"
+
+
+def test_first_start_unit_exists_failure_does_not_clean_unowned_units(tmp_path: Path):
+    resolved = _resolved(tmp_path)
+    resolved.status_path.parent.mkdir(parents=True)
+    resolved.status_path.write_text("pre-existing evidence")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "systemd-run":
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, "not-found\ninactive\n")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        lifecycle.start_replica(resolved, runner=run)
+
+    assert not any(command[:2] == ["systemctl", "stop"] for command in commands)
+    assert resolved.status_path.read_text() == "pre-existing evidence"
+
+
+def test_supervisor_unit_race_leaves_owned_worker_running_without_claim_proof(
+    tmp_path: Path,
+):
+    resolved = _resolved(tmp_path)
+    commands = []
+    start_count = 0
+
+    def run(command, **kwargs):
+        nonlocal start_count
+        commands.append(command)
+        if command[0] == "systemd-run":
+            start_count += 1
+            if start_count == 2:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, "")
+        if command[:2] == ["systemctl", "show"]:
+            output = (
+                "loaded\nactive\n"
+                if start_count == 2 and command[-1] == resolved.supervisor_unit
+                else "not-found\ninactive\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(
+        lifecycle.QualificationLifecycleError, match="recovery evidence"
+    ):
+        lifecycle.start_replica(resolved, runner=run)
+
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
+    assert ["systemctl", "stop", resolved.supervisor_unit] not in commands
+
+
+def test_interrupted_supervisor_start_drains_observed_claim_before_owned_worker(
+    tmp_path: Path,
+):
+    resolved = _resolved(tmp_path)
+    resolved.status_path.parent.mkdir(parents=True)
+    commands = []
+    interrupted = False
+    supervisor_stopped = False
+
+    def write_status(state: str, *, drained: bool) -> None:
+        resolved.status_path.write_text(
+            json.dumps(
+                {
+                    "release_id": resolved.release_id,
+                    "worker_id": resolved.worker_id,
+                    "generation": 9,
+                    "registered": True,
+                    "state": state,
+                    "drained": drained,
+                }
+            )
+        )
+
+    def run(command, **kwargs):
+        nonlocal interrupted, supervisor_stopped
         commands.append(command)
         if (
             command[0] == "systemd-run"
             and f"--unit={resolved.supervisor_unit}" in command
         ):
+            interrupted = True
+            write_status("ready", drained=False)
             raise KeyboardInterrupt
-        output = "not-found\ninactive\n" if command[:2] == ["systemctl", "show"] else ""
-        return subprocess.CompletedProcess(command, 0, output)
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification supervisor 03 owner test-owner\n",
+                )
+            if (
+                interrupted
+                and not supervisor_stopped
+                and command[-1] == resolved.supervisor_unit
+            ):
+                return subprocess.CompletedProcess(command, 0, "loaded\nactive\n")
+            return subprocess.CompletedProcess(command, 0, "not-found\ninactive\n")
+        if command == ["systemctl", "stop", resolved.supervisor_unit]:
+            supervisor_stopped = True
+            write_status("offline", drained=True)
+        return subprocess.CompletedProcess(command, 0, "")
 
     with pytest.raises(KeyboardInterrupt):
-        lifecycle.start_replica(resolved, runner=run)
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
 
-    assert commands[2:6] == [
-        ["systemctl", "stop", resolved.supervisor_unit],
-        ["systemctl", "stop", resolved.worker_unit],
-        ["systemctl", "reset-failed", resolved.supervisor_unit],
-        ["systemctl", "reset-failed", resolved.worker_unit],
-    ]
-    assert not any("kill" in command for command in commands)
+    supervisor_stop = commands.index(["systemctl", "stop", resolved.supervisor_unit])
+    worker_stop = commands.index(["systemctl", "stop", resolved.worker_unit])
+    assert supervisor_stop < worker_stop
+
+
+def test_interrupted_supervisor_with_ambiguous_status_leaves_owned_node_running(
+    tmp_path: Path,
+):
+    resolved = _resolved(tmp_path)
+    commands = []
+    interrupted = False
+
+    def run(command, **kwargs):
+        nonlocal interrupted
+        commands.append(command)
+        if (
+            command[0] == "systemd-run"
+            and f"--unit={resolved.supervisor_unit}" in command
+        ):
+            interrupted = True
+            raise KeyboardInterrupt
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification supervisor 03 owner test-owner\n",
+                )
+            output = (
+                "loaded\nactive\n"
+                if interrupted and command[-1] == resolved.supervisor_unit
+                else "not-found\ninactive\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(
+        lifecycle.QualificationLifecycleError, match="recovery evidence"
+    ):
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
+
+    assert ["systemctl", "stop", resolved.supervisor_unit] in commands
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
+
+
+def test_interrupted_start_never_adopts_a_concurrent_supervisor_owner(tmp_path: Path):
+    resolved = _resolved(tmp_path)
+    commands = []
+    interrupted = False
+
+    def run(command, **kwargs):
+        nonlocal interrupted
+        commands.append(command)
+        if (
+            command[0] == "systemd-run"
+            and f"--unit={resolved.supervisor_unit}" in command
+        ):
+            interrupted = True
+            raise KeyboardInterrupt
+        if command[:2] == ["systemctl", "show"]:
+            if "--property=Description" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Papers With Code staging external Pi qualification supervisor 03 owner concurrent-owner\n",
+                )
+            output = (
+                "loaded\nactive\n"
+                if interrupted and command[-1] == resolved.supervisor_unit
+                else "not-found\ninactive\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    with pytest.raises(
+        lifecycle.QualificationLifecycleError, match="recovery evidence"
+    ):
+        lifecycle.start_replica(resolved, runner=run, owner_id="test-owner")
+
+    assert ["systemctl", "stop", resolved.supervisor_unit] not in commands
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
 
 
 def test_ready_wait_rejects_stale_generation_and_times_out(tmp_path: Path):
@@ -429,3 +643,32 @@ def test_cleanup_orders_drain_before_worker_and_proves_postconditions(tmp_path: 
                 command, 0, "not-found\ninactive\n"
             ),
         )
+
+
+def test_owned_supervisor_without_claim_requires_matching_pre_registration_evidence(
+    tmp_path: Path,
+):
+    resolved = _resolved(tmp_path)
+    status = {
+        "release_id": resolved.release_id,
+        "worker_id": resolved.worker_id,
+        "state": "starting",
+        "registered": False,
+        "generation": None,
+    }
+    commands = []
+
+    evidence = lifecycle.cleanup_replica(
+        resolved,
+        generation=None,
+        owned_units={resolved.supervisor_unit, resolved.worker_unit},
+        runner=lambda command, **_kwargs: commands.append(command)
+        or subprocess.CompletedProcess(command, 0, "not-found\ninactive\n"),
+        read_status=lambda _path: status,
+        monotonic=iter((0.0, 0.0, 0.1)).__next__,
+        sleep=lambda _seconds: None,
+        port_is_free=lambda _host, _port: True,
+    )
+
+    assert evidence.registry_offline is True
+    assert ["systemctl", "stop", resolved.worker_unit] in commands

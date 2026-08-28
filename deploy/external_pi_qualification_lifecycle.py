@@ -9,6 +9,7 @@ import re
 import socket
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -226,10 +227,21 @@ def _launcher_arguments(resolved: QualificationReplica) -> list[str]:
     ]
 
 
-def _worker_start_command(resolved: QualificationReplica) -> list[str]:
+def _unit_description(resolved: QualificationReplica, role: str, owner_id: str) -> str:
+    return (
+        "Papers With Code staging external Pi qualification "
+        f"{role} {resolved.index:02d} owner {owner_id}"
+    )
+
+
+def _worker_start_command(
+    resolved: QualificationReplica, *, owner_id: str
+) -> list[str]:
     return [
         "systemd-run",
         "--quiet",
+        "--service-type=exec",
+        f"--description={_unit_description(resolved, 'worker', owner_id)}",
         f"--unit={resolved.worker_unit}",
         "--collect",
         "--uid=pwc-external-pi",
@@ -253,10 +265,14 @@ def _worker_start_command(resolved: QualificationReplica) -> list[str]:
     ]
 
 
-def _supervisor_start_command(resolved: QualificationReplica) -> list[str]:
+def _supervisor_start_command(
+    resolved: QualificationReplica, *, owner_id: str
+) -> list[str]:
     return [
         "systemd-run",
         "--quiet",
+        "--service-type=exec",
+        f"--description={_unit_description(resolved, 'supervisor', owner_id)}",
         f"--unit={resolved.supervisor_unit}",
         "--collect",
         "--uid=pwc-staging",
@@ -298,23 +314,104 @@ def _port_is_free(host: str, port: int) -> bool:
     return True
 
 
+def _unit_state(unit: str, *, runner: Callable) -> tuple[str, str]:
+    result = runner(
+        [
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--value",
+            unit,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    lines = result.stdout.splitlines() if result.returncode == 0 else []
+    if len(lines) != 2:
+        raise QualificationLifecycleError(
+            f"external Pi qualification unit state is unavailable: {unit}"
+        )
+    return lines[0], lines[1]
+
+
+def _unit_owner(unit: str, *, runner: Callable) -> str | None:
+    result = runner(
+        ["systemctl", "show", "--property=Description", "--value", unit],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return value or None
+
+
 def start_replica(
     resolved: QualificationReplica,
     *,
     runner: Callable = subprocess.run,
+    owner_id: str | None = None,
 ) -> None:
     """Start one exact transient pair and clean partial startup on every failure."""
     qualification_index(resolved.index, resolved.port, resolved.maximum_sessions)
+    owner_id = str(uuid.uuid4()) if owner_id is None else owner_id
+    if re.fullmatch(r"[A-Za-z0-9-]{1,64}", owner_id) is None:
+        raise ValueError("external Pi qualification lifecycle owner is invalid")
+    states = {
+        unit: _unit_state(unit, runner=runner)
+        for unit in (resolved.supervisor_unit, resolved.worker_unit)
+    }
+    if any(state != ("not-found", "inactive") for state in states.values()):
+        raise QualificationLifecycleError(
+            f"external Pi qualification exact unit already exists: {states!r}"
+        )
     if not _port_is_free("127.0.0.1", resolved.port):
         raise QualificationLifecycleError(
             "external Pi qualification port is occupied before startup"
         )
-    resolved.status_path.unlink(missing_ok=True)
+    owned_units: set[str] = set()
     try:
-        runner(_worker_start_command(resolved), check=True, timeout=75)
-        runner(_supervisor_start_command(resolved), check=True, timeout=75)
-    except BaseException:
-        cleanup_replica(resolved, generation=None, runner=runner)
+        runner(
+            _worker_start_command(resolved, owner_id=owner_id),
+            check=True,
+            timeout=75,
+        )
+        owned_units.add(resolved.worker_unit)
+        resolved.status_path.unlink(missing_ok=True)
+        runner(
+            _supervisor_start_command(resolved, owner_id=owner_id),
+            check=True,
+            timeout=75,
+        )
+        owned_units.add(resolved.supervisor_unit)
+    except BaseException as startup_error:
+        attempted_unit = (
+            resolved.worker_unit if not owned_units else resolved.supervisor_unit
+        )
+        if isinstance(startup_error, (KeyboardInterrupt, SystemExit)):
+            role = "worker" if attempted_unit == resolved.worker_unit else "supervisor"
+            expected_owner = _unit_description(resolved, role, owner_id)
+            if (
+                _unit_state(attempted_unit, runner=runner) != ("not-found", "inactive")
+                and _unit_owner(attempted_unit, runner=runner) == expected_owner
+            ):
+                owned_units.add(attempted_unit)
+        if owned_units:
+            try:
+                cleanup_replica(
+                    resolved,
+                    generation=None,
+                    owned_units=owned_units,
+                    runner=runner,
+                )
+            except BaseException as cleanup_error:
+                raise QualificationLifecycleError(
+                    "external Pi qualification retained bounded recovery evidence; "
+                    "an owned worker remains running"
+                ) from cleanup_error
         raise
 
 
@@ -373,6 +470,7 @@ def cleanup_replica(
     resolved: QualificationReplica,
     *,
     generation: int | None,
+    owned_units: set[str] | frozenset[str] | None = None,
     runner: Callable = subprocess.run,
     read_status: Callable[[Path], dict] = _read_status,
     monotonic: Callable[[], float] = time.monotonic,
@@ -384,13 +482,58 @@ def cleanup_replica(
     if not 0 < timeout_seconds <= 330:
         raise ValueError("external Pi qualification cleanup timeout is not bounded")
     qualification_index(resolved.index, resolved.port, resolved.maximum_sessions)
-    runner(
-        ["systemctl", "stop", resolved.supervisor_unit],
-        check=False,
-        timeout=timeout_seconds,
+    owned = (
+        {resolved.supervisor_unit, resolved.worker_unit}
+        if owned_units is None
+        else set(owned_units)
     )
-    registry_offline = generation is None
-    if generation is not None:
+    allowed = {resolved.supervisor_unit, resolved.worker_unit}
+    if not owned <= allowed:
+        raise ValueError("external Pi qualification cleanup ownership is invalid")
+    supervisor_owned = resolved.supervisor_unit in owned
+    worker_owned = resolved.worker_unit in owned
+    if supervisor_owned:
+        runner(
+            ["systemctl", "stop", resolved.supervisor_unit],
+            check=False,
+            timeout=timeout_seconds,
+        )
+    registry_offline = False
+    if not supervisor_owned:
+        registry_offline = _unit_state(resolved.supervisor_unit, runner=runner) == (
+            "not-found",
+            "inactive",
+        )
+        if not registry_offline:
+            raise QualificationLifecycleError(
+                "external Pi qualification has ambiguous bounded recovery evidence: "
+                "an unowned supervisor exists"
+            )
+    if supervisor_owned and generation is None:
+        last = read_status(resolved.status_path)
+        observed_generation = last.get("generation")
+        registry_offline = (
+            last.get("release_id") == resolved.release_id
+            and last.get("worker_id") == resolved.worker_id
+            and (
+                (
+                    type(observed_generation) is int
+                    and observed_generation >= 1
+                    and last.get("state") == "offline"
+                    and last.get("drained") is True
+                )
+                or (
+                    observed_generation is None
+                    and last.get("state") == "starting"
+                    and last.get("registered") is False
+                )
+            )
+        )
+        if not registry_offline:
+            raise QualificationLifecycleError(
+                f"external Pi qualification has ambiguous bounded recovery evidence: {last!r}"
+            )
+    elif supervisor_owned and generation is not None:
         deadline = monotonic() + timeout_seconds
         last: dict = {}
         while monotonic() < deadline:
@@ -409,42 +552,26 @@ def cleanup_replica(
             raise QualificationLifecycleError(
                 f"external Pi qualification drain proof timed out: {last!r}"
             )
-    runner(
-        ["systemctl", "stop", resolved.worker_unit],
-        check=False,
-        timeout=15,
-    )
-    runner(
-        ["systemctl", "reset-failed", resolved.supervisor_unit],
-        check=False,
-        timeout=10,
-    )
-    runner(
-        ["systemctl", "reset-failed", resolved.worker_unit],
-        check=False,
-        timeout=10,
-    )
+    if worker_owned:
+        runner(
+            ["systemctl", "stop", resolved.worker_unit],
+            check=False,
+            timeout=15,
+        )
+    for unit in (resolved.supervisor_unit, resolved.worker_unit):
+        if unit in owned:
+            runner(
+                ["systemctl", "reset-failed", unit],
+                check=False,
+                timeout=10,
+            )
     resolved.status_path.unlink(missing_ok=True)
     units_removed = True
     for unit in (resolved.supervisor_unit, resolved.worker_unit):
-        result = runner(
-            [
-                "systemctl",
-                "show",
-                "--property=LoadState",
-                "--property=ActiveState",
-                "--value",
-                unit,
-            ],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0 or result.stdout.splitlines() != [
+        if unit in owned and _unit_state(unit, runner=runner) != (
             "not-found",
             "inactive",
-        ]:
+        ):
             units_removed = False
     ports_free = port_is_free("127.0.0.1", resolved.port)
     if not ports_free or not units_removed:
