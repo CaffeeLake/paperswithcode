@@ -188,6 +188,42 @@ def test_get_cron_job_status_parses_daily_curation_summary():
     }
 
 
+def test_get_cron_job_status_counts_named_paper_groups_as_work():
+    cron_helpers = _load_cron_helpers()
+    logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    test_date = "20990106"
+    log_file = logs_dir / f"sync_artificial_analysis_{test_date}.log"
+    log_file.write_text(
+        "2099-01-06 08:00:00 - Starting cron job: sync_artificial_analysis\n"
+        "2099-01-06 08:00:01 - Papers processed: language=60 tts=14\n"
+        "2099-01-06 08:00:02 - Cron job completed successfully: "
+        "sync_artificial_analysis\n",
+        encoding="utf-8",
+    )
+
+    try:
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            status = cron_helpers.get_cron_job_status(
+                "sync_artificial_analysis", test_date
+            )
+    finally:
+        log_file.unlink(missing_ok=True)
+
+    assert status["status"] == "success"
+    assert status["work_summary"] == "Processed 74 items"
+    assert status["work_metrics"] == {
+        "papers_processed": 74,
+        "language_processed": 60,
+        "tts_processed": 14,
+    }
+
+
 def test_timeout_log_is_a_failure_not_a_success():
     cron_helpers = _load_cron_helpers()
     logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"

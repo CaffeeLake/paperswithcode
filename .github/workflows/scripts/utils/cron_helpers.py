@@ -525,6 +525,19 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
             elif re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)
                 work_metrics["papers_processed"] = int(match.group(1))
+            # Named paper groups, for composite jobs such as
+            # ``Papers processed: language=60 tts=14``.
+            elif "Papers processed:" in line:
+                payload = line.split("Papers processed:", 1)[1]
+                named_counts = re.findall(
+                    r"\b([a-z][a-z0-9_-]*)=(\d+)\b", payload, re.IGNORECASE
+                )
+                if named_counts:
+                    work_metrics["papers_processed"] = sum(
+                        int(value) for _name, value in named_counts
+                    )
+                    for name, value in named_counts:
+                        work_metrics[f"{name.lower()}_processed"] = int(value)
             # Repositories processed (with or without "Total")
             elif re.search(
                 r"(?:Total\s+)?repositories processed:\s*(\d+)", line, re.IGNORECASE
