@@ -1,4 +1,4 @@
-"""Create the Artificial Analysis Provider Voice TTS Arena benchmark.
+"""Create the Artificial Analysis TTS Arena benchmark.
 
 Run:
     uv run --env-file backend/keys.env \
@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-NAME = "Artificial Analysis Provider Voice TTS Arena"
+NAME = "Artificial Analysis TTS Arena"
 METHODOLOGY_URL = "https://artificialanalysis.ai/text-to-speech/methodology"
 DESCRIPTION = (
     "Artificial Analysis Provider Voice Arena leaderboard for text-to-speech "
