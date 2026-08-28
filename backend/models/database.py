@@ -4568,6 +4568,81 @@ class PendingPaperEdit(Base):
         )
 
 
+class AutonomousSubmissionClaim(Base):
+    """Scoped, expiring ownership and callback receipt for one submission."""
+
+    __tablename__ = "autonomous_submission_claim"
+
+    claim_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    pending_edit_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("pending_paper_edits.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("autonomous_run.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    review_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("autonomous_run.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    attested_decision_digest: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    callback_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="claimed", server_default="claimed"
+    )
+    decision: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    decision_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('claimed','completed')",
+            name="autonomous_submission_claim_state_check",
+        ),
+        CheckConstraint(
+            "decision IS NULL OR decision IN ('approve','reject','defer')",
+            name="autonomous_submission_claim_decision_check",
+        ),
+        CheckConstraint(
+            "length(snapshot_digest) = 64 AND length(callback_token_hash) = 64",
+            name="autonomous_submission_claim_digest_check",
+        ),
+        CheckConstraint(
+            "decision_digest IS NULL OR length(decision_digest) = 64",
+            name="autonomous_submission_claim_decision_digest_check",
+        ),
+        CheckConstraint(
+            "attested_decision_digest IS NULL OR length(attested_decision_digest) = 64",
+            name="autonomous_submission_claim_attested_digest_check",
+        ),
+        Index(
+            "idx_autonomous_submission_claim_pending_state",
+            "pending_edit_id",
+            "state",
+            "expires_at",
+        ),
+        UniqueConstraint(
+            "pending_edit_id",
+            "run_id",
+            name="uq_autonomous_submission_claim_edit_run",
+        ),
+    )
+
+
 class UserProfile(Base):
     """Stable Hugging Face identity and its current public username."""
 

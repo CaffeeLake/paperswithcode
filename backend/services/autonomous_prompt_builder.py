@@ -12,6 +12,7 @@ class CodexEnvelopeRequest(Protocol):
     capabilities: tuple
     output_schema: dict[str, object]
     budget_usd: Any
+    evidence_payload: dict[str, object] | None
 
 
 _GLOBAL_EXCLUSIONS = (
@@ -67,6 +68,8 @@ def build_codex_envelope(request: CodexEnvelopeRequest) -> str:
             "run_id": str(request.context.run_id),
         },
     }
+    if request.evidence_payload is not None:
+        payload["evidence_payload"] = request.evidence_payload
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 

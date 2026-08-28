@@ -155,6 +155,14 @@ class Settings(BaseSettings):
         default="",
         description="API token required for administrative endpoints",
     )
+    autonomous_submission_enabled: bool = Field(default=False)
+    autonomous_submission_callback_secret: str = Field(default="")
+    autonomous_submission_callback_base_url: str = Field(
+        default="https://paperswithcode.co/api/v1"
+    )
+    autonomous_submission_run_budget_usd: Decimal = Field(
+        default=Decimal("5"), gt=0, le=100
+    )
 
     # Codex curation jobs. Immutable production releases may opt in; staging
     # remains disabled because its catalog role is read-only.

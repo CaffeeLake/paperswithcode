@@ -680,6 +680,7 @@ def test_existing_run_resumes_without_second_model_call(db):
         environ=runner_env(),
         now=lambda: NOW,
     ).run(value, db=db)
+    assert first.proposed_actions, first
     db.commit()
     second_executor = RecordingExecutor(error=AssertionError("must not execute"))
     resumed = AutonomousCodexRunner(
@@ -697,6 +698,65 @@ def test_existing_run_resumes_without_second_model_call(db):
             environ={},
             now=lambda: NOW,
         ).run(replace(value, budget_usd=Decimal("0.40")), db=db)
+
+
+def test_structured_submission_run_resumes_with_exact_attested_decision(db):
+    capabilities = (Capability.REVIEW_SUBMISSION,)
+    value = CodexRequest(
+        context=RunContext(uuid.uuid4(), Operator.SUBMISSIONS, False, "review-v1"),
+        evidence=(EvidenceRef("submission_snapshot", "7", "a" * 64),),
+        capabilities=capabilities,
+        output_schema=codex_result_schema(capabilities, structured_submission=True),
+        budget_usd=Decimal("0.50"),
+        evidence_payload={"submissions": [{"id": 7}]},
+    )
+    output = json.dumps(
+        {
+            "status": "completed",
+            "proposed_actions": [
+                {
+                    "capability": "review_submission",
+                    "resource": {
+                        "kind": "pending_edit",
+                        "identifier": "7",
+                        "exists": True,
+                    },
+                    "reason_code": "approve",
+                    "rationale": "The immutable identifiers resolve.",
+                    "evidence": ["submission_snapshot"],
+                    "confidence": 0.97,
+                    "resolved_payload": {"task_ids": [3]},
+                }
+            ],
+        }
+    )
+    first = AutonomousCodexRunner(
+        executor=RecordingExecutor(
+            outcome=ExecutionOutcome(
+                0,
+                output,
+                '{"usage":{"input_tokens":12,"output_tokens":4}}\n',
+            )
+        ),
+        environ=runner_env(),
+        now=lambda: NOW,
+    ).run(value, db=db)
+    assert first.proposed_actions, first
+    db.commit()
+
+    no_second_call = RecordingExecutor(error=AssertionError("must resume"))
+    resumed = AutonomousCodexRunner(
+        executor=no_second_call,
+        environ={},
+        now=lambda: NOW,
+    ).run(value, db=db)
+
+    assert resumed == first
+    assert resumed.proposed_actions[0].rationale == (
+        "The immutable identifiers resolve."
+    )
+    assert resumed.proposed_actions[0].resolved_payload == {"task_ids": [3]}
+    assert no_second_call.calls == []
 
 
 def test_forged_capability_or_resource_is_rejected(db):

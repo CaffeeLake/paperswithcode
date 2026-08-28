@@ -98,6 +98,10 @@ class ProposedAction:
     capability: Capability
     resource: ResourceRef
     reason_code: str
+    rationale: str | None = None
+    evidence: tuple[str, ...] = ()
+    confidence: float | None = None
+    resolved_payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +161,7 @@ class CodexRequest:
     model_alias: Literal["diagnosis", "independent_review"] = "diagnosis"
     timeout_seconds: int = 1200
     max_output_bytes: int = 2_000_000
+    evidence_payload: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         manifest = (
@@ -200,8 +205,24 @@ class CodexRequest:
             raise ValueError("Invalid autonomous Codex output schema") from None
         if len(encoded_schema.encode()) > 250_000:
             raise ValueError("Invalid autonomous Codex output schema")
-        if self.output_schema != codex_result_schema(self.capabilities):
+        if self.output_schema != codex_result_schema(
+            self.capabilities,
+            structured_submission=self.evidence_payload is not None,
+        ):
             raise ValueError("Invalid autonomous Codex output schema")
+        if self.evidence_payload is not None:
+            if self.context.operator != Operator.SUBMISSIONS or not isinstance(
+                self.evidence_payload, dict
+            ):
+                raise ValueError("Invalid autonomous evidence payload")
+            try:
+                encoded_evidence = json.dumps(
+                    self.evidence_payload, sort_keys=True, separators=(",", ":")
+                ).encode()
+            except (TypeError, ValueError):
+                raise ValueError("Invalid autonomous evidence payload") from None
+            if len(encoded_evidence) > 2_000_000:
+                raise ValueError("Invalid autonomous evidence payload")
         if self.context.operator == Operator.CHAT_RELIABILITY and any(
             _CHAT_EVIDENCE_IDENTIFIER.fullmatch(item.identifier) is None
             or item.identifier.partition(":")[0] != item.kind
@@ -1112,11 +1133,24 @@ class AutonomousCodexRunner:
         if len(value["proposed_actions"]) > 100:
             raise ValueError("too many actions")
         for item in value["proposed_actions"]:
-            if not isinstance(item, dict) or set(item) != {
+            if not isinstance(item, dict) or "capability" not in item:
+                raise ValueError("invalid action")
+            capability = Capability(item["capability"])
+            review_keys = {
                 "capability",
                 "resource",
                 "reason_code",
-            }:
+                "rationale",
+                "evidence",
+                "confidence",
+                "resolved_payload",
+            }
+            ordinary_keys = {"capability", "resource", "reason_code"}
+            structured_review = (
+                capability == Capability.REVIEW_SUBMISSION
+                and request.evidence_payload is not None
+            )
+            if set(item) != (review_keys if structured_review else ordinary_keys):
                 raise ValueError("invalid action")
             resource_value = item["resource"]
             if not isinstance(resource_value, dict) or set(resource_value) != {
@@ -1125,7 +1159,6 @@ class AutonomousCodexRunner:
                 "exists",
             }:
                 raise ValueError("invalid resource")
-            capability = Capability(item["capability"])
             if capability not in request.capabilities:
                 raise ValueError("capability outside request")
             resource = ResourceRef(
@@ -1150,7 +1183,45 @@ class AutonomousCodexRunner:
                     raise ValueError("invalid chat action resource")
                 if reason_code not in _CHAT_REASON_CODES:
                     raise ValueError("invalid chat action reason")
-            actions.append(ProposedAction(capability, resource, reason_code))
+            if structured_review:
+                rationale = item["rationale"]
+                evidence = item["evidence"]
+                confidence = item["confidence"]
+                resolved_payload = item["resolved_payload"]
+                if (
+                    reason_code not in {"approve", "reject", "defer"}
+                    or resource.kind != ResourceKind.PENDING_EDIT
+                    or not resource.exists
+                    or not isinstance(rationale, str)
+                    or not 1 <= len(rationale) <= 4000
+                    or not isinstance(evidence, list)
+                    or not 1 <= len(evidence) <= 50
+                    or any(
+                        not isinstance(value, str) or not 1 <= len(value) <= 255
+                        for value in evidence
+                    )
+                    or isinstance(confidence, bool)
+                    or not isinstance(confidence, (int, float))
+                    or not 0 <= confidence <= 1
+                    or (
+                        resolved_payload is not None
+                        and not isinstance(resolved_payload, dict)
+                    )
+                ):
+                    raise ValueError("invalid submission review")
+                actions.append(
+                    ProposedAction(
+                        capability,
+                        resource,
+                        reason_code,
+                        rationale,
+                        tuple(evidence),
+                        float(confidence),
+                        resolved_payload,
+                    )
+                )
+            else:
+                actions.append(ProposedAction(capability, resource, reason_code))
         if status == "rejected" and actions:
             raise ValueError("rejected result proposed actions")
         return status, tuple(actions)
@@ -1295,17 +1366,27 @@ class AutonomousCodexRunner:
     @staticmethod
     def _capability_requests(
         actions: tuple[ProposedAction, ...],
-    ) -> list[dict[str, str | bool]]:
-        return [
-            {
+    ) -> list[dict[str, object]]:
+        requests = []
+        for action in actions:
+            item: dict[str, object] = {
                 "capability": action.capability.value,
                 "resource_kind": action.resource.kind.value,
                 "resource_identifier": action.resource.identifier,
                 "resource_exists": action.resource.exists,
                 "reason_code": action.reason_code,
             }
-            for action in actions
-        ]
+            if action.rationale is not None:
+                item.update(
+                    {
+                        "rationale": action.rationale,
+                        "evidence": list(action.evidence),
+                        "confidence": action.confidence,
+                        "resolved_payload": action.resolved_payload,
+                    }
+                )
+            requests.append(item)
+        return requests
 
     def _resume(
         self, row: AutonomousRun, request: CodexRequest, db: Session
@@ -1327,6 +1408,10 @@ class AutonomousCodexRunner:
                     item["resource_exists"],
                 ),
                 item["reason_code"],
+                item.get("rationale"),
+                tuple(item.get("evidence", ())),
+                item.get("confidence"),
+                item.get("resolved_payload"),
             )
             for item in row.capability_requests
         )
@@ -1380,6 +1465,16 @@ class AutonomousCodexRunner:
                         "identifier": action.resource.identifier,
                         "kind": action.resource.kind.value,
                     },
+                    **(
+                        {
+                            "rationale": action.rationale,
+                            "evidence": list(action.evidence),
+                            "confidence": action.confidence,
+                            "resolved_payload": action.resolved_payload,
+                        }
+                        if action.rationale is not None
+                        else {}
+                    ),
                 }
                 for action in actions
             ],
@@ -1431,6 +1526,8 @@ def run_codex(
 
 def codex_result_schema(
     capabilities: tuple[Capability, ...],
+    *,
+    structured_submission: bool = False,
 ) -> dict[str, object]:
     action_schemas = []
     for capability in sorted(capabilities, key=str):
@@ -1450,11 +1547,27 @@ def codex_result_schema(
         elif capability == Capability.REPAIR_CHAT_SOURCE:
             identifier_schema = {"const": "chat"}
             reason_schema = {"enum": sorted(_CHAT_REASON_CODES)}
+        review_properties = {}
+        required = ["capability", "resource", "reason_code"]
+        if capability == Capability.REVIEW_SUBMISSION and structured_submission:
+            reason_schema = {"enum": ["approve", "reject", "defer"]}
+            required.extend(["rationale", "evidence", "confidence", "resolved_payload"])
+            review_properties = {
+                "rationale": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "evidence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 255},
+                },
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "resolved_payload": {"type": ["object", "null"]},
+            }
         action_schemas.append(
             {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["capability", "resource", "reason_code"],
+                "required": required,
                 "properties": {
                     "capability": {"const": capability.value},
                     "resource": {
@@ -1473,6 +1586,7 @@ def codex_result_schema(
                         },
                     },
                     "reason_code": reason_schema,
+                    **review_properties,
                 },
             }
         )

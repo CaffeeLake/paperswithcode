@@ -350,6 +350,7 @@ class PendingEditService:
         resolved_payload: Optional[dict[str, Any]] = None,
         admin_note: Optional[str] = None,
         user_review_reason: Optional[str] = None,
+        commit: bool = True,
     ) -> PendingPaperEdit:
         if reviewer_kind not in {"human", "codex"}:
             raise PendingEditError("Unsupported reviewer kind")
@@ -440,8 +441,11 @@ class PendingEditService:
         row.admin_note = admin_note
         row.user_review_reason = user_review_reason
         row.reviewed_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(row)
+        if commit:
+            self.db.commit()
+            self.db.refresh(row)
+        else:
+            self.db.flush()
         logger.info(
             "submission_approved id=%s reviewer_subject=%s result=%s:%s",
             row.id,
@@ -533,6 +537,7 @@ class PendingEditService:
         review_evidence: Optional[dict[str, Any]] = None,
         admin_note: Optional[str] = None,
         user_review_reason: Optional[str] = None,
+        commit: bool = True,
     ) -> PendingPaperEdit:
         if reviewer_kind not in {"human", "codex"}:
             raise PendingEditError("Unsupported reviewer kind")
@@ -553,8 +558,11 @@ class PendingEditService:
         row.admin_note = admin_note
         row.user_review_reason = user_review_reason
         row.reviewed_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(row)
+        if commit:
+            self.db.commit()
+            self.db.refresh(row)
+        else:
+            self.db.flush()
         logger.info(
             "submission_rejected id=%s reviewer_subject=%s",
             row.id,

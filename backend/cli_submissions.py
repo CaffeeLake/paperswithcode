@@ -18,6 +18,7 @@ from backend.services.autonomous_operations_repository import (
     Operator,
     RunContext,
 )
+from backend.services.autonomous_submission_service import AutonomousSubmissionService
 from backend.services.catalog_mutation_service import json_safe
 from backend.services.pending_edit_service import PendingEditService
 from backend.services.pending_edit_snapshots import PendingEditSnapshotService
@@ -56,6 +57,13 @@ def register_submission_commands(commands) -> None:
     decide.add_argument("--confirm", required=True, choices=["APPLY_SUBMISSION_REVIEW"])
     decide.add_argument("--json", action="store_true")
     decide.set_defaults(handler=decide_submission)
+
+    autonomous_batch = subcommands.add_parser("autonomous-batch")
+    _environment_argument(autonomous_batch)
+    autonomous_batch.add_argument("--run-id", type=uuid.UUID, required=True)
+    autonomous_batch.add_argument("--limit", type=int, default=25, choices=range(1, 26))
+    autonomous_batch.add_argument("--manifest-file", type=Path, required=True)
+    autonomous_batch.set_defaults(handler=build_autonomous_batch)
 
 
 def _environment_argument(parser) -> None:
@@ -149,6 +157,34 @@ def show_submission(args: argparse.Namespace) -> int:
                 "canonical_now": current,
             },
             args.json,
+        )
+    return 0
+
+
+def build_autonomous_batch(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    if not settings.autonomous_submission_enabled:
+        raise ValueError("Autonomous submission review is disabled")
+    with db_manager.session_local() as db:
+        _verified_database(db, args.environment)
+        service = AutonomousSubmissionService(
+            db,
+            signing_secret=settings.autonomous_submission_callback_secret.encode(),
+            callback_base_url=settings.autonomous_submission_callback_base_url,
+        )
+        batch = service.claim_submission_batch(args.run_id, limit=args.limit)
+        if not batch:
+            _emit({"run_id": str(args.run_id), "claimed": 0}, True)
+            return 0
+        manifest = service.build_submission_manifest(batch)
+        service.write_manifest(args.manifest_file, manifest)
+        _emit(
+            {
+                "run_id": str(args.run_id),
+                "claimed": len(batch),
+                "manifest_file": str(args.manifest_file),
+            },
+            True,
         )
     return 0
 

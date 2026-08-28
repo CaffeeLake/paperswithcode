@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from hashlib import sha256
@@ -824,7 +825,7 @@ class AutonomousOperationsRepository:
         cost_usd: Decimal = Decimal("0"),
         result_digest: str | None = None,
         exit_classification: str = "unknown",
-        capability_requests: list[dict[str, str | bool]] | None = None,
+        capability_requests: list[dict[str, object]] | None = None,
         evidence_digests: list[str] | None = None,
         pricing_revision: str = "unknown",
         pricing_policy_digest: str = "0" * 64,
@@ -872,13 +873,21 @@ class AutonomousOperationsRepository:
             raise ValueError("Autonomous run is invalid")
         self._validate_code(pricing_revision, label="Pricing revision", max_length=128)
         for item in capability_requests:
-            if set(item) != {
+            base_keys = {
                 "capability",
                 "resource_kind",
                 "resource_identifier",
                 "resource_exists",
                 "reason_code",
-            }:
+            }
+            structured_keys = base_keys | {
+                "rationale",
+                "evidence",
+                "confidence",
+                "resolved_payload",
+            }
+            item_keys = frozenset(item)
+            if item_keys not in {frozenset(base_keys), frozenset(structured_keys)}:
                 raise ValueError("Autonomous run is invalid")
             if not isinstance(item["resource_exists"], bool):
                 raise ValueError("Autonomous run is invalid")
@@ -890,6 +899,38 @@ class AutonomousOperationsRepository:
                 _SECRET_PREFIXES
             ):
                 raise ValueError("Autonomous run is invalid")
+            if item_keys == structured_keys:
+                rationale = item["rationale"]
+                evidence = item["evidence"]
+                confidence = item["confidence"]
+                resolved_payload = item["resolved_payload"]
+                if (
+                    item["capability"] != "review_submission"
+                    or not isinstance(rationale, str)
+                    or not 1 <= len(rationale) <= 4000
+                    or not isinstance(evidence, list)
+                    or not 1 <= len(evidence) <= 50
+                    or any(
+                        not isinstance(value, str) or not 1 <= len(value) <= 255
+                        for value in evidence
+                    )
+                    or isinstance(confidence, bool)
+                    or not isinstance(confidence, (int, float))
+                    or not 0 <= confidence <= 1
+                    or (
+                        resolved_payload is not None
+                        and not isinstance(resolved_payload, dict)
+                    )
+                ):
+                    raise ValueError("Autonomous run is invalid")
+                try:
+                    encoded = json.dumps(
+                        resolved_payload, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                except (TypeError, ValueError):
+                    raise ValueError("Autonomous run is invalid") from None
+                if len(encoded) > 2_000_000:
+                    raise ValueError("Autonomous run is invalid")
         db.add(
             AutonomousRun(
                 id=context.run_id,

@@ -118,6 +118,29 @@ def test_scheduled_curation_accepts_versioned_space_with_pinned_revision(
     runtime_validation.validate_codex_jobs_configuration(settings)
 
 
+def test_autonomous_submission_callbacks_require_isolated_scoped_secret(
+    settings_factory,
+):
+    settings, _release = settings_factory("production")
+    settings.autonomous_submission_enabled = True
+    settings.autonomous_submission_callback_secret = "short"
+
+    with pytest.raises(RuntimeError, match="separate strong secret"):
+        runtime_validation.validate_codex_jobs_configuration(settings)
+
+    settings.autonomous_submission_callback_secret = "s" * 32
+    settings.autonomous_submission_callback_base_url = (
+        "https://staging.paperswithcode.co/api/v1"
+    )
+    with pytest.raises(RuntimeError, match="production autonomous callbacks"):
+        runtime_validation.validate_codex_jobs_configuration(settings)
+
+    settings.autonomous_submission_callback_base_url = (
+        "https://paperswithcode.co/api/v1"
+    )
+    runtime_validation.validate_codex_jobs_configuration(settings)
+
+
 def test_chat_runtime_descriptor_classifies_enabled_dormant_and_legacy(
     settings_factory,
 ):

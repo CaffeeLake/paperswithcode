@@ -285,6 +285,27 @@ def validate_codex_jobs_configuration(settings: Settings) -> None:
             raise RuntimeError(
                 f"{settings.environment} Codex jobs must target {expected_api_url}"
             )
+    if settings.autonomous_submission_enabled:
+        expected_callback_url = {
+            "production": "https://paperswithcode.co/api/v1",
+            "staging": "https://staging.paperswithcode.co/api/v1",
+        }[settings.environment]
+        if (
+            len(settings.autonomous_submission_callback_secret.encode()) < 32
+            or settings.autonomous_submission_callback_secret
+            == settings.admin_api_token
+        ):
+            raise RuntimeError(
+                "autonomous submission callbacks require a separate strong secret"
+            )
+        if (
+            settings.autonomous_submission_callback_base_url.rstrip("/")
+            != expected_callback_url
+        ):
+            raise RuntimeError(
+                f"{settings.environment} autonomous callbacks must target "
+                f"{expected_callback_url}"
+            )
     if settings.codex_curation_scheduler_enabled:
         if settings.environment != "production":
             raise RuntimeError("scheduled paper curation is production-only")
