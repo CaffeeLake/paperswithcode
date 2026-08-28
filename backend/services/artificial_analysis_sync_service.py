@@ -28,8 +28,8 @@ from backend.services.external_resource_service import (
     ExternalResourceInput,
     ExternalResourceService,
 )
-from backend.services.paper_ingestion_service import PaperIngestionService
 from backend.services.model_release_identity_service import ModelReleaseIdentityService
+from backend.services.paper_ingestion_service import PaperIngestionService
 
 API_ENDPOINT = "https://artificialanalysis.ai/api/v2/language/models/free"
 SOURCE_URL_PREFIX = "https://artificialanalysis.ai/models/"
@@ -438,9 +438,11 @@ class ArtificialAnalysisPaperDiscoveryService:
         *,
         persist: bool = True,
         leaderboard: ArtificialAnalysisLeaderboard | None = None,
+        identities: dict[str, PaperIdentity] | None = None,
     ) -> ArtificialAnalysisDiscovery:
         result = ArtificialAnalysisDiscovery()
-        for slug, identity in MODEL_PAPER_IDENTITIES.items():
+        active_identities = MODEL_PAPER_IDENTITIES if identities is None else identities
+        for slug, identity in active_identities.items():
             query = self.db.query(Paper).filter(Paper.is_latest_version)
             paper = (
                 (

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import re
 from unittest.mock import patch
 
 import pytest
@@ -214,6 +214,15 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert "calculate_organization_trending_scores" in job_ids
     assert "monitor_chat_operational_alerts" in job_ids
     assert "process_curation_thumbnails" in job_ids
+
+    artificial_analysis_job = _job("sync_artificial_analysis")
+    assert artificial_analysis_job.display_name == (
+        "Sync Artificial Analysis Leaderboards"
+    )
+    assert "artificial-analysis-provider-voice-tts-arena" in (
+        artificial_analysis_job.db_freshness_query
+    )
+    assert "LEAST(" in artificial_analysis_job.db_freshness_query
 
     keyword_job = _job("backfill_method_keywords")
     assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query

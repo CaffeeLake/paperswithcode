@@ -651,7 +651,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     ),
     CronJobDefinition(
         id="sync_artificial_analysis",
-        display_name="Sync Artificial Analysis Indexes",
+        display_name="Sync Artificial Analysis Leaderboards",
         category="hourly",
         schedule="35 * * * * (hourly)",
         script_path="hourly/sync_artificial_analysis.py",
@@ -666,22 +666,62 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         critical=False,
         healthy_no_work_allowed=False,
         db_freshness_query="""
-            SELECT max(e.updated_at) AS last_write,
-                   count(*) FILTER (
-                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
-                   ) AS recent_writes,
-                   count(*) AS matched_evaluations
-            FROM evaluations e
-            JOIN datasets d ON d.id = e.dataset_id
-            WHERE d.slug IN (
+            WITH managed_evaluations AS (
+              SELECT d.slug AS dataset_slug, e.updated_at
+              FROM evaluations e
+              JOIN datasets d ON d.id = e.dataset_id
+              WHERE d.slug IN (
                     'artificial-analysis-intelligence-index',
-                    'artificial-analysis-agentic-index'
+                    'artificial-analysis-agentic-index',
+                    'artificial-analysis-provider-voice-tts-arena'
                   )
-              AND e.best_metric = 'Score'
-              AND e.external_source_url LIKE
-                  'https://artificialanalysis.ai/models/%'
-              AND e.methodology LIKE
-                  'Managed by the Papers with Code Artificial Analysis live sync.%'
+                AND (
+                    (
+                      e.best_metric = 'Score'
+                      AND e.external_source_url LIKE
+                          'https://artificialanalysis.ai/models/%'
+                      AND e.methodology LIKE
+                          'Managed by the Papers with Code Artificial Analysis live sync.%'
+                    )
+                    OR
+                    (
+                      e.best_metric = 'Quality Elo'
+                      AND e.external_source_url LIKE
+                          'https://artificialanalysis.ai/text-to-speech/models/%'
+                      AND e.methodology LIKE
+                          'Managed by the Papers with Code Artificial Analysis TTS live sync.%'
+                    )
+                  )
+            )
+            SELECT max(updated_at) AS last_write,
+                   LEAST(
+                     count(*) FILTER (
+                       WHERE dataset_slug = 'artificial-analysis-intelligence-index'
+                         AND updated_at > now() - interval '2 hours 30 minutes'
+                     ),
+                     count(*) FILTER (
+                       WHERE dataset_slug = 'artificial-analysis-agentic-index'
+                         AND updated_at > now() - interval '2 hours 30 minutes'
+                     ),
+                     count(*) FILTER (
+                       WHERE dataset_slug =
+                         'artificial-analysis-provider-voice-tts-arena'
+                         AND updated_at > now() - interval '2 hours 30 minutes'
+                     )
+                   ) AS recent_writes,
+                   LEAST(
+                     count(*) FILTER (
+                       WHERE dataset_slug = 'artificial-analysis-intelligence-index'
+                     ),
+                     count(*) FILTER (
+                       WHERE dataset_slug = 'artificial-analysis-agentic-index'
+                     ),
+                     count(*) FILTER (
+                       WHERE dataset_slug =
+                         'artificial-analysis-provider-voice-tts-arena'
+                     )
+                   ) AS matched_evaluations
+            FROM managed_evaluations
         """,
         workflow_file="cron-sync-artificial-analysis.yml",
         workflow_jobs=("run",),
