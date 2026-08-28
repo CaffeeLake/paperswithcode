@@ -7,9 +7,11 @@ for interacting with the PostgreSQL database.
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import List, Optional
 
 from sqlalchemy import (
+    DDL,
     JSON,
     BigInteger,
     Boolean,
@@ -26,6 +28,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
@@ -4606,3 +4609,290 @@ class UserProfileAlias(Base):
     )
 
     __table_args__ = (Index("idx_user_profile_aliases_subject", "hf_subject"),)
+
+
+class AutonomousOperatorState(Base):
+    """Global and per-operator autonomous mutation switches."""
+
+    __tablename__ = "autonomous_operator_state"
+
+    operator: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    manual_mode: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+    updated_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('global','submissions','cron_health','chat_reliability')",
+            name="autonomous_operator_state_operator_check",
+        ),
+        CheckConstraint(
+            "operator = 'global' OR NOT manual_mode",
+            name="autonomous_operator_state_manual_check",
+        ),
+        CheckConstraint(
+            "operator <> 'global' OR NOT enabled",
+            name="autonomous_operator_state_global_check",
+        ),
+        CheckConstraint(
+            "revision > 0", name="autonomous_operator_state_revision_check"
+        ),
+    )
+
+
+class AutonomousRun(Base):
+    """One immutable, content-free autonomous execution summary."""
+
+    __tablename__ = "autonomous_run"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    manifest_revision: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, server_default="0"
+    )
+    result_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('submissions','cron_health','chat_reliability')",
+            name="autonomous_run_operator_check",
+        ),
+        CheckConstraint(
+            "status IN ('completed','rejected','failed','budget_exhausted','cancelled')",
+            name="autonomous_run_status_check",
+        ),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND cost_usd >= 0",
+            name="autonomous_run_usage_check",
+        ),
+        CheckConstraint(
+            "result_digest IS NULL OR length(result_digest) = 64",
+            name="autonomous_run_digest_check",
+        ),
+        UniqueConstraint("id", "operator", name="uq_autonomous_run_id_operator"),
+        Index("idx_autonomous_run_operator_created", "operator", "created_at"),
+    )
+
+
+class AutonomousAction(Base):
+    """One append-only autonomous mutation audit event."""
+
+    __tablename__ = "autonomous_action"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+    before_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    after_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('submissions','cron_health','chat_reliability')",
+            name="autonomous_action_operator_check",
+        ),
+        CheckConstraint(
+            "before_digest IS NULL OR length(before_digest) = 64",
+            name="autonomous_action_before_digest_check",
+        ),
+        CheckConstraint(
+            "after_digest IS NULL OR length(after_digest) = 64",
+            name="autonomous_action_after_digest_check",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "operator"],
+            ["autonomous_run.id", "autonomous_run.operator"],
+            ondelete="RESTRICT",
+            name="fk_autonomous_action_run_operator",
+        ),
+        Index("idx_autonomous_action_run_created", "run_id", "created_at"),
+    )
+
+
+class AutonomousControlEvent(Base):
+    """Append-only audit history for human control-plane mutations."""
+
+    __tablename__ = "autonomous_control_event"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    target: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "event_kind IN ('manual_mode','operator_enabled','chat_baseline')",
+            name="autonomous_control_event_kind_check",
+        ),
+        CheckConstraint(
+            "length(before_digest) = 64 AND length(after_digest) = 64",
+            name="autonomous_control_event_digest_check",
+        ),
+        Index("idx_autonomous_control_event_created", "created_at"),
+    )
+
+
+class AutonomousRepairLease(Base):
+    """The singleton global source-repair lease."""
+
+    __tablename__ = "autonomous_repair_lease"
+
+    singleton_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    lease_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    owner_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    owner_operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "singleton_key = 'source_repair'",
+            name="autonomous_repair_lease_singleton_check",
+        ),
+        ForeignKeyConstraint(
+            ["owner_run_id", "owner_operator"],
+            ["autonomous_run.id", "autonomous_run.operator"],
+            ondelete="RESTRICT",
+            name="fk_autonomous_repair_lease_run_operator",
+        ),
+    )
+
+
+class AutonomousIncidentAttempt(Base):
+    """Content-free source-repair attempt accounting by stable signature."""
+
+    __tablename__ = "autonomous_incident_attempt"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    signature: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('cron_health','chat_reliability')",
+            name="autonomous_incident_attempt_operator_check",
+        ),
+        CheckConstraint(
+            "length(signature) = 64",
+            name="autonomous_incident_attempt_signature_check",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "operator"],
+            ["autonomous_run.id", "autonomous_run.operator"],
+            ondelete="RESTRICT",
+            name="fk_autonomous_incident_attempt_run_operator",
+        ),
+        Index(
+            "idx_autonomous_incident_attempt_window",
+            "operator",
+            "signature",
+            "attempted_at",
+        ),
+    )
+
+
+class ChatReliabilityBaseline(Base):
+    """Explicitly qualified scalable-chat baseline, without trace content."""
+
+    __tablename__ = "chat_reliability_baseline"
+
+    singleton: Mapped[bool] = mapped_column(Boolean, primary_key=True)
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+    qualified_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    qualified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint("singleton", name="chat_reliability_baseline_singleton_check"),
+        CheckConstraint("length(sha) = 40", name="chat_reliability_baseline_sha_check"),
+        CheckConstraint(
+            "revision > 0", name="chat_reliability_baseline_revision_check"
+        ),
+    )
+
+
+class ChatProviderRuntimeState(Base):
+    """Content-free active provider revision per environment."""
+
+    __tablename__ = "chat_provider_runtime_state"
+
+    environment: Mapped[str] = mapped_column(String(16), primary_key=True)
+    manifest_revision: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+    active_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "environment IN ('staging','production')",
+            name="chat_provider_runtime_state_environment_check",
+        ),
+        CheckConstraint(
+            "state_revision > 0",
+            name="chat_provider_runtime_state_revision_check",
+        ),
+    )
+
+
+for _table, _operation, _trigger in (
+    (AutonomousRun.__table__, "UPDATE", "autonomous_run_no_update"),
+    (AutonomousRun.__table__, "DELETE", "autonomous_run_no_delete"),
+    (AutonomousAction.__table__, "UPDATE", "autonomous_action_no_update"),
+    (AutonomousAction.__table__, "DELETE", "autonomous_action_no_delete"),
+    (AutonomousControlEvent.__table__, "UPDATE", "autonomous_control_no_update"),
+    (AutonomousControlEvent.__table__, "DELETE", "autonomous_control_no_delete"),
+    (AutonomousIncidentAttempt.__table__, "UPDATE", "autonomous_attempt_no_update"),
+    (AutonomousIncidentAttempt.__table__, "DELETE", "autonomous_attempt_no_delete"),
+):
+    event.listen(
+        _table,
+        "after_create",
+        DDL(
+            f"CREATE TRIGGER {_trigger} BEFORE {_operation} ON {_table.name} "
+            f"BEGIN SELECT RAISE(ABORT, '{_table.name} is append-only'); END"
+        ).execute_if(dialect="sqlite"),
+    )
