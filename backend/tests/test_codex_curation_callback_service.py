@@ -514,7 +514,7 @@ def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
     )
 
     with pytest.raises(ValueError, match="outside configured scale"):
-        service.apply(row, ApplyMutationRequest(evaluations=[]))
+        service._apply_authorized(row, ApplyMutationRequest(evaluations=[]))
 
     assert row.submitted_at is None
     assert row.applied_at is None
@@ -524,7 +524,7 @@ def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
     assert database.commits == 1
 
     with pytest.raises(ValueError, match="outside configured scale"):
-        service.apply(row, ApplyMutationRequest(evaluations=[]))
+        service._apply_authorized(row, ApplyMutationRequest(evaluations=[]))
 
     assert row.submitted_at is not None
     assert row.validation_summary["retryable"] is False
@@ -534,7 +534,7 @@ def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
     with pytest.raises(
         CodexCurationMutationClosedError, match="may no longer apply mutations"
     ):
-        service.apply(row, ApplyMutationRequest(evaluations=[]))
+        service._apply_authorized(row, ApplyMutationRequest(evaluations=[]))
 
     assert database.rollbacks == 3
     assert database.commits == 2
@@ -572,7 +572,7 @@ def test_rejected_scheduled_benchmark_gap_keeps_job_open_for_correction(
     service = _service(database, SimpleNamespace())
 
     with pytest.raises(ValueError, match="benchmark gap"):
-        service.apply(
+        service._apply_authorized(
             row,
             ApplyMutationRequest(
                 evaluations=[],
@@ -642,7 +642,7 @@ def test_late_scheduled_callback_does_not_pause_dispatch_or_overwrite_audit():
         CodexCurationMutationClosedError,
         match="This job may no longer apply mutations",
     ):
-        _service(database, SimpleNamespace()).apply(
+        _service(database, SimpleNamespace())._apply_authorized(
             row, ApplyMutationRequest(evaluations=[])
         )
 

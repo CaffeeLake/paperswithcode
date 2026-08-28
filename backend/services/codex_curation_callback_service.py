@@ -36,6 +36,15 @@ from backend.models.database import (
     TrendingModelCandidate,
 )
 from backend.services.benchmark_gap_service import BenchmarkGapService
+from backend.services.autonomous_capabilities import (
+    CAPABILITY_RESOURCE_KINDS,
+    AutonomousCapabilityDenied,
+    Capability,
+    ResourceKind,
+    ResourceRef,
+)
+from backend.services.autonomous_operations_repository import RunContext
+from backend.services.autonomous_policy import AutonomousPolicy
 from backend.services.catalog_errors import CatalogValidationError
 from backend.services.codex_add_evals_service import (
     CodexPaperJobService,
@@ -114,14 +123,37 @@ class CodexCurationCallbackService:
         job_service: CodexPaperJobService = codex_paper_job_service,
         evaluation_service: EvaluationService | None = None,
         association_service: PaperAssociationService | None = None,
+        autonomous_policy: AutonomousPolicy | None = None,
     ) -> None:
         self.db = db
         self.job_service = job_service
         self.evaluation_service = evaluation_service or EvaluationService(db)
+        self.autonomous_policy = autonomous_policy or AutonomousPolicy()
         paper_service = PaperService(db)
         self.paper_associations = association_service or PaperAssociationService(
             db, paper_service.get_paper_by_id
         )
+
+    def authorize_autonomous_callback(
+        self,
+        row,
+        body: ApplyMutationRequest,
+        *,
+        context: RunContext,
+    ) -> None:
+        """Authorize the authenticated scheduled callback before any write."""
+        if getattr(row, "trigger", "admin") == "admin":
+            raise AutonomousCapabilityDenied("admin_callback_is_not_autonomous")
+        if row.kind == "resolve-model-paper":
+            raise AutonomousCapabilityDenied("capability_not_in_manifest")
+        for capability, resource in self._validate_scheduled_capability_boundary(
+            row, body
+        ):
+            decision = self.autonomous_policy.authorize(
+                self.db, context, capability, resource
+            )
+            if not decision.allowed:
+                raise AutonomousCapabilityDenied(decision.reason_code)
 
     def _resolution_candidates(
         self, candidate: TrendingModelCandidate
@@ -530,7 +562,20 @@ class CodexCurationCallbackService:
             )
         return list(grouped.values())
 
-    def apply(self, row, body: ApplyMutationRequest) -> dict[str, Any]:
+    def apply(
+        self,
+        row,
+        body: ApplyMutationRequest,
+        *,
+        autonomous_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        if getattr(row, "trigger", "admin") != "admin":
+            if autonomous_context is None:
+                raise AutonomousCapabilityDenied("autonomous_run_context_required")
+            self.authorize_autonomous_callback(row, body, context=autonomous_context)
+        return self._apply_authorized(row, body)
+
+    def _apply_authorized(self, row, body: ApplyMutationRequest) -> dict[str, Any]:
         if row.kind == "resolve-model-paper":
             try:
                 if hasattr(self.db, "refresh"):
@@ -1078,6 +1123,7 @@ class CodexCurationCallbackService:
     ) -> dict[str, Any]:
         if getattr(row, "trigger", "admin") == "admin":
             return {"policy": "admin"}
+        self._validate_scheduled_capability_boundary(row, body)
         if row.trace_status not in {"preapply_stored", "disabled"}:
             raise CodexCurationMutationClosedError(
                 "Scheduled mutation requires a durable pre-apply trace"
@@ -1344,6 +1390,50 @@ class CodexCurationCallbackService:
             "policy": "scheduled-add-evals-v1",
             "evaluations": len(body.evaluations),
         }
+
+    def _validate_scheduled_capability_boundary(
+        self, row, body: ApplyMutationRequest
+    ) -> tuple[tuple[Capability, ResourceRef], ...]:
+        """Resolve the callback's closed mutation surface from catalog state."""
+        paper_id = getattr(row, "paper_id", None)
+        if row.kind == "add-evals":
+            capability = Capability.APPLY_EXISTING_LEADERBOARD_EVAL
+        elif row.kind == "enrich-paper":
+            capability = Capability.APPLY_EXISTING_TAXONOMY_EDIT
+        else:
+            raise AutonomousCapabilityDenied("capability_not_in_manifest")
+        resources: list[ResourceRef] = [
+            ResourceRef(
+                ResourceKind.PAPER,
+                "missing" if paper_id is None else str(paper_id),
+                paper_id is not None and self.db.get(Paper, paper_id) is not None,
+            )
+        ]
+        if body.enrich is not None:
+            resources.extend(
+                ResourceRef(
+                    ResourceKind.TASK,
+                    str(task_id),
+                    self.db.get(Task, task_id) is not None,
+                )
+                for task_id in body.enrich.task_ids or []
+            )
+            resources.extend(
+                ResourceRef(
+                    ResourceKind.METHOD,
+                    str(method_id),
+                    self.db.get(Method, method_id) is not None,
+                )
+                for method_id in body.enrich.method_ids or []
+            )
+        # Evaluation task/dataset/metric references are resolved against the
+        # configured TaskDataset and TaskDatasetMetric rows immediately below.
+        for resource in resources:
+            if resource.kind not in CAPABILITY_RESOURCE_KINDS[capability]:
+                raise AutonomousCapabilityDenied("resource_kind_not_allowed")
+            if not resource.exists:
+                raise AutonomousCapabilityDenied("resource_not_found")
+        return tuple((capability, resource) for resource in resources)
 
     @staticmethod
     def _validate_metric_scale(scale: str | None, value: float) -> None:

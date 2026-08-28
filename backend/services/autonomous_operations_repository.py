@@ -296,6 +296,25 @@ class AutonomousOperationsRepository:
             raise ValueError("Autonomous run context mismatches durable identity")
         return run
 
+    def assert_run_context(self, db: Session, context: RunContext) -> None:
+        """Verify that a caller's typed identity matches its immutable run."""
+        self._require_run_context(db, context)
+
+    def owns_repair_lease(self, db: Session, *, context: RunContext) -> bool:
+        """Check the live singleton lease against database time and run identity."""
+        self._require_run_context(db, context)
+        row = db.execute(
+            select(AutonomousRepairLease).where(
+                AutonomousRepairLease.singleton_key == "source_repair"
+            )
+        ).scalar_one_or_none()
+        return bool(
+            row is not None
+            and row.owner_run_id == context.run_id
+            and row.owner_operator == context.operator.value
+            and self._aware(row.expires_at) > self._clock(db)
+        )
+
     @staticmethod
     def _advisory_lock(db: Session, key: str) -> None:
         if db.bind is not None and db.bind.dialect.name == "postgresql":
@@ -505,6 +524,32 @@ class AutonomousOperationsRepository:
             raise ValueError("Incident signature must be a server-generated digest")
         return self._count_chat_repair_attempts(
             db, signature=signature, now=self._clock(db)
+        )
+
+    def owns_chat_repair_attempt(
+        self,
+        db: Session,
+        *,
+        context: RunContext,
+        signature: str,
+        attempt_id: uuid.UUID,
+    ) -> bool:
+        """Validate a budget reservation already atomically owned by this run."""
+        if context.operator != Operator.CHAT_RELIABILITY:
+            return False
+        if _DIGEST.fullmatch(signature) is None:
+            raise ValueError("Incident signature must be a server-generated digest")
+        self._require_run_context(db, context)
+        row = db.get(AutonomousIncidentAttempt, attempt_id)
+        if row is None:
+            return False
+        now = self._clock(db)
+        return bool(
+            row.run_id == context.run_id
+            and row.operator == context.operator.value
+            and row.signature == signature
+            and self._aware(row.attempted_at) > now - timedelta(hours=6)
+            and self._aware(row.attempted_at) <= now
         )
 
     def qualify_chat_baseline(

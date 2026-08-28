@@ -362,7 +362,15 @@ def test_incident_attempts_use_a_six_hour_window(db):
     )
     signature = "a" * 64
 
-    repository.reserve_chat_repair_attempt(db, context=context, signature=signature)
+    attempt_id = repository.reserve_chat_repair_attempt(
+        db, context=context, signature=signature
+    )
+    assert repository.owns_chat_repair_attempt(
+        db,
+        context=context,
+        signature=signature,
+        attempt_id=attempt_id,
+    )
     clock[0] = NOW + timedelta(hours=5, minutes=59)
     repository.reserve_chat_repair_attempt(db, context=context, signature=signature)
 

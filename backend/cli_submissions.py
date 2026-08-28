@@ -12,7 +12,12 @@ from sqlalchemy import text
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
-from backend.models.database import PendingPaperEdit
+from backend.models.database import AutonomousRun, PendingPaperEdit
+from backend.services.autonomous_operations_repository import (
+    AutonomousOperationsRepository,
+    Operator,
+    RunContext,
+)
 from backend.services.catalog_mutation_service import json_safe
 from backend.services.pending_edit_service import PendingEditService
 from backend.services.pending_edit_snapshots import PendingEditSnapshotService
@@ -250,6 +255,25 @@ def decide_submission(args: argparse.Namespace) -> int:
 
         if args.decision in TERMINAL_DECISIONS:
             _validate_terminal_review(artifact, row, resolved_payload)
+            context = RunContext(
+                run_id=args.review_run_id,
+                operator=Operator.SUBMISSIONS,
+                dry_run=False,
+                manifest_revision=str(artifact["workflow_version"]),
+            )
+            operations = AutonomousOperationsRepository()
+            if db.get(AutonomousRun, context.run_id) is None:
+                operations.append_run(
+                    db,
+                    context=context,
+                    status="completed",
+                    now=datetime.now(timezone.utc),
+                )
+            else:
+                operations.assert_run_context(db, context)
+            # Run summaries are monitoring/audit data and remain durable even
+            # when manual mode blocks the subsequent mutation.
+            db.commit()
             service = PendingEditService(db)
             reviewer_subject = f"codex-review:{args.review_run_id}"
             review_kwargs = {
@@ -260,6 +284,7 @@ def decide_submission(args: argparse.Namespace) -> int:
                 "review_run_id": args.review_run_id,
                 "review_model": str(artifact["model"])[:255],
                 "review_evidence": evidence,
+                "autonomous_context": context,
                 "admin_note": artifact["rationale"],
                 "user_review_reason": artifact.get("user_review_reason")
                 or (artifact["rationale"] if args.decision == "reject" else None),
@@ -273,13 +298,7 @@ def decide_submission(args: argparse.Namespace) -> int:
             _emit({"database": identity, "submission": _serialize(row)}, args.json)
             return 0
 
-        row.reviewed_by_kind = "codex"
-        row.reviewed_by = "Codex"
-        row.review_run_id = args.review_run_id
-        row.review_model = str(artifact["model"])[:255]
-        row.review_evidence = evidence
-        row.reviewed_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(row)
+        # A defer/needs-human result deliberately leaves the human queue row
+        # untouched. The autonomous run ledger records execution separately.
         _emit({"database": identity, "submission": _serialize(row)}, args.json)
     return 0
