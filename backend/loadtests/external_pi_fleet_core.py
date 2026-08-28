@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from backend.loadtests.external_pi_shadow_core import (
     BaselineObservation,
@@ -23,6 +23,7 @@ EXPECTED_USERS = 100
 MIN_PROJECTED_MEM_AVAILABLE_BYTES = 1536 * 1024**2
 MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
+MAX_REPORT_BYTES = 2**63 - 1
 FleetShapeName = Literal["5x32", "8x16", "16x8"]
 QUALIFICATION_PORTS = tuple(range(8780, 8796))
 QUALIFICATION_WORKER_IDS = tuple(
@@ -76,8 +77,10 @@ class HostResourceSnapshot:
         if (
             type(self.mem_available_bytes) is not int
             or self.mem_available_bytes < 0
+            or self.mem_available_bytes > MAX_REPORT_BYTES
             or type(self.projected_additional_bytes) is not int
             or self.projected_additional_bytes < 0
+            or self.projected_additional_bytes > MAX_REPORT_BYTES
             or not 0 <= self.cpu_percent <= 100
             or not 0 < self.cpu_guard_percent <= 100
         ):
@@ -96,6 +99,7 @@ class ResourcePreflight:
             self.status not in {"passed", "resource_refused"}
             or type(self.projected_mem_available_bytes) is not int
             or self.projected_mem_available_bytes < 0
+            or self.projected_mem_available_bytes > MAX_REPORT_BYTES
             or not 0 <= self.observed_cpu_percent <= 100
             or not 0 < self.cpu_guard_percent <= 100
         ):
@@ -130,7 +134,34 @@ class FleetRoundReport(BaseModel):
     p95_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
     p99_ms: int = Field(ge=0, le=MAX_REPORT_DURATION_MS)
     forbidden_activity: ForbiddenActivity
-    passed: bool
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> FleetRoundReport:
+        outcomes = (
+            self.compatible
+            + self.capacity_rejections
+            + self.protocol_errors
+            + self.transport_errors
+        )
+        if self.observations != outcomes:
+            raise ValueError("external Pi fleet round counts are inconsistent")
+        if self.p95_ms > self.p99_ms:
+            raise ValueError("external Pi fleet round percentiles are inconsistent")
+        return self
+
+    @computed_field
+    @property
+    def passed(self) -> bool:
+        return (
+            self.observations == EXPECTED_USERS
+            and self.compatible == EXPECTED_USERS
+            and self.capacity_rejections == 0
+            and self.protocol_errors == 0
+            and self.transport_errors == 0
+            and not self.forbidden_activity.detected
+            and self.p95_ms <= 3_000
+            and self.p99_ms <= 5_000
+        )
 
 
 class WorkerEvidence(BaseModel):
@@ -150,7 +181,7 @@ class UnitResourceEvidence(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9@_.-]+\.service$",
     )
-    peak_memory_bytes: int = Field(ge=0, le=2**63 - 1)
+    peak_memory_bytes: int = Field(ge=0, le=MAX_REPORT_BYTES)
     peak_cpu_percent: float = Field(ge=0, le=100)
     peak_tasks: int = Field(ge=0, le=MAX_REPORT_COUNTER)
 
@@ -158,10 +189,10 @@ class UnitResourceEvidence(BaseModel):
 class ResourceEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    peak_memory_bytes: int = Field(ge=0, le=2**63 - 1)
+    peak_memory_bytes: int = Field(ge=0, le=MAX_REPORT_BYTES)
     peak_cpu_percent: float = Field(ge=0, le=100)
     peak_tasks: int = Field(ge=0, le=MAX_REPORT_COUNTER)
-    minimum_host_mem_available_bytes: int = Field(ge=0, le=2**63 - 1)
+    minimum_host_mem_available_bytes: int = Field(ge=0, le=MAX_REPORT_BYTES)
     unit_peaks: tuple[UnitResourceEvidence, ...] = Field(max_length=32)
 
 
@@ -199,12 +230,58 @@ class FleetShapeReport(BaseModel):
     resources: ResourceEvidence | None
     resource_preflight: ResourcePreflight | None
     cleanup: CleanupEvidence
-    safety_passed: bool
-    capacity_passed: bool
-    failure_resilience_passed: bool
-    resource_passed: bool
-    cleanup_passed: bool
-    overall_passed: bool
+
+    @computed_field
+    @property
+    def safety_passed(self) -> bool:
+        return (
+            self.status == "completed"
+            and self.healthy is not None
+            and self.survivor is not None
+            and self.healthy.passed
+            and self.survivor.passed
+        )
+
+    @computed_field
+    @property
+    def capacity_passed(self) -> bool:
+        return self.aggregate_capacity >= EXPECTED_USERS
+
+    @computed_field
+    @property
+    def failure_resilience_passed(self) -> bool:
+        return (
+            self.status == "completed"
+            and self.survivor is not None
+            and self.post_loss_capacity >= EXPECTED_USERS
+            and self.survivor.passed
+        )
+
+    @computed_field
+    @property
+    def resource_passed(self) -> bool:
+        return (
+            self.status == "completed"
+            and self.resources is not None
+            and self.resource_preflight is not None
+            and self.resource_preflight.status == "passed"
+        )
+
+    @computed_field
+    @property
+    def cleanup_passed(self) -> bool:
+        return self.cleanup.passed
+
+    @computed_field
+    @property
+    def overall_passed(self) -> bool:
+        return (
+            self.safety_passed
+            and self.capacity_passed
+            and self.failure_resilience_passed
+            and self.resource_passed
+            and self.cleanup_passed
+        )
 
 
 class FleetQualificationReport(BaseModel):
@@ -411,15 +488,6 @@ def aggregate_round(
     latencies = tuple(item.latency_ms for item in observations)
     p95 = _nearest_rank(latencies, 0.95)
     p99 = _nearest_rank(latencies, 0.99)
-    passed = (
-        compatible == EXPECTED_USERS
-        and capacity == 0
-        and protocol_errors == 0
-        and transport_errors == 0
-        and not forbidden_activity.detected
-        and p95 <= 3_000
-        and p99 <= 5_000
-    )
     return FleetRoundReport(
         name=name,
         observations=len(observations),
@@ -430,7 +498,6 @@ def aggregate_round(
         p95_ms=p95,
         p99_ms=p99,
         forbidden_activity=forbidden_activity,
-        passed=passed,
     )
 
 
@@ -490,20 +557,6 @@ def build_completed_shape_report(
         raise FleetRunRefused(
             "external Pi shape requires exact per-unit resource evidence"
         )
-    safety_passed = healthy.passed and survivor.passed
-    capacity_passed = shape.aggregate_capacity >= EXPECTED_USERS
-    failure_resilience_passed = (
-        shape.post_loss_capacity >= EXPECTED_USERS and survivor.passed
-    )
-    resource_passed = resource_preflight.status == "passed"
-    cleanup_passed = cleanup.passed
-    overall = (
-        safety_passed
-        and capacity_passed
-        and failure_resilience_passed
-        and resource_passed
-        and cleanup_passed
-    )
     return FleetShapeReport(
         shape=shape.name,
         status="completed",
@@ -518,12 +571,6 @@ def build_completed_shape_report(
         resources=resources,
         resource_preflight=resource_preflight,
         cleanup=cleanup,
-        safety_passed=safety_passed,
-        capacity_passed=capacity_passed,
-        failure_resilience_passed=failure_resilience_passed,
-        resource_passed=resource_passed,
-        cleanup_passed=cleanup_passed,
-        overall_passed=overall,
     )
 
 
@@ -551,13 +598,58 @@ def build_resource_refused_shape_report(
         resources=None,
         resource_preflight=preflight,
         cleanup=cleanup,
-        safety_passed=False,
-        capacity_passed=shape.aggregate_capacity >= EXPECTED_USERS,
-        failure_resilience_passed=False,
-        resource_passed=False,
-        cleanup_passed=cleanup.passed,
-        overall_passed=False,
     )
+
+
+def _shape_evidence(report: FleetShapeReport) -> dict[str, object]:
+    return report.model_dump(exclude_computed_fields=True)
+
+
+def _revalidate_shape_report(report: FleetShapeReport) -> FleetShapeReport:
+    """Rebuild a shape verdict exclusively from its bounded source evidence."""
+
+    try:
+        shape = resolve_fleet_shape(report.shape)
+        if report.status == "completed":
+            if (
+                report.healthy is None
+                or report.survivor is None
+                or report.resources is None
+                or report.resource_preflight is None
+                or report.removed_worker_id is None
+            ):
+                raise FleetRunRefused(
+                    "external Pi completed shape report evidence is incomplete"
+                )
+            healthy = FleetRoundReport.model_validate(
+                report.healthy.model_dump(exclude_computed_fields=True)
+            )
+            survivor = FleetRoundReport.model_validate(
+                report.survivor.model_dump(exclude_computed_fields=True)
+            )
+            rebuilt = build_completed_shape_report(
+                shape=shape,
+                healthy=healthy,
+                survivor=survivor,
+                workers=report.workers,
+                removed_worker_id=report.removed_worker_id,
+                resources=report.resources,
+                resource_preflight=report.resource_preflight,
+                cleanup=report.cleanup,
+            )
+        else:
+            if report.resource_preflight is None:
+                raise FleetRunRefused(
+                    "external Pi refused shape report evidence is incomplete"
+                )
+            rebuilt = build_resource_refused_shape_report(
+                shape, report.resource_preflight, report.cleanup
+            )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FleetRunRefused("external Pi shape report evidence is invalid") from exc
+    if _shape_evidence(report) != _shape_evidence(rebuilt):
+        raise FleetRunRefused("external Pi shape report evidence is contradictory")
+    return rebuilt
 
 
 def build_final_report(
@@ -566,13 +658,16 @@ def build_final_report(
     runtime_id: str,
     shapes: tuple[FleetShapeReport, ...],
 ) -> FleetQualificationReport:
-    names = tuple(report.shape for report in shapes)
+    validated_shapes = tuple(_revalidate_shape_report(report) for report in shapes)
+    names = tuple(report.shape for report in validated_shapes)
     if len(set(names)) != len(names):
         raise FleetRunRefused("external Pi final report requires unique fleet shapes")
-    passing = [report for report in shapes if report.overall_passed]
+    passing = [report for report in validated_shapes if report.overall_passed]
     passing.sort(
         key=lambda report: (
-            report.resources.peak_memory_bytes if report.resources else 2**63 - 1,
+            report.resources.peak_memory_bytes
+            if report.resources
+            else MAX_REPORT_BYTES,
             report.resources.peak_cpu_percent if report.resources else 101.0,
             max(report.healthy.p99_ms, report.survivor.p99_ms)
             if report.healthy and report.survivor
@@ -583,7 +678,7 @@ def build_final_report(
     return FleetQualificationReport(
         release_id=release_id,
         runtime_id=runtime_id,
-        shapes=shapes,
+        shapes=validated_shapes,
         preferred_shape=passing[0].shape if passing else None,
     )
 
