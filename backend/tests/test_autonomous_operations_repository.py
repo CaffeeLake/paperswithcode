@@ -76,7 +76,9 @@ def postgres_engine():
         DROP TABLE IF EXISTS autonomous_repair_lease CASCADE;
         DROP TABLE IF EXISTS autonomous_control_event CASCADE;
         DROP TABLE IF EXISTS autonomous_action CASCADE;
+        DROP TABLE IF EXISTS autonomous_budget_reservation CASCADE;
         DROP TABLE IF EXISTS autonomous_run CASCADE;
+        DROP TABLE IF EXISTS autonomous_execution_intent CASCADE;
         DROP TABLE IF EXISTS autonomous_operator_state CASCADE;
         DROP FUNCTION IF EXISTS reject_autonomous_append_only_mutation() CASCADE;
     """

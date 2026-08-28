@@ -4649,6 +4649,45 @@ class AutonomousOperatorState(Base):
     )
 
 
+class AutonomousExecutionIntent(Base):
+    """Immutable request identity recorded before any model allocation."""
+
+    __tablename__ = "autonomous_execution_intent"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    manifest_revision: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_digests: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    model_alias: Mapped[str] = mapped_column(String(32), nullable=False)
+    budget_usd: Mapped[Decimal] = mapped_column(Numeric(18, 9), nullable=False)
+    pricing_policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('submissions','cron_health','chat_reliability')",
+            name="autonomous_execution_intent_operator_check",
+        ),
+        CheckConstraint(
+            "model_alias IN ('diagnosis','independent_review')",
+            name="autonomous_execution_intent_model_alias_check",
+        ),
+        CheckConstraint(
+            "budget_usd > 0 AND length(request_digest) = 64 "
+            "AND length(pricing_policy_digest) = 64",
+            name="autonomous_execution_intent_integrity_check",
+        ),
+    )
+
+
 class AutonomousRun(Base):
     """One immutable, content-free autonomous execution summary."""
 
@@ -4666,9 +4705,30 @@ class AutonomousRun(Base):
         BigInteger, nullable=False, server_default="0"
     )
     cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(12, 6), nullable=False, server_default="0"
+        Numeric(18, 9), nullable=False, server_default="0"
     )
     result_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    exit_classification: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown"
+    )
+    capability_requests: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    evidence_digests: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    pricing_revision: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="unknown", server_default="unknown"
+    )
+    pricing_policy_digest: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="0" * 64, server_default="0" * 64
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -4689,8 +4749,107 @@ class AutonomousRun(Base):
             "result_digest IS NULL OR length(result_digest) = 64",
             name="autonomous_run_digest_check",
         ),
+        CheckConstraint(
+            "exit_classification IN ('unknown','completed','rejected','timeout',"
+            "'cancelled','budget_exhausted','malformed_output','process_error',"
+            "'output_limit','credential_missing','configuration_missing',"
+            "'credential_revoke_failed','interrupted')",
+            name="autonomous_run_exit_classification_check",
+        ),
+        CheckConstraint(
+            "length(pricing_policy_digest) = 64",
+            name="autonomous_run_pricing_policy_digest_check",
+        ),
         UniqueConstraint("id", "operator", name="uq_autonomous_run_id_operator"),
         Index("idx_autonomous_run_operator_created", "operator", "created_at"),
+    )
+
+
+class AutonomousBudgetReservation(Base):
+    """Provider-enforced, per-run spend reservation without credential material."""
+
+    __tablename__ = "autonomous_budget_reservation"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    operator: Mapped[str] = mapped_column(String(32), nullable=False)
+    reservation_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, unique=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_alias: Mapped[str] = mapped_column(String(32), nullable=False)
+    limit_usd: Mapped[Decimal] = mapped_column(Numeric(18, 9), nullable=False)
+    attestation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    endpoint_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claim_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    claim_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="claimed", server_default="claimed"
+    )
+    authoritative_input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    authoritative_output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    authoritative_cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(18, 9), nullable=False, server_default="0"
+    )
+    cost_upper_bound_usd: Mapped[Decimal] = mapped_column(
+        Numeric(18, 9), nullable=False, server_default="0"
+    )
+    reconciliation_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    released_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "operator IN ('submissions','cron_health','chat_reliability')",
+            name="autonomous_budget_reservation_operator_check",
+        ),
+        CheckConstraint(
+            "provider = 'openai'",
+            name="autonomous_budget_reservation_provider_check",
+        ),
+        CheckConstraint(
+            "model_alias IN ('diagnosis','independent_review')",
+            name="autonomous_budget_reservation_model_alias_check",
+        ),
+        CheckConstraint(
+            "limit_usd > 0 AND length(attestation_digest) = 64",
+            name="autonomous_budget_reservation_integrity_check",
+        ),
+        CheckConstraint(
+            "length(request_digest) = 64 AND length(endpoint_digest) = 64 "
+            "AND credential_scope = 'responses'",
+            name="autonomous_budget_reservation_scope_check",
+        ),
+        CheckConstraint(
+            "state IN ('claimed','released','release_failed','unknown') "
+            "AND authoritative_input_tokens >= 0 "
+            "AND authoritative_output_tokens >= 0 "
+            "AND authoritative_cost_usd >= 0 "
+            "AND authoritative_cost_usd <= cost_upper_bound_usd "
+            "AND cost_upper_bound_usd <= limit_usd "
+            "AND ((state = 'released' AND reconciliation_required = false "
+            "AND released_at IS NOT NULL) "
+            "OR (state IN ('release_failed','unknown') "
+            "AND reconciliation_required = true AND released_at IS NULL) "
+            "OR (state = 'claimed' AND reconciliation_required = false "
+            "AND released_at IS NULL))",
+            name="autonomous_budget_reservation_lifecycle_check",
+        ),
     )
 
 
@@ -4879,8 +5038,23 @@ class ChatProviderRuntimeState(Base):
 
 
 for _table, _operation, _trigger in (
+    (
+        AutonomousExecutionIntent.__table__,
+        "UPDATE",
+        "autonomous_execution_intent_no_update",
+    ),
+    (
+        AutonomousExecutionIntent.__table__,
+        "DELETE",
+        "autonomous_execution_intent_no_delete",
+    ),
     (AutonomousRun.__table__, "UPDATE", "autonomous_run_no_update"),
     (AutonomousRun.__table__, "DELETE", "autonomous_run_no_delete"),
+    (
+        AutonomousBudgetReservation.__table__,
+        "DELETE",
+        "autonomous_budget_reservation_no_delete",
+    ),
     (AutonomousAction.__table__, "UPDATE", "autonomous_action_no_update"),
     (AutonomousAction.__table__, "DELETE", "autonomous_action_no_delete"),
     (AutonomousControlEvent.__table__, "UPDATE", "autonomous_control_no_update"),

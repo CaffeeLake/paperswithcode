@@ -16,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import (
     AutonomousAction,
+    AutonomousBudgetReservation,
     AutonomousControlEvent,
+    AutonomousExecutionIntent,
     AutonomousIncidentAttempt,
     AutonomousOperatorState,
     AutonomousRepairLease,
@@ -88,6 +90,10 @@ class StaleRepairLease(RuntimeError):
 
 class IncidentAttemptLimit(RuntimeError):
     """The fixed chat source-repair attempt budget is exhausted."""
+
+
+class BudgetReservationUnavailable(RuntimeError):
+    """A live execution already owns the provider-enforced run budget."""
 
 
 Clock = Callable[[Session], datetime]
@@ -322,6 +328,250 @@ class AutonomousOperationsRepository:
                 select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
             )
 
+    def lock_run(self, db: Session, *, run_id: uuid.UUID) -> None:
+        """Serialize one immutable run identity across concurrent workers."""
+        if not isinstance(run_id, uuid.UUID):
+            raise ValueError("Autonomous run ID is invalid")
+        self._advisory_lock(db, f"autonomous:run:{run_id}")
+
+    def get_budget_reservation(
+        self, db: Session, *, run_id: uuid.UUID
+    ) -> AutonomousBudgetReservation | None:
+        if not isinstance(run_id, uuid.UUID):
+            raise ValueError("Autonomous run ID is invalid")
+        return db.get(AutonomousBudgetReservation, run_id)
+
+    def get_execution_intent(
+        self, db: Session, *, run_id: uuid.UUID
+    ) -> AutonomousExecutionIntent | None:
+        if not isinstance(run_id, uuid.UUID):
+            raise ValueError("Autonomous run ID is invalid")
+        return db.get(AutonomousExecutionIntent, run_id)
+
+    def record_execution_intent(
+        self,
+        db: Session,
+        *,
+        context: RunContext,
+        request_digest: str,
+        evidence_digests: list[str],
+        model_alias: str,
+        budget_usd: Decimal,
+        pricing_policy_digest: str,
+        now: datetime,
+    ) -> None:
+        if (
+            _DIGEST.fullmatch(request_digest) is None
+            or evidence_digests != sorted(set(evidence_digests))
+            or len(evidence_digests) > 500
+            or any(_DIGEST.fullmatch(value) is None for value in evidence_digests)
+            or model_alias not in {"diagnosis", "independent_review"}
+            or not budget_usd.is_finite()
+            or budget_usd <= 0
+            or _DIGEST.fullmatch(pricing_policy_digest) is None
+            or now.tzinfo is None
+        ):
+            raise ValueError("Autonomous execution intent is invalid")
+        try:
+            self._validate_code(
+                context.manifest_revision,
+                label="Manifest revision",
+                max_length=128,
+            )
+        except ValueError:
+            raise ValueError("Autonomous execution intent is invalid") from None
+        db.add(
+            AutonomousExecutionIntent(
+                run_id=context.run_id,
+                operator=context.operator.value,
+                dry_run=context.dry_run,
+                manifest_revision=context.manifest_revision,
+                request_digest=request_digest,
+                evidence_digests=evidence_digests,
+                model_alias=model_alias,
+                budget_usd=budget_usd,
+                pricing_policy_digest=pricing_policy_digest,
+                created_at=now,
+            )
+        )
+        db.flush()
+
+    def claim_budget_reservation(
+        self,
+        db: Session,
+        *,
+        context: RunContext,
+        reservation_id: str,
+        provider: str,
+        model_alias: str,
+        limit_usd: Decimal,
+        attestation_digest: str,
+        request_digest: str,
+        endpoint_digest: str,
+        credential_scope: str,
+        expires_at: datetime,
+        claim_ttl: timedelta,
+    ) -> uuid.UUID:
+        """Persist and exclusively claim an idempotent provider reservation."""
+        now = self._clock(db)
+        if (
+            _CODE.fullmatch(reservation_id) is None
+            or len(reservation_id) > 128
+            or provider != "openai"
+            or model_alias not in {"diagnosis", "independent_review"}
+            or not isinstance(limit_usd, Decimal)
+            or not limit_usd.is_finite()
+            or limit_usd <= 0
+            or _DIGEST.fullmatch(attestation_digest) is None
+            or _DIGEST.fullmatch(request_digest) is None
+            or _DIGEST.fullmatch(endpoint_digest) is None
+            or credential_scope != "responses"
+            or expires_at.tzinfo is None
+            or expires_at <= now
+            or not timedelta(minutes=1) <= claim_ttl <= timedelta(hours=3)
+        ):
+            raise ValueError("Autonomous budget reservation is invalid")
+        row = db.execute(
+            select(AutonomousBudgetReservation)
+            .where(AutonomousBudgetReservation.run_id == context.run_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        claim_id = uuid.uuid4()
+        if row is None:
+            row = AutonomousBudgetReservation(
+                run_id=context.run_id,
+                operator=context.operator.value,
+                reservation_id=reservation_id,
+                provider=provider,
+                model_alias=model_alias,
+                limit_usd=limit_usd,
+                attestation_digest=attestation_digest,
+                request_digest=request_digest,
+                endpoint_digest=endpoint_digest,
+                credential_scope=credential_scope,
+                expires_at=expires_at,
+                claim_id=claim_id,
+                claim_expires_at=now + claim_ttl,
+                created_at=now,
+            )
+            db.add(row)
+        else:
+            if (
+                row.operator != context.operator.value
+                or row.reservation_id != reservation_id
+                or row.provider != provider
+                or row.model_alias != model_alias
+                or Decimal(row.limit_usd) != limit_usd
+                or row.attestation_digest != attestation_digest
+                or row.request_digest != request_digest
+                or row.endpoint_digest != endpoint_digest
+                or row.credential_scope != credential_scope
+                or self._aware(row.expires_at) != expires_at
+                or row.state != "claimed"
+            ):
+                raise ValueError("Autonomous budget reservation mismatch")
+            if self._aware(row.claim_expires_at) > now:
+                raise BudgetReservationUnavailable(
+                    "Autonomous budget reservation is already claimed"
+                )
+            row.claim_id = claim_id
+            row.claim_expires_at = now + claim_ttl
+        db.flush()
+        return claim_id
+
+    def settle_budget_reservation(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        released: bool,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: Decimal,
+        cost_upper_bound_usd: Decimal,
+        now: datetime,
+    ) -> None:
+        row = db.execute(
+            select(AutonomousBudgetReservation)
+            .where(AutonomousBudgetReservation.run_id == run_id)
+            .with_for_update()
+        ).scalar_one()
+        if (
+            row.claim_id != claim_id
+            or row.state != "claimed"
+            or now.tzinfo is None
+            or input_tokens < 0
+            or output_tokens < 0
+            or not cost_usd.is_finite()
+            or not cost_upper_bound_usd.is_finite()
+            or not Decimal("0")
+            <= cost_usd
+            <= cost_upper_bound_usd
+            <= Decimal(row.limit_usd)
+        ):
+            raise BudgetReservationUnavailable("Autonomous budget claim is stale")
+        row.state = "released" if released else "release_failed"
+        row.authoritative_input_tokens = input_tokens
+        row.authoritative_output_tokens = output_tokens
+        row.authoritative_cost_usd = cost_usd
+        row.cost_upper_bound_usd = cost_upper_bound_usd
+        row.reconciliation_required = not released
+        row.released_at = now if released else None
+        db.flush()
+
+    def record_budget_usage(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: Decimal,
+        cost_upper_bound_usd: Decimal,
+    ) -> None:
+        row = db.execute(
+            select(AutonomousBudgetReservation)
+            .where(AutonomousBudgetReservation.run_id == run_id)
+            .with_for_update()
+        ).scalar_one()
+        if (
+            row.claim_id != claim_id
+            or row.state != "claimed"
+            or input_tokens < row.authoritative_input_tokens
+            or output_tokens < row.authoritative_output_tokens
+            or cost_usd < row.authoritative_cost_usd
+            or cost_upper_bound_usd < cost_usd
+            or cost_upper_bound_usd > row.limit_usd
+        ):
+            raise BudgetReservationUnavailable("Autonomous budget usage is invalid")
+        row.authoritative_input_tokens = input_tokens
+        row.authoritative_output_tokens = output_tokens
+        row.authoritative_cost_usd = cost_usd
+        row.cost_upper_bound_usd = cost_upper_bound_usd
+        db.flush()
+
+    def budget_claim_is_active(self, db: Session, *, run_id: uuid.UUID) -> bool:
+        row = db.get(AutonomousBudgetReservation, run_id)
+        return bool(
+            row is not None
+            and row.state == "claimed"
+            and self._aware(row.claim_expires_at) > self._clock(db)
+        )
+
+    def mark_budget_unknown(self, db: Session, *, run_id: uuid.UUID) -> None:
+        row = db.execute(
+            select(AutonomousBudgetReservation)
+            .where(AutonomousBudgetReservation.run_id == run_id)
+            .with_for_update()
+        ).scalar_one()
+        if row.state != "claimed":
+            raise BudgetReservationUnavailable("Autonomous budget is already settled")
+        row.state = "unknown"
+        row.reconciliation_required = True
+        db.flush()
+
     def append_run(
         self,
         db: Session,
@@ -333,7 +583,14 @@ class AutonomousOperationsRepository:
         output_tokens: int = 0,
         cost_usd: Decimal = Decimal("0"),
         result_digest: str | None = None,
+        exit_classification: str = "unknown",
+        capability_requests: list[dict[str, str | bool]] | None = None,
+        evidence_digests: list[str] | None = None,
+        pricing_revision: str = "unknown",
+        pricing_policy_digest: str = "0" * 64,
     ) -> uuid.UUID:
+        capability_requests = capability_requests or []
+        evidence_digests = evidence_digests or []
         try:
             self._validate_code(
                 context.manifest_revision,
@@ -350,8 +607,49 @@ class AutonomousOperationsRepository:
             or output_tokens < 0
             or cost_usd < 0
             or (result_digest is not None and _DIGEST.fullmatch(result_digest) is None)
+            or exit_classification
+            not in {
+                "unknown",
+                "completed",
+                "rejected",
+                "timeout",
+                "cancelled",
+                "budget_exhausted",
+                "malformed_output",
+                "process_error",
+                "output_limit",
+                "credential_missing",
+                "configuration_missing",
+                "credential_revoke_failed",
+                "interrupted",
+            }
+            or len(capability_requests) > 100
+            or len(evidence_digests) > 500
+            or evidence_digests != sorted(set(evidence_digests))
+            or any(_DIGEST.fullmatch(value) is None for value in evidence_digests)
+            or _DIGEST.fullmatch(pricing_policy_digest) is None
         ):
             raise ValueError("Autonomous run is invalid")
+        self._validate_code(pricing_revision, label="Pricing revision", max_length=128)
+        for item in capability_requests:
+            if set(item) != {
+                "capability",
+                "resource_kind",
+                "resource_identifier",
+                "resource_exists",
+                "reason_code",
+            }:
+                raise ValueError("Autonomous run is invalid")
+            if not isinstance(item["resource_exists"], bool):
+                raise ValueError("Autonomous run is invalid")
+            for key in ("capability", "resource_kind", "reason_code"):
+                self._validate_code(item[key], label=key, max_length=64)
+            if _RESOURCE_IDENTIFIER.fullmatch(
+                item["resource_identifier"]
+            ) is None or item["resource_identifier"].lower().startswith(
+                _SECRET_PREFIXES
+            ):
+                raise ValueError("Autonomous run is invalid")
         db.add(
             AutonomousRun(
                 id=context.run_id,
@@ -363,6 +661,11 @@ class AutonomousOperationsRepository:
                 output_tokens=output_tokens,
                 cost_usd=cost_usd,
                 result_digest=result_digest,
+                exit_classification=exit_classification,
+                capability_requests=capability_requests,
+                evidence_digests=evidence_digests,
+                pricing_revision=pricing_revision,
+                pricing_policy_digest=pricing_policy_digest,
                 created_at=now,
             )
         )
