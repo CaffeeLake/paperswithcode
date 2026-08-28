@@ -1,8 +1,6 @@
 name: Cron - Enqueue HF Trending Model Curation
 
 on:
-  schedule:
-    - cron: "42 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

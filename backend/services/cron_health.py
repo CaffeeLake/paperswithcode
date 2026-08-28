@@ -531,49 +531,41 @@ def fetch_workflow_status(
     return status
 
 
-def fetch_systemd_status(job: CronJobDefinition) -> Dict[str, Any]:
-    """Read bounded timer/service properties for a registry-owned unit pair."""
-
-    if job.scheduler != "systemd" or not job.systemd_timer or not job.systemd_service:
-        return {"available": False, "error": "systemd units are not registered"}
-
-    properties = {
-        job.systemd_timer: (
-            "LoadState,ActiveState,SubState,UnitFileState,LastTriggerUSec,"
-            "NextElapseUSecRealtime"
-        ),
-        job.systemd_service: (
-            "LoadState,ActiveState,SubState,Result,ExecMainStatus,"
-            "ExecMainStartTimestamp,ExecMainExitTimestamp"
-        ),
-    }
-    values: Dict[str, Dict[str, str]] = {}
-    for unit, requested in properties.items():
-        try:
-            result = subprocess.run(
-                ["systemctl", "show", unit, f"--property={requested}"],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return {"available": False, "error": "systemd status is unavailable"}
-        if result.returncode != 0:
-            return {
-                "available": False,
-                "error": "systemd status permission denied or unavailable",
-            }
-        values[unit] = dict(
-            line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+def _systemd_show(unit: str, requested: str) -> Optional[Dict[str, str]]:
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", unit, f"--property={requested}"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
         )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
 
-    timer = values[job.systemd_timer]
-    service = values[job.systemd_service]
+
+def _read_systemd_pair(timer_unit: str, service_unit: str) -> Optional[Dict[str, Any]]:
+    timer = _systemd_show(
+        timer_unit,
+        "LoadState,ActiveState,SubState,UnitFileState,LastTriggerUSec,"
+        "NextElapseUSecRealtime",
+    )
+    service = _systemd_show(
+        service_unit,
+        "LoadState,ActiveState,SubState,Result,ExecMainStatus,"
+        "ExecMainStartTimestamp,ExecMainExitTimestamp",
+    )
+    if timer is None or service is None:
+        return None
     return {
         "available": True,
-        "timer": job.systemd_timer,
-        "service": job.systemd_service,
+        "timer": timer_unit,
+        "service": service_unit,
         "enabled": timer.get("UnitFileState") in {"enabled", "enabled-runtime"},
         "timer_active": timer.get("ActiveState") == "active",
         "timer_state": timer.get("ActiveState"),
@@ -588,6 +580,60 @@ def fetch_systemd_status(job: CronJobDefinition) -> Dict[str, Any]:
     }
 
 
+def fetch_systemd_status(job: CronJobDefinition) -> Dict[str, Any]:
+    """Read bounded timer/service properties for the registry-owned units.
+
+    Duties driven by several timer/service pairs (for example the five
+    preload_thumbnails lanes) are merged: the pair with the most recent
+    completion provides the latest exit evidence, mirroring the previous
+    latest-scheduled-workflow semantics.
+    """
+
+    pairs = job.systemd_unit_pairs
+    if job.scheduler != "systemd" or not pairs:
+        return {"available": False, "error": "systemd units are not registered"}
+
+    statuses = []
+    for timer_unit, service_unit in pairs:
+        status = _read_systemd_pair(timer_unit, service_unit)
+        if status is None:
+            return {
+                "available": False,
+                "error": "systemd status permission denied or unavailable",
+            }
+        statuses.append(status)
+
+    def timestamp_key(field: str):
+        def key(status: Dict[str, Any]) -> datetime:
+            parsed = _parse_log_timestamp(status.get(field))
+            return parsed or datetime.min.replace(tzinfo=timezone.utc)
+
+        return key
+
+    latest = max(statuses, key=timestamp_key("last_completed_at"))
+    merged = dict(latest)
+    merged.update(
+        enabled=all(status["enabled"] for status in statuses),
+        timer_active=all(status["timer_active"] for status in statuses),
+        service_active=any(status["service_active"] for status in statuses),
+        last_started_at=max(statuses, key=timestamp_key("last_started_at")).get(
+            "last_started_at"
+        ),
+        next_trigger_at=min(
+            (
+                status["next_trigger_at"]
+                for status in statuses
+                if status.get("next_trigger_at")
+            ),
+            key=lambda value: _parse_log_timestamp(value)
+            or datetime.max.replace(tzinfo=timezone.utc),
+            default=None,
+        ),
+        units=[status["service"] for status in statuses],
+    )
+    return merged
+
+
 def discover_scheduled_duties() -> set[str]:
     """Discover pwc-cron duties from release-owned workflow and unit source."""
 
@@ -600,12 +646,16 @@ def discover_scheduled_duties() -> set[str]:
     duties.discard("status")
 
     deploy_dir = WORKFLOWS_DIR.parents[1] / "deploy"
-    for pattern in ("systemd/pwc-*.service", "autonomous/*.service"):
+    for pattern in (
+        "systemd/pwc-*.service",
+        "systemd/cron/pwc-*.service",
+        "autonomous/*.service",
+    ):
         for service in deploy_dir.glob(pattern):
             if not service.with_suffix(".timer").is_file():
                 continue
             match = re.search(
-                r"^ExecStart=.*/pwc-cron\s+([a-z0-9_]+)",
+                r"^ExecStart=.*/pwc-cron(?:-throttled)?\s+([a-z0-9_]+)",
                 service.read_text(encoding="utf-8"),
                 re.MULTILINE,
             )
@@ -1922,6 +1972,14 @@ def evaluate_job_health(
     ):
         status = "healthy"
         reasons = ["latest queue poll completed and no thumbnail work is pending"]
+    if (
+        job.output_evaluator in {"thumbnail_mirror", "weekly_linker"}
+        and status == "unknown"
+        and systemd_status
+        and systemd_status.get("service_result") == "success"
+    ):
+        status = "healthy"
+        reasons = ["latest systemd invocation completed its job-owned output contract"]
     output_status = status
     output_reason = (
         "; ".join(dict.fromkeys(reasons)) if reasons else "job-owned output is fresh"

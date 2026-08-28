@@ -47,7 +47,10 @@ export interface CronJobStatus {
   work_summary?: string | null;
   db_metrics?: Record<string, string | number>;
   workflow_status?: CronWorkflowStatus | null;
-  systemd_status?: Record<string, string | number | boolean | null> | null;
+  systemd_status?: Record<
+    string,
+    string | number | boolean | string[] | null
+  > | null;
   execution_health: CronHealthAxis;
   output_health: CronHealthAxis;
   lock_state?: Record<string, string | number | boolean | null>;

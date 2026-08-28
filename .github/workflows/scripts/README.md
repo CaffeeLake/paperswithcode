@@ -1,8 +1,12 @@
 # PapersWithCode Cron Jobs
 
-Production cron scheduling is driven by GitHub Actions. The workflows under
-`.github/workflows/cron-*.yml` SSH into the VPS and run the entrypoints in this
-directory with `uv run --env-file backend/keys.env ...`.
+Production cron scheduling is driven by host systemd timers generated from
+`deploy/cron_schedules.py` into `deploy/systemd/cron/`; each timer invokes the
+allowlisted `pwc-cron` launcher through the bounded `pwc-cron-throttled`
+wrapper. The workflows under `.github/workflows/cron-*.yml` are
+`workflow_dispatch`-only manual-recovery paths that SSH into the VPS and run
+the same `pwc-cron` jobs. The schedule columns below describe the timer
+cadence, which preserves the former GitHub Actions minute offsets.
 
 ## Production Jobs and Pending Activations
 

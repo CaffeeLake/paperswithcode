@@ -101,7 +101,19 @@ class CronJobDefinition:
     schedule_grace_minutes: int = 20
     systemd_timer: Optional[str] = None
     systemd_service: Optional[str] = None
+    # Additional timer/service pairs when one duty runs under several units
+    # (for example the five preload_thumbnails lanes).
+    systemd_extra_units: Tuple[Tuple[str, str], ...] = ()
     output_evaluator: Optional[str] = None
+
+    @property
+    def systemd_unit_pairs(self) -> Tuple[Tuple[str, str], ...]:
+        """All (timer, service) pairs owning this duty's execution evidence."""
+
+        pairs: Tuple[Tuple[str, str], ...] = ()
+        if self.systemd_timer and self.systemd_service:
+            pairs = ((self.systemd_timer, self.systemd_service),)
+        return pairs + self.systemd_extra_units
 
     @property
     def evidence_contract(self) -> CronEvidenceContract:
@@ -1494,10 +1506,59 @@ _OUTPUT_EVALUATORS: dict[str, str] = {
     "link_papers_by_task_keywords": "weekly_linker",
 }
 
+
+# Host systemd timers own scheduled execution for the previously
+# GitHub-scheduled jobs.  GitHub Actions schedule: triggers proved unreliable
+# (delayed or missing scheduled events with no catch-up), so the units in
+# deploy/systemd/cron/ are now the execution authority; the workflows remain
+# workflow_dispatch-only for manual recovery.
+def _systemd_unit(job_id: str) -> str:
+    return "pwc-cron-" + job_id.replace("_", "-")
+
+
+_PRELOAD_LANES = ("visible", "task-top", "method-top", "recent", "external")
+
+_SYSTEMD_MIGRATED: dict[str, tuple[tuple[str, str], ...]] = {
+    job_id: ((f"{_systemd_unit(job_id)}.timer", f"{_systemd_unit(job_id)}.service"),)
+    for job_id, (_policies, _grace) in _SCHEDULE_CONTRACTS.items()
+    if job_id != "preload_thumbnails"
+}
+_SYSTEMD_MIGRATED["preload_thumbnails"] = tuple(
+    (
+        f"pwc-cron-preload-thumbnails-{lane}.timer",
+        f"pwc-cron-preload-thumbnails-{lane}.service",
+    )
+    for lane in _PRELOAD_LANES
+)
+
+
+def _migrated_scheduler(job: CronJobDefinition) -> str:
+    if job.id == "extract_urls":
+        return "manual"
+    if job.id in _SYSTEMD_MIGRATED:
+        return "systemd"
+    return job.scheduler
+
+
 CRON_JOBS = tuple(
     replace(
         job,
-        scheduler="manual" if job.id == "extract_urls" else job.scheduler,
+        scheduler=_migrated_scheduler(job),
+        systemd_timer=(
+            _SYSTEMD_MIGRATED[job.id][0][0]
+            if job.id in _SYSTEMD_MIGRATED
+            else job.systemd_timer
+        ),
+        systemd_service=(
+            _SYSTEMD_MIGRATED[job.id][0][1]
+            if job.id in _SYSTEMD_MIGRATED
+            else job.systemd_service
+        ),
+        systemd_extra_units=(
+            _SYSTEMD_MIGRATED[job.id][1:]
+            if job.id in _SYSTEMD_MIGRATED
+            else job.systemd_extra_units
+        ),
         schedule_policies=_SCHEDULE_CONTRACTS.get(
             job.id, (job.schedule_policies, job.schedule_grace_minutes)
         )[0],

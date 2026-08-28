@@ -4575,15 +4575,23 @@ def test_cron_codex_flags_follow_active_release(features, expected):
 
 
 def test_hot_workflow_runs_on_the_activated_production_schedule():
+    root = Path(__file__).resolve().parents[2]
     workflow = (
-        Path(__file__).resolve().parents[2]
-        / ".github"
-        / "workflows"
-        / "cron-update-hot-github-trending.yml"
+        root / ".github" / "workflows" / "cron-update-hot-github-trending.yml"
     ).read_text()
+    # Scheduled execution moved to the host timer; the workflow remains
+    # dispatch-only for manual recovery.
     assert "workflow_dispatch:" in workflow
-    assert "schedule:" in workflow
-    assert 'cron: "*/15 * * * *"' in workflow
+    assert "schedule:" not in workflow
+    timer = (
+        root
+        / "deploy"
+        / "systemd"
+        / "cron"
+        / "pwc-cron-update-hot-github-trending.timer"
+    ).read_text()
+    assert "OnCalendar=*-*-* *:00/15:00" in timer
+    assert "Persistent=true" in timer
 
     cron_env_example = (
         Path(__file__).resolve().parents[2]

@@ -123,6 +123,22 @@ and journald for diagnostics; do not execute scheduled scripts from the
 developer checkout. CRON logs live in
 `/var/lib/paperswithcode/production/cron-logs` and are retained for 30 days.
 
+### Host timer scheduling
+
+Catalog CRON jobs are scheduled by host systemd timers, not GitHub Actions.
+The timer/service pairs are generated from `deploy/cron_schedules.py` into
+`deploy/systemd/cron/` (regenerate with `python deploy/generate_cron_units.py`)
+and installed by `install_deploy_tools.py`/`install_host_layout.py`. Every
+timer sets `Persistent=true`, so missed slots (downtime, reboots) are caught up
+on the next activation. Services invoke `pwc-cron-throttled`, which admits at
+most `PWC_CRON_THROTTLE_SLOTS` (default 3) concurrent launches through slot
+locks in `/run/paperswithcode/cron-slots` before delegating to the immutable
+`pwc-cron` launcher; producer chains additionally declare `After=` orderings
+for catch-up storms. The former GitHub `schedule:` triggers were removed; the
+workflows stay `workflow_dispatch`-only for manual recovery. Enable or inspect
+a job's schedule with `systemctl status pwc-cron-<job>.timer`; list all with
+`systemctl list-timers 'pwc-cron-*'`.
+
 Environment deployment, rollback, nginx, backup, and release layout are
 documented in [deployment.md](deployment.md).
 

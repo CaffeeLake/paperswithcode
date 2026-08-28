@@ -237,6 +237,8 @@ def main() -> int:
             systemd.parent / name if name.startswith("autonomous/") else systemd / name
         )
         shutil.copy2(source, destination)
+    for unit_file in sorted((systemd / "cron").glob("pwc-cron-*")):
+        shutil.copy2(unit_file, Path("/etc/systemd/system") / unit_file.name)
     Path("/etc/systemd/journald.conf.d").mkdir(parents=True, exist_ok=True)
     shutil.copy2(
         systemd / "journald-paperswithcode.conf",

@@ -53,6 +53,14 @@ def deployment_wrapper(command: str) -> str:
     )
 
 
+def cron_throttle_wrapper() -> str:
+    return (
+        "#!/bin/sh\n"
+        "exec /usr/bin/python3 "
+        '/usr/local/lib/paperswithcode-deploy/cron_throttle.py "$@"\n'
+    )
+
+
 def cron_wrapper() -> str:
     common = (
         "systemd-run --quiet --wait --pipe --collect "
@@ -236,6 +244,9 @@ def main() -> int:
         wrapper = BIN_ROOT / "pwc-cron"
         wrapper.write_text(cron_wrapper())
         wrapper.chmod(0o755)
+        wrapper = BIN_ROOT / "pwc-cron-throttled"
+        wrapper.write_text(cron_throttle_wrapper())
+        wrapper.chmod(0o755)
         for unit in (
             "paperswithcode-staging-backend@.service",
             "paperswithcode-staging-backend@.socket",
@@ -260,6 +271,8 @@ def main() -> int:
                 source,
                 SYSTEMD_ROOT / Path(unit).name,
             )
+        for unit_file in sorted((INSTALL_ROOT / "systemd" / "cron").glob("pwc-cron-*")):
+            shutil.copy2(unit_file, SYSTEMD_ROOT / unit_file.name)
         shutil.copy2(
             INSTALL_ROOT / "systemd" / "paperswithcode-tmpfiles.conf",
             "/etc/tmpfiles.d/paperswithcode.conf",

@@ -110,20 +110,25 @@ def test_registry_covers_workflows_systemd_and_allowlist_exactly():
     systemd_commands = set()
     services = [
         *(root / "deploy" / "systemd").glob("pwc-*.service"),
+        *(root / "deploy" / "systemd" / "cron").glob("pwc-*.service"),
         *(root / "deploy" / "autonomous").glob("*.service"),
     ]
     for service in sorted(services):
         timer = service.with_suffix(".timer")
         if not timer.exists():
             continue
-        match = re.search(r"ExecStart=.*/pwc-cron\s+([a-z0-9_]+)", service.read_text())
+        match = re.search(
+            r"ExecStart=.*/pwc-cron(?:-throttled)?\s+([a-z0-9_]+)",
+            service.read_text(),
+        )
         if not match:
             continue
         command = match.group(1)
         systemd_commands.add(command)
         assert command in by_id, f"systemd command missing from registry: {command}"
-        assert by_id[command].systemd_service == service.name
-        assert by_id[command].systemd_timer == timer.name
+        assert (timer.name, service.name) in by_id[command].systemd_unit_pairs, (
+            f"unit pair not registered for {command}: {service.name}"
+        )
 
     helpers = {
         "alert_submission_review_failure",
@@ -350,19 +355,30 @@ def test_schedule_grace_transitions_are_deterministic():
         "stale_paper_scores": 0,
         "one_snapshot_over_30m": 0,
     }
+    stale_systemd = {
+        "available": True,
+        "enabled": True,
+        "timer_active": True,
+        "service_result": "success",
+        "exec_main_status": 0,
+        "last_started_at": "2026-08-14T11:59:50Z",
+        "last_completed_at": "2026-08-14T12:00:00Z",
+        "next_trigger_at": "2026-08-14T12:30:00Z",
+        "service_active": False,
+    }
     with patch("backend.services.cron_health.is_process_running", return_value=False):
         during_grace = evaluate_job_health(
             job,
             log,
             db_metrics=db,
-            workflow_status={"available": True},
+            systemd_status=stale_systemd,
             now=datetime(2026, 8, 14, 12, 24, tzinfo=timezone.utc),
         )
         after_grace = evaluate_job_health(
             job,
             log,
             db_metrics=db,
-            workflow_status={"available": True},
+            systemd_status=stale_systemd,
             now=datetime(2026, 8, 14, 12, 26, tzinfo=timezone.utc),
         )
     assert during_grace["execution_health"]["status"] == "degraded"
@@ -372,20 +388,16 @@ def test_schedule_grace_transitions_are_deterministic():
 def test_failed_scheduled_run_wins_over_fresh_manual_recovery_output():
     job = _job("update_hot_github_trending")
     now = datetime(2026, 8, 14, 12, 20, tzinfo=timezone.utc)
-    workflow = {
+    failed_systemd = {
         "available": True,
-        "scheduled_run": {
-            "status": "completed",
-            "conclusion": "failure",
-            "createdAt": "2026-08-14T12:15:00Z",
-            "updatedAt": "2026-08-14T12:17:00Z",
-        },
-        "manual_run": {
-            "status": "completed",
-            "conclusion": "success",
-            "createdAt": "2026-08-14T12:18:00Z",
-            "updatedAt": "2026-08-14T12:19:00Z",
-        },
+        "enabled": True,
+        "timer_active": True,
+        "service_result": "exit-code",
+        "exec_main_status": 1,
+        "last_started_at": "2026-08-14T12:15:10Z",
+        "last_completed_at": "2026-08-14T12:17:00Z",
+        "next_trigger_at": "2026-08-14T12:30:00Z",
+        "service_active": False,
     }
     with patch("backend.services.cron_health.is_process_running", return_value=False):
         evaluated = evaluate_job_health(
@@ -399,7 +411,7 @@ def test_failed_scheduled_run_wins_over_fresh_manual_recovery_output():
                 "stale_paper_scores": 0,
                 "one_snapshot_over_30m": 0,
             },
-            workflow_status=workflow,
+            systemd_status=failed_systemd,
             now=now,
         )
     assert evaluated["execution_health"]["status"] == "broken"
@@ -608,6 +620,17 @@ def test_successful_workflow_is_health_evidence_without_logs_or_database():
                 "available": True,
                 "status": "completed",
                 "conclusion": "success",
+            },
+            systemd_status={
+                "available": True,
+                "enabled": True,
+                "timer_active": True,
+                "service_result": "success",
+                "exec_main_status": 0,
+                "last_started_at": "2026-08-14T09:59:50Z",
+                "last_completed_at": "2026-08-14T10:00:00Z",
+                "next_trigger_at": "2026-08-14T15:00:00Z",
+                "service_active": False,
             },
             lock_state={"exists": False, "stale": False},
             now=now,
@@ -1020,18 +1043,23 @@ def test_extract_urls_actions_unavailable_degrades_fresh_db():
 def test_stale_successful_workflow_cannot_mask_fresh_database_writes():
     job = _job("update_citations")
     fresh_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-    stale_workflow = datetime.now(timezone.utc) - timedelta(hours=3)
+    stale_completion = datetime.now(timezone.utc) - timedelta(hours=3)
     with patch("backend.services.cron_health.is_process_running", return_value=False):
         evaluated = evaluate_job_health(
             job,
             {"status": "success", "last_run": fresh_time, "is_running": False},
             db_metrics={"last_write": fresh_time, "recent_writes": 10},
             lock_state={"exists": False, "stale": False},
-            workflow_status={
+            systemd_status={
                 "available": True,
-                "status": "completed",
-                "conclusion": "success",
-                "updated_at": stale_workflow.isoformat(),
+                "enabled": True,
+                "timer_active": True,
+                "service_result": "success",
+                "exec_main_status": 0,
+                "last_started_at": stale_completion.isoformat(),
+                "last_completed_at": stale_completion.isoformat(),
+                "next_trigger_at": None,
+                "service_active": False,
             },
         )
 

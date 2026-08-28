@@ -27,8 +27,18 @@ def dashboard_job(**updates):
         "recent_write_count": 10,
         "execution_health": {
             "status": "healthy",
-            "reason": "scheduled run completed",
-            "scheduler": "github_actions",
+            "reason": "systemd timer and latest service exit are healthy",
+            "scheduler": "systemd",
+        },
+        "systemd_status": {
+            "available": True,
+            "enabled": True,
+            "timer_active": True,
+            "service_result": "success",
+            "exec_main_status": 0,
+            "last_started_at": "2026-08-28T12:00:10Z",
+            "last_completed_at": "2026-08-28T12:05:00Z",
+            "service_active": False,
         },
         "output_health": {
             "status": "healthy",
