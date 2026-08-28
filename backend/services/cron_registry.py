@@ -60,6 +60,24 @@ class SchedulePolicy:
 
 
 @dataclass(frozen=True)
+class CronEvidenceContract:
+    """Deterministic evidence expected for one declared scheduled job."""
+
+    scheduler: Literal["github_actions", "systemd", "manual"]
+    schedule_policies: Tuple[SchedulePolicy, ...]
+    accepted_exit_states: Tuple[str, ...]
+    accepted_log_states: Tuple[str, ...]
+    log_source: Literal["file", "journal", "health_record"]
+    lock_expected: bool
+    lock_max_age_minutes: int
+    durable_data_required: bool
+    throughput_policy: Literal["work_required", "no_work_allowed"]
+    throughput_source: Literal["work_metrics", "durable_data", "health_record"]
+    semantic_source: Literal["output_evaluator", "health_record", "unavailable"]
+    semantic_evaluator: str
+
+
+@dataclass(frozen=True)
 class CronJobDefinition:
     id: str
     display_name: str
@@ -84,6 +102,47 @@ class CronJobDefinition:
     systemd_timer: Optional[str] = None
     systemd_service: Optional[str] = None
     output_evaluator: Optional[str] = None
+
+    @property
+    def evidence_contract(self) -> CronEvidenceContract:
+        """Return the seven-plane contract used by deterministic probes."""
+
+        evaluator = self.output_evaluator or "generic"
+        health_record = evaluator in {"chat_alert_monitor", "submission_review"}
+        return CronEvidenceContract(
+            scheduler=self.scheduler,
+            schedule_policies=self.schedule_policies,
+            accepted_exit_states=("success", "success_no_work"),
+            accepted_log_states=("success", "success_no_work", "running"),
+            log_source=(
+                "health_record"
+                if health_record
+                else "journal"
+                if self.scheduler == "systemd"
+                else "file"
+            ),
+            lock_expected=self.lock_file is not None,
+            lock_max_age_minutes=self.expected_runtime_minutes,
+            durable_data_required=self.db_freshness_query is not None,
+            throughput_policy=(
+                "no_work_allowed" if self.healthy_no_work_allowed else "work_required"
+            ),
+            throughput_source=(
+                "health_record"
+                if health_record
+                else "durable_data"
+                if self.db_freshness_query
+                else "work_metrics"
+            ),
+            semantic_source=(
+                "health_record"
+                if health_record
+                else "output_evaluator"
+                if evaluator != "generic"
+                else "unavailable"
+            ),
+            semantic_evaluator=evaluator,
+        )
 
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
@@ -1289,6 +1348,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         schedule_grace_minutes=20,
         systemd_timer="submission-review.timer",
         systemd_service="submission-review.service",
+        output_evaluator="submission_review",
     ),
     CronJobDefinition(
         id="monitor_chat_operational_alerts",

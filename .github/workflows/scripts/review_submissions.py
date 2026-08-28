@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +26,21 @@ from backend.services.autonomous_submission_job_service import (
     AutonomousSubmissionJobError,
     AutonomousSubmissionJobService,
 )
+
+HEALTH_RECORD = "autonomous-submission-review-health.json"
+
+
+def write_health_record(path: Path, payload: dict) -> None:
+    """Atomically persist bounded operational evidence without submission content."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.new-{os.getpid()}")
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    temporary.chmod(0o644)
+    os.replace(temporary, path)
 
 
 def prepare_review_batch(
@@ -113,17 +129,43 @@ def main() -> int:
     parser.add_argument("--limit", type=int, choices=range(1, 26), default=25)
     parser.add_argument("--launch-remote", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--health-file", type=Path)
     args = parser.parse_args()
     run_id = args.run_id or uuid.uuid4()
     manifest_file = args.manifest_file or Path(
         f"/var/lib/paperswithcode/autonomous-submissions/{run_id}.json"
     )
-    claimed = prepare_review_batch(
-        run_id=run_id,
-        manifest_file=manifest_file,
-        limit=args.limit,
-        launch_remote=args.launch_remote,
-        dry_run=args.dry_run,
+    health_file = args.health_file or Path(get_settings().cron_log_dir) / HEALTH_RECORD
+    started_at = datetime.now(UTC)
+    try:
+        claimed = prepare_review_batch(
+            run_id=run_id,
+            manifest_file=manifest_file,
+            limit=args.limit,
+            launch_remote=args.launch_remote,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:
+        write_health_record(
+            health_file,
+            {
+                "status": "failed",
+                "started_at": started_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error_class": type(exc).__name__[:128],
+            },
+        )
+        raise
+    write_health_record(
+        health_file,
+        {
+            "status": "healthy",
+            "started_at": started_at.isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "claimed": claimed,
+            "dry_run": args.dry_run,
+            "remote_launch": args.launch_remote,
+        },
     )
     print(f"AUTONOMOUS_SUBMISSION_REVIEW claimed={claimed} run_id={run_id}")
     return 0

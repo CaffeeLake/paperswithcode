@@ -288,6 +288,8 @@ const CronDashboard = () => {
             <p className="text-sm cron-muted">
               Signed in as <span className="font-semibold">@{user?.username}</span>. Health checks prefer
               database freshness over log completion so silent no-work failures surface as degraded or broken.
+              Expanded jobs include deterministic scheduler, log, lock, durable-data, throughput, backlog,
+              and semantic contract evidence with direct operator and run links.
             </p>
           </CardContent>
         </Card>

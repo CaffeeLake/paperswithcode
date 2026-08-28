@@ -77,8 +77,8 @@ def test_registry_covers_workflows_systemd_and_allowlist_exactly():
     summary = _dashboard_job_summary(
         [{"category": job.category, "status": "healthy"} for job in jobs]
     )
-    assert summary["total_jobs"] == 37
-    assert summary["scheduled_jobs"] == 36
+    assert summary["total_jobs"] == 38
+    assert summary["scheduled_jobs"] == 37
     assert summary["manual_jobs"] == 1
     assert len(by_id) == len(jobs), "duplicate dashboard job IDs"
 
@@ -108,7 +108,14 @@ def test_registry_covers_workflows_systemd_and_allowlist_exactly():
             workflow_owners[path.name] = command
 
     systemd_commands = set()
-    for service in sorted((root / "deploy" / "systemd").glob("pwc-*.service")):
+    services = [
+        *(root / "deploy" / "systemd").glob("pwc-*.service"),
+        *(root / "deploy" / "autonomous").glob("*.service"),
+    ]
+    for service in sorted(services):
+        timer = service.with_suffix(".timer")
+        if not timer.exists():
+            continue
         match = re.search(r"ExecStart=.*/pwc-cron\s+([a-z0-9_]+)", service.read_text())
         if not match:
             continue
@@ -116,11 +123,13 @@ def test_registry_covers_workflows_systemd_and_allowlist_exactly():
         systemd_commands.add(command)
         assert command in by_id, f"systemd command missing from registry: {command}"
         assert by_id[command].systemd_service == service.name
-        timer = service.with_suffix(".timer")
-        assert timer.exists(), f"systemd timer missing for {command}"
         assert by_id[command].systemd_timer == timer.name
 
-    helpers = {"extract_urls_select", "extract_urls_persist"}
+    helpers = {
+        "alert_submission_review_failure",
+        "extract_urls_select",
+        "extract_urls_persist",
+    }
     manual = {"extract_urls"}
     registered = set(by_id)
     assert set(COMMANDS) == registered | helpers

@@ -54,6 +54,15 @@ export interface CronJobStatus {
   lock_stale?: boolean;
   diagnostics?: string | null;
   diagnostic_groups?: Record<string, string[]>;
+  health_findings?: Array<{
+    plane: 'scheduler' | 'process_logs' | 'durable_data' | 'semantic_outcome';
+    contract: string;
+    state: 'healthy' | 'degraded' | 'unknown';
+    summary: string;
+    evidence: Record<string, unknown>;
+  }>;
+  operator_url?: string | null;
+  run_url?: string | null;
 }
 
 export interface CronJobsResponse {

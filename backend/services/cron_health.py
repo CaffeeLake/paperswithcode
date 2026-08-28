@@ -19,6 +19,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from backend.config import get_settings
+from backend.services.autonomous_cron_probe import build_job_findings
 from backend.services.cron_registry import CronJobDefinition, list_cron_jobs
 
 WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -309,6 +310,33 @@ def fetch_chat_monitor_output() -> Dict[str, Any]:
     }
 
 
+def fetch_submission_review_output() -> Dict[str, Any]:
+    path = (
+        Path(get_settings().cron_log_dir) / "autonomous-submission-review-health.json"
+    )
+    try:
+        raw = path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return {"review_record_available": False}
+    if len(raw) > 16 * 1024:
+        return {"review_record_available": False}
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"review_record_available": False}
+    if not isinstance(payload, dict):
+        return {"review_record_available": False}
+    return {
+        "review_record_available": True,
+        "review_status": str(payload.get("status") or "unknown")[:16],
+        "review_completed_at": str(payload.get("completed_at") or "")[:64] or None,
+        "submissions_claimed": max(0, int(payload.get("claimed") or 0)),
+        "review_dry_run": bool(payload.get("dry_run")),
+        "review_remote_launch": bool(payload.get("remote_launch")),
+        "review_error_class": str(payload.get("error_class") or "")[:128] or None,
+    }
+
+
 def _gh_json(args: list[str], timeout: int = 10) -> tuple[Any, Optional[str]]:
     env = os.environ.copy()
     github_token = get_settings().github_token
@@ -571,15 +599,18 @@ def discover_scheduled_duties() -> set[str]:
         duties.update(re.findall(r"pwc-cron\s+([a-z0-9_]+)", source))
     duties.discard("status")
 
-    systemd_dir = WORKFLOWS_DIR.parents[1] / "deploy" / "systemd"
-    for service in systemd_dir.glob("pwc-*.service"):
-        match = re.search(
-            r"^ExecStart=.*/pwc-cron\s+([a-z0-9_]+)",
-            service.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-        if match:
-            duties.add(match.group(1))
+    deploy_dir = WORKFLOWS_DIR.parents[1] / "deploy"
+    for pattern in ("systemd/pwc-*.service", "autonomous/*.service"):
+        for service in deploy_dir.glob(pattern):
+            if not service.with_suffix(".timer").is_file():
+                continue
+            match = re.search(
+                r"^ExecStart=.*/pwc-cron\s+([a-z0-9_]+)",
+                service.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            if match:
+                duties.add(match.group(1))
     return duties
 
 
@@ -1244,6 +1275,34 @@ def _chat_alert_contract(
     return "unknown", reasons + ["operational monitor output state is unknown"]
 
 
+def _submission_review_contract(
+    _status: str,
+    reasons: List[str],
+    work: Dict[str, Any],
+    _db: Dict[str, Any],
+    _workflow: Dict[str, Any],
+) -> tuple[str, List[str]]:
+    if not work.get("review_record_available"):
+        return "unknown", reasons + [
+            "content-free submission review output record is unavailable"
+        ]
+    age = _minutes_since(
+        work.get("review_completed_at"), now=work.get("_evaluation_now")
+    )
+    if age is None:
+        return "unknown", reasons + ["submission review completion time is unavailable"]
+    if age > 135:
+        return "broken", reasons + ["latest submission review output is stale"]
+    if work.get("review_status") == "failed":
+        return "broken", reasons + ["latest submission review pass failed"]
+    if work.get("review_status") == "healthy":
+        claimed = int(work.get("submissions_claimed", 0) or 0)
+        return "healthy", [
+            f"latest content-free submission review completed; claimed={claimed}"
+        ]
+    return "unknown", reasons + ["submission review output state is unknown"]
+
+
 OUTPUT_EVALUATORS = {
     "generic": lambda status, reasons, _work, _db, _workflow: (status, reasons),
     "github_stars": _github_stars_contract,
@@ -1267,6 +1326,7 @@ OUTPUT_EVALUATORS = {
     "weekly_linker": _workflow_output_contract,
     "curation_thumbnails": _curation_thumbnail_contract,
     "chat_alert_monitor": _chat_alert_contract,
+    "submission_review": _submission_review_contract,
 }
 
 
@@ -1845,6 +1905,9 @@ def evaluate_job_health(
     workflow_status = workflow_status or {}
     evaluator = OUTPUT_EVALUATORS[job.output_evaluator or "generic"]
     evaluator_work = {**work_metrics, "_evaluation_now": now}
+    semantic_status, semantic_reasons = evaluator(
+        "healthy", [], evaluator_work, db_metrics, workflow_status
+    )
     status, reasons = evaluator(
         status, reasons, evaluator_work, db_metrics, workflow_status
     )
@@ -1921,6 +1984,14 @@ def evaluate_job_health(
             "reason": output_reason,
             "last_verified_at": last_db_write_iso or last_run_iso,
         },
+        "output_contract_evidence": {
+            "semantic": {
+                "status": semantic_status,
+                "reason": "; ".join(dict.fromkeys(semantic_reasons))
+                or "job-owned semantic evaluator passed",
+                "evaluator": job.output_evaluator or "generic",
+            }
+        },
         "lock_stale": bool(lock_state.get("stale")),
         "lock_state": lock_state,
         "diagnostics": diagnostics[0] if diagnostics else None,
@@ -1963,7 +2034,8 @@ def build_cron_dashboard(
     from scripts.utils.cron_helpers import get_cron_job_status
 
     collection_started = time.perf_counter()
-    today = _utcnow().strftime("%Y%m%d")
+    collection_now = _utcnow()
+    today = collection_now.strftime("%Y%m%d")
     definitions = list(list_cron_jobs())
     jobs: List[Dict[str, Any]] = []
     status_by_id: Dict[str, str] = {}
@@ -2036,6 +2108,10 @@ def build_cron_dashboard(
             metrics = dict(log_status.get("work_metrics") or {})
             metrics.update(fetch_chat_monitor_output())
             log_status["work_metrics"] = metrics
+        elif job.id == "review_submissions":
+            metrics = dict(log_status.get("work_metrics") or {})
+            metrics.update(fetch_submission_review_output())
+            log_status["work_metrics"] = metrics
 
         db_metrics = database_by_id.get(job.id, {})
         if job.id == "mirror_thumbnails_to_disk":
@@ -2058,7 +2134,17 @@ def build_cron_dashboard(
             dependency_status=dependency_status,
             workflow_status=workflow_status,
             systemd_status=systemd_status,
+            now=collection_now,
             process_running=running_by_id[job.id],
+        )
+        health_findings = build_job_findings(job, evaluated, collection_now)
+        evaluated["health_findings"] = [
+            finding.as_dict() for finding in health_findings
+        ]
+        evaluated["operator_url"] = health_findings[0].operator_url
+        evaluated["run_url"] = next(
+            (finding.run_url for finding in health_findings if finding.run_url),
+            None,
         )
         status_by_id[job.id] = evaluated["status"]
         jobs.append(evaluated)

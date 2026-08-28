@@ -109,6 +109,15 @@ describe("CronJobCard health axes", () => {
       scheduler_orchestration: ["scheduled workflow failed"],
       credential_provider: [],
     },
+    health_findings: [{
+      plane: "scheduler",
+      contract: "scheduler_execution",
+      state: "degraded",
+      summary: "scheduled workflow failed",
+      evidence: { conclusion: "failure" },
+    }],
+    operator_url: "/autonomous-operations?operator=cron",
+    run_url: "https://github.com/huggingface/paperswithcode/actions/runs/123",
   };
 
   it("renders axes independently and exposes scheduler evidence", () => {
@@ -122,6 +131,16 @@ describe("CronJobCard health axes", () => {
     rerender(<CronJobCard job={job} expanded={true} onToggle={() => undefined} />);
     expect(screen.getByText("Scheduler evidence")).toBeInTheDocument();
     expect(screen.getByText("github_actions")).toBeInTheDocument();
+    expect(screen.getByText("Deterministic contract findings")).toBeInTheDocument();
+    expect(screen.getByText("Conclusion: failure")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open operator" })).toHaveAttribute(
+      "href",
+      "/autonomous-operations?operator=cron",
+    );
+    expect(screen.getByRole("link", { name: "Open run" })).toHaveAttribute(
+      "href",
+      "https://github.com/huggingface/paperswithcode/actions/runs/123",
+    );
     rerender(<CronJobCard job={{ ...job, recent_write_count: 11 }} expanded={true} onToggle={() => undefined} />);
     expect(screen.getByText("Scheduler evidence")).toBeInTheDocument();
   });
