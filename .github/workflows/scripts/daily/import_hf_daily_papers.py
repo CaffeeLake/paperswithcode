@@ -150,7 +150,7 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
                     "inserted": self.new_papers_count,
                     "updated": max(
                         0,
-                        self.processed_count - self.new_papers_count - self.error_count,
+                        self.processed_count - self.new_papers_count,
                     ),
                     "skipped": 0,
                     "failed": self.error_count,
@@ -164,6 +164,11 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.vacuum_analyze_table("project_pages")
         self.vacuum_analyze_table("paper_tasks")
         self.vacuum_analyze_table("paper_methods")
+        if self.error_count:
+            suffix = "" if self.error_count == 1 else "s"
+            raise RuntimeError(
+                f"{self.error_count} paper import failure{suffix}; see structured summary"
+            )
 
     async def fetch_daily_papers(self, date: str) -> List[Dict]:
         """Fetch one complete daily cohort from Hugging Face, or fail closed."""
@@ -244,7 +249,6 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
                     stats,
                 )
         except Exception as exc:
-            self.error_count += 1
             session.rollback()
             self.logger.error(
                 "Failed to merge external duplicate for %s into paper %s: %s",
@@ -252,6 +256,7 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
                 paper_id,
                 exc,
             )
+            raise
         finally:
             session.close()
 

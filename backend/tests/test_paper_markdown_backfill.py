@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import httpx
 import pytest
@@ -338,7 +338,7 @@ def test_worker_archives_external_pdf_and_publishes_source_aware_markdown(
         "run_chandra",
         lambda path, _output, pages: (
             (
-                "External Markdown body " * 12,
+                "External report Markdown body " * 12,
                 {},
             )
             if path.read_bytes() == pdf and pages == 2
@@ -410,6 +410,78 @@ def test_worker_collects_nested_chandra_images(tmp_path, monkeypatch):
     assert observed_timeout == WORKER.CHANDRA_TIMEOUT_SECONDS
 
 
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        (
+            "Kimi K3: Agentic Intelligence",
+            "We introduce Kimi K3 and evaluate its agentic reasoning abilities.",
+        ),
+        (
+            "Mamba",
+            "MAMBA is a selective state-space architecture for sequence modeling.",
+        ),
+        (
+            "Étude—Über Vision!",
+            "This étude presents über vision models for robust recognition.",
+        ),
+        (
+            "The, And: Graph Networks",
+            "Graph networks learn relational structure from sparse observations.",
+        ),
+    ],
+)
+def test_worker_accepts_semantically_matching_chandra_body(title, body):
+    WORKER.validate_markdown_semantics(title, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "page_001_image_01.png",
+        "![page](page_001_image_01.png)",
+        "Kimi_image.png\nK3_diagram.webp",
+        "A generic photograph of a chart with colored boxes and arrows.",
+    ],
+)
+def test_worker_rejects_image_description_or_title_mismatch(body):
+    with pytest.raises(ValueError, match="^semantic_markdown_mismatch$"):
+        WORKER.validate_markdown_semantics("Kimi K3 Agentic Intelligence", body)
+
+
+def test_worker_semantic_mismatch_retries_until_max_attempts():
+    mismatch = ValueError("semantic_markdown_mismatch")
+
+    assert WORKER.classify_failure(mismatch, 1) == (
+        "semantic_markdown_mismatch",
+        True,
+    )
+    assert WORKER.classify_failure(mismatch, WORKER.MAX_ATTEMPTS) == (
+        "semantic_markdown_mismatch",
+        False,
+    )
+
+
+def test_worker_semantic_rejection_writes_no_canonical_artifacts(tmp_path):
+    entry = {
+        "arxiv_id": "2607.00001",
+        "version": "v1",
+        "title": "Kimi K3 Agentic Intelligence",
+        "output_key": "2607/2607.00001.md",
+    }
+
+    with pytest.raises(ValueError, match="^semantic_markdown_mismatch$"):
+        WORKER.publish(
+            entry,
+            "page_001_image_01.png",
+            {},
+            tmp_path,
+        )
+
+    assert not (tmp_path / entry["output_key"]).exists()
+    assert not list(tmp_path.rglob("images"))
+
+
 def test_worker_rejects_missing_extracted_image_before_final_attempt(tmp_path):
     with pytest.raises(ValueError, match="missing_extracted_image:missing_figure.webp"):
         WORKER.publish(
@@ -419,7 +491,7 @@ def test_worker_rejects_missing_extracted_image_before_final_attempt(tmp_path):
                 "title": "Missing figure",
                 "output_key": "2607/2607.00001.md",
             },
-            "Paper body.\n\n![figure](missing_figure.webp)",
+            "Missing figure analysis.\n\n![figure](missing_figure.webp)",
             {},
             tmp_path,
         )
@@ -434,7 +506,7 @@ def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
             "output_key": "2607/2607.00001.md",
         },
         (
-            "Paper body.\n\n![figure](missing_figure.webp)\n\n"
+            "Missing figure analysis.\n\n![figure](missing_figure.webp)\n\n"
             '<img src="missing_plot.webp" alt="plot">'
         ),
         {},
@@ -443,7 +515,7 @@ def test_worker_omits_missing_extracted_image_on_final_attempt(tmp_path):
     )
 
     markdown = (tmp_path / "2607/2607.00001.md").read_text()
-    assert "Paper body." in markdown
+    assert "Missing figure analysis." in markdown
     assert "2 generated image references were omitted" in markdown
     assert "missing_figure.webp" not in markdown
     assert "missing_plot.webp" not in markdown
@@ -468,7 +540,7 @@ def test_bucket_worker_downloads_manifest_and_uploads_outputs_without_mount(
     remote = {manifest_key: (json.dumps(entry) + "\n").encode()}
     stub = tmp_path / "stub"
     stub.mkdir()
-    (stub / "2608.00001.md").write_text("A" * 180)
+    (stub / "2608.00001.md").write_text("Bucket transport paper text. " * 12)
 
     def bucket_bridge(token, request):
         assert token == "secret"
@@ -746,6 +818,7 @@ def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
     job._existing_paths = Mock(return_value={papers[0]["output_key"]: object()})
     job._copy_upstream = Mock(return_value=([papers[1]], 0))
     job._status_records = Mock(return_value={})
+    job._semantic_records = Mock(return_value={papers[0]["output_key"]: "valid"})
     job._launch = Mock(return_value=[])
 
     job.run()
@@ -765,13 +838,18 @@ def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
             "scope": "full",
             "eligible_papers": 2,
             "canonical_markdown_count": 1,
+            "usable_markdown_count": 1,
+            "semantic_invalid_existing": 0,
+            "semantic_evidence_unavailable": 0,
             "copied_from_upstream_count": 0,
+            "planned_upstream_copy_count": 0,
             "missing_count": 1,
             "coverage_percentage": 50.0,
             "retryable_due": 0,
             "retryable_deferred": 0,
             "permanent_failures": 0,
             "attempts_exhausted": 0,
+            "semantic_validation_failures": 0,
             "retryable_papers_blocked_by_budget": 0,
             "paid_authorization_required": False,
             "selected_profile": None,
@@ -779,6 +857,56 @@ def test_dry_reconciliation_appends_coverage_history(tmp_path, monkeypatch):
         for row in rows
     )
     job._launch.assert_called_with([{**papers[1], "retry": False}])
+
+
+def test_dry_run_does_not_count_unvalidated_upstream_as_usable(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    papers = _candidates(2)
+    job = _scheduler(execute=False, confirm=False, full=False)
+    job._papers = Mock(return_value=papers)
+    job._existing_paths = Mock(return_value={papers[0]["output_key"]: object()})
+    job._copy_upstream = Mock(return_value=([], 1))
+    job._status_records = Mock(return_value={})
+    job._semantic_records = Mock(return_value={papers[0]["output_key"]: "valid"})
+    job._launch = Mock(return_value=[])
+
+    job.run()
+
+    coverage = json.loads(
+        (tmp_path / MODULE.COVERAGE_HISTORY_NAME).read_text().splitlines()[-1]
+    )
+    assert coverage["canonical_markdown_count"] == 1
+    assert coverage["usable_markdown_count"] == 1
+    assert coverage["copied_from_upstream_count"] == 0
+    assert coverage["planned_upstream_copy_count"] == 1
+
+
+def test_recent_semantic_invalid_object_is_not_usable_or_dispatched(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    papers = _candidates(2)
+    job = _scheduler(execute=False, confirm=False, full=False)
+    job._papers = Mock(return_value=papers)
+    job._existing_paths = Mock(return_value={papers[0]["output_key"]: object()})
+    job._copy_upstream = Mock(return_value=([papers[1]], 0))
+    job._status_records = Mock(return_value={})
+    job._semantic_records = Mock(return_value={papers[0]["output_key"]: "invalid"})
+    job._launch = Mock(return_value=[])
+
+    job.run()
+
+    summary_call = next(
+        call
+        for call in job.logger.info.call_args_list
+        if call.args and call.args[0] == "PAPER_MARKDOWN_SUMMARY %s"
+    )
+    summary = json.loads(summary_call.args[1])
+    assert summary["semantic_invalid_existing"] == 1
+    assert summary["semantic_evidence_unavailable"] == 0
+    assert summary["usable_markdown"] == 0
+    assert summary["coverage_percentage"] == 0.0
+    job._launch.assert_called_once_with([{**papers[1], "retry": False}])
 
 
 def test_retry_only_canary_selects_only_persisted_retryable_due(tmp_path, monkeypatch):
@@ -976,7 +1104,7 @@ def test_full_reconciliation_recovers_mount_failure_and_fills_remaining_slots():
         }
     )
     job._papers = Mock(return_value=[])
-    job._existing_paths = Mock(return_value=set())
+    job._existing_paths = Mock(return_value={})
     job._copy_upstream = Mock(return_value=([], 0))
     job._status_records = Mock(return_value={})
     job._launch = Mock(return_value=[])
@@ -984,7 +1112,7 @@ def test_full_reconciliation_recovers_mount_failure_and_fills_remaining_slots():
     job.run()
 
     job._recover_mount_failures.assert_called_once_with()
-    job._papers.assert_called_once_with()
+    assert job._papers.call_args_list == [call(), call(recent_only=True)]
     job._launch.assert_called_once_with([], additional_active_job_ids={"replacement-1"})
 
 
@@ -1124,7 +1252,7 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
     }
     manifest.write_text(json.dumps(entry) + "\n")
     (stub / "2607.24653.md").write_text(
-        "Before image.\n\n![figure](figure.webp)\n\nAfter image. " * 20
+        "Kimi K3 paper text.\n\n![figure](figure.webp)\n\nAfter image. " * 20
     )
     asset_dir = stub / "2607.24653"
     asset_dir.mkdir()
@@ -1192,7 +1320,7 @@ def test_chandra_worker_failure_records_duration(tmp_path):
     }
     manifest.write_text(json.dumps(entry) + "\n")
     (stub / "2607.24653.md").write_text(
-        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+        "Kimi K3 paper text.\n\n![figure](missing.webp)\n\nAfter image. " * 20
     )
 
     subprocess.run(
@@ -1237,7 +1365,7 @@ def test_chandra_worker_final_attempt_omits_missing_image(tmp_path):
     }
     manifest.write_text(json.dumps(entry) + "\n")
     (stub / "2607.24653.md").write_text(
-        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+        "Kimi K3 paper text.\n\n![figure](missing.webp)\n\nAfter image. " * 20
     )
     status_path.write_text(json.dumps({"status": "failed", "attempt_count": 2}))
 
@@ -1286,7 +1414,7 @@ def test_chandra_worker_omits_missing_image_after_one_retry(tmp_path):
     }
     manifest.write_text(json.dumps(entry) + "\n")
     (stub / "2607.24653.md").write_text(
-        "Before image.\n\n![figure](missing.webp)\n\nAfter image. " * 20
+        "Kimi K3 paper text.\n\n![figure](missing.webp)\n\nAfter image. " * 20
     )
     status_path.write_text(
         json.dumps(
@@ -1333,7 +1461,9 @@ def _write_stub_manifest(tmp_path: Path, count: int = 2):
     entries = _candidates(count)
     manifest.write_text("".join(json.dumps(item) + "\n" for item in entries))
     for entry in entries:
-        (stub / f"{entry['arxiv_id']}.md").write_text("Valid Markdown body. " * 20)
+        (stub / f"{entry['arxiv_id']}.md").write_text(
+            f"{entry['title']} valid Markdown body. " * 20
+        )
     return content, stub, manifest, entries
 
 

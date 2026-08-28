@@ -20,6 +20,7 @@ from backend.models.database import (
     PaperDataset,
     PaperHfArtifact,
     PaperMethod,
+    PaperMethodEvidence,
     PaperOrganization,
     PaperProjectPage,
     PaperRepository,
@@ -48,6 +49,60 @@ def record_paper_merge_redirect(
         ),
         {"old_paper_id": old_paper_id, "route_identifier": route_identifier},
     )
+
+
+def _merge_method_links(
+    db: Session,
+    external_id: int,
+    arxiv_paper_id: int,
+    stats: dict[str, Any],
+) -> None:
+    """Move evidence before merging its composite-key parent links."""
+    external_links = (
+        db.query(PaperMethod).filter(PaperMethod.paper_id == external_id).all()
+    )
+    canonical_methods = {
+        link.method_id
+        for link in db.query(PaperMethod)
+        .filter(PaperMethod.paper_id == arxiv_paper_id)
+        .all()
+    }
+    moved_method_ids = {
+        link.method_id
+        for link in external_links
+        if link.method_id not in canonical_methods
+    }
+    for method_id in moved_method_ids:
+        db.add(PaperMethod(paper_id=arxiv_paper_id, method_id=method_id))
+        canonical_methods.add(method_id)
+    db.flush()
+
+    canonical_evidence = {
+        (row.method_id, row.evidence_type)
+        for row in db.query(PaperMethodEvidence)
+        .filter(PaperMethodEvidence.paper_id == arxiv_paper_id)
+        .all()
+    }
+    for evidence in (
+        db.query(PaperMethodEvidence)
+        .filter(PaperMethodEvidence.paper_id == external_id)
+        .all()
+    ):
+        identity = (evidence.method_id, evidence.evidence_type)
+        if identity in canonical_evidence:
+            db.delete(evidence)
+            stats["method_evidence_merged"] += 1
+        else:
+            evidence.paper_id = arxiv_paper_id
+            canonical_evidence.add(identity)
+            stats["method_evidence_moved"] += 1
+    db.flush()
+    for link in external_links:
+        db.delete(link)
+        if link.method_id in moved_method_ids:
+            stats["methods_moved"] += 1
+        else:
+            stats["methods_merged"] += 1
 
 
 def lookup_paper_merge_redirect(db: Session, old_paper_id: int) -> str | None:
@@ -205,6 +260,8 @@ def merge_external_paper_into_arxiv(
         "tasks_moved": 0,
         "methods_merged": 0,
         "methods_moved": 0,
+        "method_evidence_merged": 0,
+        "method_evidence_moved": 0,
         "authors_merged": 0,
         "authors_moved": 0,
         "datasets_merged": 0,
@@ -307,20 +364,7 @@ def merge_external_paper_into_arxiv(
             stats["tasks_moved"] += 1
             arxiv_tasks[link.task_id] = link
 
-    arxiv_methods = {
-        link.method_id
-        for link in db.query(PaperMethod)
-        .filter(PaperMethod.paper_id == arxiv_paper_id)
-        .all()
-    }
-    for link in db.query(PaperMethod).filter(PaperMethod.paper_id == external_id).all():
-        if link.method_id in arxiv_methods:
-            db.delete(link)
-            stats["methods_merged"] += 1
-        else:
-            link.paper_id = arxiv_paper_id
-            stats["methods_moved"] += 1
-            arxiv_methods.add(link.method_id)
+    _merge_method_links(db, external_id, arxiv_paper_id, stats)
 
     arxiv_authors = {
         link.author_id

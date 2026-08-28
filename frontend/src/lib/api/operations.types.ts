@@ -66,6 +66,8 @@ export interface CronJobsResponse {
   refreshing: boolean;
   summary: Record<CronJobHealth, number> & {
     total_jobs: number;
+    scheduled_jobs: number;
+    manual_jobs: number;
     health_score: number;
     critical_issues: string[];
     what_to_check_next: string;

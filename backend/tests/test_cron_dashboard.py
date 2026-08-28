@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient
 from backend.config import get_settings
 from backend.main import create_app
 from backend.services.cron_health import (
+    _dashboard_job_summary,
     _gh_json,
+    _normalize_db_metric,
     _paper_markdown_monitor_snapshot,
     evaluate_job_health,
     fetch_systemd_status,
@@ -40,10 +42,43 @@ def _job(job_id: str):
     return job
 
 
+def test_dashboard_summary_reports_all_records_and_scheduled_denominator():
+    jobs = [
+        {"category": "daily", "status": "healthy"},
+        {"category": "hourly", "status": "broken"},
+        {"category": "manual", "status": "healthy"},
+    ]
+
+    summary = _dashboard_job_summary(jobs)
+
+    assert summary["total_jobs"] == 3
+    assert summary["scheduled_jobs"] == 2
+    assert summary["manual_jobs"] == 1
+    assert summary["healthy"] == 1
+    assert summary["broken"] == 1
+    assert summary["health_score"] == 50
+
+
+def test_database_freshness_metrics_preserve_bounded_scheduler_state():
+    paused_at = datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc)
+
+    assert _normalize_db_metric("pause_condition", "daily_token_guardrail") == (
+        "daily_token_guardrail"
+    )
+    assert _normalize_db_metric("paused_at", paused_at) == "2026-08-28T10:00:00Z"
+    assert _normalize_db_metric("queued_jobs", 4) == 4
+
+
 def test_registry_covers_workflows_systemd_and_allowlist_exactly():
     root = Path(__file__).resolve().parents[2]
     jobs = list(list_cron_jobs())
     by_id = {job.id: job for job in jobs}
+    summary = _dashboard_job_summary(
+        [{"category": job.category, "status": "healthy"} for job in jobs]
+    )
+    assert summary["total_jobs"] == 37
+    assert summary["scheduled_jobs"] == 36
+    assert summary["manual_jobs"] == 1
     assert len(by_id) == len(jobs), "duplicate dashboard job IDs"
 
     scheduled_commands = set()
@@ -226,6 +261,9 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
 
     keyword_job = _job("backfill_method_keywords")
     assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query
+    assert keyword_job.lock_file == (
+        "/var/lib/paperswithcode/production/cron-locks/backfill_method_keywords.lock"
+    )
     assert "WITH current_run AS" in keyword_job.db_freshness_query
     assert "WHERE keyword_catalog_sha256 =" in keyword_job.db_freshness_query
     assert keyword_job.schedule.startswith("10 1")
@@ -372,6 +410,7 @@ def test_unavailable_scheduler_evidence_fails_closed_to_unknown():
                 "work_metrics": {"papers_processed": 10},
             },
             db_metrics={"last_write": now, "recent_writes": 10},
+            lock_state={"exists": False, "held": False, "stale": False},
             workflow_status={"available": False, "error": "permission denied"},
             now=now,
         )
@@ -1016,6 +1055,30 @@ def test_import_hf_daily_papers_recent_log_is_healthy_without_false_db_provenanc
     assert job.db_freshness_query is None
 
 
+def test_import_hf_daily_papers_failed_counter_is_broken_even_after_success():
+    job = _job("import_hf_daily_papers")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {
+                    "upstream_fetch_succeeded": True,
+                    "fetched": 12,
+                    "inserted": 4,
+                    "updated": 7,
+                    "failed": 1,
+                },
+            },
+        )
+
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "1 imported paper" in evaluated["output_health"]["reason"]
+
+
 def test_recent_weekly_task_keyword_log_is_healthy_without_db_timestamp():
     job = _job("link_papers_by_task_keywords")
     recent_log_time = datetime.now(timezone.utc) - timedelta(days=6)
@@ -1101,6 +1164,21 @@ def test_hf_artifacts_fresh_db_metrics_are_healthy():
             "degraded",
             "awaits explicit paid execution authorization",
         ),
+        (
+            {"semantic_invalid_existing": 3},
+            "broken",
+            "semantic-invalid existing",
+        ),
+        (
+            {"semantic_validation_failures": 2},
+            "broken",
+            "semantic validation",
+        ),
+        (
+            {"semantic_evidence_unavailable": 4},
+            "unknown",
+            "semantic evidence is unavailable",
+        ),
     ],
 )
 def test_paper_markdown_semantic_contract(metrics, expected, reason):
@@ -1170,6 +1248,29 @@ def test_embedding_no_work_is_broken_when_eligible_rows_are_missing():
     assert "8 eligible embeddings" in evaluated["output_health"]["reason"]
 
 
+def test_embedding_no_work_is_broken_when_content_hashes_are_stale():
+    job = _job("refresh_paper_embeddings")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success_no_work",
+                "last_run": now,
+                "is_running": False,
+                "work_metrics": {"candidates": 0, "embeddings_updated": 0},
+            },
+            db_metrics={
+                "last_write": now,
+                "recent_writes": 0,
+                "missing_embeddings": 0,
+                "content_hash_mismatches": 3,
+            },
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "3 active-generation content hashes" in evaluated["output_health"]["reason"]
+
+
 def test_backfill_contract_separates_stale_run_and_provider_throttling():
     job = _job("backfill_method_references")
     now = datetime.now(timezone.utc)
@@ -1187,6 +1288,73 @@ def test_backfill_contract_separates_stale_run_and_provider_throttling():
     assert evaluated["output_health"]["status"] == "broken"
     assert "stale database run" in evaluated["output_health"]["reason"]
     assert "provider throttled" in evaluated["output_health"]["reason"]
+
+
+def test_method_keyword_backfill_fresh_checkpoint_is_resumable_not_stale():
+    job = _job("backfill_method_keywords")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": now, "is_running": False},
+            db_metrics={
+                "last_write": now,
+                "recent_writes": 1,
+                "running_runs": 1,
+                "stale_running": 0,
+                "checkpoint_age_minutes": 90,
+                "resume_cursor": 1234,
+            },
+        )
+    assert evaluated["output_health"]["status"] == "healthy"
+    assert "resumable checkpoint" in evaluated["output_health"]["reason"]
+
+
+def test_daily_curation_pause_condition_is_broken():
+    job = _job("enqueue_hf_daily_paper_curation")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": now, "is_running": False},
+            db_metrics={
+                "last_write": now,
+                "dispatch_enabled": False,
+                "pause_condition": "daily_token_guardrail",
+            },
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "daily_token_guardrail" in evaluated["output_health"]["reason"]
+
+
+def test_daily_curation_old_queue_age_is_unhealthy():
+    job = _job("enqueue_hf_daily_paper_curation")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": now, "is_running": False},
+            db_metrics={
+                "last_write": now,
+                "queued_jobs": 2,
+                "oldest_queued_age_minutes": 360,
+            },
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "queued curation job" in evaluated["output_health"]["reason"]
+
+
+def test_daily_curation_partial_workflow_is_broken():
+    job = _job("enqueue_hf_daily_paper_curation")
+    now = datetime.now(timezone.utc)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "success", "last_run": now, "is_running": False},
+            db_metrics={"last_write": now, "partial_workflows": 1},
+        )
+    assert evaluated["output_health"]["status"] == "broken"
+    assert "partial workflow" in evaluated["output_health"]["reason"]
 
 
 def test_managed_organization_snapshot_gap_degrades_output():

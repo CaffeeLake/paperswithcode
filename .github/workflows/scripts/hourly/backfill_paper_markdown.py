@@ -19,6 +19,9 @@ from sqlalchemy import select
 from backend.config import get_settings
 from backend.database.connection import db_manager
 from backend.models.database import Paper
+from backend.scripts.generate_missing_paper_markdown import (
+    validate_canonical_markdown,
+)
 from backend.services.paper_markdown_budget_service import (
     paper_markdown_budget_snapshot,
 )
@@ -247,13 +250,13 @@ class PaperMarkdownBackfillJob(CronJobBase):
     def profile(self):
         return paper_markdown_job_profile(self.mode)
 
-    def _papers(self) -> list[dict[str, object]]:
+    def _papers(self, *, recent_only: bool = False) -> list[dict[str, object]]:
         with db_manager.session_local() as db:
             query = select(Paper).where(
                 Paper.is_latest_version,
                 Paper.source.in_(("arxiv", "external")),
             )
-            if not self.full:
+            if not self.full or recent_only:
                 query = query.where(
                     Paper.created_at >= datetime.now(UTC) - timedelta(days=14)
                 )
@@ -268,6 +271,32 @@ class PaperMarkdownBackfillJob(CronJobBase):
                     continue
                 papers[entry_paper_key(entry)] = entry
             return list(papers.values())
+
+    def _semantic_records(
+        self,
+        papers: list[dict[str, object]],
+        canonical: dict[str, object],
+    ) -> dict[str, str]:
+        """Inspect only the bounded recent canonical cohort."""
+        selected = [item for item in papers if str(item["output_key"]) in canonical]
+
+        def inspect(item: dict[str, object]) -> tuple[str, str]:
+            key = str(item["output_key"])
+            path = f"hf://buckets/{self.settings.paper_markdown_hf_bucket_id}/{key}"
+            try:
+                with self.filesystem.open(path, "rb", block_size=0) as handle:
+                    raw = handle.read(64 * 1024 * 1024 + 1)
+                if len(raw) > 64 * 1024 * 1024:
+                    return key, "invalid"
+                validate_canonical_markdown(str(item["title"]), raw.decode("utf-8"))
+                return key, "valid"
+            except ValueError:
+                return key, "invalid"
+            except (OSError, UnicodeDecodeError, HfHubHTTPError):
+                return key, "unavailable"
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            return dict(executor.map(inspect, selected))
 
     def _existing_paths(self, bucket: str, paths: list[str]) -> dict[str, object]:
         found: dict[str, object] = {}
@@ -893,6 +922,28 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
         missing = [item for item in papers if str(item["output_key"]) not in canonical]
         remaining, upstream_available = self._copy_upstream(missing)
+        remaining_paths = {str(item["output_key"]) for item in remaining}
+        recent_papers = papers if not self.full else self._papers(recent_only=True)
+        recent_keys = {str(item["output_key"]) for item in recent_papers}
+        canonical_after = {
+            key: value for key, value in canonical.items() if key in recent_keys
+        }
+        if self.should_execute:
+            canonical_after.update(
+                {
+                    str(item["output_key"]): object()
+                    for item in missing
+                    if str(item["output_key"]) in recent_keys
+                    and str(item["output_key"]) not in remaining_paths
+                }
+            )
+        semantic_records = self._semantic_records(recent_papers, canonical_after)
+        semantic_invalid_existing = sum(
+            result == "invalid" for result in semantic_records.values()
+        )
+        semantic_evidence_unavailable = sum(
+            result == "unavailable" for result in semantic_records.values()
+        )
         status_paths = [
             f"_jobs/status/{entry_paper_key(item)}.json" for item in remaining
         ]
@@ -910,17 +961,28 @@ class PaperMarkdownBackfillJob(CronJobBase):
         if self.retry_only:
             candidates = [item for item in candidates if item["retry"]]
         failed_or_completed = len(remaining) - len(candidates)
-        canonical_after_upstream = len(canonical) + upstream_available
+        copied_from_upstream = upstream_available if self.should_execute else 0
+        canonical_after_upstream = len(canonical) + copied_from_upstream
+        usable_markdown = max(
+            0,
+            canonical_after_upstream
+            - semantic_invalid_existing
+            - semantic_evidence_unavailable,
+        )
         coverage = {
             "observed_at": datetime.now(UTC).isoformat(),
             "scope": "full" if self.full else "recent_14_days",
             "eligible_papers": len(papers),
             "canonical_markdown_count": canonical_after_upstream,
-            "copied_from_upstream_count": upstream_available,
+            "usable_markdown_count": usable_markdown,
+            "semantic_invalid_existing": semantic_invalid_existing,
+            "semantic_evidence_unavailable": semantic_evidence_unavailable,
+            "copied_from_upstream_count": copied_from_upstream,
+            "planned_upstream_copy_count": (
+                0 if self.should_execute else upstream_available
+            ),
             "missing_count": len(remaining),
-            "coverage_percentage": round(
-                canonical_after_upstream / len(papers) * 100, 2
-            )
+            "coverage_percentage": round(usable_markdown / len(papers) * 100, 2)
             if papers
             else 100.0,
         }
@@ -942,12 +1004,17 @@ class PaperMarkdownBackfillJob(CronJobBase):
         attempts_exhausted = sum(
             disposition == "attempts_exhausted" for disposition in dispositions.values()
         )
+        semantic_validation_failures = sum(
+            payload.get("error_class") == "semantic_markdown_mismatch"
+            for payload in status_records.values()
+        )
         coverage.update(
             {
                 "retryable_due": retryable_due,
                 "retryable_deferred": retryable_deferred,
                 "permanent_failures": permanent_failures,
                 "attempts_exhausted": attempts_exhausted,
+                "semantic_validation_failures": semantic_validation_failures,
                 "retryable_papers_blocked_by_budget": (
                     self.retryable_papers_blocked_by_budget
                 ),
@@ -962,6 +1029,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
             "eligible_papers": len(papers),
             "canonical_markdown": len(canonical),
             "canonical_markdown_after_upstream": canonical_after_upstream,
+            "usable_markdown": usable_markdown,
+            "semantic_invalid_existing": semantic_invalid_existing,
+            "semantic_evidence_unavailable": semantic_evidence_unavailable,
+            "semantic_validation_failures": semantic_validation_failures,
             "coverage_scope": coverage["scope"],
             "coverage_percentage": coverage["coverage_percentage"],
             "missing_before": len(missing),

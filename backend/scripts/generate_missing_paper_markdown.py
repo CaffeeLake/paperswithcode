@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -53,6 +54,33 @@ HTML_IMAGE = re.compile(
 )
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 FORMAT_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+TITLE_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "toward",
+        "towards",
+        "via",
+        "with",
+    }
+)
+IMAGE_FILENAME_ONLY = re.compile(
+    r"\s*(?:!\[[^\]]*\]\()?[^\s()<>]+\.(?:png|jpe?g|webp)(?:\))?\s*",
+    re.IGNORECASE,
+)
 STATUS_SCHEMA_VERSION = 2
 MAX_ATTEMPTS = int(os.environ.get("PWC_MARKDOWN_MAX_ATTEMPTS", "3"))
 CHANDRA_TIMEOUT_SECONDS = int(
@@ -417,6 +445,41 @@ def entry_paper_key(entry: dict[str, object]) -> str:
     return str(entry.get("paper_key") or entry["arxiv_id"])
 
 
+def _alphanumeric_tokens(value: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
+
+
+def validate_markdown_semantics(title: str, body: str) -> None:
+    """Reject Chandra output that lacks meaningful overlap with the paper title."""
+    nonempty_lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if nonempty_lines and all(
+        IMAGE_FILENAME_ONLY.fullmatch(line) for line in nonempty_lines
+    ):
+        raise ValueError("semantic_markdown_mismatch")
+    title_tokens = [
+        token for token in _alphanumeric_tokens(title) if token not in TITLE_STOP_WORDS
+    ]
+    required_matches = min(2, len(title_tokens))
+    semantic_body = MARKDOWN_IMAGE.sub("", body)
+    semantic_body = HTML_IMAGE.sub("", semantic_body)
+    body_tokens = set(_alphanumeric_tokens(semantic_body))
+    if required_matches == 0 or len(set(title_tokens) & body_tokens) < required_matches:
+        raise ValueError("semantic_markdown_mismatch")
+
+
+def validate_canonical_markdown(title: str, markdown: str) -> None:
+    """Apply the worker's size and semantic contracts to a canonical object."""
+    encoded = markdown.encode("utf-8")
+    if len(encoded) < 120 or len(encoded) > 64 * 1024 * 1024:
+        raise ValueError("invalid_markdown_size")
+    marker = "Markdown Content:\n\n"
+    _header, separator, body = markdown.partition(marker)
+    if not separator:
+        raise ValueError("semantic_markdown_mismatch")
+    validate_markdown_semantics(title, body)
+
+
 def download_pdf_for_entry(entry: dict[str, object]) -> tuple[bytes, str]:
     version = str(entry.get("version") or "v1")
     if entry.get("source") == "external":
@@ -540,6 +603,7 @@ def publish(
     paper_key = entry_paper_key(entry)
     arxiv_id = entry.get("arxiv_id")
     version = str(entry["version"])
+    validate_markdown_semantics(str(entry["title"]), body)
     body, canonical_assets, asset_keys, omitted_sources = canonicalize_assets(
         paper_key,
         body,
@@ -717,6 +781,9 @@ def classify_failure(error: Exception, attempt_count: int) -> tuple[str, bool]:
         error_class = "immutable_asset_conflict"
     elif message.startswith("ambiguous_chandra_asset:"):
         error_class = "ambiguous_chandra_asset"
+    elif message == "semantic_markdown_mismatch":
+        error_class = "semantic_markdown_mismatch"
+        retryable = attempt_count < MAX_ATTEMPTS
     elif message in {"invalid_pdf", "invalid_chandra_output"}:
         error_class = message
         retryable = message == "invalid_chandra_output" and attempt_count < 2

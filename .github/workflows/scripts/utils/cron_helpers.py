@@ -486,6 +486,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 marker in line
                 for marker in (
                     "HF_DAILY_PAPERS_SUMMARY ",
+                    "HF_DAILY_CURATION_SUMMARY ",
                     "HF_ARTIFACTS_SUMMARY ",
                     "PAPER_EMBEDDINGS_SUMMARY ",
                     "THUMBNAIL_PRELOAD_SUMMARY ",
@@ -502,6 +503,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                     item
                     for item in (
                         "HF_DAILY_PAPERS_SUMMARY ",
+                        "HF_DAILY_CURATION_SUMMARY ",
                         "HF_ARTIFACTS_SUMMARY ",
                         "PAPER_EMBEDDINGS_SUMMARY ",
                         "THUMBNAIL_PRELOAD_SUMMARY ",

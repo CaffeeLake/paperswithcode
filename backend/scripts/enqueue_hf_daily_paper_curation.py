@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import uuid
 from datetime import date
 
@@ -47,7 +48,9 @@ def main() -> int:
                 paper_limit=args.limit,
                 dry_run=args.dry_run,
             )
-        print(json.dumps(result, default=str, sort_keys=True))
+        summary = json.dumps(result, default=str, sort_keys=True)
+        print(f"HF_DAILY_CURATION_SUMMARY {summary}", file=sys.stderr)
+        print(summary)
         return 1 if result.get("valid") is False else 0
     finally:
         try:

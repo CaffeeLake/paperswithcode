@@ -154,6 +154,40 @@ def test_get_cron_job_status_parses_queue_specific_github_metrics():
     assert status["work_metrics"]["fresh_credential_failures"] == 2
 
 
+def test_get_cron_job_status_parses_daily_curation_summary():
+    cron_helpers = _load_cron_helpers()
+    logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    test_date = "20990105"
+    log_file = logs_dir / f"enqueue_hf_daily_paper_curation_{test_date}.log"
+    log_file.write_text(
+        "2099-01-05 08:00:00 - Starting cron job: enqueue_hf_daily_paper_curation\n"
+        '2099-01-05 08:00:01 - HF_DAILY_CURATION_SUMMARY {"created": 2, '
+        '"dispatch_enabled": true, "queued": 4}\n'
+        "2099-01-05 08:00:02 - Cron job completed successfully: "
+        "enqueue_hf_daily_paper_curation\n",
+        encoding="utf-8",
+    )
+    try:
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            status = cron_helpers.get_cron_job_status(
+                "enqueue_hf_daily_paper_curation", test_date
+            )
+    finally:
+        log_file.unlink(missing_ok=True)
+
+    assert status["work_metrics"] == {
+        "created": 2,
+        "dispatch_enabled": True,
+        "queued": 4,
+    }
+
+
 def test_timeout_log_is_a_failure_not_a_success():
     cron_helpers = _load_cron_helpers()
     logs_dir = WORKFLOW_SCRIPTS / "scripts" / "logs"

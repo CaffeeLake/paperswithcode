@@ -887,11 +887,43 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         critical=True,
         healthy_no_work_allowed=True,
         db_freshness_query="""
-            SELECT max(created_at) AS last_write,
-                   count(*) FILTER (WHERE status IN ('queued','running')) AS active,
-                   count(*) FILTER (WHERE status = 'deferred') AS deferred,
-                   count(*) FILTER (WHERE status IN ('failed','partial')) AS failed
-            FROM paper_curation_workflows
+            WITH daily_workflows AS (
+                SELECT workflow.*
+                FROM paper_curation_workflows AS workflow
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM paper_curation_jobs AS job
+                    WHERE job.parent_workflow_id = workflow.id
+                      AND job.trigger = 'hf-daily-cron'
+                )
+            ), workflow_metrics AS (
+                SELECT max(updated_at) AS last_write,
+                       count(*) FILTER (WHERE status = 'queued') AS queued_workflows,
+                       count(*) FILTER (WHERE status = 'running') AS running_workflows,
+                       count(*) FILTER (WHERE status = 'deferred') AS deferred_workflows,
+                       count(*) FILTER (WHERE status = 'failed') AS failed_workflows,
+                       count(*) FILTER (WHERE status = 'partial') AS partial_workflows
+                FROM daily_workflows
+            ), job_metrics AS (
+                SELECT count(*) FILTER (WHERE status = 'queued') AS queued_jobs,
+                       count(*) FILTER (WHERE status IN ('dispatching','running')) AS running_jobs,
+                       EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
+                           WHERE status = 'queued'))) / 60 AS oldest_queued_age_minutes,
+                       EXTRACT(EPOCH FROM (now() - min(
+                           COALESCE(started_at, created_at)
+                       ) FILTER (WHERE status IN ('dispatching','running')))) / 60
+                           AS oldest_running_age_minutes
+                FROM paper_curation_jobs
+                WHERE trigger = 'hf-daily-cron'
+            )
+            SELECT workflow_metrics.*,
+                   job_metrics.*,
+                   state.dispatch_enabled,
+                   state.paused_at,
+                   state.pause_condition
+            FROM workflow_metrics
+            CROSS JOIN job_metrics
+            LEFT JOIN paper_curation_scheduler_state AS state ON state.id = 1
         """,
         workflow_file="cron-enqueue-hf-daily-paper-curation.yml",
         workflow_jobs=("run",),
@@ -1044,7 +1076,17 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                       AND missing.generation_id = g.id
                      WHERE p.is_latest_version
                        AND missing.paper_id IS NULL
-                   ) AS missing_embeddings
+                   ) AS missing_embeddings,
+                   COALESCE((
+                     SELECT (run.details ->> 'content_hash_mismatches')::bigint
+                     FROM embedding_pipeline_runs AS run
+                     CROSS JOIN active_generation AS latest_generation
+                     WHERE run.generation_id = latest_generation.id
+                       AND run.kind = 'import'
+                       AND run.status = 'complete'
+                     ORDER BY run.completed_at DESC NULLS LAST
+                     LIMIT 1
+                   ), 0) AS content_hash_mismatches
             FROM paper_embeddings e
             JOIN active_generation g ON g.id = e.generation_id
         """,
@@ -1116,7 +1158,10 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         script_path="backfill/backfill_method_keywords.py",
         log_name="backfill_method_keywords",
         process_patterns=("backfill_method_keywords",),
-        lock_file=None,
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/"
+            "backfill_method_keywords.lock"
+        ),
         expected_runtime_minutes=60,
         stale_after_minutes=1560,
         critical=False,
@@ -1136,12 +1181,16 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS recent_writes,
                    count(*) FILTER (
                      WHERE status = 'running'
-                       AND updated_at < now() - interval '2 hours'
+                       AND updated_at < now() - interval '26 hours'
                    ) AS stale_running,
+                   count(*) FILTER (WHERE status = 'running') AS running_runs,
                    count(*) FILTER (WHERE status = 'failed') AS failed_runs,
                    COALESCE(EXTRACT(EPOCH FROM (
                      now() - min(started_at) FILTER (WHERE status = 'running')
                    )) / 60, 0)::bigint AS blocking_run_age_minutes,
+                   COALESCE(EXTRACT(EPOCH FROM (
+                     now() - max(updated_at) FILTER (WHERE status = 'running')
+                   )) / 60, 0)::bigint AS checkpoint_age_minutes,
                    max(cursor_paper_id) FILTER (WHERE status = 'running') AS resume_cursor
             FROM method_keyword_backfill_runs
             WHERE keyword_catalog_sha256 = (
@@ -1349,6 +1398,7 @@ _OUTPUT_EVALUATORS: dict[str, str] = {
     "calculate_trending_scores": "repository_trending",
     "calculate_paper_trending_scores": "paper_trending",
     "import_hf_daily_papers": "hf_paper_import",
+    "enqueue_hf_daily_paper_curation": "daily_curation",
     "update_citations": "citations",
     "update_hf_artifacts": "hf_artifacts",
     "paper_markdown_backfill": "paper_markdown",

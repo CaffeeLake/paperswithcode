@@ -2,6 +2,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
+
 from backend.database import paper_merge
 from backend.database.paper_merge import (
     _merge_hf_artifacts,
@@ -130,4 +133,78 @@ def test_merge_hf_artifacts_preserves_arrays_and_normalized_links(monkeypatch):
         "hf_artifacts_merged": 1,
         "hf_artifacts_moved": 1,
         "hf_artifact_links_created": 1,
+    }
+
+
+def test_merge_method_links_moves_evidence_before_collapsing_duplicate_parent():
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("PRAGMA foreign_keys=ON"))
+        connection.execute(
+            text(
+                "CREATE TABLE paper_methods ("
+                "paper_id INTEGER NOT NULL, method_id INTEGER NOT NULL, "
+                "PRIMARY KEY (paper_id, method_id))"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE paper_method_evidence ("
+                "paper_id INTEGER NOT NULL, method_id INTEGER NOT NULL, "
+                "evidence_type VARCHAR(24) NOT NULL, "
+                "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                "last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                "details JSON, PRIMARY KEY (paper_id, method_id, evidence_type), "
+                "FOREIGN KEY (paper_id, method_id) "
+                "REFERENCES paper_methods(paper_id, method_id) ON DELETE CASCADE)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO paper_methods (paper_id, method_id) "
+                "VALUES (10, 1), (10, 2), (20, 2)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO paper_method_evidence "
+                "(paper_id, method_id, evidence_type, details) VALUES "
+                "(10, 1, 'keyword', '{\"source\":\"external\"}'), "
+                "(10, 2, 'keyword', '{\"source\":\"external\"}'), "
+                "(10, 2, 'reference', '{\"source\":\"external\"}'), "
+                "(20, 2, 'keyword', '{\"source\":\"canonical\"}')"
+            )
+        )
+
+    stats = {
+        "methods_merged": 0,
+        "methods_moved": 0,
+        "method_evidence_merged": 0,
+        "method_evidence_moved": 0,
+    }
+    with Session(engine) as db:
+        paper_merge._merge_method_links(db, 10, 20, stats)
+        db.flush()
+        parents = db.execute(
+            text("SELECT paper_id, method_id FROM paper_methods ORDER BY 1, 2")
+        ).all()
+        evidence = db.execute(
+            text(
+                "SELECT paper_id, method_id, evidence_type, details "
+                "FROM paper_method_evidence ORDER BY 1, 2, 3"
+            )
+        ).all()
+
+    assert parents == [(20, 1), (20, 2)]
+    assert [(row[0], row[1], row[2]) for row in evidence] == [
+        (20, 1, "keyword"),
+        (20, 2, "keyword"),
+        (20, 2, "reference"),
+    ]
+    assert '"canonical"' in evidence[1][3]
+    assert stats == {
+        "methods_merged": 1,
+        "methods_moved": 1,
+        "method_evidence_merged": 1,
+        "method_evidence_moved": 2,
     }

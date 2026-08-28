@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -171,7 +172,7 @@ def test_existing_paper_retries_external_duplicate_merge(monkeypatch):
     session.commit.assert_called_once_with()
 
 
-def test_external_duplicate_merge_failure_counts_as_import_error(monkeypatch):
+def test_external_duplicate_merge_failure_rolls_back_and_propagates(monkeypatch):
     job = HuggingFaceDailyPapersJob.__new__(HuggingFaceDailyPapersJob)
     job.logger = MagicMock()
     job.get_paper_by_arxiv_id = MagicMock(return_value={"id": 109717})
@@ -187,7 +188,64 @@ def test_external_duplicate_merge_failure_counts_as_import_error(monkeypatch):
         MagicMock(side_effect=RuntimeError("duplicate")),
     )
 
-    job.process_paper({"paper": {"id": "2608.24053", "title": "Example"}})
+    with pytest.raises(RuntimeError, match="duplicate"):
+        job.process_paper({"paper": {"id": "2608.24053", "title": "Example"}})
 
-    assert job.error_count == 1
+    assert job.error_count == 0
     session.rollback.assert_called_once_with()
+
+
+def test_run_continues_after_one_failure_emits_summary_then_raises(monkeypatch):
+    job = HuggingFaceDailyPapersJob.__new__(HuggingFaceDailyPapersJob)
+    job.logger = MagicMock()
+    job.target_date = "2026-08-28"
+    job.lookback_days = 1
+    for name in (
+        "processed_count",
+        "fetched_count",
+        "fetched_dates",
+        "error_count",
+        "new_papers_count",
+        "new_authors_count",
+        "new_repos_count",
+        "new_pages_count",
+        "new_tasks_count",
+        "new_methods_count",
+        "new_organization_links_count",
+        "unknown_organizations_seen",
+    ):
+        setattr(job, name, 0)
+    job.load_task_keywords = MagicMock()
+    job.load_method_keywords = MagicMock()
+    papers = [_paper("2608.00001"), _paper("2608.00002"), _paper("2608.00003")]
+
+    async def fetch(_date):
+        return papers
+
+    job.fetch_daily_papers = fetch
+    job.process_paper = MagicMock(
+        side_effect=[None, RuntimeError("merge failed"), None]
+    )
+    job.vacuum_analyze_table = MagicMock()
+
+    with pytest.raises(RuntimeError, match="1 paper import failure"):
+        job.run()
+
+    assert job.process_paper.call_count == 3
+    assert job.processed_count == 2
+    assert job.error_count == 1
+    summary_call = next(
+        call
+        for call in job.logger.info.call_args_list
+        if call.args and call.args[0] == "HF_DAILY_PAPERS_SUMMARY %s"
+    )
+    assert json.loads(summary_call.args[1]) == {
+        "upstream_fetch_succeeded": True,
+        "dates_fetched": 1,
+        "fetched": 3,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "failed": 1,
+    }
+    assert job.vacuum_analyze_table.call_count == 6

@@ -238,6 +238,8 @@ describe("CronSnapshotNotice", () => {
     manual_operations: [],
     summary: {
       total_jobs: 0,
+      scheduled_jobs: 0,
+      manual_jobs: 0,
       healthy: 0,
       degraded: 0,
       broken: 0,

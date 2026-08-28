@@ -7,6 +7,7 @@ import json
 import urllib.error
 import uuid
 from datetime import UTC, date, datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,7 @@ from backend.services.hf_daily_curation_service import (
     HFDailyCurationService,
     _dispatched_canary_workflows,
     _MAX_AUTOMATIC_RETRIES,
+    paper_markdown_available,
 )
 from jobs import url_preflight
 
@@ -740,6 +742,57 @@ def test_markdown_reconciliation_rotates_unavailable_workflows():
     assert unavailable.updated_at >= checked_at
 
 
+@pytest.mark.parametrize(
+    ("canonical", "expected"),
+    [
+        (
+            "Title: Ready Paper\n\nURL Source: https://example.com\n\n"
+            "Markdown Content:\n\nReady paper experiments establish the result. "
+            "The ready paper analysis includes reproducible ablations.\n",
+            True,
+        ),
+        (
+            "Title: Ready Paper\n\nURL Source: https://example.com\n\n"
+            "Markdown Content:\n\npage_001_image_01.png\n",
+            False,
+        ),
+    ],
+)
+def test_curation_markdown_availability_requires_semantic_body(
+    monkeypatch, canonical, expected
+):
+    observed = {}
+
+    class Handle(BytesIO):
+        def read(self, size=-1):
+            observed["read_size"] = size
+            return super().read(size)
+
+    class Filesystem:
+        def __init__(self, *, token):
+            assert token == "token"
+
+        def open(self, path, mode, *, block_size):
+            observed.update(path=path, mode=mode, block_size=block_size)
+            return Handle(canonical.encode())
+
+    monkeypatch.setattr(
+        "backend.services.hf_daily_curation_service.HfFileSystem", Filesystem
+    )
+    paper = SimpleNamespace(arxiv_id="2608.00042v2", title="Ready Paper")
+    settings = SimpleNamespace(
+        hf_token="token", paper_markdown_hf_bucket_id="test/paper-markdown"
+    )
+
+    assert paper_markdown_available(paper, settings) is expected
+    assert observed == {
+        "path": "hf://buckets/test/paper-markdown/2608/2608.00042.md",
+        "mode": "rb",
+        "block_size": 0,
+        "read_size": 64 * 1024 * 1024 + 1,
+    }
+
+
 def test_callback_validation_rejection_is_not_classified_as_transient():
     rejected = SimpleNamespace(
         error="Remote job completed without an accepted apply.",
@@ -1033,7 +1086,82 @@ def test_scheduled_usage_snapshot_exposes_enforced_threshold(monkeypatch):
         "mode": "enforced",
         "current_day_tokens": 600,
         "trailing_seven_day_median_tokens": 100,
+        "positive_baseline_days": 7,
         "pause_threshold_tokens": 200,
+    }
+
+
+def test_scheduled_usage_filters_for_completed_jobs(monkeypatch):
+    from backend.services import codex_add_evals_service
+
+    now = datetime(2026, 8, 18, 12, tzinfo=UTC)
+    monkeypatch.setattr(codex_add_evals_service, "_now", lambda: now)
+    filters = []
+
+    class Query:
+        def filter(self, *predicates):
+            filters.extend(str(predicate) for predicate in predicates)
+            return self
+
+        def all(self):
+            return []
+
+    class Database:
+        def query(self, *_args):
+            return Query()
+
+    CodexPaperJobService._scheduled_usage_snapshot(Database(), None)
+
+    assert any("paper_curation_jobs.status" in predicate for predicate in filters)
+
+
+@pytest.mark.parametrize(
+    ("daily_tokens", "mode", "median_tokens", "threshold"),
+    [
+        ([100, 300], "baseline_alert_only", 200, None),
+        ([100, 300, 500], "enforced", 300, 600),
+    ],
+)
+def test_scheduled_usage_excludes_zero_days_and_requires_three_positive_days(
+    monkeypatch, daily_tokens, mode, median_tokens, threshold
+):
+    from backend.services import codex_add_evals_service
+
+    now = datetime(2026, 8, 18, 12, tzinfo=UTC)
+    monkeypatch.setattr(codex_add_evals_service, "_now", lambda: now)
+    rows = [
+        SimpleNamespace(
+            finished_at=now - codex_add_evals_service.timedelta(days=offset),
+            input_tokens=tokens,
+            output_tokens=0,
+        )
+        for offset, tokens in enumerate(daily_tokens, start=1)
+    ]
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def all(self):
+            return rows
+
+    class Database:
+        def query(self, *_args):
+            return Query()
+
+    snapshot = CodexPaperJobService._scheduled_usage_snapshot(
+        Database(),
+        SimpleNamespace(
+            first_enabled_at=now - codex_add_evals_service.timedelta(days=30)
+        ),
+    )
+
+    assert snapshot == {
+        "mode": mode,
+        "current_day_tokens": 0,
+        "trailing_seven_day_median_tokens": median_tokens,
+        "positive_baseline_days": len(daily_tokens),
+        "pause_threshold_tokens": threshold,
     }
 
 

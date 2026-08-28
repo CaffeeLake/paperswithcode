@@ -647,6 +647,7 @@ class CodexPaperJobService:
             db.query(PaperCurationJob)
             .filter(
                 PaperCurationJob.trigger.in_({"hf-daily-cron", "hf-trending-cron"}),
+                PaperCurationJob.status == "completed",
                 PaperCurationJob.finished_at >= now - timedelta(days=8),
             )
             .all()
@@ -657,19 +658,24 @@ class CodexPaperJobService:
                 totals[row.finished_at.date()] += (row.input_tokens or 0) + (
                     row.output_tokens or 0
                 )
-        baseline = median(
-            totals[now.date() - timedelta(days=offset)] for offset in range(1, 8)
-        )
+        positive_baseline = [
+            tokens
+            for offset in range(1, 8)
+            if (tokens := totals[now.date() - timedelta(days=offset)]) > 0
+        ]
+        baseline = median(positive_baseline) if positive_baseline else 0
         baseline_active = bool(
             state
             and state.first_enabled_at
             and state.first_enabled_at <= now - timedelta(days=7)
+            and len(positive_baseline) >= 3
         )
         threshold = int(2 * baseline) if baseline_active and baseline > 0 else None
         return {
             "mode": "enforced" if baseline_active else "baseline_alert_only",
             "current_day_tokens": int(totals[now.date()]),
             "trailing_seven_day_median_tokens": int(baseline),
+            "positive_baseline_days": len(positive_baseline),
             "pause_threshold_tokens": threshold,
         }
 

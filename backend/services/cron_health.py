@@ -202,6 +202,14 @@ def fetch_db_freshness(query: str) -> Dict[str, Any]:
         conn.close()
 
 
+def _normalize_db_metric(_key: str, value: Any) -> Any:
+    if isinstance(value, datetime):
+        return to_iso8601(value)
+    if isinstance(value, str):
+        return value[:128]
+    return int(value or 0)
+
+
 def fetch_db_freshness_batch(
     jobs: list[CronJobDefinition],
 ) -> dict[str, Dict[str, Any]]:
@@ -234,7 +242,7 @@ def fetch_db_freshness_batch(
                         metrics["last_write_iso"] = to_iso8601(last_write)
                     for key, value in row.items():
                         if key != "last_write":
-                            metrics[key] = int(value or 0)
+                            metrics[key] = _normalize_db_metric(key, value)
                     results[job.id] = metrics
                 except Exception as exc:
                     results[job.id] = {
@@ -840,6 +848,26 @@ def _paper_markdown_contract(
                 f"{remaining} papers still missing{suffix}"
             )
         )
+    semantic_invalid = int(work.get("semantic_invalid_existing", 0) or 0)
+    if semantic_invalid:
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"{semantic_invalid} semantic-invalid existing Markdown object(s) "
+            "are excluded from usable coverage"
+        )
+    semantic_failures = int(work.get("semantic_validation_failures", 0) or 0)
+    if semantic_failures:
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"{semantic_failures} Markdown semantic validation failure(s) were recorded"
+        )
+    semantic_unavailable = int(work.get("semantic_evidence_unavailable", 0) or 0)
+    if semantic_unavailable:
+        status = _worse_output(status, "unknown")
+        reasons.append(
+            f"semantic evidence is unavailable for {semantic_unavailable} "
+            "recent Markdown object(s)"
+        )
     if work.get("remote_monitor_available") is False and status == "healthy":
         status = "unknown"
         reasons.append("remote OCR shard evidence is unavailable")
@@ -890,6 +918,7 @@ def _paper_embeddings_contract(
     _workflow: Dict[str, Any],
 ) -> tuple[str, List[str]]:
     missing = int(db.get("missing_embeddings", 0) or 0)
+    hash_mismatches = int(db.get("content_hash_mismatches", 0) or 0)
     candidates = work.get("candidates")
     embedded = int(work.get("embeddings_updated", work.get("embedded", 0)) or 0)
     if missing and candidates == 0:
@@ -900,6 +929,17 @@ def _paper_embeddings_contract(
     elif missing and candidates is not None and embedded == 0:
         status = _worse_output(status, "degraded")
         reasons.append(f"no embeddings were written while {missing} remain eligible")
+    if hash_mismatches and candidates == 0:
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"{hash_mismatches} active-generation content hashes are stale "
+            "despite a no-work run"
+        )
+    elif hash_mismatches and candidates is not None and embedded == 0:
+        status = _worse_output(status, "degraded")
+        reasons.append(
+            f"no embeddings were written while {hash_mismatches} content hashes are stale"
+        )
     return status, reasons
 
 
@@ -915,7 +955,7 @@ def _hf_import_contract(
     if work.get("upstream_fetch_succeeded") is True:
         failed = int(work.get("failed", 0) or 0)
         if failed:
-            status = _worse_output(status, "degraded")
+            status = _worse_output(status, "broken")
             reasons.append(f"{failed} imported paper(s) failed")
         elif status == "unknown":
             status = "healthy"
@@ -1056,6 +1096,13 @@ def _backfill_contract(
             reasons.append(f"blocking run age is {blocking_age}m")
         if cursor is not None:
             reasons.append(f"resume cursor is {cursor}")
+    elif int(db.get("running_runs", 0) or 0):
+        checkpoint_age = int(db.get("checkpoint_age_minutes", 0) or 0)
+        cursor = db.get("resume_cursor")
+        reasons.append(
+            f"fresh resumable checkpoint is {checkpoint_age}m old"
+            + (f" at cursor {cursor}" if cursor is not None else "")
+        )
     failed_runs = int(db.get("failed_runs", 0) or 0)
     if failed_runs:
         status = _worse_output(status, "degraded")
@@ -1074,6 +1121,44 @@ def _backfill_contract(
     if throttled:
         status = _worse_output(status, "degraded")
         reasons.append(f"provider throttled {throttled} request(s)")
+    return status, reasons
+
+
+def _daily_curation_contract(
+    status: str,
+    reasons: List[str],
+    _work: Dict[str, Any],
+    db: Dict[str, Any],
+    _workflow: Dict[str, Any],
+) -> tuple[str, List[str]]:
+    pause_condition = db.get("pause_condition")
+    if pause_condition:
+        status = _worse_output(status, "broken")
+        reasons.append(f"scheduled dispatch is paused: {pause_condition}")
+
+    for metric, label in (
+        ("failed_workflows", "failed workflow"),
+        ("partial_workflows", "partial workflow"),
+    ):
+        count = int(db.get(metric, 0) or 0)
+        if count:
+            status = _worse_output(status, "broken")
+            reasons.append(f"{count} {label}(s) require attention")
+
+    for metric, label in (
+        ("oldest_queued_age_minutes", "queued curation job"),
+        ("oldest_running_age_minutes", "running curation job"),
+    ):
+        age = db.get(metric)
+        if age is None:
+            continue
+        age_minutes = float(age)
+        if age_minutes > 300:
+            status = _worse_output(status, "broken")
+            reasons.append(f"oldest {label} is {int(age_minutes)}m old")
+        elif age_minutes > 180:
+            status = _worse_output(status, "degraded")
+            reasons.append(f"oldest {label} is {int(age_minutes)}m old")
     return status, reasons
 
 
@@ -1106,7 +1191,9 @@ def _chat_alert_contract(
         return "unknown", reasons + [
             "content-free monitor output record is unavailable"
         ]
-    age = _minutes_since(work.get("monitor_completed_at"))
+    age = _minutes_since(
+        work.get("monitor_completed_at"), now=work.get("_evaluation_now")
+    )
     if age is None or age > 5:
         return "broken", reasons + ["latest operational poll output is stale"]
     pending = int(work.get("undelivered_alert_events", 0) or 0)
@@ -1134,6 +1221,7 @@ OUTPUT_EVALUATORS = {
     "repository_trending": _trending_contract,
     "paper_trending": _trending_contract,
     "hf_paper_import": _hf_import_contract,
+    "daily_curation": _daily_curation_contract,
     "citations": _provider_counter_contract,
     "hf_artifacts": _provider_counter_contract,
     "paper_markdown": _paper_markdown_contract,
@@ -1427,23 +1515,29 @@ def fetch_workflow_statuses(
     return statuses
 
 
-def _minutes_since(value: Optional[datetime | str]) -> Optional[float]:
+def _minutes_since(
+    value: Optional[datetime | str], *, now: Optional[datetime] = None
+) -> Optional[float]:
     dt = value if isinstance(value, datetime) else _parse_log_timestamp(value)
     if dt is None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return (_utcnow() - dt.astimezone(timezone.utc)).total_seconds() / 60
+    reference = now or _utcnow()
+    return (reference - dt.astimezone(timezone.utc)).total_seconds() / 60
 
 
 def _db_is_stale(
-    db_metrics: Dict[str, Any], stale_after_minutes: int
+    db_metrics: Dict[str, Any],
+    stale_after_minutes: int,
+    *,
+    now: Optional[datetime] = None,
 ) -> tuple[bool, Optional[str]]:
     last_write = db_metrics.get("last_write")
     if last_write is None:
         return True, "no database writes recorded"
 
-    age = _minutes_since(last_write)
+    age = _minutes_since(last_write, now=now)
     if age is None:
         return True, "could not parse database write timestamp"
 
@@ -1461,11 +1555,14 @@ def _db_is_stale(
 
 
 def _recent_log_success(
-    job: CronJobDefinition, log_status: Dict[str, Any]
+    job: CronJobDefinition,
+    log_status: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
 ) -> tuple[bool, Optional[str]]:
     if log_status.get("status") not in {"success", "success_no_work"}:
         return False, None
-    age = _minutes_since(log_status.get("last_run"))
+    age = _minutes_since(log_status.get("last_run"), now=now)
     if age is None:
         return False, None
     if age > job.stale_after_minutes:
@@ -1521,9 +1618,13 @@ def evaluate_job_health(
                 f"database freshness query failed: {db_metrics['freshness_error']}"
             )
         else:
-            db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
+            db_stale, db_reason = _db_is_stale(
+                db_metrics, job.stale_after_minutes, now=now
+            )
 
-    recent_log_success, recent_log_reason = _recent_log_success(job, log_status)
+    recent_log_success, recent_log_reason = _recent_log_success(
+        job, log_status, now=now
+    )
     if (
         job.id == "update_hot_github_trending"
         and db_metrics.get("hot_repository_count") == 0
@@ -1574,7 +1675,9 @@ def evaluate_job_health(
         reasons.append("completed with no work (allowed for this job)")
     else:
         if job.id == "mirror_thumbnails_to_disk":
-            db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
+            db_stale, db_reason = _db_is_stale(
+                db_metrics, job.stale_after_minutes, now=now
+            )
             if db_stale and db_reason:
                 reasons.append(db_reason or "thumbnail cache looks stale")
 
@@ -1708,8 +1811,9 @@ def evaluate_job_health(
 
     workflow_status = workflow_status or {}
     evaluator = OUTPUT_EVALUATORS[job.output_evaluator or "generic"]
+    evaluator_work = {**work_metrics, "_evaluation_now": now}
     status, reasons = evaluator(
-        status, reasons, work_metrics, db_metrics, workflow_status
+        status, reasons, evaluator_work, db_metrics, workflow_status
     )
     if (
         job.id == "process_curation_thumbnails"
@@ -1795,6 +1899,24 @@ def evaluate_job_health(
             ),
             "output_freshness_completeness": list(dict.fromkeys(reasons)),
         },
+    }
+
+
+def _dashboard_job_summary(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    scheduled_jobs = [job for job in jobs if job["category"] != "manual"]
+    manual_jobs = [job for job in jobs if job["category"] == "manual"]
+    counts = {
+        state: sum(1 for job in scheduled_jobs if job["status"] == state)
+        for state in ("healthy", "degraded", "broken", "running", "stuck", "unknown")
+    }
+    passing = counts["healthy"] + counts["running"]
+    scheduled_total = len(scheduled_jobs)
+    return {
+        "total_jobs": len(jobs),
+        "scheduled_jobs": scheduled_total,
+        "manual_jobs": len(manual_jobs),
+        **counts,
+        "health_score": (passing / scheduled_total * 100) if scheduled_total else 0.0,
     }
 
 
@@ -1930,12 +2052,8 @@ def build_cron_dashboard(
         status_by_id[job.id] = evaluated["status"]
         jobs.append(evaluated)
 
-    scheduled_jobs = [job for job in jobs if job["category"] != "manual"]
     manual_jobs = [job for job in jobs if job["category"] == "manual"]
-    counts = {
-        state: sum(1 for job in scheduled_jobs if job["status"] == state)
-        for state in ("healthy", "degraded", "broken", "running", "stuck", "unknown")
-    }
+    job_summary = _dashboard_job_summary(jobs)
 
     critical_issues = [
         f"{job['display_name']}: {job['status_reason']}"
@@ -1948,9 +2066,6 @@ def build_cron_dashboard(
         "All monitored jobs look healthy",
     )
 
-    total = len(scheduled_jobs)
-    passing = counts["healthy"] + counts["running"]
-    healthy_score = (passing / total * 100) if total else 0.0
     registered_ids = {
         job.id
         for job in list_cron_jobs()
@@ -1967,9 +2082,7 @@ def build_cron_dashboard(
         "jobs": jobs,
         "manual_operations": manual_jobs,
         "summary": {
-            "total_jobs": total,
-            **counts,
-            "health_score": healthy_score,
+            **job_summary,
             "critical_issues": critical_issues,
             "what_to_check_next": what_to_check_next,
             "coverage": {
