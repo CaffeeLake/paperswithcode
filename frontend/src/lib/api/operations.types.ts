@@ -202,3 +202,67 @@ export interface PaperMarkdownBudget {
   relevant_jobs: number;
   reason?: string | null;
 }
+
+export type AutonomousDisplayState =
+  | "healthy"
+  | "degraded"
+  | "repairing"
+  | "rolled-back"
+  | "manual";
+
+export interface AutonomousOperationsResponse {
+  revision: number;
+  manual_mode: boolean;
+  monitoring_active: boolean;
+  display_state: AutonomousDisplayState;
+  operators: Array<{
+    operator: "submissions" | "cron_health" | "chat_reliability";
+    enabled: boolean;
+    status: AutonomousDisplayState;
+    monitoring_active: boolean;
+    next_scheduled_run: string | null;
+  }>;
+  active_lease: {
+    lease_id: string;
+    owner_run_id: string;
+    owner_operator: "cron_health" | "chat_reliability";
+    expires_at: string;
+  } | null;
+  costs: { input_tokens: number; output_tokens: number; total_usd: string };
+  baseline: {
+    sha: string;
+    revision: number;
+    qualified_by: string;
+    qualified_at: string;
+  } | null;
+  provider_states: Array<{
+    environment: "staging" | "production";
+    manifest_revision: string;
+    state_revision: number;
+    active_provider: string;
+    reason_code: string;
+    updated_at: string;
+  }>;
+  recent_runs: Array<{
+    run_id: string;
+    operator: "submissions" | "cron_health" | "chat_reliability";
+    dry_run: boolean;
+    status: string;
+    exit_classification: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: string;
+    created_at: string;
+  }>;
+  recent_actions: Array<{
+    action_id: string;
+    run_id: string;
+    operator: "submissions" | "cron_health" | "chat_reliability";
+    capability: string;
+    reason_code: string;
+    resource_kind: string;
+    resource_identifier: string;
+    created_at: string;
+  }>;
+  exclusions: string[];
+}

@@ -2972,5 +2972,125 @@ class TrendsResponse(BaseModel):
     )
 
 
+AutonomousDisplayState = Literal[
+    "healthy", "degraded", "repairing", "rolled-back", "manual"
+]
+
+
+class AutonomousOperatorStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator: Literal["submissions", "cron_health", "chat_reliability"]
+    enabled: bool
+    status: AutonomousDisplayState
+    monitoring_active: bool
+    next_scheduled_run: datetime | None = None
+
+
+class AutonomousLeaseStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str
+    owner_run_id: str
+    owner_operator: Literal["cron_health", "chat_reliability"]
+    expires_at: datetime
+
+
+class AutonomousCostSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_usd: str = Field(pattern=r"^\d+\.\d{9}$")
+
+
+class AutonomousBaselineStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    revision: int = Field(ge=1)
+    qualified_by: str
+    qualified_at: datetime
+
+
+class AutonomousProviderStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    environment: Literal["staging", "production"]
+    manifest_revision: str
+    state_revision: int = Field(ge=1)
+    active_provider: str
+    reason_code: str
+    updated_at: datetime
+
+
+class AutonomousRunSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    operator: Literal["submissions", "cron_health", "chat_reliability"]
+    dry_run: bool
+    status: str
+    exit_classification: str
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: str = Field(pattern=r"^\d+\.\d{9}$")
+    created_at: datetime
+
+
+class AutonomousActionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str
+    run_id: str
+    operator: Literal["submissions", "cron_health", "chat_reliability"]
+    capability: str
+    reason_code: str
+    resource_kind: str
+    resource_identifier: str
+    created_at: datetime
+
+
+class AutonomousOperationsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: int = Field(ge=1)
+    manual_mode: bool
+    monitoring_active: bool
+    display_state: AutonomousDisplayState
+    operators: List[AutonomousOperatorStatus]
+    active_lease: AutonomousLeaseStatus | None
+    costs: AutonomousCostSummary
+    baseline: AutonomousBaselineStatus | None
+    provider_states: List[AutonomousProviderStatus]
+    recent_runs: List[AutonomousRunSummary]
+    recent_actions: List[AutonomousActionSummary]
+    exclusions: List[str]
+
+
+class AutonomousManualModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    expected_revision: int = Field(ge=1)
+    confirmation: Literal["SET_MANUAL_MODE"]
+
+
+class AutonomousOperatorStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    expected_revision: int = Field(ge=1)
+    confirmation: Literal["SET_OPERATOR_STATE"]
+
+
+class AutonomousBaselineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    expected_revision: int = Field(ge=0)
+    confirmation: Literal["QUALIFY_CHAT_BASELINE"]
+
+
 # Resolve forward references
 Paper.model_rebuild()

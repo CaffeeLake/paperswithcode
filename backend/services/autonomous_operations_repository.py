@@ -34,6 +34,11 @@ _ACTOR = re.compile(r"^(?:admin|system):[A-Za-z0-9][A-Za-z0-9._@-]{0,199}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SECRET_PREFIXES = ("sk-", "hf_", "bearer", "eyj")
+_MONITORING_INTERVALS = {
+    "submissions": timedelta(hours=1),
+    "cron_health": timedelta(minutes=15),
+    "chat_reliability": timedelta(minutes=15),
+}
 
 
 class Operator(StrEnum):
@@ -188,6 +193,221 @@ class AutonomousOperationsRepository:
             enabled={operator: rows[operator.value].enabled for operator in Operator},
             revision=rows["global"].revision,
         )
+
+    def get_admin_snapshot(self, db: Session, *, limit: int = 25) -> dict:
+        """Return a bounded, content-free read model for human supervision."""
+        if not 1 <= limit <= 100:
+            raise ValueError("Autonomous snapshot limit is invalid")
+        control = self.get_control_state(db)
+        now = self._clock(db)
+        lease_row = db.scalar(
+            select(AutonomousRepairLease).where(
+                AutonomousRepairLease.singleton_key == "source_repair",
+                AutonomousRepairLease.expires_at > now,
+            )
+        )
+        runs = list(
+            db.scalars(
+                select(AutonomousRun)
+                .order_by(AutonomousRun.created_at.desc(), AutonomousRun.id.desc())
+                .limit(limit)
+            )
+        )
+        actions = list(
+            db.scalars(
+                select(AutonomousAction)
+                .order_by(
+                    AutonomousAction.created_at.desc(), AutonomousAction.id.desc()
+                )
+                .limit(limit)
+            )
+        )
+        latest_run = {
+            operator.value: db.scalar(
+                select(AutonomousRun)
+                .where(AutonomousRun.operator == operator.value)
+                .order_by(AutonomousRun.created_at.desc(), AutonomousRun.id.desc())
+                .limit(1)
+            )
+            for operator in Operator
+        }
+        latest_action = {
+            operator.value: db.scalar(
+                select(AutonomousAction)
+                .where(AutonomousAction.operator == operator.value)
+                .order_by(
+                    AutonomousAction.created_at.desc(), AutonomousAction.id.desc()
+                )
+                .limit(1)
+            )
+            for operator in Operator
+        }
+        next_scheduled = {
+            operator.value: (
+                self._aware(latest_run[operator.value].created_at)
+                + _MONITORING_INTERVALS[operator.value]
+                if latest_run[operator.value] is not None
+                else None
+            )
+            for operator in Operator
+        }
+        monitoring = {
+            operator.value: (
+                next_scheduled[operator.value] is not None
+                and now
+                <= next_scheduled[operator.value]
+                + _MONITORING_INTERVALS[operator.value]
+            )
+            for operator in Operator
+        }
+
+        def operator_status(operator: Operator) -> str:
+            if control.manual_mode:
+                return "manual"
+            if lease_row is not None and lease_row.owner_operator == operator.value:
+                return "repairing"
+            action = latest_action.get(operator.value)
+            run = latest_run[operator.value]
+            if (
+                action is not None
+                and action.reason_code == "rolled_back"
+                and (
+                    run is None
+                    or self._aware(action.created_at) > self._aware(run.created_at)
+                )
+            ):
+                return "rolled-back"
+            if (
+                not control.enabled[operator]
+                or run is None
+                or run.status != "completed"
+                or not monitoring[operator.value]
+            ):
+                return "degraded"
+            return "healthy"
+
+        statuses = {operator: operator_status(operator) for operator in Operator}
+        if control.manual_mode:
+            display_state = "manual"
+        elif "repairing" in statuses.values():
+            display_state = "repairing"
+        elif "rolled-back" in statuses.values():
+            display_state = "rolled-back"
+        elif "degraded" in statuses.values():
+            display_state = "degraded"
+        else:
+            display_state = "healthy"
+
+        input_tokens, output_tokens, total_usd = db.execute(
+            select(
+                func.coalesce(func.sum(AutonomousRun.input_tokens), 0),
+                func.coalesce(func.sum(AutonomousRun.output_tokens), 0),
+                func.coalesce(func.sum(AutonomousRun.cost_usd), 0),
+            )
+        ).one()
+        baseline = db.scalar(
+            select(ChatReliabilityBaseline).where(
+                ChatReliabilityBaseline.singleton.is_(True)
+            )
+        )
+        providers = list(
+            db.scalars(
+                select(ChatProviderRuntimeState).order_by(
+                    ChatProviderRuntimeState.environment
+                )
+            )
+        )
+        money = Decimal("0.000000001")
+        return {
+            "revision": control.revision,
+            "manual_mode": control.manual_mode,
+            "monitoring_active": any(monitoring.values()),
+            "display_state": display_state,
+            "operators": [
+                {
+                    "operator": operator.value,
+                    "enabled": control.enabled[operator],
+                    "status": statuses[operator],
+                    "monitoring_active": monitoring[operator.value],
+                    "next_scheduled_run": next_scheduled[operator.value],
+                }
+                for operator in Operator
+            ],
+            "active_lease": (
+                {
+                    "lease_id": str(lease_row.lease_id),
+                    "owner_run_id": str(lease_row.owner_run_id),
+                    "owner_operator": lease_row.owner_operator,
+                    "expires_at": self._aware(lease_row.expires_at),
+                }
+                if lease_row is not None
+                else None
+            ),
+            "costs": {
+                "input_tokens": int(input_tokens),
+                "output_tokens": int(output_tokens),
+                "total_usd": f"{Decimal(str(total_usd)).quantize(money):.9f}",
+            },
+            "baseline": (
+                {
+                    "sha": baseline.sha,
+                    "revision": baseline.revision,
+                    "qualified_by": baseline.qualified_by,
+                    "qualified_at": self._aware(baseline.qualified_at),
+                }
+                if baseline is not None
+                else None
+            ),
+            "provider_states": [
+                {
+                    "environment": row.environment,
+                    "manifest_revision": row.manifest_revision,
+                    "state_revision": row.state_revision,
+                    "active_provider": row.active_provider,
+                    "reason_code": row.reason_code,
+                    "updated_at": self._aware(row.updated_at),
+                }
+                for row in providers
+            ],
+            "recent_runs": [
+                {
+                    "run_id": str(row.id),
+                    "operator": row.operator,
+                    "dry_run": row.dry_run,
+                    "status": row.status,
+                    "exit_classification": row.exit_classification,
+                    "input_tokens": row.input_tokens,
+                    "output_tokens": row.output_tokens,
+                    "cost_usd": f"{Decimal(str(row.cost_usd)).quantize(money):.9f}",
+                    "created_at": self._aware(row.created_at),
+                }
+                for row in runs
+            ],
+            "recent_actions": [
+                {
+                    "action_id": str(row.id),
+                    "run_id": str(row.run_id),
+                    "operator": row.operator,
+                    "capability": row.capability,
+                    "reason_code": row.reason_code,
+                    "resource_kind": row.resource_kind,
+                    "resource_identifier": row.resource_identifier,
+                    "created_at": self._aware(row.created_at),
+                }
+                for row in actions
+            ],
+            "exclusions": [
+                "task_creation",
+                "method_creation",
+                "benchmark_dataset_creation",
+                "metric_creation",
+                "conference_creation",
+                "database_migrations",
+                "nginx_host_changes",
+                "secrets_credentials",
+                "destructive_data_repair",
+            ],
+        }
 
     def _locked_global_state(self, db: Session) -> AutonomousOperatorState:
         self._ensure_control_rows(db)
