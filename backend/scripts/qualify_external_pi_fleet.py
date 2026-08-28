@@ -13,14 +13,17 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import httpx
 
 from backend.loadtests.external_pi_fleet_core import (
+    MIN_PROJECTED_MEM_AVAILABLE_BYTES,
     CleanupEvidence,
     FleetQualificationReport,
+    FleetRecoveryReport,
     FleetReplica,
     FleetRoundReport,
     FleetRunRefused,
@@ -30,6 +33,7 @@ from backend.loadtests.external_pi_fleet_core import (
     ForbiddenActivity,
     HostResourceSnapshot,
     PortState,
+    RecoveryReplicaEvidence,
     ResourceEvidence,
     ResourcePreflight,
     UnitResourceEvidence,
@@ -62,12 +66,33 @@ class FleetOperator(Protocol):
     def wait_ready(self, resolved) -> int: ...
 
     def run_round(
-        self, name: str, workers: tuple[WorkerEvidence, ...]
+        self,
+        name: str,
+        workers: tuple[WorkerEvidence, ...],
+        *,
+        abort_requested: Callable[[], bool],
     ) -> FleetRoundReport: ...
 
     def sample_resources(self, shape: FleetShape) -> ResourceEvidence: ...
 
     def cleanup(self, resolved, generation: int | None): ...
+
+    def cleanup_postconditions(self, shape: FleetShape) -> CleanupEvidence: ...
+
+    def set_owner(self, owner_id: str) -> None: ...
+
+    def owned_units(self, resolved) -> tuple[str, ...]: ...
+
+    def recovery_postconditions(
+        self, resolved, owned_units: tuple[str, ...]
+    ) -> tuple[CleanupEvidence, tuple[str, ...]]: ...
+
+
+@dataclass(slots=True)
+class AttemptedReplica:
+    resolved: object
+    generation: int | None = None
+    owned_units: tuple[str, ...] = ()
 
 
 class FleetQualificationInterrupted(FleetRunRefused):
@@ -152,23 +177,66 @@ class SystemFleetOperator:
         release_id: str,
         app_root: Path = Path("/srv/paperswithcode"),
         status_root: Path = Path("/run/paperswithcode/external-pi"),
+        qualification_status_root: Path = lifecycle.STATUS_ROOT,
         environ: Mapping[str, str] = os.environ,
         listener_hosts: Callable[[int], tuple[str, ...]] = _listener_hosts,
         runner: Callable = subprocess.run,
         http_get: Callable = httpx.get,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.release_id = release_id
         self.app_root = app_root
         self.status_root = status_root
+        self.qualification_status_root = qualification_status_root
         self.environ = environ
         self.listener_hosts = listener_hosts
         self.runner = runner
         self.http_get = http_get
+        self.sleep = sleep
         self.owner_id = str(uuid.uuid4())
         self._prompt_path: Path | None = None
         self._host_cpu_state: tuple[int, int] | None = None
         self._unit_cpu_state: dict[str, tuple[int, float]] = {}
         self.runtime_id = self._manifest()["external_pi_runtime"]["runtime_id"]
+
+    def set_owner(self, owner_id: str) -> None:
+        if (
+            not owner_id
+            or len(owner_id) > 64
+            or any(
+                not (character.isalnum() or character == "-") for character in owner_id
+            )
+        ):
+            raise FleetRunRefused("external Pi fleet owner marker is invalid")
+        self.owner_id = owner_id
+
+    def _unit_metadata(self, unit: str) -> tuple[str, str, str]:
+        result = self.runner(
+            [
+                "systemctl",
+                "show",
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=Description",
+                unit,
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return ("unknown", "unknown", "")
+        values = {}
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                values[key] = value
+        return (
+            values.get("LoadState", "unknown"),
+            values.get("ActiveState", "unknown"),
+            values.get("Description", ""),
+        )
 
     def _manifest(self) -> dict:
         current = self.app_root / "environments/staging/current"
@@ -329,6 +397,30 @@ class SystemFleetOperator:
             item.port: evidence
             for item, evidence in zip(active_replicas, active, strict=True)
         }
+        active_ids = {item.worker_id for item in active_replicas}
+        for index, replica in enumerate(shape.replicas):
+            expected = (
+                (
+                    lifecycle.QUALIFICATION_SUPERVISOR_UNITS[index],
+                    "supervisor",
+                ),
+                (lifecycle.QUALIFICATION_WORKER_UNITS[index], "worker"),
+            )
+            for unit, role in expected:
+                load, state, description = self._unit_metadata(unit)
+                if replica.worker_id in active_ids:
+                    owner = (
+                        "Papers With Code staging external Pi qualification "
+                        f"{role} {index:02d} owner {self.owner_id}"
+                    )
+                    if (load, state, description) != ("loaded", "active", owner):
+                        raise FleetRunRefused(
+                            "external Pi fleet qualification unit is not exact-owned active"
+                        )
+                elif (load, state) != ("not-found", "inactive"):
+                    raise FleetRunRefused(
+                        "external Pi fleet qualification unit is not absent"
+                    )
         for replica in shape.replicas:
             hosts = self.listener_hosts(replica.port)
             active_evidence = active_by_port.get(replica.port)
@@ -374,12 +466,7 @@ class SystemFleetOperator:
         raise FleetRunRefused("external Pi fleet host memory evidence is unavailable")
 
     def _host_cpu_percent(self) -> float:
-        fields = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
-        if fields[0] != "cpu" or len(fields) < 6:
-            raise FleetRunRefused("external Pi fleet host CPU evidence is unavailable")
-        counters = tuple(int(value) for value in fields[1:])
-        total = sum(counters)
-        idle = counters[3] + counters[4]
+        total, idle = self._read_host_cpu()
         previous = self._host_cpu_state
         self._host_cpu_state = (total, idle)
         if previous is None or total <= previous[0]:
@@ -387,27 +474,49 @@ class SystemFleetOperator:
         busy_delta = (total - previous[0]) - (idle - previous[1])
         return max(0.0, min(100.0, busy_delta * 100 / (total - previous[0])))
 
+    @staticmethod
+    def _read_host_cpu() -> tuple[int, int]:
+        fields = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
+        if fields[0] != "cpu" or len(fields) < 6:
+            raise FleetRunRefused("external Pi fleet host CPU evidence is unavailable")
+        counters = tuple(int(value) for value in fields[1:])
+        return sum(counters), counters[3] + counters[4]
+
+    def _sample_host_cpu_percent(self, interval_seconds: float = 0.1) -> float:
+        if not 0.05 <= interval_seconds <= 1.0:
+            raise FleetRunRefused("external Pi fleet CPU sample interval is invalid")
+        before_total, before_idle = self._read_host_cpu()
+        self.sleep(interval_seconds)
+        after_total, after_idle = self._read_host_cpu()
+        if after_total <= before_total:
+            raise FleetRunRefused("external Pi fleet CPU sample did not advance")
+        busy = (after_total - before_total) - (after_idle - before_idle)
+        return max(0.0, min(100.0, busy * 100 / (after_total - before_total)))
+
     def resource_preflight(self, shape: FleetShape) -> ResourcePreflight:
         staging = self.app_root / "environments/staging"
         active = staging.joinpath("active").resolve(strict=True)
         slot = active.name
         if slot not in {"blue", "green"}:
             raise FleetRunRefused("external Pi fleet active worker is invalid")
-        memory = sum(
-            self._systemctl_properties(unit, "MemoryCurrent")["MemoryCurrent"]
-            for unit in (
-                f"paperswithcode-staging-external-pi@{slot}.service",
-                f"paperswithcode-staging-external-pi-worker@{slot}.service",
-            )
+        supervisor_memory = self._systemctl_properties(
+            f"paperswithcode-staging-external-pi@{slot}.service", "MemoryCurrent"
+        )["MemoryCurrent"]
+        worker_memory = self._systemctl_properties(
+            f"paperswithcode-staging-external-pi-worker@{slot}.service",
+            "MemoryCurrent",
+        )["MemoryCurrent"]
+        cpu_percent = self._sample_host_cpu_percent()
+        if supervisor_memory <= 0 or worker_memory <= 0:
+            return ResourcePreflight("resource_refused", 0, cpu_percent, 80.0)
+        session_scale = shape.sessions_per_worker / 8
+        projected = int(
+            shape.worker_count * (supervisor_memory + worker_memory * session_scale)
         )
-        if memory <= 0:
-            return ResourcePreflight(
-                "resource_refused", 0, self._host_cpu_percent(), 80.0
-            )
         snapshot = HostResourceSnapshot(
             mem_available_bytes=self._mem_available_bytes(),
-            projected_additional_bytes=min(memory * shape.worker_count, 2**63 - 1),
-            cpu_percent=self._host_cpu_percent(),
+            projected_additional_bytes=min(projected, 2**63 - 1),
+            cpu_percent=cpu_percent,
             cpu_guard_percent=80.0,
         )
         from backend.loadtests.external_pi_fleet_core import evaluate_resource_preflight
@@ -479,7 +588,11 @@ class SystemFleetOperator:
             raise FleetRunRefused("external Pi fleet worker evidence is unsafe")
 
     def run_round(
-        self, name: str, workers: tuple[WorkerEvidence, ...]
+        self,
+        name: str,
+        workers: tuple[WorkerEvidence, ...],
+        *,
+        abort_requested: Callable[[], bool],
     ) -> FleetRoundReport:
         if self._prompt_path is None:
             raise FleetRunRefused("external Pi fleet runtime prompt is unavailable")
@@ -494,6 +607,7 @@ class SystemFleetOperator:
             ),
             prompt=self._prompt_path.read_text(encoding="utf-8"),
             token=self.environ["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"],
+            abort_requested=abort_requested,
         )
         after = tuple(self._worker_status(worker) for worker in workers)
         for worker, status in zip(workers, after, strict=True):
@@ -554,17 +668,88 @@ class SystemFleetOperator:
             resolved, generation=generation, runner=self.runner
         )
 
+    def cleanup_postconditions(self, shape: FleetShape) -> CleanupEvidence:
+        units_removed = all(
+            self._unit_metadata(unit)[:2] == ("not-found", "inactive")
+            for unit in qualification_unit_names(shape)
+        )
+        status_files_removed = all(
+            not self.qualification_status_root.joinpath(
+                f"{replica.worker_id}.json"
+            ).exists()
+            for replica in shape.replicas
+        )
+        ports_free = all(
+            not self.listener_hosts(replica.port) for replica in shape.replicas
+        )
+        return CleanupEvidence(
+            drain_proven=status_files_removed,
+            registry_offline=status_files_removed,
+            supervisors_stopped_before_workers=units_removed,
+            units_removed=units_removed,
+            status_files_removed=status_files_removed,
+            ports_free=ports_free,
+            processes_gone=units_removed and ports_free,
+        )
 
-def _clean() -> CleanupEvidence:
-    return CleanupEvidence(
-        drain_proven=True,
-        registry_offline=True,
-        supervisors_stopped_before_workers=True,
-        units_removed=True,
-        status_files_removed=True,
-        ports_free=True,
-        processes_gone=True,
-    )
+    def owned_units(self, resolved) -> tuple[str, ...]:
+        owned = []
+        for unit, role in (
+            (resolved.supervisor_unit, "supervisor"),
+            (resolved.worker_unit, "worker"),
+        ):
+            description = (
+                "Papers With Code staging external Pi qualification "
+                f"{role} {resolved.index:02d} owner {self.owner_id}"
+            )
+            load, state, observed = self._unit_metadata(unit)
+            if (load, state) != ("not-found", "inactive") and observed == description:
+                owned.append(unit)
+        return tuple(owned)
+
+    def recovery_postconditions(
+        self, resolved, owned_units: tuple[str, ...]
+    ) -> tuple[CleanupEvidence, tuple[str, ...]]:
+        unit_states = {
+            unit: self._unit_metadata(unit)[:2]
+            for unit in (resolved.supervisor_unit, resolved.worker_unit)
+        }
+        unresolved = tuple(
+            unit
+            for unit in owned_units
+            if unit_states[unit] != ("not-found", "inactive")
+        )
+        status_removed = not resolved.status_path.exists()
+        supervisor_removed = unit_states[resolved.supervisor_unit] == (
+            "not-found",
+            "inactive",
+        )
+        registry_offline = status_removed and supervisor_removed
+        if not status_removed:
+            try:
+                status = json.loads(resolved.status_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                status = {}
+            registry_offline = (
+                status.get("release_id") == resolved.release_id
+                and status.get("worker_id") == resolved.worker_id
+                and status.get("state") == "offline"
+                and status.get("drained") is True
+            )
+        ports_free = not self.listener_hosts(resolved.port)
+        units_removed = all(
+            state == ("not-found", "inactive") for state in unit_states.values()
+        )
+        cleanup = CleanupEvidence(
+            drain_proven=registry_offline,
+            registry_offline=registry_offline,
+            supervisors_stopped_before_workers=supervisor_removed,
+            units_removed=units_removed,
+            status_files_removed=status_removed,
+            ports_free=ports_free,
+            processes_gone=units_removed and ports_free,
+        )
+        return cleanup, unresolved
 
 
 def _cleanup_evidence(results: Sequence[object]) -> CleanupEvidence:
@@ -614,7 +799,65 @@ def _merge_resources(samples: Sequence[ResourceEvidence]) -> ResourceEvidence:
     )
 
 
-def _run_shape(operator: FleetOperator, shape: FleetShape):
+def _resources_safe(evidence: ResourceEvidence) -> bool:
+    return (
+        evidence.minimum_host_mem_available_bytes >= MIN_PROJECTED_MEM_AVAILABLE_BYTES
+        and evidence.peak_cpu_percent < 80.0
+    )
+
+
+def _run_guarded_round(
+    operator: FleetOperator,
+    shape: FleetShape,
+    name: str,
+    workers: tuple[WorkerEvidence, ...],
+) -> tuple[FleetRoundReport, tuple[ResourceEvidence, ...]]:
+    stop = threading.Event()
+    abort = threading.Event()
+    samples: list[ResourceEvidence] = []
+    sampling_errors: list[BaseException] = []
+
+    def sample_until_stopped() -> None:
+        while not stop.is_set():
+            try:
+                evidence = operator.sample_resources(shape)
+                samples.append(evidence)
+                if not _resources_safe(evidence):
+                    abort.set()
+                    return
+            except BaseException as error:  # noqa: BLE001 - fail round closed
+                sampling_errors.append(error)
+                abort.set()
+                return
+            stop.wait(0.1)
+
+    sampler = threading.Thread(
+        target=sample_until_stopped,
+        name="external-pi-fleet-resource-guard",
+        daemon=True,
+    )
+    sampler.start()
+    try:
+        report = operator.run_round(
+            name,
+            workers,
+            abort_requested=abort.is_set,
+        )
+    finally:
+        stop.set()
+        sampler.join(timeout=2.0)
+    if sampler.is_alive() or sampling_errors or abort.is_set():
+        raise FleetRunRefused("external Pi fleet live resource guard crossed")
+    if not samples:
+        raise FleetRunRefused("external Pi fleet live resource evidence is missing")
+    return report, tuple(samples)
+
+
+def _run_shape(
+    operator: FleetOperator,
+    shape: FleetShape,
+    attempted: list[AttemptedReplica],
+):
     active: list[object] = []
     generations: dict[str, int] = {}
     workers: list[WorkerEvidence] = []
@@ -635,13 +878,18 @@ def _run_shape(operator: FleetOperator, shape: FleetShape):
             for resolved in active
         )
         operator.revalidate(shape, evidence)
-        samples.append(operator.sample_resources(shape))
+        resource_evidence = operator.sample_resources(shape)
+        samples.append(resource_evidence)
+        if not _resources_safe(resource_evidence):
+            raise FleetRunRefused("external Pi fleet live resource guard crossed")
 
     checkpoint()
     preflight = operator.resource_preflight(shape)
     checkpoint()
     if preflight.status == "resource_refused":
-        return build_resource_refused_shape_report(shape, preflight, _clean())
+        return build_resource_refused_shape_report(
+            shape, preflight, operator.cleanup_postconditions(shape)
+        )
 
     healthy: FleetRoundReport | None = None
     survivor: FleetRoundReport | None = None
@@ -651,13 +899,23 @@ def _run_shape(operator: FleetOperator, shape: FleetShape):
         for index, replica in enumerate(shape.replicas):
             checkpoint()
             resolved = operator.resolve(shape, index)
-            operator.start(resolved)
+            attempt = AttemptedReplica(resolved=resolved)
+            attempted.append(attempt)
+            try:
+                operator.start(resolved)
+            except BaseException:
+                attempt.owned_units = operator.owned_units(resolved)
+                if attempt.owned_units:
+                    active.append(resolved)
+                    resolved_by_id[replica.worker_id] = resolved
+                raise
+            attempt.owned_units = (resolved.supervisor_unit, resolved.worker_unit)
             active.append(resolved)
             resolved_by_id[replica.worker_id] = resolved
             checkpoint()
-            checkpoint()
             generation = operator.wait_ready(resolved)
             generations[replica.worker_id] = generation
+            attempt.generation = generation
             workers.append(
                 WorkerEvidence(
                     worker_id=replica.worker_id,
@@ -669,7 +927,10 @@ def _run_shape(operator: FleetOperator, shape: FleetShape):
             checkpoint()
 
         checkpoint()
-        healthy = operator.run_round("healthy", tuple(workers))
+        healthy, round_samples = _run_guarded_round(
+            operator, shape, "healthy", tuple(workers)
+        )
+        samples.extend(round_samples)
         checkpoint()
 
         removed = workers[0]
@@ -682,7 +943,10 @@ def _run_shape(operator: FleetOperator, shape: FleetShape):
 
         survivor_workers = tuple(worker for worker in workers if worker != removed)
         checkpoint()
-        survivor = operator.run_round("survivor", survivor_workers)
+        survivor, round_samples = _run_guarded_round(
+            operator, shape, "survivor", survivor_workers
+        )
+        samples.extend(round_samples)
         checkpoint()
     except BaseException as exc:  # noqa: BLE001 - signals must enter cleanup
         error = exc
@@ -736,16 +1000,52 @@ def run_fleet_controller(
     """Run allowlisted shapes sequentially and atomically retain final evidence."""
     if geteuid() != 0:
         raise FleetRunRefused("external Pi fleet controller requires a root operator")
+    attempt_id = str(uuid.uuid4())
+    attempted_at_unix_ms = int(time.time() * 1_000)
+    owner_id = str(uuid.uuid4())
+    operator.set_owner(owner_id)
+    attempted: list[AttemptedReplica] = []
     with qualification_signal_context():
-        reports = tuple(
-            _run_shape(operator, resolve_fleet_shape(name)) for name in shape_names
-        )
-        final = build_final_report(
-            release_id=release_id,
-            runtime_id=operator.runtime_id,
-            shapes=reports,
-        )
-        publish_fleet_report(final, report_path, report_root)
+        try:
+            reports = tuple(
+                _run_shape(operator, resolve_fleet_shape(name), attempted)
+                for name in shape_names
+            )
+            final = build_final_report(
+                release_id=release_id,
+                runtime_id=operator.runtime_id,
+                shapes=reports,
+            )
+            publish_fleet_report(final, report_path, report_root)
+        except BaseException:
+            replicas = []
+            for attempt in attempted:
+                resolved = attempt.resolved
+                cleanup, unresolved = operator.recovery_postconditions(
+                    resolved, attempt.owned_units
+                )
+                replicas.append(
+                    RecoveryReplicaEvidence(
+                        worker_id=resolved.worker_id,
+                        port=resolved.port,
+                        generation=attempt.generation,
+                        supervisor_unit=resolved.supervisor_unit,
+                        worker_unit=resolved.worker_unit,
+                        owned_units=attempt.owned_units,
+                        cleanup=cleanup,
+                        unresolved_units=unresolved,
+                    )
+                )
+            recovery = FleetRecoveryReport(
+                attempt_id=attempt_id,
+                attempted_at_unix_ms=attempted_at_unix_ms,
+                release_id=release_id,
+                runtime_id=operator.runtime_id,
+                owner_id=owner_id,
+                replicas=tuple(replicas),
+            )
+            publish_fleet_report(recovery, report_path, report_root)
+            raise
     return final
 
 

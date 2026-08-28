@@ -240,7 +240,11 @@ latency. They are not model time-to-first-token: the qualifier performs no
 generation and permits no model, provider, tool, Modal, or billing activity.
 
 SIGINT, SIGTERM, test failures, and partial startup use the same exact-unit
-cleanup. After a failed run, do not kill processes by pattern and do not rerun
+cleanup. A failed attempt atomically replaces the report at the same path with
+`report_type=recovery`, a fresh `attempt_id`, the exact release and owner, and
+one bounded record for every attempted replica. Treat only that current-attempt
+record as recovery evidence; `cleanup_complete=false` or any `unresolved_units`
+requires operator recovery. Do not kill processes by pattern and do not rerun
 while any qualification unit or port remains. Inspect only the exact
 `paperswithcode-staging-external-pi-qualification@NN.service` and
 `paperswithcode-staging-external-pi-qualification-worker@NN.service` units plus
@@ -251,17 +255,25 @@ for `offline`/`drained`, stop supervisor before worker, reset only those units,
 and prove the status file, listener, and process are gone. If exact drain proof
 is unavailable, leave the worker fenced for operator recovery; never force it.
 
-For each exact retained pair, obtain `index` and the allowlisted `shape` from
-that unit's `ExecStart` (the arguments contain no token), then run the same Task
-2 cleanup contract from the exact active release. Repeat only for explicitly
-inspected retained pairs:
+For each retained replica in that recovery report, first compare the report's
+`owner_id` and `owned_units` with the live unit metadata. Every live owned unit
+must have the exact Description
+`Papers With Code staging external Pi qualification <role> NN owner <owner_id>`;
+its `ExecStart` must name the report's exact release, index, allowlisted port,
+and session limit. A unit omitted from `owned_units` must be `not-found` and
+`inactive`; a foreign or ambiguous unit is not safe to remove. Derive the
+allowlisted shape and index from those checked `ExecStart` arguments (which
+contain no token), then run the Task 2 cleanup contract from the exact active
+release. Repeat only for explicitly inspected report entries:
 
 ```bash
-systemctl show --property=ActiveState --property=ExecStart \
+systemctl show --property=LoadState --property=ActiveState \
+  --property=Description --property=ExecStart \
   paperswithcode-staging-external-pi-qualification@NN.service \
   paperswithcode-staging-external-pi-qualification-worker@NN.service
 shape=5x32  # set to the exact observed 5x32, 8x16, or 16x8 shape
 index=0     # set to the exact observed 0-15 replica index
+owned=worker  # exact report value: worker, supervisor, or supervisor,worker
 
 sudo uv run --env-file /etc/paperswithcode/staging.env python -c '
 import json, sys
@@ -269,21 +281,35 @@ from backend.loadtests.external_pi_fleet_core import resolve_fleet_shape
 from deploy.external_pi_qualification_lifecycle import (
     cleanup_replica, resolve_qualification_replica,
 )
-release_id, shape_name, raw_index = sys.argv[1:]
+release_id, shape_name, raw_index, raw_owned = sys.argv[1:]
 shape = resolve_fleet_shape(shape_name)
 index = int(raw_index)
 replica = shape.replicas[index]
 resolved = resolve_qualification_replica(
     "staging", release_id, index, replica.port, shape.sessions_per_worker
 )
-status = json.loads(resolved.status_path.read_text(encoding="utf-8"))
+names = {
+    "supervisor": resolved.supervisor_unit,
+    "worker": resolved.worker_unit,
+}
+owned_units = {names[item] for item in raw_owned.split(",") if item}
+status = (
+    json.loads(resolved.status_path.read_text(encoding="utf-8"))
+    if resolved.status_path.exists()
+    else {}
+)
 generation = status.get("generation")
 if generation is not None and (type(generation) is not int or generation < 1):
     raise SystemExit("invalid bounded generation evidence")
-cleanup_replica(resolved, generation=generation)
-' "$release_id" "$shape" "$index"
+if not status and resolved.supervisor_unit in owned_units:
+    raise SystemExit("owned supervisor has no durable generation evidence")
+cleanup_replica(resolved, generation=generation, owned_units=owned_units)
+' "$release_id" "$shape" "$index" "$owned"
 ```
 
-After each recovery command, require both exact units to be `not-found` and
+An absent status file is acceptable only for a worker-only partial start when
+the supervisor is omitted from the report's `owned_units` and its live metadata
+affirmatively proves `not-found`/`inactive`; it is not permission to assume both
+units are owned. After each recovery command, require both exact units to be `not-found` and
 inactive, the corresponding status file absent, and its loopback port absent
 from `ss -H -ltn`. Do not continue to another pair if any proof fails.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import time
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -81,6 +82,8 @@ def run_local_fleet_round(
     prompt: str,
     token: str,
     timeout_seconds: float = 30.0,
+    abort_requested: Callable[[], bool] = lambda: False,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> FleetRoundResult:
     """Run exactly 100 one-shot users in one process and return bounded evidence."""
     if not 0 < timeout_seconds <= 60:
@@ -92,10 +95,13 @@ def run_local_fleet_round(
         parsed_options=SimpleNamespace(num_users=100, spawn_rate=100.0),
     )
     runner = environment.create_local_runner()
-    deadline = time.monotonic() + timeout_seconds
+    _validate_runner(environment)
+    deadline = monotonic() + timeout_seconds
     try:
         runner.start(user_count=100, spawn_rate=100.0)
-        while time.monotonic() < deadline:
+        while monotonic() < deadline:
+            if abort_requested():
+                raise FleetRunRefused("external Pi fleet round aborted by safety guard")
             if runner.user_count == 0 and len(_observations) == EXPECTED_USERS:
                 break
             gevent.sleep(0.05)
@@ -115,6 +121,11 @@ def _elapsed_ms(started: float) -> int:
 
 @events.test_start.add_listener
 def _start(environment, **_kwargs) -> None:
+    _validate_runner(environment)
+
+
+def _validate_runner(environment: Environment) -> None:
+    """Reject an unsafe runner synchronously before Locust starts users."""
     if not isinstance(environment.runner, LocalRunner):
         raise FleetRunRefused("external Pi fleet requires one local Locust runner")
     options = environment.parsed_options

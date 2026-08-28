@@ -5,8 +5,11 @@ import importlib.util
 import json
 import signal
 import subprocess
+import threading
+import time
 from collections import Counter
 from dataclasses import FrozenInstanceError
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -714,8 +717,110 @@ def test_fleet_locust_routes_each_one_shot_user_directly_without_proxy_or_redire
     assert len(adapter.fleet_round_result().observations) == 2
 
 
+def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    counts = Counter()
+    servers = []
+    threads = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers["Content-Length"])
+            request = json.loads(self.rfile.read(length))
+            counts[self.server.server_port] += 1
+            response = {
+                "type": "shadow_projection",
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "chat_session_id": request["chat_session_id"],
+                "agent_session_id": request["agent_session_id"],
+                "current_leaf_id": request["current_leaf_id"],
+                "entry_count": len(request["transcript_entries"]),
+                "transcript_sha256": request["expected_transcript_sha256"],
+                "prompt_sha256": request["expected_prompt_sha256"],
+                "tool_names_sha256": request["expected_tool_names_sha256"],
+            }
+            body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return None
+
+    try:
+        for port in range(8780, 8785):
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            servers.append(server)
+            threads.append(thread)
+        result = adapter.run_local_fleet_round(
+            replicas=resolve_fleet_shape("5x32").replicas,
+            prompt="canonical-runtime-prompt",
+            token="protected-worker-token",
+            timeout_seconds=20,
+        )
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+    assert len(result.observations) == 100
+    assert all(item.classification == "compatible" for item in result.observations)
+    assert result.protocol_errors == result.transport_errors == 0
+    assert counts == Counter({port: 20 for port in range(8780, 8785)})
+
+
+def test_fleet_local_runner_validates_before_start(monkeypatch):
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    started = False
+
+    def reject(_environment):
+        raise FleetRunRefused("runner invariant")
+
+    def start(*_args, **_kwargs):
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(adapter, "_validate_runner", reject)
+    monkeypatch.setattr(adapter.LocalRunner, "start", start)
+    with pytest.raises(FleetRunRefused, match="runner invariant"):
+        adapter.run_local_fleet_round(
+            replicas=resolve_fleet_shape("5x32").replicas,
+            prompt="canonical-runtime-prompt",
+            token="protected-worker-token",
+        )
+    assert started is False
+
+
+def test_fleet_local_runner_timeout_refuses_incomplete_real_round():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    timestamps = iter((0.0, 31.0))
+
+    with pytest.raises(FleetRunRefused, match="exactly 100 observations"):
+        adapter.run_local_fleet_round(
+            replicas=resolve_fleet_shape("5x32").replicas,
+            prompt="canonical-runtime-prompt",
+            token="protected-worker-token",
+            timeout_seconds=30,
+            monotonic=lambda: next(timestamps),
+        )
+
+
 class _FleetOperator:
     runtime_id = "external-pi-runtime-1"
+    owner_id = "test-owner"
 
     def __init__(self, *, refuse=()):
         self.refuse = set(refuse)
@@ -739,6 +844,9 @@ class _FleetOperator:
             worker_id=replica.worker_id,
             port=replica.port,
             maximum_sessions=shape.sessions_per_worker,
+            supervisor_unit=qualification_unit_names(shape)[index],
+            worker_unit=qualification_unit_names(shape)[shape.worker_count + index],
+            status_path=Path(f"/tmp/{replica.worker_id}.json"),
         )
 
     def start(self, resolved):
@@ -749,7 +857,7 @@ class _FleetOperator:
         self.events.append(("ready", resolved.worker_id, generation))
         return generation
 
-    def run_round(self, name, workers):
+    def run_round(self, name, workers, *, abort_requested=lambda: False):
         self.events.append(
             ("round", name, tuple(worker.worker_id for worker in workers))
         )
@@ -769,6 +877,27 @@ class _FleetOperator:
             ports_free=True,
             processes_gone=True,
         )
+
+    def cleanup_postconditions(self, _shape):
+        return _cleanup()
+
+    def set_owner(self, owner_id):
+        self.owner_id = owner_id
+
+    def owned_units(self, _resolved):
+        return ()
+
+    def recovery_postconditions(self, resolved, owned_units):
+        cleaned = any(
+            event[0] == "cleanup" and event[1] == resolved.worker_id
+            for event in self.events
+        )
+        cleanup = (
+            _cleanup()
+            if cleaned or not owned_units
+            else _cleanup(units_removed=False, processes_gone=False)
+        )
+        return cleanup, (() if cleanup.passed else owned_units)
 
 
 def test_controller_runs_shapes_sequentially_healthy_then_exact_generation_loss(
@@ -830,8 +959,8 @@ def test_controller_always_cleans_every_observed_generation_on_round_failure(
     from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
 
     class FailingOperator(_FleetOperator):
-        def run_round(self, name, workers):
-            super().run_round(name, workers)
+        def run_round(self, name, workers, *, abort_requested=lambda: False):
+            super().run_round(name, workers, abort_requested=abort_requested)
             raise RuntimeError("protected response body")
 
     operator = FailingOperator()
@@ -855,7 +984,53 @@ def test_controller_always_cleans_every_observed_generation_on_round_failure(
         ("cleanup", "staging-qualification-03", 13),
         ("cleanup", "staging-qualification-04", 14),
     ]
-    assert report_path.read_text(encoding="utf-8") == '{"previous":true}\n'
+    retained = json.loads(report_path.read_text(encoding="utf-8"))
+    assert retained["report_type"] == "recovery"
+    assert retained["release_id"] == "0123456789ab-staging"
+    assert len(retained["replicas"]) == 5
+    assert [item["generation"] for item in retained["replicas"]] == [10, 11, 12, 13, 14]
+    assert all(item["unresolved_units"] == [] for item in retained["replicas"])
+    assert retained["cleanup_complete"] is True
+    assert "protected response body" not in report_path.read_text(encoding="utf-8")
+    assert report_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_controller_retains_exact_unresolved_worker_only_partial_start(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class PartialStartFailure(_FleetOperator):
+        def start(self, resolved):
+            raise RuntimeError("partial start")
+
+        def owned_units(self, resolved):
+            return (resolved.worker_unit,)
+
+        def cleanup(self, _resolved, _generation):
+            raise RuntimeError("cleanup unavailable")
+
+    operator = PartialStartFailure()
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(RuntimeError, match="partial start"):
+        run_fleet_controller(
+            operator,
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("5x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained = json.loads(report_path.read_text(encoding="utf-8"))
+    assert retained["cleanup_complete"] is False
+    assert len(retained["replicas"]) == 1
+    replica = retained["replicas"][0]
+    assert replica["generation"] is None
+    assert replica["owned_units"] == [
+        "paperswithcode-staging-external-pi-qualification-worker@00.service"
+    ]
+    assert replica["unresolved_units"] == replica["owned_units"]
 
 
 def test_controller_cleans_started_replica_when_readiness_has_no_generation(
@@ -899,7 +1074,7 @@ def test_controller_cleanup_continues_when_pre_cleanup_revalidation_fails(
                 raise FleetRunRefused("safety changed")
             super().revalidate(shape, active)
 
-        def run_round(self, name, workers):
+        def run_round(self, name, workers, *, abort_requested=lambda: False):
             self.unsafe = True
             raise RuntimeError("round failed")
 
@@ -1035,8 +1210,27 @@ def test_system_operator_revalidates_live_staging_and_exact_listener_state(
             return live_status
 
     unit_states = {"supervisor": "active", "worker": "active"}
+    qualification_active = False
 
     def systemctl(command, **_kwargs):
+        nonlocal qualification_active
+        if "qualification" in command[-1]:
+            if qualification_active and command[-1].endswith("@00.service"):
+                role = (
+                    "worker" if "qualification-worker" in command[-1] else "supervisor"
+                )
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "LoadState=loaded\nActiveState=active\n"
+                    "Description=Papers With Code staging external Pi qualification "
+                    f"{role} 00 owner {operator.owner_id}\n",
+                )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "LoadState=not-found\nActiveState=inactive\nDescription=\n",
+            )
         state = (
             unit_states["worker"]
             if "external-pi-worker" in command[-1]
@@ -1057,6 +1251,7 @@ def test_system_operator_revalidates_live_staging_and_exact_listener_state(
 
     operator.revalidate(shape, ())
     listeners[8780] = ("127.0.0.1",)
+    qualification_active = True
     active = (SimpleNamespace(worker_id=shape.replicas[0].worker_id, port=8780),)
     operator.revalidate(shape, active)
 
@@ -1077,3 +1272,319 @@ def test_system_operator_revalidates_live_staging_and_exact_listener_state(
     environ["PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED"] = "true"
     with pytest.raises(FleetRunRefused, match="disabled"):
         operator.revalidate(shape, active)
+
+
+def test_system_operator_rejects_stale_and_foreign_exact_qualification_units(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    app_root = tmp_path / "srv/paperswithcode"
+    release = app_root / "releases/0123456789ab-staging"
+    release.mkdir(parents=True)
+    release.joinpath("release.json").write_text(
+        json.dumps(
+            {
+                "release_id": release.name,
+                "external_pi_runtime": {"runtime_id": "runtime-1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    staging = app_root / "environments/staging"
+    blue = staging / "slots/blue"
+    blue.mkdir(parents=True)
+    staging.joinpath("current").symlink_to(release)
+    staging.joinpath("active").symlink_to(blue)
+    blue.joinpath("release").symlink_to(release)
+    status_root = tmp_path / "status"
+    status_root.mkdir()
+    status_root.joinpath("staging-blue.json").write_text(
+        json.dumps(
+            {
+                "release_id": release.name,
+                "worker_id": "staging-blue",
+                "state": "ready",
+                "authenticated": True,
+                "registered": True,
+                "generation": 7,
+            }
+        ),
+        encoding="utf-8",
+    )
+    live_status = {
+        "protocol": "external-pi-v1",
+        "worker_id": "staging-blue",
+        "instance_id": "10000000-0000-4000-8000-000000000001",
+        "release_id": release.name,
+        "state": "ready",
+        "active_sessions": 0,
+        "maximum_sessions": 8,
+        "worker_generation": 7,
+        "operation_counters": {
+            "shadow_requests": 0,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+        "capability_evidence": {
+            "provider_credentials_present": False,
+            "modal_credentials_present": False,
+            "registered_tool_count": 0,
+        },
+    }
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return live_status
+
+    qualification = {}
+
+    def systemctl(command, **_kwargs):
+        unit = command[-1]
+        if "qualification" not in unit:
+            values = {
+                "LoadState": "loaded",
+                "ActiveState": "active",
+                "Description": "live",
+            }
+        else:
+            values = qualification.get(
+                unit,
+                {
+                    "LoadState": "not-found",
+                    "ActiveState": "inactive",
+                    "Description": "",
+                },
+            )
+        if "--value" in command:
+            return subprocess.CompletedProcess(command, 0, values["ActiveState"] + "\n")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "\n".join(f"{name}={value}" for name, value in values.items()) + "\n",
+        )
+
+    environ = {
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "t" * 32,
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED": "false",
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "false",
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "false",
+        "PWC_CHAT_REMOTE_BASH_ENABLED": "false",
+        "PWC_CHAT_REMOTE_READ_ENABLED": "false",
+        "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "false",
+    }
+    operator = SystemFleetOperator(
+        release_id=release.name,
+        app_root=app_root,
+        status_root=status_root,
+        environ=environ,
+        listener_hosts=lambda _port: (),
+        http_get=lambda *_args, **_kwargs: Response(),
+        runner=systemctl,
+    )
+    operator.owner_id = "test-owner"
+    shape = resolve_fleet_shape("5x32")
+    supervisor = qualification_unit_names(shape)[0]
+    worker = qualification_unit_names(shape)[shape.worker_count]
+
+    qualification[supervisor] = {
+        "LoadState": "loaded",
+        "ActiveState": "failed",
+        "Description": "foreign",
+    }
+    with pytest.raises(FleetRunRefused, match="qualification unit"):
+        operator.revalidate(shape, ())
+
+    qualification[supervisor] = {
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "Description": (
+            "Papers With Code staging external Pi qualification supervisor 00 "
+            "owner test-owner"
+        ),
+    }
+    qualification[worker] = {
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "Description": (
+            "Papers With Code staging external Pi qualification worker 00 "
+            "owner test-owner"
+        ),
+    }
+    active = (SimpleNamespace(worker_id=shape.replicas[0].worker_id, port=8780),)
+    operator.revalidate(shape, active)
+
+    qualification[worker]["Description"] = "foreign-owner"
+    with pytest.raises(FleetRunRefused, match="qualification unit"):
+        operator.revalidate(shape, active)
+
+
+def test_resource_refused_shape_uses_observed_cleanup_postconditions(tmp_path: Path):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class RefusedOperator(_FleetOperator):
+        def cleanup_postconditions(self, _shape):
+            return _cleanup(units_removed=False, processes_gone=False)
+
+    operator = RefusedOperator(refuse={"16x8"})
+    report = run_fleet_controller(
+        operator,
+        release_id="0123456789ab-staging",
+        report_path=tmp_path / "fleet.json",
+        report_root=tmp_path,
+        shape_names=("16x8",),
+        geteuid=lambda: 0,
+    )
+
+    assert report.shapes[0].status == "resource_refused"
+    assert report.shapes[0].cleanup.units_removed is False
+    assert report.shapes[0].cleanup.processes_gone is False
+
+
+def test_system_recovery_does_not_report_foreign_exact_unit_as_removed(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    operator = object.__new__(SystemFleetOperator)
+    operator.listener_hosts = lambda _port: ()
+    resolved = SimpleNamespace(
+        supervisor_unit=("paperswithcode-staging-external-pi-qualification@00.service"),
+        worker_unit=(
+            "paperswithcode-staging-external-pi-qualification-worker@00.service"
+        ),
+        status_path=tmp_path / "missing.json",
+        release_id="0123456789ab-staging",
+        worker_id="staging-qualification-00",
+        port=8780,
+    )
+    operator._unit_metadata = lambda unit: (
+        ("loaded", "active", "foreign")
+        if unit == resolved.supervisor_unit
+        else ("not-found", "inactive", "")
+    )
+
+    cleanup, unresolved = operator.recovery_postconditions(resolved, ())
+
+    assert unresolved == ()
+    assert cleanup.units_removed is False
+    assert cleanup.registry_offline is False
+    assert cleanup.passed is False
+
+
+def test_system_resource_preflight_scales_worker_memory_by_session_limit(monkeypatch):
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    operator = object.__new__(SystemFleetOperator)
+    operator.app_root = Path("/srv/paperswithcode")
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda self, strict=False: Path(
+            "/srv/paperswithcode/environments/staging/slots/blue"
+        ),
+    )
+
+    def properties(unit, *_names):
+        return {"MemoryCurrent": 100 * 1024**2 if "worker" in unit else 50 * 1024**2}
+
+    operator._systemctl_properties = properties
+    operator._mem_available_bytes = lambda: 4 * 1024**3
+    slept = []
+    cpu = iter(((100, 80), (200, 100)))
+    operator._read_host_cpu = lambda: next(cpu)
+    operator.sleep = lambda seconds: slept.append(seconds)
+
+    preflight = operator.resource_preflight(resolve_fleet_shape("5x32"))
+
+    assert slept == [0.1]
+    assert preflight.observed_cpu_percent == 80.0
+    assert preflight.status == "resource_refused"
+    assert preflight.projected_mem_available_bytes == 4 * 1024**3 - 2250 * 1024**2
+
+
+def test_system_resource_adapter_parses_only_requested_numeric_properties():
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    commands = []
+
+    def systemctl(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "MemoryPeak=1048576\nCPUUsageNSec=invalid\nTasksCurrent=7\nIgnored=9\n",
+        )
+
+    operator = object.__new__(SystemFleetOperator)
+    operator.runner = systemctl
+    values = operator._systemctl_properties(
+        "qualification-worker@00.service",
+        "MemoryPeak",
+        "CPUUsageNSec",
+        "TasksCurrent",
+    )
+
+    assert values == {
+        "MemoryPeak": 1048576,
+        "CPUUsageNSec": 0,
+        "TasksCurrent": 7,
+    }
+    assert commands == [
+        [
+            "systemctl",
+            "show",
+            "--property=MemoryPeak",
+            "--property=CPUUsageNSec",
+            "--property=TasksCurrent",
+            "qualification-worker@00.service",
+        ]
+    ]
+
+
+def test_controller_concurrently_aborts_round_when_live_resource_guard_crosses(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class CrossingOperator(_FleetOperator):
+        in_round = threading.Event()
+
+        def sample_resources(self, shape):
+            evidence = super().sample_resources(shape)
+            if self.in_round.is_set():
+                return evidence.model_copy(
+                    update={"minimum_host_mem_available_bytes": 1536 * 1024**2 - 1}
+                )
+            return evidence
+
+        def run_round(self, name, workers, *, abort_requested):
+            self.in_round.set()
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and not abort_requested():
+                time.sleep(0.01)
+            if not abort_requested():
+                raise RuntimeError("no concurrent resource guard")
+            raise FleetRunRefused("resource guard crossed")
+
+    operator = CrossingOperator()
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(FleetRunRefused, match="resource guard crossed"):
+        run_fleet_controller(
+            operator,
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("5x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained = json.loads(report_path.read_text(encoding="utf-8"))
+    assert retained["report_type"] == "recovery"
+    assert retained["cleanup_complete"] is True

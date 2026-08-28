@@ -12,6 +12,11 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from backend.loadtests.external_pi_shadow_core import (
+    BaselineObservation,
+    build_external_pi_baseline_request,
+    classify_external_pi_baseline_response,
+)
 from deploy.external_pi_qualification_contract import (
     QUALIFICATION_PORTS,
     QUALIFICATION_SHAPES,
@@ -19,13 +24,6 @@ from deploy.external_pi_qualification_contract import (
     QUALIFICATION_WORKER_IDS,
     QUALIFICATION_WORKER_UNITS,
 )
-
-from backend.loadtests.external_pi_shadow_core import (
-    BaselineObservation,
-    build_external_pi_baseline_request,
-    classify_external_pi_baseline_response,
-)
-
 
 EXPECTED_USERS = 100
 MIN_PROJECTED_MEM_AVAILABLE_BYTES = 1536 * 1024**2
@@ -287,6 +285,67 @@ class FleetQualificationReport(BaseModel):
     runtime_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
     shapes: tuple[FleetShapeReport, ...] = Field(min_length=1, max_length=3)
     preferred_shape: FleetShapeName | None
+
+
+class RecoveryReplicaEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    worker_id: str = Field(pattern=r"^staging-qualification-(0[0-9]|1[0-5])$")
+    port: int = Field(ge=8780, le=8795)
+    generation: int | None = Field(default=None, ge=1, le=MAX_REPORT_COUNTER)
+    supervisor_unit: str = Field(min_length=1, max_length=128)
+    worker_unit: str = Field(min_length=1, max_length=128)
+    owned_units: tuple[str, ...] = Field(max_length=2)
+    cleanup: CleanupEvidence
+    unresolved_units: tuple[str, ...] = Field(max_length=2)
+
+    @model_validator(mode="after")
+    def validate_exact_replica(self) -> RecoveryReplicaEvidence:
+        index = QUALIFICATION_WORKER_IDS.index(self.worker_id)
+        expected = (
+            QUALIFICATION_SUPERVISOR_UNITS[index],
+            QUALIFICATION_WORKER_UNITS[index],
+        )
+        if (
+            self.port != QUALIFICATION_PORTS[index]
+            or (self.supervisor_unit, self.worker_unit) != expected
+            or len(set(self.owned_units)) != len(self.owned_units)
+            or any(unit not in expected for unit in self.owned_units)
+            or len(set(self.unresolved_units)) != len(self.unresolved_units)
+            or any(unit not in self.owned_units for unit in self.unresolved_units)
+        ):
+            raise ValueError("external Pi fleet recovery replica is not exact")
+        return self
+
+
+class FleetRecoveryReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    report_type: Literal["recovery"] = "recovery"
+    attempt_id: str = Field(
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
+    attempted_at_unix_ms: int = Field(ge=1, le=MAX_REPORT_BYTES)
+    release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
+    runtime_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    owner_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
+    replicas: tuple[RecoveryReplicaEvidence, ...] = Field(max_length=16)
+
+    @model_validator(mode="after")
+    def validate_unique_replicas(self) -> FleetRecoveryReport:
+        worker_ids = tuple(item.worker_id for item in self.replicas)
+        if len(set(worker_ids)) != len(worker_ids):
+            raise ValueError("external Pi fleet recovery replicas are duplicated")
+        return self
+
+    @computed_field
+    @property
+    def cleanup_complete(self) -> bool:
+        return all(
+            item.cleanup.passed and not item.unresolved_units for item in self.replicas
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,7 +748,7 @@ def _path_within(path: Path, root: Path) -> bool:
 
 
 def publish_fleet_report(
-    report: FleetQualificationReport,
+    report: FleetQualificationReport | FleetRecoveryReport,
     destination: Path,
     report_root: Path,
 ) -> None:
