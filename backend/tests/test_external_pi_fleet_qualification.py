@@ -1088,6 +1088,58 @@ def test_first_checkpoint_foreign_unit_and_port_are_retained_as_recovery(
     assert retained["replicas"][1]["cleanup"]["ports_free"] is False
 
 
+@pytest.mark.parametrize("pointer_failure", ("current missing", "current changed"))
+def test_partial_attempt_recovery_uses_cached_descriptors_after_pointer_drift(
+    tmp_path: Path,
+    pointer_failure: str,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class PointerDrift(_FleetOperator):
+        pointer_valid = True
+
+        def resolve(self, shape, index):
+            if not self.pointer_valid:
+                raise FleetRunRefused(pointer_failure)
+            return super().resolve(shape, index)
+
+        def start(self, resolved):
+            self.pointer_valid = False
+            raise RuntimeError("protected partial-start detail")
+
+        def owned_units(self, resolved):
+            return (resolved.worker_unit,) if resolved.index == 0 else ()
+
+    report_path = tmp_path / "fleet.json"
+    report_path.write_text('{"previous":true}\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="protected partial-start detail"):
+        run_fleet_controller(
+            PointerDrift(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("5x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained_text = report_path.read_text(encoding="utf-8")
+    retained = json.loads(retained_text)
+    assert retained["report_type"] == "recovery"
+    assert retained["cleanup_complete"] is True
+    assert len(retained["replicas"]) == 1
+    assert retained["replicas"][0]["worker_id"] == "staging-qualification-00"
+    assert retained["replicas"][0]["port"] == 8780
+    assert retained["replicas"][0]["supervisor_unit"] == (
+        "paperswithcode-staging-external-pi-qualification@00.service"
+    )
+    assert retained["replicas"][0]["worker_unit"] == (
+        "paperswithcode-staging-external-pi-qualification-worker@00.service"
+    )
+    assert pointer_failure not in retained_text
+    assert "protected partial-start detail" not in retained_text
+    assert report_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_controller_retains_exact_unresolved_worker_only_partial_start(
     tmp_path: Path,
 ):

@@ -1009,10 +1009,18 @@ def run_fleet_controller(
     current_shape: FleetShape | None = None
     attempted: list[AttemptedReplica] = []
     with qualification_signal_context():
+        shapes = tuple(resolve_fleet_shape(name) for name in shape_names)
+        recovery_descriptors = {
+            shape.name: tuple(
+                operator.resolve(shape, index)
+                for index in range(len(QUALIFICATION_PORTS))
+            )
+            for shape in shapes
+        }
         try:
             reports = []
-            for name in shape_names:
-                current_shape = resolve_fleet_shape(name)
+            for shape in shapes:
+                current_shape = shape
                 attempted = []
                 reports.append(_run_shape(operator, current_shape, attempted))
             final = build_final_report(
@@ -1033,7 +1041,7 @@ def run_fleet_controller(
                 resolved = (
                     attempt.resolved
                     if attempt is not None
-                    else operator.resolve(current_shape, index)
+                    else recovery_descriptors[current_shape.name][index]
                 )
                 owned_units = (
                     attempt.owned_units

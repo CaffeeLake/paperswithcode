@@ -262,6 +262,12 @@ for `offline`/`drained`, stop supervisor before worker, reset only those units,
 and prove the status file, listener, and process are gone. If exact drain proof
 is unavailable, leave the worker fenced for operator recovery; never force it.
 
+Before any replica start, the controller snapshots immutable descriptors for
+all 16 slots in every requested shape while the exact-current release gate is
+healthy. Normal checkpoints still refuse a missing, changed, or invalid
+`current` pointer. Failure reporting uses only that snapshot, so pointer drift
+cannot suppress or redirect the current-attempt recovery report.
+
 For each retained replica in that recovery report, first compare the report's
 `owner_id` and `owned_units` with the live unit metadata. Every live owned unit
 must have the exact Description
