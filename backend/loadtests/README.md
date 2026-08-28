@@ -238,6 +238,10 @@ Each admitted shape runs exactly 100 healthy users, drains and stops one exact
 observed generation, then runs exactly 100 users against the survivors. The
 mode-0600 report is atomically replaced and contains only bounded counters,
 identities, generations, latencies, resource peaks, and cleanup evidence.
+Each round uses a bounded in-process arrival barrier: all exactly 100 Locust
+users must be resident at the barrier before any user sends its one request.
+Barrier timeout, controller resource abort, or overall round timeout releases
+and stops all waiters and refuses the round; partial arrivals cannot pass.
 
 `p95_ms` and `p99_ms` measure synthetic transcript compatibility/restore
 latency. They are not model time-to-first-token: the qualifier performs no

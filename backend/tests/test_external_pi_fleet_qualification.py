@@ -634,7 +634,6 @@ def test_fleet_locust_requires_one_local_exact_hundred_user_runner(monkeypatch):
         prompt="canonical-runtime-prompt",
         token="protected-worker-token",
     )
-
     environment = SimpleNamespace(
         runner=object(),
         parsed_options=SimpleNamespace(num_users=100, spawn_rate=100.0),
@@ -702,15 +701,16 @@ def test_fleet_locust_routes_each_one_shot_user_directly_without_proxy_or_redire
         prompt="canonical-runtime-prompt",
         token="protected-worker-token",
     )
+    adapter._barrier_arrivals = 98
+    adapter._arrival_gate.set()
     monkeypatch.setattr(adapter, "_ordinals", iter((0, 5)))
     client = Client()
-    user = object.__new__(adapter.ExternalPiFleetUser)
-    user.client = client
-    user.on_start()
-    with pytest.raises(adapter.StopUser):
-        user.run_once()
-    with pytest.raises(adapter.StopUser):
-        user.run_once()
+    for _ in range(2):
+        user = object.__new__(adapter.ExternalPiFleetUser)
+        user.client = client
+        user.on_start()
+        with pytest.raises(adapter.StopUser):
+            user.run_once()
 
     assert client.trust_env is False
     assert client.proxies == {}
@@ -728,39 +728,60 @@ def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
         return
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
     counts = Counter()
+    state = {"in_flight": 0, "peak": 0}
+    arrivals_at_request = []
+    aggregate_gate = threading.Event()
+    aggregate_lock = threading.Lock()
     servers = []
     threads = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            length = int(self.headers["Content-Length"])
-            request = json.loads(self.rfile.read(length))
-            counts[self.server.server_port] += 1
-            response = {
-                "type": "shadow_projection",
-                "protocol_version": 1,
-                "request_id": request["request_id"],
-                "chat_session_id": request["chat_session_id"],
-                "agent_session_id": request["agent_session_id"],
-                "current_leaf_id": request["current_leaf_id"],
-                "entry_count": len(request["transcript_entries"]),
-                "transcript_sha256": request["expected_transcript_sha256"],
-                "prompt_sha256": request["expected_prompt_sha256"],
-                "tool_names_sha256": request["expected_tool_names_sha256"],
-            }
-            body = json.dumps(response).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            with aggregate_lock:
+                state["in_flight"] += 1
+                state["peak"] = max(state["peak"], state["in_flight"])
+                arrivals_at_request.append(adapter._barrier_arrivals)
+                if state["in_flight"] == 100:
+                    aggregate_gate.set()
+            try:
+                if not aggregate_gate.wait(timeout=10):
+                    self.send_error(503)
+                    return
+                length = int(self.headers["Content-Length"])
+                request = json.loads(self.rfile.read(length))
+                with aggregate_lock:
+                    counts[self.server.server_port] += 1
+                response = {
+                    "type": "shadow_projection",
+                    "protocol_version": 1,
+                    "request_id": request["request_id"],
+                    "chat_session_id": request["chat_session_id"],
+                    "agent_session_id": request["agent_session_id"],
+                    "current_leaf_id": request["current_leaf_id"],
+                    "entry_count": len(request["transcript_entries"]),
+                    "transcript_sha256": request["expected_transcript_sha256"],
+                    "prompt_sha256": request["expected_prompt_sha256"],
+                    "tool_names_sha256": request["expected_tool_names_sha256"],
+                }
+                body = json.dumps(response).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            finally:
+                with aggregate_lock:
+                    state["in_flight"] -= 1
 
         def log_message(self, *_args):
             return None
 
+    class HighBacklogServer(ThreadingHTTPServer):
+        request_queue_size = 128
+
     try:
         for port in range(8780, 8785):
-            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            server = HighBacklogServer(("127.0.0.1", port), Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             servers.append(server)
@@ -781,6 +802,8 @@ def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
     assert len(result.observations) == 100
     assert all(item.classification == "compatible" for item in result.observations)
     assert result.protocol_errors == result.transport_errors == 0
+    assert state["peak"] == 100
+    assert set(arrivals_at_request) == {100}
     assert counts == Counter({port: 20 for port in range(8780, 8785)})
 
 
@@ -814,7 +837,7 @@ def test_fleet_local_runner_timeout_refuses_incomplete_real_round():
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
     timestamps = iter((0.0, 31.0))
 
-    with pytest.raises(FleetRunRefused, match="exactly 100 observations"):
+    with pytest.raises(FleetRunRefused, match="round timed out"):
         adapter.run_local_fleet_round(
             replicas=resolve_fleet_shape("5x32").replicas,
             prompt="canonical-runtime-prompt",
@@ -822,6 +845,42 @@ def test_fleet_local_runner_timeout_refuses_incomplete_real_round():
             timeout_seconds=30,
             monotonic=lambda: next(timestamps),
         )
+
+
+def test_fleet_local_runner_barrier_timeout_releases_without_requests():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+
+    with pytest.raises(FleetRunRefused, match="barrier.*timed out"):
+        adapter.run_local_fleet_round(
+            replicas=resolve_fleet_shape("5x32").replicas,
+            prompt="canonical-runtime-prompt",
+            token="protected-worker-token",
+            timeout_seconds=5,
+            barrier_timeout_seconds=0.001,
+        )
+
+    assert adapter._arrival_gate.is_set()
+    assert adapter.fleet_round_result().observations == ()
+
+
+def test_fleet_local_runner_abort_releases_barrier_and_cannot_pass():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+
+    with pytest.raises(FleetRunRefused, match="aborted"):
+        adapter.run_local_fleet_round(
+            replicas=resolve_fleet_shape("5x32").replicas,
+            prompt="canonical-runtime-prompt",
+            token="protected-worker-token",
+            timeout_seconds=5,
+            abort_requested=lambda: True,
+        )
+
+    assert adapter._arrival_gate.is_set()
+    assert len(adapter.fleet_round_result().observations) < 100
 
 
 class _FleetOperator:
