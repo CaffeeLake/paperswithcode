@@ -232,7 +232,8 @@ sudo uv run --isolated --env-file /etc/paperswithcode/staging.env \
   --report /var/lib/paperswithcode/staging/external-pi-fleet-qualification.json
 ```
 
-Shapes run sequentially in the fixed order 5x32, 8x16, and 16x8. An unsafe
+The default `100-user` profile runs shapes sequentially in the fixed order
+5x32, 8x16, and 16x8. An unsafe
 projected-memory or CPU check records `resource_refused`; it is never overridden.
 Each admitted shape runs exactly 100 healthy users, drains and stops one exact
 observed generation, then runs exactly 100 users against the survivors. The
@@ -242,6 +243,24 @@ Each round uses a bounded in-process arrival barrier: all exactly 100 Locust
 users must be resident at the barrier before any user sends its one request.
 Barrier timeout, controller resource abort, or overall round timeout releases
 and stops all waiters and refuses the round; partial arrivals cannot pass.
+
+To qualify the current VPS incrementally, use the separate capacity profile and
+report. It runs 2x32 with 32 arrivals, 4x16 with 48 arrivals, then 3x32 with 64
+arrivals. Each count equals that shape's post-loss capacity, so both the healthy
+and survivor rounds must admit the full target without queueing:
+
+```bash
+sudo uv run --isolated --env-file /etc/paperswithcode/staging.env \
+  --with 'locust>=2.40,<3' \
+  python -m backend.scripts.qualify_external_pi_fleet \
+  --environment staging --release-id "$release_id" \
+  --profile capacity \
+  --confirm RUN_EXTERNAL_PI_FLEET_QUALIFICATION \
+  --report /var/lib/paperswithcode/staging/external-pi-capacity-qualification.json
+```
+
+Run this sequence only from its first shape upward. Stop at the first
+`resource_refused` or failed round; never skip ahead or override a safety gate.
 
 `p95_ms` and `p99_ms` measure synthetic transcript compatibility/restore
 latency. They are not model time-to-first-token: the qualifier performs no

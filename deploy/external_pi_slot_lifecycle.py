@@ -10,6 +10,8 @@ import os
 import signal
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +42,7 @@ MAXIMUM_DRAIN_STOP_TIMEOUT_SECONDS = (
     + NODE_TERMINATION_OVERHEAD_SECONDS
     + SYSTEMCTL_COMPLETION_OVERHEAD_SECONDS
 )
+MAXIMUM_WORKER_STATUS_BYTES = 64 * 1024
 
 _SUPERVISOR_PROTECTED_KEYS = (
     "PWC_DB_HOST",
@@ -275,9 +278,51 @@ def sync_worker_environment(environment: str) -> None:
         raise
 
 
+def _restart_zero_session_worker_if_active(environment: str, slot: str) -> None:
+    if _worker_is_inactive(environment, slot):
+        return
+    if not _supervisor_is_inactive(environment, slot):
+        raise ExternalPiSlotError("external Pi supervisor is still active")
+    token = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "")
+    if len(token) < 32:
+        raise ExternalPiSlotError("external Pi worker token is unavailable")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{SLOT_PORTS[slot]}/v1/status",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = response.read(MAXIMUM_WORKER_STATUS_BYTES + 1)
+            if len(payload) > MAXIMUM_WORKER_STATUS_BYTES:
+                raise ValueError("external Pi worker status is too large")
+            status = json.loads(payload)
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        raise ExternalPiSlotError(
+            "external Pi active worker status is unavailable"
+        ) from error
+    if (
+        not isinstance(status, dict)
+        or status.get("protocol") != CONTRACT_VERSION
+        or status.get("worker_id") != f"staging-{slot}"
+        or status.get("state") != "draining"
+        or type(status.get("active_sessions")) is not int
+        or status.get("active_sessions") != 0
+        or type(status.get("maximum_sessions")) is not int
+        or status.get("maximum_sessions") != MAXIMUM_SESSIONS
+    ):
+        raise ExternalPiSlotError(
+            "external Pi active worker is not proven safe to restart"
+        )
+    subprocess.run(["systemctl", "stop", _worker_unit(environment, slot)], check=True)
+    if not _worker_is_inactive(environment, slot):
+        raise ExternalPiSlotError("external Pi active worker did not stop")
+
+
 def start_slot(environment: str, slot: str) -> None:
     _status_path(environment, slot).unlink(missing_ok=True)
     sync_worker_environment(environment)
+    _restart_zero_session_worker_if_active(environment, slot)
     subprocess.run(["systemctl", "start", _worker_unit(environment, slot)], check=True)
     try:
         subprocess.run(
@@ -455,7 +500,7 @@ def _worker_stop_is_safe(
     )
 
 
-def _worker_is_inactive(environment: str, slot: str) -> bool:
+def _unit_is_inactive(unit: str) -> bool:
     try:
         result = subprocess.run(
             [
@@ -463,7 +508,7 @@ def _worker_is_inactive(environment: str, slot: str) -> bool:
                 "show",
                 "--property=ActiveState",
                 "--value",
-                _worker_unit(environment, slot),
+                unit,
             ],
             text=True,
             capture_output=True,
@@ -472,6 +517,14 @@ def _worker_is_inactive(environment: str, slot: str) -> bool:
     except OSError:
         return False
     return result.returncode == 0 and result.stdout.strip() == "inactive"
+
+
+def _worker_is_inactive(environment: str, slot: str) -> bool:
+    return _unit_is_inactive(_worker_unit(environment, slot))
+
+
+def _supervisor_is_inactive(environment: str, slot: str) -> bool:
+    return _unit_is_inactive(_supervisor_unit(environment, slot))
 
 
 def stop_slot(

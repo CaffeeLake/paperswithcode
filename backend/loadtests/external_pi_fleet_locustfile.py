@@ -37,6 +37,7 @@ from backend.loadtests.external_pi_shadow_core import BaselineObservation
 @dataclass(frozen=True, slots=True)
 class FleetRoundConfig:
     replicas: tuple[FleetReplica, ...]
+    expected_users: int
     prompt: str = field(repr=False)
     token: str = field(repr=False)
     barrier_deadline: float
@@ -66,6 +67,7 @@ def configure_fleet_round(
     replicas: tuple[FleetReplica, ...],
     prompt: str,
     token: str,
+    expected_users: int = EXPECTED_USERS,
     barrier_timeout_seconds: float = 5.0,
     abort_requested: Callable[[], bool] = lambda: False,
 ) -> None:
@@ -73,12 +75,15 @@ def configure_fleet_round(
     global _arrival_gate, _arrival_lock, _barrier_arrivals, _barrier_failure
     global _config, _ordinals, _observations, _protocol_errors, _transport_errors
     route_ordinal(0, replicas)
+    if type(expected_users) is not int or not 1 <= expected_users <= EXPECTED_USERS:
+        raise FleetRunRefused("external Pi fleet expected users are invalid")
     if not prompt or not token:
         raise FleetRunRefused("external Pi fleet round inputs are incomplete")
     if not 0 < barrier_timeout_seconds <= 10:
         raise FleetRunRefused("external Pi fleet concurrency barrier is not bounded")
     _config = FleetRoundConfig(
         replicas=replicas,
+        expected_users=expected_users,
         prompt=prompt,
         token=token,
         barrier_deadline=time.monotonic() + barrier_timeout_seconds,
@@ -107,12 +112,13 @@ def run_local_fleet_round(
     replicas: tuple[FleetReplica, ...],
     prompt: str,
     token: str,
+    expected_users: int = EXPECTED_USERS,
     timeout_seconds: float = 30.0,
     abort_requested: Callable[[], bool] = lambda: False,
     monotonic: Callable[[], float] = time.monotonic,
     barrier_timeout_seconds: float = 5.0,
 ) -> FleetRoundResult:
-    """Run exactly 100 one-shot users in one process and return bounded evidence."""
+    """Run one exact bounded profile in one process and return its evidence."""
     if not 0 < timeout_seconds <= 60:
         raise FleetRunRefused("external Pi fleet Locust timeout is not bounded")
     if barrier_timeout_seconds > timeout_seconds:
@@ -121,26 +127,29 @@ def run_local_fleet_round(
         replicas=replicas,
         prompt=prompt,
         token=token,
+        expected_users=expected_users,
         barrier_timeout_seconds=barrier_timeout_seconds,
         abort_requested=abort_requested,
     )
     environment = Environment(
         user_classes=[ExternalPiFleetUser],
         host=None,
-        parsed_options=SimpleNamespace(num_users=100, spawn_rate=100.0),
+        parsed_options=SimpleNamespace(
+            num_users=expected_users, spawn_rate=float(expected_users)
+        ),
     )
     runner = environment.create_local_runner()
     _validate_runner(environment)
     deadline = monotonic() + timeout_seconds
     try:
-        runner.start(user_count=100, spawn_rate=100.0)
+        runner.start(user_count=expected_users, spawn_rate=float(expected_users))
         while monotonic() < deadline:
             if _barrier_failure is not None:
                 raise FleetRunRefused(_barrier_failure)
             if abort_requested():
                 _fail_barrier("external Pi fleet concurrency barrier aborted")
                 raise FleetRunRefused("external Pi fleet round aborted by safety guard")
-            if runner.user_count == 0 and len(_observations) == EXPECTED_USERS:
+            if runner.user_count == 0 and len(_observations) == expected_users:
                 break
             gevent.sleep(0.05)
         else:
@@ -151,9 +160,9 @@ def run_local_fleet_round(
     if _barrier_failure is not None:
         raise FleetRunRefused(_barrier_failure)
     result = fleet_round_result()
-    if len(result.observations) != EXPECTED_USERS:
+    if len(result.observations) != expected_users:
         raise FleetRunRefused(
-            "external Pi fleet Locust round requires exactly 100 observations"
+            "external Pi fleet Locust round requires the exact expected observations"
         )
     return result
 
@@ -176,7 +185,7 @@ def _await_concurrency_barrier(config: FleetRoundConfig) -> bool:
         if _barrier_failure is not None:
             return False
         _barrier_arrivals += 1
-        if _barrier_arrivals == EXPECTED_USERS:
+        if _barrier_arrivals == config.expected_users:
             if config.abort_requested():
                 _barrier_failure = "external Pi fleet concurrency barrier aborted"
                 _arrival_gate.set()
@@ -202,18 +211,17 @@ def _validate_runner(environment: Environment) -> None:
     """Reject an unsafe runner synchronously before Locust starts users."""
     if not isinstance(environment.runner, LocalRunner):
         raise FleetRunRefused("external Pi fleet requires one local Locust runner")
+    if _config is None:
+        raise FleetRunRefused("external Pi fleet round is not configured")
     options = environment.parsed_options
-    if (
-        getattr(options, "num_users", None) != EXPECTED_USERS
-        or getattr(options, "spawn_rate", None) != 100.0
-    ):
+    if getattr(options, "num_users", None) != _config.expected_users or getattr(
+        options, "spawn_rate", None
+    ) != float(_config.expected_users):
         raise FleetRunRefused(
-            "external Pi fleet requires exactly 100 users at spawn rate 100.0"
+            "external Pi fleet requires the exact configured users and spawn rate"
         )
     if environment.host is not None:
         raise FleetRunRefused("external Pi fleet must not accept a Locust host")
-    if _config is None:
-        raise FleetRunRefused("external Pi fleet round is not configured")
 
 
 class ExternalPiFleetUser(HttpUser):
@@ -236,9 +244,11 @@ class ExternalPiFleetUser(HttpUser):
         if not _await_concurrency_barrier(config):
             raise StopUser()
         ordinal = next(_ordinals)
-        if ordinal >= EXPECTED_USERS:
+        if ordinal >= config.expected_users:
             raise StopUser()
-        replica = route_ordinal(ordinal, config.replicas)
+        replica = route_ordinal(
+            ordinal, config.replicas, expected_users=config.expected_users
+        )
         request = build_external_pi_fleet_request(ordinal, config.prompt)
         started = time.perf_counter()
         observation = BaselineObservation("error", 0)

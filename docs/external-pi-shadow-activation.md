@@ -86,6 +86,13 @@ refreshes fail closed. If exact drain cannot be proven, the helper preserves
 the enabled lifecycle configuration and requires guarded disable rather than
 abandoning a worker.
 
+Starting a slot also handles a previously active worker whose supervisor is no
+longer usable. Before systemd starts the pair, the lifecycle reads that exact
+worker's authenticated loopback status and stops it only when the supervisor is
+inactive, the worker is already `draining`, its identity and contract match,
+and `active_sessions` is the integer zero. Missing, ambiguous, ready, or
+non-zero session evidence fails closed; it never replaces an in-use worker.
+
 The CLI converts normal `SIGTERM` and `SIGINT` delivery on its main thread into
 a transaction interruption. This runs the same temporary-unit `finally` stop
 and protected-environment rollback used for other failures, then restores the
@@ -173,7 +180,7 @@ reviewed phase requires all of the following:
 Until then, `PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED`, executor, remote tool,
 remote Bash/Read, and lazy workspace controls remain false in every environment.
 
-## Transient 100-user fleet qualification
+## Transient fleet qualification
 
 The fleet qualifier is a separate staging-only operator checkpoint after the
 active shadow worker is healthy. It does not replace, reconfigure, or target the
@@ -182,7 +189,9 @@ active blue/green worker. It starts fixed transient replica pairs only on
 out of the path, and removes one exact observed generation between the healthy
 and survivor rounds. The full preflight and invocation are in
 `backend/loadtests/README.md`; the retained report is
-`/var/lib/paperswithcode/staging/external-pi-fleet-qualification.json`.
+`/var/lib/paperswithcode/staging/external-pi-fleet-qualification.json`. The
+separate incremental VPS profile runs 32, 48, then 64 arrivals and retains
+`/var/lib/paperswithcode/staging/external-pi-capacity-qualification.json`.
 
 Do not run it while `pwc-status staging` shows the active external Pi worker
 failed, draining, unauthenticated, unregistered, stale, or on a release other
@@ -199,6 +208,11 @@ valid safety evidence and must not be forced. On interruption or failure, use
 only the controller's exact generation-aware lifecycle cleanup described in the
 load-test runbook; never broad-kill a worker or free a port without durable
 offline/drained proof.
+
+For the incremental profile, the same contract applies at the shape-specific
+arrival count: 2x32 qualifies 32, 4x16 qualifies 48, and 3x32 qualifies 64.
+Each target is exactly the capacity remaining after one worker is removed. Run
+them in ascending order and stop at the first refusal or failure.
 
 ## Staging 100-user overload baseline
 

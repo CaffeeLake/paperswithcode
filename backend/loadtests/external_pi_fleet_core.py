@@ -18,6 +18,7 @@ from backend.loadtests.external_pi_shadow_core import (
     classify_external_pi_baseline_response,
 )
 from deploy.external_pi_qualification_contract import (
+    CAPACITY_QUALIFICATION_SHAPES,
     QUALIFICATION_PORTS,
     QUALIFICATION_SHAPES,
     QUALIFICATION_SUPERVISOR_UNITS,
@@ -30,7 +31,7 @@ MIN_PROJECTED_MEM_AVAILABLE_BYTES = 1536 * 1024**2
 MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
 MAX_REPORT_BYTES = 2**63 - 1
-FleetShapeName = Literal["5x32", "8x16", "16x8"]
+FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
 
 
 class FleetRunRefused(RuntimeError):
@@ -120,6 +121,7 @@ class FleetRoundReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     name: Literal["healthy", "survivor"]
+    expected_users: int = Field(ge=1, le=EXPECTED_USERS)
     observations: int = Field(ge=0, le=EXPECTED_USERS)
     compatible: int = Field(ge=0, le=EXPECTED_USERS)
     capacity_rejections: int = Field(ge=0, le=EXPECTED_USERS)
@@ -147,8 +149,8 @@ class FleetRoundReport(BaseModel):
     @property
     def passed(self) -> bool:
         return (
-            self.observations == EXPECTED_USERS
-            and self.compatible == EXPECTED_USERS
+            self.observations == self.expected_users
+            and self.compatible == self.expected_users
             and self.capacity_rejections == 0
             and self.protocol_errors == 0
             and self.transport_errors == 0
@@ -211,8 +213,9 @@ class FleetShapeReport(BaseModel):
 
     shape: FleetShapeName
     status: Literal["completed", "resource_refused"]
-    worker_count: int = Field(ge=5, le=16)
+    worker_count: int = Field(ge=2, le=16)
     sessions_per_worker: Literal[8, 16, 32]
+    expected_users: int = Field(ge=1, le=EXPECTED_USERS)
     aggregate_capacity: int = Field(ge=0, le=160)
     post_loss_capacity: int = Field(ge=0, le=160)
     healthy: FleetRoundReport | None
@@ -239,7 +242,7 @@ class FleetShapeReport(BaseModel):
     @computed_field
     @property
     def capacity_passed(self) -> bool:
-        return self.aggregate_capacity >= EXPECTED_USERS
+        return self.aggregate_capacity >= self.expected_users
 
     @computed_field
     @property
@@ -247,7 +250,7 @@ class FleetShapeReport(BaseModel):
         return (
             self.status == "completed"
             and self.survivor is not None
-            and self.post_loss_capacity >= EXPECTED_USERS
+            and self.post_loss_capacity >= self.expected_users
             and self.survivor.passed
         )
 
@@ -363,6 +366,7 @@ class FleetShape:
     name: FleetShapeName
     worker_count: int
     sessions_per_worker: int
+    expected_users: int
     replicas: tuple[FleetReplica, ...]
 
     @property
@@ -374,11 +378,14 @@ class FleetShape:
         return (self.worker_count - 1) * self.sessions_per_worker
 
 
-def _shape(name: FleetShapeName, worker_count: int, sessions: int) -> FleetShape:
+def _shape(
+    name: FleetShapeName, worker_count: int, sessions: int, expected_users: int
+) -> FleetShape:
     return FleetShape(
         name=name,
         worker_count=worker_count,
         sessions_per_worker=sessions,
+        expected_users=expected_users,
         replicas=tuple(
             FleetReplica(QUALIFICATION_WORKER_IDS[index], QUALIFICATION_PORTS[index])
             for index in range(worker_count)
@@ -388,9 +395,18 @@ def _shape(name: FleetShapeName, worker_count: int, sessions: int) -> FleetShape
 
 _FLEET_SHAPES: dict[FleetShapeName, FleetShape] = {
     cast(FleetShapeName, f"{worker_count}x{sessions}"): _shape(
-        cast(FleetShapeName, f"{worker_count}x{sessions}"), worker_count, sessions
+        cast(FleetShapeName, f"{worker_count}x{sessions}"),
+        worker_count,
+        sessions,
+        expected_users,
     )
-    for worker_count, sessions in QUALIFICATION_SHAPES
+    for worker_count, sessions, expected_users in (
+        tuple(
+            (workers, sessions, EXPECTED_USERS)
+            for workers, sessions in QUALIFICATION_SHAPES
+        )
+        + CAPACITY_QUALIFICATION_SHAPES
+    )
 }
 
 
@@ -403,8 +419,17 @@ def resolve_fleet_shape(name: str) -> FleetShape:
         ) from None
 
 
-def route_ordinal(ordinal: int, replicas: tuple[FleetReplica, ...]) -> FleetReplica:
-    if type(ordinal) is not int or not 0 <= ordinal < EXPECTED_USERS:
+def route_ordinal(
+    ordinal: int,
+    replicas: tuple[FleetReplica, ...],
+    expected_users: int = EXPECTED_USERS,
+) -> FleetReplica:
+    if (
+        type(expected_users) is not int
+        or not 1 <= expected_users <= EXPECTED_USERS
+        or type(ordinal) is not int
+        or not 0 <= ordinal < expected_users
+    ):
         raise ValueError("external Pi qualification ordinal is out of range")
     if not replicas:
         raise FleetRunRefused("external Pi qualification requires at least one replica")
@@ -518,6 +543,7 @@ def _nearest_rank(values: tuple[int, ...], percentile: float) -> int:
 def aggregate_round(
     *,
     name: Literal["healthy", "survivor"],
+    expected_users: int = EXPECTED_USERS,
     observations: tuple[BaselineObservation, ...],
     protocol_errors: int,
     transport_errors: int,
@@ -525,9 +551,13 @@ def aggregate_round(
 ) -> FleetRoundReport:
     """Reduce one fixed 100-user round to bounded content-free counters."""
 
-    if len(observations) != EXPECTED_USERS:
+    if (
+        type(expected_users) is not int
+        or not 1 <= expected_users <= EXPECTED_USERS
+        or len(observations) != expected_users
+    ):
         raise FleetRunRefused(
-            "external Pi fleet round requires exactly 100 observations"
+            "external Pi fleet round requires its exact expected observations"
         )
     if (
         type(protocol_errors) is not int
@@ -546,6 +576,7 @@ def aggregate_round(
     p99 = _nearest_rank(latencies, 0.99)
     return FleetRoundReport(
         name=name,
+        expected_users=expected_users,
         observations=len(observations),
         compatible=compatible,
         capacity_rejections=capacity,
@@ -592,6 +623,8 @@ def build_completed_shape_report(
     if (
         healthy.name != "healthy"
         or survivor.name != "survivor"
+        or healthy.expected_users != shape.expected_users
+        or survivor.expected_users != shape.expected_users
         or tuple(worker.worker_id for worker in workers) != expected_worker_ids
         or tuple(worker.port for worker in workers)
         != tuple(replica.port for replica in shape.replicas)
@@ -618,6 +651,7 @@ def build_completed_shape_report(
         status="completed",
         worker_count=shape.worker_count,
         sessions_per_worker=shape.sessions_per_worker,
+        expected_users=shape.expected_users,
         aggregate_capacity=shape.aggregate_capacity,
         post_loss_capacity=shape.post_loss_capacity,
         healthy=healthy,
@@ -645,6 +679,7 @@ def build_resource_refused_shape_report(
         status="resource_refused",
         worker_count=shape.worker_count,
         sessions_per_worker=shape.sessions_per_worker,
+        expected_users=shape.expected_users,
         aggregate_capacity=shape.aggregate_capacity,
         post_loss_capacity=shape.post_loss_capacity,
         healthy=None,

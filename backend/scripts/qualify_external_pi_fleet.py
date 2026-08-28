@@ -76,6 +76,7 @@ class FleetOperator(Protocol):
         name: str,
         workers: tuple[WorkerEvidence, ...],
         *,
+        expected_users: int,
         abort_requested: Callable[[], bool],
     ) -> FleetRoundReport: ...
 
@@ -598,6 +599,7 @@ class SystemFleetOperator:
         name: str,
         workers: tuple[WorkerEvidence, ...],
         *,
+        expected_users: int,
         abort_requested: Callable[[], bool],
     ) -> FleetRoundReport:
         if self._prompt_path is None:
@@ -613,6 +615,7 @@ class SystemFleetOperator:
             ),
             prompt=self._prompt_path.read_text(encoding="utf-8"),
             token=self.environ["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"],
+            expected_users=expected_users,
             abort_requested=abort_requested,
         )
         after = tuple(self._worker_status(worker) for worker in workers)
@@ -623,10 +626,11 @@ class SystemFleetOperator:
             - initial.operation_counters.shadow_requests
             for initial, final in zip(before, after, strict=True)
         )
-        if shadow_delta != 100:
+        if shadow_delta != expected_users:
             raise FleetRunRefused("external Pi fleet shadow counter is inconsistent")
         return aggregate_round(
             name=name,
+            expected_users=expected_users,
             observations=result.observations,
             protocol_errors=result.protocol_errors,
             transport_errors=result.transport_errors,
@@ -843,6 +847,7 @@ def _run_guarded_round(
         report = operator.run_round(
             name,
             workers,
+            expected_users=shape.expected_users,
             abort_requested=abort.is_set,
         )
     finally:
@@ -997,6 +1002,7 @@ def run_fleet_controller(
     report_path: Path,
     report_root: Path,
     shape_names: tuple[FleetShapeName, ...] = ("5x32", "8x16", "16x8"),
+    stop_on_nonpassing_shape: bool = False,
     geteuid: Callable[[], int] = os.geteuid,
 ) -> FleetQualificationReport:
     """Run allowlisted shapes sequentially and atomically retain final evidence."""
@@ -1022,7 +1028,10 @@ def run_fleet_controller(
             for shape in shapes:
                 current_shape = shape
                 attempted = []
-                reports.append(_run_shape(operator, current_shape, attempted))
+                shape_report = _run_shape(operator, current_shape, attempted)
+                reports.append(shape_report)
+                if stop_on_nonpassing_shape and not shape_report.overall_passed:
+                    break
             final = build_final_report(
                 release_id=release_id,
                 runtime_id=operator.runtime_id,
@@ -1081,8 +1090,35 @@ def run_fleet_controller(
 
 
 REPORT_ROOT = Path("/var/lib/paperswithcode/staging")
-REPORT_PATH = REPORT_ROOT / "external-pi-fleet-qualification.json"
 CONFIRMATION = "RUN_EXTERNAL_PI_FLEET_QUALIFICATION"
+
+
+def resolve_qualification_profile(
+    profile: str,
+) -> tuple[tuple[FleetShapeName, ...], str]:
+    profiles: dict[str, tuple[tuple[FleetShapeName, ...], str]] = {
+        "100-user": (
+            ("5x32", "8x16", "16x8"),
+            "external-pi-fleet-qualification.json",
+        ),
+        "capacity": (
+            ("2x32", "4x16", "3x32"),
+            "external-pi-capacity-qualification.json",
+        ),
+    }
+    try:
+        return profiles[profile]
+    except KeyError as error:
+        raise FleetRunRefused("external Pi qualification profile is invalid") from error
+
+
+def qualification_exit_code(report: FleetQualificationReport) -> int:
+    if any(
+        shape.status == "completed" and not shape.overall_passed
+        for shape in report.shapes
+    ):
+        return 1
+    return 0 if report.preferred_shape is not None else 1
 
 
 def main() -> int:
@@ -1090,24 +1126,30 @@ def main() -> int:
     parser.add_argument("--environment", choices=("staging",), required=True)
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--confirm", required=True)
-    parser.add_argument("--report", type=Path, default=REPORT_PATH)
+    parser.add_argument(
+        "--profile", choices=("100-user", "capacity"), default="100-user"
+    )
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo as the root operator")
     if args.confirm != CONFIRMATION:
         parser.error("exact fleet qualification confirmation is required")
     try:
+        shape_names, report_name = resolve_qualification_profile(args.profile)
         operator = SystemFleetOperator(release_id=args.release_id)
         report = run_fleet_controller(
             operator,
             release_id=args.release_id,
-            report_path=args.report,
+            report_path=args.report or REPORT_ROOT / report_name,
             report_root=REPORT_ROOT,
+            shape_names=shape_names,
+            stop_on_nonpassing_shape=args.profile == "capacity",
         )
     except Exception:  # noqa: BLE001 - CLI must never emit protected details
         print("external Pi fleet qualification failed closed", file=os.sys.stderr)
         return 1
-    return 0 if report.preferred_shape is not None else 1
+    return qualification_exit_code(report)
 
 
 if __name__ == "__main__":

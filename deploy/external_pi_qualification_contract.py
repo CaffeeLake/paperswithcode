@@ -15,9 +15,10 @@ QUALIFICATION_WORKER_UNITS = tuple(
     for index in range(16)
 )
 QUALIFICATION_SHAPES = ((5, 32), (8, 16), (16, 8))
+CAPACITY_QUALIFICATION_SHAPES = ((2, 32, 32), (4, 16, 48), (3, 32, 64))
 QUALIFICATION_SESSION_LIMITS = frozenset(
     sessions for _, sessions in QUALIFICATION_SHAPES
-)
+) | frozenset(sessions for _, sessions, _ in CAPACITY_QUALIFICATION_SHAPES)
 
 
 def qualification_index(index: int, port: int, maximum_sessions: int) -> int:

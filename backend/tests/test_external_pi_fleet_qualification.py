@@ -85,6 +85,47 @@ def test_fleet_shapes_have_exact_allowlisted_topology_and_capacity():
         resolve_fleet_shape("5x32").worker_count = 6
 
 
+def test_capacity_profiles_bind_exact_arrivals_to_post_loss_capacity():
+    expected = {
+        "2x32": (2, 32, 32, 64, 32),
+        "4x16": (4, 16, 48, 64, 48),
+        "3x32": (3, 32, 64, 96, 64),
+    }
+
+    for name, values in expected.items():
+        shape = resolve_fleet_shape(name)
+        workers, sessions, users, aggregate, survivor = values
+        assert shape.worker_count == workers
+        assert shape.sessions_per_worker == sessions
+        assert shape.expected_users == users
+        assert shape.aggregate_capacity == aggregate
+        assert shape.post_loss_capacity == survivor
+
+        report = aggregate_round(
+            name="survivor",
+            expected_users=users,
+            observations=tuple(
+                BaselineObservation("compatible", 10) for _ in range(users)
+            ),
+            protocol_errors=0,
+            transport_errors=0,
+            forbidden_activity=ForbiddenActivity(),
+        )
+        assert report.expected_users == users
+        assert report.passed is True
+
+
+def test_capacity_qualification_profile_is_separate_and_ascending():
+    from backend.scripts.qualify_external_pi_fleet import resolve_qualification_profile
+
+    shape_names, report_name = resolve_qualification_profile("capacity")
+
+    assert shape_names == ("2x32", "4x16", "3x32")
+    assert report_name == "external-pi-capacity-qualification.json"
+    with pytest.raises(FleetRunRefused, match="qualification profile"):
+        resolve_qualification_profile("unknown")
+
+
 def test_ordinal_routing_is_deterministic_and_balanced_after_loss():
     healthy = resolve_fleet_shape("8x16").replicas
     survivor = healthy[1:]
@@ -162,6 +203,7 @@ def test_preflight_rejects_forged_topology_even_with_free_loopback_ports():
         name="10x10",
         worker_count=1,
         sessions_per_worker=100,
+        expected_users=100,
         replicas=(FleetReplica("staging-qualification-00", 8780),),
     )
     ports = (PortState(8780, "127.0.0.1", True),)
@@ -222,11 +264,14 @@ def test_fleet_workload_reuses_shadow_payload_and_classifier_contracts():
     assert request.tool_names == ()
 
 
-def _round(name: str, *, latency_ms: int = 100, activity=None):
+def _round(
+    name: str, *, expected_users: int = 100, latency_ms: int = 100, activity=None
+):
     return aggregate_round(
         name=name,
+        expected_users=expected_users,
         observations=tuple(
-            BaselineObservation("compatible", latency_ms) for _ in range(100)
+            BaselineObservation("compatible", latency_ms) for _ in range(expected_users)
         ),
         protocol_errors=0,
         transport_errors=0,
@@ -355,6 +400,7 @@ def test_round_report_rejects_forged_pass_with_contradictory_counts():
     with pytest.raises(ValidationError, match="round counts are inconsistent"):
         FleetRoundReport(
             name="healthy",
+            expected_users=100,
             observations=1,
             compatible=100,
             capacity_rejections=0,
@@ -455,6 +501,22 @@ def test_shape_reports_require_both_rounds_survivor_capacity_and_cleanup():
             workers=_workers(shape.name),
             removed_worker_id=shape.replicas[0].worker_id,
             resources=_resources(unit_peaks=_unit_resources(shape.name)[:-1]),
+            resource_preflight=_passed_resource_preflight(),
+            cleanup=_cleanup(),
+        )
+
+
+def test_capacity_shape_rejects_rounds_for_a_different_arrival_count():
+    shape = resolve_fleet_shape("2x32")
+
+    with pytest.raises(FleetRunRefused, match="topology"):
+        build_completed_shape_report(
+            shape=shape,
+            healthy=_round("healthy"),
+            survivor=_round("survivor"),
+            workers=_workers(shape.name),
+            removed_worker_id=shape.replicas[0].worker_id,
+            resources=_resources(shape.name),
             resource_preflight=_passed_resource_preflight(),
             cleanup=_cleanup(),
         )
@@ -624,7 +686,7 @@ def test_fleet_locust_adapter_import_is_quiet(capsys, recwarn):
     assert not recwarn, [str(warning.message) for warning in recwarn]
 
 
-def test_fleet_locust_requires_one_local_exact_hundred_user_runner(monkeypatch):
+def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):
     if importlib.util.find_spec("locust") is None:
         return
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
@@ -653,7 +715,7 @@ def test_fleet_locust_requires_one_local_exact_hundred_user_runner(monkeypatch):
             num_users=users, spawn_rate=spawn_rate
         )
         environment.host = host
-        with pytest.raises(FleetRunRefused, match="exactly 100|must not accept"):
+        with pytest.raises(FleetRunRefused, match="exact configured|must not accept"):
             adapter._start(environment)
 
 
@@ -723,7 +785,13 @@ def test_fleet_locust_routes_each_one_shot_user_directly_without_proxy_or_redire
     assert len(adapter.fleet_round_result().observations) == 2
 
 
-def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
+@pytest.mark.parametrize(
+    ("shape_name", "expected_users", "expected_per_worker"),
+    (("5x32", 100, 20), ("2x32", 32, 16)),
+)
+def test_fleet_local_runner_completes_exact_balanced_profile_over_loopback(
+    shape_name: str, expected_users: int, expected_per_worker: int
+):
     if importlib.util.find_spec("locust") is None:
         return
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
@@ -741,7 +809,7 @@ def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
                 state["in_flight"] += 1
                 state["peak"] = max(state["peak"], state["in_flight"])
                 arrivals_at_request.append(adapter._barrier_arrivals)
-                if state["in_flight"] == 100:
+                if state["in_flight"] == expected_users:
                     aggregate_gate.set()
             try:
                 if not aggregate_gate.wait(timeout=10):
@@ -780,16 +848,19 @@ def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
         request_queue_size = 128
 
     try:
-        for port in range(8780, 8785):
+        shape = resolve_fleet_shape(shape_name)
+        for replica in shape.replicas:
+            port = replica.port
             server = HighBacklogServer(("127.0.0.1", port), Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             servers.append(server)
             threads.append(thread)
         result = adapter.run_local_fleet_round(
-            replicas=resolve_fleet_shape("5x32").replicas,
+            replicas=shape.replicas,
             prompt="canonical-runtime-prompt",
             token="protected-worker-token",
+            expected_users=expected_users,
             timeout_seconds=20,
         )
     finally:
@@ -799,12 +870,14 @@ def test_fleet_local_runner_completes_exact_balanced_hundred_over_loopback():
         for thread in threads:
             thread.join(timeout=2)
 
-    assert len(result.observations) == 100
+    assert len(result.observations) == expected_users
     assert all(item.classification == "compatible" for item in result.observations)
     assert result.protocol_errors == result.transport_errors == 0
-    assert state["peak"] == 100
-    assert set(arrivals_at_request) == {100}
-    assert counts == Counter({port: 20 for port in range(8780, 8785)})
+    assert state["peak"] == expected_users
+    assert set(arrivals_at_request) == {expected_users}
+    assert counts == Counter(
+        {replica.port: expected_per_worker for replica in shape.replicas}
+    )
 
 
 def test_fleet_local_runner_validates_before_start(monkeypatch):
@@ -924,11 +997,23 @@ class _FleetOperator:
         self.events.append(("ready", resolved.worker_id, generation))
         return generation
 
-    def run_round(self, name, workers, *, abort_requested=lambda: False):
+    def run_round(
+        self,
+        name,
+        workers,
+        *,
+        expected_users=100,
+        abort_requested=lambda: False,
+    ):
         self.events.append(
-            ("round", name, tuple(worker.worker_id for worker in workers))
+            (
+                "round",
+                name,
+                tuple(worker.worker_id for worker in workers),
+                expected_users,
+            )
         )
-        return _round(name)
+        return _round(name, expected_users=expected_users)
 
     def sample_resources(self, shape):
         self.events.append(("resources", shape.name))
@@ -1020,14 +1105,110 @@ def test_controller_runs_shapes_sequentially_healthy_then_exact_generation_loss(
     assert report_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_controller_binds_capacity_profile_rounds_to_exact_expected_users(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    operator = _FleetOperator()
+    report = run_fleet_controller(
+        operator,
+        release_id="0123456789ab-staging",
+        report_path=tmp_path / "capacity.json",
+        report_root=tmp_path,
+        shape_names=("2x32",),
+        geteuid=lambda: 0,
+    )
+
+    assert report.shapes[0].expected_users == 32
+    assert [event[3] for event in operator.events if event[0] == "round"] == [
+        32,
+        32,
+    ]
+
+
+def test_capacity_controller_stops_at_first_resource_refusal(tmp_path: Path):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    operator = _FleetOperator(refuse={"4x16"})
+    report = run_fleet_controller(
+        operator,
+        release_id="0123456789ab-staging",
+        report_path=tmp_path / "capacity.json",
+        report_root=tmp_path,
+        shape_names=("2x32", "4x16", "3x32"),
+        stop_on_nonpassing_shape=True,
+        geteuid=lambda: 0,
+    )
+
+    assert [shape.shape for shape in report.shapes] == ["2x32", "4x16"]
+    assert not any(event[1] == "3x32" for event in operator.events)
+
+
+def test_capacity_controller_stops_at_first_failed_shape(tmp_path: Path):
+    from backend.scripts.qualify_external_pi_fleet import (
+        qualification_exit_code,
+        run_fleet_controller,
+    )
+
+    class FailedVerdictOperator(_FleetOperator):
+        def run_round(
+            self,
+            name,
+            workers,
+            *,
+            expected_users,
+            abort_requested=lambda: False,
+        ):
+            report = super().run_round(
+                name,
+                workers,
+                expected_users=expected_users,
+                abort_requested=abort_requested,
+            )
+            if len(workers) in {3, 4} and expected_users == 48:
+                return report.model_copy(
+                    update={"forbidden_activity": ForbiddenActivity(model_calls=1)}
+                )
+            return report
+
+    operator = FailedVerdictOperator()
+    report = run_fleet_controller(
+        operator,
+        release_id="0123456789ab-staging",
+        report_path=tmp_path / "capacity.json",
+        report_root=tmp_path,
+        shape_names=("2x32", "4x16", "3x32"),
+        stop_on_nonpassing_shape=True,
+        geteuid=lambda: 0,
+    )
+
+    assert [shape.shape for shape in report.shapes] == ["2x32", "4x16"]
+    assert report.shapes[-1].overall_passed is False
+    assert qualification_exit_code(report) == 1
+    assert not any(event[1] == "3x32" for event in operator.events)
+
+
 def test_controller_always_cleans_every_observed_generation_on_round_failure(
     tmp_path: Path,
 ):
     from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
 
     class FailingOperator(_FleetOperator):
-        def run_round(self, name, workers, *, abort_requested=lambda: False):
-            super().run_round(name, workers, abort_requested=abort_requested)
+        def run_round(
+            self,
+            name,
+            workers,
+            *,
+            expected_users,
+            abort_requested=lambda: False,
+        ):
+            super().run_round(
+                name,
+                workers,
+                expected_users=expected_users,
+                abort_requested=abort_requested,
+            )
             raise RuntimeError("protected response body")
 
     operator = FailingOperator()
@@ -1080,12 +1261,24 @@ def test_later_shape_failure_publishes_only_unique_current_shape_recovery(
     class SecondShapeFailure(_FleetOperator):
         healthy_rounds = 0
 
-        def run_round(self, name, workers, *, abort_requested=lambda: False):
+        def run_round(
+            self,
+            name,
+            workers,
+            *,
+            expected_users,
+            abort_requested=lambda: False,
+        ):
             if name == "healthy":
                 self.healthy_rounds += 1
                 if self.healthy_rounds == failure_round:
                     raise RuntimeError("later shape failed")
-            return super().run_round(name, workers, abort_requested=abort_requested)
+            return super().run_round(
+                name,
+                workers,
+                expected_users=expected_users,
+                abort_requested=abort_requested,
+            )
 
     report_path = tmp_path / "fleet.json"
     with pytest.raises(RuntimeError, match="later shape failed"):
@@ -1278,7 +1471,14 @@ def test_controller_cleanup_continues_when_pre_cleanup_revalidation_fails(
                 raise FleetRunRefused("safety changed")
             super().revalidate(shape, active)
 
-        def run_round(self, name, workers, *, abort_requested=lambda: False):
+        def run_round(
+            self,
+            name,
+            workers,
+            *,
+            expected_users,
+            abort_requested=lambda: False,
+        ):
             self.unsafe = True
             raise RuntimeError("round failed")
 
@@ -1853,7 +2053,7 @@ def test_controller_concurrently_aborts_round_when_live_resource_guard_crosses(
                 )
             return evidence
 
-        def run_round(self, name, workers, *, abort_requested):
+        def run_round(self, name, workers, *, expected_users, abort_requested):
             self.in_round.set()
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline and not abort_requested():
@@ -1892,7 +2092,7 @@ def test_controller_aborts_round_when_concurrent_resource_sampler_errors(
                 raise RuntimeError("resource adapter failed")
             return super().sample_resources(shape)
 
-        def run_round(self, name, workers, *, abort_requested):
+        def run_round(self, name, workers, *, expected_users, abort_requested):
             self.in_round.set()
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline and not abort_requested():
