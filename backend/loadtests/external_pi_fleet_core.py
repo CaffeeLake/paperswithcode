@@ -8,9 +8,17 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+
+from deploy.external_pi_qualification_contract import (
+    QUALIFICATION_PORTS,
+    QUALIFICATION_SHAPES,
+    QUALIFICATION_SUPERVISOR_UNITS,
+    QUALIFICATION_WORKER_IDS,
+    QUALIFICATION_WORKER_UNITS,
+)
 
 from backend.loadtests.external_pi_shadow_core import (
     BaselineObservation,
@@ -25,18 +33,6 @@ MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
 MAX_REPORT_BYTES = 2**63 - 1
 FleetShapeName = Literal["5x32", "8x16", "16x8"]
-QUALIFICATION_PORTS = tuple(range(8780, 8796))
-QUALIFICATION_WORKER_IDS = tuple(
-    f"staging-qualification-{index:02d}" for index in range(16)
-)
-QUALIFICATION_SUPERVISOR_UNITS = tuple(
-    f"paperswithcode-staging-external-pi-qualification@{index:02d}.service"
-    for index in range(16)
-)
-QUALIFICATION_WORKER_UNITS = tuple(
-    f"paperswithcode-staging-external-pi-qualification-worker@{index:02d}.service"
-    for index in range(16)
-)
 
 
 class FleetRunRefused(RuntimeError):
@@ -332,9 +328,10 @@ def _shape(name: FleetShapeName, worker_count: int, sessions: int) -> FleetShape
 
 
 _FLEET_SHAPES: dict[FleetShapeName, FleetShape] = {
-    "5x32": _shape("5x32", 5, 32),
-    "8x16": _shape("8x16", 8, 16),
-    "16x8": _shape("16x8", 16, 8),
+    cast(FleetShapeName, f"{worker_count}x{sessions}"): _shape(
+        cast(FleetShapeName, f"{worker_count}x{sessions}"), worker_count, sessions
+    )
+    for worker_count, sessions in QUALIFICATION_SHAPES
 }
 
 
