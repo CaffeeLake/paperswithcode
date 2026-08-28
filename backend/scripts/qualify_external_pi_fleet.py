@@ -50,6 +50,12 @@ from backend.loadtests.external_pi_fleet_core import (
 )
 from backend.services.chat_external_pi_shadow import ExternalPiWorkerStatus
 from deploy import external_pi_qualification_lifecycle as lifecycle
+from deploy.external_pi_qualification_contract import (
+    QUALIFICATION_PORTS,
+    QUALIFICATION_SUPERVISOR_UNITS,
+    QUALIFICATION_WORKER_IDS,
+    QUALIFICATION_WORKER_UNITS,
+)
 
 
 class FleetOperator(Protocol):
@@ -398,17 +404,18 @@ class SystemFleetOperator:
             for item, evidence in zip(active_replicas, active, strict=True)
         }
         active_ids = {item.worker_id for item in active_replicas}
-        for index, replica in enumerate(shape.replicas):
+        if not active_ids <= {replica.worker_id for replica in shape.replicas}:
+            raise FleetRunRefused(
+                "external Pi fleet active replica is outside the current shape"
+            )
+        for index, worker_id in enumerate(QUALIFICATION_WORKER_IDS):
             expected = (
-                (
-                    lifecycle.QUALIFICATION_SUPERVISOR_UNITS[index],
-                    "supervisor",
-                ),
-                (lifecycle.QUALIFICATION_WORKER_UNITS[index], "worker"),
+                (QUALIFICATION_SUPERVISOR_UNITS[index], "supervisor"),
+                (QUALIFICATION_WORKER_UNITS[index], "worker"),
             )
             for unit, role in expected:
                 load, state, description = self._unit_metadata(unit)
-                if replica.worker_id in active_ids:
+                if worker_id in active_ids:
                     owner = (
                         "Papers With Code staging external Pi qualification "
                         f"{role} {index:02d} owner {self.owner_id}"
@@ -421,9 +428,9 @@ class SystemFleetOperator:
                     raise FleetRunRefused(
                         "external Pi fleet qualification unit is not absent"
                     )
-        for replica in shape.replicas:
-            hosts = self.listener_hosts(replica.port)
-            active_evidence = active_by_port.get(replica.port)
+        for port in QUALIFICATION_PORTS:
+            hosts = self.listener_hosts(port)
+            active_evidence = active_by_port.get(port)
             if active_evidence is not None:
                 ready_observed = hasattr(active_evidence, "generation")
                 if hosts not in (
@@ -524,12 +531,11 @@ class SystemFleetOperator:
         return evaluate_resource_preflight(snapshot)
 
     def resolve(self, shape: FleetShape, index: int):
-        replica = shape.replicas[index]
         resolved = lifecycle.resolve_qualification_replica(
             "staging",
             self.release_id,
             index,
-            replica.port,
+            QUALIFICATION_PORTS[index],
             shape.sessions_per_worker,
         )
         if self._prompt_path is None:
@@ -671,17 +677,13 @@ class SystemFleetOperator:
     def cleanup_postconditions(self, shape: FleetShape) -> CleanupEvidence:
         units_removed = all(
             self._unit_metadata(unit)[:2] == ("not-found", "inactive")
-            for unit in qualification_unit_names(shape)
+            for unit in QUALIFICATION_SUPERVISOR_UNITS + QUALIFICATION_WORKER_UNITS
         )
         status_files_removed = all(
-            not self.qualification_status_root.joinpath(
-                f"{replica.worker_id}.json"
-            ).exists()
-            for replica in shape.replicas
+            not self.qualification_status_root.joinpath(f"{worker_id}.json").exists()
+            for worker_id in QUALIFICATION_WORKER_IDS
         )
-        ports_free = all(
-            not self.listener_hosts(replica.port) for replica in shape.replicas
-        )
+        ports_free = all(not self.listener_hosts(port) for port in QUALIFICATION_PORTS)
         return CleanupEvidence(
             drain_proven=status_files_removed,
             registry_offline=status_files_removed,
@@ -716,7 +718,7 @@ class SystemFleetOperator:
         }
         unresolved = tuple(
             unit
-            for unit in owned_units
+            for unit in (resolved.supervisor_unit, resolved.worker_unit)
             if unit_states[unit] != ("not-found", "inactive")
         )
         status_removed = not resolved.status_path.exists()
@@ -1004,34 +1006,55 @@ def run_fleet_controller(
     attempted_at_unix_ms = int(time.time() * 1_000)
     owner_id = str(uuid.uuid4())
     operator.set_owner(owner_id)
+    current_shape: FleetShape | None = None
     attempted: list[AttemptedReplica] = []
     with qualification_signal_context():
         try:
-            reports = tuple(
-                _run_shape(operator, resolve_fleet_shape(name), attempted)
-                for name in shape_names
-            )
+            reports = []
+            for name in shape_names:
+                current_shape = resolve_fleet_shape(name)
+                attempted = []
+                reports.append(_run_shape(operator, current_shape, attempted))
             final = build_final_report(
                 release_id=release_id,
                 runtime_id=operator.runtime_id,
-                shapes=reports,
+                shapes=tuple(reports),
             )
             publish_fleet_report(final, report_path, report_root)
         except BaseException:
+            if current_shape is None:
+                raise
+            attempts_by_index = {
+                attempt.resolved.index: attempt for attempt in attempted
+            }
             replicas = []
-            for attempt in attempted:
-                resolved = attempt.resolved
-                cleanup, unresolved = operator.recovery_postconditions(
-                    resolved, attempt.owned_units
+            for index in range(len(QUALIFICATION_PORTS)):
+                attempt = attempts_by_index.get(index)
+                resolved = (
+                    attempt.resolved
+                    if attempt is not None
+                    else operator.resolve(current_shape, index)
                 )
+                owned_units = (
+                    attempt.owned_units
+                    if attempt is not None
+                    else operator.owned_units(resolved)
+                )
+                cleanup, unresolved = operator.recovery_postconditions(
+                    resolved, owned_units
+                )
+                if attempt is None and cleanup.passed and not unresolved:
+                    continue
                 replicas.append(
                     RecoveryReplicaEvidence(
                         worker_id=resolved.worker_id,
                         port=resolved.port,
-                        generation=attempt.generation,
+                        generation=(
+                            attempt.generation if attempt is not None else None
+                        ),
                         supervisor_unit=resolved.supervisor_unit,
                         worker_unit=resolved.worker_unit,
-                        owned_units=attempt.owned_units,
+                        owned_units=owned_units,
                         cleanup=cleanup,
                         unresolved_units=unresolved,
                     )

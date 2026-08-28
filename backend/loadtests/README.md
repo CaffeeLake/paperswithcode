@@ -203,7 +203,11 @@ release; external admission, sandbox executor routing, remote workspace tools,
 remote Bash/Read, and lazy workspace must all remain false. Confirm that ports
 8780-8795 have no listeners, `MemAvailable` and host CPU are within the guarded
 limits, and the active worker has zero active sessions and zero forbidden work.
-The controller repeats these checks before and after every transition.
+The controller repeats these checks before and after every transition. Every
+checkpoint inspects all 16 reserved slots regardless of the current shape: all
+32 exact supervisor/worker units and all ports 8780-8795. Only current-shape
+slots owned by the current attempt may be active; every other unit must be
+`not-found`/`inactive` and every other port free.
 
 Resolve the release without sourcing a protected environment into the shell,
 then run one isolated Locust dependency in the controller process:
@@ -242,9 +246,12 @@ generation and permits no model, provider, tool, Modal, or billing activity.
 SIGINT, SIGTERM, test failures, and partial startup use the same exact-unit
 cleanup. A failed attempt atomically replaces the report at the same path with
 `report_type=recovery`, a fresh `attempt_id`, the exact release and owner, and
-one bounded record for every attempted replica. Treat only that current-attempt
-record as recovery evidence; `cleanup_complete=false` or any `unresolved_units`
-requires operator recovery. Do not kill processes by pattern and do not rerun
+one bounded record for every current-shape attempted replica plus any foreign,
+stale, status-retaining, or listening slot found by a fresh all-16-slot
+inspection. Fully cleaned earlier shapes are not duplicated in later-shape
+recovery. Treat only that current-attempt record as recovery evidence;
+`cleanup_complete=false`, any `unresolved_units`, or `ports_free=false` requires
+operator recovery. Do not kill processes by pattern and do not rerun
 while any qualification unit or port remains. Inspect only the exact
 `paperswithcode-staging-external-pi-qualification@NN.service` and
 `paperswithcode-staging-external-pi-qualification-worker@NN.service` units plus

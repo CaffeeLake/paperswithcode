@@ -312,7 +312,7 @@ class RecoveryReplicaEvidence(BaseModel):
             or len(set(self.owned_units)) != len(self.owned_units)
             or any(unit not in expected for unit in self.owned_units)
             or len(set(self.unresolved_units)) != len(self.unresolved_units)
-            or any(unit not in self.owned_units for unit in self.unresolved_units)
+            or any(unit not in expected for unit in self.unresolved_units)
         ):
             raise ValueError("external Pi fleet recovery replica is not exact")
         return self
