@@ -293,7 +293,7 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
         "--property=TimeoutStartSec=75",
         "--property=TimeoutStopSec=15",
         "/usr/bin/python3",
-        "/usr/local/lib/paperswithcode-deploy/external_pi_qualification_worker_launcher.py",
+        str(resolved.release / "deploy/external_pi_qualification_worker_launcher.py"),
         "staging",
         resolved.release_id,
         "3",
@@ -323,7 +323,9 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
         "--property=TimeoutStopSec=330",
         "--property=KillSignal=SIGTERM",
         "/usr/bin/python3",
-        "/usr/local/lib/paperswithcode-deploy/external_pi_qualification_supervisor_launcher.py",
+        str(
+            resolved.release / "deploy/external_pi_qualification_supervisor_launcher.py"
+        ),
         "staging",
         resolved.release_id,
         "3",
@@ -331,6 +333,32 @@ def test_transient_start_uses_exact_units_users_and_filesystem_restrictions(
         "16",
     ]
     assert all(kwargs == {"check": True, "timeout": 75} for _, kwargs in commands[2:])
+    assert not any(
+        argument.startswith("/usr/local/lib/paperswithcode-deploy")
+        for command, _ in commands[2:]
+        for argument in command
+    )
+
+
+def test_system_python_imports_launchers_from_release_shaped_fixture(tmp_path: Path):
+    source_root = Path(__file__).resolve().parents[2]
+    release = tmp_path / "0123456789ab-staging"
+    release.symlink_to(source_root, target_is_directory=True)
+    for launcher in (
+        "external_pi_qualification_worker_launcher.py",
+        "external_pi_qualification_supervisor_launcher.py",
+    ):
+        result = subprocess.run(
+            ["/usr/bin/python3", "-I", str(release / "deploy" / launcher)],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert "usage: external_pi_qualification_" in result.stderr
+        assert "ModuleNotFoundError" not in result.stderr
 
 
 @pytest.mark.parametrize("occupied", ["worker", "supervisor"])

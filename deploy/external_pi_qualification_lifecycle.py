@@ -260,7 +260,7 @@ def _worker_start_command(
         "--property=TimeoutStartSec=75",
         "--property=TimeoutStopSec=15",
         "/usr/bin/python3",
-        "/usr/local/lib/paperswithcode-deploy/external_pi_qualification_worker_launcher.py",
+        str(resolved.release / "deploy/external_pi_qualification_worker_launcher.py"),
         *_launcher_arguments(resolved),
     ]
 
@@ -291,7 +291,9 @@ def _supervisor_start_command(
         "--property=TimeoutStopSec=330",
         "--property=KillSignal=SIGTERM",
         "/usr/bin/python3",
-        "/usr/local/lib/paperswithcode-deploy/external_pi_qualification_supervisor_launcher.py",
+        str(
+            resolved.release / "deploy/external_pi_qualification_supervisor_launcher.py"
+        ),
         *_launcher_arguments(resolved),
     ]
 

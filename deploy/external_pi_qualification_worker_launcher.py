@@ -6,6 +6,11 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from pathlib import Path
+
+RELEASE_ROOT = Path(__file__).resolve().parents[1]
+if str(RELEASE_ROOT) not in sys.path:
+    sys.path.insert(0, str(RELEASE_ROOT))
 
 try:
     from deploy.external_pi_qualification_lifecycle import (
