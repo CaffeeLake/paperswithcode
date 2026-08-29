@@ -110,6 +110,13 @@ export class PiWorker {
           PWC_EXTERNAL_GATEWAY_CAPABILITY: this.gateway.capability,
           PWC_EXTERNAL_GATEWAY_SESSION: this.gateway.sessionId,
           PWC_EXTERNAL_GATEWAY_TURN: this.gateway.turnId,
+          PWC_EXTERNAL_GATEWAY_TURN_WORKER_ID: this.gateway.turnClaim.workerId,
+          PWC_EXTERNAL_GATEWAY_TURN_WORKER_GENERATION: String(
+            this.gateway.turnClaim.workerGeneration,
+          ),
+          PWC_EXTERNAL_GATEWAY_TURN_LEASE_GENERATION: String(
+            this.gateway.turnClaim.leaseGeneration,
+          ),
         } } : {}),
       },
     );

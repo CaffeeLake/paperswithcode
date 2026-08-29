@@ -24,6 +24,12 @@ test("external provider authenticates directly to the fenced chat gateway", asyn
     capability: "opaque-turn-capability",
     sessionId: "10000000-0000-4000-8000-000000000001",
     turnId: "20000000-0000-4000-8000-000000000001",
+    turnClaim: {
+      turnId: "20000000-0000-4000-8000-000000000001",
+      workerId: "api-1",
+      workerGeneration: 4,
+      leaseGeneration: 9,
+    },
   });
   assert.equal(
     provider.model.baseUrl,
@@ -32,6 +38,9 @@ test("external provider authenticates directly to the fenced chat gateway", asyn
   assert.deepEqual(provider.runtime.getRegisteredProviderConfig("pwc-gateway")?.headers, {
     "X-PWC-Session": "10000000-0000-4000-8000-000000000001",
     "X-PWC-Turn": "20000000-0000-4000-8000-000000000001",
+    "X-PWC-Turn-Worker-ID": "api-1",
+    "X-PWC-Turn-Worker-Generation": "4",
+    "X-PWC-Turn-Lease-Generation": "9",
     "X-PWC-Provider-Protocol": "openai-responses",
   });
 });

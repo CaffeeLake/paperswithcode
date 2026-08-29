@@ -59,6 +59,7 @@ createExternalWorkerServer({
       capability: run.capability,
       sessionId: run.chat_session_id,
       turnId: run.turn_id,
+      turnClaim: run.turnClaim,
     },
     new RemoteToolBridge(channel),
   ),

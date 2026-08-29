@@ -234,6 +234,8 @@ def create_chat_turn_runner(
             scopes.add("artifact")
         if admission.paper_artifacts_enabled:
             scopes.add("paper")
+        if _uses_external_pi(settings, admission):
+            scopes.add("external_turn")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,

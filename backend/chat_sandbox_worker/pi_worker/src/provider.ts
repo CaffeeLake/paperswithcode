@@ -1,5 +1,6 @@
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { type TurnClaimFrame } from "./turn_protocol.js";
 
 export const PROVIDER_ID = "pwc-gateway";
 export const PLACEHOLDER_KEY = "sandbox-placeholder-not-a-credential";
@@ -11,6 +12,7 @@ export interface GatewayContext {
   capability: string;
   sessionId: string;
   turnId: string;
+  turnClaim: TurnClaimFrame;
 }
 
 export function gatewayHeaders(
@@ -21,6 +23,9 @@ export function gatewayHeaders(
     Authorization: `Bearer ${gateway.capability}`,
     "X-PWC-Session": gateway.sessionId,
     "X-PWC-Turn": gateway.turnId,
+    "X-PWC-Turn-Worker-ID": gateway.turnClaim.workerId,
+    "X-PWC-Turn-Worker-Generation": String(gateway.turnClaim.workerGeneration),
+    "X-PWC-Turn-Lease-Generation": String(gateway.turnClaim.leaseGeneration),
     ...(protocol ? { "X-PWC-Provider-Protocol": protocol } : {}),
   };
 }
