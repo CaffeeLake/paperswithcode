@@ -57,7 +57,6 @@ from backend.models.database import (
     ChatArtifactVersion,
     ChatMessageRecord,
     ChatSession,
-    ChatTurnEventChunk,
 )
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_artifact_service import ArtifactError, ChatArtifactService
@@ -181,32 +180,19 @@ def detached_turn_coordinator() -> DetachedTurnCoordinator:
     return _detached_coordinator
 
 
-async def _turn_journal_has_terminal(turn_id: uuid.UUID) -> bool:
-    def load_latest_events(db):
-        return db.scalar(
-            select(ChatTurnEventChunk.events)
-            .where(ChatTurnEventChunk.turn_id == turn_id)
-            .order_by(ChatTurnEventChunk.last_sequence.desc())
-            .limit(1)
-        )
-
-    events = await _detached_transaction(load_latest_events)
-    return bool(
-        events and any(event.get("event") in {"done", "error"} for event in events)
-    )
-
-
 async def _durable_replay_frames(admission, *, request_id: str, after_sequence: int):
-    if admission.replay_assistant is None or await _turn_journal_has_terminal(
-        admission.turn_id
+    terminal_observed = False
+    last_yielded_sequence = 0
+    async for frame in detached_turn_coordinator().subscribe(
+        turn_id=admission.turn_id, after_sequence=after_sequence
     ):
-        async for frame in detached_turn_coordinator().subscribe(
-            turn_id=admission.turn_id, after_sequence=after_sequence
-        ):
-            yield frame
+        last_yielded_sequence = max(last_yielded_sequence, frame.sequence)
+        terminal_observed = terminal_observed or frame.event in {"done", "error"}
+        yield frame
+    if admission.replay_assistant is None or terminal_observed:
         return
 
-    sequence = admission.durable_event_sequence
+    sequence = max(admission.durable_event_sequence, last_yielded_sequence)
     replay = admission.replay_assistant
     fallback = (
         JournalFrame(
