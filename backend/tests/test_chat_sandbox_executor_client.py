@@ -117,6 +117,25 @@ class _StallingProcess(_Process):
         self.stdout = _StallingOutput([encode_response(frame) for frame in frames])
 
 
+class _WaitFailureProcess(_Process):
+    def __init__(self, frames: list[dict], error: BaseException):
+        super().__init__(frames)
+        self.wait = _AsyncCall(self._failed_wait)
+        self.wait_error = error
+
+    async def _failed_wait(self):
+        raise self.wait_error
+
+
+class _StallingWaitProcess(_Process):
+    def __init__(self, frames: list[dict]):
+        super().__init__(frames)
+        self.wait = _AsyncCall(self._stall_wait)
+
+    async def _stall_wait(self):
+        await asyncio.Event().wait()
+
+
 class _StallingOutput(_Output):
     async def _iterate(self):
         for chunk in self.chunks:
@@ -790,6 +809,77 @@ def test_recovery_timeout_preserves_ack_output_and_latest_cursor():
     )
     with pytest.raises(TypeError):
         exc_info.value.responses[1]["data"] = "mutated"
+
+
+def test_recovery_accepts_proven_terminal_before_process_wait_transport_failure():
+    frames = [
+        _response("acknowledged", operation="attach_execution"),
+        _response("output", sequence=1, stream="stdout", data="complete"),
+        _response("terminal", status="completed", exit_code=0, error=None),
+    ]
+    client = SandboxExecutorClient(
+        _Provider(
+            [_WaitFailureProcess(frames, ConnectionResetError("wait relay lost"))]
+        ),
+        request_id_factory=lambda: "request-a",
+    )
+
+    result = asyncio.run(
+        client.attach_execution(
+            _context(),
+            offset=0,
+            timeout_ms=1000,
+            recovery=True,
+            wall_timeout_seconds=1,
+        )
+    )
+
+    assert result.outputs == ({"sequence": 1, "stream": "stdout", "data": "complete"},)
+    assert result.terminal == {"status": "completed", "exit_code": 0, "error": None}
+
+
+def test_recovery_accepts_proven_terminal_before_owned_wait_timeout():
+    frames = [
+        _response("acknowledged", operation="attach_execution"),
+        _response("output", sequence=1, stream="stdout", data="complete"),
+        _response("terminal", status="completed", exit_code=0, error=None),
+    ]
+    client = SandboxExecutorClient(
+        _Provider([_StallingWaitProcess(frames)]),
+        request_id_factory=lambda: "request-a",
+    )
+
+    result = asyncio.run(
+        client.attach_execution(
+            _context(),
+            offset=0,
+            timeout_ms=20,
+            recovery=True,
+            wall_timeout_seconds=0.02,
+        )
+    )
+
+    assert result.terminal["status"] == "completed"
+    assert result.outputs[0]["sequence"] == 1
+
+
+def test_recovery_does_not_convert_external_asyncio_cancellation():
+    frames = [_response("acknowledged", operation="attach_execution")]
+    client = SandboxExecutorClient(
+        _Provider([_Process(frames, error=asyncio.CancelledError())]),
+        request_id_factory=lambda: "request-a",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            client.attach_execution(
+                _context(),
+                offset=0,
+                timeout_ms=1000,
+                recovery=True,
+                wall_timeout_seconds=1,
+            )
+        )
 
 
 def test_attach_rejects_a_gap_after_the_recovery_cursor():

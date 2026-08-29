@@ -343,12 +343,19 @@ class SandboxExecutorClient:
             )
         except ExecutorTransportError as error:
             if recovery:
-                raise self._recovery_execution_lost(
-                    error.responses,
-                    request,
-                    "attach_execution",
-                    previous_cursor=offset,
-                ) from error
+                try:
+                    result = self._execution_result(
+                        error.responses, request, "attach_execution"
+                    )
+                    self._validate_output_cursor(result.outputs, offset)
+                except ProtocolError:
+                    raise self._recovery_execution_lost(
+                        error.responses,
+                        request,
+                        "attach_execution",
+                        previous_cursor=offset,
+                    ) from error
+                return result
             if self._valid_execution_prefix(
                 error.responses, request, "attach_execution"
             ):
