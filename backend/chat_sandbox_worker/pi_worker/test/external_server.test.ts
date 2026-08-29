@@ -5,6 +5,7 @@ import WebSocket from "ws";
 
 import { createExternalWorkerServer } from "../src/external_server.js";
 import { toolNameDigest } from "../src/mcp_app_registry.js";
+import { parseAttachTurn, TurnProtocolError } from "../src/turn_protocol.js";
 
 test("external shadow HTTP service authenticates and exposes no run endpoint", async () => {
   const server = createExternalWorkerServer({
@@ -92,8 +93,21 @@ test("external worker streams one authenticated Pi turn without a local shell", 
   await once(server, "listening");
   const address = server.address();
   assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const claim = await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  assert.equal(claim.status, 200);
   const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-PWC-Worker-Generation": "3",
+    },
   });
   const messages: Record<string, unknown>[] = [];
   socket.addEventListener("message", (event) => {
@@ -115,6 +129,12 @@ test("external worker streams one authenticated Pi turn without a local shell", 
       request_id: "request-1",
       chat_session_id: "10000000-0000-4000-8000-000000000001",
       turn_id: "20000000-0000-4000-8000-000000000001",
+      turnClaim: {
+        turnId: "20000000-0000-4000-8000-000000000001",
+        workerId: "api-1",
+        workerGeneration: 4,
+        leaseGeneration: 9,
+      },
       prompt: "Answer without tools.",
       model: "test-model",
       resume: null,
@@ -138,11 +158,85 @@ test("external worker streams one authenticated Pi turn without a local shell", 
     ]);
     assert.equal(observed.length, 1);
     assert.equal(observed[0]?.capability, "opaque-turn-capability");
+    assert.deepEqual(observed[0]?.turnClaim, {
+      turnId: "20000000-0000-4000-8000-000000000001",
+      workerId: "api-1",
+      workerGeneration: 4,
+      leaseGeneration: 9,
+    });
   } finally {
     socket.close();
     server.close();
     await once(server, "close");
   }
+});
+
+test("external worker rejects missing and stale upgrade generations", async () => {
+  const token = "s".repeat(32);
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 8,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: () => ({ async run() {}, async cancel() {} }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+
+  const rejectedStatus = async (generation?: string): Promise<number> => {
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(generation ? { "X-PWC-Worker-Generation": generation } : {}),
+      },
+    });
+    const [, response] = await once(socket, "unexpected-response");
+    return (response as { statusCode: number }).statusCode;
+  };
+
+  try {
+    assert.equal(await rejectedStatus(), 409);
+    assert.equal(await rejectedStatus("2"), 409);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("attach frame must carry the exact original turn claim", () => {
+  const claim = {
+    turnId: "20000000-0000-4000-8000-000000000001",
+    workerId: "api-1",
+    workerGeneration: 4,
+    leaseGeneration: 9,
+  };
+  assert.deepEqual(parseAttachTurn({
+    v: 1,
+    type: "attach_turn",
+    request_id: "request-1",
+    turnClaim: claim,
+    afterSequence: 12,
+  }, claim).turnClaim, claim);
+  assert.throws(() => parseAttachTurn({
+    v: 1,
+    type: "attach_turn",
+    request_id: "request-1",
+    turnClaim: { ...claim, leaseGeneration: 10 },
+    afterSequence: 12,
+  }, claim), TurnProtocolError);
 });
 
 test("external worker status is authenticated and drain blocks new sessions", async () => {

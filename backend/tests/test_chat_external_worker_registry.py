@@ -9,6 +9,7 @@ from backend.models.database import ChatExternalWorker
 from backend.services.chat_external_worker_registry import (
     ChatExternalWorkerRegistry,
     ChatExternalWorkerRepository,
+    ExternalWorkerClaim,
     StaleWorkerClaim,
     WorkerLeaseUnavailable,
 )
@@ -366,6 +367,62 @@ def test_repository_persists_heartbeat_and_graceful_drain(monkeypatch):
     assert row.active_sessions == 0
     assert row.lease_expires_at == now + timedelta(seconds=5)
     assert db.flush.call_count == 4
+
+
+def test_repository_selects_an_exact_online_ready_claim():
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=4,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    db = Mock()
+    db.execute.return_value.scalar_one_or_none.return_value = row
+
+    claim = repository.select_ready_claim(db, now=now)
+
+    assert claim == ExternalWorkerClaim(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        generation=4,
+    )
+
+
+@pytest.mark.parametrize("state,expires_delta", [("draining", 15), ("ready", 0)])
+def test_repository_selector_rejects_non_ready_or_expired_rows(state, expires_delta):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=4,
+        state=state,
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=expires_delta),
+        created_at=now,
+        updated_at=now,
+    )
+    db = Mock()
+    db.execute.return_value.scalar_one_or_none.return_value = row
+
+    with pytest.raises(WorkerLeaseUnavailable):
+        repository.select_ready_claim(db, now=now)
 
 
 def test_worker_registry_migration_is_additive_and_environment_scoped():

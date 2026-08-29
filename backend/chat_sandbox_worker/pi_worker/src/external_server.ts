@@ -228,6 +228,14 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
       socket.destroy();
       return;
     }
+    if (
+      workerGeneration === null
+      || request.headers["x-pwc-worker-generation"] !== String(workerGeneration)
+    ) {
+      socket.write("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     if (state === "draining" || active >= options.maximumConcurrent) {
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();

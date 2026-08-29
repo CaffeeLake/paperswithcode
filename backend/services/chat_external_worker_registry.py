@@ -291,6 +291,37 @@ class ChatExternalWorkerRepository:
             raise StaleWorkerClaim("External worker claim was fenced")
         return row
 
+    def select_ready_claim(self, db: Session, *, now: datetime) -> ExternalWorkerClaim:
+        if now.tzinfo is None:
+            raise ValueError("External worker selection timestamp is invalid")
+        row = db.execute(
+            select(ChatExternalWorker)
+            .where(
+                ChatExternalWorker.environment == self.environment,
+                ChatExternalWorker.state == "ready",
+                ChatExternalWorker.lease_expires_at > now,
+                ChatExternalWorker.active_sessions
+                < ChatExternalWorker.maximum_sessions,
+            )
+            .order_by(
+                ChatExternalWorker.active_sessions.asc(),
+                ChatExternalWorker.updated_at.desc(),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            raise WorkerLeaseUnavailable("External worker is not ready")
+        claim = ExternalWorkerClaim(row.worker_id, row.instance_id, row.generation)
+        self.registry.require_claim(row, claim)
+        if (
+            row.environment != self.environment
+            or row.state != "ready"
+            or row.lease_expires_at <= now
+            or row.active_sessions >= row.maximum_sessions
+        ):
+            raise WorkerLeaseUnavailable("External worker is not ready")
+        return claim
+
     def require_ready_claim(
         self,
         db: Session,
