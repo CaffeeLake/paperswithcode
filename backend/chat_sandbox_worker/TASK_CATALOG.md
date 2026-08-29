@@ -14,11 +14,11 @@ The goal is to split up those tasks in the future.
 
 - `automatic-speech-recognition` — Automatic Speech Recognition
 - `text-to-speech` — Text-to-speech
-- `audio-generation` — Audio Generation
 - `speech-enhancement` — Speech Enhancement
+- `audio-generation` — Audio Generation
 - `audio-understanding` — Audio understanding
-- `audio-compression` — Audio Compression
 - `speaker-verification` — Speaker Verification
+- `audio-compression` — Audio Compression
 - `voice-cloning` — Voice cloning
 - `audio-classification` — Audio Classification
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
@@ -32,8 +32,8 @@ The goal is to split up those tasks in the future.
 - `math` — Mathematics
 - `agents` — Agents
 - `world-models` — World Models
-- `robotics` — Robotics
 - `embedding-models` — Embedding models
+- `robotics` — Robotics
 - `pseudo-labelling` — Pseudo Labelling
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
