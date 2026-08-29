@@ -47,27 +47,17 @@ class DetachedTurn:
 class DetachedTurnHandle:
     turn: DetachedTurn
     source: AsyncIterator[ChatStreamFrame]
-    lease_expires_at: datetime
-    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     source_task: asyncio.Task[None] = field(init=False)
 
     @property
     def claim(self) -> TurnLeaseClaim:
         return self.turn.claim
 
-    async def publish(self, _frames: Sequence[JournalFrame] = ()) -> None:
-        async with self.condition:
-            self.condition.notify_all()
-
-
-@dataclass(frozen=True, slots=True)
-class _AmbiguousTurn:
-    claim: TurnLeaseClaim
-    lease_expires_at: datetime
-
 
 class DetachedTurnCoordinator:
     """Own each local source once while serving every subscriber from the journal."""
+
+    TOMBSTONE_REVALIDATION_BATCH = 100
 
     def __init__(
         self,
@@ -88,9 +78,9 @@ class DetachedTurnCoordinator:
         self._clock = clock
         self._poll_seconds = poll_seconds
         self._handles: dict[uuid.UUID, DetachedTurnHandle] = {}
-        self._conditions: dict[uuid.UUID, asyncio.Condition] = {}
-        self._ambiguous_turns: dict[uuid.UUID, _AmbiguousTurn] = {}
-        self._tombstone_timers: dict[uuid.UUID, asyncio.TimerHandle] = {}
+        self._notification = asyncio.Condition()
+        self._ambiguous_turns: dict[uuid.UUID, TurnLeaseClaim] = {}
+        self._tombstone_reaper: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
 
     @property
@@ -99,11 +89,14 @@ class DetachedTurnCoordinator:
 
     @property
     def condition_count(self) -> int:
-        return len(self._conditions)
+        return 0
+
+    @property
+    def notification_state_count(self) -> int:
+        return 1
 
     @property
     def ambiguous_turn_count(self) -> int:
-        self._prune_tombstones(self._clock())
         return len(self._ambiguous_turns)
 
     async def start(
@@ -114,8 +107,21 @@ class DetachedTurnCoordinator:
     ) -> DetachedTurnHandle:
         async with self._start_lock:
             now = self._clock()
-            self._prune_tombstones(now)
-            if turn.turn_id in self._ambiguous_turns:
+            ambiguous_claim = self._ambiguous_turns.get(turn.turn_id)
+            if ambiguous_claim is not None:
+                try:
+                    claim_is_live = await self._transaction(
+                        lambda db: self._claim_is_live(
+                            db, claim=ambiguous_claim, now=now
+                        )
+                    )
+                except Exception as error:
+                    await self._close_source(source)
+                    raise StaleTurnClaim(
+                        "Detached turn outcome remains ambiguous"
+                    ) from error
+                if not claim_is_live:
+                    self._drop_tombstone(turn.turn_id, ambiguous_claim)
                 await self._close_source(source)
                 raise StaleTurnClaim("Detached turn outcome is ambiguous")
             existing = self._handles.get(turn.turn_id)
@@ -123,8 +129,10 @@ class DetachedTurnCoordinator:
                 await self._close_source(source)
                 raise RuntimeError("Detached turn already has a local source")
             try:
-                lease_expires_at = await self._transaction(
-                    lambda db: self._live_lease_expiry(db, claim=turn.claim, now=now)
+                await self._transaction(
+                    lambda db: self._jobs.require_live_claim(
+                        db, claim=turn.claim, now=now
+                    )
                 )
             except BaseException:
                 await self._close_source(source)
@@ -132,8 +140,6 @@ class DetachedTurnCoordinator:
             handle = DetachedTurnHandle(
                 turn=turn,
                 source=source,
-                lease_expires_at=lease_expires_at,
-                condition=self._condition(turn.turn_id),
             )
             self._handles[turn.turn_id] = handle
             handle.source_task = asyncio.create_task(self._pump(handle))
@@ -144,7 +150,6 @@ class DetachedTurnCoordinator:
     ) -> AsyncIterator[JournalFrame]:
         if after_sequence < 0:
             raise ValueError("Journal replay cursor is invalid")
-        condition = self._condition(turn_id)
         cursor = after_sequence
         while True:
             frames, terminal = await self._transaction(
@@ -154,12 +159,12 @@ class DetachedTurnCoordinator:
                 cursor = frame.sequence
                 yield frame
             if terminal:
-                if self._conditions.get(turn_id) is condition:
-                    self._conditions.pop(turn_id, None)
                 return
-            async with condition:
+            async with self._notification:
                 try:
-                    await asyncio.wait_for(condition.wait(), timeout=self._poll_seconds)
+                    await asyncio.wait_for(
+                        self._notification.wait(), timeout=self._poll_seconds
+                    )
                 except TimeoutError:
                     pass
 
@@ -185,10 +190,7 @@ class DetachedTurnCoordinator:
             )
         )
         if job is not None:
-            condition = self._conditions.pop(turn_id, None)
-            if condition is not None:
-                async with condition:
-                    condition.notify_all()
+            await self._publish()
         return job is not None
 
     async def _pump(self, handle: DetachedTurnHandle) -> None:
@@ -232,7 +234,7 @@ class DetachedTurnCoordinator:
                     await self._persist_terminal_durably(handle.claim, *terminal)
                     terminal_seen = True
                     terminal_durable = True
-                await handle.publish(frames)
+                await self._publish(frames)
                 if terminal_seen:
                     break
             if not terminal_seen:
@@ -240,7 +242,7 @@ class DetachedTurnCoordinator:
                 terminal_durable = True
         finally:
             try:
-                await handle.publish()
+                await self._publish()
             finally:
                 try:
                     await self._close_source(handle.source)
@@ -281,7 +283,7 @@ class DetachedTurnCoordinator:
             code = "event_journal_exhausted"
             frames = ()
         await self._persist_terminal_durably(handle.claim, "failed", code)
-        await handle.publish(frames)
+        await self._publish(frames)
 
     async def _persist_terminal_durably(
         self, claim: TurnLeaseClaim, state: str, failure_code: str | None
@@ -302,54 +304,49 @@ class DetachedTurnCoordinator:
         turn_id = handle.turn.turn_id
         if self._handles.get(turn_id) is handle:
             self._handles.pop(turn_id, None)
-        if self._conditions.get(turn_id) is handle.condition:
-            self._conditions.pop(turn_id, None)
 
     def _retain_ambiguous(self, handle: DetachedTurnHandle) -> None:
         self._evict_handle(handle)
         turn_id = handle.turn.turn_id
-        tombstone = _AmbiguousTurn(
-            claim=handle.claim,
-            lease_expires_at=handle.lease_expires_at,
-        )
-        self._ambiguous_turns[turn_id] = tombstone
-        self._schedule_tombstone_expiry(turn_id, tombstone)
+        self._ambiguous_turns[turn_id] = handle.claim
+        self._ensure_tombstone_reaper()
 
-    def _schedule_tombstone_expiry(
-        self, turn_id: uuid.UUID, tombstone: _AmbiguousTurn
-    ) -> None:
-        timer = self._tombstone_timers.pop(turn_id, None)
-        if timer is not None:
-            timer.cancel()
-        delay = max(
-            0.0,
-            (tombstone.lease_expires_at - self._clock()).total_seconds(),
-        )
-        self._tombstone_timers[turn_id] = asyncio.get_running_loop().call_later(
-            delay, self._expire_tombstone, turn_id, tombstone
-        )
+    def _ensure_tombstone_reaper(self) -> None:
+        if self._tombstone_reaper is None or self._tombstone_reaper.done():
+            self._tombstone_reaper = asyncio.create_task(self._reap_tombstones())
 
-    def _expire_tombstone(self, turn_id: uuid.UUID, expected: _AmbiguousTurn) -> None:
-        current = self._ambiguous_turns.get(turn_id)
-        if current != expected:
-            return
-        if current.lease_expires_at > self._clock():
-            self._schedule_tombstone_expiry(turn_id, current)
-            return
-        self._ambiguous_turns.pop(turn_id, None)
-        self._tombstone_timers.pop(turn_id, None)
+    async def _reap_tombstones(self) -> None:
+        try:
+            while self._ambiguous_turns:
+                await asyncio.sleep(self._poll_seconds)
+                snapshot = tuple(self._ambiguous_turns.items())[
+                    : self.TOMBSTONE_REVALIDATION_BATCH
+                ]
+                for turn_id, claim in snapshot:
+                    try:
+                        claim_is_live = await self._transaction(
+                            lambda db, claim=claim: self._claim_is_live(
+                                db, claim=claim, now=self._clock()
+                            )
+                        )
+                    except Exception:
+                        self._rotate_tombstone(turn_id, claim)
+                        continue
+                    if not claim_is_live:
+                        self._drop_tombstone(turn_id, claim)
+                    else:
+                        self._rotate_tombstone(turn_id, claim)
+        finally:
+            self._tombstone_reaper = None
 
-    def _prune_tombstones(self, now: datetime) -> None:
-        expired = [
-            turn_id
-            for turn_id, tombstone in self._ambiguous_turns.items()
-            if tombstone.lease_expires_at <= now
-        ]
-        for turn_id in expired:
+    def _drop_tombstone(self, turn_id: uuid.UUID, expected: TurnLeaseClaim) -> None:
+        if self._ambiguous_turns.get(turn_id) == expected:
             self._ambiguous_turns.pop(turn_id, None)
-            timer = self._tombstone_timers.pop(turn_id, None)
-            if timer is not None:
-                timer.cancel()
+
+    def _rotate_tombstone(self, turn_id: uuid.UUID, expected: TurnLeaseClaim) -> None:
+        if self._ambiguous_turns.get(turn_id) == expected:
+            self._ambiguous_turns.pop(turn_id, None)
+            self._ambiguous_turns[turn_id] = expected
 
     def _terminal_matches(
         self,
@@ -375,15 +372,14 @@ class DetachedTurnCoordinator:
             and self._jobs.claim_for(job) == claim
         )
 
-    def _live_lease_expiry(
+    def _claim_is_live(
         self, db: Session, *, claim: TurnLeaseClaim, now: datetime
-    ) -> datetime:
-        job = self._jobs.require_live_claim(db, claim=claim, now=now)
-        expires_at = job.lease_expires_at
-        assert expires_at is not None
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        return expires_at
+    ) -> bool:
+        try:
+            self._jobs.require_live_claim(db, claim=claim, now=now)
+        except StaleTurnClaim:
+            return False
+        return True
 
     def _read(
         self, db: Session, *, turn_id: uuid.UUID, after_sequence: int
@@ -397,12 +393,9 @@ class DetachedTurnCoordinator:
         job = self._jobs.load_by_turn(db, turn_id)
         return frames, job is None or job.state in TERMINAL_STATES
 
-    def _condition(self, turn_id: uuid.UUID) -> asyncio.Condition:
-        condition = self._conditions.get(turn_id)
-        if condition is None:
-            condition = asyncio.Condition()
-            self._conditions[turn_id] = condition
-        return condition
+    async def _publish(self, _frames: Sequence[JournalFrame] = ()) -> None:
+        async with self._notification:
+            self._notification.notify_all()
 
     @staticmethod
     async def _close_source(source: AsyncIterator[ChatStreamFrame]) -> None:

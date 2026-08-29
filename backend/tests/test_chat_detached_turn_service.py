@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -34,6 +35,7 @@ class Harness:
         self.journal = TurnEventJournal(jobs=self.jobs)
         self.now = NOW
         self.terminal_error: Exception | None = None
+        self.transaction_error: Exception | None = None
         self.terminal_calls: list[tuple[str, str | None]] = []
         self.terminal_sequences: list[list[int]] = []
         self.turn, self.claim = self._claimed_turn()
@@ -80,6 +82,8 @@ class Harness:
         return DetachedTurn(turn_id=job.turn_id, claim=claim), claim
 
     async def transaction(self, operation):
+        if self.transaction_error is not None:
+            raise self.transaction_error
         with self.sessions.begin() as db:
             return operation(db)
 
@@ -170,6 +174,67 @@ async def _sequences(
         frame.sequence
         async for frame in coordinator.subscribe(turn_id=turn_id, after_sequence=0)
     ]
+
+
+def _remote_running_turn(harness: Harness, index: int) -> uuid.UUID:
+    with harness.sessions.begin() as db:
+        session = ChatSession(
+            id=uuid.uuid4(),
+            hf_user_id=f"remote-owner-{index}",
+            hf_username=f"remote-owner-{index}",
+            selected_model="model",
+        )
+        turn_id = uuid.uuid4()
+        db.add(session)
+        db.add(
+            ChatTurnJob(
+                turn_id=turn_id,
+                chat_session_id=session.id,
+                hf_user_id=session.hf_user_id,
+                request_id=f"remote-request-{index}",
+                revision=1,
+                dispatch_class="interactive",
+                dispatch_route="external-pi",
+                state="running",
+                worker_id=f"remote-worker-{index}",
+                worker_generation=1,
+                lease_generation=1,
+                app_release_id="release-a",
+                worker_contract_version="external-pi-v1",
+                admitted_at=NOW,
+                dispatched_at=NOW,
+                started_at=NOW,
+                heartbeat_at=NOW,
+                lease_expires_at=NOW + timedelta(seconds=30),
+            )
+        )
+    return turn_id
+
+
+def test_remote_subscriber_disconnects_do_not_retain_per_turn_notifications() -> None:
+    async def scenario() -> tuple[int, int]:
+        harness = Harness()
+        remote = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: NOW,
+            persist_terminal=harness.persist_terminal,
+            poll_seconds=1,
+        )
+        for index in range(25):
+            subscription = remote.subscribe(
+                turn_id=_remote_running_turn(harness, index), after_sequence=0
+            )
+            waiting = asyncio.create_task(anext(subscription))
+            await asyncio.sleep(0)
+            waiting.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await waiting
+            await subscription.aclose()
+        return remote.condition_count, remote.notification_state_count
+
+    assert asyncio.run(scenario()) == (0, 1)
 
 
 def test_coordinator_without_local_source_replays_and_tails_database_journal() -> None:
@@ -268,8 +333,8 @@ def test_second_start_is_rejected_without_consuming_replacement() -> None:
     assert asyncio.run(scenario()) == (True, False)
 
 
-def test_active_source_and_condition_remain_strongly_owned() -> None:
-    async def scenario() -> tuple[int, int]:
+def test_active_source_remains_strongly_owned() -> None:
+    async def scenario() -> int:
         harness = Harness()
         release = asyncio.Event()
 
@@ -278,15 +343,12 @@ def test_active_source_and_condition_remain_strongly_owned() -> None:
             yield ChatStreamFrame("done", {"finish_reason": "success"})
 
         stream = await harness.coordinator.start(turn=harness.turn, source=source())
-        retained = (
-            harness.coordinator.active_turn_count,
-            harness.coordinator.condition_count,
-        )
+        retained = harness.coordinator.active_turn_count
         release.set()
         await stream.source_task
         return retained
 
-    assert asyncio.run(scenario()) == (1, 1)
+    assert asyncio.run(scenario()) == 1
 
 
 def test_confirmed_terminal_evicts_heavy_state_and_database_rejects_restart() -> None:
@@ -368,6 +430,93 @@ def test_ambiguous_terminal_failure_keeps_only_bounded_restart_tombstone() -> No
         )
 
     assert asyncio.run(scenario()) == (0, 0, 1, 0, False)
+
+
+def test_ambiguous_tombstone_revalidates_heartbeat_extended_claim() -> None:
+    async def scenario() -> tuple[int, int, bool]:
+        harness = Harness()
+        harness.terminal_error = RuntimeError("terminal commit outcome unknown")
+        release = asyncio.Event()
+        replacement_consumed = False
+
+        async def source():
+            await release.wait()
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        async def replacement():
+            nonlocal replacement_consumed
+            replacement_consumed = True
+            if False:
+                yield ChatStreamFrame("done")
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await harness.transaction(
+            lambda db: harness.jobs.heartbeat(
+                db,
+                claim=harness.claim,
+                now=NOW + timedelta(seconds=20),
+                lease_seconds=30,
+            )
+        )
+        release.set()
+        with contextlib.suppress(RuntimeError):
+            await stream.source_task
+
+        harness.now = NOW + timedelta(seconds=31)
+        try:
+            await harness.coordinator.start(turn=harness.turn, source=replacement())
+        except StaleTurnClaim:
+            pass
+        else:
+            raise AssertionError("heartbeat-extended ambiguous claim restarted")
+        retained_during_renewed_lease = harness.coordinator.ambiguous_turn_count
+
+        harness.now = NOW + timedelta(seconds=51)
+        try:
+            await harness.coordinator.start(turn=harness.turn, source=replacement())
+        except StaleTurnClaim:
+            pass
+        else:
+            raise AssertionError("expired ambiguous claim restarted")
+        return (
+            retained_during_renewed_lease,
+            harness.coordinator.ambiguous_turn_count,
+            replacement_consumed,
+        )
+
+    assert asyncio.run(scenario()) == (1, 0, False)
+
+
+def test_ambiguous_tombstone_fails_closed_when_revalidation_is_unavailable() -> None:
+    async def scenario() -> tuple[int, bool]:
+        harness = Harness()
+        harness.terminal_error = RuntimeError("terminal commit outcome unknown")
+        replacement_consumed = False
+
+        async def source():
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        async def replacement():
+            nonlocal replacement_consumed
+            replacement_consumed = True
+            if False:
+                yield ChatStreamFrame("done")
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        with contextlib.suppress(RuntimeError):
+            await stream.source_task
+        harness.transaction_error = RuntimeError("database temporarily unavailable")
+
+        try:
+            await harness.coordinator.start(turn=harness.turn, source=replacement())
+        except StaleTurnClaim as error:
+            assert str(error) == "Detached turn outcome remains ambiguous"
+        else:
+            raise AssertionError("unverifiable ambiguous turn restarted")
+        await asyncio.sleep(0.03)
+        return harness.coordinator.ambiguous_turn_count, replacement_consumed
+
+    assert asyncio.run(scenario()) == (1, False)
 
 
 def test_journal_overflow_persists_one_terminal_failure() -> None:
