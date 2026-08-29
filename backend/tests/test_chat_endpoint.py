@@ -218,7 +218,9 @@ def test_completed_durable_replay_uses_full_terminal_journal(monkeypatch):
     ]
 
 
-def test_completed_durable_replay_fallback_is_strictly_after_cursor(monkeypatch):
+def test_completed_durable_replay_suppresses_fallback_at_acknowledged_cursor(
+    monkeypatch,
+):
     admission = _completed_durable_admission()
 
     class Coordinator:
@@ -237,8 +239,9 @@ def test_completed_durable_replay_fallback_is_strictly_after_cursor(monkeypatch)
             )
         ]
 
-    assert [frame.sequence for frame in asyncio.run(collect(8))] == [9, 10, 11]
-    assert [frame.sequence for frame in asyncio.run(collect(9))] == [10, 11]
+    assert [frame.sequence for frame in asyncio.run(collect(7))] == [9, 10, 11]
+    assert asyncio.run(collect(8)) == []
+    assert asyncio.run(collect(9)) == []
     assert asyncio.run(collect(11)) == []
 
 
@@ -260,14 +263,14 @@ def test_completed_durable_replay_falls_back_after_job_sequence(monkeypatch):
             )
         ]
 
-    all_frames = asyncio.run(collect(8))
-    resumed = asyncio.run(collect(9))
+    all_frames = asyncio.run(collect(7))
+    acknowledged = asyncio.run(collect(8))
     assert [(frame.sequence, frame.event) for frame in all_frames] == [
         (9, "stream_start"),
         (10, "answer_delta"),
         (11, "done"),
     ]
-    assert [frame.sequence for frame in resumed] == [10, 11]
+    assert acknowledged == []
 
 
 def test_completed_durable_replay_preserves_nonterminal_journal_before_fallback(
@@ -298,6 +301,30 @@ def test_completed_durable_replay_preserves_nonterminal_journal_before_fallback(
     ]
     assert frames[0].payload == {"text": "partial"}
     assert frames[2].payload == {"text": "canonical answer"}
+
+
+@pytest.mark.parametrize("cursor", [8, 9])
+def test_completed_durable_replay_partial_journal_at_acknowledged_cursor_emits_nothing(
+    monkeypatch, cursor
+):
+    admission = _completed_durable_admission(event_sequence=8)
+
+    class Coordinator:
+        async def subscribe(self, **_kwargs):
+            if 8 > cursor:
+                yield JournalFrame(8, "answer_delta", {"text": "partial"})
+
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+
+    async def collect():
+        return [
+            frame
+            async for frame in chat_router._durable_replay_frames(
+                admission, request_id="request-1", after_sequence=cursor
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
 
 
 def test_completed_durable_replay_falls_back_if_chunks_disappear_mid_replay(

@@ -189,7 +189,11 @@ async def _durable_replay_frames(admission, *, request_id: str, after_sequence: 
         last_yielded_sequence = max(last_yielded_sequence, frame.sequence)
         terminal_observed = terminal_observed or frame.event in {"done", "error"}
         yield frame
-    if admission.replay_assistant is None or terminal_observed:
+    if (
+        admission.replay_assistant is None
+        or terminal_observed
+        or after_sequence >= admission.durable_event_sequence
+    ):
         return
 
     sequence = max(admission.durable_event_sequence, last_yielded_sequence)
