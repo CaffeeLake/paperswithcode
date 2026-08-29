@@ -118,8 +118,11 @@ def test_capacity_profiles_bind_exact_arrivals_to_post_loss_capacity():
 def test_capacity_qualification_profile_is_separate_and_ascending():
     from backend.scripts.qualify_external_pi_fleet import resolve_qualification_profile
 
+    single_shape_names, single_report_name = resolve_qualification_profile("32-user")
     shape_names, report_name = resolve_qualification_profile("capacity")
 
+    assert single_shape_names == ("2x32",)
+    assert single_report_name == "external-pi-32-user-qualification.json"
     assert shape_names == ("2x32", "4x16", "3x32")
     assert report_name == "external-pi-capacity-qualification.json"
     with pytest.raises(FleetRunRefused, match="qualification profile"):

@@ -1097,6 +1097,10 @@ def resolve_qualification_profile(
     profile: str,
 ) -> tuple[tuple[FleetShapeName, ...], str]:
     profiles: dict[str, tuple[tuple[FleetShapeName, ...], str]] = {
+        "32-user": (
+            ("2x32",),
+            "external-pi-32-user-qualification.json",
+        ),
         "100-user": (
             ("5x32", "8x16", "16x8"),
             "external-pi-fleet-qualification.json",
@@ -1127,7 +1131,9 @@ def main() -> int:
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--confirm", required=True)
     parser.add_argument(
-        "--profile", choices=("100-user", "capacity"), default="100-user"
+        "--profile",
+        choices=("32-user", "100-user", "capacity"),
+        default="100-user",
     )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
