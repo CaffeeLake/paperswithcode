@@ -263,6 +263,9 @@ def test_postgresql_concurrent_appends_lock_one_turn_and_persist_jsonb(
         frames = TurnEventJournal().read_after(
             verify, turn_id=claim.turn_id, after_sequence=0, limit=10
         )
+        after_first = TurnEventJournal().read_after(
+            verify, turn_id=claim.turn_id, after_sequence=1, limit=10
+        )
         job = verify.get(ChatTurnJob, claim.turn_id)
         chunks = tuple(
             verify.scalars(
@@ -272,8 +275,77 @@ def test_postgresql_concurrent_appends_lock_one_turn_and_persist_jsonb(
 
         assert sorted(sequences) == [1, 2]
         assert [frame.sequence for frame in frames] == [1, 2]
+        assert [frame.sequence for frame in after_first] == [2]
         assert {frame.payload["text"] for frame in frames} == {"a", "b"}
         assert job.event_sequence == 2
         assert job.event_bytes == sum(chunk.payload_bytes for chunk in chunks)
         assert verify.scalar(select(func.count()).select_from(ChatTurnEventChunk)) == 2
         assert all(isinstance(chunk.events, list) for chunk in chunks)
+
+
+def test_postgresql_rejects_stale_and_limits_before_terminal_cleanup(
+    disposable_postgresql_engine,
+):
+    engine = disposable_postgresql_engine
+    with Session(engine, expire_on_commit=False) as setup:
+        _, claim = _claimed_turn(setup)
+        setup.commit()
+
+    stale = TurnLeaseClaim(
+        claim.turn_id,
+        claim.worker_id,
+        claim.worker_generation,
+        claim.lease_generation - 1,
+    )
+    with Session(engine) as db:
+        with pytest.raises(StaleTurnClaim):
+            TurnEventJournal().append(
+                db,
+                claim=stale,
+                events=[event("delta", {"text": "stale"})],
+                now=NOW,
+            )
+        job = db.get(ChatTurnJob, claim.turn_id)
+        assert (job.event_sequence, job.event_bytes) == (0, 0)
+        assert db.scalar(select(func.count()).select_from(ChatTurnEventChunk)) == 0
+
+    limit_cases = (
+        ("MAX_FRAME_BYTES", 52, [event("delta", {"text": "a"})]),
+        (
+            "MAX_TURN_BYTES",
+            105,
+            [event("delta", {"text": "a"}), event("delta", {"text": "b"})],
+        ),
+        (
+            "MAX_TURN_EVENTS",
+            1,
+            [event("delta", {"text": "a"}), event("delta", {"text": "b"})],
+        ),
+    )
+    for limit_name, limit_value, events in limit_cases:
+        journal = TurnEventJournal()
+        setattr(journal, limit_name, limit_value)
+        with Session(engine) as db:
+            with pytest.raises(JournalLimitExceeded) as raised:
+                journal.append(db, claim=claim, events=events, now=NOW)
+            job = db.get(ChatTurnJob, claim.turn_id)
+            assert raised.value.code == "event_journal_exhausted"
+            assert (job.event_sequence, job.event_bytes) == (0, 0)
+            assert db.scalar(select(func.count()).select_from(ChatTurnEventChunk)) == 0
+
+    with Session(engine) as db:
+        journal = TurnEventJournal()
+        journal.append(
+            db, claim=claim, events=[event("delta", {"text": "kept"})], now=NOW
+        )
+        ChatTurnJobRepository().write_terminal(
+            db, claim=claim, state="completed", now=NOW + timedelta(seconds=1)
+        )
+        assert journal.delete_terminal(db, turn_id=claim.turn_id) == 1
+        db.commit()
+
+    with Session(engine) as verify:
+        job = verify.get(ChatTurnJob, claim.turn_id)
+        assert job.state == "completed"
+        assert job.event_sequence == 1
+        assert verify.scalar(select(func.count()).select_from(ChatTurnEventChunk)) == 0
