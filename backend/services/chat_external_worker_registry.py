@@ -28,6 +28,8 @@ class ExternalWorkerClaim:
     worker_id: str
     instance_id: uuid.UUID
     generation: int
+    release_id: str
+    contract_version: str
 
 
 @dataclass(slots=True)
@@ -97,7 +99,13 @@ class ChatExternalWorkerRegistry:
                 created_at=now,
                 updated_at=now,
             )
-            return row, ExternalWorkerClaim(worker_id, instance_id, generation)
+            return row, ExternalWorkerClaim(
+                worker_id,
+                instance_id,
+                generation,
+                release_id,
+                contract_version,
+            )
 
         lease_is_live = row.lease_expires_at > now and row.state != "offline"
         if lease_is_live:
@@ -112,7 +120,13 @@ class ChatExternalWorkerRegistry:
             row.heartbeat_at = now
             row.lease_expires_at = expires_at
             row.updated_at = now
-            return row, ExternalWorkerClaim(worker_id, instance_id, row.generation)
+            return row, ExternalWorkerClaim(
+                worker_id,
+                instance_id,
+                row.generation,
+                release_id,
+                contract_version,
+            )
 
         row.instance_id = instance_id
         row.release_id = release_id
@@ -124,7 +138,13 @@ class ChatExternalWorkerRegistry:
         row.heartbeat_at = now
         row.lease_expires_at = expires_at
         row.updated_at = now
-        return row, ExternalWorkerClaim(worker_id, instance_id, row.generation)
+        return row, ExternalWorkerClaim(
+            worker_id,
+            instance_id,
+            row.generation,
+            release_id,
+            contract_version,
+        )
 
     @staticmethod
     def require_claim(row: ExternalWorkerRecord, claim: ExternalWorkerClaim) -> None:
@@ -132,6 +152,8 @@ class ChatExternalWorkerRegistry:
             row.worker_id != claim.worker_id
             or row.instance_id != claim.instance_id
             or row.generation != claim.generation
+            or row.release_id != claim.release_id
+            or row.contract_version != claim.contract_version
         ):
             raise StaleWorkerClaim("External worker claim was fenced")
 
@@ -224,7 +246,7 @@ class ChatExternalWorkerRepository:
             ChatExternalWorker.environment == self.environment,
         )
         if lock:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         return db.execute(query).scalar_one_or_none()
 
     def _lock_identity(self, db: Session, worker_id: str) -> None:
@@ -291,35 +313,37 @@ class ChatExternalWorkerRepository:
             raise StaleWorkerClaim("External worker claim was fenced")
         return row
 
-    def select_ready_claim(self, db: Session, *, now: datetime) -> ExternalWorkerClaim:
-        if now.tzinfo is None:
-            raise ValueError("External worker selection timestamp is invalid")
-        row = db.execute(
-            select(ChatExternalWorker)
-            .where(
-                ChatExternalWorker.environment == self.environment,
-                ChatExternalWorker.state == "ready",
-                ChatExternalWorker.lease_expires_at > now,
-                ChatExternalWorker.active_sessions
-                < ChatExternalWorker.maximum_sessions,
-            )
-            .order_by(
-                ChatExternalWorker.active_sessions.asc(),
-                ChatExternalWorker.updated_at.desc(),
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if row is None:
-            raise WorkerLeaseUnavailable("External worker is not ready")
-        claim = ExternalWorkerClaim(row.worker_id, row.instance_id, row.generation)
-        self.registry.require_claim(row, claim)
+    @staticmethod
+    def _require_ready(
+        row: ExternalWorkerRecord,
+        claim: ExternalWorkerClaim,
+        *,
+        environment: str,
+        now: datetime,
+    ) -> None:
+        ChatExternalWorkerRegistry.require_claim(row, claim)
         if (
-            row.environment != self.environment
+            now.tzinfo is None
+            or row.environment != environment
             or row.state != "ready"
             or row.lease_expires_at <= now
             or row.active_sessions >= row.maximum_sessions
         ):
             raise WorkerLeaseUnavailable("External worker is not ready")
+
+    def select_ready_claim(
+        self,
+        db: Session,
+        *,
+        claim: ExternalWorkerClaim,
+        now: datetime,
+    ) -> ExternalWorkerClaim:
+        if now.tzinfo is None:
+            raise ValueError("External worker selection timestamp is invalid")
+        row = self.load(db, claim.worker_id, lock=False)
+        if row is None:
+            raise StaleWorkerClaim("External worker claim was fenced")
+        self._require_ready(row, claim, environment=self.environment, now=now)
         return claim
 
     def require_ready_claim(
@@ -330,14 +354,7 @@ class ChatExternalWorkerRepository:
         now: datetime,
     ) -> None:
         row = self._load_claimed(db, claim)
-        self.registry.require_claim(row, claim)
-        if (
-            now.tzinfo is None
-            or row.environment != self.environment
-            or row.state != "ready"
-            or row.lease_expires_at <= now
-        ):
-            raise WorkerLeaseUnavailable("External worker is not ready")
+        self._require_ready(row, claim, environment=self.environment, now=now)
 
     def heartbeat(
         self,

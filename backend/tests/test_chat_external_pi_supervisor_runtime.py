@@ -50,6 +50,8 @@ def test_runtime_registers_heartbeats_and_gracefully_drains():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     client = Mock(
         status=AsyncMock(
@@ -126,6 +128,8 @@ def test_runtime_recovers_from_a_transient_startup_failure():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15, drain_seconds=60)
     supervisor.register = AsyncMock(
@@ -170,6 +174,8 @@ def test_runtime_fails_closed_when_heartbeat_outage_consumes_the_lease():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15)
     supervisor.register = AsyncMock(return_value=claim)
@@ -204,6 +210,8 @@ def test_runtime_polls_an_incomplete_drain_until_the_worker_is_idle():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15, drain_seconds=60)
     supervisor.register = AsyncMock(return_value=claim)
@@ -240,6 +248,8 @@ def test_runtime_retries_an_idempotent_drain_request_after_transport_failure():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15, drain_seconds=60)
     supervisor.register = AsyncMock(return_value=claim)
@@ -279,6 +289,8 @@ def test_runtime_counts_slow_successful_heartbeats_against_the_durable_lease():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15)
     supervisor.register = AsyncMock(return_value=claim)
@@ -324,6 +336,8 @@ def test_runtime_does_not_start_a_heartbeat_at_the_lease_deadline():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     supervisor = Mock(lease_seconds=15)
     supervisor.register = AsyncMock(return_value=claim)

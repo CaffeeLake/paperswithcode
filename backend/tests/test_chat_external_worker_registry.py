@@ -369,7 +369,7 @@ def test_repository_persists_heartbeat_and_graceful_drain(monkeypatch):
     assert db.flush.call_count == 4
 
 
-def test_repository_selects_an_exact_online_ready_claim():
+def test_repository_selects_an_exact_online_ready_claim(monkeypatch):
     repository = ChatExternalWorkerRepository(environment="staging")
     now = datetime(2026, 8, 29, 12, tzinfo=UTC)
     row = ChatExternalWorker(
@@ -387,20 +387,29 @@ def test_repository_selects_an_exact_online_ready_claim():
         created_at=now,
         updated_at=now,
     )
-    db = Mock()
-    db.execute.return_value.scalar_one_or_none.return_value = row
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
 
-    claim = repository.select_ready_claim(db, now=now)
+    claim = repository.select_ready_claim(
+        Mock(),
+        claim=ExternalWorkerClaim(
+            "worker-1", row.instance_id, 4, "release-a", "external-pi-v1"
+        ),
+        now=now,
+    )
 
     assert claim == ExternalWorkerClaim(
         worker_id="worker-1",
         instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
         generation=4,
+        release_id="release-a",
+        contract_version="external-pi-v1",
     )
 
 
 @pytest.mark.parametrize("state,expires_delta", [("draining", 15), ("ready", 0)])
-def test_repository_selector_rejects_non_ready_or_expired_rows(state, expires_delta):
+def test_repository_selector_rejects_non_ready_or_expired_rows(
+    monkeypatch, state, expires_delta
+):
     repository = ChatExternalWorkerRepository(environment="staging")
     now = datetime(2026, 8, 29, 12, tzinfo=UTC)
     row = ChatExternalWorker(
@@ -418,11 +427,122 @@ def test_repository_selector_rejects_non_ready_or_expired_rows(state, expires_de
         created_at=now,
         updated_at=now,
     )
-    db = Mock()
-    db.execute.return_value.scalar_one_or_none.return_value = row
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
 
     with pytest.raises(WorkerLeaseUnavailable):
-        repository.select_ready_claim(db, now=now)
+        repository.select_ready_claim(
+            Mock(),
+            claim=ExternalWorkerClaim(
+                "worker-1",
+                row.instance_id,
+                4,
+                "release-a",
+                "external-pi-v1",
+            ),
+            now=now,
+        )
+
+
+def test_selector_cannot_cross_bind_workers_at_the_same_generation(monkeypatch):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    endpoint_claim = ExternalWorkerClaim(
+        "worker-1",
+        uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        1,
+        "release-a",
+        "external-pi-v1",
+    )
+    wrong_row = ChatExternalWorker(
+        worker_id="worker-2",
+        instance_id=uuid.UUID("20000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=0,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=wrong_row))
+
+    with pytest.raises(StaleWorkerClaim):
+        repository.select_ready_claim(Mock(), claim=endpoint_claim, now=now)
+
+
+@pytest.mark.parametrize(
+    "release_id,contract_version",
+    [("release-b", "external-pi-v1"), ("release-a", "external-pi-v2")],
+)
+def test_ready_claim_rejects_stale_release_or_contract(
+    monkeypatch, release_id, contract_version
+):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id=release_id,
+        contract_version=contract_version,
+        generation=1,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=0,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+    claim = ExternalWorkerClaim(
+        "worker-1", row.instance_id, 1, "release-a", "external-pi-v1"
+    )
+
+    with pytest.raises(StaleWorkerClaim):
+        repository.require_ready_claim(Mock(), claim=claim, now=now)
+
+
+def test_ready_claim_rejects_worker_that_became_full(monkeypatch):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=8,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+    claim = ExternalWorkerClaim(
+        "worker-1", row.instance_id, 1, "release-a", "external-pi-v1"
+    )
+
+    with pytest.raises(WorkerLeaseUnavailable):
+        repository.require_ready_claim(Mock(), claim=claim, now=now)
+
+
+def test_final_claim_revalidation_refreshes_the_locked_registry_row():
+    repository = ChatExternalWorkerRepository(environment="staging")
+    db = Mock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+
+    repository.load(db, "worker-1")
+
+    query = db.execute.call_args.args[0]
+    assert query.get_execution_options()["populate_existing"] is True
 
 
 def test_worker_registry_migration_is_additive_and_environment_scoped():

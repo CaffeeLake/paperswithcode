@@ -35,7 +35,13 @@ def prove_stale_generation_fenced(
         or stale_generation >= current_generation
     ):
         raise RuntimeError("durable external Pi worker identity is invalid")
-    stale = ExternalWorkerClaim(worker_id, row.instance_id, stale_generation)
+    stale = ExternalWorkerClaim(
+        worker_id,
+        row.instance_id,
+        stale_generation,
+        row.release_id,
+        row.contract_version,
+    )
     try:
         repository.heartbeat(
             db,

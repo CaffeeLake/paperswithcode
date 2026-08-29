@@ -53,6 +53,8 @@ def test_supervisor_registers_only_the_expected_worker_contract():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     repository.register.return_value = claim
     supervisor = ChatExternalPiSupervisor(
@@ -103,6 +105,8 @@ def test_supervisor_drains_only_its_fenced_worker_and_finishes_at_zero():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     client = Mock(
         begin_drain=AsyncMock(
@@ -146,6 +150,8 @@ def test_stale_supervisor_cannot_mutate_the_remote_worker():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         2,
+        "release-a",
+        "external-pi-v1",
     )
     client = Mock(begin_drain=AsyncMock())
     repository = Mock()
@@ -175,6 +181,8 @@ def test_supervisor_reports_an_incomplete_drain_without_marking_offline():
         "worker-1",
         uuid.UUID("10000000-0000-4000-8000-000000000001"),
         3,
+        "release-a",
+        "external-pi-v1",
     )
     client = Mock(
         status=AsyncMock(

@@ -7,12 +7,13 @@ import hashlib
 import json
 import secrets
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from websockets.asyncio.client import connect as websocket_connect
 
 from backend.chat_sandbox_worker.executor_protocol import ProtocolError
@@ -26,6 +27,11 @@ from backend.services.chat_capability_service import (
 from backend.services.chat_external_worker_registry import (
     ChatExternalWorkerRepository,
     ExternalWorkerClaim,
+    WorkerLeaseUnavailable,
+)
+from backend.services.chat_external_pi_shadow import (
+    ExternalPiWorkerControlClient,
+    ExternalPiWorkerStatus,
 )
 from backend.services.chat_sandbox_executor import (
     ExecutorContext,
@@ -71,6 +77,8 @@ class ExternalPiChatTurnRunner:
         executor: SandboxExecutorClient | Any | None = None,
         websocket_connector: Callable[..., Any] = websocket_connect,
         worker_repository: ChatExternalWorkerRepository | Any | None = None,
+        worker_status_resolver: Callable[[], Awaitable[ExternalPiWorkerStatus]]
+        | None = None,
         session_factory: Callable[[], AbstractContextManager[Any]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -88,6 +96,7 @@ class ExternalPiChatTurnRunner:
         self.worker_repository = worker_repository or ChatExternalWorkerRepository(
             environment=settings.environment
         )
+        self.worker_status_resolver = worker_status_resolver
         self.session_factory = session_factory or db_manager.session_local
         self.now = now or (lambda: datetime.now(UTC))
         self.sandbox: object | None = None
@@ -97,7 +106,7 @@ class ExternalPiChatTurnRunner:
         self.active_context: ExecutorContext | None = None
 
     async def events(self) -> AsyncIterator[dict]:
-        worker_claim = self._select_worker_claim()
+        worker_claim = await self._select_worker_claim()
         async with self.websocket_connector(
             _worker_websocket_url(self.settings.chat_external_pi_worker_url),
             additional_headers={
@@ -127,10 +136,38 @@ class ExternalPiChatTurnRunner:
                 yield event
         self.socket = None
 
-    def _select_worker_claim(self) -> ExternalWorkerClaim:
+    async def _endpoint_status(self) -> ExternalPiWorkerStatus:
+        if self.worker_status_resolver is not None:
+            return await self.worker_status_resolver()
+        async with httpx.AsyncClient() as http:
+            return await ExternalPiWorkerControlClient(
+                base_url=self.settings.chat_external_pi_worker_url,
+                token=self.settings.chat_external_pi_worker_token,
+                http=http,
+            ).status()
+
+    async def _select_worker_claim(self) -> ExternalWorkerClaim:
+        status = await self._endpoint_status()
+        if (
+            status.worker_generation is None
+            or status.state != "ready"
+            or status.active_sessions >= status.maximum_sessions
+        ):
+            raise WorkerLeaseUnavailable("External worker is not ready")
+        endpoint_claim = ExternalWorkerClaim(
+            worker_id=status.worker_id,
+            instance_id=status.instance_id,
+            generation=status.worker_generation,
+            release_id=status.release_id,
+            contract_version=status.protocol,
+        )
         with self.session_factory() as db:
             selected_at = self.now()
-            claim = self.worker_repository.select_ready_claim(db, now=selected_at)
+            claim = self.worker_repository.select_ready_claim(
+                db,
+                claim=endpoint_claim,
+                now=selected_at,
+            )
             self.worker_repository.require_ready_claim(
                 db,
                 claim=claim,

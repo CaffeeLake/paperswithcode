@@ -12,6 +12,7 @@ class _Repository:
         self.row = SimpleNamespace(
             instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
             release_id="release-a",
+            contract_version="external-pi-v1",
             generation=generation,
             state="ready",
         )
@@ -42,6 +43,8 @@ def test_durable_probe_submits_the_real_stale_generation_claim():
     assert repository.claim.worker_id == "staging-blue"
     assert repository.claim.instance_id == repository.row.instance_id
     assert repository.claim.generation == 4
+    assert repository.claim.release_id == "release-a"
+    assert repository.claim.contract_version == "external-pi-v1"
 
 
 def test_durable_probe_fails_if_repository_accepts_stale_claim():
