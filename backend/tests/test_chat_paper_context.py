@@ -93,6 +93,17 @@ def _paper(route_id: str = "2501.00001") -> PreparedPaper:
     )
 
 
+def _external_paper() -> PreparedPaper:
+    return replace(
+        _paper("109743"),
+        paper_id="109743",
+        arxiv_id=None,
+        title="External report",
+        source="external",
+        source_url="https://example.com/report.pdf",
+    )
+
+
 def test_effective_prompt_orders_context_deduplicates_and_keeps_request_last(
     monkeypatch,
 ):
@@ -326,6 +337,71 @@ def test_primary_paper_precedes_viewer_and_deduplicates_matching_mention(monkeyp
     ) < result.effective_prompt.index("<viewer_context")
     assert result.effective_prompt.endswith(f"{message}\n</user_request>")
     assert 'Paper "title"' in (result.title_prompt or "")
+
+
+def test_external_paper_can_be_primary_reader_context(monkeypatch):
+    service = ChatPaperContextService(
+        SimpleNamespace(), Settings(chat_paper_mentions_enabled=True)
+    )
+    paper = _external_paper()
+    monkeypatch.setattr(service, "prepare_one", lambda _route: paper)
+
+    result = service.prepare_turn(
+        owner_id="owner",
+        display_message="Summarize it",
+        mentions=[],
+        session_id=None,
+        replace_message_id=None,
+        primary_route_id="109743",
+    )
+
+    assert result.primary_paper_id == 109743
+    assert result.primary_paper_context is not None
+    assert result.primary_paper_context["source"] == "external"
+    assert '<paper kind="primary" occurrence_id="primary-paper" route_id="109743"' in (
+        result.effective_prompt
+    )
+
+
+def test_persisted_external_reader_session_keeps_primary_context(monkeypatch):
+    session = SimpleNamespace(
+        primary_paper_id=109743,
+        sdk_session_id=None,
+        sdk_project_key=None,
+    )
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return session
+
+    row = SimpleNamespace(id=109743, arxiv_id=None, source="external")
+    db = SimpleNamespace(
+        execute=lambda _query: FakeResult(),
+        get=lambda _model, paper_id: row if paper_id == 109743 else None,
+    )
+    service = ChatPaperContextService(db, Settings(chat_paper_mentions_enabled=True))
+    paper = _external_paper()
+
+    def prepare_one(route_id):
+        if route_id != "109743":
+            raise AssertionError(f"unexpected route: {route_id}")
+        return paper
+
+    monkeypatch.setattr(service, "prepare_one", prepare_one)
+
+    result = service.prepare_turn(
+        owner_id="owner",
+        display_message="Explain more",
+        mentions=[],
+        session_id=uuid.uuid4(),
+        replace_message_id=None,
+        primary_route_id="109743",
+    )
+
+    assert result.primary_paper_id == 109743
+    assert result.primary_paper_context is not None
+    assert result.primary_paper_context["route_id"] == "109743"
+    assert result.effective_prompt.endswith("Explain more\n</user_request>")
 
 
 def test_primary_paper_requires_stored_markdown_and_viewer_requires_binding(

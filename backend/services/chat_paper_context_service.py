@@ -459,13 +459,13 @@ class ChatPaperContextService:
 
         if persisted_primary_id is not None:
             row = self.db.get(DBPaper, persisted_primary_id)
-            if row is None or row.source != "arxiv" or not row.arxiv_id:
+            if row is None:
                 raise ChatServiceError(
                     "paper_context_unavailable",
                     503,
                     "The paper bound to this chat is no longer available.",
                 )
-            primary = self.prepare_one(row.arxiv_id)
+            primary = self.prepare_one(_route_id(row))
             if primary_route_id:
                 claimed = self.prepare_one(primary_route_id)
                 if claimed.paper_id != primary.paper_id:
@@ -478,12 +478,6 @@ class ChatPaperContextService:
             primary = self.prepare_one(primary_route_id)
 
         if primary is not None:
-            if primary.source != "arxiv" or not primary.arxiv_id:
-                raise ChatServiceError(
-                    "primary_paper_unsupported",
-                    422,
-                    "Native reader chat currently supports arXiv papers only.",
-                )
             if not primary.content_available:
                 raise ChatServiceError(
                     "paper_context_unavailable",
