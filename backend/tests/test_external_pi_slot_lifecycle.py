@@ -1059,7 +1059,12 @@ def test_worker_launcher_execs_node_with_only_dedicated_worker_values(
         worker_launcher.main()
 
     assert executed["executable"] == str(resolved.node)
-    assert executed["arguments"] == [str(resolved.node), str(resolved.entry_point)]
+    assert executed["arguments"] == [
+        str(resolved.node),
+        "--import",
+        str(resolved.runtime / "app/node_modules/tsx/dist/loader.mjs"),
+        str(resolved.entry_point),
+    ]
     assert set(executed["environment"]) == {
         "PWC_EXTERNAL_PI_HOST",
         "PWC_EXTERNAL_PI_PORT",

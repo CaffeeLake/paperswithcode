@@ -38,9 +38,15 @@ def main() -> None:
         resolved, dict(os.environ), instance_id=str(uuid.uuid4())
     )
     os.chdir(resolved.release)
+    tsx_loader = resolved.runtime / "app/node_modules/tsx/dist/loader.mjs"
     os.execve(
         str(resolved.node),
-        [str(resolved.node), str(resolved.entry_point)],
+        [
+            str(resolved.node),
+            "--import",
+            str(tsx_loader),
+            str(resolved.entry_point),
+        ],
         child_env,
     )
 

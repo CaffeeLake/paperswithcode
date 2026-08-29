@@ -210,7 +210,12 @@ def test_exec_launchers_use_recorded_runtimes_and_keep_token_off_argv(
     assert calls[-1] == (
         "execve",
         str(resolved.node),
-        [str(resolved.node), str(resolved.entry_point)],
+        [
+            str(resolved.node),
+            "--import",
+            str(resolved.runtime / "app/node_modules/tsx/dist/loader.mjs"),
+            str(resolved.entry_point),
+        ],
         {"TOKEN": "secret", "INSTANCE": "fresh-worker-uuid"},
     )
     assert "secret" not in calls[-1][2]
