@@ -459,10 +459,31 @@ def test_slot_launcher_enables_chat_catalog_features(
         production_chat_enabled=True,
     )
 
-    slot_launcher.configure_release(manifest, Path("/release"))
+    slot_launcher.configure_release(manifest, Path("/release"), "production")
 
     assert os.environ["PWC_CHAT_PAPER_MENTIONS_ENABLED"] == "true"
     assert os.environ["PWC_CHAT_HF_CATALOG_ENABLED"] == "true"
+
+
+def test_staging_launcher_disables_only_posterly_artifact_generation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manifest = build_manifest("a" * 40, "staging")
+
+    with monkeypatch.context() as scoped:
+        for key in (
+            "PWC_CHAT_ARTIFACTS_ENABLED",
+            "PWC_CHAT_ARTIFACT_SHARED_PREVIEW_ENABLED",
+            "PWC_CHAT_POSTERLY_ENABLED",
+            "PWC_CHAT_ARTIFACT_STORAGE_BACKEND",
+            "PWC_CHAT_ARTIFACT_HF_BUCKET_ID",
+        ):
+            scoped.delenv(key, raising=False)
+        slot_launcher.configure_release(manifest, Path("/release"), "staging")
+
+        assert os.environ["PWC_CHAT_ARTIFACTS_ENABLED"] == "true"
+        assert os.environ["PWC_CHAT_ARTIFACT_SHARED_PREVIEW_ENABLED"] == "true"
+        assert os.environ["PWC_CHAT_POSTERLY_ENABLED"] == "false"
 
 
 @pytest.mark.parametrize(
@@ -3136,6 +3157,38 @@ def test_production_chat_pi_prewarm_rejects_unadmitted_or_alternative_pool():
                 ),
             },
             enabled=True,
+        )
+
+
+def test_staging_scope_guardrail_uses_server_credentials_and_disables_posterly():
+    current = {
+        "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=hf-guardrail",
+        "PWC_CHAT_HF_BILL_TO": "PWC_CHAT_HF_BILL_TO=pwc-org",
+        "PWC_CODEX_JOBS_OPENAI_API_KEY": ("PWC_CODEX_JOBS_OPENAI_API_KEY=sk-guardrail"),
+        "PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-main",
+        "PWC_OPENAI_API_KEY": "PWC_OPENAI_API_KEY=sk-main",
+    }
+    assert configure_host_env.staging_scope_guardrail_values(current) == {
+        "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED": "true",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": "hf-guardrail",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": "pwc-org",
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": "sk-guardrail",
+        "PWC_CHAT_POSTERLY_ENABLED": "false",
+    }
+    with pytest.raises(ValueError, match="source is missing"):
+        configure_host_env.staging_scope_guardrail_values(
+            {
+                key: value
+                for key, value in current.items()
+                if key != "PWC_CHAT_TITLE_HF_TOKEN"
+            }
+        )
+    with pytest.raises(ValueError, match="must not reuse PWC_HF_TOKEN"):
+        configure_host_env.staging_scope_guardrail_values(
+            {
+                **current,
+                "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=hf-main",
+            }
         )
 
 

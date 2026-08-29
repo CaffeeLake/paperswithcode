@@ -45,6 +45,12 @@ from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_local_turn_lease import ChatLocalTurnLeaseService
 from backend.services.chat_pi_transcript_service import ChatPiTranscriptService
 from backend.services.chat_sandbox_service import SandboxError
+from backend.services.chat_scope_guardrail_service import (
+    BoundedRawEventQueue,
+    REFUSAL_TEXT,
+    ScopeGuardrailService,
+    ScopeMessage,
+)
 from backend.services.chat_session_service import (
     ChatOwner,
     ChatServiceError,
@@ -1312,12 +1318,16 @@ class ChatStreamOrchestrator:
         is_disconnected: Callable[[], Awaitable[bool]],
         release_admission: Callable[[], Awaitable[None]],
         display_message: str | None = None,
+        scope_messages: list[ScopeMessage] | None = None,
     ) -> None:
         self.settings = settings
         self.owner = owner
         self.admission = admission
         self.prompt = prompt
         self.display_message = display_message or prompt
+        self.scope_messages = scope_messages or [
+            ScopeMessage(role="user", content=prompt)
+        ]
         self.request_id = request_id
         self.title_token = title_token
         self.is_disconnected = is_disconnected
@@ -1403,10 +1413,10 @@ class ChatStreamOrchestrator:
                     "done",
                     {
                         "followups": self.admission.replay_assistant.followups or [],
-                        "finish_reason": "success",
+                        "finish_reason": self.admission.replay_assistant.finish_reason,
                     },
                 )
-                self.terminal = "success"
+                self.terminal = self.admission.replay_assistant.finish_reason
                 return
 
             await self._claim_durable_turn()
@@ -1431,7 +1441,10 @@ class ChatStreamOrchestrator:
                 )
             self._assert_durable_lease()
 
-            queue: asyncio.Queue = asyncio.Queue()
+            queue = BoundedRawEventQueue(
+                max_events=self.settings.chat_scope_guardrail_buffer_max_events,
+                max_bytes=self.settings.chat_scope_guardrail_buffer_max_bytes,
+            )
             self.runner = create_chat_turn_runner(
                 settings=self.settings,
                 owner=self.owner,
@@ -1442,6 +1455,80 @@ class ChatStreamOrchestrator:
                 store=self.store,
             )
             self.research_task = asyncio.create_task(self._produce_research(queue))
+            guardrail_task = asyncio.create_task(
+                ScopeGuardrailService(self.settings).classify(self.scope_messages)
+            )
+            decision = await guardrail_task
+            if decision.decision == "block":
+                pre_block_events = queue.event_count
+                pre_block_bytes = queue.byte_count
+                main_completed = bool(self.research_task and self.research_task.done())
+                wasted_usage, wasted_cost = queue.speculative_usage()
+                buffered_events, buffered_bytes = await queue.discard()
+                if self.research_task and not self.research_task.done():
+                    self.research_task.cancel()
+                cancellation_result = await self._cancel_runner(
+                    force=True, timeout_seconds=0.25
+                )
+                if self.research_task:
+                    done, _pending = await asyncio.wait(
+                        {self.research_task}, timeout=0.25
+                    )
+                    if not done:
+                        cancellation_result = "producer_cancel_timeout"
+                        self.research_task.add_done_callback(
+                            _log_background_task_result
+                        )
+                    self.research_task = None
+                if self.runner is not None:
+                    runner = self.runner
+                    self.runner = None
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(runner.close()), timeout=0.25
+                        )
+                    except Exception:
+                        cancellation_result = "close_failed"
+                self.trace.record_guardrail(
+                    decision,
+                    buffered_events=pre_block_events,
+                    buffered_bytes=pre_block_bytes,
+                    cancellation_result=(
+                        "main_already_finished"
+                        if main_completed and cancellation_result != "close_failed"
+                        else cancellation_result
+                    ),
+                    wasted_usage=wasted_usage,
+                    wasted_cost=wasted_cost,
+                )
+                await self._persist_scope_block(REFUSAL_TEXT, "scope_blocked")
+                self.terminal = "scope_blocked"
+                self.trace.finish(REFUSAL_TEXT, "scope_blocked")
+                logger.info(
+                    "chat scope blocked request_id=%s provider=%s attempts=%s "
+                    "buffered_events=%s buffered_bytes=%s",
+                    self.request_id,
+                    decision.provider,
+                    decision.attempts,
+                    buffered_events,
+                    buffered_bytes,
+                )
+                yield ChatStreamFrame("answer_delta", {"text": REFUSAL_TEXT})
+                yield ChatStreamFrame(
+                    "done",
+                    {
+                        "followups": [],
+                        "citations": [],
+                        "finish_reason": "scope_blocked",
+                    },
+                )
+                return
+            self.trace.record_guardrail(
+                decision,
+                buffered_events=queue.event_count,
+                buffered_bytes=queue.byte_count,
+                cancellation_result="not_required",
+            )
             if self.title_token:
                 self.trace.start_title(self.settings.chat_title_model)
                 self.title_task = asyncio.create_task(
@@ -1648,7 +1735,7 @@ class ChatStreamOrchestrator:
         finally:
             await self._stop_lease_heartbeat()
 
-    async def _produce_research(self, queue: asyncio.Queue) -> None:
+    async def _produce_research(self, queue: BoundedRawEventQueue) -> None:
         try:
             assert self.runner is not None
             async for event in sequential_reasoning_events(self.runner.events()):
@@ -1673,7 +1760,7 @@ class ChatStreamOrchestrator:
         finally:
             await queue.put({"type": "_research_finished"})
 
-    async def _consume(self, queue: asyncio.Queue) -> AsyncIterator[ChatStreamFrame]:
+    async def _consume(self, queue) -> AsyncIterator[ChatStreamFrame]:
         research_finished = False
         title_finished = self.title_task is None
         last_write = time.monotonic()
@@ -2088,6 +2175,27 @@ class ChatStreamOrchestrator:
             )
             db.commit()
 
+    async def _persist_scope_block(self, answer: str, finish_reason: str) -> None:
+        def persist() -> None:
+            with db_manager.session_local() as db:
+                service = ChatSessionService(db, self.settings)
+                service.complete_turn(
+                    self.owner,
+                    self.admission,
+                    answer,
+                    [],
+                    [],
+                    [],
+                    finish_reason,
+                )
+                if self.title_token:
+                    service.cancel_title(
+                        self.owner, self.admission.session_id, self.title_token
+                    )
+                db.commit()
+
+        await self._persist_terminal_with_lease(persist)
+
     def _finalize_projection(
         self, db, service: ChatSessionService
     ) -> tuple[str, list[dict[str, Any]]]:
@@ -2141,10 +2249,24 @@ class ChatStreamOrchestrator:
                 )
                 db.commit()
 
-    async def _cancel_runner(self) -> None:
-        if self.runner and self.research_task and not self.research_task.done():
-            with contextlib.suppress(Exception):
-                await asyncio.shield(self.runner.cancel())
+    async def _cancel_runner(
+        self, *, force: bool = False, timeout_seconds: float | None = None
+    ) -> str:
+        if self.runner is None:
+            return "runner_unavailable"
+        if not force and self.research_task and self.research_task.done():
+            return "main_already_finished"
+        try:
+            cancellation = asyncio.shield(self.runner.cancel())
+            if timeout_seconds is not None:
+                await asyncio.wait_for(cancellation, timeout=timeout_seconds)
+            else:
+                await cancellation
+            return "cancelled"
+        except TimeoutError:
+            return "cancel_timeout"
+        except Exception:
+            return "cancel_failed"
 
     async def _close(self) -> None:
         # Starlette may close an async response generator with GeneratorExit
@@ -2200,6 +2322,7 @@ class ChatStreamOrchestrator:
             "success": "complete",
             "max_turns": "complete",
             "tool_limit": "complete",
+            "scope_blocked": "complete",
             "stopped": "stopped",
             "error": "error",
         }.get(self.terminal, "interrupted")

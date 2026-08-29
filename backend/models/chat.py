@@ -20,7 +20,7 @@ from pydantic import (
 
 StrictText = Annotated[str, StringConstraints(max_length=8000)]
 AuthorName = Annotated[str, StringConstraints(max_length=300)]
-FinishReason = Literal["success", "max_turns", "tool_limit"]
+FinishReason = Literal["success", "max_turns", "tool_limit", "scope_blocked"]
 ReasoningEffort = Literal["low", "high", "max"]
 
 

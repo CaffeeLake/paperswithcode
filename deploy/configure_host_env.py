@@ -85,6 +85,10 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_SANDBOX_MEMORY_MIB",
     "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP",
     "PWC_CHAT_SANDBOX_WARNING_MICROUSD",
+    "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED",
+    "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN",
+    "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO",
+    "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY",
     "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED",
     "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD",
     "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD",
@@ -382,6 +386,46 @@ def staging_openai_direct_disable_values() -> dict[str, str]:
         "PWC_CHAT_OPENAI_DIRECT_ENABLED": "false",
         "PWC_CHAT_PI_PREWARM_MODEL": "openai/gpt-5.6-luna",
         "PWC_CHAT_PI_PREWARM_REASONING_EFFORT": "low",
+    }
+
+
+def staging_scope_guardrail_values(current: dict[str, str]) -> dict[str, str]:
+    """Install server-owned scope credentials without exposing user tokens."""
+
+    required = (
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_HF_BILL_TO",
+        "PWC_CODEX_JOBS_OPENAI_API_KEY",
+    )
+    values = {
+        key: decoded_value(current[key]).strip()
+        for key in required
+        if key in current and decoded_value(current[key]).strip()
+    }
+    missing = [key for key in required if key not in values]
+    if missing:
+        raise ValueError(
+            "staging scope guardrail source is missing: " + ", ".join(missing)
+        )
+    for dedicated, general in (
+        ("PWC_CHAT_TITLE_HF_TOKEN", "PWC_HF_TOKEN"),
+        ("PWC_CODEX_JOBS_OPENAI_API_KEY", "PWC_OPENAI_API_KEY"),
+    ):
+        if (
+            general in current
+            and decoded_value(current[general]).strip() == values[dedicated]
+        ):
+            raise ValueError(
+                f"staging scope guardrail credential must not reuse {general}"
+            )
+    return {
+        "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED": "true",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": values["PWC_CHAT_TITLE_HF_TOKEN"],
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": values["PWC_CHAT_HF_BILL_TO"],
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": values[
+            "PWC_CODEX_JOBS_OPENAI_API_KEY"
+        ],
+        "PWC_CHAT_POSTERLY_ENABLED": "false",
     }
 
 
@@ -1123,6 +1167,7 @@ def main() -> int:
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openai-direct-only", action="store_true")
     parser.add_argument("--staging-openai-direct-disable-only", action="store_true")
+    parser.add_argument("--staging-scope-guardrail-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
@@ -1205,6 +1250,33 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_scope_guardrail_only:
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key != "staging_scope_guardrail_only"
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            other_modes
+            or args.confirm is not None
+            or args.codex_jobs_namespace
+            or args.modal_profile
+        ):
+            parser.error("staging scope guardrail mode must run alone")
+        current = read_lines(CONFIG_ROOT / "staging.env")
+        try:
+            values = staging_scope_guardrail_values(current)
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "staging.env",
+            assign(current, values),
+            "pwc-staging",
+        )
+        print("enabled staging research-scope guardrail; no service was restarted")
+        return 0
     durable_dispatch_modes = (
         args.staging_chat_durable_dispatch_enable_only,
         args.staging_chat_durable_dispatch_disable_only,

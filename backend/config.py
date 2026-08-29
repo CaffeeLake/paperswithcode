@@ -376,6 +376,39 @@ class Settings(BaseSettings):
     chat_openai_user_max_concurrency: int = Field(default=2, ge=1, le=16)
     chat_openai_global_max_concurrency: int = Field(default=4, ge=1, le=64)
     chat_openai_reconciliation_stale_minutes: int = Field(default=15, ge=1, le=24 * 60)
+    # Server-owned research-scope guardrail. These credentials, limits, and
+    # counters are deliberately separate from user inference credentials and
+    # the main direct-OpenAI chat allowance.
+    chat_scope_guardrail_enabled: bool = Field(default=False)
+    chat_scope_guardrail_hf_token: str = Field(default="")
+    chat_scope_guardrail_hf_bill_to: str = Field(default="", max_length=200)
+    chat_scope_guardrail_glm_model: str = Field(
+        default="zai-org/GLM-5.3-Flash:baseten",
+        pattern=r"^zai-org/GLM-5\.3-Flash:baseten$",
+    )
+    chat_scope_guardrail_openai_api_key: str = Field(default="")
+    chat_scope_guardrail_openai_model: str = Field(
+        default="gpt-5.6-luna", pattern=r"^gpt-5\.6-luna$"
+    )
+    chat_scope_guardrail_attempt_timeout_seconds: float = Field(
+        default=1.5, ge=0.1, le=1.5
+    )
+    chat_scope_guardrail_max_prior_messages: int = Field(default=6, ge=0, le=6)
+    chat_scope_guardrail_max_context_chars: int = Field(
+        default=8_000, ge=8_000, le=8_000
+    )
+    chat_scope_guardrail_buffer_max_events: int = Field(default=256, ge=8, le=4096)
+    chat_scope_guardrail_buffer_max_bytes: int = Field(
+        default=2 * 1024 * 1024, ge=64 * 1024, le=16 * 1024 * 1024
+    )
+    chat_scope_guardrail_max_concurrency: int = Field(default=16, ge=1, le=128)
+    chat_scope_guardrail_rate_limit_calls: int = Field(default=600, ge=1, le=100_000)
+    chat_scope_guardrail_rate_limit_window_seconds: int = Field(
+        default=10 * 60, ge=60, le=24 * 60 * 60
+    )
+    chat_scope_guardrail_daily_budget_usd: Decimal = Field(
+        default=Decimal("5.00"), gt=0, le=1000
+    )
     # Read-only compatibility input for rolling back releases whose staging
     # registry still exposed the Terra route.
     chat_terra_route: str = Field(default="openai/gpt-5.6-terra")

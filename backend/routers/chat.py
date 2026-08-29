@@ -97,6 +97,10 @@ from backend.services.chat_session_service import (
     ChatSessionService,
     owner_from_user,
 )
+from backend.services.chat_scope_guardrail_service import (
+    ScopeMessage,
+    build_scope_context,
+)
 from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_runner import shared_sandbox_manager
@@ -1811,6 +1815,7 @@ async def stream_chat(
     )
     request_id = str(uuid.uuid4())
     prepared = PreparedPaperTurn(body.message, body.message, [], 0, 0, 0)
+    scope_messages = [ScopeMessage(role="user", content=body.message)]
     existing_prompt: str | None = None
     if body.session_id is not None:
         with db_manager.session_local() as replay_db:
@@ -1908,6 +1913,48 @@ async def stream_chat(
                         is_new_chat=body.session_id is None,
                         agent_harness=admission.agent_harness,
                     )
+                    if settings.chat_scope_guardrail_enabled:
+                        current_user = db.get(
+                            ChatMessageRecord, admission.user_message_id
+                        )
+                        cutoff = (
+                            admission.replacement_target_sequence
+                            if admission.replacement_target_sequence is not None
+                            else getattr(current_user, "sequence", 0)
+                        )
+                        prior_rows = list(
+                            db.execute(
+                                select(ChatMessageRecord)
+                                .where(
+                                    ChatMessageRecord.session_id
+                                    == admission.session_id,
+                                    ChatMessageRecord.sequence < cutoff,
+                                    ChatMessageRecord.role.in_(("user", "assistant")),
+                                    ChatMessageRecord.status == "complete",
+                                )
+                                .order_by(ChatMessageRecord.sequence.desc())
+                                .limit(settings.chat_scope_guardrail_max_prior_messages)
+                            ).scalars()
+                        )
+                        selected_paper = None
+                        primary = prepared.primary_paper_context
+                        if isinstance(primary, dict):
+                            selected_paper = {
+                                "title": primary.get("title"),
+                                "route_id": primary.get("route_id"),
+                            }
+                        scope_messages = build_scope_context(
+                            [
+                                ScopeMessage(role=row.role, content=row.content)
+                                for row in reversed(prior_rows)
+                            ],
+                            prepared.display_message,
+                            max_prior_messages=(
+                                settings.chat_scope_guardrail_max_prior_messages
+                            ),
+                            max_chars=settings.chat_scope_guardrail_max_context_chars,
+                            selected_paper=selected_paper,
+                        )
                 db.commit()
             except ChatServiceError as exc:
                 if exc.commit_changes:
@@ -1959,6 +2006,7 @@ async def stream_chat(
         title_token=title_token,
         is_disconnected=_never_disconnected,
         release_admission=_release_durable_admission,
+        scope_messages=scope_messages,
     )
     live_stream = live_chat_stream_registry().start(
         session_id=admission.session_id,
