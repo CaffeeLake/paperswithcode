@@ -559,7 +559,7 @@ def test_stop_before_claim_claims_once_and_blocks_later_dispatch(db):
         )
 
 
-def test_dispatch_failure_claims_and_interrupts_unleased_admission_atomically(db):
+def test_dispatch_failure_claims_and_interrupts_expired_admission_atomically(db):
     repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
     session = _session(db)
     admitted = _admit(repository, db, session).job
@@ -570,6 +570,7 @@ def test_dispatch_failure_claims_and_interrupts_unleased_admission_atomically(db
         worker_id="dispatch-coordinator",
         worker_generation=4,
         lease_seconds=30,
+        admitted_before=NOW + timedelta(seconds=5),
         now=NOW + timedelta(seconds=10),
     )
     replay = repository.interrupt_dispatch_failed(
@@ -578,6 +579,7 @@ def test_dispatch_failure_claims_and_interrupts_unleased_admission_atomically(db
         worker_id="dispatch-coordinator",
         worker_generation=4,
         lease_seconds=30,
+        admitted_before=NOW + timedelta(seconds=5),
         now=NOW + timedelta(seconds=11),
     )
 
@@ -589,6 +591,35 @@ def test_dispatch_failure_claims_and_interrupts_unleased_admission_atomically(db
     assert terminal.worker_generation == 4
     assert terminal.lease_generation == 1
     assert terminal.lease_expires_at is None
+
+
+@pytest.mark.parametrize(
+    "admitted_before",
+    [NOW - timedelta(microseconds=1), NOW],
+    ids=["fresh", "exact_boundary"],
+)
+def test_dispatch_failure_preserves_still_dispatchable_admission(db, admitted_before):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    admitted = _admit(repository, db, session).job
+
+    result = repository.interrupt_dispatch_failed(
+        db,
+        turn_id=admitted.turn_id,
+        worker_id="dispatch-coordinator",
+        worker_generation=4,
+        lease_seconds=30,
+        admitted_before=admitted_before,
+        now=NOW + timedelta(seconds=10),
+    )
+
+    assert result is None
+    assert admitted.state == "admitted"
+    assert admitted.worker_id is None
+    assert admitted.worker_generation is None
+    assert admitted.lease_generation is None
+    assert admitted.terminal_at is None
+    assert admitted.failure_code is None
 
 
 def test_stop_after_claim_preserves_other_process_fence(db):

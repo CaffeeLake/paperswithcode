@@ -586,10 +586,15 @@ class ChatTurnJobRepository:
         worker_id: str,
         worker_generation: int,
         lease_seconds: int,
+        admitted_before: datetime,
         now: datetime,
     ) -> ChatTurnJob | None:
         """Terminalize only an admission that never acquired a worker claim."""
-        if now.tzinfo is None:
+        if (
+            now.tzinfo is None
+            or admitted_before.tzinfo is None
+            or admitted_before > now
+        ):
             raise ValueError("Dispatch failure timestamp is invalid")
         job = self.load_by_turn(db, turn_id, lock=True)
         if job is None:
@@ -599,6 +604,11 @@ class ChatTurnJobRepository:
                 raise InvalidTurnTransition("Terminal turn state is immutable")
             return job
         if job.state != "admitted":
+            return None
+        admitted_at = job.admitted_at
+        if admitted_at.tzinfo is None:
+            admitted_at = admitted_at.replace(tzinfo=UTC)
+        if admitted_at >= admitted_before:
             return None
         claim = self.claim(
             db,
