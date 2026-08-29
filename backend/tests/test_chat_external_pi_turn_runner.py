@@ -200,6 +200,10 @@ class LostExecutor(FakeExecutor):
 
     async def cancel_execution(self, context):
         self.cancelled_contexts.append(context)
+        return ExecutorExecutionResult(
+            outputs=(),
+            terminal={"status": "cancelled", "exit_code": None, "error": None},
+        )
 
 
 def worker_status(claim):
@@ -372,7 +376,7 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
 
     async def record_executor_cancel(context):
         cancellation_order.append("executor")
-        await original_cancel_execution(context)
+        return await original_cancel_execution(context)
 
     async def record_socket_send(value):
         if json.loads(value)["type"] == "cancel_turn":
@@ -1004,10 +1008,16 @@ def test_external_task_cancellation_settles_exact_active_workspace(
             self.cancelled_contexts.append(context)
             if not cancel_succeeds:
                 raise OSError("cancel uncertain")
+            return ExecutorExecutionResult(
+                outputs=(),
+                terminal={"status": "cancelled", "exit_code": None, "error": None},
+            )
 
     async def exercise():
         executor = BlockingExecutor()
         manager = FakeWorkspaceManager(FakeProvider())
+        if not cancel_succeeds:
+            manager.invalidate_error = RuntimeError("secondary cleanup failed")
         runner = _tool_runner(executor, manager)
         request = {
             "operation_id": "operation-1",
@@ -1055,6 +1065,92 @@ def test_cleanup_failures_do_not_override_successful_tool_result():
 
     assert result["ok"] is True
     assert len(manager.released) == 1
+    assert len(manager.invalidated) == 1
+
+
+def test_new_cancellation_during_successful_release_propagates_after_invalidation():
+    manager = FakeWorkspaceManager(FakeProvider())
+    manager.release_error = asyncio.CancelledError()
+    runner = _tool_runner(FakeExecutor(), manager)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            runner._tool_result(
+                {
+                    "operation_id": "operation-1",
+                    "tool_call_id": "tool-1",
+                    "operation": "exec",
+                    "command": "printf x >> marker",
+                    "timeout_ms": 1000,
+                }
+            )
+        )
+
+    assert len(manager.released) == 1
+    assert len(manager.invalidated) == 1
+
+
+@pytest.mark.parametrize(
+    ("terminal", "safe"),
+    [
+        ({"status": "cancelled", "exit_code": None, "error": None}, True),
+        ({"status": "completed", "exit_code": 0, "error": None}, True),
+        (
+            {
+                "status": "failed",
+                "exit_code": None,
+                "error": "execution_not_found",
+            },
+            False,
+        ),
+        ({"status": "failed", "exit_code": 1, "error": "failed"}, False),
+        ({"status": "unknown", "exit_code": None, "error": None}, False),
+        ({"status": "cancelled", "error": None}, False),
+        (None, False),
+    ],
+)
+def test_cancel_executor_requires_positive_terminal_proof(terminal, safe):
+    class CancelResult(FakeExecutor):
+        async def cancel_execution(self, context):
+            return ExecutorExecutionResult(outputs=(), terminal=terminal)
+
+    runner = _tool_runner(CancelResult(), FakeWorkspaceManager(FakeProvider()))
+    context = SimpleNamespace()
+
+    assert asyncio.run(runner._cancel_executor(context)) is safe
+
+
+def test_execution_not_found_cancel_result_invalidates_ambiguous_workspace():
+    class MissingExecution(LostExecutor):
+        async def cancel_execution(self, context):
+            self.cancelled_contexts.append(context)
+            return ExecutorExecutionResult(
+                outputs=(),
+                terminal={
+                    "status": "failed",
+                    "exit_code": None,
+                    "error": "execution_not_found",
+                },
+            )
+
+    manager = FakeWorkspaceManager(FakeProvider())
+    runner = _tool_runner(MissingExecution(), manager)
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(
+            runner._tool_result(
+                {
+                    "operation_id": "operation-1",
+                    "tool_call_id": "tool-1",
+                    "operation": "exec",
+                    "command": "printf x >> marker",
+                    "timeout_ms": 1000,
+                }
+            )
+        )
+
+    assert exc_info.value.code == "execution_lost"
+    assert manager.released == []
     assert len(manager.invalidated) == 1
 
 

@@ -183,6 +183,27 @@ def test_health_cleanup_failure_preserves_typed_failure_and_busy_fence():
         assert lease.state == "busy"
 
 
+def test_cancellation_during_unhealthy_health_invalidation_propagates():
+    health = ExecutorHealth("draining")
+    manager, sessions, session_id, _provider = setup_manager(health=health)
+
+    async def cancel_invalidation(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    manager.invalidate = cancel_invalidation
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+
+    asyncio.run(exercise())
+
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == "busy"
+
+
 def test_identity_failure_invalidates_only_the_exact_busy_claim():
     manager, sessions, session_id, provider = setup_manager()
 

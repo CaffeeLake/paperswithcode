@@ -180,7 +180,7 @@ class ChatExternalExecutorWorkspaceManager:
                 raise
             except (ExecutorTransportError, ProtocolError, SandboxError):
                 healthy = False
-            except BaseException:
+            except Exception:
                 await self._invalidate_preserving_primary(workspace)
                 raise
             if healthy:
@@ -235,7 +235,10 @@ class ChatExternalExecutorWorkspaceManager:
     ) -> None:
         try:
             await self.release(workspace)
-        except BaseException:
+        except asyncio.CancelledError:
+            await self._invalidate_preserving_primary(workspace)
+            raise
+        except Exception:
             await self._invalidate_preserving_primary(workspace)
 
     async def _invalidate_preserving_primary(
@@ -243,7 +246,7 @@ class ChatExternalExecutorWorkspaceManager:
     ) -> bool:
         try:
             await self.invalidate(workspace)
-        except BaseException:
+        except Exception:
             # The exact busy fence remains unreusable until reconciliation.
             return False
         return True

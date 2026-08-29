@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import json
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -42,6 +42,7 @@ from backend.services.chat_external_executor_workspace import (
 from backend.services.chat_sandbox_executor import (
     ExecutorContext,
     ExecutorExecutionLost,
+    ExecutorExecutionResult,
     ExecutorOperationError,
     ExecutorTransportError,
     SandboxExecutorClient,
@@ -54,6 +55,7 @@ from backend.services.chat_session_service import TurnAdmission
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
+type WorkspaceSettlement = Literal["release", "invalidate"]
 
 
 def _worker_websocket_url(base_url: str) -> str:
@@ -403,7 +405,8 @@ class ExternalPiChatTurnRunner:
             raise ValueError("unsupported_tool_operation")
         context: ExecutorContext | None = None
         workspace: ExternalExecutorWorkspace | None = None
-        settlement = "invalidate"
+        settlement: WorkspaceSettlement = "invalidate"
+        primary_exception_active = False
         try:
             workspace = await self._workspace_manager().acquire(
                 session_id=self.admission.session_id,
@@ -445,12 +448,14 @@ class ExternalPiChatTurnRunner:
                 }
             raise AssertionError("validated tool operation was not handled")
         except ExecutorExecutionLost:
+            primary_exception_active = True
             if context is not None:
                 settlement = (
                     "release" if await self._cancel_executor(context) else "invalidate"
                 )
             raise
         except asyncio.CancelledError:
+            primary_exception_active = True
             if context is not None:
                 settlement = (
                     "release" if await self._cancel_executor(context) else "invalidate"
@@ -466,7 +471,8 @@ class ExternalPiChatTurnRunner:
             SandboxError,
         ) as error:
             return {**base, "ok": False, "error": getattr(error, "code", "tool_failed")}
-        except BaseException:
+        except Exception:
+            primary_exception_active = True
             if context is not None:
                 settlement = (
                     "release" if await self._cancel_executor(context) else "invalidate"
@@ -475,34 +481,72 @@ class ExternalPiChatTurnRunner:
         finally:
             self.active_context = None
             if workspace is not None:
-                await self._settle_workspace(workspace, settlement=settlement)
+                await self._settle_workspace(
+                    workspace,
+                    settlement=settlement,
+                    primary_exception_active=primary_exception_active,
+                )
 
     async def _cancel_executor(self, context: ExecutorContext) -> bool:
         try:
-            await self.executor.cancel_execution(context)
-        except BaseException:
+            result = await self.executor.cancel_execution(context)
+        except Exception:
             return False
-        return True
+        if not isinstance(result, ExecutorExecutionResult):
+            return False
+        terminal = result.terminal
+        if not isinstance(terminal, Mapping) or set(terminal) != {
+            "status",
+            "exit_code",
+            "error",
+        }:
+            return False
+        return terminal.get("status") in {"completed", "cancelled"} and (
+            terminal.get("error") is None
+        )
 
     async def _settle_workspace(
         self,
         workspace: ExternalExecutorWorkspace,
         *,
-        settlement: str,
+        settlement: WorkspaceSettlement,
+        primary_exception_active: bool,
     ) -> None:
         manager = self._workspace_manager()
         if settlement == "release":
             try:
                 await manager.release(workspace)
                 return
-            except BaseException:
+            except asyncio.CancelledError:
+                await self._invalidate_workspace(
+                    workspace,
+                    primary_exception_active=primary_exception_active,
+                )
+                if not primary_exception_active:
+                    raise
+                return
+            except Exception:
                 # The durable release may have rolled back, or maintenance may
                 # have failed after it committed. Exact invalidation is safe in
                 # both cases and must not replace the primary tool outcome.
                 pass
+        await self._invalidate_workspace(
+            workspace,
+            primary_exception_active=primary_exception_active,
+        )
+
+    async def _invalidate_workspace(
+        self,
+        workspace: ExternalExecutorWorkspace,
+        *,
+        primary_exception_active: bool,
+    ) -> None:
         try:
-            await manager.invalidate(workspace)
-        except BaseException:
+            await self._workspace_manager().invalidate(workspace)
+        except asyncio.CancelledError:
+            if not primary_exception_active:
+                raise
+        except Exception:
             # A failed fence leaves the exact claim busy, which is fail-closed:
             # acquisition cannot reuse it until existing reconciliation runs.
             pass
