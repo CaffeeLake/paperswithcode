@@ -80,7 +80,11 @@ HEARTBEAT_SECONDS = 15.0
 
 
 def encode_journal_frame(frame: JournalFrame) -> bytes:
-    data = json.dumps(frame.payload, separators=(",", ":"), ensure_ascii=False)
+    data = json.dumps(
+        {"type": frame.event, **frame.payload},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     return f"id: {frame.sequence}\nevent: {frame.event}\ndata: {data}\n\n".encode()
 
 

@@ -57,6 +57,7 @@ from backend.models.database import (
     ChatArtifactVersion,
     ChatMessageRecord,
     ChatSession,
+    ChatTurnEventChunk,
 )
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_artifact_service import ArtifactError, ChatArtifactService
@@ -178,6 +179,55 @@ def detached_turn_coordinator() -> DetachedTurnCoordinator:
             persist_terminal=_persist_detached_terminal,
         )
     return _detached_coordinator
+
+
+async def _turn_journal_has_terminal(turn_id: uuid.UUID) -> bool:
+    def load_latest_events(db):
+        return db.scalar(
+            select(ChatTurnEventChunk.events)
+            .where(ChatTurnEventChunk.turn_id == turn_id)
+            .order_by(ChatTurnEventChunk.last_sequence.desc())
+            .limit(1)
+        )
+
+    events = await _detached_transaction(load_latest_events)
+    return bool(
+        events and any(event.get("event") in {"done", "error"} for event in events)
+    )
+
+
+async def _durable_replay_frames(admission, *, request_id: str, after_sequence: int):
+    if admission.replay_assistant is None or await _turn_journal_has_terminal(
+        admission.turn_id
+    ):
+        async for frame in detached_turn_coordinator().subscribe(
+            turn_id=admission.turn_id, after_sequence=after_sequence
+        ):
+            yield frame
+        return
+
+    sequence = admission.durable_event_sequence
+    replay = admission.replay_assistant
+    fallback = (
+        JournalFrame(
+            sequence + 1,
+            "stream_start",
+            {
+                "request_id": request_id,
+                "session_id": str(admission.session_id),
+                "provider_execution": False,
+            },
+        ),
+        JournalFrame(sequence + 2, "answer_delta", {"text": replay.content}),
+        JournalFrame(
+            sequence + 3,
+            "done",
+            {"followups": replay.followups, "finish_reason": "success"},
+        ),
+    )
+    for frame in fallback:
+        if frame.sequence > after_sequence:
+            yield frame
 
 
 def detached_live_stream_registry() -> LiveChatStreamRegistry:
@@ -1013,7 +1063,11 @@ def reconnect_active_stream(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
-    after_sequence = _last_event_sequence(request)
+    after_sequence = (
+        _last_event_sequence(request)
+        if settings.chat_durable_turn_dispatch_enabled
+        else 0
+    )
     owner = owner_from_user(user)
     try:
         session, _messages = ChatSessionService(db, settings).get_session(
@@ -1821,7 +1875,11 @@ async def stream_chat(
     body: ChatRequest, request: Request, user: dict = Depends(require_user)
 ):
     settings = get_settings()
-    after_sequence = _last_event_sequence(request)
+    after_sequence = (
+        _last_event_sequence(request)
+        if settings.chat_durable_turn_dispatch_enabled
+        else 0
+    )
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
     if body.paper_selection is not None and not settings.paper_reader_selection_enabled:
@@ -2050,8 +2108,10 @@ async def stream_chat(
     live_stream = None
     journal_stream = None
     if getattr(admission, "attach_only", False):
-        journal_stream = detached_turn_coordinator().subscribe(
-            turn_id=admission.turn_id, after_sequence=after_sequence
+        journal_stream = _durable_replay_frames(
+            admission,
+            request_id=request_id,
+            after_sequence=after_sequence,
         )
     else:
         orchestrator = ChatStreamOrchestrator(

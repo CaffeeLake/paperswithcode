@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -137,6 +137,7 @@ class TurnAdmission:
     fetchable_urls: tuple[str, ...] = ()
     durable_claim: TurnLeaseClaim | None = None
     attach_only: bool = False
+    durable_event_sequence: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1064,6 +1065,7 @@ class ChatSessionService:
                         and self.settings.chat_posterly_enabled
                         and detect_poster_intent(existing.content)
                     ),
+                    attach_only=self.settings.chat_durable_turn_dispatch_enabled,
                 ),
             )
         if (
@@ -1667,9 +1669,9 @@ class ChatSessionService:
             raise
         if replay.kind == "admitted":
             assert replay.admission is not None
+            admission = replay.admission
             if durable_coordinator is not None:
                 assert durable_preflight is not None
-                admission = replay.admission
                 try:
                     durable_coordinator.validate_replay(
                         durable_preflight,
@@ -1688,7 +1690,13 @@ class ChatSessionService:
                     )
                 except (TurnJobError, ValueError, SQLAlchemyError) as error:
                     raise self._durable_admission_error(error) from error
-            return replay.admission
+                admission = replace(
+                    admission,
+                    durable_event_sequence=int(
+                        getattr(durable_preflight.existing_job, "event_sequence", 0)
+                    ),
+                )
+            return admission
         if (
             durable_preflight is not None
             and durable_preflight.existing_job is not None

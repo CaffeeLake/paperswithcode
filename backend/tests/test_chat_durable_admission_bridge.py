@@ -144,7 +144,7 @@ def test_enabled_request_without_session_recovers_exact_completed_replay(monkeyp
     )
     session = _session(settings)
     turn_id = uuid.uuid4()
-    job = SimpleNamespace(chat_session_id=session.id)
+    job = SimpleNamespace(chat_session_id=session.id, event_sequence=12)
     validated = []
 
     class _Coordinator:
@@ -196,6 +196,8 @@ def test_enabled_request_without_session_recovers_exact_completed_replay(monkeyp
 
     assert admission.turn_id == turn_id
     assert admission.replay_assistant is not None
+    assert admission.attach_only is True
+    assert admission.durable_event_sequence == 12
     assert loaded_session_ids == [session.id]
     assert validated == [
         {

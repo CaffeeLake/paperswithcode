@@ -50,6 +50,7 @@ from backend.services.chat_session_service import (
     ChatOwner,
     ChatServiceError,
     ChatSessionService,
+    ReplayAssistant,
     TurnAdmission,
 )
 from backend.services.chat_stream_service import (
@@ -154,8 +155,179 @@ def test_journal_sse_serializer_adds_sequence_without_changing_event_payload():
     encoded = encode_journal_frame(JournalFrame(8, "answer_delta", {"text": "héllo"}))
 
     assert encoded == (
-        'id: 8\nevent: answer_delta\ndata: {"text":"héllo"}\n\n'.encode()
+        'id: 8\nevent: answer_delta\ndata: {"type":"answer_delta","text":"héllo"}\n\n'.encode()
     )
+
+
+def test_journal_sse_serializer_preserves_browser_data_type_contract():
+    encoded = encode_journal_frame(
+        JournalFrame(4, "done", {"followups": [], "finish_reason": "success"})
+    ).decode()
+    data = next(
+        json.loads(line.removeprefix("data: "))
+        for line in encoded.splitlines()
+        if line.startswith("data: ")
+    )
+
+    assert data == {
+        "type": "done",
+        "followups": [],
+        "finish_reason": "success",
+    }
+
+
+def _completed_durable_admission(*, event_sequence: int = 8) -> TurnAdmission:
+    return TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="model",
+        model_route="route",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        replay_assistant=ReplayAssistant("canonical answer", ["next"]),
+        attach_only=True,
+        durable_event_sequence=event_sequence,
+    )
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        ([{"sequence": 8, "event": "done", "payload": {}}], True),
+        ([{"sequence": 8, "event": "answer_delta", "payload": {}}], False),
+        (None, False),
+    ],
+)
+def test_turn_journal_terminal_detection(monkeypatch, events, expected):
+    async def transaction(operation):
+        class DB:
+            def scalar(self, _query):
+                return events
+
+        return operation(DB())
+
+    monkeypatch.setattr(chat_router, "_detached_transaction", transaction)
+
+    assert asyncio.run(chat_router._turn_journal_has_terminal(uuid.uuid4())) is expected
+
+
+def test_completed_durable_replay_uses_journal_frames_after_cursor(monkeypatch):
+    admission = _completed_durable_admission()
+
+    class Coordinator:
+        async def subscribe(self, *, turn_id, after_sequence):
+            assert (turn_id, after_sequence) == (admission.turn_id, 7)
+            yield JournalFrame(8, "done", {"finish_reason": "success"})
+
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+
+    async def journal_has_terminal(turn_id):
+        assert turn_id == admission.turn_id
+        return True
+
+    monkeypatch.setattr(chat_router, "_turn_journal_has_terminal", journal_has_terminal)
+
+    async def collect():
+        return [
+            frame
+            async for frame in chat_router._durable_replay_frames(
+                admission, request_id="request-1", after_sequence=7
+            )
+        ]
+
+    assert [(frame.sequence, frame.event) for frame in asyncio.run(collect())] == [
+        (8, "done")
+    ]
+
+
+def test_completed_durable_replay_at_terminal_cursor_emits_nothing(monkeypatch):
+    admission = _completed_durable_admission()
+
+    class Coordinator:
+        async def subscribe(self, *, turn_id, after_sequence):
+            assert (turn_id, after_sequence) == (admission.turn_id, 8)
+            if False:
+                yield
+
+    async def journal_has_terminal(turn_id):
+        assert turn_id == admission.turn_id
+        return True
+
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+    monkeypatch.setattr(chat_router, "_turn_journal_has_terminal", journal_has_terminal)
+
+    async def collect():
+        return [
+            frame
+            async for frame in chat_router._durable_replay_frames(
+                admission, request_id="request-1", after_sequence=8
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+
+
+def test_completed_durable_replay_falls_back_after_job_sequence(monkeypatch):
+    admission = _completed_durable_admission(event_sequence=8)
+
+    class Coordinator:
+        async def subscribe(self, **_kwargs):
+            if False:
+                yield
+
+    async def journal_has_terminal(_turn_id):
+        return False
+
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+    monkeypatch.setattr(chat_router, "_turn_journal_has_terminal", journal_has_terminal)
+
+    async def collect(cursor):
+        return [
+            frame
+            async for frame in chat_router._durable_replay_frames(
+                admission, request_id="request-1", after_sequence=cursor
+            )
+        ]
+
+    all_frames = asyncio.run(collect(8))
+    resumed = asyncio.run(collect(9))
+    assert [(frame.sequence, frame.event) for frame in all_frames] == [
+        (9, "stream_start"),
+        (10, "answer_delta"),
+        (11, "done"),
+    ]
+    assert [frame.sequence for frame in resumed] == [10, 11]
+
+
+def test_completed_durable_replay_ignores_nonterminal_journal(monkeypatch):
+    admission = _completed_durable_admission(event_sequence=8)
+
+    class Coordinator:
+        async def subscribe(self, **_kwargs):
+            yield JournalFrame(8, "answer_delta", {"text": "partial"})
+
+    async def journal_has_terminal(_turn_id):
+        return False
+
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+    monkeypatch.setattr(chat_router, "_turn_journal_has_terminal", journal_has_terminal)
+
+    async def collect():
+        return [
+            frame
+            async for frame in chat_router._durable_replay_frames(
+                admission, request_id="request-1", after_sequence=0
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    assert [(frame.sequence, frame.event) for frame in frames] == [
+        (9, "stream_start"),
+        (10, "answer_delta"),
+        (11, "done"),
+    ]
+    assert frames[1].payload == {"text": "canonical answer"}
 
 
 def test_reconnect_stream_resumes_after_last_event_id(monkeypatch):
@@ -209,6 +381,56 @@ def test_reconnect_stream_resumes_after_last_event_id(monkeypatch):
     assert "id: 7\n" not in body
     assert "id: 8\n" in body
     assert cursors == [7]
+
+
+def test_legacy_reconnect_ignores_malformed_last_event_id(monkeypatch):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def get_session(self, *_args):
+            return SimpleNamespace(active_turn_id=turn_id), []
+
+    class Stream:
+        async def subscribe(self):
+            yield SimpleNamespace(
+                event="done",
+                payload={"followups": [], "finish_reason": "success"},
+            )
+
+    class Registry:
+        def get(self, *_args):
+            return Stream()
+
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": False}
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "live_chat_stream_registry", lambda: Registry())
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/v1/chat/sessions/{session_id}/stream",
+            "headers": [(b"last-event-id", b"not-a-cursor")],
+        }
+    )
+
+    response = chat_router.reconnect_active_stream(
+        session_id,
+        request,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+
+    async def collect_body():
+        return b"".join([chunk async for chunk in response.body_iterator]).decode()
+
+    assert 'data: {"type":"done"' in asyncio.run(collect_body())
 
 
 @pytest.mark.parametrize("cursor", ["-1", "nope", "1.5"])
@@ -2891,6 +3113,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/chat/stream",
+            headers={"Last-Event-ID": "not-a-cursor"},
             json={"message": "hello", "client_message_id": "id"},
         )
     assert response.status_code == 200
