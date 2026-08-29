@@ -66,7 +66,14 @@ from backend.services.chat_feedback_service import (
 )
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.latex_paper_service import LatexPaperService
-from backend.services.chat_live_stream_service import live_chat_stream_registry
+from backend.services.chat_detached_turn_service import (
+    DetachedTurn,
+    DetachedTurnCoordinator,
+)
+from backend.services.chat_live_stream_service import (
+    LiveChatStreamRegistry,
+    live_chat_stream_registry,
+)
 from backend.services.chat_mcp_app_proxy import (
     APP_HTML_MIME,
     fetch_excalidraw_app_html,
@@ -98,8 +105,12 @@ from backend.services.chat_session_service import (
     owner_from_user,
 )
 from backend.services.chat_share_service import ChatShareService
-from backend.services.chat_stream_service import ChatStreamOrchestrator
+from backend.services.chat_stream_service import (
+    ChatStreamOrchestrator,
+    encode_journal_frame,
+)
 from backend.services.chat_turn_runner import shared_sandbox_manager
+from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_turn_cancellation_coordinator import (
     ChatTurnCancellationCoordinator,
 )
@@ -128,6 +139,71 @@ from backend.utils.client_ip import get_client_ip
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+
+_detached_coordinator: DetachedTurnCoordinator | None = None
+_detached_registry: LiveChatStreamRegistry | None = None
+_detached_orchestrators: dict[uuid.UUID, ChatStreamOrchestrator] = {}
+
+
+async def _detached_transaction(operation):
+    def run():
+        with db_manager.session_local() as db:
+            try:
+                result = operation(db)
+                db.commit()
+                return result
+            except BaseException:
+                db.rollback()
+                raise
+
+    return await asyncio.to_thread(run)
+
+
+async def _persist_detached_terminal(claim, state, failure_code):
+    orchestrator = _detached_orchestrators.get(claim.turn_id)
+    if orchestrator is None:
+        raise RuntimeError("Detached terminal owner is unavailable")
+    try:
+        await orchestrator.persist_detached_terminal(claim, state, failure_code)
+    finally:
+        if _detached_orchestrators.get(claim.turn_id) is orchestrator:
+            _detached_orchestrators.pop(claim.turn_id, None)
+
+
+def detached_turn_coordinator() -> DetachedTurnCoordinator:
+    global _detached_coordinator
+    if _detached_coordinator is None:
+        _detached_coordinator = DetachedTurnCoordinator(
+            transaction=_detached_transaction,
+            persist_terminal=_persist_detached_terminal,
+        )
+    return _detached_coordinator
+
+
+def detached_live_stream_registry() -> LiveChatStreamRegistry:
+    global _detached_registry
+    if _detached_registry is None:
+        _detached_registry = LiveChatStreamRegistry(
+            detached_coordinator=detached_turn_coordinator()
+        )
+    return _detached_registry
+
+
+def _last_event_sequence(request: Request) -> int:
+    raw = request.headers.get("last-event-id", "0")
+    try:
+        sequence = int(raw)
+    except ValueError:
+        sequence = -1
+    if sequence < 0 or str(sequence) != raw:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "chat_stream_cursor_invalid",
+                "message": "Last-Event-ID must be a non-negative integer.",
+            },
+        )
+    return sequence
 
 
 CHAT_CAPACITY_RETRY_SECONDS = 5
@@ -932,10 +1008,12 @@ def get_session(
 )
 def reconnect_active_stream(
     session_id: uuid.UUID,
+    request: Request,
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    after_sequence = _last_event_sequence(request)
     owner = owner_from_user(user)
     try:
         session, _messages = ChatSessionService(db, settings).get_session(
@@ -951,25 +1029,34 @@ def reconnect_active_stream(
                 "message": "This chat is not generating.",
             },
         )
-    stream = live_chat_stream_registry().get(
-        session_id, session.active_turn_id, owner.hf_user_id
-    )
-    if stream is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "chat_stream_unavailable",
-                "message": "The active response cannot be reconnected.",
-            },
+    stream = None
+    if not settings.chat_durable_turn_dispatch_enabled:
+        stream = live_chat_stream_registry().get(
+            session_id, session.active_turn_id, owner.hf_user_id
         )
+        if stream is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "chat_stream_unavailable",
+                    "message": "The active response cannot be reconnected.",
+                },
+            )
 
     async def event_stream():
         yield b": " + (b" " * SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
-        async for frame in stream.subscribe():
-            if frame.event is None:
-                yield b": ping\n\n"
-            else:
-                yield sse_event(frame.event, **frame.payload)
+        if settings.chat_durable_turn_dispatch_enabled:
+            async for frame in detached_turn_coordinator().subscribe(
+                turn_id=session.active_turn_id, after_sequence=after_sequence
+            ):
+                yield encode_journal_frame(frame)
+        else:
+            assert stream is not None
+            async for frame in stream.subscribe():
+                if frame.event is None:
+                    yield b": ping\n\n"
+                else:
+                    yield sse_event(frame.event, **frame.payload)
 
     return StreamingResponse(
         event_stream(),
@@ -1734,6 +1821,7 @@ async def stream_chat(
     body: ChatRequest, request: Request, user: dict = Depends(require_user)
 ):
     settings = get_settings()
+    after_sequence = _last_event_sequence(request)
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
     if body.paper_selection is not None and not settings.paper_reader_selection_enabled:
@@ -1880,7 +1968,11 @@ async def stream_chat(
                     update_web_search_preference=search_is_available,
                 )
                 transport = settings.chat_route_providers[admission.model_route]
-                if transport == "huggingface" and not inference_credential:
+                if (
+                    not getattr(admission, "attach_only", False)
+                    and transport == "huggingface"
+                    and not inference_credential
+                ):
                     raise ChatServiceError(
                         "hf_inference_billing_required",
                         402,
@@ -1897,7 +1989,9 @@ async def stream_chat(
                     and not admission.replay_assistant
                     else None
                 )
-                if not admission.replay_assistant:
+                if not admission.replay_assistant and not getattr(
+                    admission, "attach_only", False
+                ):
                     ChatLatencyService(db).admit(
                         turn_id=admission.turn_id,
                         session_id=admission.session_id,
@@ -1915,7 +2009,11 @@ async def stream_chat(
                 else:
                     db.rollback()
                 raise
-        if transport == "openrouter" and not admission.replay_assistant:
+        if (
+            transport == "openrouter"
+            and not admission.replay_assistant
+            and not getattr(admission, "attach_only", False)
+        ):
             try:
                 with db_manager.session_local() as db:
                     openrouter = await _authorize_openrouter(
@@ -1949,23 +2047,49 @@ async def stream_chat(
             )
         _raise(exc)
 
-    orchestrator = ChatStreamOrchestrator(
-        settings=settings,
-        owner=owner,
-        admission=admission,
-        prompt=prepared.effective_prompt,
-        display_message=prepared.title_prompt or prepared.display_message,
-        request_id=request_id,
-        title_token=title_token,
-        is_disconnected=_never_disconnected,
-        release_admission=_release_durable_admission,
-    )
-    live_stream = live_chat_stream_registry().start(
-        session_id=admission.session_id,
-        turn_id=admission.turn_id,
-        owner_id=owner.hf_user_id,
-        source=orchestrator.events(),
-    )
+    live_stream = None
+    journal_stream = None
+    if getattr(admission, "attach_only", False):
+        journal_stream = detached_turn_coordinator().subscribe(
+            turn_id=admission.turn_id, after_sequence=after_sequence
+        )
+    else:
+        orchestrator = ChatStreamOrchestrator(
+            settings=settings,
+            owner=owner,
+            admission=admission,
+            prompt=prepared.effective_prompt,
+            display_message=prepared.title_prompt or prepared.display_message,
+            request_id=request_id,
+            title_token=title_token,
+            is_disconnected=_never_disconnected,
+            release_admission=_release_durable_admission,
+        )
+        if (
+            settings.chat_durable_turn_dispatch_enabled
+            and admission.replay_assistant is None
+        ):
+            claim = await orchestrator.claim_durable_turn()
+            _detached_orchestrators[admission.turn_id] = orchestrator
+            try:
+                live_stream = await detached_live_stream_registry().start_detached(
+                    session_id=admission.session_id,
+                    owner_id=owner.hf_user_id,
+                    turn=DetachedTurn(admission.turn_id, claim),
+                    source=orchestrator.events(),
+                )
+            except BaseException:
+                _detached_orchestrators.pop(admission.turn_id, None)
+                await orchestrator.abandon_detached_start()
+                raise
+            journal_stream = live_stream.subscribe(after_sequence)
+        else:
+            live_stream = live_chat_stream_registry().start(
+                session_id=admission.session_id,
+                turn_id=admission.turn_id,
+                owner_id=owner.hf_user_id,
+                source=orchestrator.events(),
+            )
 
     async def event_stream():
         # Some edge POPs buffer small initial HTTP/2 DATA frames even when the
@@ -1973,11 +2097,22 @@ async def stream_chat(
         # comment above the common 2 KiB threshold forces those intermediaries
         # to flush the response before the first model delta arrives.
         yield b": " + (b" " * SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
-        async for frame in live_stream.subscribe():
-            if frame.event is None:
-                yield b": ping\n\n"
-            else:
-                yield sse_event(frame.event, **frame.payload)
+        if journal_stream is not None:
+            async for frame in journal_stream:
+                yield encode_journal_frame(frame)
+        else:
+            assert live_stream is not None
+            sequence = 0
+            async for frame in live_stream.subscribe():
+                if frame.event is None:
+                    yield b": ping\n\n"
+                elif settings.chat_durable_turn_dispatch_enabled:
+                    sequence += 1
+                    yield encode_journal_frame(
+                        JournalFrame(sequence, frame.event, frame.payload)
+                    )
+                else:
+                    yield sse_event(frame.event, **frame.payload)
 
     return StreamingResponse(
         event_stream(),

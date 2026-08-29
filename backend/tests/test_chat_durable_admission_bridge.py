@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -212,7 +213,7 @@ def test_enabled_request_without_session_recovers_exact_completed_replay(monkeyp
     assert db.flush_calls == 0
 
 
-def test_enabled_in_progress_replay_is_not_readmitted(monkeypatch):
+def test_enabled_in_progress_replay_attaches_without_readmission(monkeypatch):
     settings = get_settings().model_copy(
         update={"chat_durable_turn_dispatch_enabled": True}
     )
@@ -232,27 +233,75 @@ def test_enabled_in_progress_replay_is_not_readmitted(monkeypatch):
             pytest.fail("in-progress replay was readmitted")
 
         def validate_replay(self, *_args, **_kwargs):
-            pytest.fail("in-progress replay was treated as completed")
+            return None
 
     monkeypatch.setattr(
         chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
     )
     existing = SimpleNamespace(
-        turn_id=uuid.uuid4(), status="generating", web_search_enabled=False
+        id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        status="generating",
+        model=session.selected_model,
+        model_route=settings.chat_model_routes[session.selected_model],
+        sequence=1,
+        revision=1,
+        web_search_enabled=False,
+        reasoning_effort="high",
+        app_release_id="release-a",
+        worker_contract_version="contract-a",
     )
+    session.active_turn_id = existing.turn_id
+    session.active_turn_expires_at = datetime.now(UTC) + timedelta(minutes=1)
     db = _ScriptedDB(execute_results=(_Result(one=existing), _Result(one=None)))
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    admission = service.begin_turn(
+        ChatOwner("owner-1", "owner"),
+        session_id=None,
+        client_message_id="running-request",
+        text="retry",
+    )
+
+    assert admission.turn_id == existing.turn_id
+    assert admission.attach_only is True
+    assert admission.replay_assistant is None
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
+def test_enabled_different_active_message_remains_rejected(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    session = _session(settings)
+    session.active_turn_id = uuid.uuid4()
+    session.active_turn_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(existing_job=None, reconciled_expired_count=0)
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    db = _ScriptedDB(execute_results=(_Result(one=None),))
     service = ChatSessionService(db, settings)
     service._owned = lambda *_args, **_kwargs: session
 
     with pytest.raises(ChatServiceError) as exc_info:
         service.begin_turn(
             ChatOwner("owner-1", "owner"),
-            session_id=None,
-            client_message_id="running-request",
-            text="retry",
+            session_id=session.id,
+            client_message_id="different-request",
+            text="must remain rejected",
         )
 
-    assert exc_info.value.code == "turn_in_progress"
+    assert exc_info.value.code == "session_busy"
     assert db.added == []
     assert db.flush_calls == 0
 

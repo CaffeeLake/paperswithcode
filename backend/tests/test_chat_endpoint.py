@@ -56,8 +56,10 @@ from backend.services.chat_stream_service import (
     ChatStreamOrchestrator,
     ChatTurnProjection,
     _public_poster_tool_event,
+    encode_journal_frame,
     sequential_reasoning_events,
 )
+from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_tracing_service import ChatTurnTrace
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
@@ -146,6 +148,104 @@ def test_chat_request_is_strict_and_requires_message_and_client_id():
         ChatRequest(message="hello", client_message_id="id", unknown=True)
     request = ChatRequest(message="hello", client_message_id="id")
     assert request.session_id is None
+
+
+def test_journal_sse_serializer_adds_sequence_without_changing_event_payload():
+    encoded = encode_journal_frame(JournalFrame(8, "answer_delta", {"text": "héllo"}))
+
+    assert encoded == (
+        'id: 8\nevent: answer_delta\ndata: {"text":"héllo"}\n\n'.encode()
+    )
+
+
+def test_reconnect_stream_resumes_after_last_event_id(monkeypatch):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    cursors = []
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def get_session(self, owner, requested_session_id):
+            assert owner.hf_user_id == "owner-1"
+            assert requested_session_id == session_id
+            return SimpleNamespace(active_turn_id=turn_id), []
+
+    class Coordinator:
+        async def subscribe(self, *, turn_id: uuid.UUID, after_sequence: int):
+            cursors.append(after_sequence)
+            for sequence in (7, 8):
+                if sequence > after_sequence:
+                    yield JournalFrame(
+                        sequence, "answer_delta", {"text": str(sequence)}
+                    )
+
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/v1/chat/sessions/{session_id}/stream",
+            "headers": [(b"last-event-id", b"7")],
+        }
+    )
+    response = chat_router.reconnect_active_stream(
+        session_id,
+        request,
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=object(),
+        settings=settings,
+    )
+
+    async def collect_body():
+        return b"".join([chunk async for chunk in response.body_iterator]).decode()
+
+    body = asyncio.run(collect_body())
+    assert "id: 7\n" not in body
+    assert "id: 8\n" in body
+    assert cursors == [7]
+
+
+@pytest.mark.parametrize("cursor", ["-1", "nope", "1.5"])
+def test_reconnect_stream_rejects_invalid_last_event_id(monkeypatch, cursor):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def get_session(self, *_args):
+            return SimpleNamespace(active_turn_id=turn_id), []
+
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/v1/chat/sessions/{session_id}/stream",
+            "headers": [(b"last-event-id", cursor.encode())],
+        }
+    )
+    with pytest.raises(Exception) as exc_info:
+        chat_router.reconnect_active_stream(
+            session_id,
+            request,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=object(),
+            settings=settings,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "chat_stream_cursor_invalid"
 
 
 def test_browser_latency_request_is_strict_bounded_and_nonempty():
@@ -400,6 +500,135 @@ def test_stream_spend_rejection_preserves_exact_503_before_admission(monkeypatch
         "code": "chat_temporarily_disabled",
         "message": "Chat is temporarily disabled",
     }
+
+
+def test_duplicate_durable_post_attaches_without_preparation_or_source(monkeypatch):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=session_id,
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="zai-org/GLM-5.2",
+        model_route="zai-org/GLM-5.2:together",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        attach_only=True,
+    )
+    settings = get_settings().model_copy(
+        update={
+            "chat_enabled": True,
+            "chat_public_admission_enabled": True,
+            "chat_sandbox_admission_enabled": True,
+            "chat_durable_turn_dispatch_enabled": True,
+        }
+    )
+    calls = {"begin": 0}
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def existing_effective_prompt(self, owner, requested_session, request_id):
+            assert (owner.hf_user_id, requested_session, request_id) == (
+                "owner-1",
+                session_id,
+                "stable-request",
+            )
+            return "persisted prompt"
+
+        def begin_turn(self, *_args, **_kwargs):
+            calls["begin"] += 1
+            return admission
+
+    class Coordinator:
+        async def subscribe(self, *, turn_id, after_sequence):
+            assert (turn_id, after_sequence) == (admission.turn_id, 3)
+            yield JournalFrame(4, "answer_delta", {"text": "attached"})
+
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(chat_router, "web_search_available", lambda *_args: True)
+    monkeypatch.setattr(
+        chat_router,
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="token", bill_to=None),
+    )
+    monkeypatch.setattr(
+        chat_router.deployment_lifecycle,
+        "status",
+        lambda: SimpleNamespace(accepting_chat_turns=True),
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router.db_manager, "_session_local", DB)
+    monkeypatch.setattr(
+        chat_router,
+        "_prepare_paper_turn",
+        lambda *_args: pytest.fail("duplicate prompt was prepared"),
+    )
+    monkeypatch.setattr(
+        chat_router,
+        "ChatStreamOrchestrator",
+        lambda **_kwargs: pytest.fail("duplicate model source was created"),
+    )
+    monkeypatch.setattr(chat_router, "detached_turn_coordinator", lambda: Coordinator())
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/chat/stream",
+            "headers": [(b"last-event-id", b"3")],
+        }
+    )
+
+    async def exercise():
+        response = await chat_router.stream_chat(
+            ChatRequest(
+                message="retry",
+                session_id=session_id,
+                client_message_id="stable-request",
+            ),
+            request,
+            {"hf_user_id": "owner-1", "username": "owner"},
+        )
+        return b"".join([chunk async for chunk in response.body_iterator]).decode()
+
+    body = asyncio.run(exercise())
+
+    assert "id: 4\n" in body
+    assert calls == {"begin": 1}
+
+
+def test_failed_detached_terminal_callback_releases_orchestrator_registration():
+    turn_id = uuid.uuid4()
+    claim = SimpleNamespace(turn_id=turn_id)
+
+    class Orchestrator:
+        async def persist_detached_terminal(self, *_args):
+            raise RuntimeError("ambiguous terminal")
+
+    orchestrator = Orchestrator()
+    chat_router._detached_orchestrators[turn_id] = orchestrator
+    try:
+        with pytest.raises(RuntimeError, match="ambiguous terminal"):
+            asyncio.run(
+                chat_router._persist_detached_terminal(claim, "failed", "turn_failed")
+            )
+        assert turn_id not in chat_router._detached_orchestrators
+    finally:
+        chat_router._detached_orchestrators.pop(turn_id, None)
 
 
 def test_stream_rejects_paper_selection_when_flag_is_off(monkeypatch):

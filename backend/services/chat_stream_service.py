@@ -67,7 +67,8 @@ from backend.services.chat_tracing_service import (
     trace_chat_turn,
 )
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
-from backend.services.chat_turn_job_repository import TurnJobError
+from backend.services.chat_turn_job_repository import TurnJobError, TurnLeaseClaim
+from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
 from backend.services.latex_paper_service import LatexPaperService
 from backend.services.openrouter_user_budget_service import OpenRouterUserBudgetService
@@ -76,6 +77,11 @@ from backend.utils.urls import parse_arxiv_url
 
 logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 15.0
+
+
+def encode_journal_frame(frame: JournalFrame) -> bytes:
+    data = json.dumps(frame.payload, separators=(",", ":"), ensure_ascii=False)
+    return f"id: {frame.sequence}\nevent: {frame.event}\ndata: {data}\n\n".encode()
 
 
 def _external_paper_candidate(
@@ -1341,6 +1347,8 @@ class ChatStreamOrchestrator:
         self.tool_timing = _ToolTimingFallback(
             enabled=getattr(admission, "agent_harness", "claude") == "pi"
         )
+        self._detached_terminal_event: dict[str, Any] | None = None
+        self._detached_mirror_event: dict[str, Any] | None = None
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         if self.admission.replay_assistant:
@@ -1391,7 +1399,7 @@ class ChatStreamOrchestrator:
                 "stream_start",
                 {
                     "request_id": self.request_id,
-                    "session_id": self.admission.session_id,
+                    "session_id": str(self.admission.session_id),
                     "provider_execution": self.admission.replay_assistant is None,
                 },
             )
@@ -1496,10 +1504,7 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            if (
-                self.admission.durable_claim is not None
-                or not self.settings.chat_durable_turn_dispatch_enabled
-            ):
+            if not self.settings.chat_durable_turn_dispatch_enabled:
                 await self._persist_terminal_with_lease(
                     _persist_failure,
                     self.owner,
@@ -1537,13 +1542,14 @@ class ChatStreamOrchestrator:
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            await self._persist_terminal_with_lease(
-                _persist_preparation_failure,
-                self.owner,
-                self.settings,
-                self.admission,
-                "replacement_prepare_failed",
-            )
+            if not self.settings.chat_durable_turn_dispatch_enabled:
+                await self._persist_terminal_with_lease(
+                    _persist_preparation_failure,
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "replacement_prepare_failed",
+                )
             self.terminal = "error"
             return False, None
 
@@ -1583,10 +1589,65 @@ class ChatStreamOrchestrator:
     async def _claim_durable_turn(self) -> None:
         if not self.settings.chat_durable_turn_dispatch_enabled:
             return
+        if self.admission.durable_claim is not None:
+            return
         self.admission = await asyncio.to_thread(
             _claim_local_turn, self.settings, self.admission
         )
         self.lease_heartbeat_task = asyncio.create_task(self._heartbeat_durable_turn())
+
+    async def claim_durable_turn(self) -> TurnLeaseClaim:
+        """Claim once before detached ownership starts consuming the source."""
+        await self._claim_durable_turn()
+        if self.admission.durable_claim is None:
+            raise RuntimeError("Durable turn claim is missing")
+        return self.admission.durable_claim
+
+    async def abandon_detached_start(self) -> None:
+        """Release process-local lease maintenance when ownership setup fails."""
+        await self._stop_lease_heartbeat()
+
+    async def persist_detached_terminal(
+        self,
+        claim: TurnLeaseClaim,
+        state: str,
+        failure_code: str | None,
+    ) -> None:
+        """Persist canonical terminal state after the coordinator journals it."""
+        if claim != self.admission.durable_claim:
+            raise RuntimeError("Detached terminal claim does not match the turn")
+        if self.terminal_cleanup_completed:
+            return
+        if self._detached_mirror_event is not None:
+            await self._persist_terminal_with_lease(
+                self._fail_mirror, self._detached_mirror_event, True
+            )
+            return
+        if state == "completed":
+            event = self._detached_terminal_event
+            if event is None:
+                raise RuntimeError("Detached completion payload is missing")
+            await self._persist_terminal_with_lease(self._complete_turn, event)
+            return
+        code = failure_code or "turn_failed"
+        if self.admission.is_replacement and not self.edit_activated:
+            await self._persist_terminal_with_lease(
+                _persist_preparation_failure,
+                self.owner,
+                self.settings,
+                self.admission,
+                code,
+            )
+            return
+        await self._persist_terminal_with_lease(
+            _persist_failure,
+            self.owner,
+            self.settings,
+            self.admission,
+            code,
+            state == "interrupted",
+            self.projection.completed_blocks(),
+        )
 
     async def _heartbeat_durable_turn(self) -> None:
         try:
@@ -1707,7 +1768,8 @@ class ChatStreamOrchestrator:
                 continue
             if kind == "_mirror_error":
                 frame = await asyncio.to_thread(self._fail_mirror, event)
-                await self._stop_lease_heartbeat()
+                if not self.settings.chat_durable_turn_dispatch_enabled:
+                    await self._stop_lease_heartbeat()
                 self.trace.finish(
                     "".join(self.projection.answer_parts),
                     self.terminal,
@@ -1718,16 +1780,17 @@ class ChatStreamOrchestrator:
                     self.research_task.cancel()
                 continue
             if kind == "_cancelled":
-                await asyncio.to_thread(
-                    _persist_failure,
-                    self.owner,
-                    self.settings,
-                    self.admission,
-                    "interrupted",
-                    True,
-                    self.projection.completed_blocks(),
-                )
-                await self._stop_lease_heartbeat()
+                if not self.settings.chat_durable_turn_dispatch_enabled:
+                    await asyncio.to_thread(
+                        _persist_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                        True,
+                        self.projection.completed_blocks(),
+                    )
+                    await self._stop_lease_heartbeat()
                 self.terminal = "stopped"
                 self.trace.finish("".join(self.projection.answer_parts), "stopped")
                 yield ChatStreamFrame(
@@ -1943,16 +2006,17 @@ class ChatStreamOrchestrator:
                             event["message"] = (
                                 "Your OpenRouter API key is temporarily rate-limited."
                             )
-                await asyncio.to_thread(
-                    _persist_failure,
-                    self.owner,
-                    self.settings,
-                    self.admission,
-                    event.get("code") or "provider_error",
-                    budget_interrupted,
-                    self.projection.completed_blocks(),
-                )
-                await self._stop_lease_heartbeat()
+                if not self.settings.chat_durable_turn_dispatch_enabled:
+                    await asyncio.to_thread(
+                        _persist_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        event.get("code") or "provider_error",
+                        budget_interrupted,
+                        self.projection.completed_blocks(),
+                    )
+                    await self._stop_lease_heartbeat()
                 self.terminal = "error"
                 self.trace.finish(
                     "".join(self.projection.answer_parts),
@@ -1960,9 +2024,12 @@ class ChatStreamOrchestrator:
                     terminal_code=event.get("code") or "provider_error",
                 )
             elif kind == "done":
-                await asyncio.to_thread(self._complete_turn, event)
-                await self._stop_lease_heartbeat()
                 event["citations"] = self.projection.citations
+                if self.settings.chat_durable_turn_dispatch_enabled:
+                    self._detached_terminal_event = dict(event)
+                else:
+                    await asyncio.to_thread(self._complete_turn, event)
+                    await self._stop_lease_heartbeat()
                 self.terminal = event.get("finish_reason", "success")
                 self.trace.finish("".join(self.projection.answer_parts), self.terminal)
             yield ChatStreamFrame(kind, event)
@@ -1984,7 +2051,9 @@ class ChatStreamOrchestrator:
             )
             db.commit()
 
-    def _fail_mirror(self, event: dict[str, Any]) -> ChatStreamFrame:
+    def _fail_mirror(
+        self, event: dict[str, Any], persist: bool = False
+    ) -> ChatStreamFrame:
         mirror_key = event.get("key") or {}
         mirror_session_id = mirror_key.get("session_id")
         mirror_project_key = mirror_key.get("project_key")
@@ -2012,6 +2081,35 @@ class ChatStreamOrchestrator:
             and isinstance(terminal, dict)
             and terminal.get("type") == "done"
         )
+        if self.settings.chat_durable_turn_dispatch_enabled and not persist:
+            self._detached_mirror_event = dict(event)
+            if completed_result:
+                terminal_payload = {
+                    key: value
+                    for key, value in terminal.items()
+                    if key not in {"v", "type", "request_id"}
+                }
+                self.terminal = terminal_payload.get("finish_reason", "success")
+                return ChatStreamFrame(
+                    "done",
+                    {
+                        **terminal_payload,
+                        "citations": self.projection.citations,
+                        "transcript_status": "degraded",
+                        "warning": (
+                            "The answer was saved, but its research transcript is "
+                            "temporarily unavailable. Follow-up actions are disabled."
+                        ),
+                    },
+                )
+            self.terminal = "error"
+            return ChatStreamFrame(
+                "error",
+                {
+                    "message": "The conversation could not be saved.",
+                    "code": "transcript_mirror_error",
+                },
+            )
         with db_manager.session_local() as db:
             service = ChatSessionService(db, self.settings)
             service.mark_transcript_degraded(

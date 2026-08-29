@@ -136,6 +136,7 @@ class TurnAdmission:
     paper_descriptor: dict[str, object] | None = None
     fetchable_urls: tuple[str, ...] = ()
     durable_claim: TurnLeaseClaim | None = None
+    attach_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +977,48 @@ class ChatSessionService:
                 "idempotency_conflict",
                 409,
                 "This request ID was already used with different reasoning effort",
+            )
+        if (
+            self.settings.chat_durable_turn_dispatch_enabled
+            and existing.status in ("generating", PREPARING_STATUS)
+            and session.active_turn_id == existing.turn_id
+            and session.active_turn_expires_at
+            and session.active_turn_expires_at > now
+        ):
+            return _ReplayOutcome(
+                kind="admitted",
+                admission=TurnAdmission(
+                    session_id=session.id,
+                    turn_id=existing.turn_id,
+                    user_message_id=existing.id,
+                    selected_model=existing.model or session.selected_model,
+                    model_route=(
+                        existing.model_route
+                        or self._validate_model(session.selected_model)[1]
+                    ),
+                    sdk_session_id=session.sdk_session_id,
+                    sdk_project_key=session.sdk_project_key,
+                    agent_harness=getattr(session, "agent_harness", "claude"),
+                    is_first_turn=existing.sequence == 1,
+                    prompt_revision=existing.revision,
+                    execution_backend=session.execution_backend,
+                    app_release_id=(
+                        getattr(existing, "app_release_id", None)
+                        or self.settings.release_id
+                    ),
+                    worker_contract_version=self._durable_worker_contract(
+                        getattr(existing, "worker_contract_version", None)
+                    ),
+                    web_search_enabled=existing_web_search_enabled,
+                    reasoning_effort=existing_reasoning_effort,
+                    reader_mode=getattr(session, "primary_paper_id", None) is not None,
+                    poster_mode=(
+                        self.settings.chat_artifacts_enabled
+                        and self.settings.chat_posterly_enabled
+                        and detect_poster_intent(getattr(existing, "content", ""))
+                    ),
+                    attach_only=True,
+                ),
             )
         assistant = self.db.execute(
             select(ChatMessageRecord).where(

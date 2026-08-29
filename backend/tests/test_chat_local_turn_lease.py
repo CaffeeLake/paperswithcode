@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -158,8 +160,58 @@ def test_orchestrator_claims_and_starts_before_runner_dispatch(monkeypatch):
     frames = asyncio.run(collect())
 
     assert [frame.event for frame in frames] == ["stream_start", "error"]
-    assert order == ["claim", "prepare", "heartbeat", "running", "dispatch", "failed"]
+    assert order == ["claim", "prepare", "heartbeat", "running", "dispatch"]
     assert orchestrator.admission.durable_claim == claim
+
+
+def test_durable_done_waits_for_detached_terminal_callback(monkeypatch):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    admission = _admission(claim=claim)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    orchestrator = _orchestrator(settings, admission)
+    persisted = []
+    monkeypatch.setattr(
+        orchestrator, "_complete_turn", lambda event: persisted.append(dict(event))
+    )
+
+    async def exercise():
+        queue = asyncio.Queue()
+        await queue.put({"type": "done", "followups": [], "finish_reason": "success"})
+        await queue.put({"type": "_research_finished"})
+        stream = orchestrator._consume(queue)
+        terminal = await anext(stream)
+        assert persisted == []
+        await orchestrator.persist_detached_terminal(claim, "completed", None)
+        await stream.aclose()
+        return terminal
+
+    terminal = asyncio.run(exercise())
+
+    assert terminal.event == "done"
+    assert persisted == [{"followups": [], "finish_reason": "success", "citations": []}]
+
+
+def test_durable_stream_start_payload_is_journal_serializable():
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    orchestrator = _orchestrator(settings, _admission())
+
+    async def exercise():
+        stream = orchestrator._events()
+        frame = await anext(stream)
+        orchestrator.terminal_cleanup_completed = True
+        await stream.aclose()
+        return frame
+
+    frame = asyncio.run(exercise())
+
+    assert frame.event == "stream_start"
+    assert json.loads(json.dumps(frame.payload))["session_id"] == str(
+        orchestrator.admission.session_id
+    )
 
 
 def test_periodic_heartbeat_runs_during_continuous_work(monkeypatch):
@@ -202,6 +254,23 @@ def test_periodic_heartbeat_runs_during_continuous_work(monkeypatch):
     assert set(calls) == {claim}
 
 
+def test_failed_detached_start_stops_claim_heartbeat():
+    admission = _admission()
+    claim = TurnLeaseClaim(admission.turn_id, "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+
+    async def exercise():
+        orchestrator.lease_heartbeat_task = asyncio.create_task(asyncio.Event().wait())
+        await orchestrator.abandon_detached_start()
+
+    asyncio.run(exercise())
+
+    assert orchestrator.lease_heartbeat_task is None
+
+
 def test_blocked_replacement_is_cancelled_and_awaited_when_heartbeat_fails(
     monkeypatch,
 ):
@@ -237,7 +306,9 @@ def test_blocked_replacement_is_cancelled_and_awaited_when_heartbeat_fails(
         "_persist_preparation_failure",
         lambda *_args: order.append("terminal_persisted"),
     )
-    orchestrator = _orchestrator(settings, _admission(claim=claim))
+    orchestrator = _orchestrator(
+        settings, replace(_admission(claim=claim), is_replacement=True)
+    )
 
     async def exercise():
         orchestrator.lease_heartbeat_task = asyncio.create_task(
@@ -245,6 +316,9 @@ def test_blocked_replacement_is_cancelled_and_awaited_when_heartbeat_fails(
         )
         result = await asyncio.wait_for(orchestrator._replacement_or_error(), 0.2)
         assert cleanup_finished.is_set()
+        await orchestrator.persist_detached_terminal(
+            claim, "failed", "replacement_prepare_failed"
+        )
         return result
 
     assert asyncio.run(exercise()) == (False, None)
@@ -435,8 +509,25 @@ def test_orchestrator_cancellation_during_terminal_cleanup_is_exactly_once(
 
     async def exercise():
         stream = asyncio.create_task(_collect_stream_events(orchestrator))
-        while not started.is_set():
-            await asyncio.sleep(0)
+        for _attempt in range(2_000):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.001)
+        else:
+            pending = []
+            for task in asyncio.all_tasks():
+                if task.done():
+                    continue
+                stack = "\n".join(
+                    f"{frame.f_code.co_filename}:{frame.f_lineno} "
+                    f"in {frame.f_code.co_name}"
+                    for frame in task.get_stack()
+                )
+                pending.append(f"{task.get_name()}:\n{stack}")
+            pytest.fail(
+                "terminal persistence never started; pending tasks:\n"
+                + "\n".join(pending)
+            )
         stream.cancel()
         await asyncio.sleep(0.025)
         first_count = len(heartbeats)
@@ -459,7 +550,28 @@ def test_orchestrator_cancellation_during_terminal_cleanup_is_exactly_once(
 
 
 async def _collect_stream_events(orchestrator):
-    return [frame async for frame in orchestrator._events()]
+    frames = []
+    async for frame in orchestrator._events():
+        frames.append(frame)
+        claim = orchestrator.admission.durable_claim
+        if claim is None:
+            continue
+        if frame.event == "done":
+            state = (
+                "interrupted"
+                if frame.payload.get("finish_reason") == "stopped"
+                else "completed"
+            )
+            await orchestrator.persist_detached_terminal(
+                claim,
+                state,
+                "cancelled" if state == "interrupted" else None,
+            )
+        elif frame.event == "error":
+            await orchestrator.persist_detached_terminal(
+                claim, "failed", frame.payload.get("code") or "turn_failed"
+            )
+    return frames
 
 
 def test_stale_claim_never_prepares_or_dispatches(monkeypatch):
