@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
-import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager
@@ -18,7 +16,6 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import WebSocketException
 
 from backend.chat_sandbox_worker.executor_protocol import ProtocolError
-from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.services.chat_capability_service import (
@@ -37,6 +34,10 @@ from backend.services.chat_external_pi_shadow import (
     ExternalPiWorkerStatus,
     ExternalPiWorkerUnavailable,
 )
+from backend.services.chat_external_executor_workspace import (
+    ChatExternalExecutorWorkspaceManager,
+    ExternalExecutorWorkspace,
+)
 from backend.services.chat_sandbox_executor import (
     ExecutorContext,
     ExecutorExecutionLost,
@@ -47,9 +48,9 @@ from backend.services.chat_sandbox_executor import (
 from backend.services.chat_sandbox_provider import (
     ModalSandboxProviderAdapter,
     SandboxError,
-    SandboxLaunchMode,
 )
 from backend.services.chat_session_service import TurnAdmission
+from backend.services.chat_turn_job_repository import TurnLeaseClaim
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
 
@@ -79,6 +80,7 @@ class ExternalPiChatTurnRunner:
         hf_username: str,
         provider: Any | None = None,
         executor: SandboxExecutorClient | Any | None = None,
+        workspace_manager: ChatExternalExecutorWorkspaceManager | Any | None = None,
         websocket_connector: Callable[..., Any] = websocket_connect,
         worker_repository: ChatExternalWorkerRepository | Any | None = None,
         worker_status_resolver: Callable[[], Awaitable[ExternalPiWorkerStatus]]
@@ -96,6 +98,7 @@ class ExternalPiChatTurnRunner:
         self.hf_username = hf_username
         self.provider = provider or ModalSandboxProviderAdapter(settings)
         self.executor = executor or SandboxExecutorClient(self.provider)
+        self.workspace_manager = workspace_manager
         self.websocket_connector = websocket_connector
         self.worker_repository = worker_repository or ChatExternalWorkerRepository(
             environment=settings.environment
@@ -103,9 +106,6 @@ class ExternalPiChatTurnRunner:
         self.worker_status_resolver = worker_status_resolver
         self.session_factory = session_factory or db_manager.session_local
         self.now = now or (lambda: datetime.now(UTC))
-        self.sandbox: object | None = None
-        self.worker_generation = secrets.token_hex(16)
-        self.workspace_generation = 1
         self.socket: Any | None = None
         self.active_context: ExecutorContext | None = None
         self.external_worker_claim: ExternalWorkerClaim | None = None
@@ -368,33 +368,20 @@ class ExternalPiChatTurnRunner:
         return value
 
     async def _ensure_executor(
-        self, tool_call_id: str, operation_id: str
+        self,
+        workspace: ExternalExecutorWorkspace,
+        tool_call_id: str,
+        operation_id: str,
     ) -> ExecutorContext:
-        if self.sandbox is None:
-            self.sandbox = await self.provider.create(
-                name=f"chat-executor-{self.admission.session_id}",
-                tags={
-                    "service": "pwc-chat-executor",
-                    "environment": self.settings.environment,
-                    "chat_session_hash": hashlib.sha256(
-                        str(self.admission.session_id).encode()
-                    ).hexdigest()[:16],
-                    "release": self.settings.release_id,
-                    "image": self.settings.chat_modal_image_version,
-                    "egress": egress_policy_digest(self.settings),
-                },
-                worker_generation=self.worker_generation,
-                launch_mode=SandboxLaunchMode.EXECUTOR,
-            )
         context = ExecutorContext(
-            sandbox=self.sandbox,
+            sandbox=workspace.sandbox,
             workspace_id=str(self.admission.session_id),
-            workspace_generation=self.workspace_generation,
+            workspace_generation=workspace.workspace_generation,
             session_id=str(self.admission.session_id),
             turn_id=str(self.admission.turn_id),
             execution_id=operation_id,
             tool_call_id=tool_call_id,
-            worker_generation=self.worker_generation,
+            worker_generation=workspace.worker_generation,
             capability=self.capability.token,
         )
         await self.executor.ensure_workspace(context)
@@ -414,8 +401,25 @@ class ExternalPiChatTurnRunner:
         if operation not in {"exec", "read"}:
             raise ValueError("unsupported_tool_operation")
         context: ExecutorContext | None = None
+        workspace: ExternalExecutorWorkspace | None = None
         try:
-            context = await self._ensure_executor(tool_call_id, operation_id)
+            workspace = await self._workspace_manager().acquire(
+                session_id=self.admission.session_id,
+                turn_claim=self._durable_turn_claim(),
+            )
+            try:
+                context = await self._ensure_executor(
+                    workspace, tool_call_id, operation_id
+                )
+            except (
+                ExecutorOperationError,
+                ExecutorTransportError,
+                ProtocolError,
+                SandboxError,
+            ):
+                await self._workspace_manager().invalidate(workspace)
+                workspace = None
+                raise
             if operation == "exec":
                 result = await self.executor.exec_resumable(
                     context,
@@ -464,6 +468,25 @@ class ExternalPiChatTurnRunner:
             return {**base, "ok": False, "error": getattr(error, "code", "tool_failed")}
         finally:
             self.active_context = None
+            if workspace is not None:
+                await self._workspace_manager().release(workspace)
+
+    def _workspace_manager(self) -> ChatExternalExecutorWorkspaceManager:
+        manager = self.workspace_manager
+        if manager is None:
+            manager = ChatExternalExecutorWorkspaceManager.from_settings(
+                self.settings,
+                provider=self.provider,
+                executor=self.executor,
+            )
+            self.workspace_manager = manager
+        return manager
+
+    def _durable_turn_claim(self) -> TurnLeaseClaim:
+        claim = self.admission.durable_claim
+        if claim is None or claim.turn_id != self.admission.turn_id:
+            raise RuntimeError("External Pi tool use requires the durable turn claim")
+        return claim
 
     def _revoke(self) -> None:
         if self.capability_id is None:
@@ -508,9 +531,3 @@ class ExternalPiChatTurnRunner:
 
     async def close(self) -> None:
         self._revoke()
-        if self.sandbox is None:
-            return
-        sandbox_id = str(getattr(self.sandbox, "object_id", ""))
-        if sandbox_id:
-            await self.provider.terminate(sandbox_id, self.sandbox)
-        self.sandbox = None

@@ -30,7 +30,11 @@ from backend.services.chat_sandbox_lease_maintenance_coordinator import (
     ChatSandboxLeaseMaintenanceCoordinator,
 )
 from backend.services.chat_sandbox_pool_coordinator import ChatSandboxPoolCoordinator
-from backend.services.chat_sandbox_provider import SandboxError, SandboxProvider
+from backend.services.chat_sandbox_provider import (
+    SandboxError,
+    SandboxLaunchMode,
+    SandboxProvider,
+)
 from backend.services.chat_sandbox_spend_access import (
     assert_chat_sandbox_spend_available,
 )
@@ -274,6 +278,7 @@ class ChatSandboxAcquisitionCoordinator:
         self,
         chat_session_id: uuid.UUID,
         *,
+        launch_mode: SandboxLaunchMode = SandboxLaunchMode.LEGACY,
         allow_pool: bool = False,
         pool_miss: bool = False,
         pool_lookup_ms: int | None = None,
@@ -322,6 +327,7 @@ class ChatSandboxAcquisitionCoordinator:
             pool_lookup_ms=pool_lookup_ms,
             pool_miss_reason=pool_miss_reason,
             reuse_cohort=selected.reuse_cohort,
+            launch_mode=launch_mode,
         )
 
     async def _claim_start_or_reuse(
@@ -520,6 +526,7 @@ class ChatSandboxAcquisitionCoordinator:
         pool_lookup_ms: int | None,
         pool_miss_reason: str | None,
         reuse_cohort: str | None,
+        launch_mode: SandboxLaunchMode,
     ) -> SandboxCreated:
         claim = acquired.claim
         interval_id = acquired.interval_id
@@ -555,8 +562,9 @@ class ChatSandboxAcquisitionCoordinator:
                         "egress": egress_policy_digest(self.settings),
                     },
                     worker_generation=claim.worker_generation,
+                    launch_mode=launch_mode,
                 )
-                if claim.snapshot_id:
+                if claim.snapshot_id and launch_mode is SandboxLaunchMode.LEGACY:
                     try:
                         await self.snapshots.restore(sandbox, claim.snapshot_id)
                     except Exception:  # noqa: BLE001 - snapshot loss is recoverable

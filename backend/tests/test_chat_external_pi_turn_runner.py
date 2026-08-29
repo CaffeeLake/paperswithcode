@@ -125,6 +125,33 @@ class FakeProvider:
         return True
 
 
+class FakeWorkspaceManager:
+    def __init__(self, provider):
+        self.provider = provider
+        self.acquired = []
+        self.released = []
+        self.invalidated = []
+        self.sandbox = type("Sandbox", (), {"object_id": "sb-retained"})()
+        self.worker_generation = "durable-workspace-generation"
+
+    async def acquire(self, *, session_id, turn_claim):
+        self.acquired.append((session_id, turn_claim))
+        return SimpleNamespace(
+            session_id=session_id,
+            sandbox=self.sandbox,
+            sandbox_id=self.sandbox.object_id,
+            worker_generation=self.worker_generation,
+            workspace_generation=37,
+        )
+
+    async def release(self, workspace):
+        self.released.append(workspace)
+        return True
+
+    async def invalidate(self, workspace, *, failure_code="sandbox_worker_failed"):
+        self.invalidated.append((workspace, failure_code))
+
+
 class FakeExecutor:
     def __init__(self):
         self.contexts = []
@@ -186,6 +213,7 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     settings.environment = "staging"
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
     provider = FakeProvider()
+    workspace_manager = FakeWorkspaceManager(provider)
     executor = FakeExecutor()
     socket = FakeSocket(
         [
@@ -224,6 +252,7 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=workspace_manager,
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=(
             repository := FakeWorkerRepository(
@@ -244,10 +273,15 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     events = asyncio.run(exercise())
 
     assert [event["type"] for event in events] == ["workspace_ready", "done"]
-    assert len(provider.created) == 1
-    assert provider.created[0]["launch_mode"] == "executor"
-    assert provider.terminated[0][0] == "sb-test"
+    assert provider.created == []
+    assert provider.terminated == []
+    assert workspace_manager.acquired == [
+        (admission.session_id, admission.durable_claim)
+    ]
+    assert workspace_manager.released[0].sandbox_id == "sb-retained"
     assert executor.contexts[0].session_id == str(admission.session_id)
+    assert executor.contexts[0].workspace_generation == 37
+    assert executor.contexts[0].worker_generation == "durable-workspace-generation"
     assert '"type":"tool_result"' in socket.sent[1]
 
 
@@ -256,6 +290,7 @@ def test_external_pi_runner_routes_bash_through_resumable_execution():
     settings.environment = "staging"
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
     provider = FakeProvider()
+    workspace_manager = FakeWorkspaceManager(provider)
     executor = FakeExecutor()
     socket = FakeSocket(
         [
@@ -297,6 +332,7 @@ def test_external_pi_runner_routes_bash_through_resumable_execution():
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=workspace_manager,
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -369,6 +405,7 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
         hf_username="qualification",
         provider=FakeProvider(),
         executor=executor,
+        workspace_manager=FakeWorkspaceManager(FakeProvider()),
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -545,6 +582,7 @@ def test_external_pi_runner_aborts_on_recovery_validation_failure(monkeypatch, f
         hf_username="qualification",
         provider=FakeProvider(),
         executor=executor,
+        workspace_manager=FakeWorkspaceManager(FakeProvider()),
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -568,6 +606,7 @@ def test_external_pi_runner_uses_no_sandbox_without_tools():
     settings.environment = "staging"
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
     provider = FakeProvider()
+    workspace_manager = FakeWorkspaceManager(provider)
     socket = FakeSocket(
         [
             '{"type":"workspace_ready","worker_sequence":1}',
@@ -602,6 +641,7 @@ def test_external_pi_runner_uses_no_sandbox_without_tools():
         ),
         hf_username="qualification",
         provider=provider,
+        workspace_manager=workspace_manager,
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=(
             repository := FakeWorkerRepository(
@@ -621,6 +661,8 @@ def test_external_pi_runner_uses_no_sandbox_without_tools():
 
     assert asyncio.run(exercise()) == ["workspace_ready", "done"]
     assert provider.created == []
+    assert workspace_manager.acquired == []
+    assert workspace_manager.released == []
 
 
 def test_external_pi_runner_delivers_contiguous_worker_buffer_exhaustion():
@@ -1007,6 +1049,7 @@ def test_external_pi_runner_never_reexecutes_replayed_tool_request():
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=FakeWorkspaceManager(provider),
         websocket_connector=connector,
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -1075,6 +1118,7 @@ def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=FakeWorkspaceManager(provider),
         websocket_connector=connector,
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -1118,6 +1162,8 @@ def test_external_pi_reconnect_reuses_real_recovered_bash_result(tmp_path):
     executor = SandboxExecutorClient(
         provider, request_id_factory=lambda: f"executor-{next(request_number)}"
     )
+    workspace_manager = FakeWorkspaceManager(provider)
+    workspace_manager.worker_generation = "runner-worker"
     turn_id = uuid.uuid4()
     admission = TurnAdmission(
         session_id=uuid.uuid4(),
@@ -1162,13 +1208,12 @@ def test_external_pi_reconnect_reuses_real_recovered_bash_result(tmp_path):
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=workspace_manager,
         websocket_connector=SequencedConnector(first, second),
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
         session_factory=SessionContext,
     )
-    runner.worker_generation = "runner-worker"
-
     try:
         assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
         request_types = [
@@ -1244,6 +1289,7 @@ def test_external_pi_runner_does_not_resend_resolved_tool_result_after_later_los
         hf_username="qualification",
         provider=provider,
         executor=executor,
+        workspace_manager=FakeWorkspaceManager(provider),
         websocket_connector=connector,
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
