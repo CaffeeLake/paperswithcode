@@ -3173,6 +3173,8 @@ def test_staging_scope_guardrail_uses_server_credentials_and_disables_posterly()
         "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": "hf-guardrail",
         "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": "pwc-org",
         "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": "sk-guardrail",
+        "PWC_CHAT_ARTIFACT_STORAGE_BACKEND": "hf_bucket",
+        "PWC_CHAT_ARTIFACT_HF_BUCKET_ID": "nielsr/pwc-chat-artifacts-staging",
         "PWC_CHAT_POSTERLY_ENABLED": "false",
     }
     with pytest.raises(ValueError, match="source is missing"):

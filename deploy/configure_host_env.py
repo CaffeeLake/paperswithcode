@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 CONFIG_ROOT = Path("/etc/paperswithcode")
 PRODUCTION_CHAT_SEALED_CONFIG = CONFIG_ROOT / "production-chat-prepared.env"
+STAGING_CHAT_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
 
 STAGING_EXCLUDED_PREFIXES = (
     "PWC_POSTGRES_BACKUP_",
@@ -425,6 +426,8 @@ def staging_scope_guardrail_values(current: dict[str, str]) -> dict[str, str]:
         "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": values[
             "PWC_CODEX_JOBS_OPENAI_API_KEY"
         ],
+        "PWC_CHAT_ARTIFACT_STORAGE_BACKEND": "hf_bucket",
+        "PWC_CHAT_ARTIFACT_HF_BUCKET_ID": STAGING_CHAT_ARTIFACT_BUCKET_ID,
         "PWC_CHAT_POSTERLY_ENABLED": "false",
     }
 

@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.services.paper_markdown_job_profile import (
@@ -609,6 +609,7 @@ class Settings(BaseSettings):
     chat_artifact_max_version_bytes: int = Field(
         default=32 * 1024 * 1024, ge=4096, le=32 * 1024 * 1024
     )
+
     chat_artifact_owner_quota_bytes: int = Field(
         default=250 * 1024 * 1024, ge=4096, le=250 * 1024 * 1024
     )
@@ -767,6 +768,15 @@ class Settings(BaseSettings):
     catalog_mutations_enabled: bool = Field(default=True)
     thumbnail_mutations_enabled: bool = Field(default=True)
     cron_enabled: bool = Field(default=True)
+
+    @model_validator(mode="after")
+    def preserve_staging_artifacts_when_scope_guarded(self) -> "Settings":
+        """Keep non-Posterly research artifacts across the legacy host launcher."""
+
+        if self.environment == "staging" and self.chat_scope_guardrail_enabled:
+            self.chat_artifacts_enabled = True
+            self.chat_artifact_shared_preview_enabled = True
+        return self
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:

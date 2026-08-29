@@ -494,6 +494,13 @@ def validate_chat_scope_guardrail_configuration(settings: Settings) -> None:
         raise RuntimeError("scope guardrail must not reuse the main HF credential")
     if settings.chat_scope_guardrail_openai_api_key == settings.openai_api_key:
         raise RuntimeError("scope guardrail must not reuse the main OpenAI credential")
+    if settings.environment == "staging" and (
+        not settings.chat_artifacts_enabled
+        or not settings.chat_artifact_shared_preview_enabled
+        or settings.chat_artifact_storage_backend != "hf_bucket"
+        or not settings.chat_artifact_hf_bucket_id
+    ):
+        raise RuntimeError("scope guardrail must preserve staging research artifacts")
     if settings.chat_posterly_enabled:
         raise RuntimeError("Posterly must remain disabled with scope enforcement")
 
