@@ -71,6 +71,8 @@ class FleetOperator(Protocol):
 
     def wait_ready(self, resolved) -> int: ...
 
+    def prepare_round(self) -> None: ...
+
     def run_round(
         self,
         name: str,
@@ -202,6 +204,7 @@ class SystemFleetOperator:
         self.sleep = sleep
         self.owner_id = str(uuid.uuid4())
         self._prompt_path: Path | None = None
+        self._round_runner: Callable | None = None
         self._host_cpu_state: tuple[int, int] | None = None
         self._unit_cpu_state: dict[str, tuple[int, float]] = {}
         self.runtime_id = self._manifest()["external_pi_runtime"]["runtime_id"]
@@ -594,6 +597,14 @@ class SystemFleetOperator:
         ):
             raise FleetRunRefused("external Pi fleet worker evidence is unsafe")
 
+    def prepare_round(self) -> None:
+        if self._round_runner is None:
+            from backend.loadtests.external_pi_fleet_locustfile import (
+                run_local_fleet_round,
+            )
+
+            self._round_runner = run_local_fleet_round
+
     def run_round(
         self,
         name: str,
@@ -604,12 +615,12 @@ class SystemFleetOperator:
     ) -> FleetRoundReport:
         if self._prompt_path is None:
             raise FleetRunRefused("external Pi fleet runtime prompt is unavailable")
+        if self._round_runner is None:
+            raise FleetRunRefused("external Pi fleet round runtime is unavailable")
         before = tuple(self._worker_status(worker) for worker in workers)
         for worker, status in zip(workers, before, strict=True):
             self._validate_worker_status(worker, status)
-        from backend.loadtests.external_pi_fleet_locustfile import run_local_fleet_round
-
-        result = run_local_fleet_round(
+        result = self._round_runner(
             replicas=tuple(
                 FleetReplica(worker.worker_id, worker.port) for worker in workers
             ),
@@ -818,6 +829,7 @@ def _run_guarded_round(
     name: str,
     workers: tuple[WorkerEvidence, ...],
 ) -> tuple[FleetRoundReport, tuple[ResourceEvidence, ...]]:
+    operator.prepare_round()
     stop = threading.Event()
     abort = threading.Event()
     samples: list[ResourceEvidence] = []

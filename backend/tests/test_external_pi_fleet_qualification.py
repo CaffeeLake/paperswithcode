@@ -1000,6 +1000,9 @@ class _FleetOperator:
         self.events.append(("ready", resolved.worker_id, generation))
         return generation
 
+    def prepare_round(self):
+        self.events.append(("prepare_round", None))
+
     def run_round(
         self,
         name,
@@ -1053,6 +1056,39 @@ class _FleetOperator:
             else _cleanup(units_removed=False, processes_gone=False)
         )
         return cleanup, (() if cleanup.passed else owned_units)
+
+
+def test_guarded_round_prepares_runtime_before_starting_resource_sampler():
+    from backend.scripts.qualify_external_pi_fleet import _run_guarded_round
+
+    class OrderedOperator(_FleetOperator):
+        def prepare_round(self):
+            assert threading.current_thread() is threading.main_thread()
+            super().prepare_round()
+
+        def sample_resources(self, shape):
+            assert ("prepare_round", None) in self.events
+            return super().sample_resources(shape)
+
+    operator = OrderedOperator()
+    shape = resolve_fleet_shape("2x32")
+    workers = tuple(
+        WorkerEvidence(
+            worker_id=replica.worker_id,
+            port=replica.port,
+            generation=1,
+            maximum_sessions=shape.sessions_per_worker,
+        )
+        for replica in shape.replicas
+    )
+
+    report, samples = _run_guarded_round(operator, shape, "healthy", workers)
+
+    assert report.passed is True
+    assert samples
+    assert operator.events.index(("prepare_round", None)) < next(
+        index for index, event in enumerate(operator.events) if event[0] == "resources"
+    )
 
 
 def test_controller_runs_shapes_sequentially_healthy_then_exact_generation_loss(
