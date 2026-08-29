@@ -33,7 +33,9 @@ from backend.services.chat_external_worker_registry import (
 )
 from backend.services.chat_external_pi_shadow import (
     ExternalPiWorkerControlClient,
+    ExternalPiWorkerControlRejected,
     ExternalPiWorkerStatus,
+    ExternalPiWorkerUnavailable,
 )
 from backend.services.chat_sandbox_executor import (
     ExecutorContext,
@@ -123,27 +125,15 @@ class ExternalPiChatTurnRunner:
                 except (
                     StaleWorkerClaim,
                     WorkerLeaseUnavailable,
+                    ExternalPiWorkerUnavailable,
+                    ExternalPiWorkerControlRejected,
                     httpx.HTTPError,
                     ValueError,
                 ):
                     yield self._worker_lost_event()
                     return
             try:
-                async with self.websocket_connector(
-                    _worker_websocket_url(self.settings.chat_external_pi_worker_url),
-                    additional_headers={
-                        "Authorization": (
-                            f"Bearer {self.settings.chat_external_pi_worker_token}"
-                        ),
-                        "X-PWC-Worker-Generation": str(worker_claim.generation),
-                    },
-                    max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
-                    open_timeout=(
-                        self.settings.chat_external_pi_startup_timeout_seconds
-                    ),
-                    ping_interval=20,
-                    ping_timeout=20,
-                ) as socket:
+                async with self._external_worker_socket(worker_claim) as socket:
                     self.socket = socket
                     await socket.send(
                         json.dumps(
@@ -222,6 +212,22 @@ class ExternalPiChatTurnRunner:
                 token=self.settings.chat_external_pi_worker_token,
                 http=http,
             ).status()
+
+    def _external_worker_socket(self, claim: ExternalWorkerClaim):
+        """Build the shared fenced transport for run, attach, and cancel."""
+        return self.websocket_connector(
+            _worker_websocket_url(self.settings.chat_external_pi_worker_url),
+            additional_headers={
+                "Authorization": (
+                    f"Bearer {self.settings.chat_external_pi_worker_token}"
+                ),
+                "X-PWC-Worker-Generation": str(claim.generation),
+            },
+            max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
+            open_timeout=self.settings.chat_external_pi_startup_timeout_seconds,
+            ping_interval=20,
+            ping_timeout=20,
+        )
 
     async def _select_worker_claim(self) -> ExternalWorkerClaim:
         status = await self._endpoint_status()
@@ -465,27 +471,15 @@ class ExternalPiChatTurnRunner:
                 await self._require_same_external_worker_claim(
                     self.external_worker_claim
                 )
-                async with self.websocket_connector(
-                    _worker_websocket_url(self.settings.chat_external_pi_worker_url),
-                    additional_headers={
-                        "Authorization": (
-                            f"Bearer {self.settings.chat_external_pi_worker_token}"
-                        ),
-                        "X-PWC-Worker-Generation": str(
-                            self.external_worker_claim.generation
-                        ),
-                    },
-                    max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
-                    open_timeout=(
-                        self.settings.chat_external_pi_startup_timeout_seconds
-                    ),
-                    ping_interval=20,
-                    ping_timeout=20,
+                async with self._external_worker_socket(
+                    self.external_worker_claim
                 ) as socket:
                     await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
             except (
                 StaleWorkerClaim,
                 WorkerLeaseUnavailable,
+                ExternalPiWorkerUnavailable,
+                ExternalPiWorkerControlRejected,
                 OSError,
                 TimeoutError,
                 WebSocketException,

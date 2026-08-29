@@ -36,8 +36,15 @@ test("registry replays only unacknowledged frames and fences attach identity", (
     [2],
   );
   assert.deepEqual(second.frames.map((frame) => frame.worker_sequence), [2]);
-  assert.throws(() => run.attach(new RecordingTransport(), claim, 2), TurnProtocolError);
+  assert.throws(
+    () => run.attach(new RecordingTransport(), claim, 2),
+    TurnProtocolError,
+  );
   run.detach(second);
+  assert.throws(
+    () => run.attach(new RecordingTransport(), claim, 3),
+    TurnProtocolError,
+  );
   assert.throws(
     () => run.attach(new RecordingTransport(), { ...claim, leaseGeneration: 10 }, 2),
     TurnProtocolError,
@@ -136,6 +143,10 @@ test("detached replay overflow fails closed with the canonical public code", asy
   assert.deepEqual(replayTransport.frames.map((frame) => frame.type), [
     "answer_delta", "answer_delta", "error", "worker_done",
   ]);
+  assert.deepEqual(
+    replayTransport.frames.map((frame) => frame.worker_sequence),
+    [1, 2, 3, 4],
+  );
   assert.equal(replayTransport.frames[2]?.code, "worker_event_buffer_exhausted");
   assert.equal(aborts, 1);
 });
@@ -164,6 +175,10 @@ test("terminal acknowledgement and grace expiry release retained state", async (
   const first = acknowledged.start("request-1", claim, new RecordingTransport());
   first.append({ type: "worker_done", status: "complete" });
   assert.equal(acknowledged.size, 1);
+  assert.throws(
+    () => acknowledged.acknowledgeTerminal("request-1", claim, 2),
+    TurnProtocolError,
+  );
   acknowledged.acknowledgeTerminal("request-1", claim, 1);
   assert.equal(acknowledged.size, 0);
 

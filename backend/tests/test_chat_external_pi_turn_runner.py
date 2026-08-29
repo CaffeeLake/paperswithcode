@@ -8,7 +8,14 @@ import pytest
 
 from backend.config import get_settings
 from backend.services.chat_capability_service import IssuedCapability
-from backend.services.chat_external_pi_turn_runner import ExternalPiChatTurnRunner
+from backend.services.chat_external_pi_turn_runner import (
+    MAX_EXTERNAL_TURN_FRAME_BYTES,
+    ExternalPiChatTurnRunner,
+)
+from backend.services.chat_external_pi_shadow import (
+    ExternalPiWorkerControlRejected,
+    ExternalPiWorkerUnavailable,
+)
 from backend.services.chat_external_worker_registry import (
     ExternalWorkerClaim,
     StaleWorkerClaim,
@@ -262,6 +269,63 @@ def test_external_pi_runner_uses_no_sandbox_without_tools():
     assert provider.created == []
 
 
+def test_external_pi_runner_delivers_contiguous_worker_buffer_exhaustion():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    socket = FakeSocket(
+        [
+            '{"type":"workspace_ready","worker_sequence":1}',
+            '{"type":"error","code":"worker_event_buffer_exhausted",'
+            '"message":"The research run failed.","worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert asyncio.run(_collect(runner)) == [
+        {"type": "workspace_ready"},
+        {
+            "type": "error",
+            "code": "worker_event_buffer_exhausted",
+            "message": "The research run failed.",
+        },
+    ]
+
+
 def test_external_pi_runner_fences_socket_and_run_with_distinct_claims():
     settings = get_settings().model_copy(deep=True)
     settings.environment = "staging"
@@ -327,6 +391,12 @@ def test_external_pi_runner_fences_socket_and_run_with_distinct_claims():
         "Authorization": f"Bearer {settings.chat_external_pi_worker_token}",
         "X-PWC-Worker-Generation": "7",
     }
+    assert connection["kwargs"]["max_size"] == MAX_EXTERNAL_TURN_FRAME_BYTES
+    assert connection["kwargs"]["open_timeout"] == (
+        settings.chat_external_pi_startup_timeout_seconds
+    )
+    assert connection["kwargs"]["ping_interval"] == 20
+    assert connection["kwargs"]["ping_timeout"] == 20
     assert json.loads(socket.sent[0])["turnClaim"] == {
         "turnId": str(turn_id),
         "workerId": "api-1",
@@ -730,3 +800,131 @@ def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run()
         },
     ]
     assert len(connector.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status_error",
+    [
+        ExternalPiWorkerUnavailable("worker unavailable"),
+        ExternalPiWorkerControlRejected("malformed worker status"),
+    ],
+    ids=["unavailable", "malformed-or-rejected"],
+)
+def test_external_pi_runner_classifies_status_control_failure_as_worker_loss(
+    status_error,
+):
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    statuses = iter([worker_status(claim), status_error])
+
+    async def resolve_status():
+        status = next(statuses)
+        if isinstance(status, BaseException):
+            raise status
+        return status
+
+    socket = FakeSocket(
+        ['{"type":"workspace_ready","worker_sequence":1}', OSError("link lost")]
+    )
+    connector = SequencedConnector(socket)
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=resolve_status,
+        session_factory=SessionContext,
+    )
+
+    assert asyncio.run(_collect(runner)) == [
+        {"type": "workspace_ready"},
+        {
+            "type": "error",
+            "code": "external_worker_lost",
+            "message": "The research run was interrupted.",
+        },
+    ]
+    assert len(connector.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status_error",
+    [
+        ExternalPiWorkerUnavailable("worker unavailable"),
+        ExternalPiWorkerControlRejected("malformed worker status"),
+    ],
+)
+def test_external_pi_detached_cancel_tolerates_status_control_failure(status_error):
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+
+    async def rejected_status():
+        raise status_error
+
+    connector = SequencedConnector()
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=rejected_status,
+        session_factory=SessionContext,
+    )
+    runner.external_worker_claim = claim
+
+    asyncio.run(runner.cancel())
+    assert connector.calls == []

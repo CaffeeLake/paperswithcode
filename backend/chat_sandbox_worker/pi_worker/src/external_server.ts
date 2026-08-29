@@ -248,17 +248,23 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
   });
   turnServer.on("connection", (socket) => {
     let started = false;
+    let acceptingFrames = true;
     let retained: ReturnType<ExternalTurnRegistry["start"]> | undefined;
+    const reject = (code: number, reason: string): void => {
+      acceptingFrames = false;
+      socket.close(code, reason);
+    };
     socket.on("message", (data, isBinary) => {
+      if (!acceptingFrames) return;
       if (isBinary) {
-        socket.close(1003, "invalid_frame");
+        reject(1003, "invalid_frame");
         return;
       }
       let frame: Record<string, unknown>;
       try {
         frame = JSON.parse(data.toString()) as Record<string, unknown>;
       } catch {
-        socket.close(1007, "invalid_json");
+        reject(1007, "invalid_json");
         return;
       }
       if (frame.type === "tool_result" && typeof frame.operation_id === "string") {
@@ -267,7 +273,7 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
           retained.resolveTool(frame as unknown as RemoteToolResult);
         } catch (error) {
           if (!(error instanceof TurnProtocolError)) throw error;
-          socket.close(1008, "uncorrelated_tool_result");
+          reject(1008, "uncorrelated_tool_result");
         }
         return;
       }
@@ -282,7 +288,7 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
           started = true;
         } catch (error) {
           if (!(error instanceof TurnProtocolError)) throw error;
-          socket.close(1008, "invalid_cancel");
+          reject(1008, "invalid_cancel");
         }
         return;
       }
@@ -296,23 +302,24 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
           );
         } catch (error) {
           if (!(error instanceof TurnProtocolError)) throw error;
-          socket.close(1008, "invalid_terminal_ack");
+          reject(1008, "invalid_terminal_ack");
         }
         return;
       }
       if (started) {
-        socket.close(1008, "turn_already_started");
+        reject(1008, "turn_already_started");
         return;
       }
       started = true;
       if (frame.type === "attach_turn") {
         try {
           const attach = parseAttachTurn(frame);
-          retained = turns.require(attach.request_id, attach.turnClaim);
-          retained.attach(socket, attach.turnClaim, attach.afterSequence);
+          const target = turns.require(attach.request_id, attach.turnClaim);
+          target.attach(socket, attach.turnClaim, attach.afterSequence);
+          retained = target;
         } catch (error) {
           if (!(error instanceof TurnProtocolError)) throw error;
-          socket.close(1008, "invalid_attach");
+          reject(1008, "invalid_attach");
         }
         return;
       }
@@ -321,18 +328,26 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
         run = parseRunTurn(frame, true) as ExternalRunTurn;
       } catch (error) {
         if (!(error instanceof TurnProtocolError)) throw error;
-        socket.close(1008, "invalid_request");
+        reject(1008, "invalid_request");
         return;
       }
       if (state !== "ready" || activeSessions() >= options.maximumConcurrent) {
-        socket.close(1013, "worker_capacity");
+        reject(1013, "worker_capacity");
         return;
       }
-      operationCounters.model_calls += 1;
-      retained = turns.start(run.request_id, run.turnClaim, socket);
-      const worker = options.createTurnWorker!(retained.emit, run, retained.channel);
-      retained.setCancelWorker(() => worker.cancel(run.request_id));
-      void worker.run(run);
+      let candidate: ReturnType<ExternalTurnRegistry["start"]> | undefined;
+      try {
+        candidate = turns.start(run.request_id, run.turnClaim, socket);
+        const worker = options.createTurnWorker!(candidate.emit, run, candidate.channel);
+        candidate.setCancelWorker(() => worker.cancel(run.request_id));
+        const running = worker.run(run);
+        retained = candidate;
+        operationCounters.model_calls += 1;
+        void running;
+      } catch {
+        candidate?.rejectStart();
+        reject(1008, "turn_start_rejected");
+      }
     });
     socket.on("close", () => {
       retained?.detach(socket);

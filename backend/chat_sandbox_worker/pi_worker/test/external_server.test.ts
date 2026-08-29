@@ -524,6 +524,294 @@ test("external worker rejects a tool result without an attached retained run", a
   }
 });
 
+test("duplicate run start is rejected without counting or disturbing the incumbent", async () => {
+  const token = "s".repeat(32);
+  let starts = 0;
+  let finish!: () => void;
+  const completion = new Promise<void>((resolve) => { finish = resolve; });
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 2,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: (emit) => ({
+      async run(run) {
+        starts += 1;
+        emit(run.request_id, { type: "workspace_ready" });
+        await completion;
+        emit(run.request_id, { type: "worker_done", status: "complete" });
+      },
+      async cancel() {},
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const authorization = { Authorization: `Bearer ${token}` };
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { ...authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: { ...authorization, "X-PWC-Worker-Generation": "3" },
+  });
+  const incumbent = connect();
+  let duplicate: WebSocket | undefined;
+  let attached: WebSocket | undefined;
+  try {
+    await once(incumbent, "open");
+    incumbent.send(JSON.stringify(externalRunFrame()));
+    await once(incumbent, "message");
+    incumbent.close();
+    await once(incumbent, "close");
+
+    duplicate = connect();
+    await once(duplicate, "open");
+    const duplicateClosed = once(duplicate, "close");
+    duplicate.send(JSON.stringify(externalRunFrame()));
+    const [duplicateCode] = await duplicateClosed;
+    assert.equal(duplicateCode, 1008);
+    const status = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(status.operation_counters.model_calls, 1);
+    assert.equal(starts, 1);
+
+    attached = connect();
+    await once(attached, "open");
+    attached.send(JSON.stringify({
+      v: 1,
+      type: "attach_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      afterSequence: 1,
+    }));
+    const terminal = once(attached, "message");
+    finish();
+    const [payload] = await terminal;
+    assert.equal((JSON.parse(String(payload)) as any).type, "worker_done");
+  } finally {
+    incumbent.terminate();
+    duplicate?.terminate();
+    attached?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("worker construction failure releases the provisional run without counting a model", async () => {
+  const token = "s".repeat(32);
+  let attempts = 0;
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 1,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: (emit) => {
+      attempts += 1;
+      if (attempts === 1) {
+        emit("request-1", { type: "workspace_ready" });
+        throw new Error("construction failed");
+      }
+      return {
+        async run(run) {
+          emit(run.request_id, { type: "worker_done", status: "complete" });
+        },
+        async cancel() {},
+      };
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const authorization = { Authorization: `Bearer ${token}` };
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { ...authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: { ...authorization, "X-PWC-Worker-Generation": "3" },
+  });
+  const failed = connect();
+  let successful: WebSocket | undefined;
+  try {
+    await once(failed, "open");
+    const failedClosed = once(failed, "close");
+    failed.send(JSON.stringify(externalRunFrame()));
+    const [failedCode] = await failedClosed;
+    assert.equal(failedCode, 1008);
+    const afterFailure = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(afterFailure.active_sessions, 0);
+    assert.equal(afterFailure.operation_counters.model_calls, 0);
+
+    const nextClaim = {
+      ...durableTurnClaim,
+      turnId: "20000000-0000-4000-8000-000000000002",
+    };
+    successful = connect();
+    await once(successful, "open");
+    const terminal = once(successful, "message");
+    successful.send(JSON.stringify({
+      ...externalRunFrame(),
+      request_id: "request-2",
+      turn_id: nextClaim.turnId,
+      turnClaim: nextClaim,
+    }));
+    const [payload] = await terminal;
+    assert.equal((JSON.parse(String(payload)) as any).type, "worker_done");
+    const afterSuccess = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(afterSuccess.operation_counters.model_calls, 1);
+  } finally {
+    failed.terminate();
+    successful?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("rejected second attach has no authority over the incumbent run", async () => {
+  const token = "s".repeat(32);
+  let cancels = 0;
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 2,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: ["read"] },
+    createTurnWorker: (emit, _run, channel) => ({
+      async run(run) {
+        const result = await channel.request({
+          type: "tool_request",
+          operation_id: "operation-1",
+          tool_call_id: "tool-1",
+          operation: "read",
+          path: "/workspace/result.txt",
+          offset: 0,
+          max_bytes: 1024,
+        });
+        assert.equal(result.ok, true);
+        emit(run.request_id, { type: "worker_done", status: "complete" });
+      },
+      async cancel() { cancels += 1; },
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const authorization = { Authorization: `Bearer ${token}` };
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { ...authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: { ...authorization, "X-PWC-Worker-Generation": "3" },
+  });
+  const incumbent = connect();
+  let rejected: WebSocket | undefined;
+  let terminalRejected: WebSocket | undefined;
+  try {
+    await once(incumbent, "open");
+    incumbent.send(JSON.stringify(externalRunFrame()));
+    const [toolPayload] = await once(incumbent, "message");
+    const tool = JSON.parse(String(toolPayload)) as any;
+    assert.equal(tool.type, "tool_request");
+
+    rejected = connect();
+    await once(rejected, "open");
+    const rejectedClosed = once(rejected, "close");
+    rejected.send(JSON.stringify({
+      v: 1,
+      type: "attach_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      afterSequence: 0,
+    }));
+    rejected.send(JSON.stringify({
+      type: "tool_result", operation_id: "operation-1", ok: false,
+    }));
+    rejected.send(JSON.stringify({
+      v: 1,
+      type: "cancel_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+    }));
+    const [rejectedCode] = await rejectedClosed;
+    assert.equal(rejectedCode, 1008);
+    assert.equal(cancels, 0);
+
+    const terminal = once(incumbent, "message");
+    incumbent.send(JSON.stringify({
+      type: "tool_result",
+      operation_id: "operation-1",
+      ok: true,
+      data_base64: "YW5zd2Vy",
+      eof: true,
+    }));
+    const [terminalPayload] = await terminal;
+    const terminalFrame = JSON.parse(String(terminalPayload)) as any;
+    assert.equal(terminalFrame.type, "worker_done");
+
+    terminalRejected = connect();
+    await once(terminalRejected, "open");
+    const terminalRejectedClosed = once(terminalRejected, "close");
+    terminalRejected.send(JSON.stringify({
+      v: 1,
+      type: "attach_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      afterSequence: 0,
+    }));
+    terminalRejected.send(JSON.stringify({
+      v: 1,
+      type: "ack_terminal",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      sequence: terminalFrame.worker_sequence,
+    }));
+    await terminalRejectedClosed;
+    const beforeAck = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(beforeAck.active_sessions, 1);
+    incumbent.send(JSON.stringify({
+      v: 1,
+      type: "ack_terminal",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      sequence: terminalFrame.worker_sequence,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const afterAck = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: authorization,
+    })).json() as any;
+    assert.equal(afterAck.active_sessions, 0);
+  } finally {
+    incumbent.terminate();
+    rejected?.terminate();
+    terminalRejected?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("external worker rejects missing and stale upgrade generations", async () => {
   const token = "s".repeat(32);
   const server = createExternalWorkerServer({

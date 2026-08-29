@@ -99,6 +99,9 @@ export class ExternalTurnRun {
   ): SequencedTurnFrame[] {
     if (!claimsEqual(this.claim, claim)) throw new TurnProtocolError("Stale Pi turn claim");
     if (this.transport) throw new TurnProtocolError("Pi turn already has a transport");
+    if (afterSequence > this.sequence) {
+      throw new TurnProtocolError("Pi turn cursor is ahead of the run");
+    }
     const replay = this.frames.filter((frame) => frame.worker_sequence > afterSequence);
     this.transport = transport;
     for (const frame of replay) this.send(frame);
@@ -129,9 +132,13 @@ export class ExternalTurnRun {
   }
 
   acknowledgeTerminal(sequence: number): void {
-    if (this.terminalSequence === undefined || sequence < this.terminalSequence) {
+    if (this.terminalSequence === undefined || sequence !== this.terminalSequence) {
       throw new TurnProtocolError("Pi turn terminal is not acknowledged");
     }
+    this.dispose();
+  }
+
+  rejectStart(): void {
     this.dispose();
   }
 
@@ -160,10 +167,14 @@ export class ExternalTurnRun {
   }
 
   private sequenceFrame(frame: PwCEvent | RemoteToolRequest): SequencedTurnFrame {
-    return { ...frame, worker_sequence: ++this.sequence };
+    return { ...frame, worker_sequence: this.sequence + 1 };
   }
 
   private store(frame: SequencedTurnFrame, bytes = Buffer.byteLength(JSON.stringify(frame))): void {
+    if (frame.worker_sequence !== this.sequence + 1) {
+      throw new TurnProtocolError("Pi turn frame sequence is invalid");
+    }
+    this.sequence = frame.worker_sequence;
     this.frames.push(frame);
     this.bufferedBytes += bytes;
     this.send(frame);
