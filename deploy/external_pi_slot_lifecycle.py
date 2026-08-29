@@ -518,7 +518,7 @@ def _unit_is_inactive(unit: str) -> bool:
         )
     except OSError:
         return False
-    return result.returncode == 0 and result.stdout.strip() == "inactive"
+    return result.returncode == 0 and result.stdout.strip() in {"inactive", "failed"}
 
 
 def _worker_is_inactive(environment: str, slot: str) -> bool:

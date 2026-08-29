@@ -602,6 +602,18 @@ def test_stop_without_durable_drain_evidence_leaves_worker_running(
     ]
 
 
+def test_failed_worker_unit_is_not_treated_as_a_running_orphan(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="failed\n"),
+    )
+
+    assert lifecycle._worker_is_inactive("staging", "blue") is True
+
+
 @pytest.mark.parametrize(
     "contents",
     [
