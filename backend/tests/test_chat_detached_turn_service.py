@@ -36,6 +36,7 @@ class Harness:
         self.now = NOW
         self.terminal_error: Exception | None = None
         self.transaction_error: Exception | None = None
+        self.transaction_calls = 0
         self.terminal_calls: list[tuple[str, str | None]] = []
         self.terminal_sequences: list[list[int]] = []
         self.turn, self.claim = self._claimed_turn()
@@ -82,6 +83,7 @@ class Harness:
         return DetachedTurn(turn_id=job.turn_id, claim=claim), claim
 
     async def transaction(self, operation):
+        self.transaction_calls += 1
         if self.transaction_error is not None:
             raise self.transaction_error
         with self.sessions.begin() as db:
@@ -234,7 +236,60 @@ def test_remote_subscriber_disconnects_do_not_retain_per_turn_notifications() ->
             await subscription.aclose()
         return remote.condition_count, remote.notification_state_count
 
-    assert asyncio.run(scenario()) == (0, 1)
+    assert asyncio.run(scenario()) == (0, 0)
+
+
+def test_turn_publish_wakes_only_subscribers_for_that_turn() -> None:
+    async def scenario() -> tuple[int, bool]:
+        harness = Harness()
+        other_turn_id = _remote_running_turn(harness, 100)
+        coordinator = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: NOW,
+            persist_terminal=harness.persist_terminal,
+            poll_seconds=10,
+        )
+        release_first = asyncio.Event()
+        release_terminal = asyncio.Event()
+
+        async def source():
+            await release_first.wait()
+            yield ChatStreamFrame("stream_start")
+            await release_terminal.wait()
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await coordinator.start(turn=harness.turn, source=source())
+        first_subscription = coordinator.subscribe(
+            turn_id=harness.turn.turn_id, after_sequence=0
+        )
+        other_subscription = coordinator.subscribe(
+            turn_id=other_turn_id, after_sequence=0
+        )
+        first = asyncio.create_task(anext(first_subscription))
+        other = asyncio.create_task(anext(other_subscription))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        baseline = harness.transaction_calls
+
+        release_first.set()
+        assert (await first).sequence == 1
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        transaction_delta = harness.transaction_calls - baseline
+        other_still_waiting = not other.done()
+
+        other.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await other
+        await other_subscription.aclose()
+        await first_subscription.aclose()
+        release_terminal.set()
+        await stream.source_task
+        return transaction_delta, other_still_waiting
+
+    assert asyncio.run(scenario()) == (2, True)
 
 
 def test_coordinator_without_local_source_replays_and_tails_database_journal() -> None:
@@ -334,7 +389,7 @@ def test_second_start_is_rejected_without_consuming_replacement() -> None:
 
 
 def test_active_source_remains_strongly_owned() -> None:
-    async def scenario() -> int:
+    async def scenario() -> tuple[int, int]:
         harness = Harness()
         release = asyncio.Event()
 
@@ -343,12 +398,15 @@ def test_active_source_remains_strongly_owned() -> None:
             yield ChatStreamFrame("done", {"finish_reason": "success"})
 
         stream = await harness.coordinator.start(turn=harness.turn, source=source())
-        retained = harness.coordinator.active_turn_count
+        retained = (
+            harness.coordinator.active_turn_count,
+            harness.coordinator.notification_state_count,
+        )
         release.set()
         await stream.source_task
         return retained
 
-    assert asyncio.run(scenario()) == 1
+    assert asyncio.run(scenario()) == (1, 1)
 
 
 def test_confirmed_terminal_evicts_heavy_state_and_database_rejects_restart() -> None:

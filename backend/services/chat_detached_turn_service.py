@@ -54,6 +54,13 @@ class DetachedTurnHandle:
         return self.turn.claim
 
 
+@dataclass(slots=True)
+class _TurnNotificationState:
+    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    producer_owned: bool = False
+    subscriber_count: int = 0
+
+
 class DetachedTurnCoordinator:
     """Own each local source once while serving every subscriber from the journal."""
 
@@ -78,7 +85,7 @@ class DetachedTurnCoordinator:
         self._clock = clock
         self._poll_seconds = poll_seconds
         self._handles: dict[uuid.UUID, DetachedTurnHandle] = {}
-        self._notification = asyncio.Condition()
+        self._notifications: dict[uuid.UUID, _TurnNotificationState] = {}
         self._ambiguous_turns: dict[uuid.UUID, TurnLeaseClaim] = {}
         self._tombstone_reaper: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
@@ -89,11 +96,11 @@ class DetachedTurnCoordinator:
 
     @property
     def condition_count(self) -> int:
-        return 0
+        return len(self._notifications)
 
     @property
     def notification_state_count(self) -> int:
-        return 1
+        return len(self._notifications)
 
     @property
     def ambiguous_turn_count(self) -> int:
@@ -137,6 +144,7 @@ class DetachedTurnCoordinator:
             except BaseException:
                 await self._close_source(source)
                 raise
+            self._acquire_producer(turn.turn_id)
             handle = DetachedTurnHandle(
                 turn=turn,
                 source=source,
@@ -150,23 +158,27 @@ class DetachedTurnCoordinator:
     ) -> AsyncIterator[JournalFrame]:
         if after_sequence < 0:
             raise ValueError("Journal replay cursor is invalid")
+        notification = self._acquire_subscriber(turn_id)
         cursor = after_sequence
-        while True:
-            frames, terminal = await self._transaction(
-                lambda db: self._read(db, turn_id=turn_id, after_sequence=cursor)
-            )
-            for frame in frames:
-                cursor = frame.sequence
-                yield frame
-            if terminal:
-                return
-            async with self._notification:
-                try:
-                    await asyncio.wait_for(
-                        self._notification.wait(), timeout=self._poll_seconds
-                    )
-                except TimeoutError:
-                    pass
+        try:
+            while True:
+                frames, terminal = await self._transaction(
+                    lambda db: self._read(db, turn_id=turn_id, after_sequence=cursor)
+                )
+                for frame in frames:
+                    cursor = frame.sequence
+                    yield frame
+                if terminal:
+                    return
+                async with notification.condition:
+                    try:
+                        await asyncio.wait_for(
+                            notification.condition.wait(), timeout=self._poll_seconds
+                        )
+                    except TimeoutError:
+                        pass
+        finally:
+            self._release_subscriber(turn_id, notification)
 
     async def interrupt_dispatch_failed(
         self,
@@ -190,7 +202,7 @@ class DetachedTurnCoordinator:
             )
         )
         if job is not None:
-            await self._publish()
+            await self._publish(turn_id)
         return job is not None
 
     async def _pump(self, handle: DetachedTurnHandle) -> None:
@@ -234,7 +246,7 @@ class DetachedTurnCoordinator:
                     await self._persist_terminal_durably(handle.claim, *terminal)
                     terminal_seen = True
                     terminal_durable = True
-                await self._publish(frames)
+                await self._publish(handle.turn.turn_id, frames)
                 if terminal_seen:
                     break
             if not terminal_seen:
@@ -242,7 +254,7 @@ class DetachedTurnCoordinator:
                 terminal_durable = True
         finally:
             try:
-                await self._publish()
+                await self._publish(handle.turn.turn_id)
             finally:
                 try:
                     await self._close_source(handle.source)
@@ -283,7 +295,7 @@ class DetachedTurnCoordinator:
             code = "event_journal_exhausted"
             frames = ()
         await self._persist_terminal_durably(handle.claim, "failed", code)
-        await self._publish(frames)
+        await self._publish(handle.turn.turn_id, frames)
 
     async def _persist_terminal_durably(
         self, claim: TurnLeaseClaim, state: str, failure_code: str | None
@@ -304,6 +316,7 @@ class DetachedTurnCoordinator:
         turn_id = handle.turn.turn_id
         if self._handles.get(turn_id) is handle:
             self._handles.pop(turn_id, None)
+            self._release_producer(turn_id)
 
     def _retain_ambiguous(self, handle: DetachedTurnHandle) -> None:
         self._evict_handle(handle)
@@ -393,9 +406,49 @@ class DetachedTurnCoordinator:
         job = self._jobs.load_by_turn(db, turn_id)
         return frames, job is None or job.state in TERMINAL_STATES
 
-    async def _publish(self, _frames: Sequence[JournalFrame] = ()) -> None:
-        async with self._notification:
-            self._notification.notify_all()
+    def _acquire_producer(self, turn_id: uuid.UUID) -> None:
+        notification = self._notifications.setdefault(turn_id, _TurnNotificationState())
+        if notification.producer_owned:
+            raise RuntimeError("Detached turn already owns notification state")
+        notification.producer_owned = True
+
+    def _release_producer(self, turn_id: uuid.UUID) -> None:
+        notification = self._notifications.get(turn_id)
+        if notification is None or not notification.producer_owned:
+            raise RuntimeError("Detached turn does not own notification state")
+        notification.producer_owned = False
+        self._drop_unused_notification(turn_id, notification)
+
+    def _acquire_subscriber(self, turn_id: uuid.UUID) -> _TurnNotificationState:
+        notification = self._notifications.setdefault(turn_id, _TurnNotificationState())
+        notification.subscriber_count += 1
+        return notification
+
+    def _release_subscriber(
+        self, turn_id: uuid.UUID, notification: _TurnNotificationState
+    ) -> None:
+        if self._notifications.get(turn_id) is not notification:
+            raise RuntimeError("Detached turn notification state was replaced")
+        if notification.subscriber_count <= 0:
+            raise RuntimeError("Detached turn has no active subscriber")
+        notification.subscriber_count -= 1
+        self._drop_unused_notification(turn_id, notification)
+
+    def _drop_unused_notification(
+        self, turn_id: uuid.UUID, notification: _TurnNotificationState
+    ) -> None:
+        if not notification.producer_owned and notification.subscriber_count == 0:
+            if self._notifications.get(turn_id) is notification:
+                self._notifications.pop(turn_id)
+
+    async def _publish(
+        self, turn_id: uuid.UUID, _frames: Sequence[JournalFrame] = ()
+    ) -> None:
+        notification = self._notifications.get(turn_id)
+        if notification is None:
+            return
+        async with notification.condition:
+            notification.condition.notify_all()
 
     @staticmethod
     async def _close_source(source: AsyncIterator[ChatStreamFrame]) -> None:
