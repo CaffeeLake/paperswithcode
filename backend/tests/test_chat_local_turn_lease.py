@@ -193,6 +193,43 @@ def test_durable_done_waits_for_detached_terminal_callback(monkeypatch):
     assert persisted == [{"followups": [], "finish_reason": "success", "citations": []}]
 
 
+def test_execution_lost_event_persists_canonical_terminal_code(monkeypatch):
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": False}
+    )
+    orchestrator = _orchestrator(settings, _admission())
+    persisted = []
+    monkeypatch.setattr(
+        chat_stream_service.ChatCapabilityService,
+        "provider_error_for_turn",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_persist_failure",
+        lambda _owner, _settings, _admission, code, *_args: persisted.append(code),
+    )
+
+    async def consume():
+        queue = asyncio.Queue()
+        await queue.put(
+            {
+                "type": "error",
+                "message": "The sandbox execution could not be recovered.",
+                "code": "execution_lost",
+            }
+        )
+        await queue.put({"type": "_research_finished"})
+        return [frame async for frame in orchestrator._consume(queue)]
+
+    frames = asyncio.run(consume())
+
+    assert [(frame.event, frame.payload["code"]) for frame in frames] == [
+        ("error", "execution_lost")
+    ]
+    assert persisted == ["execution_lost"]
+
+
 def test_durable_stream_start_payload_is_journal_serializable():
     settings = get_settings().model_copy(
         update={"chat_durable_turn_dispatch_enabled": True}

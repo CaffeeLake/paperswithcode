@@ -45,6 +45,7 @@ from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_local_turn_lease import ChatLocalTurnLeaseService
 from backend.services.chat_pi_transcript_service import ChatPiTranscriptService
 from backend.services.chat_sandbox_service import SandboxError
+from backend.services.chat_sandbox_executor import ExecutorExecutionLost
 from backend.services.chat_session_service import (
     ChatOwner,
     ChatServiceError,
@@ -1720,6 +1721,18 @@ class ChatStreamOrchestrator:
                 await queue.put(event)
         except asyncio.CancelledError:
             raise
+        except ExecutorExecutionLost:
+            assert self.runner is not None
+            if not getattr(self.runner, "execution_loss_cancelled", False):
+                with contextlib.suppress(Exception):
+                    await self.runner.cancel()
+            await queue.put(
+                {
+                    "type": "error",
+                    "message": "The sandbox execution could not be recovered.",
+                    "code": "execution_lost",
+                }
+            )
         except SandboxError as exc:
             await queue.put({"type": "error", "message": str(exc), "code": exc.code})
         except Exception as exc:

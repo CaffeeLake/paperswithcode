@@ -1,12 +1,14 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 import json
+import threading
 from types import SimpleNamespace
 import uuid
 
 import pytest
 
 from backend.config import get_settings
+from backend.chat_sandbox_worker.executor_daemon import ExecutorServer
 from backend.services.chat_capability_service import IssuedCapability
 from backend.services.chat_external_pi_turn_runner import (
     MAX_EXTERNAL_TURN_FRAME_BYTES,
@@ -22,11 +24,18 @@ from backend.services.chat_external_worker_registry import (
     WorkerLeaseUnavailable,
 )
 from backend.services.chat_sandbox_executor import (
+    ExecutorExecutionLost,
     ExecutorExecutionResult,
     ExecutorReadResult,
+    SandboxExecutorClient,
 )
 from backend.services.chat_session_service import TurnAdmission
+from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
+from backend.tests.test_chat_sandbox_executor_client import (
+    _Broker,
+    _DropFirstResponseSocketProvider,
+)
 
 
 class FakeSocket:
@@ -137,6 +146,16 @@ class FakeExecutor:
         return ExecutorExecutionResult(
             outputs=({"sequence": 1, "stream": "stdout", "data": "x"},),
             terminal={"status": "completed", "exit_code": 0, "error": None},
+        )
+
+
+class LostExecutor(FakeExecutor):
+    async def exec_resumable(self, context, *, command, timeout_ms):
+        self.exec_calls += 1
+        raise ExecutorExecutionLost(
+            execution_id=context.execution_id,
+            last_sequence=0,
+            responses=(),
         )
 
 
@@ -280,6 +299,103 @@ def test_external_pi_runner_routes_bash_through_resumable_execution():
     tool_result = json.loads(socket.sent[1])
     assert tool_result["operation_id"] == "operation-1"
     assert tool_result["ok"] is True
+
+
+def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    executor = LostExecutor()
+    socket = FakeSocket(
+        [
+            '{"type":"tool_request","operation_id":"operation-1",'
+            '"tool_call_id":"tool-1","operation":"exec",'
+            '"command":"printf x >> marker","timeout_ms":1000,"worker_sequence":1}',
+            '{"type":"answer_delta","text":"must not be processed","worker_sequence":2}',
+        ]
+    )
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=FakeProvider(),
+        executor=executor,
+        websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(_collect(runner))
+
+    assert exc_info.value.code == "execution_lost"
+    assert executor.exec_calls == 1
+    assert [json.loads(frame)["type"] for frame in socket.sent] == [
+        "run_turn",
+        "cancel_turn",
+    ]
+    assert next(socket.messages) == (
+        '{"type":"answer_delta","text":"must not be processed","worker_sequence":2}'
+    )
+
+
+def test_chat_stream_producer_preserves_execution_lost_terminal_code():
+    class LostRunner:
+        def __init__(self):
+            self.cancelled = False
+
+        async def events(self):
+            raise ExecutorExecutionLost(
+                execution_id="execution-a",
+                last_sequence=0,
+                responses=(),
+            )
+            yield
+
+        async def cancel(self):
+            self.cancelled = True
+
+    runner = LostRunner()
+    coordinator = ChatStreamOrchestrator.__new__(ChatStreamOrchestrator)
+    coordinator.runner = runner
+    coordinator.admission = SimpleNamespace(session_id=uuid.uuid4())
+    queue = asyncio.Queue()
+
+    asyncio.run(coordinator._produce_research(queue))
+
+    assert runner.cancelled is True
+    assert queue.get_nowait() == {
+        "type": "error",
+        "message": "The sandbox execution could not be recovered.",
+        "code": "execution_lost",
+    }
+    assert queue.get_nowait() == {"type": "_research_finished"}
 
 
 def test_external_pi_runner_uses_no_sandbox_without_tools():
@@ -803,6 +919,108 @@ def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
     assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
     assert executor.exec_calls == 1
     assert json.loads(first.sent[1]) == json.loads(second.sent[1])
+
+
+def test_external_pi_reconnect_reuses_real_recovered_bash_result(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = ExecutorServer(
+        socket_path=tmp_path / "private" / "executor.sock",
+        state_path=tmp_path / "state",
+        workspace_root=workspace,
+        worker_generation="runner-worker",
+        broker_control=_Broker(),
+        command_preexec=None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert server.wait_until_ready(2)
+    relay = _DropFirstResponseSocketProvider(
+        server.socket_path, drop_after_frames=1, drop_on_call=2
+    )
+
+    class ExecutorProvider(FakeProvider):
+        async def open_executor_relay(self, sandbox, *, timeout_seconds):
+            return await relay.open_executor_relay(
+                sandbox, timeout_seconds=timeout_seconds
+            )
+
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    provider = ExecutorProvider()
+    request_number = iter(range(10))
+    executor = SandboxExecutorClient(
+        provider, request_id_factory=lambda: f"executor-{next(request_number)}"
+    )
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    tool = (
+        '{"type":"tool_request","operation_id":"operation-1",'
+        '"tool_call_id":"tool-1","operation":"exec",'
+        '"command":"printf x >> marker","timeout_ms":1000,"worker_sequence":1}'
+    )
+    first = FakeSocket([tool, OSError("Pi link lost after tool result")])
+    second = FakeSocket(
+        [
+            tool,
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=provider,
+        executor=executor,
+        websocket_connector=SequencedConnector(first, second),
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+    runner.worker_generation = "runner-worker"
+
+    try:
+        assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
+        request_types = [
+            json.loads(process.stdin.writes[0].splitlines()[1].decode("utf-8"))["type"]
+            for process in relay.processes
+        ]
+        assert json.loads(first.sent[1])["ok"] is True, (
+            request_types,
+            json.loads(first.sent[1]),
+        )
+        assert (workspace / "marker").read_text() == "x"
+        assert request_types == ["ensure_workspace", "exec", "attach_execution"]
+        assert request_types.count("exec") == 1
+        assert json.loads(first.sent[1]) == json.loads(second.sent[1])
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 def test_external_pi_runner_does_not_resend_resolved_tool_result_after_later_loss():

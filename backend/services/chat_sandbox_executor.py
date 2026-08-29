@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Protocol
 
 from grpclib import GRPCError
@@ -26,6 +30,7 @@ from backend.chat_sandbox_worker.executor_protocol import (
     ResponseSequenceValidator,
     decode_read_result_data,
     decode_response,
+    encode_response,
     encode_request,
 )
 
@@ -67,6 +72,7 @@ class ExecutorContext:
 class ExecutorExecutionResult:
     outputs: tuple[dict[str, object], ...]
     terminal: dict[str, object]
+    responses: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,11 +107,15 @@ class ExecutorExecutionLost(RuntimeError):
         *,
         execution_id: str,
         last_sequence: int,
+        responses: tuple[Mapping[str, object], ...],
         outputs: tuple[dict[str, object], ...] = (),
     ) -> None:
         super().__init__("Sandbox execution delivery or completion is uncertain")
         self._execution_id = execution_id
         self._last_sequence = last_sequence
+        self._responses = tuple(
+            MappingProxyType(dict(response)) for response in responses
+        )
         self.outputs = outputs
 
     @property
@@ -115,6 +125,10 @@ class ExecutorExecutionLost(RuntimeError):
     @property
     def last_sequence(self) -> int:
         return self._last_sequence
+
+    @property
+    def responses(self) -> tuple[Mapping[str, object], ...]:
+        return self._responses
 
 
 class ExecutorOperationError(RuntimeError):
@@ -135,9 +149,11 @@ class SandboxExecutorClient:
         provider: ExecutorRelayProvider,
         *,
         request_id_factory: Callable[[], str] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.provider = provider
         self.request_id_factory = request_id_factory or (lambda: uuid.uuid4().hex)
+        self.monotonic = monotonic or time.monotonic
 
     async def health(self, sandbox: object) -> str:
         request_id = self.request_id_factory()
@@ -203,6 +219,7 @@ class SandboxExecutorClient:
                 raise ExecutorExecutionLost(
                     execution_id=context.execution_id,
                     last_sequence=0,
+                    responses=(),
                 ) from error
             raise
         if self._valid_execution_prefix(responses, request, "exec") and (
@@ -222,33 +239,74 @@ class SandboxExecutorClient:
         if max_attach_attempts < 0:
             raise ValueError("max_attach_attempts must not be negative")
         try:
-            return await self.exec(context, command=command, timeout_ms=timeout_ms)
+            result = await self.exec(context, command=command, timeout_ms=timeout_ms)
         except ExecutorExecutionLost as lost:
             outputs = lost.outputs
             cursor = lost.last_sequence
+            responses = lost.responses
+        else:
+            if result.terminal.get("error") == "execution_lost":
+                raise ExecutorExecutionLost(
+                    execution_id=context.execution_id,
+                    last_sequence=max(
+                        (int(output["sequence"]) for output in result.outputs),
+                        default=0,
+                    ),
+                    responses=result.responses,
+                    outputs=result.outputs,
+                )
+            return result
+        self._validate_recovery_bounds(responses)
+        deadline = self.monotonic() + timeout_ms / 1000
 
         for _attempt in range(max_attach_attempts):
+            remaining_seconds = deadline - self.monotonic()
+            if remaining_seconds <= 0:
+                break
+            remaining_ms = max(1, math.ceil(remaining_seconds * 1000))
             try:
-                attached = await self.attach_execution(
-                    context,
-                    offset=cursor,
-                    timeout_ms=timeout_ms,
-                )
+                async with asyncio.timeout(remaining_seconds):
+                    attached = await self.attach_execution(
+                        context,
+                        offset=cursor,
+                        timeout_ms=remaining_ms,
+                    )
+            except TimeoutError:
+                break
             except ExecutorExecutionLost as lost:
                 if lost.execution_id != context.execution_id:
                     raise ProtocolError("Uncorrelated executor loss identity") from lost
                 outputs += lost.outputs
                 cursor = lost.last_sequence
+                responses += lost.responses
+                self._validate_recovery_bounds(responses)
                 continue
+            responses += attached.responses
+            self._validate_recovery_bounds(responses)
+            if self.monotonic() > deadline:
+                break
             if attached.terminal.get("error") == "execution_not_found":
                 continue
+            if attached.terminal.get("error") == "execution_lost":
+                combined_outputs = outputs + attached.outputs
+                raise ExecutorExecutionLost(
+                    execution_id=context.execution_id,
+                    last_sequence=max(
+                        (int(output["sequence"]) for output in combined_outputs),
+                        default=cursor,
+                    ),
+                    responses=responses,
+                    outputs=combined_outputs,
+                )
             return ExecutorExecutionResult(
                 outputs=outputs + attached.outputs,
                 terminal=attached.terminal,
+                responses=responses,
             )
         raise ExecutorExecutionLost(
             execution_id=context.execution_id,
             last_sequence=cursor,
+            responses=responses,
             outputs=outputs,
         )
 
@@ -260,7 +318,7 @@ class SandboxExecutorClient:
         timeout_ms: int = 30_000,
     ) -> ExecutorExecutionResult:
         request = self._request(context, "attach_execution", offset=offset)
-        timeout_seconds = max(5, (timeout_ms + 999) // 1000 + 5)
+        timeout_seconds = max(1, math.ceil(timeout_ms / 1000))
         try:
             responses = await self._exchange(
                 context.sandbox,
@@ -285,10 +343,19 @@ class SandboxExecutorClient:
             raise ExecutorExecutionLost(
                 execution_id=context.execution_id,
                 last_sequence=offset,
+                responses=(),
             ) from error
+        if self._valid_execution_prefix(responses, request, "attach_execution") and (
+            responses[-1]["type"] != "terminal"
+        ):
+            raise self._execution_lost(
+                responses,
+                request,
+                "attach_execution",
+                previous_cursor=offset,
+            )
         result = self._execution_result(responses, request, "attach_execution")
-        if any(int(output["sequence"]) <= offset for output in result.outputs):
-            raise ProtocolError("Executor attach response did not advance its cursor")
+        self._validate_output_cursor(result.outputs, offset)
         return result
 
     async def cancel_execution(
@@ -538,6 +605,7 @@ class SandboxExecutorClient:
                 "exit_code": terminal["exit_code"],
                 "error": terminal["error"],
             },
+            responses=tuple(MappingProxyType(dict(response)) for response in responses),
         )
 
     @classmethod
@@ -559,8 +627,7 @@ class SandboxExecutorClient:
             for response in responses
             if response["type"] == "output"
         )
-        if any(int(output["sequence"]) <= previous_cursor for output in outputs):
-            raise ProtocolError("Executor attach response did not advance its cursor")
+        cls._validate_output_cursor(outputs, previous_cursor)
         last_sequence = max(
             (int(output["sequence"]) for output in outputs),
             default=previous_cursor,
@@ -568,5 +635,28 @@ class SandboxExecutorClient:
         return ExecutorExecutionLost(
             execution_id=str(request["execution_id"]),
             last_sequence=last_sequence,
+            responses=responses,
             outputs=outputs,
         )
+
+    @staticmethod
+    def _validate_output_cursor(
+        outputs: tuple[dict[str, object], ...], previous_cursor: int
+    ) -> None:
+        expected = previous_cursor + 1
+        for output in outputs:
+            if int(output["sequence"]) != expected:
+                raise ProtocolError("Executor output cursor is not contiguous")
+            expected += 1
+
+    @staticmethod
+    def _validate_recovery_bounds(
+        responses: tuple[Mapping[str, object], ...],
+    ) -> None:
+        if len(responses) > MAX_EXECUTOR_RESPONSE_FRAMES:
+            raise ProtocolError("Executor aggregate recovery has too many frames")
+        if (
+            sum(len(encode_response(dict(response))) for response in responses)
+            > MAX_EXECUTOR_RESPONSE_BYTES
+        ):
+            raise ProtocolError("Executor aggregate recovery is too large")

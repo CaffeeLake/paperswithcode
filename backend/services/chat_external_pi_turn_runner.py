@@ -109,6 +109,7 @@ class ExternalPiChatTurnRunner:
         self.socket: Any | None = None
         self.active_context: ExecutorContext | None = None
         self.external_worker_claim: ExternalWorkerClaim | None = None
+        self.execution_loss_cancelled = False
 
     async def events(self) -> AsyncIterator[dict]:
         worker_claim = await self._select_worker_claim()
@@ -180,7 +181,16 @@ class ExternalPiChatTurnRunner:
                             operation_id = str(event.get("operation_id") or "")
                             result = tool_results.get(operation_id)
                             if result is None:
-                                result = await self._tool_result(event)
+                                try:
+                                    result = await self._tool_result(event)
+                                except ExecutorExecutionLost:
+                                    try:
+                                        await self.cancel()
+                                    except Exception:
+                                        self.execution_loss_cancelled = False
+                                    else:
+                                        self.execution_loss_cancelled = True
+                                    raise
                                 tool_results[operation_id] = result
                             await socket.send(json.dumps(result, separators=(",", ":")))
                             pending_tool = (sequence, operation_id)
@@ -438,7 +448,6 @@ class ExternalPiChatTurnRunner:
                 }
             raise AssertionError("validated tool operation was not handled")
         except (
-            ExecutorExecutionLost,
             ExecutorOperationError,
             ExecutorTransportError,
             ProtocolError,
