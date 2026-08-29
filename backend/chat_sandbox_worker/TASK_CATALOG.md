@@ -31,8 +31,8 @@ The goal is to split up those tasks in the future.
 - `reasoning` — Reasoning
 - `math` — Mathematics
 - `agents` — Agents
-- `world-models` — World Models
 - `embedding-models` — Embedding models
+- `world-models` — World Models
 - `robotics` — Robotics
 - `pseudo-labelling` — Pseudo Labelling
 - `remote-sensing` — Remote Sensing
@@ -73,8 +73,8 @@ The goal is to split up those tasks in the future.
 - `video-segmentation` — Video segmentation
 - `object-tracking` — Object Tracking
 - `video-compression` — Video Compression
-- `video-super-resolution` — Video super-resolution
 - `video-frame-interpolation` — Video frame interpolation
+- `video-super-resolution` — Video super-resolution
 - `video-restoration` — Video Restoration
 - `video-matting` — Video Matting
 - `cross-view-object-correspondence` — Cross-view object correspondence
