@@ -4,7 +4,6 @@ import asyncio
 import json
 import socket
 import threading
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -110,6 +109,19 @@ class _Process:
 
     async def _wait(self) -> None:
         return None
+
+
+class _StallingProcess(_Process):
+    def __init__(self, frames: list[dict]):
+        super().__init__(frames)
+        self.stdout = _StallingOutput([encode_response(frame) for frame in frames])
+
+
+class _StallingOutput(_Output):
+    async def _iterate(self):
+        for chunk in self.chunks:
+            yield chunk
+        await asyncio.Event().wait()
 
 
 class _Provider:
@@ -625,6 +637,66 @@ def test_attach_clean_eof_without_terminal_is_execution_lost(frames):
     assert len(exc_info.value.responses) == len(frames)
 
 
+@pytest.mark.parametrize("include_output", [False, True])
+def test_exec_resumable_recovers_after_attach_clean_eof_prefix(include_output):
+    request_ids = iter(["exec-request", "attach-one", "attach-two"])
+
+    def response(request_id, kind, **fields):
+        return {**_response(kind, **fields), "request_id": request_id}
+
+    first_attach = [
+        response("attach-one", "acknowledged", operation="attach_execution")
+    ]
+    if include_output:
+        first_attach.append(
+            response(
+                "attach-one",
+                "output",
+                sequence=1,
+                stream="stdout",
+                data="partial",
+            )
+        )
+    processes = [
+        _Process([], error=ConnectionResetError("ambiguous exec")),
+        _Process(first_attach),
+        _Process(
+            [
+                response("attach-two", "acknowledged", operation="attach_execution"),
+                response(
+                    "attach-two",
+                    "terminal",
+                    status="completed",
+                    exit_code=0,
+                    error=None,
+                ),
+            ]
+        ),
+    ]
+    client = SandboxExecutorClient(
+        _Provider(processes.copy()), request_id_factory=lambda: next(request_ids)
+    )
+
+    result = asyncio.run(
+        client.exec_resumable(
+            _context(), command="true", timeout_ms=1000, max_attach_attempts=2
+        )
+    )
+
+    requests = [
+        decode_request(process.stdin.writes[0].splitlines(keepends=True)[1])
+        for process in processes
+    ]
+    assert [request.get("offset") for request in requests] == [
+        None,
+        0,
+        1 if include_output else 0,
+    ]
+    assert [output["data"] for output in result.outputs] == (
+        ["partial"] if include_output else []
+    )
+
+
 def test_exec_resumable_uses_one_monotonic_deadline_for_all_attachments():
     clock = [10.0]
 
@@ -640,7 +712,15 @@ def test_exec_resumable_uses_one_monotonic_deadline_for_all_attachments():
                 responses=(),
             )
 
-        async def attach_execution(self, context, *, offset, timeout_ms=30_000):
+        async def attach_execution(
+            self,
+            context,
+            *,
+            offset,
+            timeout_ms=30_000,
+            recovery=False,
+            wall_timeout_seconds=None,
+        ):
             self.timeouts.append(timeout_ms)
             clock[0] += 0.4
             raise ExecutorExecutionLost(
@@ -662,37 +742,54 @@ def test_exec_resumable_uses_one_monotonic_deadline_for_all_attachments():
     assert all(timeout > 0 for timeout in client.timeouts)
 
 
-def test_exec_resumable_cancels_an_attachment_at_the_shared_deadline():
-    class SlowRecoveryClient(SandboxExecutorClient):
-        def __init__(self):
-            super().__init__(_Provider([]))
-            self.attach_calls = 0
+def test_recovery_timeout_preserves_ack_output_and_latest_cursor():
+    request_ids = iter(["exec-request", "attach-request"])
 
-        async def exec(self, context, *, command, timeout_ms):
-            raise ExecutorExecutionLost(
-                execution_id=context.execution_id,
-                last_sequence=0,
-                responses=(),
-            )
+    def response(request_id, kind, **fields):
+        return {**_response(kind, **fields), "request_id": request_id}
 
-        async def attach_execution(self, context, *, offset, timeout_ms=30_000):
-            self.attach_calls += 1
-            await asyncio.sleep(1)
-            raise AssertionError("attachment exceeded recovery deadline")
+    client = SandboxExecutorClient(
+        _Provider(
+            [
+                _Process([], error=ConnectionResetError("ambiguous exec")),
+                _StallingProcess(
+                    [
+                        response(
+                            "attach-request",
+                            "acknowledged",
+                            operation="attach_execution",
+                        ),
+                        response(
+                            "attach-request",
+                            "output",
+                            sequence=1,
+                            stream="stdout",
+                            data="partial",
+                        ),
+                    ]
+                ),
+            ]
+        ),
+        request_id_factory=lambda: next(request_ids),
+    )
 
-    client = SlowRecoveryClient()
-    started = time.monotonic()
-
-    with pytest.raises(ExecutorExecutionLost):
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
         asyncio.run(
             client.exec_resumable(
-                _context(), command="true", timeout_ms=10, max_attach_attempts=2
+                _context(), command="true", timeout_ms=20, max_attach_attempts=1
             )
         )
 
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.2
-    assert client.attach_calls == 1
+    assert exc_info.value.last_sequence == 1
+    assert [frame["type"] for frame in exc_info.value.responses] == [
+        "acknowledged",
+        "output",
+    ]
+    assert exc_info.value.outputs == (
+        {"sequence": 1, "stream": "stdout", "data": "partial"},
+    )
+    with pytest.raises(TypeError):
+        exc_info.value.responses[1]["data"] = "mutated"
 
 
 def test_attach_rejects_a_gap_after_the_recovery_cursor():
@@ -711,6 +808,109 @@ def test_attach_rejects_a_gap_after_the_recovery_cursor():
 
     with pytest.raises(ProtocolError, match="contiguous"):
         asyncio.run(client.attach_execution(_context(), offset=1, timeout_ms=1000))
+
+
+def test_exec_resumable_converts_attach_cursor_gap_to_execution_lost_prefix():
+    request_ids = iter(["exec-request", "attach-request"])
+
+    def response(request_id, kind, **fields):
+        return {**_response(kind, **fields), "request_id": request_id}
+
+    client = SandboxExecutorClient(
+        _Provider(
+            [
+                _Process(
+                    [
+                        response("exec-request", "acknowledged", operation="exec"),
+                        response(
+                            "exec-request",
+                            "output",
+                            sequence=1,
+                            stream="stdout",
+                            data="safe",
+                        ),
+                    ],
+                    error=ConnectionResetError("ambiguous exec"),
+                ),
+                _Process(
+                    [
+                        response(
+                            "attach-request",
+                            "acknowledged",
+                            operation="attach_execution",
+                        ),
+                        response(
+                            "attach-request",
+                            "output",
+                            sequence=3,
+                            stream="stdout",
+                            data="invalid-gap",
+                        ),
+                    ]
+                ),
+            ]
+        ),
+        request_id_factory=lambda: next(request_ids),
+    )
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(
+            client.exec_resumable(
+                _context(), command="true", timeout_ms=1000, max_attach_attempts=1
+            )
+        )
+
+    assert exc_info.value.last_sequence == 1
+    assert [frame["type"] for frame in exc_info.value.responses] == [
+        "acknowledged",
+        "output",
+        "acknowledged",
+    ]
+    assert all(frame.get("data") != "invalid-gap" for frame in exc_info.value.responses)
+
+
+@pytest.mark.parametrize("failure", ["uncorrelated", "malformed"])
+def test_exec_resumable_excludes_invalid_attach_frame_from_lost_prefix(failure):
+    request_ids = iter(["exec-request", "attach-request"])
+
+    def response(request_id, kind, **fields):
+        return {**_response(kind, **fields), "request_id": request_id}
+
+    attach_frames = [
+        response("attach-request", "acknowledged", operation="attach_execution")
+    ]
+    trailing = b""
+    if failure == "uncorrelated":
+        invalid = response(
+            "attach-request",
+            "output",
+            sequence=1,
+            stream="stdout",
+            data="invalid",
+        )
+        invalid["execution_id"] = "other-execution"
+        attach_frames.append(invalid)
+    else:
+        trailing = b'{"protocol":"sandbox-executor-v1"'
+    client = SandboxExecutorClient(
+        _Provider(
+            [
+                _Process([], error=ConnectionResetError("ambiguous exec")),
+                _Process(attach_frames, trailing=trailing),
+            ]
+        ),
+        request_id_factory=lambda: next(request_ids),
+    )
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(
+            client.exec_resumable(
+                _context(), command="true", timeout_ms=1000, max_attach_attempts=1
+            )
+        )
+
+    assert exc_info.value.last_sequence == 0
+    assert [frame["type"] for frame in exc_info.value.responses] == ["acknowledged"]
 
 
 def test_exec_resumable_bounds_aggregate_frames_across_losses(monkeypatch):
@@ -760,12 +960,13 @@ def test_exec_resumable_bounds_aggregate_frames_across_losses(monkeypatch):
         request_id_factory=lambda: next(request_ids),
     )
 
-    with pytest.raises(ProtocolError, match="aggregate.*frames"):
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
         asyncio.run(
             client.exec_resumable(
                 _context(), command="true", timeout_ms=1000, max_attach_attempts=1
             )
         )
+    assert len(exc_info.value.responses) == 3
 
 
 def test_exec_resumable_bounds_aggregate_bytes_across_losses(monkeypatch):
@@ -818,12 +1019,13 @@ def test_exec_resumable_bounds_aggregate_bytes_across_losses(monkeypatch):
         request_id_factory=lambda: next(request_ids),
     )
 
-    with pytest.raises(ProtocolError, match="aggregate recovery is too large"):
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
         asyncio.run(
             client.exec_resumable(
                 _context(), command="true", timeout_ms=1000, max_attach_attempts=1
             )
         )
+    assert len(exc_info.value.responses) >= 2
 
 
 def test_execution_lost_preserves_immutable_cumulative_validated_frames():
@@ -1236,22 +1438,28 @@ def test_exec_resumable_real_daemon_faults_never_repeat_side_effect(
         provider, request_id_factory=lambda: f"request-{next(request_number)}"
     )
 
-    result = asyncio.run(
-        client.exec_resumable(_context(), command=command, timeout_ms=1000)
-    )
+    try:
+        result = asyncio.run(
+            client.exec_resumable(_context(), command=command, timeout_ms=1000)
+        )
 
-    assert (workspace / "marker").read_text() == "x"
-    request_types = [
-        decode_request(process.stdin.writes[0].splitlines(keepends=True)[1])["type"]
-        for process in provider.processes
-    ]
-    assert request_types.count("exec") == 1
-    assert request_types[0] == "exec"
-    assert set(request_types[1:]) <= {"attach_execution"}
-    assert provider.calls == expected_relay_calls
-    assert result.terminal == {"status": "completed", "exit_code": 0, "error": None}
-    server.shutdown()
-    thread.join(timeout=2)
+        assert (workspace / "marker").read_text() == "x"
+        request_types = [
+            decode_request(process.stdin.writes[0].splitlines(keepends=True)[1])["type"]
+            for process in provider.processes
+        ]
+        assert request_types.count("exec") == 1
+        assert request_types[0] == "exec"
+        assert set(request_types[1:]) <= {"attach_execution"}
+        assert provider.calls == expected_relay_calls
+        assert result.terminal == {
+            "status": "completed",
+            "exit_code": 0,
+            "error": None,
+        }
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 def test_read_rejects_decoded_data_larger_than_the_requested_byte_limit():

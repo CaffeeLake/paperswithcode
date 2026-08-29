@@ -265,41 +265,52 @@ class SandboxExecutorClient:
                 break
             remaining_ms = max(1, math.ceil(remaining_seconds * 1000))
             try:
-                async with asyncio.timeout(remaining_seconds):
-                    attached = await self.attach_execution(
-                        context,
-                        offset=cursor,
-                        timeout_ms=remaining_ms,
-                    )
-            except TimeoutError:
-                break
+                attached = await self.attach_execution(
+                    context,
+                    offset=cursor,
+                    timeout_ms=remaining_ms,
+                    recovery=True,
+                    wall_timeout_seconds=remaining_seconds,
+                )
             except ExecutorExecutionLost as lost:
                 if lost.execution_id != context.execution_id:
-                    raise ProtocolError("Uncorrelated executor loss identity") from lost
-                outputs += lost.outputs
-                cursor = lost.last_sequence
-                responses += lost.responses
-                self._validate_recovery_bounds(responses)
+                    raise ExecutorExecutionLost(
+                        execution_id=context.execution_id,
+                        last_sequence=cursor,
+                        responses=responses,
+                        outputs=outputs,
+                    ) from lost
+                responses, outputs, cursor = self._merge_recovery_frames(
+                    context,
+                    responses,
+                    outputs,
+                    cursor,
+                    lost.responses,
+                )
                 continue
-            responses += attached.responses
-            self._validate_recovery_bounds(responses)
+            responses, outputs, cursor = self._merge_recovery_frames(
+                context,
+                responses,
+                outputs,
+                cursor,
+                attached.responses,
+            )
             if self.monotonic() > deadline:
                 break
             if attached.terminal.get("error") == "execution_not_found":
                 continue
             if attached.terminal.get("error") == "execution_lost":
-                combined_outputs = outputs + attached.outputs
                 raise ExecutorExecutionLost(
                     execution_id=context.execution_id,
                     last_sequence=max(
-                        (int(output["sequence"]) for output in combined_outputs),
+                        (int(output["sequence"]) for output in outputs),
                         default=cursor,
                     ),
                     responses=responses,
-                    outputs=combined_outputs,
+                    outputs=outputs,
                 )
             return ExecutorExecutionResult(
-                outputs=outputs + attached.outputs,
+                outputs=outputs,
                 terminal=attached.terminal,
                 responses=responses,
             )
@@ -316,6 +327,8 @@ class SandboxExecutorClient:
         *,
         offset: int,
         timeout_ms: int = 30_000,
+        recovery: bool = False,
+        wall_timeout_seconds: float | None = None,
     ) -> ExecutorExecutionResult:
         request = self._request(context, "attach_execution", offset=offset)
         timeout_seconds = max(1, math.ceil(timeout_ms / 1000))
@@ -325,8 +338,17 @@ class SandboxExecutorClient:
                 request,
                 context=context,
                 timeout_seconds=timeout_seconds,
+                wall_timeout_seconds=wall_timeout_seconds,
+                preserve_partial_protocol=recovery,
             )
         except ExecutorTransportError as error:
+            if recovery:
+                raise self._recovery_execution_lost(
+                    error.responses,
+                    request,
+                    "attach_execution",
+                    previous_cursor=offset,
+                ) from error
             if self._valid_execution_prefix(
                 error.responses, request, "attach_execution"
             ):
@@ -345,17 +367,27 @@ class SandboxExecutorClient:
                 last_sequence=offset,
                 responses=(),
             ) from error
-        if self._valid_execution_prefix(responses, request, "attach_execution") and (
-            responses[-1]["type"] != "terminal"
-        ):
-            raise self._execution_lost(
+        try:
+            if self._valid_execution_prefix(
+                responses, request, "attach_execution"
+            ) and (responses[-1]["type"] != "terminal"):
+                raise self._execution_lost(
+                    responses,
+                    request,
+                    "attach_execution",
+                    previous_cursor=offset,
+                )
+            result = self._execution_result(responses, request, "attach_execution")
+            self._validate_output_cursor(result.outputs, offset)
+        except ProtocolError as error:
+            if not recovery:
+                raise
+            raise self._recovery_execution_lost(
                 responses,
                 request,
                 "attach_execution",
                 previous_cursor=offset,
-            )
-        result = self._execution_result(responses, request, "attach_execution")
-        self._validate_output_cursor(result.outputs, offset)
+            ) from error
         return result
 
     async def cancel_execution(
@@ -424,6 +456,8 @@ class SandboxExecutorClient:
         *,
         context: ExecutorContext | None,
         timeout_seconds: int,
+        wall_timeout_seconds: float | None = None,
+        preserve_partial_protocol: bool = False,
     ) -> tuple[dict[str, object], ...]:
         request_frame = encode_request(request)
         payload = request_frame
@@ -439,15 +473,33 @@ class SandboxExecutorClient:
             payload_delivery_attempted = True
             write(payload)
             await process.stdin.drain.aio()
-            async for response in self._responses(process.stdout):
-                responses.append(response)
-            await process.wait.aio()
+
+            async def receive() -> None:
+                async for response in self._responses(process.stdout):
+                    responses.append(response)
+                await process.wait.aio()
+
+            if wall_timeout_seconds is None:
+                await receive()
+            else:
+                async with asyncio.timeout(wall_timeout_seconds):
+                    await receive()
             if not responses:
                 raise _ExecutorDisconnect(
                     "Executor response stream ended before its first frame"
                 )
-        except ProtocolError:
-            raise
+        except ProtocolError as error:
+            if not preserve_partial_protocol:
+                raise
+            raise ExecutorTransportError(
+                tuple(responses),
+                payload_delivery_attempted=payload_delivery_attempted,
+            ) from error
+        except TimeoutError as error:
+            raise ExecutorTransportError(
+                tuple(responses),
+                payload_delivery_attempted=payload_delivery_attempted,
+            ) from error
         except (
             OSError,
             EOFError,
@@ -638,6 +690,99 @@ class SandboxExecutorClient:
             responses=responses,
             outputs=outputs,
         )
+
+    @classmethod
+    def _recovery_execution_lost(
+        cls,
+        responses: tuple[dict[str, object], ...],
+        request: dict[str, object],
+        operation: str,
+        *,
+        previous_cursor: int,
+    ) -> ExecutorExecutionLost:
+        prefix: list[dict[str, object]] = []
+        expected_sequence = previous_cursor + 1
+        validator = ResponseSequenceValidator(
+            str(request["request_id"]),
+            workspace_id=str(request["workspace_id"]),
+            workspace_generation=int(request["workspace_generation"]),
+            session_id=str(request["session_id"]),
+            turn_id=str(request["turn_id"]),
+            execution_id=str(request["execution_id"]),
+            tool_call_id=str(request["tool_call_id"]),
+        )
+        for response in responses:
+            try:
+                validator.accept(response)
+                if not prefix:
+                    cls._validate_ack(response, request, operation)
+                elif response["type"] == "output":
+                    if int(response["sequence"]) != expected_sequence:
+                        break
+                    expected_sequence += 1
+            except ProtocolError:
+                break
+            prefix.append(response)
+        outputs = tuple(
+            {
+                "sequence": response["sequence"],
+                "stream": response["stream"],
+                "data": response["data"],
+            }
+            for response in prefix
+            if response["type"] == "output"
+        )
+        return ExecutorExecutionLost(
+            execution_id=str(request["execution_id"]),
+            last_sequence=max(
+                (int(output["sequence"]) for output in outputs),
+                default=previous_cursor,
+            ),
+            responses=tuple(prefix),
+            outputs=outputs,
+        )
+
+    @staticmethod
+    def _merge_recovery_frames(
+        context: ExecutorContext,
+        responses: tuple[Mapping[str, object], ...],
+        outputs: tuple[dict[str, object], ...],
+        cursor: int,
+        incoming: tuple[Mapping[str, object], ...],
+    ) -> tuple[
+        tuple[Mapping[str, object], ...],
+        tuple[dict[str, object], ...],
+        int,
+    ]:
+        merged_responses = list(responses)
+        merged_outputs = list(outputs)
+        encoded_bytes = sum(
+            len(encode_response(dict(response))) for response in merged_responses
+        )
+        for response in incoming:
+            frame_bytes = len(encode_response(dict(response)))
+            if (
+                len(merged_responses) >= MAX_EXECUTOR_RESPONSE_FRAMES
+                or encoded_bytes + frame_bytes > MAX_EXECUTOR_RESPONSE_BYTES
+            ):
+                raise ExecutorExecutionLost(
+                    execution_id=context.execution_id,
+                    last_sequence=cursor,
+                    responses=tuple(merged_responses),
+                    outputs=tuple(merged_outputs),
+                )
+            merged_responses.append(response)
+            encoded_bytes += frame_bytes
+            if response["type"] == "output":
+                cursor = int(response["sequence"])
+                merged_outputs.append(
+                    {
+                        "sequence": response["sequence"],
+                        "stream": response["stream"],
+                        "data": response["data"],
+                    }
+                )
+        return tuple(merged_responses), tuple(merged_outputs), cursor
 
     @staticmethod
     def _validate_output_cursor(

@@ -35,6 +35,8 @@ from backend.services.chat_turn_job_repository import TurnLeaseClaim
 from backend.tests.test_chat_sandbox_executor_client import (
     _Broker,
     _DropFirstResponseSocketProvider,
+    _Process,
+    _Provider,
 )
 
 
@@ -150,6 +152,10 @@ class FakeExecutor:
 
 
 class LostExecutor(FakeExecutor):
+    def __init__(self):
+        super().__init__()
+        self.cancelled_contexts = []
+
     async def exec_resumable(self, context, *, command, timeout_ms):
         self.exec_calls += 1
         raise ExecutorExecutionLost(
@@ -157,6 +163,9 @@ class LostExecutor(FakeExecutor):
             last_sequence=0,
             responses=(),
         )
+
+    async def cancel_execution(self, context):
+        self.cancelled_contexts.append(context)
 
 
 def worker_status(claim):
@@ -306,6 +315,7 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
     settings.environment = "staging"
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
     executor = LostExecutor()
+    cancellation_order = []
     socket = FakeSocket(
         [
             '{"type":"tool_request","operation_id":"operation-1",'
@@ -314,6 +324,20 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
             '{"type":"answer_delta","text":"must not be processed","worker_sequence":2}',
         ]
     )
+    original_cancel_execution = executor.cancel_execution
+    original_socket_send = socket.send
+
+    async def record_executor_cancel(context):
+        cancellation_order.append("executor")
+        await original_cancel_execution(context)
+
+    async def record_socket_send(value):
+        if json.loads(value)["type"] == "cancel_turn":
+            cancellation_order.append("pi")
+        await original_socket_send(value)
+
+    executor.cancel_execution = record_executor_cancel
+    socket.send = record_socket_send
     turn_id = uuid.uuid4()
     admission = TurnAdmission(
         session_id=uuid.uuid4(),
@@ -356,6 +380,10 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
 
     assert exc_info.value.code == "execution_lost"
     assert executor.exec_calls == 1
+    assert len(executor.cancelled_contexts) == 1
+    assert executor.cancelled_contexts[0].execution_id == "operation-1"
+    assert executor.cancelled_contexts[0].tool_call_id == "tool-1"
+    assert cancellation_order == ["executor", "pi"]
     assert [json.loads(frame)["type"] for frame in socket.sent] == [
         "run_turn",
         "cancel_turn",
@@ -396,6 +424,143 @@ def test_chat_stream_producer_preserves_execution_lost_terminal_code():
         "code": "execution_lost",
     }
     assert queue.get_nowait() == {"type": "_research_finished"}
+
+
+@pytest.mark.parametrize("failure", ["cursor_gap", "aggregate_limit"])
+def test_external_pi_runner_aborts_on_recovery_validation_failure(monkeypatch, failure):
+    if failure == "aggregate_limit":
+        monkeypatch.setattr(
+            "backend.services.chat_sandbox_executor.MAX_EXECUTOR_RESPONSE_FRAMES", 3
+        )
+
+    class RecoveryFailureExecutor(FakeExecutor):
+        def __init__(self):
+            super().__init__()
+            self.cancelled_contexts = []
+
+        async def exec_resumable(self, context, *, command, timeout_ms):
+            request_ids = iter(["exec-request", "attach-request"])
+
+            def frame(request_id, kind, **fields):
+                return {
+                    "protocol": "sandbox-executor-v1",
+                    "type": kind,
+                    "request_id": request_id,
+                    **context.operation_identity,
+                    **fields,
+                }
+
+            attach_sequence = 3 if failure == "cursor_gap" else 2
+            client = SandboxExecutorClient(
+                _Provider(
+                    [
+                        _Process(
+                            [
+                                frame(
+                                    "exec-request",
+                                    "acknowledged",
+                                    operation="exec",
+                                ),
+                                frame(
+                                    "exec-request",
+                                    "output",
+                                    sequence=1,
+                                    stream="stdout",
+                                    data="safe",
+                                ),
+                            ],
+                            error=ConnectionResetError("ambiguous exec"),
+                        ),
+                        _Process(
+                            [
+                                frame(
+                                    "attach-request",
+                                    "acknowledged",
+                                    operation="attach_execution",
+                                ),
+                                frame(
+                                    "attach-request",
+                                    "output",
+                                    sequence=attach_sequence,
+                                    stream="stdout",
+                                    data="unsafe",
+                                ),
+                            ]
+                        ),
+                    ]
+                ),
+                request_id_factory=lambda: next(request_ids),
+            )
+            return await client.exec_resumable(
+                context,
+                command=command,
+                timeout_ms=timeout_ms,
+                max_attach_attempts=1,
+            )
+
+        async def cancel_execution(self, context):
+            self.cancelled_contexts.append(context)
+
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    executor = RecoveryFailureExecutor()
+    later_event = '{"type":"answer_delta","text":"must not run","worker_sequence":2}'
+    socket = FakeSocket(
+        [
+            '{"type":"tool_request","operation_id":"operation-1",'
+            '"tool_call_id":"tool-1","operation":"exec",'
+            '"command":"true","timeout_ms":1000,"worker_sequence":1}',
+            later_event,
+        ]
+    )
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=FakeProvider(),
+        executor=executor,
+        websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    with pytest.raises(ExecutorExecutionLost):
+        asyncio.run(_collect(runner))
+
+    assert len(executor.cancelled_contexts) == 1
+    assert executor.cancelled_contexts[0].execution_id == "operation-1"
+    assert [json.loads(frame)["type"] for frame in socket.sent] == [
+        "run_turn",
+        "cancel_turn",
+    ]
+    assert next(socket.messages) == later_event
 
 
 def test_external_pi_runner_uses_no_sandbox_without_tools():

@@ -413,6 +413,7 @@ class ExternalPiChatTurnRunner:
         operation = request.get("operation")
         if operation not in {"exec", "read"}:
             raise ValueError("unsupported_tool_operation")
+        context: ExecutorContext | None = None
         try:
             context = await self._ensure_executor(tool_call_id, operation_id)
             if operation == "exec":
@@ -447,6 +448,13 @@ class ExternalPiChatTurnRunner:
                     "eof": result.eof,
                 }
             raise AssertionError("validated tool operation was not handled")
+        except ExecutorExecutionLost:
+            if context is not None:
+                try:
+                    await self.executor.cancel_execution(context)
+                except Exception:
+                    pass
+            raise
         except (
             ExecutorOperationError,
             ExecutorTransportError,
