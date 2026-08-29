@@ -578,6 +578,44 @@ class ChatTurnJobRepository:
         db.flush()
         return job
 
+    def interrupt_dispatch_failed(
+        self,
+        db: Session,
+        *,
+        turn_id: uuid.UUID,
+        worker_id: str,
+        worker_generation: int,
+        lease_seconds: int,
+        now: datetime,
+    ) -> ChatTurnJob | None:
+        """Terminalize only an admission that never acquired a worker claim."""
+        if now.tzinfo is None:
+            raise ValueError("Dispatch failure timestamp is invalid")
+        job = self.load_by_turn(db, turn_id, lock=True)
+        if job is None:
+            return None
+        if job.state in TERMINAL_STATES:
+            if job.state != "interrupted" or job.failure_code != "dispatch_failed":
+                raise InvalidTurnTransition("Terminal turn state is immutable")
+            return job
+        if job.state != "admitted":
+            return None
+        claim = self.claim(
+            db,
+            turn_id=turn_id,
+            worker_id=worker_id,
+            worker_generation=worker_generation,
+            now=now,
+            lease_seconds=lease_seconds,
+        )
+        return self.write_terminal(
+            db,
+            claim=claim,
+            state="interrupted",
+            failure_code="dispatch_failed",
+            now=now,
+        )
+
     def write_terminal(
         self,
         db: Session,

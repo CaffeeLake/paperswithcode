@@ -559,6 +559,38 @@ def test_stop_before_claim_claims_once_and_blocks_later_dispatch(db):
         )
 
 
+def test_dispatch_failure_claims_and_interrupts_unleased_admission_atomically(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    admitted = _admit(repository, db, session).job
+
+    terminal = repository.interrupt_dispatch_failed(
+        db,
+        turn_id=admitted.turn_id,
+        worker_id="dispatch-coordinator",
+        worker_generation=4,
+        lease_seconds=30,
+        now=NOW + timedelta(seconds=10),
+    )
+    replay = repository.interrupt_dispatch_failed(
+        db,
+        turn_id=admitted.turn_id,
+        worker_id="dispatch-coordinator",
+        worker_generation=4,
+        lease_seconds=30,
+        now=NOW + timedelta(seconds=11),
+    )
+
+    assert terminal is replay
+    assert terminal is not None
+    assert terminal.state == "interrupted"
+    assert terminal.failure_code == "dispatch_failed"
+    assert terminal.worker_id == "dispatch-coordinator"
+    assert terminal.worker_generation == 4
+    assert terminal.lease_generation == 1
+    assert terminal.lease_expires_at is None
+
+
 def test_stop_after_claim_preserves_other_process_fence(db):
     repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
     session = _session(db)

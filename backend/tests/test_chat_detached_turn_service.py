@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+import asyncio
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from backend.models.database import ChatSession, ChatTurnEventChunk, ChatTurnJob
+from backend.services.chat_detached_turn_service import (
+    DetachedTurn,
+    DetachedTurnCoordinator,
+)
+from backend.services.chat_stream_service import ChatStreamFrame
+from backend.services.chat_turn_event_repository import TurnEventJournal
+from backend.services.chat_turn_job_repository import (
+    ChatTurnJobRepository,
+    StaleTurnClaim,
+    TurnLeaseClaim,
+)
+
+NOW = datetime(2026, 8, 29, 12, tzinfo=UTC)
+
+
+class Harness:
+    def __init__(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        ChatSession.__table__.create(engine)
+        ChatTurnJob.__table__.create(engine)
+        ChatTurnEventChunk.__table__.create(engine)
+        self.sessions = sessionmaker(engine, expire_on_commit=False)
+        self.jobs = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+        self.journal = TurnEventJournal(jobs=self.jobs)
+        self.terminal_calls: list[tuple[str, str | None]] = []
+        self.terminal_sequences: list[list[int]] = []
+        self.turn, self.claim = self._claimed_turn()
+        self.coordinator = DetachedTurnCoordinator(
+            transaction=self.transaction,
+            journal=self.journal,
+            jobs=self.jobs,
+            clock=lambda: NOW,
+            persist_terminal=self.persist_terminal,
+            poll_seconds=0.01,
+        )
+
+    def _claimed_turn(self) -> tuple[DetachedTurn, TurnLeaseClaim]:
+        with self.sessions.begin() as db:
+            session = ChatSession(
+                id=uuid.uuid4(),
+                hf_user_id="detached-owner",
+                hf_username="detached-owner",
+                selected_model="model",
+            )
+            db.add(session)
+            job = ChatTurnJob(
+                turn_id=uuid.uuid4(),
+                chat_session_id=session.id,
+                hf_user_id=session.hf_user_id,
+                request_id=f"request-{uuid.uuid4()}",
+                revision=1,
+                dispatch_class="interactive",
+                dispatch_route="external-pi",
+                state="running",
+                worker_id="worker-a",
+                worker_generation=7,
+                lease_generation=3,
+                app_release_id="release-a",
+                worker_contract_version="external-pi-v1",
+                admitted_at=NOW - timedelta(seconds=2),
+                dispatched_at=NOW - timedelta(seconds=2),
+                started_at=NOW - timedelta(seconds=1),
+                heartbeat_at=NOW,
+                lease_expires_at=NOW + timedelta(seconds=30),
+            )
+            db.add(job)
+        claim = TurnLeaseClaim(job.turn_id, "worker-a", 7, 3)
+        return DetachedTurn(turn_id=job.turn_id, claim=claim), claim
+
+    async def transaction(self, operation):
+        with self.sessions.begin() as db:
+            return operation(db)
+
+    async def persist_terminal(
+        self, claim: TurnLeaseClaim, state: str, failure_code: str | None
+    ) -> None:
+        self.terminal_calls.append((state, failure_code))
+        self.terminal_sequences.append(
+            await self.transaction(
+                lambda db: [
+                    frame.sequence
+                    for frame in self.journal.read_after(
+                        db, turn_id=claim.turn_id, after_sequence=0, limit=10
+                    )
+                ]
+            )
+        )
+        await self.transaction(
+            lambda db: self.jobs.write_terminal(
+                db,
+                claim=claim,
+                state=state,
+                failure_code=failure_code,
+                now=NOW,
+            )
+        )
+
+
+def test_subscriber_cancellation_does_not_cancel_source_and_reconnect_replays() -> None:
+    async def scenario() -> list[int]:
+        harness = Harness()
+        release = asyncio.Event()
+
+        async def source():
+            yield ChatStreamFrame("stream_start", {"request_id": "r1"})
+            await release.wait()
+            yield ChatStreamFrame("answer_delta", {"text": "Recovered"})
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        first = harness.coordinator.subscribe(
+            turn_id=harness.turn.turn_id, after_sequence=0
+        )
+        assert (await anext(first)).sequence == 1
+        await first.aclose()
+        assert not stream.source_task.cancelled()
+
+        release.set()
+        await stream.source_task
+        return [
+            frame.sequence
+            async for frame in harness.coordinator.subscribe(
+                turn_id=harness.turn.turn_id, after_sequence=0
+            )
+        ]
+
+    assert asyncio.run(scenario()) == [1, 2, 3]
+
+
+def test_two_subscribers_receive_identical_ordered_frames() -> None:
+    async def scenario() -> tuple[list[int], list[int]]:
+        harness = Harness()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            yield ChatStreamFrame("answer_delta", {"text": "answer"})
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        first = asyncio.create_task(
+            _sequences(harness.coordinator, harness.turn.turn_id)
+        )
+        second = asyncio.create_task(
+            _sequences(harness.coordinator, harness.turn.turn_id)
+        )
+        await stream.source_task
+        return await first, await second
+
+    assert asyncio.run(scenario()) == ([1, 2, 3], [1, 2, 3])
+
+
+async def _sequences(
+    coordinator: DetachedTurnCoordinator, turn_id: uuid.UUID
+) -> list[int]:
+    return [
+        frame.sequence
+        async for frame in coordinator.subscribe(turn_id=turn_id, after_sequence=0)
+    ]
+
+
+def test_coordinator_without_local_source_replays_and_tails_database_journal() -> None:
+    async def scenario() -> list[int]:
+        harness = Harness()
+        remote = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: NOW,
+            persist_terminal=harness.persist_terminal,
+            poll_seconds=0.01,
+        )
+        release = asyncio.Event()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            await release.wait()
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        subscriber = asyncio.create_task(_sequences(remote, harness.turn.turn_id))
+        while True:
+            with harness.sessions() as db:
+                if harness.journal.read_after(
+                    db,
+                    turn_id=harness.turn.turn_id,
+                    after_sequence=0,
+                    limit=10,
+                ):
+                    break
+            await asyncio.sleep(0)
+        release.set()
+        await stream.source_task
+        return await subscriber
+
+    assert asyncio.run(scenario()) == [1, 2]
+
+
+def test_start_rejects_stale_claim_without_consuming_source() -> None:
+    async def scenario() -> bool:
+        harness = Harness()
+        consumed = False
+
+        async def source():
+            nonlocal consumed
+            consumed = True
+            yield ChatStreamFrame("done")
+
+        stale = DetachedTurn(
+            turn_id=harness.turn.turn_id,
+            claim=TurnLeaseClaim(
+                harness.turn.turn_id,
+                harness.claim.worker_id,
+                harness.claim.worker_generation,
+                harness.claim.lease_generation + 1,
+            ),
+        )
+        try:
+            await harness.coordinator.start(turn=stale, source=source())
+        except StaleTurnClaim:
+            pass
+        else:
+            raise AssertionError("stale claim was accepted")
+        return consumed
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_second_start_returns_owned_handle_without_consuming_replacement() -> None:
+    async def scenario() -> tuple[bool, bool]:
+        harness = Harness()
+        release = asyncio.Event()
+        replacement_consumed = False
+
+        async def source():
+            await release.wait()
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        async def replacement():
+            nonlocal replacement_consumed
+            replacement_consumed = True
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        first = await harness.coordinator.start(turn=harness.turn, source=source())
+        second = await harness.coordinator.start(
+            turn=harness.turn, source=replacement()
+        )
+        release.set()
+        await first.source_task
+        return first is second, replacement_consumed
+
+    assert asyncio.run(scenario()) == (True, False)
+
+
+def test_journal_overflow_persists_one_terminal_failure() -> None:
+    async def scenario() -> tuple[list[tuple[str, str | None]], str, str | None]:
+        harness = Harness()
+        harness.journal.MAX_FRAME_BYTES = 1
+
+        async def source():
+            yield ChatStreamFrame("answer_delta", {"text": "too large"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        with harness.sessions() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            assert job is not None
+            return harness.terminal_calls, job.state, job.failure_code
+
+    assert asyncio.run(scenario()) == (
+        [("failed", "event_journal_exhausted")],
+        "failed",
+        "event_journal_exhausted",
+    )
+
+
+def test_source_exception_appends_bounded_failure_before_terminal_persistence() -> None:
+    async def scenario() -> tuple[list[str], list[tuple[str, str | None]]]:
+        harness = Harness()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            raise RuntimeError("provider secret must not escape")
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        frames = [
+            frame
+            async for frame in harness.coordinator.subscribe(
+                turn_id=harness.turn.turn_id, after_sequence=0
+            )
+        ]
+        assert frames[-1].payload == {
+            "message": "The response could not be completed.",
+            "code": "turn_failed",
+        }
+        assert harness.terminal_sequences == [[1, 2]]
+        return [frame.event for frame in frames], harness.terminal_calls
+
+    assert asyncio.run(scenario()) == (
+        ["stream_start", "error"],
+        [("failed", "turn_failed")],
+    )
+
+
+def test_unleased_admission_becomes_dispatch_failed() -> None:
+    async def scenario() -> tuple[bool, str, str | None]:
+        harness = Harness()
+        with harness.sessions.begin() as db:
+            original = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            assert original is not None
+            session = db.get(ChatSession, original.chat_session_id)
+            assert session is not None
+            admitted = harness.jobs.admit(
+                db,
+                turn_id=uuid.uuid4(),
+                chat_session_id=session.id,
+                hf_user_id="other-owner",
+                request_id=f"request-{uuid.uuid4()}",
+                revision=1,
+                dispatch_class="interactive",
+                dispatch_route="external-pi",
+                app_release_id="release-a",
+                worker_contract_version="external-pi-v1",
+                now=NOW,
+                emergency_capacity=8,
+            ).job
+        changed = await harness.coordinator.interrupt_dispatch_failed(
+            admitted.turn_id,
+            worker_id="dispatch-coordinator",
+            worker_generation=1,
+            lease_seconds=30,
+        )
+        with harness.sessions() as db:
+            job = harness.jobs.load_by_turn(db, admitted.turn_id)
+            assert job is not None
+            return changed, job.state, job.failure_code
+
+    assert asyncio.run(scenario()) == (True, "interrupted", "dispatch_failed")
