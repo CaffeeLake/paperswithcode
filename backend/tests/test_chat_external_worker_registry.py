@@ -534,6 +534,95 @@ def test_ready_claim_rejects_worker_that_became_full(monkeypatch):
         repository.require_ready_claim(Mock(), claim=claim, now=now)
 
 
+@pytest.mark.parametrize("state", ["ready", "draining"])
+def test_live_claim_allows_reattach_when_worker_is_full(monkeypatch, state):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state=state,
+        maximum_sessions=8,
+        active_sessions=8,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+    claim = ExternalWorkerClaim(
+        "worker-1", row.instance_id, 1, "release-a", "external-pi-v1"
+    )
+
+    repository.require_live_claim(Mock(), claim=claim, now=now)
+
+
+@pytest.mark.parametrize("state", ["offline", "ready"])
+def test_live_claim_rejects_unavailable_or_expired_worker(monkeypatch, state):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state=state,
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=(now + timedelta(seconds=15) if state == "offline" else now),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+    claim = ExternalWorkerClaim(
+        "worker-1", row.instance_id, 1, "release-a", "external-pi-v1"
+    )
+
+    with pytest.raises(WorkerLeaseUnavailable):
+        repository.require_live_claim(Mock(), claim=claim, now=now)
+
+
+def test_live_claim_rejects_missing_or_stale_full_identity(monkeypatch):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    claim = ExternalWorkerClaim(
+        "worker-1",
+        uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        1,
+        "release-a",
+        "external-pi-v1",
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=None))
+    with pytest.raises(StaleWorkerClaim):
+        repository.require_live_claim(Mock(), claim=claim, now=now)
+
+    stale = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=claim.instance_id,
+        environment="staging",
+        release_id="release-b",
+        contract_version=claim.contract_version,
+        generation=claim.generation,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=stale))
+    with pytest.raises(StaleWorkerClaim):
+        repository.require_live_claim(Mock(), claim=claim, now=now)
+
+
 def test_final_claim_revalidation_refreshes_the_locked_registry_row():
     repository = ChatExternalWorkerRepository(environment="staging")
     db = Mock()

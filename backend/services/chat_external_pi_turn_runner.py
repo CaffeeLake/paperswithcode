@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import connect as websocket_connect
+from websockets.exceptions import WebSocketException
 
 from backend.chat_sandbox_worker.executor_protocol import ProtocolError
 from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
@@ -27,6 +28,7 @@ from backend.services.chat_capability_service import (
 from backend.services.chat_external_worker_registry import (
     ChatExternalWorkerRepository,
     ExternalWorkerClaim,
+    StaleWorkerClaim,
     WorkerLeaseUnavailable,
 )
 from backend.services.chat_external_pi_shadow import (
@@ -104,37 +106,112 @@ class ExternalPiChatTurnRunner:
         self.workspace_generation = 1
         self.socket: Any | None = None
         self.active_context: ExecutorContext | None = None
+        self.external_worker_claim: ExternalWorkerClaim | None = None
 
     async def events(self) -> AsyncIterator[dict]:
         worker_claim = await self._select_worker_claim()
-        async with self.websocket_connector(
-            _worker_websocket_url(self.settings.chat_external_pi_worker_url),
-            additional_headers={
-                "Authorization": (
-                    f"Bearer {self.settings.chat_external_pi_worker_token}"
-                ),
-                "X-PWC-Worker-Generation": str(worker_claim.generation),
-            },
-            max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
-            open_timeout=self.settings.chat_external_pi_startup_timeout_seconds,
-            ping_interval=20,
-            ping_timeout=20,
-        ) as socket:
-            self.socket = socket
-            await socket.send(json.dumps(self._run_frame(), separators=(",", ":")))
-            async for raw in socket:
-                event = self._decode(raw)
-                if event.get("type") == "tool_request":
+        self.external_worker_claim = worker_claim
+        acknowledged_sequence = 0
+        seen_sequence = 0
+        started = False
+        tool_results: dict[str, dict[str, object]] = {}
+        pending_tool: tuple[int, str] | None = None
+        for _attempt in range(3):
+            if started:
+                try:
+                    await self._require_same_external_worker_claim(worker_claim)
+                except (
+                    StaleWorkerClaim,
+                    WorkerLeaseUnavailable,
+                    httpx.HTTPError,
+                    ValueError,
+                ):
+                    yield self._worker_lost_event()
+                    return
+            try:
+                async with self.websocket_connector(
+                    _worker_websocket_url(self.settings.chat_external_pi_worker_url),
+                    additional_headers={
+                        "Authorization": (
+                            f"Bearer {self.settings.chat_external_pi_worker_token}"
+                        ),
+                        "X-PWC-Worker-Generation": str(worker_claim.generation),
+                    },
+                    max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
+                    open_timeout=(
+                        self.settings.chat_external_pi_startup_timeout_seconds
+                    ),
+                    ping_interval=20,
+                    ping_timeout=20,
+                ) as socket:
+                    self.socket = socket
                     await socket.send(
                         json.dumps(
-                            await self._tool_result(event), separators=(",", ":")
+                            self._run_frame()
+                            if not started
+                            else self._attach_frame(acknowledged_sequence),
+                            separators=(",", ":"),
                         )
                     )
-                    continue
-                if event.get("type") == "worker_done":
-                    return
-                yield event
-        self.socket = None
+                    started = True
+                    async for raw in socket:
+                        event = self._decode(raw)
+                        sequence = event.pop("worker_sequence", None)
+                        if (
+                            not isinstance(sequence, int)
+                            or isinstance(sequence, bool)
+                            or sequence < 1
+                            or sequence > 2**53 - 1
+                        ):
+                            raise RuntimeError("External Pi frame sequence is invalid")
+                        if sequence <= seen_sequence:
+                            if event.get("type") == "tool_request":
+                                operation_id = str(event.get("operation_id") or "")
+                                result = tool_results.get(operation_id)
+                                if result is None:
+                                    raise RuntimeError(
+                                        "External Pi replayed an unknown tool request"
+                                    )
+                                await socket.send(
+                                    json.dumps(result, separators=(",", ":"))
+                                )
+                            continue
+                        if sequence != seen_sequence + 1:
+                            raise RuntimeError(
+                                "External Pi frame sequence is discontinuous"
+                            )
+                        if pending_tool is not None:
+                            tool_sequence, operation_id = pending_tool
+                            acknowledged_sequence = tool_sequence
+                            tool_results.pop(operation_id, None)
+                            pending_tool = None
+                        seen_sequence = sequence
+                        if event.get("type") == "tool_request":
+                            operation_id = str(event.get("operation_id") or "")
+                            result = tool_results.get(operation_id)
+                            if result is None:
+                                result = await self._tool_result(event)
+                                tool_results[operation_id] = result
+                            await socket.send(json.dumps(result, separators=(",", ":")))
+                            pending_tool = (sequence, operation_id)
+                            continue
+                        if event.get("type") == "worker_done":
+                            await socket.send(
+                                json.dumps(
+                                    self._terminal_ack_frame(sequence),
+                                    separators=(",", ":"),
+                                )
+                            )
+                            return
+                        yield event
+                        acknowledged_sequence = sequence
+                    raise OSError("External Pi transport ended before terminal")
+            except (OSError, TimeoutError, WebSocketException):
+                if not started:
+                    raise
+            finally:
+                self.socket = None
+        yield self._worker_lost_event()
 
     async def _endpoint_status(self) -> ExternalPiWorkerStatus:
         if self.worker_status_resolver is not None:
@@ -175,22 +252,71 @@ class ExternalPiChatTurnRunner:
             )
             return claim
 
-    def _run_frame(self) -> dict[str, object]:
+    async def _require_same_external_worker_claim(
+        self, claim: ExternalWorkerClaim
+    ) -> None:
+        status = await self._endpoint_status()
+        endpoint_claim = ExternalWorkerClaim(
+            worker_id=status.worker_id,
+            instance_id=status.instance_id,
+            generation=status.worker_generation or 0,
+            release_id=status.release_id,
+            contract_version=status.protocol,
+        )
+        if endpoint_claim != claim or status.state not in {"ready", "draining"}:
+            raise StaleWorkerClaim("External worker claim was fenced")
+        with self.session_factory() as db:
+            self.worker_repository.require_live_claim(
+                db,
+                claim=claim,
+                now=self.now(),
+            )
+
+    @staticmethod
+    def _worker_lost_event() -> dict[str, object]:
+        return {
+            "type": "error",
+            "code": "external_worker_lost",
+            "message": "The research run was interrupted.",
+        }
+
+    def _turn_claim_frame(self) -> dict[str, object]:
         claim = self.admission.durable_claim
         if claim is None or claim.turn_id != self.admission.turn_id:
             raise RuntimeError("External Pi turn requires the durable turn claim")
+        return {
+            "turnId": str(claim.turn_id),
+            "workerId": claim.worker_id,
+            "workerGeneration": claim.worker_generation,
+            "leaseGeneration": claim.lease_generation,
+        }
+
+    def _attach_frame(self, after_sequence: int) -> dict[str, object]:
+        return {
+            "v": 1,
+            "type": "attach_turn",
+            "request_id": self.request_id,
+            "turnClaim": self._turn_claim_frame(),
+            "afterSequence": after_sequence,
+        }
+
+    def _terminal_ack_frame(self, sequence: int) -> dict[str, object]:
+        return {
+            "v": 1,
+            "type": "ack_terminal",
+            "request_id": self.request_id,
+            "turnClaim": self._turn_claim_frame(),
+            "sequence": sequence,
+        }
+
+    def _run_frame(self) -> dict[str, object]:
         return {
             "v": 1,
             "type": "run_turn",
             "request_id": self.request_id,
             "chat_session_id": str(self.admission.session_id),
             "turn_id": str(self.admission.turn_id),
-            "turnClaim": {
-                "turnId": str(claim.turn_id),
-                "workerId": claim.worker_id,
-                "workerGeneration": claim.worker_generation,
-                "leaseGeneration": claim.lease_generation,
-            },
+            "turnClaim": self._turn_claim_frame(),
             "prompt": self.prompt,
             "model": self.settings.chat_route_provider_models[
                 self.admission.model_route
@@ -326,10 +452,46 @@ class ExternalPiChatTurnRunner:
 
     async def cancel(self) -> None:
         self._revoke()
+        cancel_frame = {
+            "v": 1,
+            "type": "cancel_turn",
+            "request_id": self.request_id,
+            "turnClaim": self._turn_claim_frame(),
+        }
         if self.socket is not None:
-            await self.socket.send(
-                json.dumps({"type": "cancel", "request_id": self.request_id})
-            )
+            await self.socket.send(json.dumps(cancel_frame, separators=(",", ":")))
+        elif self.external_worker_claim is not None:
+            try:
+                await self._require_same_external_worker_claim(
+                    self.external_worker_claim
+                )
+                async with self.websocket_connector(
+                    _worker_websocket_url(self.settings.chat_external_pi_worker_url),
+                    additional_headers={
+                        "Authorization": (
+                            f"Bearer {self.settings.chat_external_pi_worker_token}"
+                        ),
+                        "X-PWC-Worker-Generation": str(
+                            self.external_worker_claim.generation
+                        ),
+                    },
+                    max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
+                    open_timeout=(
+                        self.settings.chat_external_pi_startup_timeout_seconds
+                    ),
+                    ping_interval=20,
+                    ping_timeout=20,
+                ) as socket:
+                    await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
+            except (
+                StaleWorkerClaim,
+                WorkerLeaseUnavailable,
+                OSError,
+                TimeoutError,
+                WebSocketException,
+                httpx.HTTPError,
+            ):
+                pass
         if self.active_context is not None:
             await self.executor.cancel_execution(self.active_context)
 

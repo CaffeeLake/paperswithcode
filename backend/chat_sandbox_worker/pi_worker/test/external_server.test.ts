@@ -7,6 +7,38 @@ import { createExternalWorkerServer } from "../src/external_server.js";
 import { toolNameDigest } from "../src/mcp_app_registry.js";
 import { parseAttachTurn, TurnProtocolError } from "../src/turn_protocol.js";
 
+const durableTurnClaim = {
+  turnId: "20000000-0000-4000-8000-000000000001",
+  workerId: "api-1",
+  workerGeneration: 4,
+  leaseGeneration: 9,
+};
+
+function externalRunFrame(): Record<string, unknown> {
+  return {
+    v: 1,
+    type: "run_turn",
+    request_id: "request-1",
+    chat_session_id: "10000000-0000-4000-8000-000000000001",
+    turn_id: durableTurnClaim.turnId,
+    turnClaim: durableTurnClaim,
+    prompt: "Answer without tools.",
+    model: "test-model",
+    resume: null,
+    web_search_enabled: false,
+    reader_mode: false,
+    poster_mode: false,
+    paper_artifacts_enabled: false,
+    reasoning_effort: "low",
+    fetchable_urls: [],
+    hf_username: "qualification",
+    agent_harness: "pi",
+    provider_protocol: "openai-responses",
+    capability: "opaque-turn-capability",
+    gateway_url: "https://gateway.example.test/api/internal/chat-gateway",
+  };
+}
+
 test("external shadow HTTP service authenticates and exposes no run endpoint", async () => {
   const server = createExternalWorkerServer({
     token: "s".repeat(32),
@@ -166,6 +198,327 @@ test("external worker streams one authenticated Pi turn without a local shell", 
     });
   } finally {
     socket.close();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("external worker reattaches a pending tool request without restarting or cancelling Pi", async () => {
+  const token = "s".repeat(32);
+  let starts = 0;
+  let cancels = 0;
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 8,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: ["read"] },
+    createTurnWorker: (emit, _run, channel) => ({
+      async run(run) {
+        starts += 1;
+        const result = await channel.request({
+          type: "tool_request",
+          operation_id: "operation-1",
+          tool_call_id: "tool-1",
+          operation: "read",
+          path: "/workspace/result.txt",
+          offset: 0,
+          max_bytes: 1024,
+        });
+        assert.equal(result.ok, true);
+        emit(run.request_id, { type: "done", finish_reason: "success", followups: [] });
+        emit(run.request_id, { type: "worker_done", status: "complete" });
+      },
+      async cancel() { cancels += 1; },
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-PWC-Worker-Generation": "3",
+    },
+  });
+
+  const first = connect();
+  let second: WebSocket | undefined;
+  try {
+    await once(first, "open");
+    first.send(JSON.stringify(externalRunFrame()));
+    const [firstPayload] = await once(first, "message");
+    const firstTool = JSON.parse(String(firstPayload)) as Record<string, unknown>;
+    assert.equal(firstTool.type, "tool_request");
+    assert.equal(firstTool.worker_sequence, 1);
+    first.close();
+    await once(first, "close");
+
+    second = connect();
+    await once(second, "open");
+    second.send(JSON.stringify({
+      v: 1,
+      type: "attach_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      afterSequence: 0,
+    }));
+    const [replayPayload] = await once(second, "message");
+    const replay = JSON.parse(String(replayPayload)) as Record<string, unknown>;
+    assert.equal(replay.type, "tool_request");
+    assert.equal(replay.worker_sequence, 1);
+    const terminal: Record<string, unknown>[] = [];
+    const terminalDone = new Promise<void>((resolve) => {
+      second!.addEventListener("message", (event) => {
+        const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (message.worker_sequence === 1) return;
+        terminal.push(message);
+        if (message.type === "worker_done") resolve();
+      });
+    });
+    second.send(JSON.stringify({
+      type: "tool_result",
+      operation_id: "operation-1",
+      ok: true,
+      data_base64: Buffer.from("answer").toString("base64"),
+      eof: true,
+    }));
+    await terminalDone;
+    assert.deepEqual(terminal.map((frame) => frame.type), ["done", "worker_done"]);
+    assert.equal(starts, 1);
+    assert.equal(cancels, 0);
+    second.close();
+  } finally {
+    first.terminate();
+    second?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("retained runs hold capacity across detach and release it on terminal acknowledgement", async () => {
+  const token = "s".repeat(32);
+  let starts = 0;
+  let finish!: () => void;
+  const completion = new Promise<void>((resolve) => { finish = resolve; });
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 1,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: (emit) => ({
+      async run(run) {
+        starts += 1;
+        emit(run.request_id, { type: "workspace_ready" });
+        await completion;
+        emit(run.request_id, { type: "worker_done", status: "complete" });
+      },
+      async cancel() {},
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const authorization = { Authorization: `Bearer ${token}` };
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { ...authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: { ...authorization, "X-PWC-Worker-Generation": "3" },
+  });
+  const activeSessions = async () => Number((await (
+    await fetch(`${baseUrl}/v1/status`, { headers: authorization })
+  ).json() as { active_sessions: number }).active_sessions);
+  const first = connect();
+  let attached: WebSocket | undefined;
+  let intruder: WebSocket | undefined;
+  try {
+    await once(first, "open");
+    first.send(JSON.stringify(externalRunFrame()));
+    await once(first, "message");
+    first.close();
+    await once(first, "close");
+    assert.equal(await activeSessions(), 1);
+
+    intruder = connect();
+    await once(intruder, "open");
+    const intruderClosed = once(intruder, "close");
+    const intruderClaim = {
+      ...durableTurnClaim,
+      turnId: "20000000-0000-4000-8000-000000000002",
+    };
+    intruder.send(JSON.stringify({
+      ...externalRunFrame(),
+      request_id: "request-2",
+      turn_id: intruderClaim.turnId,
+      turnClaim: intruderClaim,
+    }));
+    const [intruderCode] = await intruderClosed;
+    assert.equal(intruderCode, 1013);
+    assert.equal(starts, 1);
+
+    attached = connect();
+    await once(attached, "open");
+    attached.send(JSON.stringify({
+      v: 1,
+      type: "attach_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      afterSequence: 1,
+    }));
+    assert.equal(await activeSessions(), 1);
+    const terminal = once(attached, "message");
+    finish();
+    const [payload] = await terminal;
+    const done = JSON.parse(String(payload)) as Record<string, unknown>;
+    assert.equal(done.type, "worker_done");
+    assert.equal(done.worker_sequence, 2);
+    attached.send(JSON.stringify({
+      v: 1,
+      type: "ack_terminal",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      sequence: 2,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(await activeSessions(), 0);
+  } finally {
+    first.terminate();
+    intruder?.terminate();
+    attached?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("authenticated detached cancellation requires the exact claim and aborts once", async () => {
+  const token = "s".repeat(32);
+  let cancels = 0;
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 1,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: (emit) => ({
+      async run(run) { emit(run.request_id, { type: "workspace_ready" }); },
+      async cancel() { cancels += 1; },
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "X-PWC-Worker-Generation": "3",
+  };
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const connect = () => new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, { headers });
+  const runSocket = connect();
+  let stale: WebSocket | undefined;
+  let control: WebSocket | undefined;
+  try {
+    await once(runSocket, "open");
+    runSocket.send(JSON.stringify(externalRunFrame()));
+    await once(runSocket, "message");
+    runSocket.close();
+    await once(runSocket, "close");
+
+    stale = connect();
+    await once(stale, "open");
+    const staleClosed = once(stale, "close");
+    stale.send(JSON.stringify({
+      v: 1,
+      type: "cancel_turn",
+      request_id: "request-1",
+      turnClaim: { ...durableTurnClaim, leaseGeneration: 10 },
+    }));
+    const [staleCode] = await staleClosed;
+    assert.equal(staleCode, 1008);
+    assert.equal(cancels, 0);
+
+    control = connect();
+    await once(control, "open");
+    const cancel = {
+      v: 1,
+      type: "cancel_turn",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+    };
+    control.send(JSON.stringify(cancel));
+    control.send(JSON.stringify(cancel));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(cancels, 1);
+  } finally {
+    runSocket.terminate();
+    stale?.terminate();
+    control?.terminate();
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("external worker rejects a tool result without an attached retained run", async () => {
+  const token = "s".repeat(32);
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 1,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: [] },
+    createTurnWorker: () => ({ async run() {}, async cancel() {} }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await fetch(`${baseUrl}/v1/claim`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ worker_generation: 3 }),
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-PWC-Worker-Generation": "3",
+    },
+  });
+  try {
+    await once(socket, "open");
+    const closed = once(socket, "close");
+    socket.send(JSON.stringify({
+      type: "tool_result", operation_id: "unknown", ok: true,
+    }));
+    const result = await Promise.race([
+      closed.then(([code]) => Number(code)),
+      new Promise<number>((resolve) => setTimeout(() => resolve(0), 25)),
+    ]);
+    assert.equal(result, 1008);
+  } finally {
+    socket.terminate();
     server.close();
     await once(server, "close");
   }

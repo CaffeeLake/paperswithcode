@@ -356,6 +356,24 @@ class ChatExternalWorkerRepository:
         row = self._load_claimed(db, claim)
         self._require_ready(row, claim, environment=self.environment, now=now)
 
+    def require_live_claim(
+        self,
+        db: Session,
+        *,
+        claim: ExternalWorkerClaim,
+        now: datetime,
+    ) -> None:
+        """Fence reattachment to an existing run without applying new-run capacity."""
+        row = self._load_claimed(db, claim)
+        ChatExternalWorkerRegistry.require_claim(row, claim)
+        if (
+            now.tzinfo is None
+            or row.environment != self.environment
+            or row.state not in {"ready", "draining"}
+            or row.lease_expires_at <= now
+        ):
+            raise WorkerLeaseUnavailable("External worker is not live")
+
     def heartbeat(
         self,
         db: Session,

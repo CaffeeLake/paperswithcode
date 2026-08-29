@@ -24,6 +24,21 @@ export interface AttachTurn {
   afterSequence: number;
 }
 
+export interface CancelTurn {
+  v: 1;
+  type: "cancel_turn";
+  request_id: string;
+  turnClaim: TurnClaimFrame;
+}
+
+export interface AcknowledgeTerminal {
+  v: 1;
+  type: "ack_terminal";
+  request_id: string;
+  turnClaim: TurnClaimFrame;
+  sequence: number;
+}
+
 export class TurnProtocolError extends Error {}
 
 function parseTurnClaim(value: unknown): TurnClaimFrame {
@@ -47,7 +62,7 @@ function parseTurnClaim(value: unknown): TurnClaimFrame {
   return claim as unknown as TurnClaimFrame;
 }
 
-function claimsEqual(left: TurnClaimFrame, right: TurnClaimFrame): boolean {
+export function claimsEqual(left: TurnClaimFrame, right: TurnClaimFrame): boolean {
   return left.turnId === right.turnId
     && left.workerId === right.workerId
     && left.workerGeneration === right.workerGeneration
@@ -56,7 +71,7 @@ function claimsEqual(left: TurnClaimFrame, right: TurnClaimFrame): boolean {
 
 export function parseAttachTurn(
   value: unknown,
-  expectedClaim: TurnClaimFrame,
+  expectedClaim?: TurnClaimFrame,
 ): AttachTurn {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TurnProtocolError("Invalid Pi attach frame");
@@ -74,10 +89,56 @@ export function parseAttachTurn(
     throw new TurnProtocolError("Invalid Pi attach frame");
   }
   const turnClaim = parseTurnClaim(frame.turnClaim);
-  if (!claimsEqual(turnClaim, expectedClaim)) {
+  if (expectedClaim && !claimsEqual(turnClaim, expectedClaim)) {
     throw new TurnProtocolError("Stale Pi turn claim");
   }
   return { ...frame, turnClaim } as unknown as AttachTurn;
+}
+
+export function parseCancelTurn(
+  value: unknown,
+  expectedClaim?: TurnClaimFrame,
+): CancelTurn {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TurnProtocolError("Invalid Pi cancel frame");
+  }
+  const frame = value as Record<string, unknown>;
+  if (
+    Object.keys(frame).length !== 4
+    || frame.v !== 1
+    || frame.type !== "cancel_turn"
+    || typeof frame.request_id !== "string"
+    || !frame.request_id
+  ) throw new TurnProtocolError("Invalid Pi cancel frame");
+  const turnClaim = parseTurnClaim(frame.turnClaim);
+  if (expectedClaim && !claimsEqual(turnClaim, expectedClaim)) {
+    throw new TurnProtocolError("Stale Pi turn claim");
+  }
+  return { ...frame, turnClaim } as unknown as CancelTurn;
+}
+
+export function parseAcknowledgeTerminal(
+  value: unknown,
+  expectedClaim?: TurnClaimFrame,
+): AcknowledgeTerminal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TurnProtocolError("Invalid Pi terminal acknowledgement");
+  }
+  const frame = value as Record<string, unknown>;
+  if (
+    Object.keys(frame).length !== 5
+    || frame.v !== 1
+    || frame.type !== "ack_terminal"
+    || typeof frame.request_id !== "string"
+    || !frame.request_id
+    || !Number.isSafeInteger(frame.sequence)
+    || (frame.sequence as number) < 1
+  ) throw new TurnProtocolError("Invalid Pi terminal acknowledgement");
+  const turnClaim = parseTurnClaim(frame.turnClaim);
+  if (expectedClaim && !claimsEqual(turnClaim, expectedClaim)) {
+    throw new TurnProtocolError("Stale Pi turn claim");
+  }
+  return { ...frame, turnClaim } as unknown as AcknowledgeTerminal;
 }
 
 export function parseRunTurn(value: unknown, external = false): RunTurn | ExternalRunTurn {

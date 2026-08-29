@@ -32,9 +32,12 @@ class FakeSocket:
 
     async def __anext__(self):
         try:
-            return next(self.messages)
+            value = next(self.messages)
         except StopIteration:
             raise StopAsyncIteration from None
+        if isinstance(value, BaseException):
+            raise value
+        return value
 
 
 class SocketContext:
@@ -46,6 +49,17 @@ class SocketContext:
 
     async def __aexit__(self, *_args):
         return None
+
+
+class SequencedConnector:
+    def __init__(self, *sockets):
+        self.sockets = iter(sockets)
+        self.calls = []
+
+    def __call__(self, url, **kwargs):
+        socket = next(self.sockets)
+        self.calls.append((url, kwargs, socket))
+        return SocketContext(socket)
 
 
 class SessionContext:
@@ -70,6 +84,11 @@ class FakeWorkerRepository:
     def require_ready_claim(self, db, *, claim, now):
         self.calls.append(("require", db, claim, now))
 
+    def require_live_claim(self, db, *, claim, now):
+        self.calls.append(("require_live", db, claim, now))
+        if claim != self.claim:
+            raise StaleWorkerClaim("External worker claim was fenced")
+
 
 class FakeProvider:
     def __init__(self):
@@ -88,12 +107,14 @@ class FakeProvider:
 class FakeExecutor:
     def __init__(self):
         self.contexts = []
+        self.reads = 0
 
     async def ensure_workspace(self, context):
         self.contexts.append(context)
 
     async def read_file(self, context, *, path, offset, max_bytes):
         self.contexts.append(context)
+        self.reads += 1
         assert path == "/opt/pwc/PWC_CLI_SKILL.md"
         return ExecutorReadResult(path=path, offset=offset, data=b"guide", eof=True)
 
@@ -120,10 +141,10 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     socket = FakeSocket(
         [
             '{"type":"tool_request","operation_id":"operation-1","tool_call_id":"tool-1",'
-            '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,"max_bytes":1024}',
-            '{"type":"workspace_ready"}',
-            '{"type":"done","finish_reason":"success","followups":[]}',
-            '{"type":"worker_done","status":"complete"}',
+            '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,"max_bytes":1024,"worker_sequence":1}',
+            '{"type":"workspace_ready","worker_sequence":2}',
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":3}',
+            '{"type":"worker_done","status":"complete","worker_sequence":4}',
         ]
     )
     turn_id = uuid.uuid4()
@@ -188,9 +209,9 @@ def test_external_pi_runner_uses_no_sandbox_without_tools():
     provider = FakeProvider()
     socket = FakeSocket(
         [
-            '{"type":"workspace_ready"}',
-            '{"type":"done","finish_reason":"success","followups":[]}',
-            '{"type":"worker_done","status":"complete"}',
+            '{"type":"workspace_ready","worker_sequence":1}',
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
         ]
     )
     turn_id = uuid.uuid4()
@@ -267,7 +288,9 @@ def test_external_pi_runner_fences_socket_and_run_with_distinct_claims():
         "external-pi-v1",
     )
     repository = FakeWorkerRepository(worker_claim)
-    socket = FakeSocket(['{"type":"worker_done","status":"complete"}'])
+    socket = FakeSocket(
+        ['{"type":"worker_done","status":"complete","worker_sequence":1}']
+    )
     connection = {}
 
     def connect(url, **kwargs):
@@ -418,3 +441,292 @@ async def _collect(runner):
 
 async def _async_value(value):
     return value
+
+
+def test_external_pi_runner_reattaches_same_run_from_last_acknowledged_sequence():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    turn_id = uuid.UUID("20000000-0000-4000-8000-000000000001")
+    admission = TurnAdmission(
+        session_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    worker_claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    first = FakeSocket(
+        ['{"type":"workspace_ready","worker_sequence":1}', OSError("link lost")]
+    )
+    second = FakeSocket(
+        [
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    connector = SequencedConnector(first, second)
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=connector,
+        worker_repository=(repository := FakeWorkerRepository(worker_claim)),
+        worker_status_resolver=lambda: _async_value(worker_status(worker_claim)),
+        session_factory=SessionContext,
+    )
+
+    assert asyncio.run(_collect(runner)) == [
+        {"type": "workspace_ready"},
+        {
+            "type": "done",
+            "finish_reason": "success",
+            "followups": [],
+        },
+    ]
+    assert json.loads(first.sent[0])["type"] == "run_turn"
+    assert json.loads(second.sent[0]) == {
+        "v": 1,
+        "type": "attach_turn",
+        "request_id": "request-1",
+        "turnClaim": {
+            "turnId": str(turn_id),
+            "workerId": "api-1",
+            "workerGeneration": 4,
+            "leaseGeneration": 9,
+        },
+        "afterSequence": 1,
+    }
+    assert json.loads(second.sent[1]) == {
+        "v": 1,
+        "type": "ack_terminal",
+        "request_id": "request-1",
+        "turnClaim": {
+            "turnId": str(turn_id),
+            "workerId": "api-1",
+            "workerGeneration": 4,
+            "leaseGeneration": 9,
+        },
+        "sequence": 3,
+    }
+    assert [call[0] for call in repository.calls] == [
+        "select",
+        "require",
+        "require_live",
+    ]
+
+
+def test_external_pi_runner_never_reexecutes_replayed_tool_request():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    provider = FakeProvider()
+    executor = FakeExecutor()
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    tool = (
+        '{"type":"tool_request","operation_id":"operation-1","tool_call_id":"tool-1",'
+        '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,'
+        '"max_bytes":1024,"worker_sequence":1}'
+    )
+    first = FakeSocket([tool, OSError("result acknowledgement lost")])
+    second = FakeSocket(
+        [
+            tool,
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    connector = SequencedConnector(first, second)
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=provider,
+        executor=executor,
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
+    assert executor.reads == 1
+    assert json.loads(second.sent[0])["afterSequence"] == 0
+    assert json.loads(first.sent[1]) == json.loads(second.sent[1])
+    assert [json.loads(frame)["type"] for frame in second.sent] == [
+        "attach_turn",
+        "tool_result",
+        "ack_terminal",
+    ]
+
+
+def test_external_pi_runner_does_not_resend_resolved_tool_result_after_later_loss():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    provider = FakeProvider()
+    executor = FakeExecutor()
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    tool = (
+        '{"type":"tool_request","operation_id":"operation-1","tool_call_id":"tool-1",'
+        '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,'
+        '"max_bytes":1024,"worker_sequence":1}'
+    )
+    first = FakeSocket(
+        [
+            tool,
+            '{"type":"workspace_ready","worker_sequence":2}',
+            OSError("later link loss"),
+        ]
+    )
+    second = FakeSocket(
+        [
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":3}',
+            '{"type":"worker_done","status":"complete","worker_sequence":4}',
+        ]
+    )
+    connector = SequencedConnector(first, second)
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=provider,
+        executor=executor,
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert [event["type"] for event in asyncio.run(_collect(runner))] == [
+        "workspace_ready",
+        "done",
+    ]
+    assert executor.reads == 1
+    assert [json.loads(frame)["type"] for frame in second.sent] == [
+        "attach_turn",
+        "ack_terminal",
+    ]
+    assert json.loads(second.sent[0])["afterSequence"] == 2
+
+
+def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    replacement = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 8, "release-b", "external-pi-v1"
+    )
+    statuses = iter([worker_status(claim), worker_status(replacement)])
+    socket = FakeSocket(
+        ['{"type":"workspace_ready","worker_sequence":1}', OSError("worker lost")]
+    )
+    connector = SequencedConnector(socket)
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(next(statuses)),
+        session_factory=SessionContext,
+    )
+
+    assert asyncio.run(_collect(runner)) == [
+        {"type": "workspace_ready"},
+        {
+            "type": "error",
+            "code": "external_worker_lost",
+            "message": "The research run was interrupted.",
+        },
+    ]
+    assert len(connector.calls) == 1
