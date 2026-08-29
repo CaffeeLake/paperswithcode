@@ -1,12 +1,16 @@
+import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import BigInteger, Column, MetaData, Table, create_engine, func, select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
-from sqlalchemy.schema import CreateIndex, CreateTable
+from sqlalchemy.schema import CreateIndex, CreateSchema, CreateTable, DropSchema
 
 from backend.models.database import ChatSession, ChatTurnEventChunk, ChatTurnJob
 from backend.services.chat_turn_event_repository import (
@@ -31,6 +35,45 @@ def db():
     ChatTurnEventChunk.__table__.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         yield session
+
+
+@pytest.fixture
+def disposable_postgresql_engine():
+    raw_url = os.environ.get("PWC_DISPOSABLE_POSTGRES_URL")
+    if raw_url is None:
+        pytest.skip("explicit disposable PostgreSQL URL is required")
+    url = make_url(raw_url)
+    if url.get_backend_name() != "postgresql":
+        pytest.fail("PostgreSQL journal proof requires a PostgreSQL URL")
+    database = url.database or ""
+    if not (
+        database.startswith("pwc_disposable_")
+        or database.startswith("pwc_bridge_disposable_")
+    ):
+        pytest.fail("PostgreSQL journal proof requires a disposable pwc database")
+    if database in {"paperswithcode_hf", "pwc_staging"}:
+        pytest.fail("application databases are forbidden for this proof")
+
+    schema = f"journal_test_{uuid.uuid4().hex}"
+    base_engine = create_engine(url, pool_size=4)
+    try:
+        with base_engine.begin() as connection:
+            connection.execute(CreateSchema(schema))
+        engine = base_engine.execution_options(schema_translate_map={None: schema})
+        Table(
+            "papers",
+            MetaData(),
+            Column("id", BigInteger, primary_key=True),
+            schema=schema,
+        ).create(base_engine)
+        ChatSession.__table__.create(engine)
+        ChatTurnJob.__table__.create(engine)
+        ChatTurnEventChunk.__table__.create(engine)
+        yield engine
+    finally:
+        with base_engine.begin() as connection:
+            connection.execute(DropSchema(schema, cascade=True, if_exists=True))
+        base_engine.dispose()
 
 
 def _claimed_turn(db: Session) -> tuple[ChatTurnJob, TurnLeaseClaim]:
@@ -189,3 +232,48 @@ def test_model_and_migration_define_the_bounded_event_journal():
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "OWNER TO paperswithcode_user" in migration
+
+
+def test_postgresql_concurrent_appends_lock_one_turn_and_persist_jsonb(
+    disposable_postgresql_engine,
+):
+    engine = disposable_postgresql_engine
+    with Session(engine, expire_on_commit=False) as setup:
+        _, claim = _claimed_turn(setup)
+        setup.commit()
+
+    ready = Barrier(2)
+
+    def append(text: str) -> int:
+        with Session(engine) as db:
+            ready.wait(timeout=5)
+            frame = TurnEventJournal().append(
+                db,
+                claim=claim,
+                events=[event("delta", {"text": text})],
+                now=NOW,
+            )[0]
+            db.commit()
+            return frame.sequence
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sequences = tuple(executor.map(append, ("a", "b")))
+
+    with Session(engine) as verify:
+        frames = TurnEventJournal().read_after(
+            verify, turn_id=claim.turn_id, after_sequence=0, limit=10
+        )
+        job = verify.get(ChatTurnJob, claim.turn_id)
+        chunks = tuple(
+            verify.scalars(
+                select(ChatTurnEventChunk).order_by(ChatTurnEventChunk.first_sequence)
+            )
+        )
+
+        assert sorted(sequences) == [1, 2]
+        assert [frame.sequence for frame in frames] == [1, 2]
+        assert {frame.payload["text"] for frame in frames} == {"a", "b"}
+        assert job.event_sequence == 2
+        assert job.event_bytes == sum(chunk.payload_bytes for chunk in chunks)
+        assert verify.scalar(select(func.count()).select_from(ChatTurnEventChunk)) == 2
+        assert all(isinstance(chunk.events, list) for chunk in chunks)
