@@ -170,6 +170,36 @@ test("detached replay byte overflow fails before buffered content exceeds its bo
   assert.equal(replay.frames[0]?.code, "worker_event_buffer_exhausted");
 });
 
+test("buffer overflow contains a rejected harness cancellation and still cleans terminal state", async () => {
+  const registry = new ExternalTurnRegistry({
+    maximumEvents: 3,
+    maximumBytes: 4096,
+    terminalGraceMs: 1000,
+  });
+  const transport = new RecordingTransport();
+  const run = registry.start("request-1", claim, transport);
+  let cancels = 0;
+  run.setCancelWorker(async () => {
+    cancels += 1;
+    throw new Error("cancel failed");
+  });
+  run.detach(transport);
+  run.append({ type: "answer_delta", text: "one" });
+  run.append({ type: "answer_delta", text: "overflow" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const replay = new RecordingTransport();
+  run.attach(replay, claim, 0);
+  assert.deepEqual(replay.frames.map((frame) => frame.type), [
+    "answer_delta", "error", "worker_done",
+  ]);
+  assert.equal(cancels, 1);
+  await assert.rejects(run.cancel(), /cancel failed/);
+  assert.equal(cancels, 1);
+  registry.acknowledgeTerminal("request-1", claim, 3);
+  assert.equal(registry.size, 0);
+});
+
 test("terminal acknowledgement and grace expiry release retained state", async () => {
   const acknowledged = new ExternalTurnRegistry({ terminalGraceMs: 1000 });
   const first = acknowledged.start("request-1", claim, new RecordingTransport());

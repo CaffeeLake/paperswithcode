@@ -284,7 +284,7 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
             cancel.request_id, cancel.turnClaim,
           );
           if (cancel.request_id !== target.requestId) throw new TurnProtocolError("Unknown Pi turn");
-          void target.cancel();
+          void target.cancel().catch(() => undefined);
           started = true;
         } catch (error) {
           if (!(error instanceof TurnProtocolError)) throw error;

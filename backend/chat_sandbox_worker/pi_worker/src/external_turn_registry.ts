@@ -194,7 +194,7 @@ export class ExternalTurnRun {
       pending.reject(new TurnProtocolError("Pi turn event buffer is exhausted"));
     }
     this.pendingTools.clear();
-    void this.cancel();
+    void this.cancel().catch(() => undefined);
     return done;
   }
 

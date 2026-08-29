@@ -417,7 +417,10 @@ test("authenticated detached cancellation requires the exact claim and aborts on
     profile: { prompt: "system", tool_names: [] },
     createTurnWorker: (emit) => ({
       async run(run) { emit(run.request_id, { type: "workspace_ready" }); },
-      async cancel() { cancels += 1; },
+      async cancel() {
+        cancels += 1;
+        throw new Error("cancel failed");
+      },
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -470,6 +473,10 @@ test("authenticated detached cancellation requires the exact claim and aborts on
     control.send(JSON.stringify(cancel));
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(cancels, 1);
+    const afterRejectedCancel = await (await fetch(`${baseUrl}/v1/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).json() as any;
+    assert.equal(afterRejectedCancel.active_sessions, 1);
   } finally {
     runSocket.terminate();
     stale?.terminate();
