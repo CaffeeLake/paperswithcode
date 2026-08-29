@@ -96,8 +96,25 @@ class ExecutorExecutionLost(RuntimeError):
 
     code = "execution_lost"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        execution_id: str,
+        last_sequence: int,
+        outputs: tuple[dict[str, object], ...] = (),
+    ) -> None:
         super().__init__("Sandbox execution delivery or completion is uncertain")
+        self._execution_id = execution_id
+        self._last_sequence = last_sequence
+        self.outputs = outputs
+
+    @property
+    def execution_id(self) -> str:
+        return self._execution_id
+
+    @property
+    def last_sequence(self) -> int:
+        return self._last_sequence
 
 
 class ExecutorOperationError(RuntimeError):
@@ -181,23 +198,94 @@ class SandboxExecutorClient:
             if self._valid_execution_prefix(error.responses, request, "exec"):
                 if error.responses[-1]["type"] == "terminal":
                     return self._execution_result(error.responses, request, "exec")
-                raise ExecutorExecutionLost() from error
+                raise self._execution_lost(error.responses, request, "exec") from error
             if error.payload_delivery_attempted:
-                raise ExecutorExecutionLost() from error
+                raise ExecutorExecutionLost(
+                    execution_id=context.execution_id,
+                    last_sequence=0,
+                ) from error
             raise
         if self._valid_execution_prefix(responses, request, "exec") and (
             not responses or responses[-1]["type"] != "terminal"
         ):
-            raise ExecutorExecutionLost()
+            raise self._execution_lost(responses, request, "exec")
         return self._execution_result(responses, request, "exec")
 
+    async def exec_resumable(
+        self,
+        context: ExecutorContext,
+        *,
+        command: str,
+        timeout_ms: int,
+        max_attach_attempts: int = 2,
+    ) -> ExecutorExecutionResult:
+        if max_attach_attempts < 0:
+            raise ValueError("max_attach_attempts must not be negative")
+        try:
+            return await self.exec(context, command=command, timeout_ms=timeout_ms)
+        except ExecutorExecutionLost as lost:
+            outputs = lost.outputs
+            cursor = lost.last_sequence
+
+        for _attempt in range(max_attach_attempts):
+            try:
+                attached = await self.attach_execution(
+                    context,
+                    offset=cursor,
+                    timeout_ms=timeout_ms,
+                )
+            except ExecutorExecutionLost as lost:
+                if lost.execution_id != context.execution_id:
+                    raise ProtocolError("Uncorrelated executor loss identity") from lost
+                outputs += lost.outputs
+                cursor = lost.last_sequence
+                continue
+            if attached.terminal.get("error") == "execution_not_found":
+                continue
+            return ExecutorExecutionResult(
+                outputs=outputs + attached.outputs,
+                terminal=attached.terminal,
+            )
+        raise ExecutorExecutionLost(
+            execution_id=context.execution_id,
+            last_sequence=cursor,
+            outputs=outputs,
+        )
+
     async def attach_execution(
-        self, context: ExecutorContext, *, offset: int
+        self,
+        context: ExecutorContext,
+        *,
+        offset: int,
+        timeout_ms: int = 30_000,
     ) -> ExecutorExecutionResult:
         request = self._request(context, "attach_execution", offset=offset)
-        responses = await self._exchange(
-            context.sandbox, request, context=context, timeout_seconds=35
-        )
+        timeout_seconds = max(5, (timeout_ms + 999) // 1000 + 5)
+        try:
+            responses = await self._exchange(
+                context.sandbox,
+                request,
+                context=context,
+                timeout_seconds=timeout_seconds,
+            )
+        except ExecutorTransportError as error:
+            if self._valid_execution_prefix(
+                error.responses, request, "attach_execution"
+            ):
+                if error.responses[-1]["type"] == "terminal":
+                    return self._execution_result(
+                        error.responses, request, "attach_execution"
+                    )
+                raise self._execution_lost(
+                    error.responses,
+                    request,
+                    "attach_execution",
+                    previous_cursor=offset,
+                ) from error
+            raise ExecutorExecutionLost(
+                execution_id=context.execution_id,
+                last_sequence=offset,
+            ) from error
         result = self._execution_result(responses, request, "attach_execution")
         if any(int(output["sequence"]) <= offset for output in result.outputs):
             raise ProtocolError("Executor attach response did not advance its cursor")
@@ -450,4 +538,35 @@ class SandboxExecutorClient:
                 "exit_code": terminal["exit_code"],
                 "error": terminal["error"],
             },
+        )
+
+    @classmethod
+    def _execution_lost(
+        cls,
+        responses: tuple[dict[str, object], ...],
+        request: dict[str, object],
+        operation: str,
+        *,
+        previous_cursor: int = 0,
+    ) -> ExecutorExecutionLost:
+        cls._valid_execution_prefix(responses, request, operation)
+        outputs = tuple(
+            {
+                "sequence": response["sequence"],
+                "stream": response["stream"],
+                "data": response["data"],
+            }
+            for response in responses
+            if response["type"] == "output"
+        )
+        if any(int(output["sequence"]) <= previous_cursor for output in outputs):
+            raise ProtocolError("Executor attach response did not advance its cursor")
+        last_sequence = max(
+            (int(output["sequence"]) for output in outputs),
+            default=previous_cursor,
+        )
+        return ExecutorExecutionLost(
+            execution_id=str(request["execution_id"]),
+            last_sequence=last_sequence,
+            outputs=outputs,
         )

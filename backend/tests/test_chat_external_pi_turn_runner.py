@@ -21,7 +21,10 @@ from backend.services.chat_external_worker_registry import (
     StaleWorkerClaim,
     WorkerLeaseUnavailable,
 )
-from backend.services.chat_sandbox_executor import ExecutorReadResult
+from backend.services.chat_sandbox_executor import (
+    ExecutorExecutionResult,
+    ExecutorReadResult,
+)
 from backend.services.chat_session_service import TurnAdmission
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
 
@@ -115,6 +118,7 @@ class FakeExecutor:
     def __init__(self):
         self.contexts = []
         self.reads = 0
+        self.exec_calls = 0
 
     async def ensure_workspace(self, context):
         self.contexts.append(context)
@@ -124,6 +128,16 @@ class FakeExecutor:
         self.reads += 1
         assert path == "/opt/pwc/PWC_CLI_SKILL.md"
         return ExecutorReadResult(path=path, offset=offset, data=b"guide", eof=True)
+
+    async def exec_resumable(self, context, *, command, timeout_ms):
+        self.contexts.append(context)
+        self.exec_calls += 1
+        assert command == "printf x >> marker"
+        assert timeout_ms == 1000
+        return ExecutorExecutionResult(
+            outputs=({"sequence": 1, "stream": "stdout", "data": "x"},),
+            terminal={"status": "completed", "exit_code": 0, "error": None},
+        )
 
 
 def worker_status(claim):
@@ -207,6 +221,65 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     assert provider.terminated[0][0] == "sb-test"
     assert executor.contexts[0].session_id == str(admission.session_id)
     assert '"type":"tool_result"' in socket.sent[1]
+
+
+def test_external_pi_runner_routes_bash_through_resumable_execution():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    provider = FakeProvider()
+    executor = FakeExecutor()
+    socket = FakeSocket(
+        [
+            '{"type":"tool_request","operation_id":"operation-1",'
+            '"tool_call_id":"tool-1","operation":"exec",'
+            '"command":"printf x >> marker","timeout_ms":1000,"worker_sequence":1}',
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=provider,
+        executor=executor,
+        websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
+    assert executor.exec_calls == 1
+    tool_result = json.loads(socket.sent[1])
+    assert tool_result["operation_id"] == "operation-1"
+    assert tool_result["ok"] is True
 
 
 def test_external_pi_runner_uses_no_sandbox_without_tools():
@@ -668,6 +741,68 @@ def test_external_pi_runner_never_reexecutes_replayed_tool_request():
         "tool_result",
         "ack_terminal",
     ]
+
+
+def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    provider = FakeProvider()
+    executor = FakeExecutor()
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    tool = (
+        '{"type":"tool_request","operation_id":"operation-1",'
+        '"tool_call_id":"tool-1","operation":"exec",'
+        '"command":"printf x >> marker","timeout_ms":1000,"worker_sequence":1}'
+    )
+    first = FakeSocket([tool, OSError("tool result acknowledgement lost")])
+    second = FakeSocket(
+        [
+            tool,
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
+            '{"type":"worker_done","status":"complete","worker_sequence":3}',
+        ]
+    )
+    connector = SequencedConnector(first, second)
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=provider,
+        executor=executor,
+        websocket_connector=connector,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
+    assert executor.exec_calls == 1
+    assert json.loads(first.sent[1]) == json.loads(second.sent[1])
 
 
 def test_external_pi_runner_does_not_resend_resolved_tool_result_after_later_loss():

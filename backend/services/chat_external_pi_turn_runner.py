@@ -406,7 +406,7 @@ class ExternalPiChatTurnRunner:
         try:
             context = await self._ensure_executor(tool_call_id, operation_id)
             if operation == "exec":
-                result = await self.executor.exec(
+                result = await self.executor.exec_resumable(
                     context,
                     command=str(request["command"]),
                     timeout_ms=int(request["timeout_ms"]),
