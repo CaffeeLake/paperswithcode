@@ -58,6 +58,26 @@ MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
 type WorkspaceSettlement = Literal["release", "invalidate"]
 
 
+def _is_safe_cancel_terminal(terminal: object) -> bool:
+    if not isinstance(terminal, Mapping) or set(terminal) != {
+        "status",
+        "exit_code",
+        "error",
+    }:
+        return False
+    status = terminal["status"]
+    exit_code = terminal["exit_code"]
+    if terminal["error"] is not None or status not in {"completed", "cancelled"}:
+        return False
+    if exit_code is not None and (
+        not isinstance(exit_code, int)
+        or isinstance(exit_code, bool)
+        or not -(2**31) <= exit_code < 2**31
+    ):
+        return False
+    return status == "cancelled" or exit_code is not None
+
+
 def _worker_websocket_url(base_url: str) -> str:
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -494,16 +514,7 @@ class ExternalPiChatTurnRunner:
             return False
         if not isinstance(result, ExecutorExecutionResult):
             return False
-        terminal = result.terminal
-        if not isinstance(terminal, Mapping) or set(terminal) != {
-            "status",
-            "exit_code",
-            "error",
-        }:
-            return False
-        return terminal.get("status") in {"completed", "cancelled"} and (
-            terminal.get("error") is None
-        )
+        return _is_safe_cancel_terminal(result.terminal)
 
     async def _settle_workspace(
         self,

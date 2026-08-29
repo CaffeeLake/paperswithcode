@@ -1095,6 +1095,10 @@ def test_new_cancellation_during_successful_release_propagates_after_invalidatio
     [
         ({"status": "cancelled", "exit_code": None, "error": None}, True),
         ({"status": "completed", "exit_code": 0, "error": None}, True),
+        ({"status": "completed", "exit_code": -(2**31), "error": None}, True),
+        ({"status": "completed", "exit_code": 2**31 - 1, "error": None}, True),
+        ({"status": "cancelled", "exit_code": -(2**31), "error": None}, True),
+        ({"status": "cancelled", "exit_code": 2**31 - 1, "error": None}, True),
         (
             {
                 "status": "failed",
@@ -1106,6 +1110,16 @@ def test_new_cancellation_during_successful_release_propagates_after_invalidatio
         ({"status": "failed", "exit_code": 1, "error": "failed"}, False),
         ({"status": "unknown", "exit_code": None, "error": None}, False),
         ({"status": "cancelled", "error": None}, False),
+        ({"status": "completed", "exit_code": None, "error": None}, False),
+        ({"status": "completed", "exit_code": True, "error": None}, False),
+        ({"status": "completed", "exit_code": "0", "error": None}, False),
+        ({"status": "completed", "exit_code": 0.0, "error": None}, False),
+        ({"status": "completed", "exit_code": 2**31, "error": None}, False),
+        ({"status": "completed", "exit_code": -(2**31) - 1, "error": None}, False),
+        ({"status": "cancelled", "exit_code": False, "error": None}, False),
+        ({"status": "cancelled", "exit_code": "0", "error": None}, False),
+        ({"status": "cancelled", "exit_code": 2**31, "error": None}, False),
+        ({"status": "cancelled", "exit_code": -(2**31) - 1, "error": None}, False),
         (None, False),
     ],
 )
