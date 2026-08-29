@@ -885,6 +885,26 @@ def test_stale_session_cannot_replace_a_newer_committed_claim(tmp_path):
         assert row.lease_generation == authoritative.lease_generation
 
 
+def test_require_live_claim_returns_exact_fence_and_rejects_expiry(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="worker-live",
+        worker_generation=4,
+        now=NOW,
+        lease_seconds=15,
+    )
+
+    assert repository.require_live_claim(db, claim=claim, now=NOW) is job
+    with pytest.raises(ValueError):
+        repository.require_live_claim(db, claim=claim, now=NOW.replace(tzinfo=None))
+    with pytest.raises(StaleTurnClaim):
+        repository.require_live_claim(db, claim=claim, now=NOW + timedelta(seconds=15))
+
+
 def test_stale_session_cannot_overwrite_a_newer_committed_terminal(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'stale-terminal.db'}")
     ChatSession.__table__.create(engine)

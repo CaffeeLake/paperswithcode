@@ -475,6 +475,21 @@ class ChatTurnJobRepository:
         db.flush()
         return job
 
+    def require_live_claim(
+        self,
+        db: Session,
+        *,
+        claim: TurnLeaseClaim,
+        now: datetime,
+    ) -> ChatTurnJob:
+        """Lock and return the job only while the exact claim remains live."""
+        if now.tzinfo is None:
+            raise ValueError("Turn claim timestamp is invalid")
+        job = self._load_claimed(db, claim)
+        if job.state not in _CLAIMED_STATES or self._lease_expired(job, now):
+            raise StaleTurnClaim("Turn lease is no longer live")
+        return job
+
     def transition(
         self,
         db: Session,

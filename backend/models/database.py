@@ -2540,6 +2540,12 @@ class ChatTurnJob(Base):
         UUID(as_uuid=True), nullable=True
     )
     last_resume_boundary_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    event_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    event_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
 
     __table_args__ = (
         CheckConstraint("revision > 0", name="chat_turn_jobs_revision_check"),
@@ -2599,6 +2605,45 @@ class ChatTurnJob(Base):
                 "('admitted','leased','running','waiting_model','waiting_tool','cancelling')"
             ),
         ),
+    )
+
+
+class ChatTurnEventChunk(Base):
+    """A bounded contiguous batch of public stream events for one turn."""
+
+    __tablename__ = "chat_turn_event_chunks"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_turn_jobs.turn_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    first_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    events: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False
+    )
+    payload_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "turn_id",
+            "first_sequence",
+            name="uq_chat_turn_event_chunk_start",
+        ),
+        CheckConstraint(
+            "last_sequence >= first_sequence",
+            name="ck_chat_turn_event_chunk_range",
+        ),
+        Index("idx_chat_turn_event_chunks_after", "turn_id", "last_sequence"),
     )
 
 
