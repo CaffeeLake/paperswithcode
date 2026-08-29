@@ -9,6 +9,7 @@ import pytest
 
 from backend.config import get_settings
 from backend.chat_sandbox_worker.executor_daemon import ExecutorServer
+from backend.chat_sandbox_worker.executor_protocol import ProtocolError
 from backend.services.chat_capability_service import IssuedCapability
 from backend.services.chat_external_pi_turn_runner import (
     MAX_EXTERNAL_TURN_FRAME_BYTES,
@@ -133,6 +134,8 @@ class FakeWorkspaceManager:
         self.invalidated = []
         self.sandbox = type("Sandbox", (), {"object_id": "sb-retained"})()
         self.worker_generation = "durable-workspace-generation"
+        self.release_error = None
+        self.invalidate_error = None
 
     async def acquire(self, *, session_id, turn_claim):
         self.acquired.append((session_id, turn_claim))
@@ -146,10 +149,14 @@ class FakeWorkspaceManager:
 
     async def release(self, workspace):
         self.released.append(workspace)
+        if self.release_error is not None:
+            raise self.release_error
         return True
 
     async def invalidate(self, workspace, *, failure_code="sandbox_worker_failed"):
         self.invalidated.append((workspace, failure_code))
+        if self.invalidate_error is not None:
+            raise self.invalidate_error
 
 
 class FakeExecutor:
@@ -391,6 +398,7 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
     claim = ExternalWorkerClaim(
         "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
     )
+    workspace_manager = FakeWorkspaceManager(FakeProvider())
     runner = ExternalPiChatTurnRunner(
         settings=settings,
         admission=admission,
@@ -405,7 +413,7 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
         hf_username="qualification",
         provider=FakeProvider(),
         executor=executor,
-        workspace_manager=FakeWorkspaceManager(FakeProvider()),
+        workspace_manager=workspace_manager,
         websocket_connector=lambda *_args, **_kwargs: SocketContext(socket),
         worker_repository=FakeWorkerRepository(claim),
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
@@ -421,6 +429,8 @@ def test_external_pi_runner_cancels_and_aborts_turn_on_execution_lost():
     assert executor.cancelled_contexts[0].execution_id == "operation-1"
     assert executor.cancelled_contexts[0].tool_call_id == "tool-1"
     assert cancellation_order == ["executor", "pi"]
+    assert len(workspace_manager.released) == 1
+    assert workspace_manager.invalidated == []
     assert [json.loads(frame)["type"] for frame in socket.sent] == [
         "run_turn",
         "cancel_turn",
@@ -907,6 +917,177 @@ async def _collect(runner):
 
 async def _async_value(value):
     return value
+
+
+def _tool_runner(executor, workspace_manager):
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    return ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        provider=FakeProvider(),
+        executor=executor,
+        workspace_manager=workspace_manager,
+        session_factory=SessionContext,
+    )
+
+
+def test_execution_lost_cancel_failure_invalidates_without_releasing():
+    class CancelFailure(LostExecutor):
+        async def cancel_execution(self, context):
+            self.cancelled_contexts.append(context)
+            raise OSError("cancel uncertain")
+
+    executor = CancelFailure()
+    manager = FakeWorkspaceManager(FakeProvider())
+    manager.invalidate_error = RuntimeError("invalidation failed")
+    runner = _tool_runner(executor, manager)
+    request = {
+        "operation_id": "operation-1",
+        "tool_call_id": "tool-1",
+        "operation": "exec",
+        "command": "printf x >> marker",
+        "timeout_ms": 1000,
+    }
+
+    with pytest.raises(ExecutorExecutionLost) as exc_info:
+        asyncio.run(runner._tool_result(request))
+
+    assert exc_info.value.code == "execution_lost"
+    assert manager.released == []
+    assert len(manager.invalidated) == 1
+
+
+@pytest.mark.parametrize("operation", ["exec", "read"])
+@pytest.mark.parametrize("cancel_succeeds", [True, False])
+def test_external_task_cancellation_settles_exact_active_workspace(
+    cancel_succeeds, operation
+):
+    class BlockingExecutor(FakeExecutor):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.cancelled_contexts = []
+
+        async def exec_resumable(self, context, *, command, timeout_ms):
+            self.started.set()
+            await asyncio.Future()
+
+        async def read_file(self, context, *, path, offset, max_bytes):
+            self.started.set()
+            await asyncio.Future()
+
+        async def cancel_execution(self, context):
+            self.cancelled_contexts.append(context)
+            if not cancel_succeeds:
+                raise OSError("cancel uncertain")
+
+    async def exercise():
+        executor = BlockingExecutor()
+        manager = FakeWorkspaceManager(FakeProvider())
+        runner = _tool_runner(executor, manager)
+        request = {
+            "operation_id": "operation-1",
+            "tool_call_id": "tool-1",
+            "operation": operation,
+        }
+        if operation == "exec":
+            request.update(command="printf x >> marker", timeout_ms=1000)
+        else:
+            request.update(path="/opt/pwc/PWC_CLI_SKILL.md", offset=0, max_bytes=1024)
+        task = asyncio.create_task(runner._tool_result(request))
+        await executor.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return executor, manager
+
+    executor, manager = asyncio.run(exercise())
+    assert len(executor.cancelled_contexts) == 1
+    if cancel_succeeds:
+        assert len(manager.released) == 1
+        assert manager.invalidated == []
+    else:
+        assert manager.released == []
+        assert len(manager.invalidated) == 1
+
+
+def test_cleanup_failures_do_not_override_successful_tool_result():
+    manager = FakeWorkspaceManager(FakeProvider())
+    manager.release_error = RuntimeError("release failed")
+    manager.invalidate_error = RuntimeError("invalidate failed")
+    runner = _tool_runner(FakeExecutor(), manager)
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "operation-1",
+                "tool_call_id": "tool-1",
+                "operation": "exec",
+                "command": "printf x >> marker",
+                "timeout_ms": 1000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert len(manager.released) == 1
+    assert len(manager.invalidated) == 1
+
+
+def test_invalidation_failure_never_releases_identity_mismatch():
+    class IdentityFailure(FakeExecutor):
+        async def ensure_workspace(self, context):
+            raise ProtocolError("workspace mismatch")
+
+    manager = FakeWorkspaceManager(FakeProvider())
+    manager.invalidate_error = RuntimeError("invalidate failed")
+    runner = _tool_runner(IdentityFailure(), manager)
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "operation-1",
+                "tool_call_id": "tool-1",
+                "operation": "read",
+                "path": "/opt/pwc/PWC_CLI_SKILL.md",
+                "offset": 0,
+                "max_bytes": 1024,
+            }
+        )
+    )
+
+    assert result == {
+        "type": "tool_result",
+        "operation_id": "operation-1",
+        "ok": False,
+        "error": "tool_failed",
+    }
+    assert manager.released == []
+    assert len(manager.invalidated) == 1
 
 
 def test_external_pi_runner_reattaches_same_run_from_last_acknowledged_sequence():

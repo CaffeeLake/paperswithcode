@@ -175,21 +175,27 @@ class ChatExternalExecutorWorkspaceManager:
             )
             try:
                 healthy = await self.executor.health(workspace.sandbox) == "ok"
+            except asyncio.CancelledError:
+                await self._invalidate_preserving_primary(workspace)
+                raise
             except (ExecutorTransportError, ProtocolError, SandboxError):
                 healthy = False
+            except BaseException:
+                await self._invalidate_preserving_primary(workspace)
+                raise
             if healthy:
                 try:
                     self._require_live_turn(turn_claim)
                 except StaleTurnClaim:
-                    await self.release(workspace)
+                    await self._release_preserving_primary(workspace)
                     raise
                 return workspace
 
-            await self.lifecycle.terminate_worker(
-                session_id,
-                claim,
-                failure_code="sandbox_worker_failed",
-            )
+            invalidated = await self._invalidate_preserving_primary(workspace)
+            if not invalidated:
+                raise SandboxError(
+                    "sandbox_worker_failed", "Secure workspace executor is unavailable"
+                )
             replacement_attempts += 1
             if replacement_attempts >= 2 or self.monotonic() >= deadline:
                 raise SandboxError(
@@ -223,6 +229,24 @@ class ChatExternalExecutorWorkspaceManager:
             workspace.claim,
             failure_code=failure_code,
         )
+
+    async def _release_preserving_primary(
+        self, workspace: ExternalExecutorWorkspace
+    ) -> None:
+        try:
+            await self.release(workspace)
+        except BaseException:
+            await self._invalidate_preserving_primary(workspace)
+
+    async def _invalidate_preserving_primary(
+        self, workspace: ExternalExecutorWorkspace
+    ) -> bool:
+        try:
+            await self.invalidate(workspace)
+        except BaseException:
+            # The exact busy fence remains unreusable until reconciliation.
+            return False
+        return True
 
     def _claim(self, session_id: uuid.UUID, sandbox_id: str) -> WorkerClaim:
         with self.session_factory() as db, db.begin():

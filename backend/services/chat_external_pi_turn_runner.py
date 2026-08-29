@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -402,24 +403,13 @@ class ExternalPiChatTurnRunner:
             raise ValueError("unsupported_tool_operation")
         context: ExecutorContext | None = None
         workspace: ExternalExecutorWorkspace | None = None
+        settlement = "invalidate"
         try:
             workspace = await self._workspace_manager().acquire(
                 session_id=self.admission.session_id,
                 turn_claim=self._durable_turn_claim(),
             )
-            try:
-                context = await self._ensure_executor(
-                    workspace, tool_call_id, operation_id
-                )
-            except (
-                ExecutorOperationError,
-                ExecutorTransportError,
-                ProtocolError,
-                SandboxError,
-            ):
-                await self._workspace_manager().invalidate(workspace)
-                workspace = None
-                raise
+            context = await self._ensure_executor(workspace, tool_call_id, operation_id)
             if operation == "exec":
                 result = await self.executor.exec_resumable(
                     context,
@@ -427,6 +417,7 @@ class ExternalPiChatTurnRunner:
                     timeout_ms=int(request["timeout_ms"]),
                 )
                 terminal = dict(result.terminal)
+                settlement = "release"
                 return {
                     **base,
                     "ok": terminal.get("status") == "completed",
@@ -445,6 +436,7 @@ class ExternalPiChatTurnRunner:
                     offset=int(request["offset"]),
                     max_bytes=int(request["max_bytes"]),
                 )
+                settlement = "release"
                 return {
                     **base,
                     "ok": True,
@@ -454,22 +446,66 @@ class ExternalPiChatTurnRunner:
             raise AssertionError("validated tool operation was not handled")
         except ExecutorExecutionLost:
             if context is not None:
-                try:
-                    await self.executor.cancel_execution(context)
-                except Exception:
-                    pass
+                settlement = (
+                    "release" if await self._cancel_executor(context) else "invalidate"
+                )
             raise
+        except asyncio.CancelledError:
+            if context is not None:
+                settlement = (
+                    "release" if await self._cancel_executor(context) else "invalidate"
+                )
+            raise
+        except ExecutorOperationError as error:
+            if context is not None:
+                settlement = "release"
+            return {**base, "ok": False, "error": error.code}
         except (
-            ExecutorOperationError,
             ExecutorTransportError,
             ProtocolError,
             SandboxError,
         ) as error:
             return {**base, "ok": False, "error": getattr(error, "code", "tool_failed")}
+        except BaseException:
+            if context is not None:
+                settlement = (
+                    "release" if await self._cancel_executor(context) else "invalidate"
+                )
+            raise
         finally:
             self.active_context = None
             if workspace is not None:
-                await self._workspace_manager().release(workspace)
+                await self._settle_workspace(workspace, settlement=settlement)
+
+    async def _cancel_executor(self, context: ExecutorContext) -> bool:
+        try:
+            await self.executor.cancel_execution(context)
+        except BaseException:
+            return False
+        return True
+
+    async def _settle_workspace(
+        self,
+        workspace: ExternalExecutorWorkspace,
+        *,
+        settlement: str,
+    ) -> None:
+        manager = self._workspace_manager()
+        if settlement == "release":
+            try:
+                await manager.release(workspace)
+                return
+            except BaseException:
+                # The durable release may have rolled back, or maintenance may
+                # have failed after it committed. Exact invalidation is safe in
+                # both cases and must not replace the primary tool outcome.
+                pass
+        try:
+            await manager.invalidate(workspace)
+        except BaseException:
+            # A failed fence leaves the exact claim busy, which is fail-closed:
+            # acquisition cannot reuse it until existing reconciliation runs.
+            pass
 
     def _workspace_manager(self) -> ChatExternalExecutorWorkspaceManager:
         manager = self.workspace_manager

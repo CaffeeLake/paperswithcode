@@ -4,10 +4,13 @@ import asyncio
 from types import SimpleNamespace
 import uuid
 
+import pytest
+
+from backend.models.database import ChatSession
 from backend.services.chat_external_executor_workspace import (
     ChatExternalExecutorWorkspaceManager,
 )
-from backend.services.chat_sandbox_provider import SandboxLaunchMode
+from backend.services.chat_sandbox_provider import SandboxError, SandboxLaunchMode
 from backend.services.chat_turn_job_repository import StaleTurnClaim, TurnLeaseClaim
 from backend.tests.test_chat_sandbox_acquisition_coordinator import _coordinator
 from backend.tests.test_chat_sandbox_capacity_acquisition import (
@@ -36,6 +39,17 @@ class ExecutorHealth:
     async def health(self, sandbox):
         self.sandboxes.append(sandbox)
         return self.statuses.pop(0) if self.statuses else "ok"
+
+
+class BlockingHealth(ExecutorHealth):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def health(self, sandbox):
+        self.sandboxes.append(sandbox)
+        self.started.set()
+        await asyncio.Future()
 
 
 class LiveTurns:
@@ -83,7 +97,8 @@ def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():
     async def exercise():
         first = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
         assert await manager.release(first)
-        second = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        second_claim = TurnLeaseClaim(uuid.uuid4(), "worker", 3, 8)
+        second = await manager.acquire(session_id=session_id, turn_claim=second_claim)
         assert await manager.release(second)
         return first, second
 
@@ -145,6 +160,29 @@ def test_failed_executor_health_uses_fenced_termination_before_one_replacement()
     assert create_indices[0] < terminate_index < create_indices[1]
 
 
+def test_health_cleanup_failure_preserves_typed_failure_and_busy_fence():
+    health = ExecutorHealth("draining")
+    manager, sessions, session_id, provider = setup_manager(health=health)
+
+    async def fail_invalidation(*_args, **_kwargs):
+        raise RuntimeError("cleanup failed")
+
+    manager.invalidate = fail_invalidation
+
+    async def exercise():
+        with pytest.raises(SandboxError) as exc_info:
+            await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        assert exc_info.value.code == "sandbox_worker_failed"
+
+    asyncio.run(exercise())
+
+    assert len(provider.create_options) == 1
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == "busy"
+
+
 def test_identity_failure_invalidates_only_the_exact_busy_claim():
     manager, sessions, session_id, provider = setup_manager()
 
@@ -160,6 +198,49 @@ def test_identity_failure_invalidates_only_the_exact_busy_claim():
         assert lease is not None
         assert lease.state == "failed"
         assert lease.modal_sandbox_id is None
+
+
+@pytest.mark.parametrize(
+    ("cancel_proven", "expected_state"),
+    [(True, "idle"), (False, "failed")],
+)
+def test_executor_cancellation_settlement_is_durable(cancel_proven, expected_state):
+    manager, sessions, session_id, _provider = setup_manager()
+
+    async def exercise():
+        handle = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        if cancel_proven:
+            assert await manager.release(handle)
+        else:
+            await manager.invalidate(handle)
+
+    asyncio.run(exercise())
+
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == expected_state
+        assert (lease.modal_sandbox_id is not None) is cancel_proven
+
+
+def test_maintenance_failure_after_release_leaves_durable_lease_idle():
+    manager, sessions, session_id, _provider = setup_manager()
+
+    async def fail_maintenance():
+        raise RuntimeError("maintenance failed")
+
+    async def exercise():
+        handle = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        manager.maintenance.enforce_warm_cap = fail_maintenance
+        with pytest.raises(RuntimeError, match="maintenance failed"):
+            await manager.release(handle)
+
+    asyncio.run(exercise())
+
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == "idle"
 
 
 def test_turn_fence_expiring_during_acquisition_releases_workspace_to_idle():
@@ -200,3 +281,45 @@ def test_idle_executor_workspace_is_reclaimed_by_existing_eviction_lifecycle():
         assert lease is not None
         assert lease.state == "terminated"
         assert lease.modal_sandbox_id is None
+
+
+def test_cancellation_during_health_invalidates_exact_busy_workspace():
+    health = BlockingHealth()
+    manager, sessions, session_id, provider = setup_manager(health=health)
+
+    async def exercise():
+        task = asyncio.create_task(
+            manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        )
+        await health.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert [call[0] for call in provider.calls].count("terminate") == 1
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == "failed"
+        assert lease.modal_sandbox_id is None
+
+
+def test_retained_workspace_uses_existing_deleted_session_cleanup_path():
+    manager, sessions, session_id, provider = setup_manager()
+
+    async def exercise():
+        handle = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        assert await manager.release(handle)
+        with sessions() as db, db.begin():
+            session = db.get(ChatSession, session_id)
+            assert session is not None
+            db.delete(session)
+        await manager.lifecycle.cleanup_deleted(handle.sandbox_id, None)
+
+    asyncio.run(exercise())
+
+    assert [call[0] for call in provider.calls].count("terminate") == 1
+    with sessions() as db:
+        assert db.get(ChatSession, session_id) is None
