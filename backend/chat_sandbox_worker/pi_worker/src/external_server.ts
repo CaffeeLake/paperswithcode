@@ -1,8 +1,24 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
 
+import { type RunTurn } from "./agent.js";
+import { type PwCEvent } from "./events.js";
+import {
+  type RemoteToolChannel,
+  type RemoteToolRequest,
+  type RemoteToolResult,
+} from "./external_tools.js";
 import { handleExternalFrame, MAX_EXTERNAL_FRAME_BYTES } from "./external_worker.js";
 import { type ExternalWorkerProfile } from "./external_shadow.js";
+import { type ExternalRunTurn, parseRunTurn, TurnProtocolError } from "./turn_protocol.js";
+
+interface ExternalTurnWorker {
+  run(run: RunTurn): Promise<void>;
+  cancel(requestId: string): Promise<void>;
+}
+
+type TurnEmitter = (requestId: string, event: PwCEvent) => void;
 
 interface ExternalWorkerServerOptions {
   token: string;
@@ -16,6 +32,11 @@ interface ExternalWorkerServerOptions {
     provider_credentials_present: boolean;
     modal_credentials_present: boolean;
   };
+  createTurnWorker?: (
+    emit: TurnEmitter,
+    run: ExternalRunTurn,
+    channel: RemoteToolChannel,
+  ) => ExternalTurnWorker;
 }
 
 export interface ExternalOperationCounters {
@@ -111,11 +132,11 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
       registered_tool_count: options.profile.tool_names.length,
     },
   });
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       json(response, 200, {
         status: "ok",
-        mode: "shadow",
+        mode: options.createTurnWorker ? "active" : "shadow",
         protocol: "external-pi-v1",
         active,
         capacity: options.maximumConcurrent,
@@ -195,4 +216,112 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
       active -= 1;
     }
   });
+  const turnServer = new WebSocketServer({ noServer: true, maxPayload: MAX_EXTERNAL_FRAME_BYTES });
+  server.on("upgrade", (request, socket, head) => {
+    if (request.url !== "/v1/turn") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (!options.createTurnWorker || !authorized(request, expectedToken)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (state === "draining" || active >= options.maximumConcurrent) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    turnServer.handleUpgrade(request, socket, head, (websocket) => {
+      turnServer.emit("connection", websocket, request);
+    });
+  });
+  turnServer.on("connection", (socket) => {
+    active += 1;
+    let started = false;
+    let activeRequest: string | undefined;
+    const emit: TurnEmitter = (_requestId, event) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+    };
+    let worker: ExternalTurnWorker | undefined;
+    const pendingTools = new Map<string, {
+      resolve: (result: RemoteToolResult) => void;
+      reject: (error: Error) => void;
+    }>();
+    const channel: RemoteToolChannel = {
+      request(frame: RemoteToolRequest) {
+        if (socket.readyState !== WebSocket.OPEN) {
+          return Promise.reject(new Error("external turn transport closed"));
+        }
+        return new Promise((resolve, reject) => {
+          pendingTools.set(frame.operation_id, { resolve, reject });
+          socket.send(JSON.stringify(frame), (error) => {
+            if (!error) return;
+            pendingTools.delete(frame.operation_id);
+            reject(error);
+          });
+        });
+      },
+    };
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) {
+        socket.close(1003, "invalid_frame");
+        return;
+      }
+      let frame: Record<string, unknown>;
+      try {
+        frame = JSON.parse(data.toString()) as Record<string, unknown>;
+      } catch {
+        socket.close(1007, "invalid_json");
+        return;
+      }
+      if (frame.type === "tool_result" && typeof frame.operation_id === "string") {
+        const pending = pendingTools.get(frame.operation_id);
+        if (!pending) {
+          socket.close(1008, "uncorrelated_tool_result");
+          return;
+        }
+        pendingTools.delete(frame.operation_id);
+        pending.resolve(frame as unknown as RemoteToolResult);
+        return;
+      }
+      if (frame.type === "cancel" && typeof frame.request_id === "string") {
+        if (worker) void worker.cancel(frame.request_id);
+        return;
+      }
+      if (started) {
+        socket.close(1008, "turn_already_started");
+        return;
+      }
+      started = true;
+      let run: ExternalRunTurn;
+      try {
+        run = parseRunTurn(frame, true) as ExternalRunTurn;
+      } catch (error) {
+        if (!(error instanceof TurnProtocolError)) throw error;
+        emit(typeof frame.request_id === "string" ? frame.request_id : "invalid", {
+          type: "error", code: "invalid_request", message: "The research run failed.",
+        });
+        emit(typeof frame.request_id === "string" ? frame.request_id : "invalid", {
+          type: "worker_done", status: "complete",
+        });
+        return;
+      }
+      activeRequest = run.request_id;
+      operationCounters.model_calls += 1;
+      worker = options.createTurnWorker!(emit, run, channel);
+      void worker.run(run);
+    });
+    socket.on("close", () => {
+      active -= 1;
+      for (const pending of pendingTools.values()) {
+        pending.reject(new Error("external turn transport closed"));
+      }
+      pendingTools.clear();
+      if (activeRequest && worker) void worker.cancel(activeRequest);
+    });
+  });
+  server.on("close", () => turnServer.close());
+  return server;
 }

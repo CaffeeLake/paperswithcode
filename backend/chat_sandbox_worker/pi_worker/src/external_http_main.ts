@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { createExternalWorkerServer } from "./external_server.js";
+import { PiWorker } from "./agent.js";
+import { RemoteToolBridge } from "./external_tools.js";
 
 const host = process.env.PWC_EXTERNAL_PI_HOST ?? "127.0.0.1";
 const port = Number(process.env.PWC_EXTERNAL_PI_PORT ?? "8766");
@@ -50,4 +52,14 @@ createExternalWorkerServer({
       process.env.MODAL_TOKEN_ID || process.env.MODAL_TOKEN_SECRET,
     ),
   },
+  createTurnWorker: (emit, run, channel) => new PiWorker(
+    emit,
+    {
+      url: run.gateway_url,
+      capability: run.capability,
+      sessionId: run.chat_session_id,
+      turnId: run.turn_id,
+    },
+    new RemoteToolBridge(channel),
+  ),
 }).listen(port, host);

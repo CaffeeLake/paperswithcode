@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
+import WebSocket from "ws";
 
 import { createExternalWorkerServer } from "../src/external_server.js";
 import { toolNameDigest } from "../src/mcp_app_registry.js";
@@ -56,6 +57,89 @@ test("external shadow HTTP service authenticates and exposes no run endpoint", a
     assert.equal(projection.prompt_sha256, payload.expected_prompt_sha256);
     assert.equal(projection.tool_names_sha256, payload.expected_tool_names_sha256);
   } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("external worker streams one authenticated Pi turn without a local shell", async () => {
+  const token = "s".repeat(32);
+  const observed: Record<string, unknown>[] = [];
+  const server = createExternalWorkerServer({
+    token,
+    maximumConcurrent: 8,
+    workerId: "worker-1",
+    instanceId: "10000000-0000-4000-8000-000000000001",
+    releaseId: "release-a",
+    profile: { prompt: "system", tool_names: ["bash", "read"] },
+    createTurnWorker: (emit, _run, channel) => ({
+      async run(run) {
+        observed.push(run as unknown as Record<string, unknown>);
+        const tool = await channel.request({
+          type: "tool_request", operation_id: "operation-1", tool_call_id: "tool-1",
+          operation: "read", path: "/opt/pwc/PWC_CLI_SKILL.md", offset: 0,
+          max_bytes: 1024,
+        });
+        assert.equal(tool.ok, true);
+        emit(run.request_id, { type: "workspace_ready" });
+        emit(run.request_id, { type: "done", finish_reason: "success", followups: [] });
+        emit(run.request_id, { type: "worker_done", status: "complete" });
+      },
+      async cancel() {},
+    }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/turn`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const messages: Record<string, unknown>[] = [];
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+    if (message.type === "tool_request") {
+      socket.send(JSON.stringify({
+        type: "tool_result", operation_id: message.operation_id, ok: true,
+        data_base64: Buffer.from("guide").toString("base64"), eof: true,
+      }));
+      return;
+    }
+    messages.push(message);
+  });
+  try {
+    await once(socket, "open");
+    socket.send(JSON.stringify({
+      v: 1,
+      type: "run_turn",
+      request_id: "request-1",
+      chat_session_id: "10000000-0000-4000-8000-000000000001",
+      turn_id: "20000000-0000-4000-8000-000000000001",
+      prompt: "Answer without tools.",
+      model: "test-model",
+      resume: null,
+      web_search_enabled: false,
+      reader_mode: false,
+      poster_mode: false,
+      paper_artifacts_enabled: false,
+      reasoning_effort: "low",
+      fetchable_urls: [],
+      hf_username: "qualification",
+      agent_harness: "pi",
+      provider_protocol: "openai-responses",
+      capability: "opaque-turn-capability",
+      gateway_url: "https://gateway.example.test/api/internal/chat-gateway",
+    }));
+    while (!messages.some((message) => message.type === "worker_done")) {
+      await once(socket, "message");
+    }
+    assert.deepEqual(messages.map((message) => message.type), [
+      "workspace_ready", "done", "worker_done",
+    ]);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0]?.capability, "opaque-turn-capability");
+  } finally {
+    socket.close();
     server.close();
     await once(server, "close");
   }

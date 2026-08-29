@@ -14,6 +14,7 @@ from backend.services.chat_capability_service import (
     ChatCapabilityService,
     IssuedCapability,
 )
+from backend.services.chat_external_pi_turn_runner import ExternalPiChatTurnRunner
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import ChatOwner, TurnAdmission
 from backend.services.chat_web_search_service import opaque_owner
@@ -28,6 +29,14 @@ class ChatTurnRunner(Protocol):
     async def cancel(self) -> None: ...
 
     async def close(self) -> None: ...
+
+
+def _uses_external_pi(settings: Settings, admission: TurnAdmission) -> bool:
+    return bool(
+        settings.chat_external_pi_admission_enabled
+        and admission.agent_harness == "pi"
+        and admission.execution_backend == "modal_cli"
+    )
 
 
 class LocalChatTurnRunner:
@@ -259,7 +268,12 @@ def create_chat_turn_runner(
             ),
         )
         db.commit()
-    return ModalChatTurnRunner(
+    runner_type = (
+        ExternalPiChatTurnRunner
+        if _uses_external_pi(settings, admission)
+        else ModalChatTurnRunner
+    )
+    return runner_type(
         settings=settings,
         admission=admission,
         prompt=prompt,

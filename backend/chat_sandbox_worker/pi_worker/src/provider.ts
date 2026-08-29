@@ -6,13 +6,36 @@ export const PLACEHOLDER_KEY = "sandbox-placeholder-not-a-credential";
 
 export type ProviderProtocol = "anthropic-messages" | "openai-responses";
 
+export interface GatewayContext {
+  url: string;
+  capability: string;
+  sessionId: string;
+  turnId: string;
+}
+
+export function gatewayHeaders(
+  gateway: GatewayContext,
+  protocol?: ProviderProtocol,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${gateway.capability}`,
+    "X-PWC-Session": gateway.sessionId,
+    "X-PWC-Turn": gateway.turnId,
+    ...(protocol ? { "X-PWC-Provider-Protocol": protocol } : {}),
+  };
+}
+
 export async function createProvider(
   modelId: string,
   api: ProviderProtocol = "anthropic-messages",
+  gateway?: GatewayContext,
 ) {
+  const gatewayUrl = gateway?.url.replace(/\/$/u, "") ?? "http://127.0.0.1:8765";
   const baseUrl = api === "openai-responses"
-    ? "http://127.0.0.1:8765/v1"
-    : "http://127.0.0.1:8765";
+    ? `${gatewayUrl}/v1`
+    : gatewayUrl;
+  const headers = gateway ? gatewayHeaders(gateway, api) : undefined;
+  if (headers) delete headers.Authorization;
   const credentials = new InMemoryCredentialStore();
   const runtime = await ModelRuntime.create({
     credentials,
@@ -23,15 +46,17 @@ export async function createProvider(
   runtime.registerProvider(PROVIDER_ID, {
     name: "PwC Gateway",
     baseUrl,
-    apiKey: PLACEHOLDER_KEY,
+    apiKey: gateway?.capability ?? PLACEHOLDER_KEY,
     api,
     authHeader: true,
+    ...(headers ? { headers } : {}),
     models: [
       {
         id: modelId,
         name: modelId,
         api,
         baseUrl,
+        ...(headers ? { headers } : {}),
         reasoning: true,
         thinkingLevelMap: {
           off: null,

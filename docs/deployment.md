@@ -37,11 +37,16 @@ fixed-port services remain a migration fallback until both environments have
 passed a slot rollback window. Public staging is static and gated to
 allowlisted project contributors and admins; it never runs Vite or HMR.
 
-The shadow-only external Pi worker is packaged independently under
-`runtimes/external-pi`. Its identity covers the package manifest, lockfile,
-TypeScript build inputs, canonical prompt inputs, and pinned Node 22.19.0
-distribution contract. Packaging does not activate worker traffic. A build
-uses a temporary directory, exact locked dependencies, a production
+The external Pi worker is packaged independently under `runtimes/external-pi`.
+It exposes the content-free shadow comparison and an authenticated active-turn
+tracer. Packaging and shadow activation do not route browser chat traffic to
+the tracer: external admission remains a separate staging-only switch, and
+runtime validation rejects every external migration switch in production until
+the durable dispatch, fencing, recovery, workspace-retention, and qualification
+gates have been approved. The runtime identity covers the package manifest,
+lockfile, TypeScript build inputs, canonical prompt inputs, and pinned Node
+22.19.0 distribution contract. Packaging does not activate worker traffic. A
+build uses a temporary directory, exact locked dependencies, a production
 TypeScript build, production-dependency pruning, and an atomic rename.
 `runtime.json` records contract `external-pi-v1`, source release, entry point,
 Node identity, and a strict file-digest inventory. Reuse rejects mutable,

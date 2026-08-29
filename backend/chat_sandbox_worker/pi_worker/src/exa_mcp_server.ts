@@ -2,14 +2,24 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { pathToFileURL } from "node:url";
 import * as z from "zod/v4";
+import { gatewayHeaders } from "./provider.js";
 
-const BROKER_SEARCH_URL = "http://127.0.0.1:8765/web-search";
+const BROKER_SEARCH_URL = `${(process.env.PWC_EXTERNAL_GATEWAY_URL ?? "http://127.0.0.1:8765").replace(/\/$/u, "")}/web-search`;
 const MAX_RESPONSE_BYTES = 20 * 1024;
 
 export async function searchWeb(query: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const gateway = process.env.PWC_EXTERNAL_GATEWAY_CAPABILITY ? {
+    url: process.env.PWC_EXTERNAL_GATEWAY_URL ?? "",
+    capability: process.env.PWC_EXTERNAL_GATEWAY_CAPABILITY,
+    sessionId: process.env.PWC_EXTERNAL_GATEWAY_SESSION ?? "",
+    turnId: process.env.PWC_EXTERNAL_GATEWAY_TURN ?? "",
+  } : undefined;
   const response = await fetch(BROKER_SEARCH_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(gateway ? gatewayHeaders(gateway) : {}),
+    },
     body: JSON.stringify({ query }),
     ...(signal ? { signal } : {}),
   });
