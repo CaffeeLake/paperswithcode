@@ -1636,21 +1636,6 @@ async def messages(
     x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     if request.headers.get("x-pwc-provider-protocol") == "openai-responses":
-        if not any(
-            (
-                x_pwc_turn_worker_id,
-                x_pwc_turn_worker_generation,
-                x_pwc_turn_lease_generation,
-            )
-        ):
-            return await responses(
-                request,
-                authorization,
-                x_pwc_session,
-                x_pwc_turn,
-                db,
-                settings,
-            )
         return await responses(
             request,
             authorization,

@@ -81,6 +81,9 @@ def test_existing_gateway_path_dispatches_explicit_responses_protocol(monkeypatc
         "turn-id",
         db,
         settings,
+        None,
+        None,
+        None,
     )
 
 

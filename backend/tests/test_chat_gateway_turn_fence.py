@@ -21,14 +21,25 @@ from backend.services.chat_turn_job_repository import StaleTurnClaim, TurnLeaseC
 
 
 class FenceDB:
-    def __init__(self) -> None:
+    def __init__(self, *, on_commit=None, on_get=None, on_rollback=None) -> None:
         self.rollbacks = 0
+        self.on_commit = on_commit
+        self.on_get = on_get
+        self.on_rollback = on_rollback
 
     def rollback(self) -> None:
         self.rollbacks += 1
+        if self.on_rollback is not None:
+            self.on_rollback()
 
     def commit(self) -> None:
-        pass
+        if self.on_commit is not None:
+            self.on_commit()
+
+    def get(self, *args, **kwargs):
+        if self.on_get is not None:
+            return self.on_get(*args, **kwargs)
+        return None
 
 
 def _external_capability(turn_id: uuid.UUID):
@@ -173,39 +184,70 @@ def test_legacy_sandbox_scope_remains_header_free(monkeypatch):
     )
 
 
+GATEWAY_CASES = [
+    (
+        "paper_catalog",
+        "/catalog",
+        {"operation": "search", "arguments": {"query": "x"}},
+        {},
+    ),
+    (
+        "web_search",
+        "/catalog",
+        {"operation": "web_search", "arguments": {"query": "x"}},
+        {},
+    ),
+    (
+        "hf_catalog",
+        "/hf-catalog",
+        {"operation": "model_info", "arguments": {"repo_id": "owner/model"}},
+        {},
+    ),
+    (
+        "session_store",
+        "/session-store",
+        {
+            "action": "load_session",
+            "format": "pi",
+            "agent_session_id": "30000000-0000-4000-8000-000000000001",
+        },
+        {},
+    ),
+    (
+        "artifact_prepare",
+        "/artifact-prepare",
+        {"paper_route_id": "2401.00001"},
+        {},
+    ),
+    ("paper", "/paper", {"operation": "create", "title": "Draft"}, {}),
+    (
+        "artifact_publish",
+        "/artifact-publish?publication_id=publication-1",
+        b"x",
+        {"Content-Type": "application/zip"},
+    ),
+    ("web_fetch", "/web-fetch", {"url": "https://example.com"}, {}),
+    (
+        "responses",
+        "/v1/responses",
+        {"model": "gpt-5.6", "input": "x", "max_output_tokens": 1},
+        {},
+    ),
+    (
+        "messages",
+        "/v1/messages",
+        {"model": "route", "messages": [], "max_tokens": 1},
+        {},
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("path", "body", "extra_headers"),
-    [
-        ("/catalog", {"operation": "search", "arguments": {"query": "x"}}, {}),
-        (
-            "/catalog",
-            {"operation": "web_search", "arguments": {"query": "x"}},
-            {},
-        ),
-        (
-            "/hf-catalog",
-            {"operation": "model_info", "arguments": {"repo_id": "owner/model"}},
-            {},
-        ),
-        ("/session-store", {"action": "load_session"}, {}),
-        ("/artifact-prepare", {"paper_route_id": "2401.00001"}, {}),
-        ("/paper", {"operation": "create", "title": "Draft"}, {}),
-        (
-            "/artifact-publish?publication_id=publication-1",
-            b"x",
-            {"Content-Type": "application/zip"},
-        ),
-        ("/web-fetch", {"url": "https://example.com"}, {}),
-        (
-            "/v1/responses",
-            {"model": "gpt-5.6", "input": "x", "max_output_tokens": 1},
-            {},
-        ),
-        ("/v1/messages", {"model": "route", "messages": [], "max_tokens": 1}, {}),
-    ],
+    ("_name", "path", "body", "extra_headers"),
+    GATEWAY_CASES,
 )
 def test_every_gateway_entry_rejects_an_external_capability_before_side_effects(
-    monkeypatch, path, body, extra_headers
+    monkeypatch, _name, path, body, extra_headers
 ):
     turn_id = uuid.uuid4()
     row = _external_capability(turn_id)
@@ -239,6 +281,158 @@ def test_every_gateway_entry_rejects_an_external_capability_before_side_effects(
 
     assert response.status_code == 403, (path, response.text)
     assert response.json()["detail"]["code"] == "chat_turn_fence_missing"
+
+
+def _install_downstream_sentinel(monkeypatch, name, reached, db):
+    def hit(*_args, **_kwargs):
+        reached.append(name)
+        raise HTTPException(status_code=418, detail="downstream_reached")
+
+    if name == "paper_catalog":
+        monkeypatch.setattr(gateway.ChatCapabilityService, "meter_catalog", hit)
+    elif name == "web_search":
+        monkeypatch.setattr(gateway.ChatCapabilityService, "meter_web_search", hit)
+    elif name == "hf_catalog":
+        monkeypatch.setattr(gateway.ChatCapabilityService, "meter_hf_catalog", hit)
+    elif name == "session_store":
+        monkeypatch.setattr(gateway.ChatPiTranscriptService, "load_session", hit)
+    elif name == "artifact_prepare":
+        monkeypatch.setattr(gateway.ChatPaperContextService, "prepare_one", hit)
+    elif name == "paper":
+        db.on_get = hit
+    elif name == "artifact_publish":
+        monkeypatch.setattr(gateway.tempfile, "mkstemp", hit)
+    elif name == "web_fetch":
+        db.on_commit = hit
+    else:
+        monkeypatch.setattr(gateway, "_capability_owner", lambda *_args: "owner-1")
+        monkeypatch.setattr(
+            gateway,
+            "_provider_target",
+            lambda *_args: ("https://provider.example.test", "token", None),
+        )
+        monkeypatch.setattr(gateway.ChatCapabilityService, "meter_provider", hit)
+
+
+@pytest.mark.parametrize(("name", "path", "body", "extra_headers"), GATEWAY_CASES)
+@pytest.mark.parametrize("claim_variant", ["exact", "stale_worker", "stale_lease"])
+def test_every_gateway_entry_forwards_the_exact_claim_before_downstream_work(
+    monkeypatch, name, path, body, extra_headers, claim_variant
+):
+    turn_id = uuid.uuid4()
+    settings = get_settings().model_copy(deep=True)
+    settings.chat_hf_catalog_enabled = True
+    settings.chat_artifacts_enabled = True
+    settings.chat_posterly_enabled = True
+    settings.chat_latex_paper_enabled = True
+    settings.chat_latex_compiler_jobs_enabled = True
+    settings.chat_openai_direct_enabled = True
+    settings.openai_api_key = "test-openai-key"
+    settings.chat_openai_model = "gpt-5.6"
+    model = (
+        settings.chat_openai_luna_route
+        if name == "responses"
+        else settings.chat_deepseek_v4_flash_openrouter_route
+    )
+    if name == "responses":
+        body = {**body, "model": settings.chat_openai_model}
+    elif name == "messages":
+        body = {**body, "model": model}
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        turn_id=turn_id,
+        chat_session_id=uuid.uuid4(),
+        scopes=[
+            "model",
+            "catalog",
+            "web_search",
+            "hf_catalog",
+            "session_store",
+            "artifact",
+            "paper",
+            "web_fetch",
+            "external_turn",
+        ],
+        owner_hash="a" * 64,
+        agent_harness="pi",
+        provider_mode="openai_funded" if name == "responses" else "openrouter_funded",
+        model=model,
+        reasoning_effort="high",
+        provider_requests=0,
+        provider_tokens=0,
+        artifact_paper_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        gateway.ChatCapabilityService,
+        "validate",
+        lambda *_args, **_kwargs: row,
+    )
+    expected = TurnLeaseClaim(turn_id, "api-1", 4, 9)
+
+    class Jobs:
+        def require_live_claim(self, _db, *, claim, now):
+            assert now.tzinfo is not None
+            if claim != expected:
+                raise StaleTurnClaim("stale")
+
+    monkeypatch.setattr(gateway, "ChatTurnJobRepository", Jobs)
+    reached = []
+    db = FenceDB()
+    _install_downstream_sentinel(monkeypatch, name, reached, db)
+    gateway.app.dependency_overrides[gateway.get_database_session] = lambda: db
+    gateway.app.dependency_overrides[gateway.get_settings] = lambda: settings
+    worker_generation = "5" if claim_variant == "stale_worker" else "4"
+    lease_generation = "10" if claim_variant == "stale_lease" else "9"
+    headers = {
+        "Authorization": "Bearer token",
+        "X-PWC-Session": str(row.chat_session_id),
+        "X-PWC-Turn": str(turn_id),
+        "X-PWC-Turn-Worker-ID": "api-1",
+        "X-PWC-Turn-Worker-Generation": worker_generation,
+        "X-PWC-Turn-Lease-Generation": lease_generation,
+        **extra_headers,
+    }
+    try:
+        with TestClient(gateway.app, raise_server_exceptions=False) as client:
+            if isinstance(body, bytes):
+                response = client.post(path, content=body, headers=headers)
+            else:
+                response = client.post(path, json=body, headers=headers)
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+    if claim_variant == "exact":
+        assert response.status_code == 418, (name, response.text)
+        assert reached == [name]
+    else:
+        assert response.status_code == 403, (name, claim_variant, response.text)
+        assert response.json()["detail"]["code"] == "chat_turn_fence_stale"
+        assert reached == []
+
+
+def test_rejected_external_fence_rolls_back_capability_accounting(monkeypatch):
+    turn_id = uuid.uuid4()
+    row = SimpleNamespace(scopes=["model", "external_turn"], gateway_calls=0)
+
+    def validate(*_args, **_kwargs):
+        row.gateway_calls += 1
+        return row
+
+    monkeypatch.setattr(gateway.ChatCapabilityService, "validate", validate)
+    db = FenceDB(on_rollback=lambda: setattr(row, "gateway_calls", 0))
+
+    with pytest.raises(HTTPException) as error:
+        gateway._scope(
+            "token",
+            "model",
+            str(uuid.uuid4()),
+            str(turn_id),
+            db,
+        )
+
+    assert error.value.detail["code"] == "chat_turn_fence_missing"
+    assert db.rollbacks == 1
+    assert row.gateway_calls == 0
 
 
 def test_gateway_accepts_complete_external_turn_headers(monkeypatch):
