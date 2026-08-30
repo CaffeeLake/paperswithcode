@@ -52,47 +52,6 @@ class QualificationEvidenceUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class QualificationStaleSeam:
-    name: str
-    rejection: str
-    emitter: str
-
-
-# Closed inventory of post-admission ownership rejections. Adding another stale
-# rejection to the qualified turn path requires adding its durable emitter here.
-QUALIFICATION_STALE_SEAMS = (
-    QualificationStaleSeam(
-        "gateway_turn_claim", "gateway capability/turn fence", "chat_gateway_app"
-    ),
-    QualificationStaleSeam(
-        "workspace_pre_acquire_turn_claim",
-        "turn fence before sandbox acquisition",
-        "ChatExternalExecutorWorkspaceManager._require_live_turn",
-    ),
-    QualificationStaleSeam(
-        "workspace_post_health_turn_claim",
-        "turn fence after executor health",
-        "ChatExternalExecutorWorkspaceManager._require_live_turn",
-    ),
-    QualificationStaleSeam(
-        "workspace_release_ownership",
-        "false exact workspace release",
-        "ExternalPiToolWorkspaceExecutor._settle",
-    ),
-    QualificationStaleSeam(
-        "external_reservation_claim",
-        "reserved worker missing or fenced",
-        "ExternalPiChatTurnRunner._select_worker_claim_with_evidence",
-    ),
-    QualificationStaleSeam(
-        "external_worker_claim",
-        "worker selection/reconnect/cancel claim fenced",
-        "ExternalPiChatTurnRunner._require_same_external_worker_claim",
-    ),
-)
-
-
-@dataclass(frozen=True, slots=True)
 class QualificationScope:
     scope_id: uuid.UUID
     run_id: str
@@ -139,11 +98,18 @@ class ChatQualificationEvidenceRepository:
         chat_session_id: uuid.UUID,
         event_type: str,
         operation_id: str | None = None,
+        operation_kind: str | None = None,
         occurred_at: datetime | None = None,
     ) -> bool:
         if event_type not in QUALIFICATION_EVENT_TYPES:
             raise ValueError("qualification evidence event is invalid")
-        if (event_type == "executor_started") != bool(operation_id):
+        if (
+            event_type == "executor_started"
+            and (not operation_id or operation_kind not in {"read", "bash"})
+        ) or (
+            event_type != "executor_started"
+            and (operation_id is not None or operation_kind is not None)
+        ):
             raise ValueError("qualification executor evidence is invalid")
         scope_id = db.execute(
             select(ChatTurnLatency.qualification_scope_id).where(
@@ -167,6 +133,7 @@ class ChatQualificationEvidenceRepository:
                     if operation_id is not None
                     else None
                 ),
+                operation_kind=operation_kind,
                 occurred_at=occurred_at or datetime.now(UTC),
             )
         )
@@ -240,9 +207,14 @@ class ChatDurableQualificationEvidenceService:
         )
 
     def require_active_scope(
-        self, scope_id: uuid.UUID, *, settings: Settings
+        self, scope_id: uuid.UUID, *, settings: Settings, lock: bool = False
     ) -> ChatQualificationScope:
-        scope = self.db.get(ChatQualificationScope, scope_id)
+        statement = select(ChatQualificationScope).where(
+            ChatQualificationScope.id == scope_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        scope = self.db.execute(statement).scalar_one_or_none()
         now = self.now()
         if (
             scope is None
@@ -311,6 +283,7 @@ class ChatDurableQualificationEvidenceService:
                 ChatQualificationEvidenceEvent.chat_session_id,
                 ChatQualificationEvidenceEvent.event_type,
                 ChatQualificationEvidenceEvent.operation_digest,
+                ChatQualificationEvidenceEvent.operation_kind,
             ).where(
                 ChatQualificationEvidenceEvent.qualification_scope_id == scope.id,
                 ChatQualificationEvidenceEvent.turn_id.in_(turn_ids),
@@ -380,6 +353,12 @@ class ChatDurableQualificationEvidenceService:
             evictions = per_turn_event_counts[(row.turn_id, "workspace_evicted")]
             interval_count = interval_counts_by_session[row.chat_session_id]
             expected = 1 if is_tool_turn else 0
+            operation_kinds = [
+                event.operation_kind
+                for event in events
+                if event.turn_id == row.turn_id
+                and event.event_type == "executor_started"
+            ]
             if (
                 executor_starts != expected
                 or acquisitions != expected
@@ -388,6 +367,12 @@ class ChatDurableQualificationEvidenceService:
             ):
                 raise QualificationEvidenceUnavailable(
                     "qualification per-turn evidence is incomplete"
+                )
+            if operation_kinds != (
+                [row.qualification_workload] if is_tool_turn else []
+            ):
+                raise QualificationEvidenceUnavailable(
+                    "qualification operation kind evidence is incomplete"
                 )
         return DurableQualificationEvidence(
             expected_users=expected_users,
@@ -413,7 +398,7 @@ class ChatDurableQualificationEvidenceService:
         settings: Settings,
         sandbox_manager,
     ) -> QualificationTeardownProof:
-        scope = self.require_active_scope(scope_id, settings=settings)
+        scope = self.require_active_scope(scope_id, settings=settings, lock=True)
         rows = self.db.execute(
             select(
                 ChatTurnLatency.turn_id,
@@ -478,18 +463,24 @@ class ChatDurableQualificationEvidenceService:
             raise QualificationEvidenceUnavailable(
                 "qualification teardown intervals are incomplete"
             )
-        eviction_counts = Counter(
-            self.db.execute(
-                select(ChatQualificationEvidenceEvent.turn_id).where(
-                    ChatQualificationEvidenceEvent.qualification_scope_id == scope.id,
-                    ChatQualificationEvidenceEvent.event_type == "workspace_evicted",
-                )
-            ).scalars()
-        )
-        if any(eviction_counts[row.turn_id] > 1 for row in tool_rows):
+        eviction_rows = self.db.execute(
+            select(
+                ChatQualificationEvidenceEvent.turn_id,
+                ChatQualificationEvidenceEvent.chat_session_id,
+            ).where(
+                ChatQualificationEvidenceEvent.qualification_scope_id == scope.id,
+                ChatQualificationEvidenceEvent.event_type == "workspace_evicted",
+            )
+        ).all()
+        tool_turn_sessions = {row.turn_id: row.chat_session_id for row in tool_rows}
+        if any(
+            tool_turn_sessions.get(row.turn_id) != row.chat_session_id
+            for row in eviction_rows
+        ):
             raise QualificationEvidenceUnavailable(
                 "qualification teardown evidence collides"
             )
+        eviction_counts = Counter(row.turn_id for row in eviction_rows)
         occurred_at = self.now()
         for row in tool_rows:
             if eviction_counts[row.turn_id] == 0:

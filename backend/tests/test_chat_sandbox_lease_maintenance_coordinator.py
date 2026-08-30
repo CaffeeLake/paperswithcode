@@ -828,3 +828,69 @@ def test_periodic_reconcile_runs_restart_safe_qualification_retention_without_is
     assert asyncio.run(coordinator.reconcile()) == 0
     assert asyncio.run(coordinator.reconcile()) == 0
     assert cleanup_calls == [2, 0]
+
+
+def test_qualification_retention_runs_after_reconcile_failure_without_masking_primary():
+    harness = _Harness()
+    primary = RuntimeError("sandbox reconcile failed")
+    cleanup_calls = []
+    harness.repository.list_stale_operations = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(primary)
+    coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=harness.repository,
+        provider=harness.provider,
+        lifecycle=harness.lifecycle,
+        snapshots=harness.snapshots,
+        capacity_locker=harness.capacity_locker,
+        qualification_cleanup=lambda: cleanup_calls.append("cleanup") or 0,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(coordinator.reconcile())
+    assert caught.value is primary
+    assert cleanup_calls == ["cleanup"]
+
+
+def test_expected_qualification_retention_failure_does_not_change_reconcile_result():
+    harness = _Harness()
+    coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=harness.repository,
+        provider=harness.provider,
+        lifecycle=harness.lifecycle,
+        snapshots=harness.snapshots,
+        capacity_locker=harness.capacity_locker,
+        qualification_cleanup=lambda: (_ for _ in ()).throw(OSError("db unavailable")),
+    )
+
+    assert asyncio.run(coordinator.reconcile()) == 0
+
+
+def test_unexpected_retention_error_is_visible_only_without_primary_reconcile_error():
+    harness = _Harness()
+    programming_error = ValueError("programming defect")
+    coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=harness.repository,
+        provider=harness.provider,
+        lifecycle=harness.lifecycle,
+        snapshots=harness.snapshots,
+        capacity_locker=harness.capacity_locker,
+        qualification_cleanup=lambda: (_ for _ in ()).throw(programming_error),
+    )
+    with pytest.raises(ValueError) as caught:
+        asyncio.run(coordinator.reconcile())
+    assert caught.value is programming_error
+
+    primary = RuntimeError("sandbox reconcile failed")
+    harness.repository.list_stale_operations = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(primary)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(coordinator.reconcile())
+    assert caught.value is primary

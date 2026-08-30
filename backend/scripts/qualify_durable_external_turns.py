@@ -354,35 +354,42 @@ def run_durable_qualification(
                 status = "resource_refused"
                 reason = refusal
                 break
-            teardown_failed = False
             result = None
+            primary_error: BaseException | None = None
+            profile_cleanup_failed = False
             try:
                 operator.setup_profile(profile)
                 result = operator.run_profile(profile)
-            finally:
-                try:
-                    scope_id = getattr(result, "qualification_scope_id", None)
-                    if scope_id is None:
-                        scope_source = getattr(operator, "qualification_scope_id", None)
-                        if callable(scope_source):
-                            scope_id = scope_source(profile)
-                    operator.teardown_profile(profile, scope_id)
-                except BaseException:
-                    teardown_failed = True
-            cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
+            except BaseException as error:
+                primary_error = error
             try:
-                if teardown_failed:
-                    raise QualificationRefused("cleanup_failed")
-                finalize = getattr(operator, "finalize_profile", None)
-                report = finalize(profile, result) if callable(finalize) else result
-            finally:
-                if callable(cleanup_evidence):
-                    try:
-                        cleanup_evidence(profile)
-                    except BaseException:
-                        teardown_failed = True
-            if teardown_failed:
+                scope_id = getattr(result, "qualification_scope_id", None)
+                scope_source = getattr(operator, "qualification_scope_id", None)
+                if scope_id is None:
+                    if callable(scope_source):
+                        scope_id = scope_source(profile)
+                if scope_id is not None or not callable(scope_source):
+                    operator.teardown_profile(profile, scope_id)
+            except BaseException:
+                profile_cleanup_failed = True
+
+            report = None
+            if primary_error is None and not profile_cleanup_failed:
+                try:
+                    finalize = getattr(operator, "finalize_profile", None)
+                    report = finalize(profile, result) if callable(finalize) else result
+                except BaseException as error:
+                    primary_error = error
+            cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
+            if callable(cleanup_evidence):
+                try:
+                    cleanup_evidence(profile)
+                except BaseException:
+                    profile_cleanup_failed = True
+            if profile_cleanup_failed:
                 raise QualificationRefused("cleanup_failed")
+            if primary_error is not None:
+                raise primary_error
             if report.profile != profile.name or not report.passed:
                 raise QualificationRefused("durable_profile_failed")
             reports.append(report)
@@ -415,9 +422,7 @@ def run_durable_qualification(
         raise QualificationRefused(
             unreportable_refusal or "durable_qualification_failed"
         ) from None
-    if status in {"completed", "resource_refused"} and not (
-        flags_restored and cleanup.passed
-    ):
+    if not cleanup.passed or (previous_flags is not None and not flags_restored):
         status = "failed"
         reason = "cleanup_failed"
     return DurableQualificationReport(

@@ -3365,6 +3365,7 @@ class ChatQualificationEvidenceEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     operation_digest: Mapped[Optional[str]] = mapped_column(String(64))
+    operation_kind: Mapped[Optional[str]] = mapped_column(String(8))
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -3376,7 +3377,9 @@ class ChatQualificationEvidenceEvent(Base):
             name="chat_qualification_evidence_event_type_check",
         ),
         CheckConstraint(
-            "(event_type = 'executor_started') = (operation_digest IS NOT NULL)",
+            "(event_type = 'executor_started') = "
+            "(operation_digest IS NOT NULL AND operation_kind IS NOT NULL "
+            "AND operation_kind IN ('read','bash'))",
             name="chat_qualification_evidence_operation_shape_check",
         ),
         Index(
@@ -3394,6 +3397,22 @@ class ChatQualificationEvidenceEvent(Base):
             "idx_chat_qualification_evidence_turn_event",
             "turn_id",
             "event_type",
+        ),
+        Index(
+            "uq_chat_qualification_evidence_stale_turn",
+            "qualification_scope_id",
+            "turn_id",
+            unique=True,
+            postgresql_where=text("event_type = 'stale_fence'"),
+            sqlite_where=text("event_type = 'stale_fence'"),
+        ),
+        Index(
+            "uq_chat_qualification_evidence_eviction_turn",
+            "qualification_scope_id",
+            "turn_id",
+            unique=True,
+            postgresql_where=text("event_type = 'workspace_evicted'"),
+            sqlite_where=text("event_type = 'workspace_evicted'"),
         ),
     )
 

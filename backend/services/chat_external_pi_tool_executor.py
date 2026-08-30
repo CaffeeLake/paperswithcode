@@ -28,6 +28,9 @@ from backend.services.chat_sandbox_provider import (
 )
 from backend.services.chat_session_service import TurnAdmission
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
+from backend.services.chat_qualification_stale_boundary import (
+    QualificationStaleFenceBoundary,
+)
 
 type WorkspaceSettlement = Literal["release", "invalidate"]
 type LifecycleObserver = Callable[[str, str | None, int], None]
@@ -91,10 +94,18 @@ class ExternalPiToolWorkspaceExecutor:
             raise ValueError("unsupported_tool_operation")
         await self.transition("waiting_tool")
         self.observe("turn_state", "waiting_tool", 1)
-        result = await self._execute(
-            request,
-            operation_id=operation_id,
-            operation=operation,
+        stale_boundary = QualificationStaleFenceBoundary(
+            turn_id=self.admission.turn_id,
+            chat_session_id=self.admission.session_id,
+            recorder=self.record_evidence,
+        )
+        result = await stale_boundary.call(
+            self._execute(
+                request,
+                operation_id=operation_id,
+                operation=operation,
+                stale_boundary=stale_boundary,
+            )
         )
         await self.transition("running")
         self.observe("turn_state", "running", 1)
@@ -106,6 +117,7 @@ class ExternalPiToolWorkspaceExecutor:
         *,
         operation_id: str,
         operation: str,
+        stale_boundary: QualificationStaleFenceBoundary,
     ) -> dict[str, object]:
         base: dict[str, object] = {
             "type": "tool_result",
@@ -128,7 +140,7 @@ class ExternalPiToolWorkspaceExecutor:
                     command=str(request["command"]),
                     timeout_ms=int(request["timeout_ms"]),
                 )
-                self._record_executor_start(operation_id)
+                self._record_executor_start(operation_id, operation_kind="bash")
                 if result.recovered:
                     self.observe("executor_recovery", "succeeded", 1)
                 terminal = dict(result.terminal)
@@ -150,7 +162,7 @@ class ExternalPiToolWorkspaceExecutor:
                 offset=int(request["offset"]),
                 max_bytes=int(request["max_bytes"]),
             )
-            self._record_executor_start(operation_id)
+            self._record_executor_start(operation_id, operation_kind="read")
             settlement = "release"
             return {
                 **base,
@@ -185,6 +197,7 @@ class ExternalPiToolWorkspaceExecutor:
                     workspace,
                     settlement=settlement,
                     primary_exception_active=primary_exception_active,
+                    stale_boundary=stale_boundary,
                 )
 
     async def _ensure_executor(
@@ -208,12 +221,15 @@ class ExternalPiToolWorkspaceExecutor:
         self.active_context = context
         return context
 
-    def _record_executor_start(self, operation_id: str) -> None:
+    def _record_executor_start(
+        self, operation_id: str, *, operation_kind: Literal["read", "bash"]
+    ) -> None:
         self.record_evidence(
             turn_id=self.admission.turn_id,
             chat_session_id=self.admission.session_id,
             event_type="executor_started",
             operation_id=operation_id,
+            operation_kind=operation_kind,
         )
 
     async def cancel_executor(self, context: ExecutorContext) -> bool:
@@ -237,17 +253,14 @@ class ExternalPiToolWorkspaceExecutor:
         *,
         settlement: WorkspaceSettlement,
         primary_exception_active: bool,
+        stale_boundary: QualificationStaleFenceBoundary,
     ) -> None:
         manager = self._workspace_manager()
         if settlement == "release":
             try:
                 released = await manager.release(workspace)
                 if not released:
-                    self.record_evidence(
-                        turn_id=self.admission.turn_id,
-                        chat_session_id=self.admission.session_id,
-                        event_type="stale_fence",
-                    )
+                    stale_boundary.reject()
                 return
             except asyncio.CancelledError:
                 await self._invalidate(

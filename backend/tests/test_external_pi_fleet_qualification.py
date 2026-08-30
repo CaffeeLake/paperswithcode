@@ -745,6 +745,66 @@ def test_durable_controller_attempts_cleanup_at_every_failure_boundary(stage):
         assert not any(event[0] == "restore_flags" for event in operator.events)
 
 
+@pytest.mark.parametrize(
+    ("stage", "expected_reason"),
+    (
+        ("setup", "durable_qualification_failed"),
+        ("run", "durable_qualification_failed"),
+        ("interrupt:run", "durable_qualification_failed"),
+        ("teardown", "cleanup_failed"),
+        ("finalize", "durable_qualification_failed"),
+        ("cleanup_evidence", "cleanup_failed"),
+    ),
+)
+def test_durable_controller_deletes_server_scope_at_every_profile_failure_boundary(
+    stage, expected_reason
+):
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    class ScopedOperator(_DurableOperator):
+        def setup_profile(self, profile):
+            self.events.append(("scope_created", profile.name))
+            super().setup_profile(profile)
+
+        def qualification_scope_id(self, profile):
+            self.events.append(("scope_id", profile.name))
+            return uuid.UUID("d0000000-0000-4000-8000-000000000001")
+
+        def finalize_profile(self, profile, result):
+            self.events.append(("finalize", profile.name))
+            self._fail("finalize")
+            return result
+
+        def cleanup_profile_evidence(self, profile):
+            self.events.append(("cleanup_evidence", profile.name))
+            self._fail("cleanup_evidence")
+
+    operator = ScopedOperator(failure_stage=stage)
+    report = run_durable_qualification(operator)
+
+    assert report.status == "failed"
+    assert report.reason == expected_reason
+    assert ("teardown", "32-functional-turns") in operator.events
+    assert ("cleanup_evidence", "32-functional-turns") in operator.events
+    assert operator.events[-2][0] == "restore_flags"
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_primary_profile_failure_plus_worker_cleanup_failure_is_typed_cleanup_failed():
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    class CombinedFailureOperator(_DurableOperator):
+        def cleanup_transient_workers(self):
+            self.events.append(("cleanup_transient_workers",))
+            return None
+
+    report = run_durable_qualification(CombinedFailureOperator(failure_stage="run"))
+
+    assert report.status == "failed"
+    assert report.reason == "cleanup_failed"
+    assert report.cleanup_passed is False
+
+
 def test_durable_controller_cleans_after_environment_probe_failure():
     from backend.scripts.qualify_durable_external_turns import (
         QualificationRefused,
@@ -1732,10 +1792,12 @@ def test_live_durable_runner_constructs_real_transport_and_accepts_no_fake(monke
         admin_token="a" * 32,
     )
 
+    scope_id = uuid.uuid4()
     result = adapter.run_live_durable_profile(
         profile_name="32-functional-turns",
         transport_config=config,
         resources=adapter.DurableRunResources(1, 2 * 1024**3, 1.0, 32, 4, 0),
+        qualification_scope_id=scope_id,
     )
 
     assert result.profile_name == "32-functional-turns"
@@ -1753,7 +1815,10 @@ def test_guarded_live_operator_delegates_run_only_to_live_runner(monkeypatch):
 
     profile = resolve_durable_profile("32-functional-turns")
     resources = adapter.DurableRunResources(1, 2 * 1024**3, 1.0, 32, 4, 0)
-    control = SimpleNamespace(run_resources=lambda selected: resources)
+    control = SimpleNamespace(
+        run_resources=lambda selected: resources,
+        environment=lambda: SimpleNamespace(target_release="0123456789ab-staging"),
+    )
     captured = {}
 
     def run_live(**kwargs):
@@ -1771,10 +1836,18 @@ def test_guarded_live_operator_delegates_run_only_to_live_runner(monkeypatch):
             admin_token="a" * 32,
         ),
     )
+    scope_id = uuid.uuid4()
+    operator.evidence_source = SimpleNamespace(
+        begin_scope=lambda _profile: {
+            "scope_id": scope_id,
+            "app_release_id": "0123456789ab-staging",
+        }
+    )
 
     assert operator.run_profile(profile) == "profile-report"
     assert captured["profile_name"] == profile.name
     assert captured["resources"] is resources
+    assert captured["qualification_scope_id"] == scope_id
 
 
 def test_guarded_live_teardown_requires_and_evicts_only_the_exact_scope():

@@ -29,6 +29,7 @@ ALTER TABLE chat_qualification_evidence_events
     ADD COLUMN IF NOT EXISTS chat_session_id UUID,
     ADD COLUMN IF NOT EXISTS event_type VARCHAR(32),
     ADD COLUMN IF NOT EXISTS operation_digest VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS operation_kind VARCHAR(8),
     ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ;
 ALTER TABLE chat_turn_latency
     ADD COLUMN IF NOT EXISTS qualification_run_id VARCHAR(64),
@@ -59,6 +60,7 @@ BEGIN
           ('chat_qualification_evidence_events','chat_session_id','uuid',NULL,'UUID'),
           ('chat_qualification_evidence_events','event_type','character varying',32,'VARCHAR(32)'),
           ('chat_qualification_evidence_events','operation_digest','character varying',64,'VARCHAR(64)'),
+          ('chat_qualification_evidence_events','operation_kind','character varying',8,'VARCHAR(8)'),
           ('chat_qualification_evidence_events','occurred_at','timestamp with time zone',NULL,'TIMESTAMPTZ'),
           ('chat_turn_latency','qualification_run_id','character varying',64,'VARCHAR(64)'),
           ('chat_turn_latency','qualification_scope_id','uuid',NULL,'UUID'),
@@ -111,11 +113,18 @@ BEGIN
         qualification_scope_id IS NULL OR turn_id IS NULL OR chat_session_id IS NULL OR
         event_type IS NULL OR occurred_at IS NULL OR
         event_type NOT IN ('admitted_no_queue','executor_started','stale_fence','queued','workspace_created','workspace_reused','workspace_evicted') OR
-        ((event_type = 'executor_started') <> (operation_digest IS NOT NULL)) OR
+        ((event_type = 'executor_started') <> (operation_digest IS NOT NULL AND operation_kind IS NOT NULL AND operation_kind IN ('read','bash'))) OR
         NOT EXISTS (SELECT 1 FROM chat_qualification_scopes scope WHERE scope.id = evidence.qualification_scope_id) OR
         NOT EXISTS (SELECT 1 FROM chat_turn_jobs job WHERE job.turn_id = evidence.turn_id) OR
         NOT EXISTS (SELECT 1 FROM chat_sessions session WHERE session.id = evidence.chat_session_id))
-       OR EXISTS (SELECT id FROM chat_qualification_evidence_events GROUP BY id HAVING count(*) > 1) THEN
+       OR EXISTS (SELECT id FROM chat_qualification_evidence_events GROUP BY id HAVING count(*) > 1)
+       OR EXISTS (
+            SELECT qualification_scope_id, turn_id, event_type
+            FROM chat_qualification_evidence_events
+            WHERE event_type IN ('stale_fence','workspace_evicted')
+            GROUP BY qualification_scope_id, turn_id, event_type
+            HAVING count(*) > 1
+       ) THEN
         RAISE EXCEPTION 'refusing lossy qualification evidence repair';
     END IF;
     IF EXISTS (SELECT 1 FROM chat_turn_latency WHERE
@@ -176,6 +185,7 @@ ALTER TABLE chat_qualification_evidence_events
     ALTER COLUMN turn_id DROP DEFAULT, ALTER COLUMN chat_session_id DROP DEFAULT,
     ALTER COLUMN event_type DROP DEFAULT,
     ALTER COLUMN operation_digest DROP DEFAULT,
+    ALTER COLUMN operation_kind DROP DEFAULT,
     ALTER COLUMN occurred_at DROP DEFAULT,
     ALTER COLUMN qualification_scope_id SET NOT NULL,
     ALTER COLUMN turn_id SET NOT NULL, ALTER COLUMN chat_session_id SET NOT NULL,
@@ -190,7 +200,7 @@ ALTER TABLE chat_qualification_evidence_events
     ADD CONSTRAINT chat_qualification_evidence_turn_fkey FOREIGN KEY (turn_id) REFERENCES chat_turn_jobs(turn_id) ON DELETE CASCADE,
     ADD CONSTRAINT chat_qualification_evidence_session_fkey FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
     ADD CONSTRAINT chat_qualification_evidence_event_type_check CHECK (event_type IN ('admitted_no_queue','executor_started','stale_fence','queued','workspace_created','workspace_reused','workspace_evicted')),
-    ADD CONSTRAINT chat_qualification_evidence_operation_shape_check CHECK ((event_type = 'executor_started') = (operation_digest IS NOT NULL));
+    ADD CONSTRAINT chat_qualification_evidence_operation_shape_check CHECK ((event_type = 'executor_started') = (operation_digest IS NOT NULL AND operation_kind IS NOT NULL AND operation_kind IN ('read','bash')));
 
 ALTER TABLE chat_turn_latency
     ALTER COLUMN qualification_run_id DROP DEFAULT,
@@ -211,12 +221,16 @@ DROP INDEX IF EXISTS idx_chat_qualification_scopes_release_profile;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_scope_event_time;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_session_time;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_turn_event;
+DROP INDEX IF EXISTS uq_chat_qualification_evidence_stale_turn;
+DROP INDEX IF EXISTS uq_chat_qualification_evidence_eviction_turn;
 DROP INDEX IF EXISTS idx_chat_turn_latency_qualification_scope;
 CREATE INDEX idx_chat_qualification_scopes_expiry ON chat_qualification_scopes (expires_at);
 CREATE INDEX idx_chat_qualification_scopes_release_profile ON chat_qualification_scopes (app_release_id, profile);
 CREATE INDEX idx_chat_qualification_evidence_scope_event_time ON chat_qualification_evidence_events (qualification_scope_id, event_type, occurred_at);
 CREATE INDEX idx_chat_qualification_evidence_session_time ON chat_qualification_evidence_events (chat_session_id, occurred_at);
 CREATE INDEX idx_chat_qualification_evidence_turn_event ON chat_qualification_evidence_events (turn_id, event_type);
+CREATE UNIQUE INDEX uq_chat_qualification_evidence_stale_turn ON chat_qualification_evidence_events (qualification_scope_id, turn_id) WHERE event_type = 'stale_fence';
+CREATE UNIQUE INDEX uq_chat_qualification_evidence_eviction_turn ON chat_qualification_evidence_events (qualification_scope_id, turn_id) WHERE event_type = 'workspace_evicted';
 CREATE INDEX idx_chat_turn_latency_qualification_scope ON chat_turn_latency (qualification_scope_id, admitted_at);
 
 DO $$

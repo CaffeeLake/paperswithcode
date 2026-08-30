@@ -1314,6 +1314,13 @@ class _ChatSchemaDB:
                 ),
                 (
                     "chat_qualification_evidence_events",
+                    "operation_kind",
+                    "character varying",
+                    "YES",
+                    8,
+                ),
+                (
+                    "chat_qualification_evidence_events",
                     "occurred_at",
                     "timestamp with time zone",
                     "NO",
@@ -1373,7 +1380,7 @@ class _ChatSchemaDB:
                 "chat_qualification_evidence_turn_fkey": "FOREIGN KEY (turn_id) REFERENCES chat_turn_jobs(turn_id) ON DELETE CASCADE",
                 "chat_qualification_evidence_session_fkey": "FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE",
                 "chat_qualification_evidence_event_type_check": "CHECK (((event_type)::text = ANY ((ARRAY['admitted_no_queue'::character varying, 'executor_started'::character varying, 'stale_fence'::character varying, 'queued'::character varying, 'workspace_created'::character varying, 'workspace_reused'::character varying, 'workspace_evicted'::character varying])::text[])))",
-                "chat_qualification_evidence_operation_shape_check": "CHECK ((((event_type)::text = 'executor_started'::text) = (operation_digest IS NOT NULL)))",
+                "chat_qualification_evidence_operation_shape_check": "CHECK ((((event_type)::text = 'executor_started'::text) = ((operation_digest IS NOT NULL) AND (operation_kind IS NOT NULL) AND ((operation_kind)::text = ANY ((ARRAY['read'::character varying, 'bash'::character varying])::text[])))))",
                 "chat_turn_latency_qualification_scope_fkey": "FOREIGN KEY (qualification_scope_id) REFERENCES chat_qualification_scopes(id) ON DELETE SET NULL",
                 "chat_turn_latency_qualification_profile_check": "CHECK (((qualification_profile IS NULL) OR ((qualification_profile)::text = ANY ((ARRAY['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[]))))",
                 "chat_turn_latency_qualification_workload_check": "CHECK (((qualification_workload IS NULL) OR ((qualification_workload)::text = ANY ((ARRAY['no_tool'::character varying, 'read'::character varying, 'bash'::character varying])::text[]))))",
@@ -1399,13 +1406,35 @@ class _ChatSchemaDB:
                     "occurred_at",
                 ],
                 "idx_chat_qualification_evidence_turn_event": ["turn_id", "event_type"],
+                "uq_chat_qualification_evidence_stale_turn": [
+                    "qualification_scope_id",
+                    "turn_id",
+                ],
+                "uq_chat_qualification_evidence_eviction_turn": [
+                    "qualification_scope_id",
+                    "turn_id",
+                ],
                 "idx_chat_turn_latency_qualification_scope": [
                     "qualification_scope_id",
                     "admitted_at",
                 ],
             }
             return _ChatSchemaResult(
-                rows=[(name, False, value, None) for name, value in columns.items()]
+                rows=[
+                    (
+                        name,
+                        name.startswith("uq_"),
+                        value,
+                        (
+                            "((event_type)::text = 'stale_fence'::text)"
+                            if name.endswith("stale_turn")
+                            else "((event_type)::text = 'workspace_evicted'::text)"
+                            if name.endswith("eviction_turn")
+                            else None
+                        ),
+                    )
+                    for name, value in columns.items()
+                ]
                 if self.include_reservation_schema
                 else []
             )
@@ -1536,6 +1565,7 @@ class _ChatSchemaDB:
                         "chat_session_id",
                         "event_type",
                         "operation_digest",
+                        "operation_kind",
                         "occurred_at",
                     )
                 )
@@ -5304,6 +5334,7 @@ _QUALIFICATION_SCHEMA_OBJECTS = (
             "chat_session_id",
             "event_type",
             "operation_digest",
+            "operation_kind",
             "occurred_at",
             "qualification_profile",
         )
@@ -5332,6 +5363,8 @@ _QUALIFICATION_SCHEMA_OBJECTS = (
             "idx_chat_qualification_evidence_scope_event_time",
             "idx_chat_qualification_evidence_session_time",
             "idx_chat_qualification_evidence_turn_event",
+            "uq_chat_qualification_evidence_stale_turn",
+            "uq_chat_qualification_evidence_eviction_turn",
             "idx_chat_turn_latency_qualification_scope",
         )
     ),

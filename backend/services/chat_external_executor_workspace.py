@@ -313,17 +313,9 @@ class ChatExternalExecutorWorkspaceManager:
             )
 
     def _require_live_turn(self, session_id: uuid.UUID, claim: TurnLeaseClaim) -> None:
-        try:
-            with self.session_factory() as db, db.begin():
-                self.turn_repository.require_live_claim(
-                    db,
-                    claim=claim,
-                    now=self.utcnow(),
-                )
-        except StaleTurnClaim:
-            self.record_evidence(
-                turn_id=claim.turn_id,
-                chat_session_id=session_id,
-                event_type="stale_fence",
+        with self.session_factory() as db, db.begin():
+            self.turn_repository.require_live_claim(
+                db,
+                claim=claim,
+                now=self.utcnow(),
             )
-            raise

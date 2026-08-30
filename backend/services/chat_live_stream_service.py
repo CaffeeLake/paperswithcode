@@ -13,6 +13,12 @@ from backend.services.chat_detached_turn_service import (
 )
 from backend.services.chat_stream_service import ChatStreamFrame
 from backend.services.chat_turn_event_repository import JournalFrame
+from backend.services.chat_durable_qualification_evidence import (
+    record_qualification_event_safely,
+)
+from backend.services.chat_qualification_stale_boundary import (
+    QualificationStaleFenceBoundary,
+)
 
 
 class LiveChatStream:
@@ -141,7 +147,11 @@ class LiveChatStreamRegistry:
         if existing is not None and not existing.task.done():
             await self._close_source(source)
             raise RuntimeError("Chat session already has a live stream")
-        handle = await self._detached_coordinator.start(turn=turn, source=source)
+        handle = await QualificationStaleFenceBoundary(
+            turn_id=turn.turn_id,
+            chat_session_id=session_id,
+            recorder=record_qualification_event_safely,
+        ).call(self._detached_coordinator.start(turn=turn, source=source))
         stream = DurableLiveChatStream(
             session_id=session_id,
             owner_id=owner_id,

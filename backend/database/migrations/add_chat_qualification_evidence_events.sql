@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS chat_qualification_evidence_events (
     chat_session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     event_type VARCHAR(32) NOT NULL,
     operation_digest VARCHAR(64),
+    operation_kind VARCHAR(8),
     occurred_at TIMESTAMPTZ NOT NULL
 );
 
@@ -93,16 +94,25 @@ ALTER TABLE chat_qualification_evidence_events
     ADD COLUMN IF NOT EXISTS chat_session_id UUID,
     ADD COLUMN IF NOT EXISTS event_type VARCHAR(32),
     ADD COLUMN IF NOT EXISTS operation_digest VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS operation_kind VARCHAR(8),
     ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ;
 
 DELETE FROM chat_qualification_evidence_events evidence
 WHERE qualification_scope_id IS NULL OR turn_id IS NULL OR chat_session_id IS NULL
    OR event_type IS NULL OR occurred_at IS NULL
    OR event_type NOT IN ('admitted_no_queue','executor_started','stale_fence','queued','workspace_created','workspace_reused','workspace_evicted')
-   OR ((event_type = 'executor_started') <> (operation_digest IS NOT NULL))
+   OR ((event_type = 'executor_started') <> (operation_digest IS NOT NULL AND operation_kind IS NOT NULL AND operation_kind IN ('read','bash')))
    OR NOT EXISTS (SELECT 1 FROM chat_qualification_scopes scope WHERE scope.id = evidence.qualification_scope_id)
    OR NOT EXISTS (SELECT 1 FROM chat_turn_jobs turn_job WHERE turn_job.turn_id = evidence.turn_id)
    OR NOT EXISTS (SELECT 1 FROM chat_sessions session WHERE session.id = evidence.chat_session_id);
+
+DELETE FROM chat_qualification_evidence_events duplicate
+USING chat_qualification_evidence_events retained
+WHERE duplicate.qualification_scope_id = retained.qualification_scope_id
+  AND duplicate.turn_id = retained.turn_id
+  AND duplicate.event_type = retained.event_type
+  AND duplicate.event_type IN ('stale_fence','workspace_evicted')
+  AND duplicate.ctid > retained.ctid;
 
 ALTER TABLE chat_qualification_evidence_events
     ALTER COLUMN id SET NOT NULL,
@@ -138,7 +148,7 @@ BEGIN
         ALTER TABLE chat_qualification_evidence_events VALIDATE CONSTRAINT chat_qualification_evidence_event_type_check;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'chat_qualification_evidence_events'::regclass AND conname = 'chat_qualification_evidence_operation_shape_check') THEN
-        ALTER TABLE chat_qualification_evidence_events ADD CONSTRAINT chat_qualification_evidence_operation_shape_check CHECK ((event_type = 'executor_started') = (operation_digest IS NOT NULL)) NOT VALID;
+        ALTER TABLE chat_qualification_evidence_events ADD CONSTRAINT chat_qualification_evidence_operation_shape_check CHECK ((event_type = 'executor_started') = (operation_digest IS NOT NULL AND operation_kind IS NOT NULL AND operation_kind IN ('read','bash'))) NOT VALID;
         ALTER TABLE chat_qualification_evidence_events VALIDATE CONSTRAINT chat_qualification_evidence_operation_shape_check;
     END IF;
 END $$;
@@ -148,11 +158,15 @@ DROP INDEX IF EXISTS idx_chat_qualification_scopes_release_profile;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_scope_event_time;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_session_time;
 DROP INDEX IF EXISTS idx_chat_qualification_evidence_turn_event;
+DROP INDEX IF EXISTS uq_chat_qualification_evidence_stale_turn;
+DROP INDEX IF EXISTS uq_chat_qualification_evidence_eviction_turn;
 CREATE INDEX idx_chat_qualification_scopes_expiry ON chat_qualification_scopes (expires_at);
 CREATE INDEX idx_chat_qualification_scopes_release_profile ON chat_qualification_scopes (app_release_id, profile);
 CREATE INDEX idx_chat_qualification_evidence_scope_event_time ON chat_qualification_evidence_events (qualification_scope_id, event_type, occurred_at);
 CREATE INDEX idx_chat_qualification_evidence_session_time ON chat_qualification_evidence_events (chat_session_id, occurred_at);
 CREATE INDEX idx_chat_qualification_evidence_turn_event ON chat_qualification_evidence_events (turn_id, event_type);
+CREATE UNIQUE INDEX uq_chat_qualification_evidence_stale_turn ON chat_qualification_evidence_events (qualification_scope_id, turn_id) WHERE event_type = 'stale_fence';
+CREATE UNIQUE INDEX uq_chat_qualification_evidence_eviction_turn ON chat_qualification_evidence_events (qualification_scope_id, turn_id) WHERE event_type = 'workspace_evicted';
 
 DO $$
 BEGIN

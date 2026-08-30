@@ -245,6 +245,7 @@ def test_executor_start_evidence_follows_successful_executor_operation():
             "chat_session_id": session_id,
             "event_type": "executor_started",
             "operation_id": "operation-a",
+            "operation_kind": "bash",
         }
     )
     assert events[-1] == "state:running"

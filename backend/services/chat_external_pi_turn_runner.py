@@ -27,7 +27,6 @@ from backend.services.chat_external_worker_registry import (
 from backend.services.chat_external_worker_capacity import (
     ChatExternalWorkerCapacityRepository,
     ExternalWorkerEndpoint,
-    ExternalWorkerCapacityUnavailable,
     external_worker_endpoints,
 )
 from backend.services.chat_external_pi_shadow import (
@@ -52,6 +51,10 @@ from backend.services.chat_sandbox_provider import ModalSandboxProviderAdapter
 from backend.services.chat_session_service import TurnAdmission
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
 from backend.services.chat_turn_cancel_control import CancelControlResult
+from backend.services.chat_qualification_stale_boundary import (
+    QUALIFIED_OWNERSHIP_REJECTIONS,
+    QualificationStaleFenceBoundary,
+)
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
 type LifecycleObserver = Callable[[str, str | None, int], None]
@@ -149,7 +152,22 @@ class ExternalPiChatTurnRunner:
         self.execution_loss_cancelled = False
 
     async def events(self) -> AsyncIterator[dict]:
-        worker_claim = await self._select_worker_claim_with_evidence()
+        boundary = QualificationStaleFenceBoundary(
+            turn_id=self.admission.turn_id,
+            chat_session_id=self.admission.session_id,
+            recorder=self.record_evidence,
+        )
+        try:
+            async for event in self._events(boundary):
+                yield event
+        except QUALIFIED_OWNERSHIP_REJECTIONS:
+            boundary.reject()
+            raise
+
+    async def _events(
+        self, stale_boundary: QualificationStaleFenceBoundary
+    ) -> AsyncIterator[dict]:
+        worker_claim = await self._select_worker_claim()
         self.external_worker_claim = worker_claim
         acknowledged_sequence = 0
         seen_sequence = 0
@@ -168,7 +186,9 @@ class ExternalPiChatTurnRunner:
                     ExternalPiWorkerControlRejected,
                     httpx.HTTPError,
                     ValueError,
-                ):
+                ) as error:
+                    if isinstance(error, QUALIFIED_OWNERSHIP_REJECTIONS):
+                        stale_boundary.reject()
                     self.observe("typed_failure", "external_worker_lost", 1)
                     yield self._worker_lost_event()
                     return
@@ -372,47 +392,25 @@ class ExternalPiChatTurnRunner:
             )
             return claim
 
-    async def _select_worker_claim_with_evidence(self) -> ExternalWorkerClaim:
-        try:
-            return await self._select_worker_claim()
-        except (
-            ExternalWorkerCapacityUnavailable,
-            StaleWorkerClaim,
-            WorkerLeaseUnavailable,
-        ):
-            self._record_stale_fence()
-            raise
-
     async def _require_same_external_worker_claim(
         self, claim: ExternalWorkerClaim
     ) -> None:
-        try:
-            status = await self._endpoint_status()
-            endpoint_claim = ExternalWorkerClaim(
-                worker_id=status.worker_id,
-                instance_id=status.instance_id,
-                generation=status.worker_generation or 0,
-                release_id=status.release_id,
-                contract_version=status.protocol,
-            )
-            if endpoint_claim != claim or status.state not in {"ready", "draining"}:
-                raise StaleWorkerClaim("External worker claim was fenced")
-            with self.session_factory() as db:
-                self.worker_repository.require_live_claim(
-                    db,
-                    claim=claim,
-                    now=self.now(),
-                )
-        except (StaleWorkerClaim, WorkerLeaseUnavailable):
-            self._record_stale_fence()
-            raise
-
-    def _record_stale_fence(self) -> None:
-        self.record_evidence(
-            turn_id=self.admission.turn_id,
-            chat_session_id=self.admission.session_id,
-            event_type="stale_fence",
+        status = await self._endpoint_status()
+        endpoint_claim = ExternalWorkerClaim(
+            worker_id=status.worker_id,
+            instance_id=status.instance_id,
+            generation=status.worker_generation or 0,
+            release_id=status.release_id,
+            contract_version=status.protocol,
         )
+        if endpoint_claim != claim or status.state not in {"ready", "draining"}:
+            raise StaleWorkerClaim("External worker claim was fenced")
+        with self.session_factory() as db:
+            self.worker_repository.require_live_claim(
+                db,
+                claim=claim,
+                now=self.now(),
+            )
 
     @staticmethod
     def _worker_lost_event() -> dict[str, object]:

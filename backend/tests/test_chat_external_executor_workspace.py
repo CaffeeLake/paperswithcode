@@ -357,7 +357,9 @@ def test_turn_fence_expiring_during_acquisition_releases_workspace_to_idle():
 
 
 @pytest.mark.parametrize("rejection_call", (1, 2))
-def test_workspace_acquire_stale_turn_seams_emit_exact_evidence(rejection_call):
+def test_workspace_acquire_stale_turn_seams_propagate_to_high_level_boundary(
+    rejection_call,
+):
     evidence = []
     manager, _sessions, session_id, _provider = setup_manager(
         record=lambda **values: evidence.append(values) or True
@@ -367,13 +369,7 @@ def test_workspace_acquire_stale_turn_seams_emit_exact_evidence(rejection_call):
     with pytest.raises(StaleTurnClaim):
         asyncio.run(manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM))
 
-    assert evidence == [
-        {
-            "turn_id": TURN_CLAIM.turn_id,
-            "chat_session_id": session_id,
-            "event_type": "stale_fence",
-        }
-    ]
+    assert evidence == []
 
 
 def test_idle_executor_workspace_is_reclaimed_by_existing_eviction_lifecycle():

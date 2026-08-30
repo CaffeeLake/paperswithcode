@@ -1470,6 +1470,12 @@ def validate_qualification_evidence_schema(db) -> None:
             64,
             None,
         ),
+        ("chat_qualification_evidence_events", "operation_kind"): (
+            "character varying",
+            "YES",
+            8,
+            None,
+        ),
         ("chat_qualification_evidence_events", "occurred_at"): (
             "timestamp with time zone",
             "NO",
@@ -1545,7 +1551,7 @@ def validate_qualification_evidence_schema(db) -> None:
         "chat_qualification_evidence_turn_fkey": "foreign key (turn_id) references chat_turn_jobs(turn_id) on delete cascade",
         "chat_qualification_evidence_session_fkey": "foreign key (chat_session_id) references chat_sessions(id) on delete cascade",
         "chat_qualification_evidence_event_type_check": "check (((event_type)::text = any ((array['admitted_no_queue'::character varying, 'executor_started'::character varying, 'stale_fence'::character varying, 'queued'::character varying, 'workspace_created'::character varying, 'workspace_reused'::character varying, 'workspace_evicted'::character varying])::text[])))",
-        "chat_qualification_evidence_operation_shape_check": "check ((((event_type)::text = 'executor_started'::text) = (operation_digest is not null)))",
+        "chat_qualification_evidence_operation_shape_check": "check ((((event_type)::text = 'executor_started'::text) = ((operation_digest is not null) and (operation_kind is not null) and ((operation_kind)::text = any ((array['read'::character varying, 'bash'::character varying])::text[])))))",
         "chat_turn_latency_qualification_scope_fkey": "foreign key (qualification_scope_id) references chat_qualification_scopes(id) on delete set null",
         "chat_turn_latency_qualification_profile_check": "check (((qualification_profile is null) or ((qualification_profile)::text = any ((array['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[]))))",
         "chat_turn_latency_qualification_workload_check": "check (((qualification_workload is null) or ((qualification_workload)::text = any ((array['no_tool'::character varying, 'read'::character varying, 'bash'::character varying])::text[]))))",
@@ -1581,6 +1587,8 @@ def validate_qualification_evidence_schema(db) -> None:
                     'idx_chat_qualification_evidence_scope_event_time',
                     'idx_chat_qualification_evidence_session_time',
                     'idx_chat_qualification_evidence_turn_event',
+                    'uq_chat_qualification_evidence_stale_turn',
+                    'uq_chat_qualification_evidence_eviction_turn',
                     'idx_chat_turn_latency_qualification_scope'
                   )
             """)
@@ -1607,6 +1615,16 @@ def validate_qualification_evidence_schema(db) -> None:
             False,
             ["turn_id", "event_type"],
             None,
+        ),
+        "uq_chat_qualification_evidence_stale_turn": (
+            True,
+            ["qualification_scope_id", "turn_id"],
+            "((event_type)::text = 'stale_fence'::text)",
+        ),
+        "uq_chat_qualification_evidence_eviction_turn": (
+            True,
+            ["qualification_scope_id", "turn_id"],
+            "((event_type)::text = 'workspace_evicted'::text)",
         ),
         "idx_chat_turn_latency_qualification_scope": (
             False,
@@ -1867,6 +1885,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_qualification_evidence_events", "chat_session_id"),
         ("chat_qualification_evidence_events", "event_type"),
         ("chat_qualification_evidence_events", "operation_digest"),
+        ("chat_qualification_evidence_events", "operation_kind"),
         ("chat_qualification_evidence_events", "occurred_at"),
         ("chat_qualification_scopes", "id"),
         ("chat_qualification_scopes", "run_id"),
@@ -2033,6 +2052,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_qualification_evidence_events', 'chat_session_id')
                 ,('chat_qualification_evidence_events', 'event_type')
                 ,('chat_qualification_evidence_events', 'operation_digest')
+                ,('chat_qualification_evidence_events', 'operation_kind')
                 ,('chat_qualification_evidence_events', 'occurred_at')
                 ,('chat_qualification_scopes', 'id')
                 ,('chat_qualification_scopes', 'run_id')
