@@ -43,6 +43,14 @@ MAXIMUM_DRAIN_STOP_TIMEOUT_SECONDS = (
     + SYSTEMCTL_COMPLETION_OVERHEAD_SECONDS
 )
 MAXIMUM_WORKER_STATUS_BYTES = 64 * 1024
+OPERATION_COUNTER_NAMES = (
+    "shadow_requests",
+    "model_calls",
+    "tool_calls",
+    "provider_calls",
+    "modal_calls",
+    "billing_events",
+)
 
 _SUPERVISOR_PROTECTED_KEYS = (
     "PWC_DB_HOST",
@@ -280,7 +288,11 @@ def sync_worker_environment(environment: str) -> None:
 
 
 def _stop_proven_orphaned_worker_if_active(
-    environment: str, slot: str, *, worker_active_proven: bool = False
+    environment: str,
+    slot: str,
+    *,
+    worker_active_proven: bool = False,
+    expected_release_id: str | None = None,
 ) -> None:
     if not worker_active_proven and _worker_is_inactive(environment, slot):
         return
@@ -304,15 +316,32 @@ def _stop_proven_orphaned_worker_if_active(
         raise ExternalPiSlotError(
             "external Pi active worker status is unavailable"
         ) from error
-    if (
-        not isinstance(status, dict)
-        or status.get("protocol") != CONTRACT_VERSION
-        or status.get("worker_id") != f"staging-{slot}"
-        or status.get("state") != "draining"
-        or type(status.get("active_sessions")) is not int
-        or status.get("active_sessions") != 0
-        or type(status.get("maximum_sessions")) is not int
-        or status.get("maximum_sessions") != MAXIMUM_SESSIONS
+    identity_and_capacity_match = (
+        isinstance(status, dict)
+        and status.get("protocol") == CONTRACT_VERSION
+        and status.get("worker_id") == f"staging-{slot}"
+        and type(status.get("active_sessions")) is int
+        and status.get("active_sessions") == 0
+        and type(status.get("maximum_sessions")) is int
+        and status.get("maximum_sessions") == MAXIMUM_SESSIONS
+    )
+    counters = status.get("operation_counters") if isinstance(status, dict) else None
+    request_free_unclaimed = (
+        isinstance(status, dict)
+        and expected_release_id is not None
+        and status.get("release_id") == expected_release_id
+        and status.get("state") == "ready"
+        and "worker_generation" in status
+        and status.get("worker_generation") is None
+        and isinstance(counters, dict)
+        and set(counters) == set(OPERATION_COUNTER_NAMES)
+        and all(
+            type(counters[name]) is int and counters[name] == 0
+            for name in OPERATION_COUNTER_NAMES
+        )
+    )
+    if not identity_and_capacity_match or not (
+        status.get("state") == "draining" or request_free_unclaimed
     ):
         raise ExternalPiSlotError(
             "external Pi active worker is not proven safe to restart"
@@ -560,7 +589,10 @@ def stop_slot(
         return
     try:
         _stop_proven_orphaned_worker_if_active(
-            environment, slot, worker_active_proven=True
+            environment,
+            slot,
+            worker_active_proven=True,
+            expected_release_id=release_id,
         )
     except ExternalPiSlotError as error:
         raise ExternalPiSlotError(

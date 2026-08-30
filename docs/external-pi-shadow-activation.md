@@ -93,6 +93,14 @@ inactive, the worker is already `draining`, its identity and contract match,
 and `active_sessions` is the integer zero. Missing, ambiguous, ready, or
 non-zero session evidence fails closed; it never replaces an in-use worker.
 
+Stopping a slot preserves that draining proof and adds one narrowly bounded
+pre-registration recovery proof. An exact `ready` worker may be stopped only
+when its authenticated loopback status matches the slot worker ID and expected
+release, `worker_generation` is explicitly null, `active_sessions` is the exact
+integer zero, `maximum_sessions` is the exact integer eight, and all six
+operation counters are present as exact integer zeros. Any missing, differently
+typed, non-zero, or mismatched evidence fails closed.
+
 The CLI converts normal `SIGTERM` and `SIGINT` delivery on its main thread into
 a transaction interruption. This runs the same temporary-unit `finally` stop
 and protected-environment rollback used for other failures, then restores the

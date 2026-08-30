@@ -1448,6 +1448,195 @@ def test_lifecycle_bounds_active_worker_status_body(monkeypatch: pytest.MonkeyPa
     assert read_sizes == [65_537]
 
 
+def _install_active_worker_status(
+    monkeypatch: pytest.MonkeyPatch, status: dict
+) -> list[list[str]]:
+    monkeypatch.setattr(lifecycle, "drain_stop_timeout_seconds", lambda _env: 10)
+    monkeypatch.setattr(
+        lifecycle,
+        "_read_status",
+        lambda *_args: {
+            "release_id": "release-blue",
+            "worker_id": "staging-blue",
+            "state": "failed",
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_protected_staging_values",
+        lambda: {"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "t" * 32},
+    )
+    commands: list[list[str]] = []
+    worker_active = True
+
+    def run(command, **_kwargs):
+        nonlocal worker_active
+        commands.append(command)
+        if command[:2] == ["systemctl", "show"]:
+            if command[-1] == "paperswithcode-staging-external-pi@blue.service":
+                return subprocess.CompletedProcess(command, 0, stdout="inactive\n")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="active\n" if worker_active else "inactive\n"
+            )
+        if command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]:
+            worker_active = False
+        return subprocess.CompletedProcess(command, 0)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size=-1):
+            return json.dumps(status).encode()
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+
+    def open_status(request, *, timeout):
+        assert request.full_url == "http://127.0.0.1:8766/v1/status"
+        assert request.get_header("Authorization") == f"Bearer {'t' * 32}"
+        assert timeout == 5
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_status)
+    return commands
+
+
+def _unclaimed_worker_status() -> dict:
+    return {
+        "protocol": "external-pi-v1",
+        "worker_id": "staging-blue",
+        "instance_id": "00000000-0000-0000-0000-000000000001",
+        "release_id": "release-blue",
+        "state": "ready",
+        "active_sessions": 0,
+        "maximum_sessions": 8,
+        "worker_generation": None,
+        "operation_counters": {
+            "shadow_requests": 0,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+        "capability_evidence": {
+            "provider_credentials_present": False,
+            "modal_credentials_present": False,
+            "registered_tool_count": 0,
+        },
+    }
+
+
+def test_stop_slot_cleans_exact_unclaimed_request_free_worker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    commands = _install_active_worker_status(monkeypatch, _unclaimed_worker_status())
+
+    lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert [
+        "systemctl",
+        "stop",
+        "paperswithcode-staging-external-pi-worker@blue.service",
+    ] in commands
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    (
+        ("protocol", "external-pi-v2"),
+        ("worker_id", "staging-green"),
+        ("release_id", "other-release"),
+        ("state", "starting"),
+        ("worker_generation", 0),
+        ("active_sessions", 0.0),
+        ("active_sessions", 1),
+        ("maximum_sessions", 8.0),
+        ("maximum_sessions", 7),
+    ),
+)
+def test_stop_slot_refuses_ambiguous_unclaimed_worker_identity_or_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    unsafe_value: object,
+):
+    status = _unclaimed_worker_status()
+    status[field] = unsafe_value
+    commands = _install_active_worker_status(monkeypatch, status)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert not any(
+        command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]
+        for command in commands
+    )
+
+
+def test_stop_slot_refuses_unclaimed_worker_without_explicit_null_generation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    status = _unclaimed_worker_status()
+    del status["worker_generation"]
+    commands = _install_active_worker_status(monkeypatch, status)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert not any(
+        command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]
+        for command in commands
+    )
+
+
+@pytest.mark.parametrize(
+    ("counter", "unsafe_value"),
+    (
+        ("shadow_requests", True),
+        ("model_calls", 0.0),
+        ("tool_calls", 1),
+        ("provider_calls", 1),
+        ("modal_calls", 1),
+        ("billing_events", 1),
+    ),
+)
+def test_stop_slot_refuses_unclaimed_worker_with_ambiguous_operation_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    counter: str,
+    unsafe_value: object,
+):
+    status = _unclaimed_worker_status()
+    status["operation_counters"][counter] = unsafe_value
+    commands = _install_active_worker_status(monkeypatch, status)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert not any(
+        command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]
+        for command in commands
+    )
+
+
+def test_stop_slot_refuses_unclaimed_worker_with_incomplete_operation_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    status = _unclaimed_worker_status()
+    del status["operation_counters"]["billing_events"]
+    commands = _install_active_worker_status(monkeypatch, status)
+
+    with pytest.raises(lifecycle.ExternalPiSlotError, match="prove graceful drain"):
+        lifecycle.stop_slot("staging", "blue", "release-blue")
+
+    assert not any(
+        command[:2] == ["systemctl", "stop"] and "worker@" in command[-1]
+        for command in commands
+    )
+
+
 def test_stop_slot_cleans_exact_orphan_with_authenticated_zero_session_proof(
     monkeypatch: pytest.MonkeyPatch,
 ):
