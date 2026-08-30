@@ -9,11 +9,7 @@ export const paperDatePresetRange = (
 ): Required<PaperDateRangeValue> => {
   const today = new Date(currentDate);
   const start = new Date(today);
-  if (preset === "week") {
-    start.setUTCDate(today.getUTCDate() - ((today.getUTCDay() + 6) % 7));
-  } else {
-    start.setUTCDate(1);
-  }
+  start.setUTCDate(today.getUTCDate() - (preset === "week" ? 6 : 29));
   return {
     startDate: start.toISOString().slice(0, 10),
     endDate: today.toISOString().slice(0, 10),

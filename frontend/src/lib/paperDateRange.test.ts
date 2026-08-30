@@ -6,12 +6,12 @@ import {
 } from "@/lib/paperDateRange";
 
 describe("homepage paper date range", () => {
-  it("defaults a bare homepage to Monday through today in UTC", () => {
+  it("defaults a bare homepage to the last seven UTC dates", () => {
     expect(readHomepagePaperDateRange(
       new URLSearchParams(),
       new Date("2026-08-21T23:30:00Z"),
     )).toEqual({
-      startDate: "2026-08-17",
+      startDate: "2026-08-15",
       endDate: "2026-08-21",
     });
   });
