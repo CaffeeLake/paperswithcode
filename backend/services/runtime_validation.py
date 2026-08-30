@@ -873,6 +873,8 @@ def _validate_chat_gateway_policy(settings: Settings) -> None:
 def _validate_chat_title_policy(settings: Settings) -> None:
     """Validate the environment-specific title provider and spend circuit."""
 
+    if not settings.chat_scope_guardrail_enabled:
+        raise RuntimeError("enabled chat requires the research-scope guardrail")
     if (
         not settings.chat_title_generation_enabled
         or settings.chat_title_credential_owner != "nielsr"
@@ -881,21 +883,14 @@ def _validate_chat_title_policy(settings: Settings) -> None:
         raise RuntimeError(
             "an environment-scoped title credential owned by nielsr is required"
         )
-    legacy_openrouter = (
-        settings.chat_title_provider == "openrouter"
-        and settings.chat_title_model == "deepseek/deepseek-v4-flash-0731"
-        and settings.chat_openrouter_api_key
-    )
     hf_glm = (
         settings.chat_title_provider == "huggingface"
         and settings.chat_title_model == "zai-org/GLM-5.3-Flash:baseten"
         and settings.chat_title_hf_token
         and settings.chat_title_bill_to
     )
-    if not (legacy_openrouter or hf_glm):
-        raise RuntimeError(
-            "a reviewed OpenRouter or HF GLM title credential is required"
-        )
+    if not hf_glm:
+        raise RuntimeError("an HF GLM title credential is required")
     if (
         settings.chat_title_max_tokens != 64
         or settings.chat_title_monthly_cap_microusd != 25_000_000
