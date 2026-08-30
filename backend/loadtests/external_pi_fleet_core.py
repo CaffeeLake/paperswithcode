@@ -6,6 +6,7 @@ import math
 import os
 import re
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
@@ -30,12 +31,252 @@ EXPECTED_USERS = 100
 MIN_PROJECTED_MEM_AVAILABLE_BYTES = 1536 * 1024**2
 MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
+MAX_DURABLE_DURATION_MS = 600_000
 MAX_REPORT_BYTES = 2**63 - 1
 FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
+DurableWorkload = Literal["no_tool", "read_only_cli", "bash", "admission_stream"]
 
 
 class FleetRunRefused(RuntimeError):
     """The requested fleet qualification violates a fail-closed contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class DurableQualificationProfile:
+    name: Literal["32-functional-turns", "100-immediate-admission"]
+    expected_users: Literal[32, 100]
+    spawn_rate: Literal[32, 100]
+    workloads: tuple[DurableWorkload, ...]
+    minimum_available_bytes: int = MIN_PROJECTED_MEM_AVAILABLE_BYTES
+    application_queue: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.workloads) != self.expected_users
+            or self.spawn_rate != self.expected_users
+            or self.minimum_available_bytes != MIN_PROJECTED_MEM_AVAILABLE_BYTES
+        ):
+            raise ValueError("durable qualification profile is inconsistent")
+
+
+class DurableTurnObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    outcome: Literal["completed", "refused", "failed"]
+    ttft_ms: int | None = Field(default=None, ge=0, le=MAX_DURABLE_DURATION_MS)
+    completion_ms: int | None = Field(default=None, ge=0, le=MAX_DURABLE_DURATION_MS)
+    reconnects: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    reconnect_successes: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    model_starts: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    executor_starts: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    modal_creates: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    modal_reuses: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    queued_states: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    stale_mutations: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    duplicate_turns: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    terminal_cause: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
+    failure_code: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def validate_reconnects(self) -> DurableTurnObservation:
+        if self.reconnect_successes > self.reconnects:
+            raise ValueError("durable turn reconnect counts are inconsistent")
+        return self
+
+
+class DurableProfileReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile: Literal["32-functional-turns", "100-immediate-admission"]
+    expected_users: Literal[32, 100]
+    observations: int = Field(ge=0, le=EXPECTED_USERS)
+    completed: int = Field(ge=0, le=EXPECTED_USERS)
+    refusals: int = Field(ge=0, le=EXPECTED_USERS)
+    typed_failures: int = Field(ge=0, le=EXPECTED_USERS)
+    queued_states: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    model_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    executor_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    duplicate_model_starts: int = Field(ge=0, le=EXPECTED_USERS)
+    duplicate_executor_starts: int = Field(ge=0, le=EXPECTED_USERS)
+    duplicate_turns: int = Field(ge=0, le=EXPECTED_USERS)
+    stale_mutations: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    terminal_outcomes: int = Field(ge=0, le=EXPECTED_USERS)
+    terminal_cause_counts: dict[str, int] = Field(max_length=32)
+    typed_failure_counts: dict[str, int] = Field(max_length=32)
+    reconnects: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    reconnect_successes: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    ttft_observations: int = Field(ge=0, le=EXPECTED_USERS)
+    completion_observations: int = Field(ge=0, le=EXPECTED_USERS)
+    p95_ttft_ms: int = Field(ge=0, le=MAX_DURABLE_DURATION_MS)
+    p99_completion_ms: int = Field(ge=0, le=MAX_DURABLE_DURATION_MS)
+    peak_memory_bytes: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    minimum_host_mem_available_bytes: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    peak_cpu_percent: float = Field(ge=0, le=100)
+    peak_active_backend_turns: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    peak_active_external_workers: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    peak_active_sandboxes: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    modal_creates: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    modal_reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+
+    @model_validator(mode="after")
+    def validate_typed_counts(self) -> DurableProfileReport:
+        for counts in (self.terminal_cause_counts, self.typed_failure_counts):
+            if any(
+                not re.fullmatch(r"[a-z0-9][a-z0-9_]{0,63}", code)
+                or type(count) is not int
+                or count < 1
+                or count > MAX_REPORT_COUNTER
+                for code, count in counts.items()
+            ):
+                raise ValueError("durable profile typed counts are invalid")
+        return self
+
+    @computed_field
+    @property
+    def passed(self) -> bool:
+        return (
+            self.observations == self.expected_users
+            and self.completed == self.expected_users
+            and self.refusals == 0
+            and self.typed_failures == 0
+            and self.queued_states == 0
+            and self.model_starts == self.expected_users
+            and self.duplicate_model_starts == 0
+            and self.duplicate_executor_starts == 0
+            and self.duplicate_turns == 0
+            and self.stale_mutations == 0
+            and self.terminal_outcomes == self.expected_users
+            and self.terminal_cause_counts == {"completed": self.expected_users}
+            and not self.typed_failure_counts
+            and self.reconnects == self.reconnect_successes
+            and self.ttft_observations == self.expected_users
+            and self.completion_observations == self.expected_users
+            and self.p95_ttft_ms <= 10_000
+            and self.p99_completion_ms <= 60_000
+            and self.minimum_host_mem_available_bytes
+            >= MIN_PROJECTED_MEM_AVAILABLE_BYTES
+            and self.peak_cpu_percent < 80.0
+            and self.peak_active_backend_turns == self.expected_users
+            and self.peak_active_external_workers > 0
+        )
+
+
+class DurableQualificationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
+    status: Literal["completed", "resource_refused", "failed"]
+    reason: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
+    profiles: tuple[DurableProfileReport, ...] = Field(max_length=2)
+    flags_restored: bool
+    transient_workers_clean: bool
+    final_active_backend_turns: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    final_active_external_workers: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    final_active_sandboxes: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+
+    @computed_field
+    @property
+    def passed(self) -> bool:
+        return (
+            self.status == "completed"
+            and self.reason is None
+            and tuple(item.profile for item in self.profiles)
+            == ("32-functional-turns", "100-immediate-admission")
+            and all(item.passed for item in self.profiles)
+            and self.flags_restored
+            and self.transient_workers_clean
+            and self.final_active_backend_turns == 0
+            and self.final_active_external_workers == 0
+            and self.final_active_sandboxes == 0
+        )
+
+
+_DURABLE_PROFILES = {
+    "32-functional-turns": DurableQualificationProfile(
+        name="32-functional-turns",
+        expected_users=32,
+        spawn_rate=32,
+        workloads=("no_tool",) * 16 + ("read_only_cli",) * 8 + ("bash",) * 8,
+    ),
+    "100-immediate-admission": DurableQualificationProfile(
+        name="100-immediate-admission",
+        expected_users=100,
+        spawn_rate=100,
+        workloads=("admission_stream",) * 100,
+    ),
+}
+
+
+def resolve_durable_profile(name: str) -> DurableQualificationProfile:
+    try:
+        return _DURABLE_PROFILES[name]
+    except KeyError:
+        raise FleetRunRefused("durable qualification profile is invalid") from None
+
+
+def aggregate_durable_profile(
+    *,
+    profile: DurableQualificationProfile,
+    observations: tuple[DurableTurnObservation, ...],
+    peak_memory_bytes: int,
+    minimum_host_mem_available_bytes: int,
+    peak_cpu_percent: float,
+    peak_active_backend_turns: int,
+    peak_active_external_workers: int,
+    peak_active_sandboxes: int,
+) -> DurableProfileReport:
+    expected = resolve_durable_profile(profile.name)
+    if profile != expected or len(observations) != profile.expected_users:
+        raise FleetRunRefused(
+            "durable qualification requires exact profile observations"
+        )
+    ttft = tuple(item.ttft_ms for item in observations if item.ttft_ms is not None)
+    completion = tuple(
+        item.completion_ms for item in observations if item.completion_ms is not None
+    )
+    terminal_cause_counts = Counter(item.terminal_cause for item in observations)
+    typed_failure_counts = Counter(
+        item.failure_code for item in observations if item.failure_code is not None
+    )
+    return DurableProfileReport(
+        profile=profile.name,
+        expected_users=profile.expected_users,
+        observations=len(observations),
+        completed=sum(item.outcome == "completed" for item in observations),
+        refusals=sum(item.outcome == "refused" for item in observations),
+        typed_failures=sum(
+            item.outcome == "failed" or item.failure_code is not None
+            for item in observations
+        ),
+        queued_states=sum(item.queued_states for item in observations),
+        model_starts=sum(item.model_starts for item in observations),
+        executor_starts=sum(item.executor_starts for item in observations),
+        duplicate_model_starts=sum(item.model_starts > 1 for item in observations),
+        duplicate_executor_starts=sum(
+            item.executor_starts > 1 for item in observations
+        ),
+        duplicate_turns=sum(item.duplicate_turns for item in observations),
+        stale_mutations=sum(item.stale_mutations for item in observations),
+        terminal_outcomes=sum(
+            item.terminal_cause == item.outcome for item in observations
+        ),
+        terminal_cause_counts=dict(sorted(terminal_cause_counts.items())),
+        typed_failure_counts=dict(sorted(typed_failure_counts.items())),
+        reconnects=sum(item.reconnects for item in observations),
+        reconnect_successes=sum(item.reconnect_successes for item in observations),
+        ttft_observations=len(ttft),
+        completion_observations=len(completion),
+        p95_ttft_ms=_nearest_rank(ttft, 0.95),
+        p99_completion_ms=_nearest_rank(completion, 0.99),
+        peak_memory_bytes=peak_memory_bytes,
+        minimum_host_mem_available_bytes=minimum_host_mem_available_bytes,
+        peak_cpu_percent=peak_cpu_percent,
+        peak_active_backend_turns=peak_active_backend_turns,
+        peak_active_external_workers=peak_active_external_workers,
+        peak_active_sandboxes=peak_active_sandboxes,
+        modal_creates=sum(item.modal_creates for item in observations),
+        modal_reuses=sum(item.modal_reuses for item in observations),
+    )
 
 
 _STAGING_RELEASE = re.compile(r"^[0-9a-f]{12}-staging$")
@@ -783,7 +1024,7 @@ def _path_within(path: Path, root: Path) -> bool:
 
 
 def publish_fleet_report(
-    report: FleetQualificationReport | FleetRecoveryReport,
+    report: FleetQualificationReport | FleetRecoveryReport | DurableQualificationReport,
     destination: Path,
     report_root: Path,
 ) -> None:
@@ -824,3 +1065,10 @@ def publish_fleet_report(
             os.close(descriptor)
         if temporary.exists():
             temporary.unlink()
+
+
+def publish_durable_report(
+    report: DurableQualificationReport, destination: Path, report_root: Path
+) -> None:
+    """Publish only validated content-free durable qualification evidence."""
+    publish_fleet_report(report, destination, report_root)

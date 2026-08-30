@@ -43,6 +43,11 @@ from backend.loadtests.external_pi_fleet_core import (
     resolve_fleet_shape,
     route_ordinal,
     validate_fleet_preflight,
+    aggregate_durable_profile,
+    resolve_durable_profile,
+    DurableTurnObservation,
+    DurableQualificationReport,
+    publish_durable_report,
 )
 from backend.loadtests.external_pi_shadow_core import (
     BaselineObservation,
@@ -127,6 +132,385 @@ def test_capacity_qualification_profile_is_separate_and_ascending():
     assert report_name == "external-pi-capacity-qualification.json"
     with pytest.raises(FleetRunRefused, match="qualification profile"):
         resolve_qualification_profile("unknown")
+
+
+def test_durable_profiles_bind_32_mixed_turns_then_100_immediate_admissions():
+    functional = resolve_durable_profile("32-functional-turns")
+    admission = resolve_durable_profile("100-immediate-admission")
+
+    assert functional.expected_users == functional.spawn_rate == 32
+    assert Counter(functional.workloads) == Counter(
+        {"no_tool": 16, "read_only_cli": 8, "bash": 8}
+    )
+    assert admission.expected_users == admission.spawn_rate == 100
+    assert admission.workloads == ("admission_stream",) * 100
+    assert functional.application_queue is False
+    assert admission.application_queue is False
+    assert functional.minimum_available_bytes == MIN_PROJECTED_MEM_AVAILABLE_BYTES
+    assert admission.minimum_available_bytes == MIN_PROJECTED_MEM_AVAILABLE_BYTES
+
+
+def test_durable_profile_report_records_required_content_free_measurements():
+    profile = resolve_durable_profile("32-functional-turns")
+    observations = tuple(
+        DurableTurnObservation(
+            outcome="completed",
+            ttft_ms=100 + index,
+            completion_ms=1_000 + index,
+            reconnects=1 if index == 0 else 0,
+            reconnect_successes=1 if index == 0 else 0,
+            model_starts=1,
+            executor_starts=0 if workload == "no_tool" else 1,
+            modal_creates=1 if workload == "read_only_cli" and index == 16 else 0,
+            modal_reuses=1 if workload != "no_tool" and index != 16 else 0,
+            terminal_cause="completed",
+        )
+        for index, workload in enumerate(profile.workloads)
+    )
+
+    report = aggregate_durable_profile(
+        profile=profile,
+        observations=observations,
+        peak_memory_bytes=2 * 1024**3,
+        minimum_host_mem_available_bytes=2 * 1024**3,
+        peak_cpu_percent=50.0,
+        peak_active_backend_turns=32,
+        peak_active_external_workers=4,
+        peak_active_sandboxes=8,
+    )
+
+    assert report.passed is True
+    assert report.refusals == report.queued_states == report.typed_failures == 0
+    assert report.p95_ttft_ms == 130
+    assert report.p99_completion_ms == 1_031
+    assert report.ttft_observations == report.completion_observations == 32
+    assert report.reconnects == report.reconnect_successes == 1
+    assert report.modal_creates == 1
+    assert report.modal_reuses == 15
+    assert report.terminal_cause_counts == {"completed": 32}
+    assert report.typed_failure_counts == {}
+    assert report.peak_active_backend_turns == 32
+    assert report.peak_active_external_workers == 4
+    assert report.peak_active_sandboxes == 8
+    assert "content" not in report.model_dump()
+    assert (
+        report.model_copy(update={"terminal_cause_counts": {"completed": 1}}).passed
+        is False
+    )
+    assert (
+        report.model_copy(update={"typed_failure_counts": {"execution_lost": 1}}).passed
+        is False
+    )
+
+
+def test_durable_profile_report_fails_refusal_queue_duplicate_or_lost_terminal():
+    profile = resolve_durable_profile("100-immediate-admission")
+    base = DurableTurnObservation(
+        outcome="completed",
+        ttft_ms=100,
+        completion_ms=1_000,
+        model_starts=1,
+        terminal_cause="completed",
+    )
+    mutations = (
+        base.model_copy(update={"outcome": "refused", "terminal_cause": "refused"}),
+        base.model_copy(update={"queued_states": 1}),
+        base.model_copy(update={"model_starts": 2}),
+        base.model_copy(update={"terminal_cause": "terminal_lost"}),
+        base.model_copy(update={"stale_mutations": 1}),
+        base.model_copy(update={"duplicate_turns": 1}),
+        base.model_copy(update={"ttft_ms": None}),
+    )
+
+    for mutation in mutations:
+        report = aggregate_durable_profile(
+            profile=profile,
+            observations=(mutation,) + (base,) * 99,
+            peak_memory_bytes=1024**3,
+            minimum_host_mem_available_bytes=2 * 1024**3,
+            peak_cpu_percent=20.0,
+            peak_active_backend_turns=100,
+            peak_active_external_workers=8,
+            peak_active_sandboxes=0,
+        )
+        assert report.passed is False
+
+
+def test_durable_profile_retains_slow_completion_as_failing_evidence():
+    profile = resolve_durable_profile("32-functional-turns")
+    slow = DurableTurnObservation(
+        outcome="completed",
+        ttft_ms=100,
+        completion_ms=60_001,
+        model_starts=1,
+        terminal_cause="completed",
+    )
+    normal = slow.model_copy(update={"completion_ms": 1_000})
+
+    report = aggregate_durable_profile(
+        profile=profile,
+        observations=(slow,) + (normal,) * 31,
+        peak_memory_bytes=1024**3,
+        minimum_host_mem_available_bytes=2 * 1024**3,
+        peak_cpu_percent=20.0,
+        peak_active_backend_turns=32,
+        peak_active_external_workers=4,
+        peak_active_sandboxes=0,
+    )
+
+    assert report.p99_completion_ms == 60_001
+    assert report.passed is False
+
+
+def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: Path):
+    profile = resolve_durable_profile("32-functional-turns")
+    observations = tuple(
+        DurableTurnObservation(
+            outcome="completed",
+            ttft_ms=100,
+            completion_ms=1_000,
+            model_starts=1,
+            terminal_cause="completed",
+        )
+        for _ in profile.workloads
+    )
+    profile_report = aggregate_durable_profile(
+        profile=profile,
+        observations=observations,
+        peak_memory_bytes=1024**3,
+        minimum_host_mem_available_bytes=2 * 1024**3,
+        peak_cpu_percent=20.0,
+        peak_active_backend_turns=32,
+        peak_active_external_workers=4,
+        peak_active_sandboxes=0,
+    )
+    report = DurableQualificationReport(
+        release_id="0123456789ab-staging",
+        status="completed",
+        reason=None,
+        profiles=(profile_report,),
+        flags_restored=True,
+        transient_workers_clean=True,
+        final_active_backend_turns=0,
+        final_active_external_workers=0,
+        final_active_sandboxes=0,
+    )
+    destination = tmp_path / "durable.json"
+
+    publish_durable_report(report, destination, tmp_path)
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert payload["release_id"] == "0123456789ab-staging"
+    assert payload["flags_restored"] is True
+    assert payload["final_active_backend_turns"] == 0
+    assert payload["final_active_external_workers"] == 0
+    assert payload["final_active_sandboxes"] == 0
+    assert "prompt" not in destination.read_text(encoding="utf-8")
+    assert "token" not in destination.read_text(encoding="utf-8")
+
+
+class _DurableOperator:
+    def __init__(
+        self,
+        *,
+        environment=None,
+        refuse_profile=None,
+        fail_setup=False,
+        prior_flags=None,
+    ):
+        from backend.scripts.qualify_durable_external_turns import (
+            QualificationEnvironment,
+        )
+
+        self.current_environment = environment or QualificationEnvironment(
+            name="staging",
+            target_release="0123456789ab-staging",
+            staging_release="0123456789ab-staging",
+            production_release="fedcba987654-production",
+            host_mem_total_bytes=8 * 1024**3,
+            public_external_admission_flags=(False, False, False),
+        )
+        self.refuse_profile = refuse_profile
+        self.fail_setup = fail_setup
+        self.prior_flags = prior_flags or {
+            "external": False,
+            "executor": False,
+            "remote": False,
+        }
+        self.events = []
+
+    def environment(self):
+        self.events.append(("environment",))
+        return self.current_environment
+
+    def snapshot_flags(self):
+        self.events.append(("snapshot_flags",))
+        return self.prior_flags
+
+    def resource_snapshot(self, profile):
+        self.events.append(("resource", profile.name))
+        available = 1024**3 if profile.name == self.refuse_profile else 3 * 1024**3
+        return HostResourceSnapshot(available, 0, 20.0, 80.0)
+
+    def setup_profile(self, profile):
+        self.events.append(("setup", profile.name))
+        if self.fail_setup:
+            raise RuntimeError("setup failed")
+
+    def run_profile(self, profile):
+        self.events.append(("run", profile.name))
+        observations = tuple(
+            DurableTurnObservation(
+                outcome="completed",
+                ttft_ms=100,
+                completion_ms=1_000,
+                model_starts=1,
+                executor_starts=0,
+                terminal_cause="completed",
+            )
+            for _ in profile.workloads
+        )
+        return aggregate_durable_profile(
+            profile=profile,
+            observations=observations,
+            peak_memory_bytes=1024**3,
+            minimum_host_mem_available_bytes=2 * 1024**3,
+            peak_cpu_percent=20.0,
+            peak_active_backend_turns=profile.expected_users,
+            peak_active_external_workers=4,
+            peak_active_sandboxes=0,
+        )
+
+    def teardown_profile(self, profile):
+        self.events.append(("teardown", profile.name))
+
+    def restore_flags(self, flags):
+        self.events.append(("restore_flags", flags))
+
+    def cleanup_transient_workers(self):
+        self.events.append(("cleanup_transient_workers",))
+
+
+def test_durable_controller_runs_32_then_100_and_restores_everything():
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator()
+    result = run_durable_qualification(operator)
+
+    assert result.status == "completed"
+    assert [report.profile for report in result.profiles] == [
+        "32-functional-turns",
+        "100-immediate-admission",
+    ]
+    assert [event for event in operator.events if event[0] == "run"] == [
+        ("run", "32-functional-turns"),
+        ("run", "100-immediate-admission"),
+    ]
+    assert operator.events[-2][0] == "restore_flags"
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_treats_resource_refusal_as_evidence_and_stops():
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator(refuse_profile="100-immediate-admission")
+    result = run_durable_qualification(operator)
+
+    assert result.status == "resource_refused"
+    assert result.reason == "memory_headroom"
+    assert [report.profile for report in result.profiles] == ["32-functional-turns"]
+    assert ("setup", "100-immediate-admission") not in operator.events
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"name": "production"},
+        {"target_release": "fedcba987654-staging"},
+        {"production_release": "0123456789ab-staging"},
+        {"host_mem_total_bytes": 4 * 1024**3},
+        {"public_external_admission_flags": (False, True, False)},
+    ),
+)
+def test_durable_controller_refuses_unsafe_environment_but_still_restores(updates):
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationEnvironment,
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    values = {
+        "name": "staging",
+        "target_release": "0123456789ab-staging",
+        "staging_release": "0123456789ab-staging",
+        "production_release": "fedcba987654-production",
+        "host_mem_total_bytes": 8 * 1024**3,
+        "public_external_admission_flags": (False, False, False),
+    }
+    values.update(updates)
+    operator = _DurableOperator(environment=QualificationEnvironment(**values))
+
+    with pytest.raises(QualificationRefused):
+        run_durable_qualification(operator)
+
+    assert not any(event[0] == "setup" for event in operator.events)
+    assert operator.events[-2][0] == "restore_flags"
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_restores_after_setup_failure():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator(fail_setup=True)
+    with pytest.raises(
+        QualificationRefused, match="durable_qualification_failed"
+    ) as exc:
+        run_durable_qualification(operator)
+
+    assert "setup failed" not in str(exc.value)
+    assert ("teardown", "32-functional-turns") in operator.events
+    assert operator.events[-2][0] == "restore_flags"
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_cannot_skip_or_reverse_the_binding_profile_order():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator()
+    with pytest.raises(QualificationRefused, match="profile_order"):
+        run_durable_qualification(
+            operator,
+            profiles=("100-immediate-admission", "32-functional-turns"),
+        )
+    assert not any(event[0] == "setup" for event in operator.events)
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_requires_snapshot_flags_off_before_setup():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator(
+        prior_flags={"external": True, "executor": False, "remote": False}
+    )
+    with pytest.raises(QualificationRefused, match="flags_must_be_off"):
+        run_durable_qualification(operator)
+    assert not any(event[0] == "setup" for event in operator.events)
+    assert operator.events[-1] == ("cleanup_transient_workers",)
 
 
 def test_ordinal_routing_is_deterministic_and_balanced_after_loss():
@@ -687,6 +1071,64 @@ def test_fleet_locust_adapter_import_is_quiet(capsys, recwarn):
     assert captured.out == ""
     assert captured.err == ""
     assert not recwarn, [str(warning.message) for warning in recwarn]
+
+
+def test_durable_locust_specs_start_every_user_immediately_without_queue():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+
+    functional = adapter.build_durable_user_specs("32-functional-turns")
+    admission = adapter.build_durable_user_specs("100-immediate-admission")
+
+    assert [item.ordinal for item in functional] == list(range(32))
+    assert Counter(item.workload for item in functional) == Counter(
+        {"no_tool": 16, "read_only_cli": 8, "bash": 8}
+    )
+    assert [item.ordinal for item in admission] == list(range(100))
+    assert {item.workload for item in admission} == {"admission_stream"}
+    assert all(item.arrival_delay_ms == 0 for item in functional + admission)
+    assert all(item.application_queue is False for item in functional + admission)
+
+
+def test_durable_locust_measurement_requires_content_free_typed_outcomes():
+    if importlib.util.find_spec("locust") is None:
+        return
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+
+    observation = adapter.build_durable_observation(
+        outcome="completed",
+        ttft_ms=125,
+        completion_ms=2_500,
+        reconnects=1,
+        reconnect_successes=1,
+        model_starts=1,
+        executor_starts=1,
+        modal_creates=1,
+        modal_reuses=0,
+        queued_states=0,
+        terminal_cause="completed",
+        failure_code=None,
+    )
+
+    assert observation.ttft_ms == 125
+    assert observation.terminal_cause == "completed"
+    with pytest.raises(TypeError):
+        adapter.build_durable_observation(
+            outcome="completed",
+            ttft_ms=125,
+            completion_ms=2_500,
+            reconnects=0,
+            reconnect_successes=0,
+            model_starts=1,
+            executor_starts=0,
+            modal_creates=0,
+            modal_reuses=0,
+            queued_states=0,
+            terminal_cause="completed",
+            failure_code=None,
+            content="must-not-be-recorded",
+        )
 
 
 def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):

@@ -349,3 +349,81 @@ affirmatively proves `not-found`/`inactive`; it is not permission to assume both
 units are owned. After each recovery command, require both exact units to be `not-found` and
 inactive, the corresponding status file absent, and its loopback port absent
 from `ss -H -ltn`. Do not continue to another pair if any proof fails.
+
+## Durable external-turn 32/100 qualification tooling
+
+Task 11 adds deterministic tooling and report contracts; it does **not**
+authorize or run a live qualification. Task 12 alone may provide the guarded
+staging adapter and invoke `run_durable_qualification`. The controller always
+runs `32-functional-turns` before `100-immediate-admission`. The first profile
+starts exactly 32 users at once: 16 no-tool turns, eight read-only CLI turns,
+and eight Bash turns. The second starts exactly 100 admission/stream users at
+once. Both profiles have spawn rate equal to user count, zero arrival delay,
+and no application queue.
+
+Before each shape, Task 12 must resolve the immutable staging and production
+releases and inspect the approved VPS class and current headroom:
+
+```bash
+staging_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+production_release="$(readlink -e /srv/paperswithcode/environments/production/current)" || exit 1
+case "$staging_release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "staging current is not an immutable staging release" >&2; exit 1 ;;
+esac
+test "$staging_release" != "$production_release" || exit 1
+awk '/^MemTotal:|^MemAvailable:/{print}' /proc/meminfo
+pwc-status staging
+```
+
+`MemTotal` must identify the approved 8 GiB VPS class (the controller accepts
+the kernel-reported 7–9 GiB range). This is not a demand for 8 GiB free.
+Immediately before **each** profile, projected `MemAvailable` must remain at
+least 1,610,612,736 bytes (1.5 GiB) and observed host CPU must be below 80%.
+`resource_refused` with reason `memory_headroom` is valid evidence. Stop there;
+never skip the shape, retry with a larger load, or overcommit the VPS.
+
+The live Task 12 adapter must prove the target release is exact staging
+`current`, differs from production `current`, and that public external
+admission, executor routing, remote workspace/Bash/Read, and lazy workspace
+flags are all false before setup. It may enable only its scoped synthetic
+cohort. Its transaction must use the prior flag snapshot and exact transient
+worker identities with `try/finally`: tear down each profile, restore every
+prior flag, then drain/remove its transient workers even after refusal,
+exception, SIGINT, or SIGTERM. Do not kill by process pattern or reuse an
+unproven port.
+
+A passing profile requires the exact 32 or 100 observations; every user
+immediately admitted and durably terminal; one model start per turn; at most
+one executor start per operation identity; no queued state, refusal, typed
+failure, duplicate start, stale mutation, or lost terminal; reconnect successes
+equal reconnect attempts; p95 TTFT at most 10,000 ms; p99 completion at most
+60,000 ms; minimum host `MemAvailable` at least 1.5 GiB; and peak CPU below 80%.
+Reports also retain bounded peak RAM, Modal create/reuse, terminal-cause, and
+typed-failure counts. Durable outcomes and direct operation counts are the
+source of truth. Best-effort logs are not treated as exactly once: a crash
+after canonical terminal commit but before log emission may undercount one
+executor-loss alert.
+
+The retained Task 12 report path is
+`/var/lib/paperswithcode/staging/durable-external-turn-qualification.json`.
+Publication must be atomic and mode 0600. Only the root operator may read or
+replace it; do not copy it to a planning file, commit it, or attach it to an
+issue without explicit permission. It contains only release/profile names,
+bounded counts/durations/resource values, typed states/failures, and cleanup
+booleans—never prompts, model output, tool commands, file contents, account or
+session identifiers, cookies, capabilities, provider credentials, or worker
+tokens. Cleanup proof requires prior flags restored, exact transient workers
+drained/offline and removed, their status files and listeners absent, zero
+active backend/worker/sandbox counts for the cohort, and every admitted turn in
+a durable terminal state.
+
+Source verification is safe and exact; it does not contact staging:
+
+```bash
+uv run --env-file backend/keys.env pytest -q \
+  backend/tests/test_durable_external_turn_faults.py \
+  backend/tests/test_external_pi_fleet_qualification.py
+uv run --isolated --with locust python -c \
+  "import backend.loadtests.external_pi_fleet_locustfile"
+```

@@ -214,6 +214,38 @@ arrival count: 2x32 qualifies 32, 4x16 qualifies 48, and 3x32 qualifies 64.
 Each target is exactly the capacity remaining after one worker is removed. Run
 them in ascending order and stop at the first refusal or failure.
 
+## Durable external-turn production gate
+
+The durable 32/100 qualification is distinct from the synthetic shadow and
+transient compatibility fleet checks above. Task 11 provides only deterministic
+fault/load contracts. It must not be used to generate staging traffic. A
+separately authorized Task 12 operation must bind a live adapter to
+`backend.scripts.qualify_durable_external_turns.run_durable_qualification` and
+must use the exact active immutable staging release while production remains a
+different release and all public external-admission flags are off.
+
+The mandatory order is 32 simultaneous full functional turns (16 no-tool,
+eight read-only CLI, eight Bash), followed immediately by 100 simultaneous
+admission/stream chats. Each cohort is released at once; application-level
+queueing is forbidden. The controller rechecks the approved 8 GiB VPS class and
+the existing 1.5 GiB projected `MemAvailable`/80% CPU guard before each cohort.
+A resource refusal is retained safety evidence and ends the operation; it never
+authorizes overcommit.
+
+Qualification includes deterministic browser disconnect, API subscriber
+process loss, external worker WebSocket loss, one-worker drain, executor
+response loss, and cancellation schedules. Browser/API reconnect resumes by
+event cursor, worker reconnect uses the exact retained worker/turn claim, and
+executor recovery attaches to the same operation identity. Every schedule
+proves exactly one model start and no more than one executor start for an
+operation identity. Verdicts use canonical terminal rows and direct operation
+counts, not assumed exactly-once logging.
+
+The exact preflight, thresholds, cleanup proof, report path and permission rules
+are in `backend/loadtests/README.md`. Production activation remains forbidden
+until the 100-user report passes, the staging soak has no unresolved alerts,
+and the user gives separate explicit production authorization.
+
 ## Staging 100-user overload baseline
 
 After activation, the separate external Pi load harness may measure the active

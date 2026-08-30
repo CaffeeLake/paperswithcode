@@ -8,6 +8,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Literal
 
 import gevent
 from gevent.event import Event
@@ -25,11 +26,14 @@ from requests.exceptions import RequestException
 
 from backend.loadtests.external_pi_fleet_core import (
     EXPECTED_USERS,
+    DurableTurnObservation,
+    DurableWorkload,
     FleetReplica,
     FleetRunRefused,
     build_external_pi_fleet_request,
     classify_external_pi_fleet_response,
     route_ordinal,
+    resolve_durable_profile,
 )
 from backend.loadtests.external_pi_shadow_core import BaselineObservation
 
@@ -49,6 +53,28 @@ class FleetRoundResult:
     observations: tuple[BaselineObservation, ...]
     protocol_errors: int
     transport_errors: int
+
+
+@dataclass(frozen=True, slots=True)
+class DurableUserSpec:
+    ordinal: int
+    workload: DurableWorkload
+    arrival_delay_ms: Literal[0] = 0
+    application_queue: Literal[False] = False
+
+
+def build_durable_user_specs(profile_name: str) -> tuple[DurableUserSpec, ...]:
+    """Build one immediate, deterministic user assignment without queue state."""
+    profile = resolve_durable_profile(profile_name)
+    return tuple(
+        DurableUserSpec(ordinal=ordinal, workload=workload)
+        for ordinal, workload in enumerate(profile.workloads)
+    )
+
+
+def build_durable_observation(**evidence) -> DurableTurnObservation:
+    """Validate the bounded measurement schema; unknown/content fields fail."""
+    return DurableTurnObservation.model_validate(evidence)
 
 
 _ordinals = itertools.count()
