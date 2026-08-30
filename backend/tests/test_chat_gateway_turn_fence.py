@@ -116,9 +116,7 @@ def test_external_turn_scope_rejects_a_stale_claim(monkeypatch):
             str(uuid.uuid4()),
             str(turn_id),
             FenceDB(),
-            turn_worker_id="api-1",
-            turn_worker_generation="4",
-            turn_lease_generation="9",
+            turn_fence=gateway.ExternalTurnFenceHeaders("api-1", "4", "9"),
         )
 
     assert error.value.status_code == 403
@@ -149,9 +147,7 @@ def test_external_turn_scope_checks_the_exact_immutable_claim(monkeypatch):
             str(uuid.uuid4()),
             str(turn_id),
             FenceDB(),
-            turn_worker_id="api-1",
-            turn_worker_generation="4",
-            turn_lease_generation="9",
+            turn_fence=gateway.ExternalTurnFenceHeaders("api-1", "4", "9"),
         )
         is row
     )

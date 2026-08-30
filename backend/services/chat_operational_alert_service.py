@@ -57,6 +57,12 @@ RUNTIME_FAILURE_PATTERNS = {
     "dispatch_failed": (
         "chat durable lifecycle event=typed_failure code=dispatch_failed"
     ),
+    "stale_fence_rejection": (
+        "chat durable lifecycle event=stale_fence_rejection code=stale"
+    ),
+    "expired_turn_lease": (
+        "chat durable lifecycle event=expired_turn_lease code=expired"
+    ),
     "paper_curation_dispatch_pause": "paper curation dispatch paused",
     "paper_curation_dispatch_recovery": "paper curation dispatch resumed",
 }
@@ -71,6 +77,8 @@ LIFECYCLE_ALERT_NAMES = frozenset(
         "capacity_saturation",
         "workspace_create_ratio",
         "ttft_regression_rate",
+        "stale_fence_rejection",
+        "expired_turn_lease",
     }
 )
 MAX_LIFECYCLE_VALUE = 16 * 1024 * 1024
@@ -179,6 +187,12 @@ def lifecycle_window_alerts(messages: list[str], settings: Settings) -> dict[str
         )
 
     alerts: dict[str, int] = {}
+    stale_fences = count("stale_fence_rejection", "stale")
+    if stale_fences:
+        alerts["stale_fence_rejection"] = stale_fences
+    expired_leases = count("expired_turn_lease", "expired")
+    if expired_leases:
+        alerts["expired_turn_lease"] = expired_leases
     worker_failures = count("typed_failure", "external_worker_lost")
     worker_successes = count("worker_reconnect", "none")
     if rate_breached(

@@ -497,8 +497,12 @@ class Settings(BaseSettings):
     chat_external_pi_supervisor_enabled: bool = Field(default=False)
     chat_external_pi_ready_registry_enabled: bool = Field(default=False)
     chat_external_pi_runtime_contract_version: str = Field(default="", max_length=64)
+    chat_external_pi_worker_id: str = Field(default="", max_length=128)
     chat_external_pi_worker_url: str = Field(default="", max_length=1000)
     chat_external_pi_worker_token: str = Field(default="", repr=False)
+    chat_external_pi_worker_endpoints: list[dict[str, str]] = Field(
+        default_factory=list, max_length=16, repr=False
+    )
     chat_external_pi_worker_contract_version: str = Field(default="", max_length=64)
     chat_external_pi_worker_max_sessions: int = Field(default=8, ge=1, le=32)
     chat_external_pi_heartbeat_seconds: float = Field(default=10, ge=1, le=30)

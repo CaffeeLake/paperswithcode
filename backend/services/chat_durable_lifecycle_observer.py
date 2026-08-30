@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.config import Settings
 from backend.services.chat_tracing_service import configured_chat_client
+from backend.services.chat_turn_lifecycle import LIFECYCLE_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -24,35 +25,11 @@ EVENTS = frozenset(
         "turn_replay",
         "ttft_ms",
         "terminal_latency_ms",
+        "stale_fence_rejection",
+        "expired_turn_lease",
     }
 )
-CODES = frozenset(
-    {
-        "admitted",
-        "leased",
-        "running",
-        "reconnecting",
-        "waiting_model",
-        "waiting_tool",
-        "cancelling",
-        "completed",
-        "failed",
-        "interrupted",
-        "cancelled",
-        "cancel_control_missing",
-        "dispatch_failed",
-        "external_worker_lost",
-        "execution_lost",
-        "event_journal_exhausted",
-        "projection_mismatch",
-        "created",
-        "reused",
-        "released",
-        "invalidated",
-        "accepted",
-        "succeeded",
-    }
-)
+CODES = LIFECYCLE_CODES | {"reconnecting"}
 MAX_VALUE = 16 * 1024 * 1024
 
 

@@ -862,6 +862,8 @@ def test_duplicate_durable_post_attaches_without_preparation_or_source(monkeypat
 
 
 def test_failed_detached_terminal_callback_releases_orchestrator_registration():
+    from backend.services.chat_detached_runtime import ChatDetachedRuntime
+
     turn_id = uuid.uuid4()
     claim = SimpleNamespace(turn_id=turn_id)
 
@@ -870,15 +872,14 @@ def test_failed_detached_terminal_callback_releases_orchestrator_registration():
             raise RuntimeError("ambiguous terminal")
 
     orchestrator = Orchestrator()
-    chat_router._detached_orchestrators[turn_id] = orchestrator
+    runtime = ChatDetachedRuntime(get_settings())
+    runtime._orchestrators[turn_id] = orchestrator
     try:
         with pytest.raises(RuntimeError, match="ambiguous terminal"):
-            asyncio.run(
-                chat_router._persist_detached_terminal(claim, "failed", "turn_failed")
-            )
-        assert turn_id not in chat_router._detached_orchestrators
+            asyncio.run(runtime._persist_terminal(claim, "failed", "turn_failed"))
+        assert turn_id not in runtime._orchestrators
     finally:
-        chat_router._detached_orchestrators.pop(turn_id, None)
+        runtime._orchestrators.pop(turn_id, None)
 
 
 def test_stream_rejects_paper_selection_when_flag_is_off(monkeypatch):

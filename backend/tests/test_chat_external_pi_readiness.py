@@ -22,6 +22,7 @@ def _settings():
     return Settings(
         environment="staging",
         release_id="release-a",
+        chat_external_pi_worker_id="worker-1",
         chat_external_pi_worker_url="http://127.0.0.1:8766",
         chat_external_pi_worker_token="secret",
         chat_external_pi_worker_contract_version="external-pi-v1",

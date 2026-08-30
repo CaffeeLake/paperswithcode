@@ -24,6 +24,10 @@ from backend.services.chat_external_worker_registry import (
     StaleWorkerClaim,
     WorkerLeaseUnavailable,
 )
+from backend.services.chat_external_worker_capacity import (
+    ExternalWorkerEndpoint,
+    ExternalWorkerReservation,
+)
 from backend.services.chat_sandbox_executor import (
     ExecutorExecutionLost,
     ExecutorExecutionResult,
@@ -874,6 +878,94 @@ def test_external_pi_runner_rejects_endpoint_status_mismatch_before_connect():
     with pytest.raises(StaleWorkerClaim):
         asyncio.run(_collect(runner))
     assert connected is False
+
+
+def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
+    settings = get_settings().model_copy(
+        deep=True,
+        update={
+            "environment": "staging",
+            "chat_external_pi_worker_endpoints": [
+                {
+                    "endpoint_id": "blue",
+                    "worker_id": "external-pi-blue",
+                    "base_url": "https://blue.internal",
+                    "token": "blue-secret",
+                },
+                {
+                    "endpoint_id": "green",
+                    "worker_id": "external-pi-green",
+                    "base_url": "https://green.internal",
+                    "token": "green-secret",
+                },
+            ],
+        },
+    )
+    turn_id = uuid.uuid4()
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=turn_id,
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        durable_claim=TurnLeaseClaim(turn_id, "api-1", 4, 9),
+    )
+    endpoint = ExternalWorkerEndpoint(
+        endpoint_id="green",
+        worker_id="external-pi-green",
+        base_url="https://green.internal",
+        token="green-secret",
+    )
+    claim = ExternalWorkerClaim(
+        endpoint.worker_id, uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+
+    class Capacity:
+        def require_turn(self, _db, *, turn_id, endpoints, now):
+            assert turn_id == admission.turn_id
+            assert endpoint in endpoints
+            return ExternalWorkerReservation(
+                "request-1", admission.turn_id, endpoint, claim
+            )
+
+    connection = {}
+    socket = FakeSocket(
+        ['{"type":"worker_done","status":"complete","worker_sequence":1}']
+    )
+
+    def connect(url, **kwargs):
+        connection.update(url=url, kwargs=kwargs)
+        return SocketContext(socket)
+
+    runner = ExternalPiChatTurnRunner(
+        settings=settings,
+        admission=admission,
+        prompt="answer",
+        request_id="request-1",
+        resume_id=None,
+        capability=IssuedCapability(
+            token="opaque-capability",
+            capability_id=None,
+            expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        hf_username="qualification",
+        websocket_connector=connect,
+        worker_repository=FakeWorkerRepository(claim),
+        worker_capacity_repository=Capacity(),
+        worker_status_resolver=lambda: _async_value(worker_status(claim)),
+        session_factory=SessionContext,
+    )
+
+    assert asyncio.run(_collect(runner)) == []
+    assert connection["url"] == "wss://green.internal/v1/turn"
+    assert connection["kwargs"]["additional_headers"] == {
+        "Authorization": "Bearer green-secret",
+        "X-PWC-Worker-Generation": "7",
+    }
 
 
 def test_external_pi_runner_rejects_worker_becoming_full_before_connect():

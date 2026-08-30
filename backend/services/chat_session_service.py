@@ -1777,6 +1777,28 @@ class ChatSessionService:
                     "This conversation belongs to a different paper.",
                 )
 
+        target_harness = (
+            getattr(session, "agent_harness", "claude")
+            if session is not None
+            else (
+                "pi"
+                if self.settings.chat_new_session_pi_percentage == 100
+                else self.settings.chat_default_agent_harness
+            )
+        )
+        if (
+            durable_coordinator is not None
+            and durable_preflight is not None
+            and self.settings.chat_external_pi_admission_enabled
+            and target_harness == "pi"
+        ):
+            try:
+                durable_preflight = durable_coordinator.reserve_external_capacity(
+                    durable_preflight, now=now
+                )
+            except (TurnJobError, ValueError, SQLAlchemyError) as error:
+                raise self._durable_admission_error(error) from error
+
         if durable_coordinator is None:
             self._lock_admission_keys(owner)
             capacity = self._load_capacity_snapshot(owner, session)

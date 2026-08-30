@@ -138,6 +138,52 @@ def test_enabled_capacity_rejection_precedes_session_and_message_writes(
     assert db.flush_calls == 0
 
 
+def test_external_worker_capacity_refusal_precedes_all_chat_projection_writes(
+    monkeypatch,
+):
+    settings = get_settings().model_copy(
+        update={
+            "chat_durable_turn_dispatch_enabled": True,
+            "chat_external_pi_admission_enabled": True,
+            "chat_default_agent_harness": "pi",
+        }
+    )
+    db = _ScriptedDB()
+
+    class _Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preflight(self, **_kwargs):
+            return SimpleNamespace(existing_job=None, reconciled_expired_count=0)
+
+        def reserve_external_capacity(self, *_args, **_kwargs):
+            raise ChatOverload("external fleet full")
+
+    monkeypatch.setattr(
+        chat_session_module, "ChatTurnAdmissionCoordinator", _Coordinator
+    )
+    service = ChatSessionService(db, settings)
+    service.create_session = lambda *_args, **_kwargs: pytest.fail(
+        "session created before external capacity reservation"
+    )
+    service._apply_turn_creation = lambda *_args, **_kwargs: pytest.fail(
+        "message created before external capacity reservation"
+    )
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("owner-1", "owner"),
+            session_id=None,
+            client_message_id="rejected-request",
+            text="must not persist",
+        )
+
+    assert exc_info.value.code == "chat_overload"
+    assert db.added == []
+    assert db.flush_calls == 0
+
+
 def test_enabled_request_without_session_recovers_exact_completed_replay(monkeypatch):
     settings = get_settings().model_copy(
         update={"chat_durable_turn_dispatch_enabled": True}

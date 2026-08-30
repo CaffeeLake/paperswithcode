@@ -12,44 +12,22 @@ from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session, SessionTransaction
 
 from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnJob
+from backend.services.chat_turn_lifecycle import (
+    CLAIMED_STATES as _CLAIMED_STATES,
+    FAILURE_CODE_PATTERN as _FAILURE_CODE,
+    NONTERMINAL_STATES,
+    RECONCILABLE_FAILURE_CODES as _RECONCILABLE_FAILURE_CODES,
+    TERMINAL_STATES,
+    TRANSITIONS as _TRANSITIONS,
+    classify_expired_state,
+)
 
-NONTERMINAL_STATES = frozenset(
-    {"admitted", "leased", "running", "waiting_model", "waiting_tool", "cancelling"}
-)
-TERMINAL_STATES = frozenset({"completed", "failed", "interrupted"})
-_CLAIMED_STATES = NONTERMINAL_STATES - {"admitted"}
-_TRANSITIONS = {
-    "leased": frozenset({"running", "cancelling"}),
-    "running": frozenset({"waiting_model", "waiting_tool", "cancelling"}),
-    "waiting_model": frozenset({"running", "cancelling"}),
-    "waiting_tool": frozenset({"running", "cancelling"}),
-    "cancelling": frozenset(),
-}
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_FAILURE_CODE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
-_RECONCILABLE_FAILURE_CODES = frozenset(
-    {
-        "dispatch_failed",
-        "external_worker_lost",
-        "event_journal_exhausted",
-        "execution_lost",
-        "cancelled",
-        "cancel_control_missing",
-    }
-)
 
 
 def classify_expired_turn(job: ChatTurnJob) -> str:
     """Classify an expired owner from durable, content-free evidence only."""
-    if job.failure_code in _RECONCILABLE_FAILURE_CODES:
-        return job.failure_code
-    return {
-        "leased": "dispatch_failed",
-        "running": "external_worker_lost",
-        "waiting_model": "external_worker_lost",
-        "waiting_tool": "execution_lost",
-        "cancelling": "cancel_control_missing",
-    }.get(job.state, "external_worker_lost")
+    return classify_expired_state(job.state, job.failure_code)
 
 
 class TurnJobError(RuntimeError):

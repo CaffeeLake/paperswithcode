@@ -33,6 +33,7 @@ MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
 MAX_DURABLE_DURATION_MS = 600_000
 MAX_REPORT_BYTES = 2**63 - 1
+DEFAULT_MODAL_RATE_MICROUSD_PER_SECOND = 25
 FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
 DurableWorkload = Literal["no_tool", "read_only_cli", "bash", "admission_stream"]
 
@@ -72,6 +73,7 @@ class DurableTurnObservation(BaseModel):
     duplicate_operation_start_count: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     modal_creates: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     modal_reuses: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    modal_evictions: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     queued_states: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     stale_mutations: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     duplicate_turns: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
@@ -118,6 +120,10 @@ class DurableProfileReport(BaseModel):
     peak_active_sandboxes: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     modal_creates: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     modal_reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    modal_evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    modal_active_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    modal_rate_microusd_per_second: int = Field(ge=1, le=MAX_REPORT_COUNTER)
+    modal_estimated_cost_microusd: int = Field(ge=0, le=MAX_REPORT_BYTES)
 
     @model_validator(mode="after")
     def validate_typed_counts(self) -> DurableProfileReport:
@@ -130,6 +136,11 @@ class DurableProfileReport(BaseModel):
                 for code, count in counts.items()
             ):
                 raise ValueError("durable profile typed counts are invalid")
+        expected_cost = math.ceil(
+            self.modal_active_ms * self.modal_rate_microusd_per_second / 1000
+        )
+        if self.modal_estimated_cost_microusd != expected_cost:
+            raise ValueError("durable profile Modal cost evidence is inconsistent")
         return self
 
     @computed_field
@@ -288,6 +299,7 @@ def aggregate_durable_profile(
     peak_active_backend_turns: int,
     peak_active_external_workers: int,
     peak_active_sandboxes: int,
+    modal_rate_microusd_per_second: int = DEFAULT_MODAL_RATE_MICROUSD_PER_SECOND,
 ) -> DurableProfileReport:
     expected = resolve_durable_profile(profile.name)
     if profile != expected or len(observations) != profile.expected_users:
@@ -301,6 +313,11 @@ def aggregate_durable_profile(
     terminal_cause_counts = Counter(item.terminal_cause for item in observations)
     typed_failure_counts = Counter(
         item.failure_code for item in observations if item.failure_code is not None
+    )
+    modal_active_ms = sum(
+        item.completion_ms or 0
+        for item in observations
+        if item.modal_creates or item.modal_reuses
     )
     return DurableProfileReport(
         profile=profile.name,
@@ -340,6 +357,12 @@ def aggregate_durable_profile(
         peak_active_sandboxes=peak_active_sandboxes,
         modal_creates=sum(item.modal_creates for item in observations),
         modal_reuses=sum(item.modal_reuses for item in observations),
+        modal_evictions=sum(item.modal_evictions for item in observations),
+        modal_active_ms=modal_active_ms,
+        modal_rate_microusd_per_second=modal_rate_microusd_per_second,
+        modal_estimated_cost_microusd=math.ceil(
+            modal_active_ms * modal_rate_microusd_per_second / 1000
+        ),
     )
 
 

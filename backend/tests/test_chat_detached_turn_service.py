@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -182,6 +183,95 @@ def test_two_subscribers_receive_identical_ordered_frames() -> None:
         return await first, await second
 
     assert asyncio.run(scenario()) == ([1, 2, 3], [1, 2, 3])
+
+
+def test_terminal_event_flushes_pending_frames_in_one_transactional_chunk() -> None:
+    async def scenario() -> tuple[list[tuple[int, int]], list[int]]:
+        harness = Harness()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            yield ChatStreamFrame("answer_delta", {"text": "answer"})
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        with harness.sessions() as db:
+            chunks = list(
+                db.query(ChatTurnEventChunk)
+                .order_by(ChatTurnEventChunk.first_sequence)
+                .all()
+            )
+            return (
+                [(chunk.first_sequence, chunk.last_sequence) for chunk in chunks],
+                [len(chunk.events) for chunk in chunks],
+            )
+
+    assert asyncio.run(scenario()) == ([(1, 3)], [3])
+
+
+def test_journal_batch_flushes_on_byte_bound_before_terminal() -> None:
+    async def scenario() -> list[int]:
+        harness = Harness()
+        harness.coordinator = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: harness.now,
+            persist_terminal=harness.persist_terminal,
+            poll_seconds=0.01,
+            batch_max_bytes=180,
+            batch_max_seconds=1,
+        )
+
+        async def source():
+            yield ChatStreamFrame("answer_delta", {"text": "a" * 80})
+            yield ChatStreamFrame("answer_delta", {"text": "b" * 80})
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        with harness.sessions() as db:
+            return [
+                len(chunk.events)
+                for chunk in db.query(ChatTurnEventChunk)
+                .order_by(ChatTurnEventChunk.first_sequence)
+                .all()
+            ]
+
+    assert asyncio.run(scenario()) == [1, 2]
+
+
+def test_journal_batch_flushes_on_time_while_source_remains_open() -> None:
+    async def scenario() -> tuple[int, bool]:
+        harness = Harness()
+        harness.coordinator = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: harness.now,
+            persist_terminal=harness.persist_terminal,
+            poll_seconds=0.01,
+            batch_max_bytes=64 * 1024,
+            batch_max_seconds=0.01,
+        )
+        release = asyncio.Event()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            await release.wait()
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await asyncio.sleep(0.03)
+        with harness.sessions() as db:
+            chunks_before_terminal = db.query(ChatTurnEventChunk).count()
+        source_still_running = not stream.source_task.done()
+        release.set()
+        await stream.source_task
+        return chunks_before_terminal, source_still_running
+
+    assert asyncio.run(scenario()) == (1, True)
 
 
 async def _sequences(
@@ -578,7 +668,9 @@ def test_ambiguous_tombstone_fails_closed_when_revalidation_is_unavailable() -> 
         stream = await harness.coordinator.start(turn=harness.turn, source=source())
         with contextlib.suppress(RuntimeError):
             await stream.source_task
-        harness.transaction_error = RuntimeError("database temporarily unavailable")
+        harness.transaction_error = OperationalError(
+            "SELECT 1", {}, RuntimeError("database temporarily unavailable")
+        )
 
         try:
             await harness.coordinator.start(turn=harness.turn, source=replacement())
@@ -704,13 +796,15 @@ def test_live_execution_loss_is_observed_after_terminal_persistence() -> None:
     ]
 
 
-def test_source_exception_appends_bounded_failure_before_terminal_persistence() -> None:
+def test_expected_source_transport_error_appends_bounded_failure_before_terminal() -> (
+    None
+):
     async def scenario() -> tuple[list[str], list[tuple[str, str | None]]]:
         harness = Harness()
 
         async def source():
             yield ChatStreamFrame("stream_start")
-            raise RuntimeError("provider secret must not escape")
+            raise OSError("transport unavailable")
 
         stream = await harness.coordinator.start(turn=harness.turn, source=source())
         await stream.source_task
@@ -731,6 +825,22 @@ def test_source_exception_appends_bounded_failure_before_terminal_persistence() 
         ["stream_start", "error"],
         [("failed", "turn_failed")],
     )
+
+
+def test_programming_error_propagates_without_generic_turn_failed_terminal() -> None:
+    async def scenario() -> tuple[list[tuple[str, str | None]], int]:
+        harness = Harness()
+
+        async def source():
+            yield ChatStreamFrame("stream_start")
+            raise RuntimeError("programming defect")
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        with pytest.raises(RuntimeError, match="programming defect"):
+            await stream.source_task
+        return harness.terminal_calls, harness.coordinator.ambiguous_turn_count
+
+    assert asyncio.run(scenario()) == ([], 1)
 
 
 def test_unleased_admission_becomes_dispatch_failed() -> None:
@@ -850,7 +960,10 @@ def test_expired_detached_reconciler_terminalizes_projection_and_retains_replay(
     )
     assert result == {expected_code: 1}
     assert ordering == ["<lambda>", "<lambda>"]
-    assert observations == [("typed_failure", expected_code, 1)]
+    assert observations == [
+        ("expired_turn_lease", "expired", 1),
+        ("typed_failure", expected_code, 1),
+    ]
     assert (job.state, job.failure_code) == ("interrupted", expected_code)
     assert (message.status, message.error_code) == ("interrupted", expected_code)
     assert session.active_turn_id is None
@@ -968,7 +1081,9 @@ def test_expired_reconciler_progresses_past_full_poison_window_across_restarts()
         {"external_worker_lost": 1},
     ]
     assert observations == [
+        ("expired_turn_lease", "expired", 1),
         ("typed_failure", "external_worker_lost", 1),
+        ("expired_turn_lease", "expired", 1),
         ("typed_failure", "external_worker_lost", 1),
     ]
     assert healthy_states == ["interrupted", "interrupted"]

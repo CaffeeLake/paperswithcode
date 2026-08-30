@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session
 from backend.config import Settings
 from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnJob
 from backend.services.chat_edit_service import PREPARING_STATUS, ChatEditService
+from backend.services.chat_external_worker_capacity import (
+    ChatExternalWorkerCapacityRepository,
+    ExternalWorkerCapacityUnavailable,
+    ExternalWorkerReservation,
+    external_worker_endpoints,
+)
 from backend.services.chat_turn_job_repository import (
+    ChatOverload,
     ChatTurnJobRepository,
     ExpiryProjectionMismatch,
     IdempotencyMismatch,
@@ -30,6 +37,7 @@ class DurableAdmissionPreflight:
     reconciled_expired_count: int
     existing_job: ChatTurnJob | None
     repository_preflight: TurnAdmissionPreflight
+    external_reservation: ExternalWorkerReservation | None = None
 
 
 class ChatTurnAdmissionCoordinator:
@@ -41,11 +49,13 @@ class ChatTurnAdmissionCoordinator:
         settings: Settings,
         *,
         repository: ChatTurnJobRepository | None = None,
+        external_capacity: ChatExternalWorkerCapacityRepository | None = None,
         observe=None,
     ):
         self.db = db
         self.settings = settings
         self.repository = repository or ChatTurnJobRepository()
+        self.external_capacity = external_capacity
         self.observe = observe or durable_lifecycle_observer(settings)
 
     def preflight(
@@ -79,6 +89,31 @@ class ChatTurnAdmissionCoordinator:
             existing_job=result.existing_job,
             repository_preflight=result,
         )
+
+    def reserve_external_capacity(
+        self,
+        preflight: DurableAdmissionPreflight,
+        *,
+        now: datetime,
+    ) -> DurableAdmissionPreflight:
+        if preflight.existing_job is not None:
+            return preflight
+        try:
+            capacity = self.external_capacity or ChatExternalWorkerCapacityRepository(
+                environment=self.settings.environment
+            )
+            reservation = capacity.reserve(
+                self.db,
+                request_id=preflight.request_id,
+                endpoints=external_worker_endpoints(self.settings),
+                contract_version=self.settings.chat_external_pi_worker_contract_version,
+                now=now,
+            )
+        except ExternalWorkerCapacityUnavailable as error:
+            self.observe("capacity_saturation", None, 1)
+            raise ChatOverload("External worker capacity is full") from error
+        self.external_capacity = capacity
+        return replace(preflight, external_reservation=reservation)
 
     def _reconcile_expired_claims(self, *, hf_user_id: str, now: datetime) -> int:
         """Atomically repair bounded durable and legacy expiry projections."""
@@ -175,6 +210,15 @@ class ChatTurnAdmissionCoordinator:
             now=now,
         )
         if admitted.created:
+            if preflight.external_reservation is not None:
+                if self.external_capacity is None:
+                    raise RuntimeError("External worker capacity repository is missing")
+                self.external_capacity.bind_turn(
+                    self.db,
+                    reservation=preflight.external_reservation,
+                    turn_id=turn_id,
+                    now=now,
+                )
             self.observe("turn_state", "admitted", 1)
         return admitted.job
 

@@ -3240,6 +3240,42 @@ class ChatExternalWorker(Base):
     )
 
 
+class ChatExternalWorkerReservation(Base):
+    """Protected per-turn capacity on one exact external worker endpoint."""
+
+    __tablename__ = "chat_external_worker_reservations"
+
+    request_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    turn_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, unique=True
+    )
+    endpoint_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    instance_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    worker_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "worker_generation > 0",
+            name="chat_external_worker_reservations_generation_check",
+        ),
+        Index(
+            "idx_chat_external_worker_reservations_capacity",
+            "worker_id",
+            "instance_id",
+            "worker_generation",
+        ),
+    )
+
+
 class ChatSandboxPool(Base):
     """Auditable lifecycle for one unassigned blank chat sandbox."""
 

@@ -177,6 +177,22 @@ def test_event_journal_bound_remains_an_explicit_runtime_failure():
     ) == {"event_journal_bound": 1}
 
 
+def test_stale_fence_and_expired_lease_page_immediately_without_content():
+    messages = [
+        "chat durable lifecycle event=stale_fence_rejection code=stale value=1",
+        "chat durable lifecycle event=expired_turn_lease code=expired value=2",
+    ]
+
+    assert runtime_failure_counts(messages) == {
+        "stale_fence_rejection": 1,
+        "expired_turn_lease": 1,
+    }
+    assert lifecycle_window_alerts(messages, Settings()) == {
+        "stale_fence_rejection": 1,
+        "expired_turn_lease": 2,
+    }
+
+
 def test_monitor_pages_once_on_window_breach_and_recovers_once(monkeypatch):
     now = datetime(2026, 8, 6, 12, tzinfo=UTC)
     settings = Settings(

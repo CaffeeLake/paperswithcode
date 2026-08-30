@@ -14,39 +14,44 @@ from backend.services.chat_external_worker_registry import (
     ExternalWorkerClaim,
     WorkerLeaseUnavailable,
 )
+from backend.services.chat_external_worker_capacity import external_worker_endpoints
 
 
 async def validate_external_pi_readiness(settings: Settings) -> None:
+    endpoints = external_worker_endpoints(settings)
     async with httpx.AsyncClient() as http:
-        status = await ExternalPiWorkerControlClient(
-            base_url=settings.chat_external_pi_worker_url,
-            token=settings.chat_external_pi_worker_token,
-            http=http,
-            timeout_seconds=5.0,
-        ).status()
-    if (
-        status.worker_generation is None
-        or status.state != "ready"
-        or status.release_id != settings.release_id
-        or status.protocol != settings.chat_external_pi_worker_contract_version
-        or status.active_sessions >= status.maximum_sessions
-    ):
-        raise WorkerLeaseUnavailable("External worker is not ready")
-    claim = ExternalWorkerClaim(
-        worker_id=status.worker_id,
-        instance_id=status.instance_id,
-        generation=status.worker_generation,
-        release_id=status.release_id,
-        contract_version=status.protocol,
-    )
+        statuses = []
+        for endpoint in endpoints:
+            status = await ExternalPiWorkerControlClient(
+                base_url=endpoint.base_url,
+                token=endpoint.token,
+                http=http,
+                timeout_seconds=5.0,
+            ).status()
+            if (
+                status.worker_id != endpoint.worker_id
+                or status.worker_generation is None
+                or status.state != "ready"
+                or status.release_id != settings.release_id
+                or status.protocol != settings.chat_external_pi_worker_contract_version
+                or status.active_sessions >= status.maximum_sessions
+            ):
+                raise WorkerLeaseUnavailable("External worker is not ready")
+            statuses.append(status)
     with db_manager.session_local() as db:
-        ChatExternalWorkerRepository(
-            environment=settings.environment
-        ).require_endpoint_ready(
-            db,
-            claim=claim,
-            active_sessions=status.active_sessions,
-            maximum_sessions=status.maximum_sessions,
-            configured_maximum_sessions=settings.chat_external_pi_worker_max_sessions,
-            now=datetime.now(UTC),
-        )
+        repository = ChatExternalWorkerRepository(environment=settings.environment)
+        for status in statuses:
+            repository.require_endpoint_ready(
+                db,
+                claim=ExternalWorkerClaim(
+                    worker_id=status.worker_id,
+                    instance_id=status.instance_id,
+                    generation=status.worker_generation,
+                    release_id=status.release_id,
+                    contract_version=status.protocol,
+                ),
+                active_sessions=status.active_sessions,
+                maximum_sessions=status.maximum_sessions,
+                configured_maximum_sessions=settings.chat_external_pi_worker_max_sessions,
+                now=datetime.now(UTC),
+            )

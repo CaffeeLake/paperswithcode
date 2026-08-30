@@ -3,31 +3,31 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import WebSocketException
 
-from backend.chat_sandbox_worker.executor_protocol import ProtocolError
 from backend.config import Settings
 from backend.database.connection import db_manager
-from backend.services.chat_capability_service import (
-    ChatCapabilityService,
-    IssuedCapability,
-)
+from backend.services.chat_capability_service import IssuedCapability
 from backend.services.chat_external_worker_registry import (
     ChatExternalWorkerRepository,
     ExternalWorkerClaim,
     StaleWorkerClaim,
     WorkerLeaseUnavailable,
+)
+from backend.services.chat_external_worker_capacity import (
+    ChatExternalWorkerCapacityRepository,
+    ExternalWorkerEndpoint,
+    external_worker_endpoints,
 )
 from backend.services.chat_external_pi_shadow import (
     ExternalPiWorkerControlClient,
@@ -37,50 +37,23 @@ from backend.services.chat_external_pi_shadow import (
 )
 from backend.services.chat_external_executor_workspace import (
     ChatExternalExecutorWorkspaceManager,
-    ExternalExecutorWorkspace,
 )
+from backend.services.chat_external_pi_tool_executor import (
+    ExternalPiToolWorkspaceExecutor,
+)
+from backend.services.chat_external_pi_lifecycle import ExternalPiTurnLifecycle
 from backend.services.chat_sandbox_executor import (
     ExecutorContext,
     ExecutorExecutionLost,
-    ExecutorExecutionResult,
-    ExecutorOperationError,
-    ExecutorTransportError,
     SandboxExecutorClient,
 )
-from backend.services.chat_sandbox_provider import (
-    ModalSandboxProviderAdapter,
-    SandboxError,
-)
+from backend.services.chat_sandbox_provider import ModalSandboxProviderAdapter
 from backend.services.chat_session_service import TurnAdmission
-from backend.services.chat_turn_job_repository import (
-    ChatTurnJobRepository,
-    TurnLeaseClaim,
-)
+from backend.services.chat_turn_job_repository import TurnLeaseClaim
 from backend.services.chat_turn_cancel_control import CancelControlResult
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
-type WorkspaceSettlement = Literal["release", "invalidate"]
 type LifecycleObserver = Callable[[str, str | None, int], None]
-
-
-def _is_safe_cancel_terminal(terminal: object) -> bool:
-    if not isinstance(terminal, Mapping) or set(terminal) != {
-        "status",
-        "exit_code",
-        "error",
-    }:
-        return False
-    status = terminal["status"]
-    exit_code = terminal["exit_code"]
-    if terminal["error"] is not None or status not in {"completed", "cancelled"}:
-        return False
-    if exit_code is not None and (
-        not isinstance(exit_code, int)
-        or isinstance(exit_code, bool)
-        or not -(2**31) <= exit_code < 2**31
-    ):
-        return False
-    return status == "cancelled" or exit_code is not None
 
 
 def _worker_websocket_url(base_url: str) -> str:
@@ -111,6 +84,9 @@ class ExternalPiChatTurnRunner:
         workspace_manager: ChatExternalExecutorWorkspaceManager | Any | None = None,
         websocket_connector: Callable[..., Any] = websocket_connect,
         worker_repository: ChatExternalWorkerRepository | Any | None = None,
+        worker_capacity_repository: ChatExternalWorkerCapacityRepository
+        | Any
+        | None = None,
         worker_status_resolver: Callable[[], Awaitable[ExternalPiWorkerStatus]]
         | None = None,
         session_factory: Callable[[], AbstractContextManager[Any]] | None = None,
@@ -134,17 +110,34 @@ class ExternalPiChatTurnRunner:
         self.worker_repository = worker_repository or ChatExternalWorkerRepository(
             environment=settings.environment
         )
+        self.worker_capacity_repository = worker_capacity_repository
         self.worker_status_resolver = worker_status_resolver
         self.session_factory = session_factory or db_manager.session_local
         self.now = now or (lambda: datetime.now(UTC))
-        self.turn_state_transition = turn_state_transition or self._persist_turn_state
         self.observe = observe or (lambda _event, _code, _value: None)
+        self.tool_executor = ExternalPiToolWorkspaceExecutor(
+            settings=settings,
+            admission=admission,
+            capability=capability,
+            provider=self.provider,
+            executor=self.executor,
+            workspace_manager=workspace_manager,
+            transition=lambda state: self.turn_state_transition(state),
+            observe=lambda event, code, value: self.observe(event, code, value),
+        )
+        self.lifecycle = ExternalPiTurnLifecycle(
+            capability_id=self.capability_id,
+            turn_claim=self._durable_turn_claim,
+            session_factory=self.session_factory,
+            now=self.now,
+        )
+        self.turn_state_transition = turn_state_transition or self._persist_turn_state
         if not 0 < cancel_timeout_seconds <= 30:
             raise ValueError("External cancellation timeout is invalid")
         self.cancel_timeout_seconds = cancel_timeout_seconds
         self.socket: Any | None = None
-        self.active_context: ExecutorContext | None = None
         self.external_worker_claim: ExternalWorkerClaim | None = None
+        self.external_worker_endpoint: ExternalWorkerEndpoint | None = None
         self.execution_loss_cancelled = False
 
     async def events(self) -> AsyncIterator[dict]:
@@ -258,21 +251,41 @@ class ExternalPiChatTurnRunner:
     async def _endpoint_status(self) -> ExternalPiWorkerStatus:
         if self.worker_status_resolver is not None:
             return await self.worker_status_resolver()
+        endpoint = self.external_worker_endpoint
+        base_url = (
+            endpoint.base_url
+            if endpoint is not None
+            else self.settings.chat_external_pi_worker_url
+        )
+        token = (
+            endpoint.token
+            if endpoint is not None
+            else self.settings.chat_external_pi_worker_token
+        )
         async with httpx.AsyncClient() as http:
             return await ExternalPiWorkerControlClient(
-                base_url=self.settings.chat_external_pi_worker_url,
-                token=self.settings.chat_external_pi_worker_token,
+                base_url=base_url,
+                token=token,
                 http=http,
             ).status()
 
     def _external_worker_socket(self, claim: ExternalWorkerClaim):
         """Build the shared fenced transport for run, attach, and cancel."""
+        endpoint = self.external_worker_endpoint
+        base_url = (
+            endpoint.base_url
+            if endpoint is not None
+            else self.settings.chat_external_pi_worker_url
+        )
+        token = (
+            endpoint.token
+            if endpoint is not None
+            else self.settings.chat_external_pi_worker_token
+        )
         return self.websocket_connector(
-            _worker_websocket_url(self.settings.chat_external_pi_worker_url),
+            _worker_websocket_url(base_url),
             additional_headers={
-                "Authorization": (
-                    f"Bearer {self.settings.chat_external_pi_worker_token}"
-                ),
+                "Authorization": f"Bearer {token}",
                 "X-PWC-Worker-Generation": str(claim.generation),
             },
             max_size=MAX_EXTERNAL_TURN_FRAME_BYTES,
@@ -282,6 +295,41 @@ class ExternalPiChatTurnRunner:
         )
 
     async def _select_worker_claim(self) -> ExternalWorkerClaim:
+        try:
+            endpoints = external_worker_endpoints(self.settings)
+        except ValueError:
+            endpoints = ()
+        if endpoints:
+            capacity = (
+                self.worker_capacity_repository
+                or ChatExternalWorkerCapacityRepository(
+                    environment=self.settings.environment
+                )
+            )
+            with self.session_factory() as db:
+                reservation = capacity.require_turn(
+                    db,
+                    turn_id=self.admission.turn_id,
+                    endpoints=endpoints,
+                    now=self.now(),
+                )
+            self.worker_capacity_repository = capacity
+            self.external_worker_endpoint = reservation.endpoint
+            status = await self._endpoint_status()
+            status_claim = ExternalWorkerClaim(
+                worker_id=status.worker_id,
+                instance_id=status.instance_id,
+                generation=status.worker_generation or 0,
+                release_id=status.release_id,
+                contract_version=status.protocol,
+            )
+            if status_claim != reservation.worker_claim or status.state != "ready":
+                raise StaleWorkerClaim("External worker endpoint identity mismatches")
+            with self.session_factory() as db:
+                self.worker_repository.require_live_claim(
+                    db, claim=reservation.worker_claim, now=self.now()
+                )
+            return reservation.worker_claim
         status = await self._endpoint_status()
         if status.active_sessions >= status.maximum_sessions:
             self.observe("capacity_saturation", None, 1)
@@ -411,45 +459,8 @@ class ExternalPiChatTurnRunner:
             raise RuntimeError("External Pi frame is invalid")
         return value
 
-    async def _ensure_executor(
-        self,
-        workspace: ExternalExecutorWorkspace,
-        tool_call_id: str,
-        operation_id: str,
-    ) -> ExecutorContext:
-        context = ExecutorContext(
-            sandbox=workspace.sandbox,
-            workspace_id=str(self.admission.session_id),
-            workspace_generation=workspace.workspace_generation,
-            session_id=str(self.admission.session_id),
-            turn_id=str(self.admission.turn_id),
-            execution_id=operation_id,
-            tool_call_id=tool_call_id,
-            worker_generation=workspace.worker_generation,
-            capability=self.capability.token,
-        )
-        await self.executor.ensure_workspace(context)
-        self.active_context = context
-        return context
-
     async def _tool_result(self, request: dict[str, object]) -> dict[str, object]:
-        operation_id = str(request.get("operation_id") or "")
-        tool_call_id = str(request.get("tool_call_id") or "")
-        if not operation_id or not tool_call_id:
-            raise ValueError("invalid_tool_identity")
-        operation = request.get("operation")
-        if operation not in {"exec", "read"}:
-            raise ValueError("unsupported_tool_operation")
-        await self.turn_state_transition("waiting_tool")
-        self.observe("turn_state", "waiting_tool", 1)
-        result = await self._execute_tool_result(
-            request,
-            operation_id=operation_id,
-            operation=operation,
-        )
-        await self.turn_state_transition("running")
-        self.observe("turn_state", "running", 1)
-        return result
+        return await self.tool_executor.tool_result(request)
 
     async def _execute_tool_result(
         self,
@@ -458,191 +469,31 @@ class ExternalPiChatTurnRunner:
         operation_id: str,
         operation: str,
     ) -> dict[str, object]:
-        base: dict[str, object] = {
-            "type": "tool_result",
-            "operation_id": operation_id,
-        }
-        tool_call_id = str(request.get("tool_call_id") or "")
-        context: ExecutorContext | None = None
-        workspace: ExternalExecutorWorkspace | None = None
-        settlement: WorkspaceSettlement = "invalidate"
-        primary_exception_active = False
-        try:
-            workspace = await self._workspace_manager().acquire(
-                session_id=self.admission.session_id,
-                turn_claim=self._durable_turn_claim(),
-            )
-            context = await self._ensure_executor(workspace, tool_call_id, operation_id)
-            if operation == "exec":
-                result = await self.executor.exec_resumable(
-                    context,
-                    command=str(request["command"]),
-                    timeout_ms=int(request["timeout_ms"]),
-                )
-                if result.recovered:
-                    self.observe("executor_recovery", "succeeded", 1)
-                terminal = dict(result.terminal)
-                settlement = "release"
-                return {
-                    **base,
-                    "ok": terminal.get("status") == "completed",
-                    "outputs": list(result.outputs),
-                    "terminal": terminal,
-                    **(
-                        {"error": str(terminal["error"])}
-                        if terminal.get("error")
-                        else {}
-                    ),
-                }
-            if operation == "read":
-                result = await self.executor.read_file(
-                    context,
-                    path=str(request["path"]),
-                    offset=int(request["offset"]),
-                    max_bytes=int(request["max_bytes"]),
-                )
-                settlement = "release"
-                return {
-                    **base,
-                    "ok": True,
-                    "data_base64": base64.b64encode(result.data).decode("ascii"),
-                    "eof": result.eof,
-                }
-            raise AssertionError("validated tool operation was not handled")
-        except ExecutorExecutionLost:
-            primary_exception_active = True
-            if context is not None:
-                settlement = (
-                    "release" if await self._cancel_executor(context) else "invalidate"
-                )
-            raise
-        except asyncio.CancelledError:
-            primary_exception_active = True
-            if context is not None:
-                settlement = (
-                    "release" if await self._cancel_executor(context) else "invalidate"
-                )
-            raise
-        except ExecutorOperationError as error:
-            if context is not None:
-                settlement = "release"
-            return {**base, "ok": False, "error": error.code}
-        except (
-            ExecutorTransportError,
-            ProtocolError,
-            SandboxError,
-        ) as error:
-            return {**base, "ok": False, "error": getattr(error, "code", "tool_failed")}
-        except Exception:
-            primary_exception_active = True
-            if context is not None:
-                settlement = (
-                    "release" if await self._cancel_executor(context) else "invalidate"
-                )
-            raise
-        finally:
-            self.active_context = None
-            if workspace is not None:
-                await self._settle_workspace(
-                    workspace,
-                    settlement=settlement,
-                    primary_exception_active=primary_exception_active,
-                )
-
-    async def _persist_turn_state(self, state: str) -> None:
-        claim = self._durable_turn_claim()
-
-        def transition() -> None:
-            with self.session_factory() as db:
-                ChatTurnJobRepository().transition(
-                    db,
-                    claim=claim,
-                    state=state,
-                    now=self.now(),
-                )
-                db.commit()
-
-        await asyncio.to_thread(transition)
-
-    async def _cancel_executor(self, context: ExecutorContext) -> bool:
-        try:
-            result = await self.executor.cancel_execution(context)
-        except Exception:
-            return False
-        if not isinstance(result, ExecutorExecutionResult):
-            return False
-        return _is_safe_cancel_terminal(result.terminal)
-
-    async def _settle_workspace(
-        self,
-        workspace: ExternalExecutorWorkspace,
-        *,
-        settlement: WorkspaceSettlement,
-        primary_exception_active: bool,
-    ) -> None:
-        manager = self._workspace_manager()
-        if settlement == "release":
-            try:
-                await manager.release(workspace)
-                return
-            except asyncio.CancelledError:
-                await self._invalidate_workspace(
-                    workspace,
-                    primary_exception_active=primary_exception_active,
-                )
-                if not primary_exception_active:
-                    raise
-                return
-            except Exception:
-                # The durable release may have rolled back, or maintenance may
-                # have failed after it committed. Exact invalidation is safe in
-                # both cases and must not replace the primary tool outcome.
-                pass
-        await self._invalidate_workspace(
-            workspace,
-            primary_exception_active=primary_exception_active,
+        return await self.tool_executor._execute(
+            request, operation_id=operation_id, operation=operation
         )
 
-    async def _invalidate_workspace(
-        self,
-        workspace: ExternalExecutorWorkspace,
-        *,
-        primary_exception_active: bool,
-    ) -> None:
-        try:
-            await self._workspace_manager().invalidate(workspace)
-        except asyncio.CancelledError:
-            if not primary_exception_active:
-                raise
-        except Exception:
-            # A failed fence leaves the exact claim busy, which is fail-closed:
-            # acquisition cannot reuse it until existing reconciliation runs.
-            pass
+    async def _persist_turn_state(self, state: str) -> None:
+        await self.lifecycle.persist_turn_state(state)
 
-    def _workspace_manager(self) -> ChatExternalExecutorWorkspaceManager:
-        manager = self.workspace_manager
-        if manager is None:
-            manager = ChatExternalExecutorWorkspaceManager.from_settings(
-                self.settings,
-                provider=self.provider,
-                executor=self.executor,
-            )
-            self.workspace_manager = manager
-        return manager
+    async def _cancel_executor(self, context: ExecutorContext) -> bool:
+        return await self.tool_executor.cancel_executor(context)
 
     def _durable_turn_claim(self) -> TurnLeaseClaim:
-        claim = self.admission.durable_claim
-        if claim is None or claim.turn_id != self.admission.turn_id:
-            raise RuntimeError("External Pi tool use requires the durable turn claim")
-        return claim
+        return self.tool_executor._durable_turn_claim()
+
+    @property
+    def active_context(self):
+        return self.tool_executor.active_context
+
+    @active_context.setter
+    def active_context(self, value) -> None:
+        self.tool_executor.active_context = value
 
     def _revoke(self) -> None:
-        if self.capability_id is None:
-            return
-        with db_manager.session_local() as db:
-            ChatCapabilityService(db).revoke(self.capability_id)
-            db.commit()
-        self.capability_id = None
+        self.lifecycle.capability_id = self.capability_id
+        self.lifecycle.revoke()
+        self.capability_id = self.lifecycle.capability_id
 
     async def cancel(self) -> CancelControlResult:
         cancel_frame = {

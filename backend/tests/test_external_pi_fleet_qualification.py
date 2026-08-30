@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import math
 import signal
 import subprocess
 import threading
@@ -188,6 +189,12 @@ def test_durable_profile_report_records_required_content_free_measurements():
     assert report.reconnects == report.reconnect_successes == 1
     assert report.modal_creates == 1
     assert report.modal_reuses == 15
+    assert report.modal_evictions == 0
+    assert report.modal_active_ms > 0
+    assert report.modal_rate_microusd_per_second > 0
+    assert report.modal_estimated_cost_microusd == math.ceil(
+        report.modal_active_ms * report.modal_rate_microusd_per_second / 1000
+    )
     assert report.terminal_cause_counts == {"completed": 32}
     assert report.typed_failure_counts == {}
     assert report.peak_active_backend_turns == 32

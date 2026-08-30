@@ -13,7 +13,7 @@ import re
 import tempfile
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -93,6 +93,9 @@ from backend.services.chat_turn_job_repository import (
     ChatTurnJobRepository,
     StaleTurnClaim,
     TurnLeaseClaim,
+)
+from backend.services.chat_durable_lifecycle_observer import (
+    durable_lifecycle_observer,
 )
 from backend.services.chat_web_fetch_service import (
     ChatWebFetchError,
@@ -626,6 +629,48 @@ def _settle_openai_call(
     return replace(result, cost_microusd=actual_usage_microusd(settings, result))
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalTurnFenceHeaders:
+    worker_id: str | None
+    worker_generation: str | None
+    lease_generation: str | None
+
+    def claim(self, *, turn_id: str) -> TurnLeaseClaim:
+        if (
+            self.worker_id is None
+            or self.worker_generation is None
+            or self.lease_generation is None
+        ):
+            raise LookupError("External turn fence is missing")
+        worker_generation = int(self.worker_generation)
+        lease_generation = int(self.lease_generation)
+        if worker_generation < 1 or lease_generation < 1:
+            raise ValueError("External turn fence generation is invalid")
+        return TurnLeaseClaim(
+            turn_id=uuid.UUID(turn_id),
+            worker_id=self.worker_id,
+            worker_generation=worker_generation,
+            lease_generation=lease_generation,
+        )
+
+
+def _external_turn_fence_headers(
+    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
+    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
+    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
+) -> ExternalTurnFenceHeaders:
+    return ExternalTurnFenceHeaders(
+        worker_id=x_pwc_turn_worker_id,
+        worker_generation=x_pwc_turn_worker_generation,
+        lease_generation=x_pwc_turn_lease_generation,
+    )
+
+
+TurnFenceDependency = Annotated[
+    ExternalTurnFenceHeaders, Depends(_external_turn_fence_headers)
+]
+
+
 def _scope(
     token: str,
     scope: str,
@@ -634,9 +679,7 @@ def _scope(
     db: Session,
     *,
     model: str | None = None,
-    turn_worker_id: str | None = None,
-    turn_worker_generation: str | None = None,
-    turn_lease_generation: str | None = None,
+    turn_fence: ExternalTurnFenceHeaders | None = None,
 ):
     try:
         row = ChatCapabilityService(db).validate(
@@ -651,11 +694,10 @@ def _scope(
         raise HTTPException(status_code=403, detail="Capability rejected") from None
     if "external_turn" not in row.scopes:
         return row
-    if (
-        turn_worker_id is None
-        or turn_worker_generation is None
-        or turn_lease_generation is None
-    ):
+    fence = turn_fence or ExternalTurnFenceHeaders(None, None, None)
+    try:
+        claim = fence.claim(turn_id=turn_id)
+    except LookupError:
         db.rollback()
         raise HTTPException(
             status_code=403,
@@ -665,22 +707,14 @@ def _scope(
             },
         )
     try:
-        worker_generation = int(turn_worker_generation)
-        lease_generation = int(turn_lease_generation)
-        if worker_generation < 1 or lease_generation < 1:
-            raise ValueError
         ChatTurnJobRepository().require_live_claim(
             db,
-            claim=TurnLeaseClaim(
-                turn_id=uuid.UUID(turn_id),
-                worker_id=turn_worker_id,
-                worker_generation=worker_generation,
-                lease_generation=lease_generation,
-            ),
+            claim=claim,
             now=datetime.now(UTC),
         )
     except (StaleTurnClaim, ValueError):
         db.rollback()
+        durable_lifecycle_observer(get_settings())("stale_fence_rejection", "stale", 1)
         raise HTTPException(
             status_code=403,
             detail={
@@ -697,11 +731,9 @@ def catalog(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     token = _bearer(authorization)
     scope = "web_search" if body.operation == "web_search" else "catalog"
@@ -711,9 +743,7 @@ def catalog(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     try:
         if body.operation == "web_search":
@@ -807,11 +837,9 @@ def hf_catalog(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     if not settings.chat_hf_catalog_enabled:
         raise HTTPException(
@@ -835,9 +863,7 @@ def hf_catalog(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     recursive = body.operation.endswith("_list") and bool(
         arguments.get("repo_id") and arguments.get("recursive")
@@ -895,11 +921,9 @@ def session_store(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     token = _bearer(authorization)
     capability = _scope(
@@ -908,9 +932,7 @@ def session_store(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     if body.format == "pi":
         if (
@@ -1002,11 +1024,9 @@ def artifact_prepare(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     token = _bearer(authorization)
     capability = _scope(
@@ -1015,9 +1035,7 @@ def artifact_prepare(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     if not settings.chat_artifacts_enabled or not settings.chat_posterly_enabled:
         raise HTTPException(status_code=404, detail="Poster generation is disabled")
@@ -1082,11 +1100,9 @@ def paper_command(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     """Create or inspect the paper bound to this authenticated live turn."""
     capability = _scope(
@@ -1095,9 +1111,7 @@ def paper_command(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     if not (
         settings.chat_artifacts_enabled
@@ -1193,11 +1207,9 @@ async def artifact_publish(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     token = _bearer(authorization)
     capability = _scope(
@@ -1206,9 +1218,7 @@ async def artifact_publish(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     if capability.artifact_paper_id is None:
         raise HTTPException(
@@ -1296,10 +1306,8 @@ async def web_fetch(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     token = _bearer(authorization)
     _scope(
@@ -1308,9 +1316,7 @@ async def web_fetch(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     db.commit()
     try:
@@ -1334,11 +1340,9 @@ async def responses(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     """Capability-bound, stateless native OpenAI Responses streaming proxy."""
 
@@ -1364,9 +1368,7 @@ async def responses(
         x_pwc_session,
         x_pwc_turn,
         db,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     if (
         row.agent_harness != "pi"
@@ -1629,11 +1631,9 @@ async def messages(
     authorization: Annotated[str, Header()],
     x_pwc_session: Annotated[str, Header()],
     x_pwc_turn: Annotated[str, Header()],
+    turn_fence: TurnFenceDependency,
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
-    x_pwc_turn_worker_id: Annotated[str | None, Header()] = None,
-    x_pwc_turn_worker_generation: Annotated[str | None, Header()] = None,
-    x_pwc_turn_lease_generation: Annotated[str | None, Header()] = None,
 ):
     if request.headers.get("x-pwc-provider-protocol") == "openai-responses":
         return await responses(
@@ -1641,11 +1641,9 @@ async def messages(
             authorization,
             x_pwc_session,
             x_pwc_turn,
+            turn_fence,
             db,
             settings,
-            x_pwc_turn_worker_id,
-            x_pwc_turn_worker_generation,
-            x_pwc_turn_lease_generation,
         )
     gateway_started = time.perf_counter()
     received_at = datetime.now(UTC)
@@ -1672,9 +1670,7 @@ async def messages(
         x_pwc_turn,
         db,
         model=model,
-        turn_worker_id=x_pwc_turn_worker_id,
-        turn_worker_generation=x_pwc_turn_worker_generation,
-        turn_lease_generation=x_pwc_turn_lease_generation,
+        turn_fence=turn_fence,
     )
     provider = settings.chat_route_providers.get(row.model)
     provider_mode = row.provider_mode or (

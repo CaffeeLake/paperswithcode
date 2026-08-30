@@ -66,12 +66,11 @@ from backend.services.chat_feedback_service import (
 )
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.latex_paper_service import LatexPaperService
-from backend.services.chat_detached_turn_service import (
-    DetachedTurn,
-    DetachedTurnCoordinator,
+from backend.services.chat_detached_runtime import (
+    detached_chat_runtime,
+    replay_detached_frames,
 )
 from backend.services.chat_live_stream_service import (
-    LiveChatStreamRegistry,
     live_chat_stream_registry,
 )
 from backend.services.chat_mcp_app_proxy import (
@@ -110,11 +109,10 @@ from backend.services.chat_stream_service import (
     encode_journal_frame,
 )
 from backend.services.chat_turn_runner import shared_sandbox_manager
-from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_turn_cancellation_coordinator import (
     ChatTurnCancellationCoordinator,
 )
-from backend.services.chat_turn_cancel_control import CancelControlResult
+from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_durable_lifecycle_observer import (
     durable_lifecycle_observer,
 )
@@ -144,101 +142,19 @@ from backend.utils.client_ip import get_client_ip
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
-_detached_coordinator: DetachedTurnCoordinator | None = None
-_detached_registry: LiveChatStreamRegistry | None = None
-_detached_orchestrators: dict[uuid.UUID, ChatStreamOrchestrator] = {}
 
-
-async def _detached_transaction(operation):
-    def run():
-        with db_manager.session_local() as db:
-            try:
-                result = operation(db)
-                db.commit()
-                return result
-            except Exception:
-                db.rollback()
-                raise
-
-    return await asyncio.to_thread(run)
-
-
-async def _persist_detached_terminal(claim, state, failure_code):
-    orchestrator = _detached_orchestrators.get(claim.turn_id)
-    if orchestrator is None:
-        raise RuntimeError("Detached terminal owner is unavailable")
-    try:
-        await orchestrator.persist_detached_terminal(claim, state, failure_code)
-    finally:
-        if _detached_orchestrators.get(claim.turn_id) is orchestrator:
-            _detached_orchestrators.pop(claim.turn_id, None)
-
-
-async def _cancel_external_detached_turn(request) -> CancelControlResult:
-    orchestrator = _detached_orchestrators.get(request.turn_id)
-    if orchestrator is None:
-        return CancelControlResult.MISSING
-    return await orchestrator.cancel_detached_turn(request.claim)
-
-
-def detached_turn_coordinator() -> DetachedTurnCoordinator:
-    global _detached_coordinator
-    if _detached_coordinator is None:
-        _detached_coordinator = DetachedTurnCoordinator(
-            transaction=_detached_transaction,
-            persist_terminal=_persist_detached_terminal,
-            observe=durable_lifecycle_observer(get_settings()),
-        )
-    return _detached_coordinator
+def detached_turn_coordinator():
+    return detached_chat_runtime().coordinator
 
 
 async def _durable_replay_frames(admission, *, request_id: str, after_sequence: int):
-    terminal_observed = False
-    last_yielded_sequence = 0
-    async for frame in detached_turn_coordinator().subscribe(
-        turn_id=admission.turn_id, after_sequence=after_sequence
+    async for frame in replay_detached_frames(
+        detached_turn_coordinator(),
+        admission,
+        request_id=request_id,
+        after_sequence=after_sequence,
     ):
-        last_yielded_sequence = max(last_yielded_sequence, frame.sequence)
-        terminal_observed = terminal_observed or frame.event in {"done", "error"}
         yield frame
-    if (
-        admission.replay_assistant is None
-        or terminal_observed
-        or after_sequence >= admission.durable_event_sequence
-    ):
-        return
-
-    sequence = max(admission.durable_event_sequence, last_yielded_sequence)
-    replay = admission.replay_assistant
-    fallback = (
-        JournalFrame(
-            sequence + 1,
-            "stream_start",
-            {
-                "request_id": request_id,
-                "session_id": str(admission.session_id),
-                "provider_execution": False,
-            },
-        ),
-        JournalFrame(sequence + 2, "answer_delta", {"text": replay.content}),
-        JournalFrame(
-            sequence + 3,
-            "done",
-            {"followups": replay.followups, "finish_reason": "success"},
-        ),
-    )
-    for frame in fallback:
-        if frame.sequence > after_sequence:
-            yield frame
-
-
-def detached_live_stream_registry() -> LiveChatStreamRegistry:
-    global _detached_registry
-    if _detached_registry is None:
-        _detached_registry = LiveChatStreamRegistry(
-            detached_coordinator=detached_turn_coordinator()
-        )
-    return _detached_registry
 
 
 def _last_event_sequence(request: Request) -> int:
@@ -1730,7 +1646,7 @@ async def cancel_active_turn(
     if getattr(settings, "chat_durable_turn_dispatch_enabled", False):
         try:
             coordinator_kwargs = (
-                {"external_cancel": _cancel_external_detached_turn}
+                {"external_cancel": detached_chat_runtime(settings).cancel}
                 if settings.chat_external_pi_admission_enabled
                 else {}
             )
@@ -2141,18 +2057,12 @@ async def stream_chat(
             and admission.replay_assistant is None
         ):
             claim = await orchestrator.claim_durable_turn()
-            _detached_orchestrators[admission.turn_id] = orchestrator
-            try:
-                live_stream = await detached_live_stream_registry().start_detached(
-                    session_id=admission.session_id,
-                    owner_id=owner.hf_user_id,
-                    turn=DetachedTurn(admission.turn_id, claim),
-                    source=orchestrator.events(),
-                )
-            except BaseException:
-                _detached_orchestrators.pop(admission.turn_id, None)
-                await orchestrator.abandon_detached_start()
-                raise
+            live_stream = await detached_chat_runtime(settings).start(
+                admission=admission,
+                owner_id=owner.hf_user_id,
+                claim=claim,
+                orchestrator=orchestrator,
+            )
             journal_stream = live_stream.subscribe(after_sequence)
         else:
             live_stream = live_chat_stream_registry().start(

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TypeVar
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.models.database import ChatMessageRecord, ChatSession
@@ -31,9 +32,9 @@ from backend.services.chat_turn_job_repository import (
     TurnLeaseClaim,
     classify_expired_turn,
 )
+from backend.services.chat_turn_lifecycle import terminal_stream_outcome
 
 _T = TypeVar("_T")
-_FAILURE_CODE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 
 Transaction = Callable[[Callable[[Session], _T]], Awaitable[_T]]
 TerminalPersistence = Callable[[TurnLeaseClaim, str, str | None], Awaitable[None]]
@@ -134,6 +135,7 @@ class ExpiredDetachedTurnReconciler:
                 continue
             if outcome is not None:
                 outcomes.append(outcome)
+                self._observe("expired_turn_lease", "expired", 1)
         counts: dict[str, int] = {}
         for code in outcomes:
             counts[code] = counts.get(code, 0) + 1
@@ -202,9 +204,15 @@ class DetachedTurnCoordinator:
         jobs: ChatTurnJobRepository | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         poll_seconds: float = 0.25,
+        batch_max_bytes: int = 64 * 1024,
+        batch_max_seconds: float = 0.05,
         observe: LifecycleObserver | None = None,
     ) -> None:
-        if poll_seconds <= 0:
+        if (
+            poll_seconds <= 0
+            or not 1 <= batch_max_bytes <= TurnEventJournal.MAX_FRAME_BYTES
+            or not 0.005 <= batch_max_seconds <= 1
+        ):
             raise ValueError("Detached turn poll interval must be positive")
         self._transaction = transaction
         self._persist_terminal = persist_terminal
@@ -212,6 +220,8 @@ class DetachedTurnCoordinator:
         self._journal = journal or TurnEventJournal(jobs=self._jobs)
         self._clock = clock
         self._poll_seconds = poll_seconds
+        self._batch_max_bytes = batch_max_bytes
+        self._batch_max_seconds = batch_max_seconds
         self._observe = observe or (lambda _event, _code, _value: None)
         self._handles: dict[uuid.UUID, DetachedTurnHandle] = {}
         self._notifications: dict[uuid.UUID, _TurnNotificationState] = {}
@@ -251,7 +261,7 @@ class DetachedTurnCoordinator:
                             db, claim=ambiguous_claim, now=now
                         )
                     )
-                except Exception as error:
+                except (SQLAlchemyError, OSError, TimeoutError) as error:
                     await self._close_source(source)
                     raise StaleTurnClaim(
                         "Detached turn outcome remains ambiguous"
@@ -264,18 +274,17 @@ class DetachedTurnCoordinator:
             if existing is not None:
                 await self._close_source(source)
                 raise RuntimeError("Detached turn already has a local source")
+            claim_validated = False
             try:
                 await self._transaction(
                     lambda db: self._jobs.require_live_claim(
                         db, claim=turn.claim, now=now
                     )
                 )
-            except asyncio.CancelledError:
-                await self._close_source(source)
-                raise
-            except Exception:
-                await self._close_source(source)
-                raise
+                claim_validated = True
+            finally:
+                if not claim_validated:
+                    await self._close_source(source)
             self._acquire_producer(turn.turn_id)
             handle = DetachedTurnHandle(
                 turn=turn,
@@ -341,32 +350,67 @@ class DetachedTurnCoordinator:
     async def _pump(self, handle: DetachedTurnHandle) -> None:
         terminal_seen = False
         terminal_durable = False
+        pending: list[UnsequencedJournalEvent] = []
+        pending_bytes = 0
+        batch_started_at = 0.0
+        next_event: asyncio.Task[ChatStreamFrame] | None = None
         try:
             while True:
                 try:
-                    event = await anext(handle.source)
+                    if next_event is None:
+                        next_event = asyncio.create_task(anext(handle.source))
+                    timeout = None
+                    if pending:
+                        timeout = max(
+                            0.0,
+                            self._batch_max_seconds
+                            - (asyncio.get_running_loop().time() - batch_started_at),
+                        )
+                    done, _pending = await asyncio.wait((next_event,), timeout=timeout)
+                    if not done:
+                        await self._append_batch(handle, pending)
+                        pending = []
+                        pending_bytes = 0
+                        continue
+                    event = next_event.result()
+                    next_event = None
                 except StopAsyncIteration:
+                    if pending:
+                        await self._append_batch(handle, pending)
                     break
-                except Exception:
+                except (OSError, TimeoutError, ConnectionError):
+                    if pending:
+                        await self._append_batch(handle, pending)
                     await self._fail_source(handle, "turn_failed")
                     terminal_seen = True
                     terminal_durable = True
                     break
                 if event.event is None:
                     continue
+                unsequenced = UnsequencedJournalEvent(
+                    event=event.event, payload=event.payload
+                )
+                event_bytes = len(
+                    json.dumps(
+                        {"event": event.event, "payload": event.payload},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
+                )
+                if pending and pending_bytes + event_bytes > self._batch_max_bytes:
+                    await self._append_batch(handle, pending)
+                    pending = []
+                    pending_bytes = 0
+                if not pending:
+                    batch_started_at = asyncio.get_running_loop().time()
+                pending.append(unsequenced)
+                pending_bytes += event_bytes
+                terminal = self._terminal_for(event)
+                if terminal is None and pending_bytes < self._batch_max_bytes:
+                    continue
                 try:
-                    frames = await self._transaction(
-                        lambda db: self._journal.append(
-                            db,
-                            claim=handle.claim,
-                            events=(
-                                UnsequencedJournalEvent(
-                                    event=event.event, payload=event.payload
-                                ),
-                            ),
-                            now=self._clock(),
-                        )
-                    )
+                    frames = await self._append_batch(handle, pending, publish=False)
                 except JournalLimitExceeded:
                     await self._persist_terminal_durably(
                         handle.claim, "failed", "event_journal_exhausted"
@@ -374,13 +418,8 @@ class DetachedTurnCoordinator:
                     terminal_seen = True
                     terminal_durable = True
                     break
-                self._observe("journal_events", None, len(frames))
-                self._observe(
-                    "journal_bytes",
-                    None,
-                    sum(len(self._journal._frame_bytes(frame)) for frame in frames),
-                )
-                terminal = self._terminal_for(event)
+                pending = []
+                pending_bytes = 0
                 if terminal is not None:
                     self._observe("turn_state", terminal[0], 1)
                     await self._persist_terminal_durably(handle.claim, *terminal)
@@ -392,7 +431,15 @@ class DetachedTurnCoordinator:
             if not terminal_seen:
                 await self._fail_source(handle, "turn_failed")
                 terminal_durable = True
+        except JournalLimitExceeded:
+            await self._persist_terminal_durably(
+                handle.claim, "failed", "event_journal_exhausted"
+            )
+            terminal_seen = True
+            terminal_durable = True
         finally:
+            if next_event is not None and not next_event.done():
+                next_event.cancel()
             try:
                 await self._publish(handle.turn.turn_id)
             finally:
@@ -406,12 +453,37 @@ class DetachedTurnCoordinator:
                                     db, claim=handle.claim
                                 )
                             )
-                        except Exception:
+                        except (SQLAlchemyError, OSError, TimeoutError):
                             terminal_durable = False
                     if terminal_durable:
                         self._evict_handle(handle)
                     else:
                         self._retain_ambiguous(handle)
+
+    async def _append_batch(
+        self,
+        handle: DetachedTurnHandle,
+        events: Sequence[UnsequencedJournalEvent],
+        *,
+        publish: bool = True,
+    ) -> Sequence[JournalFrame]:
+        frames = await self._transaction(
+            lambda db: self._journal.append(
+                db,
+                claim=handle.claim,
+                events=events,
+                now=self._clock(),
+            )
+        )
+        self._observe("journal_events", None, len(frames))
+        self._observe(
+            "journal_bytes",
+            None,
+            sum(len(self._journal._frame_bytes(frame)) for frame in frames),
+        )
+        if publish:
+            await self._publish(handle.turn.turn_id, frames)
+        return frames
 
     async def _fail_source(self, handle: DetachedTurnHandle, code: str) -> None:
         try:
@@ -484,7 +556,7 @@ class DetachedTurnCoordinator:
                                 db, claim=claim, now=self._clock()
                             )
                         )
-                    except Exception:
+                    except (SQLAlchemyError, OSError, TimeoutError):
                         self._rotate_tombstone(turn_id, claim)
                         continue
                     if not claim_is_live:
@@ -600,13 +672,4 @@ class DetachedTurnCoordinator:
 
     @staticmethod
     def _terminal_for(frame: ChatStreamFrame) -> tuple[str, str | None] | None:
-        if frame.event == "done":
-            if frame.payload.get("finish_reason") == "stopped":
-                return "interrupted", "cancelled"
-            return "completed", None
-        if frame.event != "error":
-            return None
-        code = str(frame.payload.get("code") or "turn_failed")
-        if _FAILURE_CODE.fullmatch(code) is None:
-            code = "turn_failed"
-        return "failed", code
+        return terminal_stream_outcome(frame.event, frame.payload)
