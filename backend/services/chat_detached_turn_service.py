@@ -451,6 +451,8 @@ class DetachedTurnCoordinator:
         )
         if not confirmed:
             raise RuntimeError("Terminal persistence was not durable")
+        if failure_code == "execution_lost":
+            self._observe("typed_failure", "execution_lost", 1)
 
     def _evict_handle(self, handle: DetachedTurnHandle) -> None:
         turn_id = handle.turn.turn_id

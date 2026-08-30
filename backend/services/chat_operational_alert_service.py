@@ -188,9 +188,7 @@ def lifecycle_window_alerts(messages: list[str], settings: Settings) -> dict[str
     ):
         alerts["worker_reattach_failure_rate"] = worker_failures
 
-    executor_failures = count("executor_recovery", "failed") + count(
-        "typed_failure", "execution_lost"
-    )
+    executor_failures = count("typed_failure", "execution_lost")
     executor_attempts = count("turn_state", "waiting_tool")
     if rate_breached(
         executor_failures,

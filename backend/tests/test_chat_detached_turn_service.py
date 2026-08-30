@@ -665,6 +665,45 @@ def test_detached_lifecycle_observer_receives_only_bounded_labels_and_counts() -
     assert observations[3:] == [("turn_state", "completed", 1)]
 
 
+def test_live_execution_loss_is_observed_after_terminal_persistence() -> None:
+    async def scenario() -> list[tuple[str, str | None, int]]:
+        harness = Harness()
+        observations: list[tuple[str, str | None, int]] = []
+        persisted = False
+        original_persist = harness.coordinator._persist_terminal
+
+        async def persist(claim, state, code):
+            nonlocal persisted
+            await original_persist(claim, state, code)
+            persisted = True
+
+        def observe(event, code, value):
+            if (event, code) == ("typed_failure", "execution_lost"):
+                assert persisted is True
+            observations.append((event, code, value))
+
+        harness.coordinator._persist_terminal = persist
+        harness.coordinator._observe = observe
+
+        async def source():
+            yield ChatStreamFrame(
+                "error",
+                {
+                    "message": "The sandbox execution could not be recovered.",
+                    "code": "execution_lost",
+                },
+            )
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        return observations
+
+    assert asyncio.run(scenario())[-2:] == [
+        ("turn_state", "failed", 1),
+        ("typed_failure", "execution_lost", 1),
+    ]
+
+
 def test_source_exception_appends_bounded_failure_before_terminal_persistence() -> None:
     async def scenario() -> tuple[list[str], list[tuple[str, str | None]]]:
         harness = Harness()

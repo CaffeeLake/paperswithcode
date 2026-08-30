@@ -510,7 +510,6 @@ class ExternalPiChatTurnRunner:
                 }
             raise AssertionError("validated tool operation was not handled")
         except ExecutorExecutionLost:
-            self.observe("executor_recovery", "failed", 1)
             primary_exception_active = True
             if context is not None:
                 settlement = (

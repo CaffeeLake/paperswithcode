@@ -81,7 +81,7 @@ def test_lifecycle_window_alerts_require_configured_rate_or_ratio_breaches():
             for _ in range(5)
         ],
         *[
-            "chat durable lifecycle event=executor_recovery code=failed value=1"
+            "chat durable lifecycle event=typed_failure code=execution_lost value=1"
             for _ in range(3)
         ],
         *[
@@ -128,6 +128,46 @@ def test_lifecycle_window_alerts_count_reconciled_execution_loss():
     assert lifecycle_window_alerts(messages, settings) == {"executor_lost_rate": 3}
 
 
+def test_lifecycle_window_alerts_ignore_early_executor_recovery_failure():
+    settings = Settings(
+        chat_lifecycle_alert_min_samples=5,
+        chat_lifecycle_alert_failure_percent=50,
+    )
+    messages = [
+        *[
+            "chat durable lifecycle event=turn_state code=waiting_tool value=1"
+            for _ in range(5)
+        ],
+        *[
+            "chat durable lifecycle event=executor_recovery code=failed value=1"
+            for _ in range(2)
+        ],
+        *[
+            "chat durable lifecycle event=typed_failure code=execution_lost value=1"
+            for _ in range(2)
+        ],
+    ]
+
+    assert lifecycle_window_alerts(messages, settings) == {}
+
+
+def test_lifecycle_window_alerts_canonical_loss_cannot_exceed_attempts():
+    settings = Settings(
+        chat_lifecycle_alert_min_samples=5,
+        chat_lifecycle_alert_failure_percent=50,
+    )
+    messages = [
+        "chat durable lifecycle event=turn_state code=waiting_tool value=5",
+        "chat durable lifecycle event=executor_recovery code=failed value=6",
+        "chat durable lifecycle event=typed_failure code=execution_lost value=3",
+    ]
+
+    alerts = lifecycle_window_alerts(messages, settings)
+
+    assert alerts == {"executor_lost_rate": 3}
+    assert alerts["executor_lost_rate"] <= 5
+
+
 def test_event_journal_bound_remains_an_explicit_runtime_failure():
     assert runtime_failure_counts(
         [
@@ -145,7 +185,7 @@ def test_monitor_pages_once_on_window_breach_and_recovers_once(monkeypatch):
     )
     failed_window = [
         "chat durable lifecycle event=turn_state code=waiting_tool value=2",
-        "chat durable lifecycle event=executor_recovery code=failed value=1",
+        "chat durable lifecycle event=typed_failure code=execution_lost value=1",
     ]
     current_window = [
         "chat durable lifecycle event=worker_reconnect code=none value=1",
