@@ -640,13 +640,23 @@ def test_enabled_chat_requires_hf_glm_title_credential(tmp_path: Path):
         validate_runtime(settings)
 
 
-def test_recovery_bridge_accepts_legacy_openrouter_title_policy(tmp_path: Path):
+def test_enforced_runtime_rejects_legacy_openrouter_title_policy(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_title_provider = "openrouter"
     settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
 
-    assert validate_runtime(settings) == profile_features("staging")
+    with pytest.raises(RuntimeError, match="HF GLM title credential"):
+        validate_runtime(settings)
+
+
+def test_enabled_chat_requires_scope_guardrail(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_scope_guardrail_enabled = False
+
+    with pytest.raises(RuntimeError, match="research-scope guardrail"):
+        validate_runtime(settings)
 
 
 def test_bridge_runtime_rejects_unapproved_hf_title_model(tmp_path: Path):
