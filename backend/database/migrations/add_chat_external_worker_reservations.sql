@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS chat_external_worker_reservations (
     worker_generation BIGINT NOT NULL CHECK (worker_generation > 0),
     release_id VARCHAR(255) NOT NULL,
     contract_version VARCHAR(128) NOT NULL,
+    maximum_sessions INTEGER NOT NULL
+        CHECK (maximum_sessions BETWEEN 1 AND 32),
     reserved_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
 );

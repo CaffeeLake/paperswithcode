@@ -323,7 +323,11 @@ class ExternalPiChatTurnRunner:
                 release_id=status.release_id,
                 contract_version=status.protocol,
             )
-            if status_claim != reservation.worker_claim or status.state != "ready":
+            if (
+                status_claim != reservation.worker_claim
+                or status.state != "ready"
+                or status.maximum_sessions != reservation.maximum_sessions
+            ):
                 raise StaleWorkerClaim("External worker endpoint identity mismatches")
             with self.session_factory() as db:
                 self.worker_repository.require_live_claim(

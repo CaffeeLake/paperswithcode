@@ -929,7 +929,7 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
             assert turn_id == admission.turn_id
             assert endpoint in endpoints
             return ExternalWorkerReservation(
-                "request-1", admission.turn_id, endpoint, claim
+                "request-1", admission.turn_id, endpoint, claim, 8
             )
 
     connection = {}
@@ -966,6 +966,12 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
         "Authorization": "Bearer green-secret",
         "X-PWC-Worker-Generation": "7",
     }
+
+    mismatched = worker_status(claim)
+    mismatched.maximum_sessions = 7
+    runner.worker_status_resolver = lambda: _async_value(mismatched)
+    with pytest.raises(StaleWorkerClaim, match="identity mismatches"):
+        asyncio.run(_collect(runner))
 
 
 def test_external_pi_runner_rejects_worker_becoming_full_before_connect():

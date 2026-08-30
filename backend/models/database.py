@@ -3255,6 +3255,7 @@ class ChatExternalWorkerReservation(Base):
     worker_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     release_id: Mapped[str] = mapped_column(String(255), nullable=False)
     contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    maximum_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
     reserved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -3266,6 +3267,10 @@ class ChatExternalWorkerReservation(Base):
         CheckConstraint(
             "worker_generation > 0",
             name="chat_external_worker_reservations_generation_check",
+        ),
+        CheckConstraint(
+            "maximum_sessions BETWEEN 1 AND 32",
+            name="chat_external_worker_reservations_maximum_sessions_check",
         ),
         Index(
             "idx_chat_external_worker_reservations_capacity",

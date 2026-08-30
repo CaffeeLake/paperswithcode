@@ -79,6 +79,7 @@ class ExternalWorkerReservation:
     turn_id: uuid.UUID | None
     endpoint: ExternalWorkerEndpoint
     worker_claim: ExternalWorkerClaim
+    maximum_sessions: int
 
     @property
     def endpoint_id(self) -> str:
@@ -140,6 +141,7 @@ class ChatExternalWorkerCapacityRepository:
                 release_id=row.release_id,
                 contract_version=row.contract_version,
             ),
+            maximum_sessions=row.maximum_sessions,
         )
 
     def reserve(
@@ -215,6 +217,7 @@ class ChatExternalWorkerCapacityRepository:
                 worker_generation=worker.generation,
                 release_id=worker.release_id,
                 contract_version=worker.contract_version,
+                maximum_sessions=worker.maximum_sessions,
                 reserved_at=now,
                 expires_at=now + timedelta(seconds=self.unbound_ttl_seconds),
             )
