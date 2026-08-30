@@ -1,6 +1,8 @@
 import asyncio
 
 import httpx
+import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.config import Settings
@@ -111,3 +113,67 @@ def test_central_middleware_rejects_before_route_auth(monkeypatch):
         assert response.json()["detail"]["code"] == "csrf_rejected"
 
     asyncio.run(exercise())
+
+
+def test_staging_chat_initial_and_reconnect_origin_pass_central_csrf(monkeypatch):
+    settings = Settings(
+        environment="staging",
+        session_cookie_name="pwc_session",
+        chat_enabled=True,
+    )
+    monkeypatch.setattr("backend.main.get_settings", lambda: settings)
+    from backend.main import create_app
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://staging.paperswithcode.co"
+        ) as client:
+            client.cookies.set("pwc_session", "invalid-session")
+            for headers in (
+                {"Origin": "https://staging.paperswithcode.co"},
+                {
+                    "Origin": "https://staging.paperswithcode.co",
+                    "Last-Event-ID": "1",
+                },
+            ):
+                response = await client.post(
+                    "/api/v1/chat/stream",
+                    headers=headers,
+                    json={"message": "hello", "client_message_id": "scope-test"},
+                )
+                assert response.status_code == 401
+                assert response.json() != {
+                    "detail": {
+                        "code": "csrf_rejected",
+                        "message": (
+                            "Unsafe cookie-authenticated requests must be same-origin"
+                        ),
+                    }
+                }
+
+    asyncio.run(exercise())
+
+
+def test_qualification_scope_requires_staging_and_protected_admin_credential():
+    from backend.routers.chat import _durable_qualification_scope
+
+    headers = [
+        (b"x-pwc-qualification-run-id", b"run-f32"),
+        (b"x-pwc-qualification-profile", b"32-functional-turns"),
+        (b"x-admin-token", b"a" * 32),
+    ]
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": headers}
+    )
+    staging = Settings(environment="staging", admin_api_token="a" * 32)
+    assert _durable_qualification_scope(request, staging) == (
+        "run-f32",
+        "32-functional-turns",
+    )
+    with pytest.raises(HTTPException) as error:
+        _durable_qualification_scope(
+            request,
+            staging.model_copy(update={"environment": "production"}),
+        )
+    assert error.value.status_code == 403

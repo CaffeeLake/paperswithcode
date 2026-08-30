@@ -70,7 +70,7 @@ class ExpiringTurn(LiveTurns):
 TURN_CLAIM = TurnLeaseClaim(uuid.uuid4(), "worker", 3, 7)
 
 
-def setup_manager(*, health: ExecutorHealth | None = None, observe=None):
+def setup_manager(*, health: ExecutorHealth | None = None, observe=None, record=None):
     settings = _settings(chat_workspace_snapshots_enabled=False)
     sessions = _database()
     session_id = uuid.uuid4()
@@ -88,8 +88,54 @@ def setup_manager(*, health: ExecutorHealth | None = None, observe=None):
         executor=health or ExecutorHealth(),
         turn_repository=LiveTurns(),
         observe=observe,
+        record_evidence=record,
     )
     return manager, sessions, session_id, provider
+
+
+def test_workspace_lifecycle_records_exact_turn_and_session_evidence():
+    evidence = []
+    manager, _sessions, session_id, _provider = setup_manager(
+        record=lambda **values: evidence.append(values) or True
+    )
+
+    async def exercise():
+        workspace = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+        await manager.invalidate(workspace)
+
+    asyncio.run(exercise())
+
+    assert evidence == [
+        {
+            "turn_id": TURN_CLAIM.turn_id,
+            "chat_session_id": session_id,
+            "event_type": "workspace_created",
+        },
+        {
+            "turn_id": TURN_CLAIM.turn_id,
+            "chat_session_id": session_id,
+            "event_type": "workspace_evicted",
+        },
+    ]
+
+
+def test_workspace_evidence_failure_invalidates_busy_claim():
+    def fail_record(**_values):
+        raise RuntimeError("evidence unavailable")
+
+    manager, sessions, session_id, provider = setup_manager(record=fail_record)
+
+    async def exercise():
+        with pytest.raises(RuntimeError, match="evidence unavailable"):
+            await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
+
+    asyncio.run(exercise())
+
+    assert [call[0] for call in provider.calls].count("terminate") == 1
+    with sessions() as db:
+        lease = manager.state_repository.load_lease(db, session_id, lock=False)
+        assert lease is not None
+        assert lease.state == "failed"
 
 
 def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():

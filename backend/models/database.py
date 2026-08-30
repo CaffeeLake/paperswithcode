@@ -3286,6 +3286,51 @@ class ChatExternalWorkerReservation(Base):
     )
 
 
+class ChatQualificationEvidenceEvent(Base):
+    """Content-free durable evidence emitted only for protected qualification turns."""
+
+    __tablename__ = "chat_qualification_evidence_events"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_turn_jobs.turn_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_digest: Mapped[Optional[str]] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('executor_started','stale_fence','queued',"
+            "'workspace_created','workspace_reused','workspace_evicted')",
+            name="chat_qualification_evidence_event_type_check",
+        ),
+        CheckConstraint(
+            "(event_type = 'executor_started') = (operation_digest IS NOT NULL)",
+            name="chat_qualification_evidence_operation_shape_check",
+        ),
+        Index(
+            "idx_chat_qualification_evidence_session_time",
+            "chat_session_id",
+            "occurred_at",
+        ),
+        Index(
+            "idx_chat_qualification_evidence_turn_event",
+            "turn_id",
+            "event_type",
+        ),
+    )
+
+
 class ChatSandboxPool(Base):
     """Auditable lifecycle for one unassigned blank chat sandbox."""
 

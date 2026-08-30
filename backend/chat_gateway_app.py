@@ -714,6 +714,15 @@ def _scope(
         )
     except (StaleTurnClaim, ValueError):
         db.rollback()
+        from backend.services.chat_durable_qualification_evidence import (
+            record_qualification_event,
+        )
+
+        record_qualification_event(
+            turn_id=uuid.UUID(turn_id),
+            chat_session_id=uuid.UUID(session_id),
+            event_type="stale_fence",
+        )
         durable_lifecycle_observer(get_settings())("stale_fence_rejection", "stale", 1)
         raise HTTPException(
             status_code=403,

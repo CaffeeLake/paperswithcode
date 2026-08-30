@@ -291,6 +291,9 @@ def test_external_pi_endpoint_list_is_a_complete_runtime_configuration(
     settings, _release = settings_factory("staging")
     settings.chat_external_pi_supervisor_enabled = True
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_worker_id = ""
+    settings.chat_external_pi_worker_url = ""
+    settings.chat_external_pi_worker_token = ""
     settings.chat_external_pi_worker_endpoints = [
         {
             "endpoint_id": "blue",
@@ -307,6 +310,26 @@ def test_external_pi_endpoint_list_is_a_complete_runtime_configuration(
     ]
 
     runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+def test_external_pi_endpoint_list_rejects_unknown_configuration_keys(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_worker_endpoints = [
+        {
+            "endpoint_id": "blue",
+            "worker_id": "worker-blue",
+            "base_url": "http://127.0.0.1:8780",
+            "token": "b" * 32,
+            "unexpected": "must-fail",
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="external Pi worker"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
 
 
 @pytest.mark.parametrize(

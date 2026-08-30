@@ -15,6 +15,9 @@ from backend.services.chat_external_pi_turn_runner import (
     MAX_EXTERNAL_TURN_FRAME_BYTES,
     ExternalPiChatTurnRunner,
 )
+from backend.services.chat_external_pi_tool_executor import (
+    ExternalPiToolWorkspaceExecutor,
+)
 from backend.services.chat_external_pi_shadow import (
     ExternalPiWorkerControlRejected,
     ExternalPiWorkerUnavailable,
@@ -137,6 +140,114 @@ class FakeProvider:
     async def terminate(self, sandbox_id, sandbox=None):
         self.terminated.append((sandbox_id, sandbox))
         return True
+
+
+def test_workspace_ack_is_not_misreported_as_executor_start():
+    events = []
+
+    class Executor:
+        async def ensure_workspace(self, _context):
+            events.append("workspace_ack")
+
+    turn_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    owner = SimpleNamespace(
+        admission=SimpleNamespace(turn_id=turn_id, session_id=session_id),
+        capability=SimpleNamespace(token="capability"),
+        executor=Executor(),
+        record_evidence=lambda **values: events.append(values) or True,
+        active_context=None,
+    )
+    workspace = SimpleNamespace(
+        sandbox=object(),
+        workspace_generation=1,
+        worker_generation="generation-a",
+    )
+
+    asyncio.run(
+        ExternalPiToolWorkspaceExecutor._ensure_executor(
+            owner, workspace, "tool-call", "operation-a"
+        )
+    )
+
+    assert events == ["workspace_ack"]
+
+
+def test_executor_start_evidence_follows_successful_executor_operation():
+    events = []
+    turn_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    claim = TurnLeaseClaim(turn_id, "worker", 1, 1)
+    workspace = SimpleNamespace(
+        sandbox=object(),
+        workspace_generation=1,
+        worker_generation="generation-a",
+    )
+
+    class Manager:
+        async def acquire(self, **_kwargs):
+            return workspace
+
+        async def release(self, _workspace):
+            events.append("released")
+            return True
+
+        async def invalidate(self, _workspace):
+            raise AssertionError("successful operation must not invalidate")
+
+    class Executor:
+        async def ensure_workspace(self, _context):
+            events.append("workspace_ack")
+
+        async def exec_resumable(self, _context, **_kwargs):
+            events.append("executor_completed")
+            return ExecutorExecutionResult(
+                outputs=(),
+                terminal={"status": "completed", "exit_code": 0, "error": None},
+                responses=(),
+            )
+
+    async def transition(state):
+        events.append(f"state:{state}")
+
+    executor = ExternalPiToolWorkspaceExecutor(
+        settings=get_settings(),
+        admission=SimpleNamespace(
+            turn_id=turn_id,
+            session_id=session_id,
+            durable_claim=claim,
+        ),
+        capability=SimpleNamespace(token="capability"),
+        provider=object(),
+        executor=Executor(),
+        workspace_manager=Manager(),
+        transition=transition,
+        observe=lambda *_args: None,
+        record_evidence=lambda **values: events.append(values) or True,
+    )
+
+    result = asyncio.run(
+        executor.tool_result(
+            {
+                "operation_id": "operation-a",
+                "tool_call_id": "tool-call",
+                "operation": "exec",
+                "command": "printf ready",
+                "timeout_ms": 1_000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert events.index("executor_completed") < events.index(
+        {
+            "turn_id": turn_id,
+            "chat_session_id": session_id,
+            "event_type": "executor_started",
+            "operation_id": "operation-a",
+        }
+    )
+    assert events[-1] == "state:running"
 
 
 class FakeWorkspaceManager:
@@ -889,14 +1000,14 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
                 {
                     "endpoint_id": "blue",
                     "worker_id": "external-pi-blue",
-                    "base_url": "https://blue.internal",
-                    "token": "blue-secret",
+                    "base_url": "http://127.0.0.1:18101",
+                    "token": "b" * 32,
                 },
                 {
                     "endpoint_id": "green",
                     "worker_id": "external-pi-green",
-                    "base_url": "https://green.internal",
-                    "token": "green-secret",
+                    "base_url": "http://127.0.0.1:18102",
+                    "token": "g" * 32,
                 },
             ],
         },
@@ -917,8 +1028,8 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
     endpoint = ExternalWorkerEndpoint(
         endpoint_id="green",
         worker_id="external-pi-green",
-        base_url="https://green.internal",
-        token="green-secret",
+        base_url="http://127.0.0.1:18102",
+        token="g" * 32,
     )
     claim = ExternalWorkerClaim(
         endpoint.worker_id, uuid.uuid4(), 7, "release-a", "external-pi-v1"
@@ -961,9 +1072,9 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
     )
 
     assert asyncio.run(_collect(runner)) == []
-    assert connection["url"] == "wss://green.internal/v1/turn"
+    assert connection["url"] == "ws://127.0.0.1:18102/v1/turn"
     assert connection["kwargs"]["additional_headers"] == {
-        "Authorization": "Bearer green-secret",
+        "Authorization": f"Bearer {'g' * 32}",
         "X-PWC-Worker-Generation": "7",
     }
 

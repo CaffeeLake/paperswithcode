@@ -17,7 +17,7 @@ from backend.loadtests.external_pi_fleet_core import (
     DurableQualificationProfile,
     HostResourceSnapshot,
     resolve_durable_profile,
-    ModalRateEvidence,
+    load_modal_rate_evidence,
 )
 from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
 
@@ -156,6 +156,10 @@ class LiveQualificationControlPlane(Protocol):
 
     def cleanup_transient_workers(self) -> CleanupProof: ...
 
+    def protected_runtime_evidence(
+        self, profile: DurableQualificationProfile
+    ) -> Mapping[str, str]: ...
+
 
 class GuardedLiveDurableOperator:
     """Bind the controller to the concrete chat transport and exact Locust profile."""
@@ -165,11 +169,9 @@ class GuardedLiveDurableOperator:
         *,
         control_plane: LiveQualificationControlPlane,
         transport_config: DurableChatTransportConfig,
-        modal_rate: ModalRateEvidence,
     ) -> None:
         self.control_plane = control_plane
         self.transport_config = transport_config
-        self.modal_rate = modal_rate
 
     def environment(self) -> QualificationEnvironment:
         return self.control_plane.environment()
@@ -185,7 +187,7 @@ class GuardedLiveDurableOperator:
     def setup_profile(self, profile: DurableQualificationProfile) -> None:
         self.control_plane.setup_profile(profile)
 
-    def run_profile(self, profile: DurableQualificationProfile) -> DurableProfileReport:
+    def run_profile(self, profile: DurableQualificationProfile):
         from backend.loadtests.external_pi_fleet_locustfile import (
             run_live_durable_profile,
         )
@@ -194,7 +196,29 @@ class GuardedLiveDurableOperator:
             profile_name=profile.name,
             transport_config=self.transport_config,
             resources=self.control_plane.run_resources(profile),
-            modal_rate=self.modal_rate,
+        )
+
+    def finalize_profile(self, profile: DurableQualificationProfile, measurement):
+        from datetime import UTC, datetime
+        from backend.loadtests.durable_chat_transport import (
+            HttpDurableQualificationEvidenceSource,
+        )
+        from backend.loadtests.external_pi_fleet_locustfile import (
+            finalize_live_durable_profile,
+        )
+
+        environment = self.environment()
+        rate = load_modal_rate_evidence(
+            self.control_plane.protected_runtime_evidence(profile),
+            expected_release=environment.target_release,
+        )
+        return finalize_live_durable_profile(
+            measurement,
+            evidence_source=HttpDurableQualificationEvidenceSource(
+                self.transport_config
+            ),
+            modal_rate=rate,
+            window_ended_at=datetime.now(UTC),
         )
 
     def teardown_profile(self, profile: DurableQualificationProfile) -> None:
@@ -211,13 +235,11 @@ def run_live_durable_qualification(
     *,
     control_plane: LiveQualificationControlPlane,
     transport_config: DurableChatTransportConfig,
-    modal_rate: ModalRateEvidence,
 ) -> DurableQualificationReport:
     return run_durable_qualification(
         GuardedLiveDurableOperator(
             control_plane=control_plane,
             transport_config=transport_config,
-            modal_rate=modal_rate,
         )
     )
 
@@ -306,11 +328,13 @@ def run_durable_qualification(
                 break
             try:
                 operator.setup_profile(profile)
-                report = operator.run_profile(profile)
-                if report.profile != profile.name or not report.passed:
-                    raise QualificationRefused("durable_profile_failed")
+                result = operator.run_profile(profile)
             finally:
                 operator.teardown_profile(profile)
+            finalize = getattr(operator, "finalize_profile", None)
+            report = finalize(profile, result) if callable(finalize) else result
+            if report.profile != profile.name or not report.passed:
+                raise QualificationRefused("durable_profile_failed")
             reports.append(report)
         else:
             status = "completed"

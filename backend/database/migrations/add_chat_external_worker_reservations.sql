@@ -35,6 +35,38 @@ CREATE TABLE IF NOT EXISTS chat_external_worker_reservations (
     expires_at TIMESTAMPTZ NOT NULL
 );
 
+-- Forward repair for environments that applied the earlier additive table shape.
+-- PostgreSQL may already have equivalent automatically named checks; these blocks
+-- install the canonical names only when they are absent and validate existing rows.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'chat_external_worker_reservations'::regclass
+          AND conname = 'chat_external_worker_reservations_worker_generation_check'
+    ) THEN
+        ALTER TABLE chat_external_worker_reservations
+            ADD CONSTRAINT chat_external_worker_reservations_worker_generation_check
+            CHECK (worker_generation > 0) NOT VALID;
+        ALTER TABLE chat_external_worker_reservations
+            VALIDATE CONSTRAINT
+                chat_external_worker_reservations_worker_generation_check;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'chat_external_worker_reservations'::regclass
+          AND conname = 'chat_external_worker_reservations_maximum_sessions_check'
+    ) THEN
+        ALTER TABLE chat_external_worker_reservations
+            ADD CONSTRAINT
+                chat_external_worker_reservations_maximum_sessions_check
+            CHECK (maximum_sessions BETWEEN 1 AND 32) NOT VALID;
+        ALTER TABLE chat_external_worker_reservations
+            VALIDATE CONSTRAINT
+                chat_external_worker_reservations_maximum_sessions_check;
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_chat_external_worker_reservations_capacity
     ON chat_external_worker_reservations (
         worker_id,

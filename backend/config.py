@@ -8,13 +8,28 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.services.paper_markdown_job_profile import (
     PAPER_MARKDOWN_BACKFILL_JOB_PROFILE,
     PAPER_MARKDOWN_LIVE_JOB_PROFILE,
 )
+
+
+class ExternalPiWorkerEndpointConfig(BaseModel):
+    """Closed configuration shape for one authenticated loopback worker."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    endpoint_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    )
+    worker_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    )
+    base_url: str = Field(min_length=1, max_length=1000)
+    token: str = Field(min_length=32, max_length=8192, repr=False)
 
 
 class Settings(BaseSettings):
@@ -500,7 +515,7 @@ class Settings(BaseSettings):
     chat_external_pi_worker_id: str = Field(default="", max_length=128)
     chat_external_pi_worker_url: str = Field(default="", max_length=1000)
     chat_external_pi_worker_token: str = Field(default="", repr=False)
-    chat_external_pi_worker_endpoints: list[dict[str, str]] = Field(
+    chat_external_pi_worker_endpoints: list[ExternalPiWorkerEndpointConfig] = Field(
         default_factory=list, max_length=16, repr=False
     )
     chat_external_pi_worker_contract_version: str = Field(default="", max_length=64)

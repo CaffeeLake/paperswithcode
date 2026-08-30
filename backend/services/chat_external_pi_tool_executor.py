@@ -31,6 +31,7 @@ from backend.services.chat_turn_job_repository import TurnLeaseClaim
 
 type WorkspaceSettlement = Literal["release", "invalidate"]
 type LifecycleObserver = Callable[[str, str | None, int], None]
+type QualificationEvidenceRecorder = Callable[..., bool]
 
 
 def is_safe_cancel_terminal(terminal: object) -> bool:
@@ -67,6 +68,7 @@ class ExternalPiToolWorkspaceExecutor:
         workspace_manager: ChatExternalExecutorWorkspaceManager | Any | None,
         transition: Callable[[str], Awaitable[None]],
         observe: LifecycleObserver,
+        record_evidence: QualificationEvidenceRecorder | None = None,
     ) -> None:
         self.settings = settings
         self.admission = admission
@@ -76,6 +78,7 @@ class ExternalPiToolWorkspaceExecutor:
         self.workspace_manager = workspace_manager
         self.transition = transition
         self.observe = observe
+        self.record_evidence = record_evidence or (lambda **_kwargs: False)
         self.active_context: ExecutorContext | None = None
 
     async def tool_result(self, request: dict[str, object]) -> dict[str, object]:
@@ -125,6 +128,7 @@ class ExternalPiToolWorkspaceExecutor:
                     command=str(request["command"]),
                     timeout_ms=int(request["timeout_ms"]),
                 )
+                self._record_executor_start(operation_id)
                 if result.recovered:
                     self.observe("executor_recovery", "succeeded", 1)
                 terminal = dict(result.terminal)
@@ -146,6 +150,7 @@ class ExternalPiToolWorkspaceExecutor:
                 offset=int(request["offset"]),
                 max_bytes=int(request["max_bytes"]),
             )
+            self._record_executor_start(operation_id)
             settlement = "release"
             return {
                 **base,
@@ -202,6 +207,14 @@ class ExternalPiToolWorkspaceExecutor:
         await self.executor.ensure_workspace(context)
         self.active_context = context
         return context
+
+    def _record_executor_start(self, operation_id: str) -> None:
+        self.record_evidence(
+            turn_id=self.admission.turn_id,
+            chat_session_id=self.admission.session_id,
+            event_type="executor_started",
+            operation_id=operation_id,
+        )
 
     async def cancel_executor(self, context: ExecutorContext) -> bool:
         try:

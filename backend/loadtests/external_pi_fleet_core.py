@@ -111,26 +111,58 @@ class ModalRateEvidence(BaseModel):
 
     microusd_per_second: int = Field(ge=1, le=MAX_REPORT_COUNTER)
     source: Literal["protected_runtime"]
+    source_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
+    attested_at_ms: int = Field(ge=1, le=MAX_REPORT_BYTES)
 
 
 def load_modal_rate_evidence(
     environment: Mapping[str, str],
+    *,
+    expected_release: str,
 ) -> ModalRateEvidence:
     """Load one explicit protected runtime rate; source code has no fallback."""
     raw = environment.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND", "")
     try:
         value = int(raw)
-    except ValueError:
+        attested_at_ms = int(
+            environment.get("PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS", "")
+        )
+    except (TypeError, ValueError):
         raise FleetRunRefused(
             "explicit protected Modal rate evidence is required"
         ) from None
+    if environment.get("PWC_RELEASE_ID") != expected_release:
+        raise FleetRunRefused("protected Modal rate evidence release is inconsistent")
     try:
         return ModalRateEvidence(
             microusd_per_second=value,
             source="protected_runtime",
+            source_id=environment.get("PWC_MODAL_EXECUTOR_RATE_SOURCE_ID", ""),
+            release_id=environment.get("PWC_RELEASE_ID", ""),
+            attested_at_ms=attested_at_ms,
         )
     except ValueError:
         raise FleetRunRefused("protected Modal rate evidence is invalid") from None
+
+
+class DurableQualificationEvidence(BaseModel):
+    """Exact cross-process records for one protected qualification cohort."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    expected_users: Literal[32, 100]
+    admitted_turns: int = Field(ge=0, le=100)
+    terminal_turns: int = Field(ge=0, le=100)
+    queued_states: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    stale_fences: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    executor_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    duplicate_executor_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    workspace_creates: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    workspace_reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    workspace_evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    billed_duration_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    source: Literal["durable_qualification_records"]
 
 
 def modal_lifecycle_delta(
@@ -154,6 +186,9 @@ class DurableProfileReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     profile: Literal["32-functional-turns", "100-immediate-admission"]
+    qualification_evidence_source: Literal[
+        "durable_qualification_records", "isolated_test_harness"
+    ]
     expected_users: Literal[32, 100]
     observations: int = Field(ge=0, le=EXPECTED_USERS)
     completed: int = Field(ge=0, le=EXPECTED_USERS)
@@ -187,6 +222,9 @@ class DurableProfileReport(BaseModel):
     modal_active_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
     modal_rate_microusd_per_second: int = Field(ge=1, le=MAX_REPORT_COUNTER)
     modal_rate_source: Literal["protected_runtime"]
+    modal_rate_source_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    modal_rate_release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
+    modal_rate_attested_at_ms: int = Field(ge=1, le=MAX_REPORT_BYTES)
     modal_estimated_cost_microusd: int = Field(ge=0, le=MAX_REPORT_BYTES)
 
     @model_validator(mode="after")
@@ -238,6 +276,10 @@ class DurableProfileReport(BaseModel):
                 (
                     self.profile == "32-functional-turns"
                     and self.modal_creates + self.modal_reuses == 16
+                    and (
+                        self.qualification_evidence_source == "isolated_test_harness"
+                        or self.operation_start_count == 16
+                    )
                     and self.modal_evictions == 0
                     and self.modal_active_ms > 0
                     and self.peak_active_sandboxes > 0
@@ -248,6 +290,10 @@ class DurableProfileReport(BaseModel):
                     and self.modal_reuses == 0
                     and self.modal_evictions == 0
                     and self.modal_active_ms == 0
+                    and (
+                        self.qualification_evidence_source == "isolated_test_harness"
+                        or self.operation_start_count == 0
+                    )
                     and self.peak_active_sandboxes == 0
                 )
             )
@@ -290,7 +336,8 @@ class DurableQualificationReport(BaseModel):
         names = tuple(item.profile for item in self.profiles)
         expected = ("32-functional-turns", "100-immediate-admission")
         if names != expected[: len(names)] or any(
-            not item.passed for item in self.profiles
+            not item.passed or item.modal_rate_release_id != self.release_id
+            for item in self.profiles
         ):
             raise ValueError("durable report profiles are invalid")
         if self.status == "completed":
@@ -380,8 +427,9 @@ def aggregate_durable_profile(
     peak_active_backend_turns: int,
     peak_active_external_workers: int,
     peak_active_sandboxes: int,
-    modal_lifecycle: ModalLifecycleDelta,
     modal_rate: ModalRateEvidence,
+    modal_lifecycle: ModalLifecycleDelta | None = None,
+    qualification_evidence: DurableQualificationEvidence | None = None,
 ) -> DurableProfileReport:
     expected = resolve_durable_profile(profile.name)
     if profile != expected or len(observations) != profile.expected_users:
@@ -396,9 +444,44 @@ def aggregate_durable_profile(
     typed_failure_counts = Counter(
         item.failure_code for item in observations if item.failure_code is not None
     )
-    modal_active_ms = modal_lifecycle.active_duration_ms
+    if qualification_evidence is not None:
+        if (
+            qualification_evidence.expected_users != profile.expected_users
+            or qualification_evidence.admitted_turns != profile.expected_users
+            or qualification_evidence.terminal_turns != profile.expected_users
+        ):
+            raise FleetRunRefused("durable qualification evidence is incomplete")
+        queued_states = qualification_evidence.queued_states
+        stale_mutations = qualification_evidence.stale_fences
+        operation_start_count = qualification_evidence.executor_starts
+        duplicate_operation_start_count = (
+            qualification_evidence.duplicate_executor_starts
+        )
+        modal_creates = qualification_evidence.workspace_creates
+        modal_reuses = qualification_evidence.workspace_reuses
+        modal_evictions = qualification_evidence.workspace_evictions
+        modal_active_ms = qualification_evidence.billed_duration_ms
+    elif modal_lifecycle is not None:
+        # Retained solely for isolated, non-live unit harnesses.
+        queued_states = sum(item.queued_states for item in observations)
+        stale_mutations = sum(item.stale_mutations for item in observations)
+        operation_start_count = sum(item.operation_start_count for item in observations)
+        duplicate_operation_start_count = sum(
+            item.duplicate_operation_start_count for item in observations
+        )
+        modal_creates = modal_lifecycle.creates
+        modal_reuses = modal_lifecycle.reuses
+        modal_evictions = modal_lifecycle.evictions
+        modal_active_ms = modal_lifecycle.active_duration_ms
+    else:
+        raise FleetRunRefused("durable qualification evidence is required")
     return DurableProfileReport(
         profile=profile.name,
+        qualification_evidence_source=(
+            "durable_qualification_records"
+            if qualification_evidence is not None
+            else "isolated_test_harness"
+        ),
         expected_users=profile.expected_users,
         observations=len(observations),
         completed=sum(item.outcome == "completed" for item in observations),
@@ -407,15 +490,13 @@ def aggregate_durable_profile(
             item.outcome == "failed" or item.failure_code is not None
             for item in observations
         ),
-        queued_states=sum(item.queued_states for item in observations),
+        queued_states=queued_states,
         model_starts=sum(item.model_starts for item in observations),
-        operation_start_count=sum(item.operation_start_count for item in observations),
+        operation_start_count=operation_start_count,
         duplicate_model_starts=sum(item.model_starts > 1 for item in observations),
-        duplicate_operation_start_count=sum(
-            item.duplicate_operation_start_count for item in observations
-        ),
+        duplicate_operation_start_count=duplicate_operation_start_count,
         duplicate_turns=sum(item.duplicate_turns for item in observations),
-        stale_mutations=sum(item.stale_mutations for item in observations),
+        stale_mutations=stale_mutations,
         terminal_outcomes=sum(
             item.terminal_cause == item.outcome for item in observations
         ),
@@ -433,12 +514,15 @@ def aggregate_durable_profile(
         peak_active_backend_turns=peak_active_backend_turns,
         peak_active_external_workers=peak_active_external_workers,
         peak_active_sandboxes=peak_active_sandboxes,
-        modal_creates=modal_lifecycle.creates,
-        modal_reuses=modal_lifecycle.reuses,
-        modal_evictions=modal_lifecycle.evictions,
+        modal_creates=modal_creates,
+        modal_reuses=modal_reuses,
+        modal_evictions=modal_evictions,
         modal_active_ms=modal_active_ms,
         modal_rate_microusd_per_second=modal_rate.microusd_per_second,
         modal_rate_source=modal_rate.source,
+        modal_rate_source_id=modal_rate.source_id,
+        modal_rate_release_id=modal_rate.release_id,
+        modal_rate_attested_at_ms=modal_rate.attested_at_ms,
         modal_estimated_cost_microusd=math.ceil(
             modal_active_ms * modal_rate.microusd_per_second / 1000
         ),

@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Literal, Protocol
+from datetime import UTC, datetime
 
 import gevent
 from gevent.event import Event
@@ -38,6 +39,7 @@ from backend.loadtests.external_pi_fleet_core import (
     modal_lifecycle_delta,
     ModalLifecycleSnapshot,
     ModalRateEvidence,
+    DurableQualificationEvidence,
 )
 from backend.loadtests.external_pi_shadow_core import BaselineObservation
 
@@ -77,12 +79,30 @@ class DurableRunResources:
     peak_active_sandboxes: int
 
 
+@dataclass(frozen=True, slots=True)
+class DurableProfileMeasurement:
+    profile_name: str
+    observations: tuple[DurableTurnObservation, ...]
+    resources: DurableRunResources
+    window_started_at: datetime
+
+
 class DurableStreamTransport(Protocol):
     def open_durable_stream(self, spec: DurableUserSpec) -> Mapping[str, object]: ...
 
 
 class ModalLifecycleEvidenceSource(Protocol):
     def snapshot(self, profile_name: str) -> ModalLifecycleSnapshot: ...
+
+
+class DurableQualificationEvidenceSource(Protocol):
+    def collect(
+        self,
+        profile_name: str,
+        *,
+        window_started_at: datetime,
+        window_ended_at: datetime,
+    ) -> DurableQualificationEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +138,11 @@ def build_durable_observation(**evidence) -> DurableTurnObservation:
         "terminal_cause",
         "failure_code",
     }
-    if set(evidence) != allowed:
+    legacy_evidence = {"operation_start_ids", "queued_states", "stale_mutations"}
+    fields = set(evidence)
+    if fields != allowed and fields != allowed - legacy_evidence:
         raise FleetRunRefused("durable observation fields are invalid")
-    operation_ids = evidence.pop("operation_start_ids")
+    operation_ids = evidence.pop("operation_start_ids", ())
     if (
         not isinstance(operation_ids, (tuple, list))
         or len(operation_ids) > 1_000
@@ -137,6 +159,8 @@ def build_durable_observation(**evidence) -> DurableTurnObservation:
     ):
         raise FleetRunRefused("durable operation identity evidence is invalid")
     normalized = dict(evidence)
+    normalized.setdefault("queued_states", 0)
+    normalized.setdefault("stale_mutations", 0)
     normalized["operation_start_count"] = len(set(operation_ids))
     normalized["duplicate_operation_start_count"] = len(operation_ids) - len(
         set(operation_ids)
@@ -311,11 +335,42 @@ def run_local_durable_profile(
     monotonic: Callable[[], float] = time.monotonic,
 ):
     """Execute the exact Locust profile through an injected durable transport."""
+    lifecycle_before = lifecycle_source.snapshot(profile_name)
+    observations = _run_durable_observations(
+        profile_name=profile_name,
+        transport=transport,
+        timeout_seconds=timeout_seconds,
+        barrier_timeout_seconds=barrier_timeout_seconds,
+        monotonic=monotonic,
+    )
+    lifecycle_after = lifecycle_source.snapshot(profile_name)
+    profile = resolve_durable_profile(profile_name)
+    return aggregate_durable_profile(
+        profile=profile,
+        observations=observations,
+        peak_memory_bytes=resources.peak_memory_bytes,
+        minimum_host_mem_available_bytes=resources.minimum_host_mem_available_bytes,
+        peak_cpu_percent=resources.peak_cpu_percent,
+        peak_active_backend_turns=resources.peak_active_backend_turns,
+        peak_active_external_workers=resources.peak_active_external_workers,
+        peak_active_sandboxes=resources.peak_active_sandboxes,
+        modal_lifecycle=modal_lifecycle_delta(lifecycle_before, lifecycle_after),
+        modal_rate=modal_rate,
+    )
+
+
+def _run_durable_observations(
+    *,
+    profile_name: str,
+    transport: DurableStreamTransport,
+    timeout_seconds: float,
+    barrier_timeout_seconds: float,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> tuple[DurableTurnObservation, ...]:
     if not 0 < timeout_seconds <= 120:
         raise FleetRunRefused("durable Locust timeout is not bounded")
     if barrier_timeout_seconds > timeout_seconds:
         raise FleetRunRefused("durable concurrency barrier exceeds timeout")
-    lifecycle_before = lifecycle_source.snapshot(profile_name)
     configure_durable_profile(
         profile_name=profile_name,
         transport=transport,
@@ -352,18 +407,33 @@ def run_local_durable_profile(
         raise FleetRunRefused(_durable_failure)
     if len(_durable_observations) != expected_users:
         raise FleetRunRefused("durable Locust profile evidence is incomplete")
-    lifecycle_after = lifecycle_source.snapshot(profile_name)
-    profile = resolve_durable_profile(profile_name)
+    return tuple(_durable_observations)
+
+
+def finalize_live_durable_profile(
+    measurement: DurableProfileMeasurement,
+    *,
+    evidence_source: DurableQualificationEvidenceSource,
+    modal_rate: ModalRateEvidence,
+    window_ended_at: datetime,
+):
+    profile = resolve_durable_profile(measurement.profile_name)
+    evidence = evidence_source.collect(
+        profile.name,
+        window_started_at=measurement.window_started_at,
+        window_ended_at=window_ended_at,
+    )
+    resources = measurement.resources
     return aggregate_durable_profile(
         profile=profile,
-        observations=tuple(_durable_observations),
+        observations=measurement.observations,
         peak_memory_bytes=resources.peak_memory_bytes,
         minimum_host_mem_available_bytes=resources.minimum_host_mem_available_bytes,
         peak_cpu_percent=resources.peak_cpu_percent,
         peak_active_backend_turns=resources.peak_active_backend_turns,
         peak_active_external_workers=resources.peak_active_external_workers,
         peak_active_sandboxes=resources.peak_active_sandboxes,
-        modal_lifecycle=modal_lifecycle_delta(lifecycle_before, lifecycle_after),
+        qualification_evidence=evidence,
         modal_rate=modal_rate,
     )
 
@@ -373,24 +443,24 @@ def run_live_durable_profile(
     profile_name: str,
     transport_config,
     resources: DurableRunResources,
-    modal_rate: ModalRateEvidence,
     timeout_seconds: float = 60.0,
     barrier_timeout_seconds: float = 5.0,
 ):
     """Guarded constructor: live evidence can only use the real chat transport."""
-    from backend.loadtests.durable_chat_transport import (
-        HttpModalLifecycleEvidenceSource,
-        create_live_durable_transport,
-    )
+    from backend.loadtests.durable_chat_transport import create_live_durable_transport
 
-    return run_local_durable_profile(
+    started_at = datetime.now(UTC)
+    observations = _run_durable_observations(
         profile_name=profile_name,
-        transport=create_live_durable_transport(transport_config),
-        resources=resources,
-        lifecycle_source=HttpModalLifecycleEvidenceSource(transport_config),
-        modal_rate=modal_rate,
+        transport=create_live_durable_transport(transport_config, profile_name),
         timeout_seconds=timeout_seconds,
         barrier_timeout_seconds=barrier_timeout_seconds,
+    )
+    return DurableProfileMeasurement(
+        profile_name=profile_name,
+        observations=observations,
+        resources=resources,
+        window_started_at=started_at,
     )
 
 

@@ -3,23 +3,23 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import re
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
 from backend.loadtests.external_pi_fleet_core import (
     FleetRunRefused,
-    ModalLifecycleSnapshot,
+    DurableQualificationEvidence,
 )
 
 _STAGING_ORIGIN = "https://staging.paperswithcode.co"
 _CHAT_STREAM_PATH = "/api/v1/chat/stream"
-_MODAL_LIFECYCLE_PATH = "/api/v1/chat/admin/modal-lifecycle"
+_QUALIFICATION_EVIDENCE_PATH = "/api/v1/chat/admin/qualification-evidence"
 _MAX_EVENT_BYTES = 128 * 1024
 _MAX_STREAM_BYTES = 2 * 1024 * 1024
 _CODE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
@@ -60,6 +60,11 @@ _PROMPTS = {
 }
 
 
+def _profile_run_id(base: str, profile_name: str) -> str:
+    suffix = "f32" if profile_name == "32-functional-turns" else "a100"
+    return f"{base}-{suffix}"
+
+
 class DurableUser(Protocol):
     ordinal: int
     workload: str
@@ -85,6 +90,8 @@ class DurableChatTransportConfig:
     base_url: str
     synthetic_cookies: tuple[str, ...] = field(repr=False)
     initial_model: str
+    qualification_run_id: str = field(default="", repr=False)
+    admin_token: str = field(default="", repr=False)
     timeout_seconds: float = 90.0
 
     def __post_init__(self) -> None:
@@ -100,6 +107,14 @@ class DurableChatTransportConfig:
             raise FleetRunRefused("durable transport synthetic credentials are invalid")
         if not self.initial_model or len(self.initial_model) > 128:
             raise FleetRunRefused("durable transport model is invalid")
+        if self.qualification_run_id and not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]{0,31}", self.qualification_run_id
+        ):
+            raise FleetRunRefused("durable qualification scope is invalid")
+        if self.admin_token and not 32 <= len(self.admin_token) <= 8192:
+            raise FleetRunRefused("durable qualification admin credential is invalid")
+        if bool(self.qualification_run_id) != bool(self.admin_token):
+            raise FleetRunRefused("durable qualification credentials are incomplete")
         if not 1 <= self.timeout_seconds <= 120:
             raise FleetRunRefused("durable transport timeout is invalid")
 
@@ -176,9 +191,16 @@ class HttpSSEDurableChatTransport:
         self,
         config: DurableChatTransportConfig,
         *,
+        profile_name: str | None = None,
         session_factory: Callable[[], _HttpSession] = _requests_session,
     ) -> None:
         self._config = config
+        if profile_name is not None and profile_name not in {
+            "32-functional-turns",
+            "100-immediate-admission",
+        }:
+            raise FleetRunRefused("durable qualification profile is invalid")
+        self._profile_name = profile_name
         self._session_factory = session_factory
 
     def open_durable_stream(self, spec: DurableUser) -> Mapping[str, object]:
@@ -235,7 +257,6 @@ class HttpSSEDurableChatTransport:
         if second.status_code != 200:
             raise FleetRunRefused("durable reconnect was refused")
         ttft_ms: int | None = None
-        operation_ids: list[str] = []
         terminal_cause: str | None = None
         failure_code: str | None = None
         duplicate_turns = 0
@@ -258,13 +279,6 @@ class HttpSSEDurableChatTransport:
                         replay_session != session_id or replay_request != request_id
                     )
                     model_starts += starts
-                elif event.event == "tool_call":
-                    identity = event.data.get("id")
-                    if not isinstance(identity, str) or not 1 <= len(identity) <= 64:
-                        raise FleetRunRefused("durable operation identity is invalid")
-                    operation_ids.append(
-                        "op-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
-                    )
                 elif event.event == "error":
                     code = event.data.get("code")
                     if not isinstance(code, str) or not _CODE.fullmatch(code):
@@ -287,16 +301,26 @@ class HttpSSEDurableChatTransport:
             "reconnects": 1,
             "reconnect_successes": 1,
             "model_starts": model_starts,
-            "operation_start_ids": tuple(operation_ids),
-            "queued_states": 0,
-            "stale_mutations": 0,
             "duplicate_turns": duplicate_turns,
             "terminal_cause": terminal_cause,
             "failure_code": failure_code,
         }
 
     def _open(self, session, body: Mapping[str, object], *, after_sequence: int | None):
-        headers = {"Accept": "text/event-stream"}
+        headers = {
+            "Accept": "text/event-stream",
+            "Origin": _STAGING_ORIGIN,
+        }
+        if self._profile_name is not None:
+            headers.update(
+                {
+                    "X-Admin-Token": self._config.admin_token,
+                    "X-PWC-Qualification-Run-ID": _profile_run_id(
+                        self._config.qualification_run_id, self._profile_name
+                    ),
+                    "X-PWC-Qualification-Profile": self._profile_name,
+                }
+            )
         if after_sequence is not None:
             headers["Last-Event-ID"] = str(after_sequence)
         return session.post(
@@ -313,6 +337,7 @@ class HttpSSEDurableChatTransport:
         for chunk in response.iter_content(chunk_size=4096):
             for event in parser.feed(chunk):
                 yield event
+        parser.close()
 
     @staticmethod
     def _advance(cursor: int, event: _SSEEvent) -> int:
@@ -357,17 +382,14 @@ class HttpSSEDurableChatTransport:
             "reconnects": 0,
             "reconnect_successes": 0,
             "model_starts": 0,
-            "operation_start_ids": (),
-            "queued_states": 0,
-            "stale_mutations": 0,
             "duplicate_turns": 0,
             "terminal_cause": "refused",
             "failure_code": "chat_overload",
         }
 
 
-class HttpModalLifecycleEvidenceSource:
-    """Read the application's cumulative content-free Modal lifecycle seam."""
+class HttpDurableQualificationEvidenceSource:
+    """Read one exact durable run cohort from the protected staging API."""
 
     def __init__(
         self,
@@ -378,9 +400,17 @@ class HttpModalLifecycleEvidenceSource:
         self._config = config
         self._session_factory = session_factory
 
-    def snapshot(self, profile_name: str) -> ModalLifecycleSnapshot:
+    def collect(
+        self,
+        profile_name: str,
+        *,
+        window_started_at: datetime,
+        window_ended_at: datetime,
+    ) -> DurableQualificationEvidence:
         if profile_name not in {"32-functional-turns", "100-immediate-admission"}:
-            raise FleetRunRefused("Modal lifecycle profile is invalid")
+            raise FleetRunRefused("durable qualification profile is invalid")
+        if not self._config.admin_token or not self._config.qualification_run_id:
+            raise FleetRunRefused("durable qualification credentials are incomplete")
         session = self._session_factory()
         session.trust_env = False
         session.proxies.clear()
@@ -390,32 +420,49 @@ class HttpModalLifecycleEvidenceSource:
             domain=urlsplit(self._config.base_url).hostname,
             secure=True,
         )
-        response = session.get(
-            urljoin(self._config.base_url, _MODAL_LIFECYCLE_PATH),
-            headers={"Accept": "application/json"},
+        response = session.post(
+            urljoin(self._config.base_url, _QUALIFICATION_EVIDENCE_PATH),
+            json={
+                "run_id": _profile_run_id(
+                    self._config.qualification_run_id, profile_name
+                ),
+                "profile": profile_name,
+                "window_started_at": window_started_at.isoformat(),
+                "window_ended_at": window_ended_at.isoformat(),
+            },
+            headers={
+                "Accept": "application/json",
+                "Origin": _STAGING_ORIGIN,
+                "X-Admin-Token": self._config.admin_token,
+            },
             timeout=10.0,
             allow_redirects=False,
         )
         with response:
             if response.status_code != 200:
-                raise FleetRunRefused("Modal lifecycle snapshot is unavailable")
+                raise FleetRunRefused("durable qualification evidence is unavailable")
             try:
                 payload = response.json()
-                return ModalLifecycleSnapshot.model_validate(payload)
+                return DurableQualificationEvidence.model_validate(payload)
             except (ValueError, TypeError):
-                raise FleetRunRefused("Modal lifecycle snapshot is invalid") from None
+                raise FleetRunRefused(
+                    "durable qualification evidence is invalid"
+                ) from None
 
 
 def create_live_durable_transport(
     config: DurableChatTransportConfig,
+    profile_name: str,
 ) -> HttpSSEDurableChatTransport:
     """Construct the only transport accepted by guarded live qualification."""
-    return HttpSSEDurableChatTransport(config)
+    if not config.admin_token or not config.qualification_run_id:
+        raise FleetRunRefused("live qualification credentials are incomplete")
+    return HttpSSEDurableChatTransport(config, profile_name=profile_name)
 
 
 __all__ = (
     "DurableChatTransportConfig",
     "HttpSSEDurableChatTransport",
-    "HttpModalLifecycleEvidenceSource",
+    "HttpDurableQualificationEvidenceSource",
     "create_live_durable_transport",
 )

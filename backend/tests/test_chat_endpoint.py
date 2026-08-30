@@ -78,35 +78,47 @@ def _cookie_request() -> Request:
     )
 
 
-def test_admin_modal_lifecycle_endpoint_is_content_free_and_bounded(monkeypatch):
-    monkeypatch.setattr(get_settings(), "chat_enabled", True)
+def test_admin_qualification_evidence_is_content_free_and_bounded(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from backend.models.chat import ChatQualificationEvidenceRequest
+
+    class EvidenceService:
+        def __init__(self, db):
+            assert db is not None
+
+        def collect(self, **scope):
+            assert scope["run_id"] == "run-f32"
+            return {
+                "expected_users": 32,
+                "admitted_turns": 32,
+                "terminal_turns": 32,
+                "queued_states": 0,
+                "stale_fences": 0,
+                "executor_starts": 16,
+                "duplicate_executor_starts": 0,
+                "workspace_creates": 1,
+                "workspace_reuses": 15,
+                "workspace_evictions": 0,
+                "billed_duration_ms": 4,
+                "source": "durable_qualification_records",
+            }
+
     monkeypatch.setattr(
-        chat_router,
-        "application_modal_lifecycle_snapshot",
-        lambda: {
-            "captured_at_ms": 10,
-            "creates": 1,
-            "reuses": 2,
-            "evictions": 3,
-            "active_duration_ms": 4,
-            "source": "application_modal_lifecycle",
-        },
+        chat_router, "ChatDurableQualificationEvidenceService", EvidenceService
     )
-    app = create_app()
-    app.dependency_overrides[chat_router.require_admin] = lambda: {"role": "admin"}
+    started = datetime.now(UTC)
+    response = chat_router.chat_qualification_evidence(
+        ChatQualificationEvidenceRequest(
+            run_id="run-f32",
+            profile="32-functional-turns",
+            window_started_at=started,
+            window_ended_at=started + timedelta(seconds=1),
+        ),
+        object(),
+    )
 
-    with TestClient(app) as client:
-        response = client.get("/api/v1/chat/admin/modal-lifecycle")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "captured_at_ms": 10,
-        "creates": 1,
-        "reuses": 2,
-        "evictions": 3,
-        "active_duration_ms": 4,
-        "source": "application_modal_lifecycle",
-    }
+    assert response["executor_starts"] == 16
+    assert "turn_id" not in response and "chat_session_id" not in response
 
 
 def test_chat_quota_configuration_and_billing_api_fields_are_removed():

@@ -9,13 +9,14 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from backend.models.database import (
     ChatExternalWorker,
     ChatExternalWorkerReservation,
 )
 from backend.services.chat_external_worker_registry import ExternalWorkerClaim
-from backend.config import Settings
+from backend.config import ExternalPiWorkerEndpointConfig, Settings
 
 
 class ExternalWorkerCapacityUnavailable(RuntimeError):
@@ -58,14 +59,21 @@ def external_worker_endpoints(settings: Settings) -> tuple[ExternalWorkerEndpoin
     )
     if settings.chat_external_pi_worker_endpoints and any(legacy_values):
         raise ValueError("External worker topology is ambiguous")
+    try:
+        parsed_items = tuple(
+            ExternalPiWorkerEndpointConfig.model_validate(item, strict=True)
+            for item in settings.chat_external_pi_worker_endpoints
+        )
+    except ValidationError:
+        raise ValueError("External worker endpoint is invalid") from None
     configured = tuple(
         ExternalWorkerEndpoint(
-            endpoint_id=str(item.get("endpoint_id", "")),
-            worker_id=str(item.get("worker_id", "")),
-            base_url=str(item.get("base_url", "")),
-            token=str(item.get("token", "")),
+            endpoint_id=item.endpoint_id,
+            worker_id=item.worker_id,
+            base_url=item.base_url,
+            token=item.token,
         )
-        for item in settings.chat_external_pi_worker_endpoints
+        for item in parsed_items
     )
     if configured:
         ChatExternalWorkerCapacityRepository._endpoint_map(configured)

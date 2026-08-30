@@ -1215,8 +1215,31 @@ class _ChatSchemaDB:
                     "chat_external_workers",
                 )
             if self.include_reservation_schema:
-                names += ("chat_external_worker_reservations",)
+                names += (
+                    "chat_external_worker_reservations",
+                    "chat_qualification_evidence_events",
+                )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
+        if (
+            "character_maximum_length" in sql
+            and "chat_external_worker_reservations" in sql
+        ):
+            rows = [
+                ("request_id", "character varying", "NO", 200),
+                ("turn_id", "uuid", "YES", None),
+                ("endpoint_id", "character varying", "NO", 128),
+                ("worker_id", "character varying", "NO", 128),
+                ("instance_id", "uuid", "NO", None),
+                ("worker_generation", "bigint", "NO", None),
+                ("release_id", "character varying", "NO", 255),
+                ("contract_version", "character varying", "NO", 128),
+                ("maximum_sessions", "integer", "NO", None),
+                ("reserved_at", "timestamp with time zone", "NO", None),
+                ("expires_at", "timestamp with time zone", "NO", None),
+            ]
+            return _ChatSchemaResult(
+                rows=rows if self.include_reservation_schema else []
+            )
         if "information_schema.columns" in sql:
             rows = [
                 ("chat_sessions", "execution_backend"),
@@ -1323,6 +1346,17 @@ class _ChatSchemaDB:
                         "expires_at",
                     )
                 )
+                rows.extend(
+                    ("chat_qualification_evidence_events", name)
+                    for name in (
+                        "id",
+                        "turn_id",
+                        "chat_session_id",
+                        "event_type",
+                        "operation_digest",
+                        "occurred_at",
+                    )
+                )
             if self.include_artifact_foundation:
                 rows.extend(
                     [
@@ -1407,6 +1441,36 @@ class _ChatSchemaDB:
                     if self.include_reservation_schema
                     else []
                 )
+            if "tablename = 'chat_external_worker_reservations'" in sql:
+                rows = [
+                    (
+                        "chat_external_worker_reservations_pkey",
+                        "CREATE UNIQUE INDEX chat_external_worker_reservations_pkey "
+                        "ON staging.chat_external_worker_reservations USING btree "
+                        "(request_id)",
+                    ),
+                    (
+                        "chat_external_worker_reservations_turn_id_key",
+                        "CREATE UNIQUE INDEX chat_external_worker_reservations_turn_id_key "
+                        "ON staging.chat_external_worker_reservations USING btree "
+                        "(turn_id)",
+                    ),
+                    (
+                        "idx_chat_external_worker_reservations_capacity",
+                        "CREATE INDEX idx_chat_external_worker_reservations_capacity "
+                        "ON staging.chat_external_worker_reservations USING btree "
+                        "(worker_id, instance_id, worker_generation)",
+                    ),
+                    (
+                        "idx_chat_external_worker_reservations_unbound_expiry",
+                        "CREATE INDEX idx_chat_external_worker_reservations_unbound_expiry "
+                        "ON staging.chat_external_worker_reservations USING btree "
+                        "(expires_at) WHERE (turn_id IS NULL)",
+                    ),
+                ]
+                return _ChatSchemaResult(
+                    rows=rows if self.include_reservation_schema else []
+                )
             if "idx_chat_external_workers_dispatch" in sql:
                 return _ChatSchemaResult(
                     rows=[("idx_chat_external_workers_dispatch",)]
@@ -1443,10 +1507,22 @@ class _ChatSchemaDB:
         if "chat_external_worker_reservations_worker_generation_check" in sql:
             return _ChatSchemaResult(
                 rows=[
-                    ("chat_external_worker_reservations_pkey",),
-                    ("chat_external_worker_reservations_turn_id_key",),
-                    ("chat_external_worker_reservations_worker_generation_check",),
-                    ("chat_external_worker_reservations_maximum_sessions_check",),
+                    (
+                        "chat_external_worker_reservations_pkey",
+                        "PRIMARY KEY (request_id)",
+                    ),
+                    (
+                        "chat_external_worker_reservations_turn_id_key",
+                        "UNIQUE (turn_id)",
+                    ),
+                    (
+                        "chat_external_worker_reservations_worker_generation_check",
+                        "CHECK ((worker_generation > 0))",
+                    ),
+                    (
+                        "chat_external_worker_reservations_maximum_sessions_check",
+                        "CHECK ((maximum_sessions BETWEEN 1 AND 32))",
+                    ),
                 ]
                 if self.include_reservation_schema
                 else []
@@ -1563,7 +1639,9 @@ def test_chat_schema_rejects_each_missing_reservation_contract_item(kind, name):
             result._rows = [
                 row
                 for row in result._rows
-                if row != ("chat_external_worker_reservations", name)
+                if not (
+                    row[0] == name or row == ("chat_external_worker_reservations", name)
+                )
             ]
         elif kind == "index" and "FROM pg_indexes" in sql:
             result._rows = [row for row in result._rows if row[0] != name]
@@ -1572,6 +1650,73 @@ def test_chat_schema_rejects_each_missing_reservation_contract_item(kind, name):
         return result
 
     db.execute = without_contract_item
+    with pytest.raises(
+        RuntimeError, match="required external worker schema is missing"
+    ):
+        validate_chat_schema(
+            db,
+            Settings(environment="staging", chat_external_pi_admission_enabled=True),
+        )
+
+
+@pytest.mark.parametrize(
+    ("query_marker", "object_name", "replacement"),
+    (
+        (
+            "character_maximum_length",
+            "endpoint_id",
+            ("endpoint_id", "text", "YES", None),
+        ),
+        (
+            "tablename = 'chat_external_worker_reservations'",
+            "chat_external_worker_reservations_turn_id_key",
+            "CREATE INDEX chat_external_worker_reservations_turn_id_key "
+            "ON staging.chat_external_worker_reservations USING btree (turn_id)",
+        ),
+        (
+            "tablename = 'chat_external_worker_reservations'",
+            "idx_chat_external_worker_reservations_capacity",
+            "CREATE INDEX idx_chat_external_worker_reservations_capacity "
+            "ON staging.chat_external_worker_reservations USING btree (worker_id)",
+        ),
+        (
+            "tablename = 'chat_external_worker_reservations'",
+            "idx_chat_external_worker_reservations_unbound_expiry",
+            "CREATE INDEX idx_chat_external_worker_reservations_unbound_expiry "
+            "ON staging.chat_external_worker_reservations USING btree (expires_at)",
+        ),
+        (
+            "pg_get_constraintdef",
+            "chat_external_worker_reservations_worker_generation_check",
+            "CHECK ((worker_generation >= 0))",
+        ),
+        (
+            "pg_get_constraintdef",
+            "chat_external_worker_reservations_maximum_sessions_check",
+            "CHECK ((maximum_sessions BETWEEN 1 AND 64))",
+        ),
+    ),
+)
+def test_chat_schema_rejects_malformed_same_name_reservation_objects(
+    query_marker, object_name, replacement
+):
+    db = _ChatSchemaDB("off")
+    original_execute = db.execute
+
+    def malformed(statement):
+        result = original_execute(statement)
+        if query_marker in str(statement):
+            result._rows = [
+                (
+                    replacement
+                    if row[0] == object_name and isinstance(replacement, tuple)
+                    else ((row[0], replacement) if row[0] == object_name else row)
+                )
+                for row in result._rows
+            ]
+        return result
+
+    db.execute = malformed
     with pytest.raises(
         RuntimeError, match="required external worker schema is missing"
     ):

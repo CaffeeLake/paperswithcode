@@ -414,19 +414,20 @@ failure, duplicate start, stale mutation, or lost terminal; reconnect successes
 equal reconnect attempts; p95 TTFT at most 10,000 ms; p99 completion at most
 60,000 ms; minimum host `MemAvailable` at least 1.5 GiB; and peak CPU below 80%.
 Reports also retain bounded peak RAM, Modal create/reuse/eviction,
-terminal-cause, and typed-failure counts. Each profile is bracketed by the
-admin-only, content-free `/api/v1/chat/admin/modal-lifecycle` snapshot. Its
-delta contains application-observed workspace creates, reuses, evictions, and
-actual acquire-to-release/invalidate active duration; chat completion latency
-is never substituted for Modal duration. Cost additionally requires explicit
-protected runtime `PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`; there is no
-code default, and missing/decreasing/inconsistent snapshot or rate evidence
-refuses publication. The transport supplies opaque executor operation
-identities only to the in-process normalizer; the retained report contains only
-the unique operation-start count and duplicate-start count. Two distinct
-operations started once each pass; one identity started twice fails. Durable
-outcomes and direct operation counts are the source of truth. Best-effort logs
-are not treated as exactly once: a crash
+terminal-cause, and typed-failure counts. Protected qualification headers bind
+each admitted turn to an exact run/profile cohort. After profile teardown, the
+admin-only, content-free `/api/v1/chat/admin/qualification-evidence` endpoint
+aggregates durable cross-process records for that cohort: admitted and terminal
+turns, queue/stale-fence events, executor operations proven by successful responses,
+workspace lifecycle, and compute-interval overlap through the teardown boundary.
+This includes retained-idle billed sandbox lifetime; chat or busy-claim duration
+is never substituted. Cost additionally requires explicit protected runtime
+rate, source identity, attestation time, and exact release evidence; there is no
+code default, and missing or inconsistent evidence refuses publication. Raw
+operation identities are stored only as one-way digests and neither identities
+nor content appear in the API or report. Two distinct operations started once
+each pass; one digest started twice fails. Durable records are the source of
+truth. Best-effort logs are not treated as exactly once: a crash
 after canonical terminal commit but before log emission may undercount one
 executor-loss alert.
 

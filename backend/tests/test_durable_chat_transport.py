@@ -145,17 +145,20 @@ def test_real_transport_posts_chat_stream_and_resumes_same_turn_without_leaking_
     assert first_body["session_id"] is None
     assert second_body["session_id"] == session_id
     assert first_body["client_message_id"] == second_body["client_message_id"]
-    assert posts[0][2]["headers"] == {"Accept": "text/event-stream"}
+    assert posts[0][2]["headers"] == {
+        "Accept": "text/event-stream",
+        "Origin": "https://staging.paperswithcode.co",
+    }
     assert posts[1][2]["headers"] == {
         "Accept": "text/event-stream",
+        "Origin": "https://staging.paperswithcode.co",
         "Last-Event-ID": "1",
     }
     assert session.trust_env is False
     assert session.proxies == {}
     assert evidence["outcome"] == "completed"
     assert evidence["model_starts"] == 1
-    assert len(evidence["operation_start_ids"]) == 1
-    assert evidence["operation_start_ids"][0].startswith("op-")
+    assert "operation_start_ids" not in evidence
     assert evidence["reconnects"] == evidence["reconnect_successes"] == 1
     assert "TOP_SECRET" not in repr(evidence)
     assert "/v1/shadow" not in repr(session.calls)
@@ -181,7 +184,7 @@ def test_real_transport_preserves_typed_immediate_429_without_queueing():
 
     assert evidence["outcome"] == "refused"
     assert evidence["failure_code"] == "chat_overload"
-    assert evidence["queued_states"] == 0
+    assert "queued_states" not in evidence
 
 
 @pytest.mark.parametrize(
@@ -212,6 +215,44 @@ def test_real_transport_rejects_untyped_queue_and_invalid_sse(response):
         transport.open_durable_stream(_spec(0, "no_tool"))
 
 
+def test_real_transport_rejects_a_truncated_sse_tail():
+    from backend.loadtests.durable_chat_transport import (
+        DurableChatTransportConfig,
+        HttpSSEDurableChatTransport,
+    )
+
+    session = _Session(
+        (
+            _Response(
+                200,
+                (
+                    _frame(
+                        1,
+                        "stream_start",
+                        {
+                            "request_id": "00000000-0000-0000-0000-000000000002",
+                            "session_id": "00000000-0000-0000-0000-000000000001",
+                            "provider_execution": True,
+                        },
+                    ),
+                ),
+            ),
+            _Response(200, (b"id: 2\nevent: answer_delta\ndata: {",)),
+        )
+    )
+    transport = HttpSSEDurableChatTransport(
+        DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+        ),
+        session_factory=lambda: session,
+    )
+
+    with pytest.raises(FleetRunRefused, match="mid-event"):
+        transport.open_durable_stream(_spec(0, "no_tool"))
+
+
 def test_live_constructor_refuses_non_staging_hosts_and_injected_fakes():
     from backend.loadtests.durable_chat_transport import (
         DurableChatTransportConfig,
@@ -229,7 +270,10 @@ def test_live_constructor_refuses_non_staging_hosts_and_injected_fakes():
             base_url="https://staging.paperswithcode.co",
             synthetic_cookies=("signed-cookie",),
             initial_model="gpt-5.6-luna@openai",
-        )
+            qualification_run_id="run",
+            admin_token="a" * 32,
+        ),
+        "32-functional-turns",
     )
     assert type(live).__name__ == "HttpSSEDurableChatTransport"
 
@@ -284,7 +328,11 @@ def test_modal_lifecycle_delta_and_protected_rate_are_window_bound_not_chat_late
         peak_active_sandboxes=16,
         modal_lifecycle=modal_lifecycle_delta(before, after),
         modal_rate=ModalRateEvidence(
-            microusd_per_second=25, source="protected_runtime"
+            microusd_per_second=25,
+            source="protected_runtime",
+            source_id="modal-staging-price-v1",
+            release_id="0123456789ab-staging",
+            attested_at_ms=1,
         ),
     )
 
@@ -320,10 +368,10 @@ def test_modal_lifecycle_refuses_missing_or_contradictory_snapshot_evidence():
             modal_lifecycle_delta(before, before.model_copy(update=changes))
 
 
-def test_http_modal_lifecycle_source_reads_exact_content_free_application_seam():
+def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
     from backend.loadtests.durable_chat_transport import (
         DurableChatTransportConfig,
-        HttpModalLifecycleEvidenceSource,
+        HttpDurableQualificationEvidenceSource,
     )
 
     session = _Session(
@@ -331,32 +379,49 @@ def test_http_modal_lifecycle_source_reads_exact_content_free_application_seam()
             _Response(
                 200,
                 payload={
-                    "captured_at_ms": 100,
-                    "creates": 1,
-                    "reuses": 2,
-                    "evictions": 3,
-                    "active_duration_ms": 4,
-                    "source": "application_modal_lifecycle",
+                    "expected_users": 32,
+                    "admitted_turns": 32,
+                    "terminal_turns": 32,
+                    "queued_states": 0,
+                    "stale_fences": 0,
+                    "executor_starts": 16,
+                    "duplicate_executor_starts": 0,
+                    "workspace_creates": 1,
+                    "workspace_reuses": 15,
+                    "workspace_evictions": 0,
+                    "billed_duration_ms": 4,
+                    "source": "durable_qualification_records",
                 },
             ),
         )
     )
-    source = HttpModalLifecycleEvidenceSource(
+    source = HttpDurableQualificationEvidenceSource(
         DurableChatTransportConfig(
             base_url="https://staging.paperswithcode.co",
             synthetic_cookies=("signed-cookie",),
             initial_model="gpt-5.6-luna@openai",
+            qualification_run_id="run",
+            admin_token="a" * 32,
         ),
         session_factory=lambda: session,
     )
 
-    snapshot = source.snapshot("32-functional-turns")
+    from datetime import UTC, datetime, timedelta
 
-    get = next(call for call in session.calls if call[0] == "get")
-    assert get[1] == (
-        "https://staging.paperswithcode.co/api/v1/chat/admin/modal-lifecycle"
+    started = datetime.now(UTC)
+    snapshot = source.collect(
+        "32-functional-turns",
+        window_started_at=started,
+        window_ended_at=started + timedelta(seconds=1),
     )
-    assert snapshot.active_duration_ms == 4
+
+    post = next(call for call in session.calls if call[0] == "post")
+    assert post[1] == (
+        "https://staging.paperswithcode.co/api/v1/chat/admin/qualification-evidence"
+    )
+    assert post[2]["json"]["run_id"] == "run-f32"
+    assert post[2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
+    assert snapshot.billed_duration_ms == 4
     assert "signed-cookie" not in repr(snapshot)
 
 
@@ -364,10 +429,16 @@ def test_modal_rate_has_no_code_default_and_requires_explicit_protected_input():
     from backend.loadtests.external_pi_fleet_core import load_modal_rate_evidence
 
     with pytest.raises(FleetRunRefused, match="explicit protected Modal rate"):
-        load_modal_rate_evidence({})
+        load_modal_rate_evidence({}, expected_release="0123456789ab-staging")
 
     rate = load_modal_rate_evidence(
-        {"PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "25"}
+        {
+            "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "25",
+            "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+            "PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS": "1",
+            "PWC_RELEASE_ID": "0123456789ab-staging",
+        },
+        expected_release="0123456789ab-staging",
     )
 
     assert rate.microusd_per_second == 25

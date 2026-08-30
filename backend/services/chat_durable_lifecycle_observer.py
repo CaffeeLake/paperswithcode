@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
-from dataclasses import dataclass
 from typing import Any
 
 from backend.config import Settings
@@ -37,53 +34,6 @@ CODES = LIFECYCLE_CODES | {"reconnecting"}
 MAX_VALUE = 16 * 1024 * 1024
 
 
-@dataclass(frozen=True, slots=True)
-class ApplicationModalLifecycleSnapshot:
-    captured_at_ms: int
-    creates: int
-    reuses: int
-    evictions: int
-    active_duration_ms: int
-    source: str = "application_modal_lifecycle"
-
-
-class _ApplicationModalLifecycleCounter:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._creates = 0
-        self._reuses = 0
-        self._evictions = 0
-        self._active_duration_ms = 0
-
-    def observe(self, event: str, code: str | None, value: int) -> None:
-        with self._lock:
-            if event == "workspace_state" and code == "created":
-                self._creates += value
-            elif event == "workspace_state" and code == "reused":
-                self._reuses += value
-            elif event == "workspace_state" and code == "invalidated":
-                self._evictions += value
-            elif event == "workspace_active_ms" and code is None:
-                self._active_duration_ms += value
-
-    def snapshot(self) -> ApplicationModalLifecycleSnapshot:
-        with self._lock:
-            return ApplicationModalLifecycleSnapshot(
-                captured_at_ms=round(time.monotonic() * 1_000),
-                creates=self._creates,
-                reuses=self._reuses,
-                evictions=self._evictions,
-                active_duration_ms=self._active_duration_ms,
-            )
-
-
-_application_modal_lifecycle = _ApplicationModalLifecycleCounter()
-
-
-def application_modal_lifecycle_snapshot() -> ApplicationModalLifecycleSnapshot:
-    return _application_modal_lifecycle.snapshot()
-
-
 class DurableLifecycleObserver:
     def __init__(self, settings: Settings, *, client: Any = None) -> None:
         self.settings = settings
@@ -98,7 +48,6 @@ class DurableLifecycleObserver:
             or not 0 <= value <= MAX_VALUE
         ):
             raise ValueError("Durable lifecycle observation is invalid")
-        _application_modal_lifecycle.observe(event, code, value)
         logger.info(
             "chat durable lifecycle event=%s code=%s value=%d",
             event,

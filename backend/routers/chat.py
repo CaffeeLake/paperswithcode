@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections import deque
@@ -43,7 +44,8 @@ from backend.models.chat import (
     LatexPaperRestoreRequest,
     LatexPaperSaveCompileRequest,
     ChatSandboxSpendResponse,
-    ChatModalLifecycleResponse,
+    ChatQualificationEvidenceRequest,
+    ChatQualificationEvidenceResponse,
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
@@ -114,9 +116,10 @@ from backend.services.chat_turn_cancellation_coordinator import (
     ChatTurnCancellationCoordinator,
 )
 from backend.services.chat_turn_event_repository import JournalFrame
-from backend.services.chat_durable_lifecycle_observer import (
-    application_modal_lifecycle_snapshot,
-    durable_lifecycle_observer,
+from backend.services.chat_durable_lifecycle_observer import durable_lifecycle_observer
+from backend.services.chat_durable_qualification_evidence import (
+    ChatDurableQualificationEvidenceService,
+    QualificationEvidenceUnavailable,
 )
 from backend.services.chat_web_search_service import (
     ChatWebSearchBudgetService,
@@ -134,6 +137,7 @@ from backend.services.openrouter_byok_service import (
     OpenRouterCredentialError,
     OpenRouterCredentialUnavailable,
 )
+from backend.utils.csrf import has_valid_non_cookie_admin_credential
 from backend.services.openrouter_user_budget_service import (
     PUBLIC_SUPPORT_URL,
     OpenRouterUserBudgetService,
@@ -285,6 +289,27 @@ class AdminCreateHarnessSession(BaseModel):
     agent_harness: Literal["claude", "pi"]
     selected_model: str | None = None
     reasoning_effort: Literal["low", "high", "max"] = "low"
+
+
+def _durable_qualification_scope(
+    request: Request, settings: Settings
+) -> tuple[str, str] | None:
+    run_id = request.headers.get("X-PWC-Qualification-Run-ID")
+    profile = request.headers.get("X-PWC-Qualification-Profile")
+    if run_id is None and profile is None:
+        return None
+    if (
+        settings.environment != "staging"
+        or run_id is None
+        or profile not in {"32-functional-turns", "100-immediate-admission"}
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id)
+        or not has_valid_non_cookie_admin_credential(request, settings)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "qualification_scope_rejected"},
+        )
+    return run_id, profile
 
 
 OPENROUTER_UNAVAILABLE_MESSAGE = (
@@ -685,14 +710,28 @@ def chat_sandbox_spend(environment: str | None = None):
     )
 
 
-@router.get(
-    "/admin/modal-lifecycle",
+@router.post(
+    "/admin/qualification-evidence",
     dependencies=[Depends(require_admin)],
-    response_model=ChatModalLifecycleResponse,
+    response_model=ChatQualificationEvidenceResponse,
 )
-def chat_modal_lifecycle():
-    """Return only cumulative content-free lifecycle counters for window deltas."""
-    return application_modal_lifecycle_snapshot()
+def chat_qualification_evidence(
+    body: ChatQualificationEvidenceRequest,
+    db: Session = Depends(get_database_session),
+):
+    """Return the exact protected run cohort without identities or content."""
+    try:
+        return ChatDurableQualificationEvidenceService(db).collect(
+            run_id=body.run_id,
+            profile=body.profile,
+            window_started_at=body.window_started_at,
+            window_ended_at=body.window_ended_at,
+        )
+    except QualificationEvidenceUnavailable:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "qualification_evidence_unavailable"},
+        ) from None
 
 
 @router.get("/usage")
@@ -1814,6 +1853,7 @@ async def stream_chat(
     body: ChatRequest, request: Request, user: dict = Depends(require_user)
 ):
     settings = get_settings()
+    qualification_scope = _durable_qualification_scope(request, settings)
     after_sequence = (
         _last_event_sequence(request)
         if settings.chat_durable_turn_dispatch_enabled
@@ -1989,7 +2029,8 @@ async def stream_chat(
                 if not admission.replay_assistant and not getattr(
                     admission, "attach_only", False
                 ):
-                    ChatLatencyService(db).admit(
+                    latency = ChatLatencyService(db)
+                    latency.admit(
                         turn_id=admission.turn_id,
                         session_id=admission.session_id,
                         request_id=request_id,
@@ -1999,6 +2040,15 @@ async def stream_chat(
                         is_new_chat=body.session_id is None,
                         agent_harness=admission.agent_harness,
                     )
+                    if (
+                        qualification_scope is not None
+                        and not latency.mark_qualification(
+                            request_id,
+                            run_id=qualification_scope[0],
+                            scenario="reliability",
+                        )
+                    ):
+                        raise RuntimeError("qualification scope persistence failed")
                 db.commit()
             except ChatServiceError as exc:
                 if exc.commit_changes:

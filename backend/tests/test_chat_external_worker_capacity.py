@@ -212,6 +212,11 @@ def test_capacity_reservation_migration_is_additive_and_environment_scoped():
     assert "chat_external_worker_reservations_worker_generation_check" in migration
     assert "chat_external_worker_reservations_maximum_sessions_check" in migration
     assert (
+        "ADD CONSTRAINT chat_external_worker_reservations_worker_generation_check"
+        in migration
+    )
+    assert "VALIDATE CONSTRAINT" in migration
+    assert (
         "REVOKE ALL ON chat_external_worker_reservations FROM paperswithcode_user"
         in migration
     )

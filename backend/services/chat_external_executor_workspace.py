@@ -47,6 +47,7 @@ from backend.services.chat_turn_job_repository import (
 
 SessionFactory = Callable[[], Session]
 LifecycleObserver = Callable[[str, str | None, int], None]
+QualificationEvidenceRecorder = Callable[..., bool]
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class ExternalExecutorWorkspace:
     """One exact busy claim on a durable session workspace."""
 
     session_id: uuid.UUID
+    turn_id: uuid.UUID
     sandbox: object
     sandbox_id: str
     worker_generation: str
@@ -90,6 +92,7 @@ class ChatExternalExecutorWorkspaceManager:
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         assignment_token_factory: Callable[[], str] | None = None,
         observe: LifecycleObserver | None = None,
+        record_evidence: QualificationEvidenceRecorder | None = None,
     ) -> None:
         if settings.chat_workspace_snapshots_enabled:
             raise ValueError("External executor workspaces require snapshots disabled")
@@ -118,6 +121,7 @@ class ChatExternalExecutorWorkspaceManager:
             lambda: secrets.token_urlsafe(24)
         )
         self.observe = observe or (lambda _event, _code, _value: None)
+        self.record_evidence = record_evidence or (lambda **_kwargs: False)
 
     @classmethod
     def from_settings(
@@ -133,6 +137,9 @@ class ChatExternalExecutorWorkspaceManager:
         from backend.services.chat_durable_lifecycle_observer import (
             durable_lifecycle_observer,
         )
+        from backend.services.chat_durable_qualification_evidence import (
+            record_qualification_event,
+        )
 
         owner = SandboxSessionManager(settings, sandbox_provider=provider)
         manager = cls(
@@ -144,6 +151,7 @@ class ChatExternalExecutorWorkspaceManager:
             maintenance=owner._lease_maintenance_coordinator(),
             executor=executor,
             observe=durable_lifecycle_observer(settings),
+            record_evidence=record_qualification_event,
         )
         manager._dependency_owner = owner
         return manager
@@ -175,6 +183,7 @@ class ChatExternalExecutorWorkspaceManager:
 
             workspace = ExternalExecutorWorkspace(
                 session_id=session_id,
+                turn_id=turn_claim.turn_id,
                 sandbox=outcome.sandbox,
                 sandbox_id=claim.sandbox_id,
                 worker_generation=claim.worker_generation,
@@ -203,6 +212,19 @@ class ChatExternalExecutorWorkspaceManager:
                     "created" if outcome.public_label == "created" else "reused",
                     1,
                 )
+                try:
+                    self.record_evidence(
+                        turn_id=turn_claim.turn_id,
+                        chat_session_id=session_id,
+                        event_type=(
+                            "workspace_created"
+                            if outcome.public_label == "created"
+                            else "workspace_reused"
+                        ),
+                    )
+                except Exception:
+                    await self._invalidate_preserving_primary(workspace)
+                    raise
                 return workspace
 
             invalidated = await self._invalidate_preserving_primary(workspace)
@@ -247,6 +269,11 @@ class ChatExternalExecutorWorkspaceManager:
         )
         self._observe_active_duration(workspace)
         self.observe("workspace_state", "invalidated", 1)
+        self.record_evidence(
+            turn_id=workspace.turn_id,
+            chat_session_id=workspace.session_id,
+            event_type="workspace_evicted",
+        )
 
     def _observe_active_duration(self, workspace: ExternalExecutorWorkspace) -> None:
         elapsed_ms = max(

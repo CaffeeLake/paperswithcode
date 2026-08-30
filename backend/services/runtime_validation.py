@@ -1253,32 +1253,92 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
 
 def validate_external_worker_reservation_schema(db) -> None:
     """Require model/migration parity for protected external-worker admission."""
-    indexes = set(
+    expected_columns = {
+        "request_id": ("character varying", "NO", 200),
+        "turn_id": ("uuid", "YES", None),
+        "endpoint_id": ("character varying", "NO", 128),
+        "worker_id": ("character varying", "NO", 128),
+        "instance_id": ("uuid", "NO", None),
+        "worker_generation": ("bigint", "NO", None),
+        "release_id": ("character varying", "NO", 255),
+        "contract_version": ("character varying", "NO", 128),
+        "maximum_sessions": ("integer", "NO", None),
+        "reserved_at": ("timestamp with time zone", "NO", None),
+        "expires_at": ("timestamp with time zone", "NO", None),
+    }
+    columns = {
+        name: (data_type, nullable, maximum_length)
+        for name, data_type, nullable, maximum_length in db.execute(
+            text("""
+                SELECT column_name, data_type, is_nullable, character_maximum_length
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'chat_external_worker_reservations'
+                """)
+        ).all()
+    }
+    if columns != expected_columns:
+        raise RuntimeError("required external worker schema is missing")
+
+    index_rows = dict(
         db.execute(
             text("""
-                SELECT indexname
+                SELECT indexname, indexdef
                 FROM pg_indexes
                 WHERE schemaname = current_schema()
-                  AND indexname IN (
-                      'chat_external_worker_reservations_pkey',
-                      'chat_external_worker_reservations_turn_id_key',
-                      'idx_chat_external_worker_reservations_capacity',
-                      'idx_chat_external_worker_reservations_unbound_expiry'
-                  )
+                  AND tablename = 'chat_external_worker_reservations'
                 """)
-        ).scalars()
+        ).all()
     )
-    if indexes != {
+    expected_index_names = {
         "chat_external_worker_reservations_pkey",
         "chat_external_worker_reservations_turn_id_key",
         "idx_chat_external_worker_reservations_capacity",
         "idx_chat_external_worker_reservations_unbound_expiry",
-    }:
+    }
+    if set(index_rows) != expected_index_names:
         raise RuntimeError("required external worker schema is missing")
-    constraints = set(
+    normalized_indexes = {
+        name: " ".join(definition.lower().replace('"', "").split())
+        for name, definition in index_rows.items()
+    }
+    index_contracts = {
+        "chat_external_worker_reservations_pkey": (
+            True,
+            "(request_id)",
+            None,
+        ),
+        "chat_external_worker_reservations_turn_id_key": (
+            True,
+            "(turn_id)",
+            None,
+        ),
+        "idx_chat_external_worker_reservations_capacity": (
+            False,
+            "(worker_id, instance_id, worker_generation)",
+            None,
+        ),
+        "idx_chat_external_worker_reservations_unbound_expiry": (
+            False,
+            "(expires_at)",
+            "where (turn_id is null)",
+        ),
+    }
+    for name, (unique, columns_text, predicate) in index_contracts.items():
+        definition = normalized_indexes[name]
+        if (
+            (definition.startswith("create unique index ") != unique)
+            or f" using btree {columns_text}" not in definition
+            or (predicate is None and " where " in definition)
+            or (predicate is not None and not definition.endswith(predicate))
+        ):
+            raise RuntimeError("required external worker schema is missing")
+
+    constraint_rows = dict(
         db.execute(
             text("""
-                SELECT conname
+                SELECT constraint_row.conname,
+                       pg_get_constraintdef(constraint_row.oid, true)
                 FROM pg_constraint AS constraint_row
                 JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
                 JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
@@ -1291,14 +1351,43 @@ def validate_external_worker_reservation_schema(db) -> None:
                       'chat_external_worker_reservations_maximum_sessions_check'
                   )
                 """)
-        ).scalars()
+        ).all()
     )
-    if constraints != {
+    expected_constraint_names = {
         "chat_external_worker_reservations_pkey",
         "chat_external_worker_reservations_turn_id_key",
         "chat_external_worker_reservations_worker_generation_check",
         "chat_external_worker_reservations_maximum_sessions_check",
-    }:
+    }
+    if set(constraint_rows) != expected_constraint_names:
+        raise RuntimeError("required external worker schema is missing")
+    definitions = {
+        name: " ".join(definition.lower().replace('"', "").split())
+        for name, definition in constraint_rows.items()
+    }
+    generation_check = definitions[
+        "chat_external_worker_reservations_worker_generation_check"
+    ]
+    maximum_check = definitions[
+        "chat_external_worker_reservations_maximum_sessions_check"
+    ]
+    if (
+        definitions["chat_external_worker_reservations_pkey"]
+        != "primary key (request_id)"
+        or definitions["chat_external_worker_reservations_turn_id_key"]
+        != "unique (turn_id)"
+        or not re.fullmatch(r"check \(\(*worker_generation > 0\)*\)", generation_check)
+        or not (
+            re.fullmatch(
+                r"check \(\(*maximum_sessions between 1 and 32\)*\)", maximum_check
+            )
+            or re.fullmatch(
+                r"check \(\(*maximum_sessions >= 1\)* and "
+                r"\(*maximum_sessions <= 32\)*\)",
+                maximum_check,
+            )
+        )
+    ):
         raise RuntimeError("required external worker schema is missing")
 
 
@@ -1345,6 +1434,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
     external_worker_tables = {
         "chat_external_workers",
         "chat_external_worker_reservations",
+        "chat_qualification_evidence_events",
     }
     required_tables = (
         common_tables
@@ -1401,6 +1491,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ,('chat_turn_event_chunks')
                     ,('chat_external_workers')
                     ,('chat_external_worker_reservations')
+                    ,('chat_qualification_evidence_events')
                 ) AS required(name)
                 """)
         ).all()
@@ -1541,6 +1632,12 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_external_worker_reservations", "maximum_sessions"),
         ("chat_external_worker_reservations", "reserved_at"),
         ("chat_external_worker_reservations", "expires_at"),
+        ("chat_qualification_evidence_events", "id"),
+        ("chat_qualification_evidence_events", "turn_id"),
+        ("chat_qualification_evidence_events", "chat_session_id"),
+        ("chat_qualification_evidence_events", "event_type"),
+        ("chat_qualification_evidence_events", "operation_digest"),
+        ("chat_qualification_evidence_events", "occurred_at"),
     }
     expected_columns = (
         common_columns
@@ -1691,6 +1788,12 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_external_worker_reservations', 'maximum_sessions')
                 ,('chat_external_worker_reservations', 'reserved_at')
                 ,('chat_external_worker_reservations', 'expires_at')
+                ,('chat_qualification_evidence_events', 'id')
+                ,('chat_qualification_evidence_events', 'turn_id')
+                ,('chat_qualification_evidence_events', 'chat_session_id')
+                ,('chat_qualification_evidence_events', 'event_type')
+                ,('chat_qualification_evidence_events', 'operation_digest')
+                ,('chat_qualification_evidence_events', 'occurred_at')
             )
             """)
         ).all()

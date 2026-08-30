@@ -52,6 +52,7 @@ from backend.loadtests.external_pi_fleet_core import (
     ModalLifecycleDelta,
     ModalLifecycleSnapshot,
     ModalRateEvidence,
+    DurableQualificationEvidence,
 )
 from backend.loadtests.external_pi_shadow_core import (
     BaselineObservation,
@@ -69,7 +70,13 @@ _NO_MODAL = ModalLifecycleDelta(creates=0, reuses=0, evictions=0, active_duratio
 _FUNCTIONAL_MODAL = ModalLifecycleDelta(
     creates=1, reuses=15, evictions=0, active_duration_ms=16_000
 )
-_MODAL_RATE = ModalRateEvidence(microusd_per_second=25, source="protected_runtime")
+_MODAL_RATE = ModalRateEvidence(
+    microusd_per_second=25,
+    source="protected_runtime",
+    source_id="modal-staging-price-v1",
+    release_id="0123456789ab-staging",
+    attested_at_ms=1,
+)
 
 
 class _LifecycleSource:
@@ -222,21 +229,52 @@ def test_durable_profile_report_records_required_content_free_measurements():
     assert report.modal_estimated_cost_microusd == math.ceil(
         report.modal_active_ms * report.modal_rate_microusd_per_second / 1000
     )
-    assert report.terminal_cause_counts == {"completed": 32}
-    assert report.typed_failure_counts == {}
-    assert report.peak_active_backend_turns == 32
-    assert report.peak_active_external_workers == 4
-    assert report.peak_active_sandboxes == 8
-    assert report.model_copy(update={"modal_active_ms": 0}).passed is False
-    assert "content" not in report.model_dump()
-    assert (
-        report.model_copy(update={"terminal_cause_counts": {"completed": 1}}).passed
-        is False
+
+
+def test_live_report_requires_durable_executor_start_and_duplicate_evidence():
+    profile = resolve_durable_profile("32-functional-turns")
+    observations = tuple(
+        DurableTurnObservation(
+            outcome="completed",
+            ttft_ms=100,
+            completion_ms=1_000,
+            model_starts=1,
+            terminal_cause="completed",
+        )
+        for _ in profile.workloads
     )
-    assert (
-        report.model_copy(update={"typed_failure_counts": {"execution_lost": 1}}).passed
-        is False
-    )
+    base = {
+        "expected_users": 32,
+        "admitted_turns": 32,
+        "terminal_turns": 32,
+        "queued_states": 0,
+        "stale_fences": 0,
+        "executor_starts": 16,
+        "duplicate_executor_starts": 0,
+        "workspace_creates": 1,
+        "workspace_reuses": 15,
+        "workspace_evictions": 0,
+        "billed_duration_ms": 16_000,
+        "source": "durable_qualification_records",
+    }
+
+    def aggregate(evidence):
+        return aggregate_durable_profile(
+            profile=profile,
+            observations=observations,
+            peak_memory_bytes=2 * 1024**3,
+            minimum_host_mem_available_bytes=2 * 1024**3,
+            peak_cpu_percent=20.0,
+            peak_active_backend_turns=32,
+            peak_active_external_workers=4,
+            peak_active_sandboxes=16,
+            qualification_evidence=DurableQualificationEvidence(**evidence),
+            modal_rate=_MODAL_RATE,
+        )
+
+    assert aggregate(base).passed is True
+    assert aggregate({**base, "executor_starts": 0}).passed is False
+    assert aggregate({**base, "duplicate_executor_starts": 1}).passed is False
 
 
 def test_durable_profile_report_fails_refusal_queue_duplicate_or_lost_terminal():
@@ -516,6 +554,26 @@ def test_durable_controller_runs_32_then_100_and_restores_everything():
 
     assert result.status == "completed"
     assert result.passed is True
+
+
+def test_durable_controller_finalizes_billed_evidence_after_profile_teardown():
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    class TwoPhaseOperator(_DurableOperator):
+        def finalize_profile(self, profile, measurement):
+            self.events.append(("finalize", profile.name))
+            return measurement
+
+    operator = TwoPhaseOperator()
+    result = run_durable_qualification(operator)
+
+    assert result.passed is True
+    for name in ("32-functional-turns", "100-immediate-admission"):
+        assert operator.events.index(("teardown", name)) < operator.events.index(
+            ("finalize", name)
+        )
     assert [report.profile for report in result.profiles] == [
         "32-functional-turns",
         "100-immediate-admission",
@@ -1654,33 +1712,32 @@ def test_live_durable_runner_constructs_real_transport_and_accepts_no_fake(monke
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
     from backend.loadtests.durable_chat_transport import (
         DurableChatTransportConfig,
-        HttpModalLifecycleEvidenceSource,
         HttpSSEDurableChatTransport,
     )
 
     captured = {}
 
-    def run_local(**kwargs):
+    def run_observations(**kwargs):
         captured.update(kwargs)
-        return "report"
+        return ()
 
-    monkeypatch.setattr(adapter, "run_local_durable_profile", run_local)
+    monkeypatch.setattr(adapter, "_run_durable_observations", run_observations)
     config = DurableChatTransportConfig(
         base_url="https://staging.paperswithcode.co",
         synthetic_cookies=("signed-cookie",),
         initial_model="gpt-5.6-luna@openai",
+        qualification_run_id="run",
+        admin_token="a" * 32,
     )
 
     result = adapter.run_live_durable_profile(
         profile_name="32-functional-turns",
         transport_config=config,
         resources=adapter.DurableRunResources(1, 2 * 1024**3, 1.0, 32, 4, 0),
-        modal_rate=_MODAL_RATE,
     )
 
-    assert result == "report"
+    assert result.profile_name == "32-functional-turns"
     assert type(captured["transport"]) is HttpSSEDurableChatTransport
-    assert type(captured["lifecycle_source"]) is HttpModalLifecycleEvidenceSource
     assert "/v1/shadow" not in repr(captured)
 
 
@@ -1708,8 +1765,9 @@ def test_guarded_live_operator_delegates_run_only_to_live_runner(monkeypatch):
             base_url="https://staging.paperswithcode.co",
             synthetic_cookies=("signed-cookie",),
             initial_model="gpt-5.6-luna@openai",
+            qualification_run_id="run",
+            admin_token="a" * 32,
         ),
-        modal_rate=_MODAL_RATE,
     )
 
     assert operator.run_profile(profile) == "profile-report"
