@@ -204,7 +204,131 @@ def test_valid_glm_decision_is_not_second_guessed_by_luna() -> None:
     assert len(calls) == 1
 
 
-def test_invalid_glm_schema_retries_once_with_direct_luna() -> None:
+def test_glm_block_is_overruled_by_luna_allow() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.host == "router.huggingface.co":
+            content = '{"reason":"finance domain","decision":"block"}'
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 8},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"reason":"ML research request",'
+                                    '"decision":"allow"}'
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 22, "output_tokens": 7},
+            },
+        )
+
+    async def scenario() -> ScopeDecision:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await ScopeGuardrailService(_settings(), client=client).classify(
+                [
+                    ScopeMessage(
+                        role="user", content="State-of-the-art volatility models"
+                    )
+                ]
+            )
+
+    result = asyncio.run(scenario())
+
+    assert result.decision == "allow"
+    assert result.provider == "openai"
+    assert result.attempts == 2
+    assert calls == ["router.huggingface.co", "api.openai.com"]
+    assert [attempt.decision for attempt in result.attempt_records] == [
+        "block",
+        "allow",
+    ]
+
+
+def test_glm_and_luna_must_both_block() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.host == "router.huggingface.co":
+            content = '{"reason":"application build","decision":"block"}'
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": content}}]},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"reason":"application build","decision":"block"}'
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    async def scenario() -> ScopeDecision:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await ScopeGuardrailService(_settings(), client=client).classify(
+                [ScopeMessage(role="user", content="Build a restaurant booking app")]
+            )
+
+    result = asyncio.run(scenario())
+
+    assert result.decision == "block"
+    assert result.attempts == 2
+    assert calls == ["router.huggingface.co", "api.openai.com"]
+
+
+def test_unconfirmed_glm_block_fails_open() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "router.huggingface.co":
+            content = '{"reason":"ambiguous","decision":"block"}'
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": content}}]},
+            )
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    async def scenario() -> ScopeDecision:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await ScopeGuardrailService(_settings(), client=client).classify(
+                [ScopeMessage(role="user", content="Self-improving agent")]
+            )
+
+    result = asyncio.run(scenario())
+
+    assert result.decision == "allow"
+    assert result.provider == "fail-open"
+    assert result.attempts == 2
+    assert result.fail_open is True
+
+
+def test_invalid_glm_schema_cannot_become_a_confirmed_block() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -248,10 +372,32 @@ def test_invalid_glm_schema_retries_once_with_direct_luna() -> None:
 
     result = asyncio.run(scenario())
 
-    assert result.decision == "block"
-    assert result.provider == "openai"
+    assert result.decision == "allow"
+    assert result.provider == "fail-open"
     assert result.attempts == 2
+    assert result.fail_open is True
     assert calls == ["router.huggingface.co", "api.openai.com"]
+
+
+def test_glm_timeout_cannot_become_a_confirmed_block(monkeypatch) -> None:
+    service = ScopeGuardrailService(_settings())
+
+    async def timeout(_messages: list[ScopeMessage]) -> ScopeDecision:
+        raise TimeoutError
+
+    async def luna_block(_messages: list[ScopeMessage]) -> ScopeDecision:
+        return ScopeDecision("application build", "block", "openai", 2, False)
+
+    monkeypatch.setattr(service, "_glm", timeout)
+    monkeypatch.setattr(service, "_luna", luna_block)
+
+    result = asyncio.run(
+        service.classify([ScopeMessage(role="user", content="Build a booking app")])
+    )
+
+    assert result.decision == "allow"
+    assert result.provider == "fail-open"
+    assert result.fail_open is True
 
 
 def test_double_provider_failure_fails_open_after_two_attempts() -> None:
