@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { createExternalWorkerServer } from "./external_server.js";
+import { prewarmExternalWorkerAndListen } from "./external_startup.js";
 import { PiWorker } from "./agent.js";
 import { RemoteToolBridge } from "./external_tools.js";
 
@@ -35,14 +36,15 @@ const toolNames = JSON.parse(toolNamesValue) as unknown;
 if (!Array.isArray(toolNames) || toolNames.some((name) => typeof name !== "string")) {
   throw new Error("External shadow worker tool profile is invalid");
 }
+const profile = { prompt: readFileSync(promptPath, "utf8"), tool_names: toolNames };
 
-createExternalWorkerServer({
+const server = createExternalWorkerServer({
   token,
   maximumConcurrent,
   workerId,
   instanceId,
   releaseId,
-  profile: { prompt: readFileSync(promptPath, "utf8"), tool_names: toolNames },
+  profile,
   capabilityEvidence: {
     provider_credentials_present: [
       "OPENAI_API_KEY", "PWC_OPENAI_API_KEY", "PWC_OPENROUTER_API_KEY",
@@ -63,4 +65,10 @@ createExternalWorkerServer({
     },
     new RemoteToolBridge(channel),
   ),
-}).listen(port, host);
+});
+
+await prewarmExternalWorkerAndListen({
+  maximumConcurrent,
+  profile,
+  listen: () => server.listen(port, host),
+});

@@ -8,7 +8,7 @@ import { toolNameDigest } from "./mcp_app_registry.js";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
-const MAX_TRANSCRIPT_ENTRIES = 2_000;
+export const MAX_EXTERNAL_SHADOW_TRANSCRIPT_ENTRIES = 2_000;
 const MAX_TRANSCRIPT_BYTES = 25 * 1024 * 1024;
 const MAX_TOOL_NAMES = 128;
 
@@ -101,7 +101,10 @@ function validateRequestEnvelope(request: ExternalShadowRequest): void {
   ) {
     throw new Error("External shadow expected profile is invalid");
   }
-  if (!request.transcript_entries.length || request.transcript_entries.length > MAX_TRANSCRIPT_ENTRIES) {
+  if (
+    !request.transcript_entries.length
+    || request.transcript_entries.length > MAX_EXTERNAL_SHADOW_TRANSCRIPT_ENTRIES
+  ) {
     throw new Error("External shadow transcript count is invalid");
   }
   const transcriptBytes = Buffer.byteLength(JSON.stringify(request.transcript_entries));
