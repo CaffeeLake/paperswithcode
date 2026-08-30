@@ -430,6 +430,8 @@ class _DurableOperator:
 
     def teardown_profile(self, profile):
         self.events.append(("teardown", profile.name))
+        if self.failure_stage == f"teardown:{profile.name}":
+            raise RuntimeError("TOP_SECRET_teardown")
         self._fail("teardown")
 
     def restore_flags(self, flags):
@@ -561,6 +563,21 @@ def test_durable_controller_restores_after_setup_failure():
     assert ("teardown", "32-functional-turns") in operator.events
     assert operator.events[-2][0] == "restore_flags"
     assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_second_teardown_failure_retains_only_first_profile():
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator(failure_stage="teardown:100-immediate-admission")
+
+    result = run_durable_qualification(operator)
+
+    assert result.status == "failed"
+    assert result.reason == "durable_qualification_failed"
+    assert [profile.profile for profile in result.profiles] == ["32-functional-turns"]
+    assert result.cleanup_passed is True
 
 
 def test_durable_controller_cannot_skip_or_reverse_the_binding_profile_order():
@@ -717,7 +734,9 @@ def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
         )
 
 
-@pytest.mark.parametrize("reason", ("test_failure", "cleanup_failed"))
+@pytest.mark.parametrize(
+    "reason", ("test_failure", "cleanup_failed", "durable_qualification_failed")
+)
 def test_completed_report_cannot_be_forged_as_contradictory_failure(
     reason: str, tmp_path: Path
 ) -> None:
@@ -783,7 +802,7 @@ def test_controller_generated_cleanup_failure_is_a_valid_failed_report() -> None
 @pytest.mark.parametrize(
     ("reason", "profile_count", "flags_restored"),
     (
-        ("durable_qualification_failed", 2, True),
+        ("durable_qualification_failed", 1, True),
         ("durable_profile_failed", 1, True),
         ("staging_isolation_required", 1, True),
         ("exact_staging_release_required", 1, True),

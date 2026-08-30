@@ -220,9 +220,9 @@ def run_durable_qualification(
                 report = operator.run_profile(profile)
                 if report.profile != profile.name or not report.passed:
                     raise QualificationRefused("durable_profile_failed")
-                reports.append(report)
             finally:
                 operator.teardown_profile(profile)
+            reports.append(report)
         else:
             status = "completed"
             reason = None

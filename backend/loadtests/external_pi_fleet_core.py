@@ -217,7 +217,7 @@ class DurableQualificationReport(BaseModel):
             if self.reason is None:
                 raise ValueError("failed durable report requires a typed reason")
             failed_profile_limits = {
-                "durable_qualification_failed": 2,
+                "durable_qualification_failed": 1,
                 "durable_profile_failed": 1,
                 "cleanup_failed": 2,
                 "staging_isolation_required": 1,
