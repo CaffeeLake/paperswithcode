@@ -59,6 +59,8 @@ from deploy.external_pi_qualification_contract import (
     QUALIFICATION_WORKER_UNITS,
 )
 
+HOST_CPU_AGGREGATE_SECONDS = 1.0
+
 
 class FleetOperator(Protocol):
     runtime_id: str
@@ -525,8 +527,10 @@ class SystemFleetOperator:
         counters = tuple(int(value) for value in fields[1:])
         return sum(counters), counters[3] + counters[4]
 
-    def _sample_host_cpu_percent(self, interval_seconds: float = 0.1) -> float:
-        if not 0.1 <= interval_seconds <= 1.0:
+    def _sample_host_cpu_percent(
+        self, interval_seconds: float = HOST_CPU_AGGREGATE_SECONDS
+    ) -> float:
+        if interval_seconds != HOST_CPU_AGGREGATE_SECONDS:
             raise FleetRunRefused("external Pi fleet CPU sample interval is invalid")
         before_total, before_idle = self._read_host_cpu()
         self.sleep(interval_seconds)
@@ -549,7 +553,7 @@ class SystemFleetOperator:
             f"paperswithcode-staging-external-pi-worker@{slot}.service",
             "MemoryCurrent",
         )["MemoryCurrent"]
-        cpu_percent = self._sample_host_cpu_percent()
+        cpu_percent = self._sample_host_cpu_percent(HOST_CPU_AGGREGATE_SECONDS)
         if supervisor_memory <= 0 or worker_memory <= 0:
             return ResourcePreflight("resource_refused", 0, cpu_percent, 80.0)
         session_scale = shape.sessions_per_worker / 8
@@ -728,7 +732,7 @@ class SystemFleetOperator:
             )
         return ResourceEvidence(
             peak_memory_bytes=sum(item.peak_memory_bytes for item in unit_peaks),
-            peak_cpu_percent=self._sample_host_cpu_percent(),
+            peak_cpu_percent=self._sample_host_cpu_percent(HOST_CPU_AGGREGATE_SECONDS),
             peak_tasks=sum(item.peak_tasks for item in unit_peaks),
             minimum_host_mem_available_bytes=self._mem_available_bytes(),
             unit_peaks=tuple(unit_peaks),

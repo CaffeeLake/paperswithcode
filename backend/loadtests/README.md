@@ -235,6 +235,11 @@ sudo uv run --isolated --env-file /etc/paperswithcode/staging.env \
 The default `100-user` profile runs shapes sequentially in the fixed order
 5x32, 8x16, and 16x8. An unsafe
 projected-memory or CPU check records `resource_refused`; it is never overridden.
+Host CPU evidence is the aggregate `/proc/stat` delta over one fixed second;
+an aggregate at or above 80% refuses the run. Live abort latency also includes
+the bounded sequential per-unit inspection before each CPU window and the
+0.1-second polling gap; there is no separate hard overall latency bound. The
+guard does not cache, smooth, or bypass this evidence.
 Each admitted shape runs exactly 100 healthy users, drains and stops one exact
 observed generation, then runs exactly 100 users against the survivors. The
 mode-0600 report is atomically replaced and contains only bounded counters,

@@ -2665,6 +2665,37 @@ def test_controller_recovery_distinguishes_failure_stage_without_error_text(
     assert secret not in retained_text
 
 
+def test_initial_eighty_percent_cpu_checkpoint_retains_clean_threshold_recovery(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class ThresholdOperator(_FleetOperator):
+        def sample_resources(self, shape):
+            return (
+                super()
+                .sample_resources(shape)
+                .model_copy(update={"peak_cpu_percent": 80.0})
+            )
+
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(FleetRunRefused, match="resource guard crossed"):
+        run_fleet_controller(
+            ThresholdOperator(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("2x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained = json.loads(report_path.read_text(encoding="utf-8"))
+    assert retained["failure_stage"] == "resource_threshold"
+    assert retained["failure_code"] == "resource_threshold_crossed"
+    assert retained["replicas"] == []
+    assert retained["cleanup_complete"] is True
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_stage", "expected_code"),
     (
@@ -3425,13 +3456,13 @@ def test_system_resource_preflight_scales_worker_memory_by_session_limit(monkeyp
 
     preflight = operator.resource_preflight(resolve_fleet_shape("5x32"))
 
-    assert slept == [0.1]
+    assert slept == [1.0]
     assert preflight.observed_cpu_percent == 80.0
     assert preflight.status == "resource_refused"
     assert preflight.projected_mem_available_bytes == 4 * 1024**3 - 2250 * 1024**2
 
 
-def test_system_resource_samples_host_cpu_over_at_least_one_tenth_second():
+def test_system_resource_samples_host_cpu_over_one_second():
     from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
 
     operator = object.__new__(SystemFleetOperator)
@@ -3449,17 +3480,43 @@ def test_system_resource_samples_host_cpu_over_at_least_one_tenth_second():
 
     evidence = operator.sample_resources(resolve_fleet_shape("2x32"))
 
-    assert slept == [0.1]
+    assert slept == [1.0]
     assert evidence.peak_cpu_percent == 80.0
 
 
-def test_system_host_cpu_sampler_rejects_sub_tenth_second_window():
+def test_system_resource_sample_below_eighty_percent_remains_safe():
+    from backend.scripts.qualify_external_pi_fleet import (
+        SystemFleetOperator,
+        _resources_safe,
+    )
+
+    operator = object.__new__(SystemFleetOperator)
+    operator._unit_cpu_state = {}
+    operator._systemctl_properties = lambda _unit, *_names: {
+        "MemoryPeak": 1,
+        "CPUUsageNSec": 1,
+        "TasksCurrent": 1,
+    }
+    operator._mem_available_bytes = lambda: 2 * 1024**3
+    cpu = iter(((100, 80), (200, 101)))
+    operator._read_host_cpu = lambda: next(cpu)
+    slept = []
+    operator.sleep = lambda seconds: slept.append(seconds)
+
+    evidence = operator.sample_resources(resolve_fleet_shape("2x32"))
+
+    assert slept == [1.0]
+    assert evidence.peak_cpu_percent == 79.0
+    assert _resources_safe(evidence) is True
+
+
+def test_system_host_cpu_sampler_rejects_sub_one_second_window():
     from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
 
     operator = object.__new__(SystemFleetOperator)
 
     with pytest.raises(FleetRunRefused, match="sample interval"):
-        operator._sample_host_cpu_percent(0.099)
+        operator._sample_host_cpu_percent(0.999)
 
 
 def test_system_resource_adapter_parses_only_requested_numeric_properties():
@@ -3548,7 +3605,7 @@ def test_system_sample_resources_aggregates_injected_exact_unit_and_host_evidenc
     assert len(second.unit_peaks) == 10
     assert {item.peak_cpu_percent for item in second.unit_peaks} == {50.0}
     assert set(calls.values()) == {2}
-    assert slept == [0.1, 0.1]
+    assert slept == [1.0, 1.0]
 
 
 def test_controller_concurrently_aborts_round_when_live_resource_guard_crosses(
