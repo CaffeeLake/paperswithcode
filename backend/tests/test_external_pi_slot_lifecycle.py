@@ -16,6 +16,9 @@ import deploy.cli as deploy_cli
 import deploy.external_pi_slot_launcher as launcher
 import deploy.external_pi_slot_lifecycle as lifecycle
 import deploy.external_pi_worker_launcher as worker_launcher
+from backend.config import Settings
+from backend.services.chat_external_worker_capacity import external_worker_endpoints
+from backend.services.runtime_validation import validate_external_pi_migration_policy
 
 
 def _release(root: Path, slot: str, runtime_id: str = "a" * 64) -> Path:
@@ -136,6 +139,7 @@ def test_child_environments_are_strictly_scrubbed(tmp_path: Path):
         "PWC_DB_PASSWORD",
         "PWC_DB_SEARCH_PATH",
         "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_ID",
         "PWC_CHAT_EXTERNAL_PI_WORKER_URL",
         "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN",
         "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION",
@@ -151,6 +155,46 @@ def test_child_environments_are_strictly_scrubbed(tmp_path: Path):
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "http://127.0.0.1:8767"
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
     assert "PWC_HF_TOKEN" not in supervisor
+
+
+@pytest.mark.parametrize(("slot", "port"), (("blue", 8766), ("green", 8767)))
+def test_supervisor_child_settings_resolve_complete_slot_worker_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str, port: int
+):
+    worker_id = f"staging-{slot}"
+    resolved = lifecycle.ExternalPiSlot(
+        slot=slot,
+        port=port,
+        worker_id=worker_id,
+        release=tmp_path / "release",
+        release_id=f"release-{slot}",
+        runtime=tmp_path / "runtime",
+        node=tmp_path / "runtime/node/bin/node",
+        entry_point=tmp_path / "runtime/dist/src/external_http_main.js",
+        prompt=tmp_path / "runtime/assets/pi-system-prompt.txt",
+        status_path=tmp_path / "status.json",
+    )
+    child_environment = lifecycle.supervisor_environment(
+        resolved,
+        {"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "t" * 32},
+    )
+
+    assert child_environment["PWC_CHAT_EXTERNAL_PI_WORKER_ID"] == worker_id
+
+    with monkeypatch.context() as scoped:
+        for key in tuple(os.environ):
+            if key.startswith("PWC_CHAT_EXTERNAL_PI_WORKER_"):
+                scoped.delenv(key)
+        for key, value in child_environment.items():
+            scoped.setenv(key, value)
+        settings = Settings(_env_file=None)
+
+    validate_external_pi_migration_policy(settings)
+    (endpoint,) = external_worker_endpoints(settings)
+    assert endpoint.endpoint_id == "legacy"
+    assert endpoint.worker_id == worker_id
+    assert endpoint.base_url == f"http://127.0.0.1:{port}"
+    assert endpoint.token == "t" * 32
 
 
 def test_candidate_requires_authenticated_durable_lifecycle_evidence(

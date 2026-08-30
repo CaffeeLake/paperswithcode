@@ -149,6 +149,7 @@ def supervisor_environment(
             "PWC_ENVIRONMENT": "staging",
             "PWC_RELEASE_ID": resolved.release_id,
             "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED": "true",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_ID": resolved.worker_id,
             "PWC_CHAT_EXTERNAL_PI_WORKER_URL": f"http://127.0.0.1:{resolved.port}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": CONTRACT_VERSION,
             "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": str(MAXIMUM_SESSIONS),
