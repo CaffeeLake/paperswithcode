@@ -251,6 +251,41 @@ def test_executor_start_evidence_follows_successful_executor_operation():
     assert events[-1] == "state:running"
 
 
+def test_compatibility_tool_helper_supplies_the_stale_boundary():
+    runner = _tool_runner(FakeExecutor(), FakeWorkspaceManager(FakeProvider()))
+    recorded = []
+    runner.record_evidence = lambda **event: recorded.append(event) or True
+
+    async def execute(request, *, operation_id, operation, stale_boundary):
+        assert request["tool_call_id"] == "tool-1"
+        assert operation_id == "operation-1"
+        assert operation == "read"
+        stale_boundary.reject()
+        return {"type": "tool_result", "operation_id": operation_id, "ok": True}
+
+    runner.tool_executor._execute = execute
+    result = asyncio.run(
+        runner._execute_tool_result(
+            {"tool_call_id": "tool-1"},
+            operation_id="operation-1",
+            operation="read",
+        )
+    )
+
+    assert result == {
+        "type": "tool_result",
+        "operation_id": "operation-1",
+        "ok": True,
+    }
+    assert recorded == [
+        {
+            "turn_id": runner.admission.turn_id,
+            "chat_session_id": runner.admission.session_id,
+            "event_type": "stale_fence",
+        }
+    ]
+
+
 class FakeWorkspaceManager:
     def __init__(self, provider):
         self.provider = provider

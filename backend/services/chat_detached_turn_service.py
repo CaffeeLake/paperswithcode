@@ -32,6 +32,9 @@ from backend.services.chat_turn_job_repository import (
     TurnLeaseClaim,
     classify_expired_turn,
 )
+from backend.services.chat_qualification_stale_boundary import (
+    QualificationStaleFenceBoundary,
+)
 from backend.services.chat_turn_lifecycle import terminal_stream_outcome
 
 _T = TypeVar("_T")
@@ -250,6 +253,7 @@ class DetachedTurnCoordinator:
         *,
         turn: DetachedTurn,
         source: AsyncIterator[ChatStreamFrame],
+        stale_boundary: QualificationStaleFenceBoundary | None = None,
     ) -> DetachedTurnHandle:
         async with self._start_lock:
             now = self._clock()
@@ -292,7 +296,10 @@ class DetachedTurnCoordinator:
             )
             self._handles[turn.turn_id] = handle
             self._observe("turn_state", "running", 1)
-            handle.source_task = asyncio.create_task(self._pump(handle))
+            pump = self._pump(handle)
+            if stale_boundary is not None:
+                pump = stale_boundary.call(pump)
+            handle.source_task = asyncio.create_task(pump)
             return handle
 
     async def subscribe(

@@ -178,7 +178,7 @@ def test_real_transport_posts_chat_stream_and_resumes_same_turn_without_leaking_
     (
         ("no_tool", "no_tool"),
         ("admission_stream", "no_tool"),
-        ("read_only_cli", "read"),
+        ("read", "read"),
         ("bash", "bash"),
     ),
 )
@@ -205,6 +205,67 @@ def test_qualified_transport_sends_the_closed_persisted_workload(workload, persi
     headers = session.calls[0][2]["headers"]
     assert headers["X-PWC-Qualification-Scope-ID"] == str(scope_id)
     assert headers["X-PWC-Qualification-Workload"] == persisted
+
+
+def test_read_workload_requires_the_pi_read_tool_for_a_known_executor_file():
+    from backend.loadtests.durable_chat_transport import (
+        DurableChatTransportConfig,
+        HttpSSEDurableChatTransport,
+    )
+
+    session_id = "00000000-0000-0000-0000-000000000011"
+    request_id = "00000000-0000-0000-0000-000000000012"
+    session = _Session(
+        (
+            _Response(
+                200,
+                (
+                    _frame(
+                        1,
+                        "stream_start",
+                        {
+                            "request_id": request_id,
+                            "session_id": session_id,
+                            "provider_execution": True,
+                        },
+                    ),
+                ),
+            ),
+            _Response(
+                200,
+                (
+                    _frame(
+                        2,
+                        "tool_call",
+                        {
+                            "id": "read-1",
+                            "name": "Read",
+                            "input": {"path": "/opt/pwc/PWC_CLI_SKILL.md"},
+                        },
+                    ),
+                    _frame(3, "done", {"finish_reason": "success", "followups": []}),
+                ),
+            ),
+        )
+    )
+    transport = HttpSSEDurableChatTransport(
+        DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+        ),
+        session_factory=lambda: session,
+    )
+
+    transport.open_durable_stream(_spec(0, "read"))
+
+    prompt = next(call for call in session.calls if call[0] == "post")[2]["json"][
+        "message"
+    ]
+    assert prompt == (
+        "Use the Read tool exactly once to read /opt/pwc/PWC_CLI_SKILL.md. "
+        "Do not use Bash or any other tool."
+    )
 
 
 def test_real_transport_preserves_typed_immediate_429_without_queueing():

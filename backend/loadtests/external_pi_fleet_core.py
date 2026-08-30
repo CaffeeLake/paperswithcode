@@ -35,7 +35,7 @@ MAX_REPORT_DURATION_MS = 60_000
 MAX_DURABLE_DURATION_MS = 600_000
 MAX_REPORT_BYTES = 2**63 - 1
 FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
-DurableWorkload = Literal["no_tool", "read_only_cli", "bash", "admission_stream"]
+DurableWorkload = Literal["no_tool", "read", "bash", "admission_stream"]
 
 
 class FleetRunRefused(RuntimeError):
@@ -410,7 +410,7 @@ _DURABLE_PROFILES = {
         name="32-functional-turns",
         expected_users=32,
         spawn_rate=32,
-        workloads=("no_tool",) * 16 + ("read_only_cli",) * 8 + ("bash",) * 8,
+        workloads=("no_tool",) * 16 + ("read",) * 8 + ("bash",) * 8,
     ),
     "100-immediate-admission": DurableQualificationProfile(
         name="100-immediate-admission",

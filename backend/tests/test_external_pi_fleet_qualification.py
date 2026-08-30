@@ -176,7 +176,7 @@ def test_durable_profiles_bind_32_mixed_turns_then_100_immediate_admissions():
 
     assert functional.expected_users == functional.spawn_rate == 32
     assert Counter(functional.workloads) == Counter(
-        {"no_tool": 16, "read_only_cli": 8, "bash": 8}
+        {"no_tool": 16, "read": 8, "bash": 8}
     )
     assert admission.expected_users == admission.spawn_rate == 100
     assert admission.workloads == ("admission_stream",) * 100
@@ -1592,7 +1592,7 @@ def test_durable_locust_specs_start_every_user_immediately_without_queue():
 
     assert [item.ordinal for item in functional] == list(range(32))
     assert Counter(item.workload for item in functional) == Counter(
-        {"no_tool": 16, "read_only_cli": 8, "bash": 8}
+        {"no_tool": 16, "read": 8, "bash": 8}
     )
     assert [item.ordinal for item in admission] == list(range(100))
     assert {item.workload for item in admission} == {"admission_stream"}
@@ -1689,7 +1689,7 @@ def test_durable_locust_observation_counts_duplicate_operation_identity():
         (
             "32-functional-turns",
             32,
-            Counter({"no_tool": 16, "read_only_cli": 8, "bash": 8}),
+            Counter({"no_tool": 16, "read": 8, "bash": 8}),
             16,
         ),
         (
@@ -1721,11 +1721,7 @@ def test_executable_durable_locust_runner_releases_exact_simultaneous_profile(
             operation_ids = (
                 (f"op-{spec.ordinal:04d}-1", f"op-{spec.ordinal:04d}-2")
                 if spec.workload == "bash"
-                else (
-                    (f"op-{spec.ordinal:04d}-1",)
-                    if spec.workload == "read_only_cli"
-                    else ()
-                )
+                else ((f"op-{spec.ordinal:04d}-1",) if spec.workload == "read" else ())
             )
             return {
                 "outcome": "completed",

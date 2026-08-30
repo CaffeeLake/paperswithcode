@@ -23,6 +23,7 @@ from backend.services.chat_detached_turn_service import (
     DetachedTurnCoordinator,
     ExpiredDetachedTurnReconciler,
 )
+from backend.services.chat_live_stream_service import LiveChatStreamRegistry
 from backend.services.chat_stream_service import ChatStreamFrame
 from backend.services.chat_turn_event_repository import TurnEventJournal
 from backend.services.chat_turn_job_repository import (
@@ -208,6 +209,79 @@ def test_terminal_event_flushes_pending_frames_in_one_transactional_chunk() -> N
             )
 
     assert asyncio.run(scenario()) == ([(1, 3)], [3])
+
+
+def test_detached_boundary_records_post_start_batched_append_stale_once(
+    monkeypatch,
+) -> None:
+    async def scenario() -> tuple[
+        list[dict[str, object]], int, int, int, uuid.UUID, uuid.UUID
+    ]:
+        harness = Harness()
+        release_second_batch = asyncio.Event()
+        recorded: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            "backend.services.chat_live_stream_service.record_qualification_event_safely",
+            lambda **event: recorded.append(event) or True,
+        )
+        with harness.sessions() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            assert job is not None
+            session_id = job.chat_session_id
+
+        async def source():
+            yield ChatStreamFrame("stream_start", {"request_id": "r1"})
+            await release_second_batch.wait()
+            yield ChatStreamFrame("answer_delta", {"text": "fenced"})
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        registry = LiveChatStreamRegistry(detached_coordinator=harness.coordinator)
+        stream = await registry.start_detached(
+            session_id=session_id,
+            owner_id="owner-1",
+            turn=harness.turn,
+            source=source(),
+        )
+        while True:
+            with harness.sessions() as db:
+                if db.query(ChatTurnEventChunk).count() == 1:
+                    break
+            await asyncio.sleep(0)
+        with harness.sessions.begin() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            assert job is not None
+            job.lease_generation += 1
+        release_second_batch.set()
+
+        with pytest.raises(StaleTurnClaim):
+            await stream.source_task
+        return (
+            recorded,
+            len(harness.terminal_calls),
+            harness.coordinator.active_turn_count,
+            harness.coordinator.ambiguous_turn_count,
+            session_id,
+            harness.turn.turn_id,
+        )
+
+    (
+        recorded,
+        terminal_calls,
+        active_turns,
+        ambiguous_turns,
+        session_id,
+        turn_id,
+    ) = asyncio.run(scenario())
+    assert recorded == [
+        {
+            "turn_id": turn_id,
+            "chat_session_id": session_id,
+            "event_type": "stale_fence",
+        }
+    ]
+    assert terminal_calls == 0
+    assert active_turns == 0
+    assert ambiguous_turns == 1
 
 
 def test_journal_batch_flushes_on_byte_bound_before_terminal() -> None:

@@ -147,11 +147,18 @@ class LiveChatStreamRegistry:
         if existing is not None and not existing.task.done():
             await self._close_source(source)
             raise RuntimeError("Chat session already has a live stream")
-        handle = await QualificationStaleFenceBoundary(
+        stale_boundary = QualificationStaleFenceBoundary(
             turn_id=turn.turn_id,
             chat_session_id=session_id,
             recorder=record_qualification_event_safely,
-        ).call(self._detached_coordinator.start(turn=turn, source=source))
+        )
+        handle = await stale_boundary.call(
+            self._detached_coordinator.start(
+                turn=turn,
+                source=source,
+                stale_boundary=stale_boundary,
+            )
+        )
         stream = DurableLiveChatStream(
             session_id=session_id,
             owner_id=owner_id,
@@ -160,9 +167,19 @@ class LiveChatStreamRegistry:
         )
         self._streams[session_id] = stream
         stream.task.add_done_callback(
-            lambda _task: asyncio.create_task(self._expire(session_id, stream))
+            lambda task: self._finish_detached_task(session_id, stream, task)
         )
         return stream
+
+    def _finish_detached_task(
+        self,
+        session_id: uuid.UUID,
+        stream: DurableLiveChatStream,
+        task: asyncio.Task[None],
+    ) -> None:
+        if not task.cancelled():
+            task.exception()
+        asyncio.create_task(self._expire(session_id, stream))
 
     @staticmethod
     async def _close_source(source: AsyncIterator[ChatStreamFrame]) -> None:

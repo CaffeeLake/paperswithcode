@@ -78,9 +78,9 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS chat_qualification_evidence_events (
     id UUID PRIMARY KEY,
-    qualification_scope_id UUID NOT NULL REFERENCES chat_qualification_scopes(id) ON DELETE CASCADE,
-    turn_id UUID NOT NULL REFERENCES chat_turn_jobs(turn_id) ON DELETE CASCADE,
-    chat_session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    qualification_scope_id UUID NOT NULL,
+    turn_id UUID NOT NULL,
+    chat_session_id UUID NOT NULL,
     event_type VARCHAR(32) NOT NULL,
     operation_digest VARCHAR(64),
     operation_kind VARCHAR(8),

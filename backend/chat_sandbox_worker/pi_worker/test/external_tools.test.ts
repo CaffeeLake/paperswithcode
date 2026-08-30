@@ -33,6 +33,23 @@ test("remote tool bridge correlates Bash output and Read bytes", async () => {
   assert.equal(content.toString("utf8"), "# Guide\n");
   assert.deepEqual(requests.map((request) => request.operation), ["exec", "read"]);
   assert.deepEqual(requests.map((request) => request.tool_call_id), ["tool-1", "tool-2"]);
+  assert.deepEqual(requests[0], {
+    type: "tool_request",
+    operation_id: requests[0]?.operation_id,
+    tool_call_id: "tool-1",
+    operation: "exec",
+    command: "pwc search papers attention",
+    timeout_ms: 30_000,
+  });
+  assert.deepEqual(requests[1], {
+    type: "tool_request",
+    operation_id: requests[1]?.operation_id,
+    tool_call_id: "tool-2",
+    operation: "read",
+    path: "/opt/pwc/PWC_CLI_SKILL.md",
+    offset: 0,
+    max_bytes: 1024 * 1024,
+  });
 });
 
 test("remote tool bridge fails closed on an uncorrelated result", async () => {

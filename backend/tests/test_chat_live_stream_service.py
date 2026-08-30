@@ -83,7 +83,7 @@ def test_registry_delegates_durable_streams_to_detached_coordinator() -> None:
         calls = []
 
         class Coordinator:
-            async def start(self, *, turn, source):
+            async def start(self, *, turn, source, stale_boundary):
                 calls.append((turn, source))
                 return SimpleNamespace(turn=turn, source_task=source_task)
 

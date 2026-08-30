@@ -25,6 +25,9 @@ from backend.services.chat_durable_qualification_evidence import (
     QualificationEvidenceUnavailable,
     record_qualification_event_safely,
 )
+from backend.services.runtime_validation import (
+    validate_qualification_evidence_schema,
+)
 
 START = datetime(2026, 8, 30, 12, tzinfo=UTC)
 END = START + timedelta(minutes=1)
@@ -481,6 +484,10 @@ def test_qualification_evidence_migration_matches_content_free_model_contract():
         in sql
     )
     assert "message" not in sql.lower()
+    create_events = sql.split(
+        "CREATE TABLE IF NOT EXISTS chat_qualification_evidence_events (", 1
+    )[1].split(");", 1)[0]
+    assert " REFERENCES " not in create_events
 
 
 def test_forward_repair_is_additive_ordered_idempotent_and_refuses_lossy_data():
@@ -503,6 +510,168 @@ def test_forward_repair_is_additive_ordered_idempotent_and_refuses_lossy_data():
     assert "DROP TABLE" not in sql
     assert "DELETE FROM" not in sql
     assert "DROP INDEX IF EXISTS" in sql
+
+
+def test_postgresql_fresh_evidence_catalog_and_repair_are_exact_and_idempotent():
+    url = os.getenv("PWC_QUALIFICATION_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("explicit disposable qualification PostgreSQL URL is required")
+    configured = create_engine(url)
+    if configured.dialect.name != "postgresql" or not configured.url.database.endswith(
+        "_test"
+    ):
+        pytest.fail("qualification catalog proof requires a disposable test DB")
+    database_name = f"pwc_qualification_catalog_{uuid.uuid4().hex}_test"
+    admin = create_engine(
+        configured.url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    initial_sql = (
+        Path(__file__).parents[1]
+        / "database/migrations/add_chat_qualification_evidence_events.sql"
+    ).read_text()
+    repair_sql = (
+        Path(__file__).parents[1]
+        / "database/migrations/repair_chat_qualification_evidence_contract.sql"
+    ).read_text()
+    database = None
+    try:
+        with admin.connect() as connection:
+            connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
+        database = create_engine(configured.url.set(database=database_name))
+        with database.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                DO $$ BEGIN
+                  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+                    CREATE ROLE paperswithcode_user;
+                  END IF;
+                  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging') THEN
+                    CREATE ROLE pwc_staging;
+                  END IF;
+                END $$;
+                CREATE TABLE chat_sessions (id UUID PRIMARY KEY);
+                CREATE TABLE chat_turn_jobs (turn_id UUID PRIMARY KEY);
+                CREATE TABLE chat_turn_latency (
+                  turn_id UUID PRIMARY KEY, admitted_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+        for _ in range(2):
+            with database.connect() as connection:
+                connection.exec_driver_sql(initial_sql)
+
+        with database.connect() as connection:
+            constraints = {
+                name: " ".join(definition.lower().replace('"', "").split())
+                for name, definition in connection.execute(
+                    text(
+                        """
+                        SELECT conname, pg_get_constraintdef(oid)
+                        FROM pg_constraint
+                        WHERE connamespace = current_schema()::regnamespace
+                          AND conrelid IN (
+                            'chat_qualification_scopes'::regclass,
+                            'chat_qualification_evidence_events'::regclass
+                          )
+                        """
+                    )
+                ).all()
+            }
+            indexes = {
+                name: (unique, tuple(columns), predicate)
+                for name, unique, columns, predicate in connection.execute(
+                    text(
+                        """
+                        SELECT index_class.relname, index_meta.indisunique,
+                               ARRAY(
+                                 SELECT attribute.attname
+                                 FROM unnest(index_meta.indkey) WITH ORDINALITY
+                                      AS key(attnum, position)
+                                 JOIN pg_attribute attribute
+                                   ON attribute.attrelid = table_class.oid
+                                  AND attribute.attnum = key.attnum
+                                 ORDER BY key.position
+                               ),
+                               pg_get_expr(index_meta.indpred, index_meta.indrelid)
+                        FROM pg_index index_meta
+                        JOIN pg_class index_class ON index_class.oid = index_meta.indexrelid
+                        JOIN pg_class table_class ON table_class.oid = index_meta.indrelid
+                        JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+                        WHERE namespace.nspname = current_schema()
+                          AND table_class.relname IN (
+                            'chat_qualification_scopes',
+                            'chat_qualification_evidence_events'
+                          )
+                        """
+                    )
+                ).all()
+            }
+
+        assert constraints == {
+            "chat_qualification_scopes_pkey": "primary key (id)",
+            "chat_qualification_scopes_run_id_key": "unique (run_id)",
+            "chat_qualification_scopes_profile_check": "check (((profile)::text = any ((array['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[])))",
+            "chat_qualification_scopes_window_check": "check (((window_ended_at is null) or (window_ended_at >= window_started_at)))",
+            "chat_qualification_scopes_expiry_check": "check ((expires_at > window_started_at))",
+            "chat_qualification_evidence_events_pkey": "primary key (id)",
+            "chat_qualification_evidence_scope_fkey": "foreign key (qualification_scope_id) references chat_qualification_scopes(id) on delete cascade",
+            "chat_qualification_evidence_turn_fkey": "foreign key (turn_id) references chat_turn_jobs(turn_id) on delete cascade",
+            "chat_qualification_evidence_session_fkey": "foreign key (chat_session_id) references chat_sessions(id) on delete cascade",
+            "chat_qualification_evidence_event_type_check": "check (((event_type)::text = any ((array['admitted_no_queue'::character varying, 'executor_started'::character varying, 'stale_fence'::character varying, 'queued'::character varying, 'workspace_created'::character varying, 'workspace_reused'::character varying, 'workspace_evicted'::character varying])::text[])))",
+            "chat_qualification_evidence_operation_shape_check": "check ((((event_type)::text = 'executor_started'::text) = ((operation_digest is not null) and (operation_kind is not null) and ((operation_kind)::text = any ((array['read'::character varying, 'bash'::character varying])::text[])))))",
+        }
+        assert indexes == {
+            "chat_qualification_scopes_pkey": (True, ("id",), None),
+            "chat_qualification_scopes_run_id_key": (True, ("run_id",), None),
+            "idx_chat_qualification_scopes_expiry": (False, ("expires_at",), None),
+            "idx_chat_qualification_scopes_release_profile": (
+                False,
+                ("app_release_id", "profile"),
+                None,
+            ),
+            "chat_qualification_evidence_events_pkey": (True, ("id",), None),
+            "idx_chat_qualification_evidence_scope_event_time": (
+                False,
+                ("qualification_scope_id", "event_type", "occurred_at"),
+                None,
+            ),
+            "idx_chat_qualification_evidence_session_time": (
+                False,
+                ("chat_session_id", "occurred_at"),
+                None,
+            ),
+            "idx_chat_qualification_evidence_turn_event": (
+                False,
+                ("turn_id", "event_type"),
+                None,
+            ),
+            "uq_chat_qualification_evidence_stale_turn": (
+                True,
+                ("qualification_scope_id", "turn_id"),
+                "((event_type)::text = 'stale_fence'::text)",
+            ),
+            "uq_chat_qualification_evidence_eviction_turn": (
+                True,
+                ("qualification_scope_id", "turn_id"),
+                "((event_type)::text = 'workspace_evicted'::text)",
+            ),
+        }
+        for _ in range(2):
+            with database.connect() as connection:
+                connection.exec_driver_sql(repair_sql)
+        with Session(database) as db:
+            validate_qualification_evidence_schema(db)
+    finally:
+        configured.dispose()
+        if database is not None:
+            database.dispose()
+        with admin.connect() as connection:
+            connection.exec_driver_sql(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname = '{database_name}' AND pid <> pg_backend_pid()"
+            )
+            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}"')
+        admin.dispose()
 
 
 def test_expected_evidence_store_outage_is_non_disruptive_but_programming_error_is_visible(

@@ -501,8 +501,18 @@ class ExternalPiChatTurnRunner:
         operation_id: str,
         operation: str,
     ) -> dict[str, object]:
-        return await self.tool_executor._execute(
-            request, operation_id=operation_id, operation=operation
+        stale_boundary = QualificationStaleFenceBoundary(
+            turn_id=self.admission.turn_id,
+            chat_session_id=self.admission.session_id,
+            recorder=self.record_evidence,
+        )
+        return await stale_boundary.call(
+            self.tool_executor._execute(
+                request,
+                operation_id=operation_id,
+                operation=operation,
+                stale_boundary=stale_boundary,
+            )
         )
 
     async def _persist_turn_state(self, state: str) -> None:

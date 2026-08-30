@@ -52,9 +52,9 @@ _EVENTS = {
 _PROMPTS = {
     "no_tool": "Reply with READY only. Do not call tools.",
     "admission_stream": "Reply with READY only. Do not call tools.",
-    "read_only_cli": (
-        "Run exactly this read-only command exactly once: "
-        "`pwc paper info 1706.03762`. Do not run any other command."
+    "read": (
+        "Use the Read tool exactly once to read /opt/pwc/PWC_CLI_SKILL.md. "
+        "Do not use Bash or any other tool."
     ),
     "bash": "Run `printf durable-ready` exactly once, then report only the exit code.",
 }
@@ -335,7 +335,7 @@ class HttpSSEDurableChatTransport:
                     "X-PWC-Qualification-Workload": {
                         "no_tool": "no_tool",
                         "admission_stream": "no_tool",
-                        "read_only_cli": "read",
+                        "read": "read",
                         "bash": "bash",
                     }[workload],
                 }
