@@ -31,6 +31,22 @@ def test_observer_emits_only_bounded_content_free_labels(caplog):
     assert runtime_failure_counts(caplog.messages) == {"durable_lifecycle_failure": 1}
 
 
+def test_observer_sends_bounded_latency_signal_to_langfuse():
+    observation = Mock()
+    client = Mock()
+    client.start_observation.return_value = observation
+    observer = DurableLifecycleObserver(Settings(environment="staging"), client=client)
+
+    observer("ttft_ms", None, 12_000)
+
+    client.start_observation.assert_called_once_with(
+        name="durable-chat-lifecycle",
+        as_type="span",
+        metadata={"event": "ttft_ms", "code": "none", "value": 12_000},
+    )
+    observation.end.assert_called_once_with()
+
+
 @pytest.mark.parametrize(
     ("event", "code", "value"),
     [

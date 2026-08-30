@@ -924,6 +924,25 @@ def test_external_pi_runner_rejects_worker_becoming_full_before_connect():
         asyncio.run(_collect(runner))
 
 
+def test_external_pi_runner_observes_endpoint_capacity_saturation():
+    claim = ExternalWorkerClaim(
+        "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
+    )
+    status = worker_status(claim)
+    status.active_sessions = status.maximum_sessions
+    observations: list[tuple[str, str | None, int]] = []
+    runner = _tool_runner(FakeExecutor(), FakeWorkspaceManager(FakeProvider()))
+    runner.worker_status_resolver = lambda: _async_value(status)
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
+
+    with pytest.raises(WorkerLeaseUnavailable):
+        asyncio.run(runner._select_worker_claim())
+
+    assert observations == [("capacity_saturation", None, 1)]
+
+
 async def _collect(runner):
     return [event async for event in runner.events()]
 
@@ -1005,9 +1024,43 @@ def test_tool_execution_persists_waiting_tool_until_safe_settlement():
     assert states == ["waiting_tool", "running"]
     assert observations == [
         ("turn_state", "waiting_tool", 1),
-        ("executor_recovery", "succeeded", 1),
         ("turn_state", "running", 1),
     ]
+
+
+def test_tool_execution_reports_executor_recovery_only_with_recovery_evidence():
+    class RecoveredExecutor(FakeExecutor):
+        async def exec_resumable(self, context, *, command, timeout_ms):
+            result = await super().exec_resumable(
+                context, command=command, timeout_ms=timeout_ms
+            )
+            return ExecutorExecutionResult(
+                outputs=result.outputs,
+                terminal=result.terminal,
+                responses=result.responses,
+                recovered=True,
+            )
+
+    observations: list[tuple[str, str | None, int]] = []
+    runner = _tool_runner(RecoveredExecutor(), FakeWorkspaceManager(FakeProvider()))
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "operation-1",
+                "tool_call_id": "tool-1",
+                "operation": "exec",
+                "command": "printf x >> marker",
+                "timeout_ms": 1000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert ("executor_recovery", "succeeded", 1) in observations
 
 
 def test_execution_lost_cancel_failure_invalidates_without_releasing():
@@ -1210,6 +1263,35 @@ def test_cancel_attempts_executor_when_worker_socket_fails_and_defers_revocation
 
     assert result is CancelControlResult.MISSING
     assert calls == ["worker", "executor"]
+
+
+def test_cancel_times_out_never_returning_worker_send_but_cancels_executor():
+    worker_started = asyncio.Event()
+    executor_cancelled = asyncio.Event()
+
+    class WedgedSocket:
+        async def send(self, _frame):
+            worker_started.set()
+            await asyncio.Future()
+
+    class CancelExecutor(FakeExecutor):
+        async def cancel_execution(self, _context):
+            executor_cancelled.set()
+            return ExecutorExecutionResult(
+                outputs=(),
+                terminal={"status": "cancelled", "exit_code": None, "error": None},
+            )
+
+    runner = _tool_runner(CancelExecutor(), FakeWorkspaceManager(FakeProvider()))
+    runner.socket = WedgedSocket()
+    runner.active_context = SimpleNamespace()
+    runner.cancel_timeout_seconds = 0.01
+
+    result = asyncio.run(asyncio.wait_for(runner.cancel(), timeout=0.2))
+
+    assert worker_started.is_set()
+    assert executor_cancelled.is_set()
+    assert result is CancelControlResult.MISSING
 
 
 def test_execution_not_found_cancel_result_invalidates_ambiguous_workspace():
@@ -1493,10 +1575,20 @@ def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
         session_factory=SessionContext,
     )
+    observations: list[tuple[str, str | None, int]] = []
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
 
     assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
     assert executor.exec_calls == 1
     assert json.loads(first.sent[1]) == json.loads(second.sent[1])
+    assert ("turn_state", "reconnecting", 1) in observations
+    assert ("worker_reconnect", None, 1) in observations
+    assert observations.index(("turn_state", "reconnecting", 1)) < observations.index(
+        ("worker_reconnect", None, 1)
+    )
+    assert ("turn_state", "running", 1) in observations
 
 
 def test_external_pi_reconnect_reuses_real_recovered_bash_result(tmp_path):

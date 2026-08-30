@@ -35,6 +35,35 @@ def test_runtime_failure_counts_never_return_raw_journal_content():
     }
 
 
+def test_runtime_failure_counts_classifies_durable_capacity_and_latency_signals():
+    messages = [
+        "chat durable lifecycle event=worker_reconnect code=none value=1",
+        "chat durable lifecycle event=executor_recovery code=succeeded value=1",
+        "chat durable lifecycle event=executor_recovery code=failed value=1",
+        "chat durable lifecycle event=capacity_saturation code=none value=1",
+        (
+            "chat durable lifecycle event=typed_failure "
+            "code=event_journal_exhausted value=1"
+        ),
+        "chat durable lifecycle event=workspace_state code=created value=1",
+        "chat durable lifecycle event=workspace_state code=reused value=1",
+        "chat durable lifecycle event=ttft_ms code=none value=9999",
+        "chat durable lifecycle event=ttft_ms code=none value=10000",
+    ]
+
+    assert runtime_failure_counts(messages) == {
+        "durable_lifecycle_failure": 1,
+        "worker_reconnect": 1,
+        "executor_reattach": 1,
+        "executor_loss": 1,
+        "capacity_saturation": 1,
+        "event_journal_bound": 1,
+        "workspace_created": 1,
+        "workspace_reused": 1,
+        "ttft_regression": 1,
+    }
+
+
 def test_provider_health_counts_only_content_free_aggregates():
     class FakeSession:
         values = iter((10, 5))

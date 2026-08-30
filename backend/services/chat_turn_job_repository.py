@@ -8,10 +8,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session, SessionTransaction
 
-from backend.models.database import ChatTurnJob
+from backend.models.database import ChatMessageRecord, ChatSession, ChatTurnJob
 
 NONTERMINAL_STATES = frozenset(
     {"admitted", "leased", "running", "waiting_model", "waiting_tool", "cancelling"}
@@ -297,6 +297,23 @@ class ChatTurnJobRepository:
         """Scan content-free candidates; authority is locked session-first later."""
         if now.tzinfo is None or limit <= 0 or limit > 100:
             raise ValueError("Expired turn reconciliation bound is invalid")
+        valid_projection = and_(
+            exists(
+                select(ChatSession.id).where(
+                    ChatSession.id == ChatTurnJob.chat_session_id,
+                    ChatSession.hf_user_id == ChatTurnJob.hf_user_id,
+                    ChatSession.active_turn_id == ChatTurnJob.turn_id,
+                )
+            ),
+            exists(
+                select(ChatMessageRecord.id).where(
+                    ChatMessageRecord.session_id == ChatTurnJob.chat_session_id,
+                    ChatMessageRecord.turn_id == ChatTurnJob.turn_id,
+                    ChatMessageRecord.role == "user",
+                    ChatMessageRecord.status.in_(("generating", "preparing")),
+                )
+            ),
+        )
         return tuple(
             db.execute(
                 select(ChatTurnJob.chat_session_id, ChatTurnJob.turn_id)
@@ -304,7 +321,11 @@ class ChatTurnJobRepository:
                     ChatTurnJob.state.in_(_CLAIMED_STATES),
                     ChatTurnJob.lease_expires_at <= now,
                 )
-                .order_by(ChatTurnJob.lease_expires_at, ChatTurnJob.turn_id)
+                .order_by(
+                    case((valid_projection, 0), else_=1),
+                    ChatTurnJob.lease_expires_at,
+                    ChatTurnJob.turn_id,
+                )
                 .limit(limit)
             ).tuples()
         )

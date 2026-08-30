@@ -117,6 +117,7 @@ class ExternalPiChatTurnRunner:
         now: Callable[[], datetime] | None = None,
         turn_state_transition: Callable[[str], Awaitable[None]] | None = None,
         observe: LifecycleObserver | None = None,
+        cancel_timeout_seconds: float = 5.0,
     ) -> None:
         self.settings = settings
         self.admission = admission
@@ -138,6 +139,9 @@ class ExternalPiChatTurnRunner:
         self.now = now or (lambda: datetime.now(UTC))
         self.turn_state_transition = turn_state_transition or self._persist_turn_state
         self.observe = observe or (lambda _event, _code, _value: None)
+        if not 0 < cancel_timeout_seconds <= 30:
+            raise ValueError("External cancellation timeout is invalid")
+        self.cancel_timeout_seconds = cancel_timeout_seconds
         self.socket: Any | None = None
         self.active_context: ExecutorContext | None = None
         self.external_worker_claim: ExternalWorkerClaim | None = None
@@ -153,6 +157,7 @@ class ExternalPiChatTurnRunner:
         pending_tool: tuple[int, str] | None = None
         for _attempt in range(3):
             if started:
+                self.observe("turn_state", "reconnecting", 1)
                 try:
                     await self._require_same_external_worker_claim(worker_claim)
                 except (
@@ -169,6 +174,7 @@ class ExternalPiChatTurnRunner:
                 async with self._external_worker_socket(worker_claim) as socket:
                     if _attempt:
                         self.observe("worker_reconnect", None, 1)
+                        self.observe("turn_state", "running", 1)
                     self.socket = socket
                     await socket.send(
                         json.dumps(
@@ -276,6 +282,8 @@ class ExternalPiChatTurnRunner:
 
     async def _select_worker_claim(self) -> ExternalWorkerClaim:
         status = await self._endpoint_status()
+        if status.active_sessions >= status.maximum_sessions:
+            self.observe("capacity_saturation", None, 1)
         if (
             status.worker_generation is None
             or status.state != "ready"
@@ -470,7 +478,8 @@ class ExternalPiChatTurnRunner:
                     command=str(request["command"]),
                     timeout_ms=int(request["timeout_ms"]),
                 )
-                self.observe("executor_recovery", "succeeded", 1)
+                if result.recovered:
+                    self.observe("executor_recovery", "succeeded", 1)
                 terminal = dict(result.terminal)
                 settlement = "release"
                 return {
@@ -642,41 +651,59 @@ class ExternalPiChatTurnRunner:
             "request_id": self.request_id,
             "turnClaim": self._turn_claim_frame(),
         }
-        worker_requested = False
         socket = self.socket
         context = self.active_context
-        if socket is not None:
+
+        async def cancel_worker() -> bool:
             try:
-                await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
-                worker_requested = True
+                async with asyncio.timeout(self.cancel_timeout_seconds):
+                    if socket is not None:
+                        await socket.send(
+                            json.dumps(cancel_frame, separators=(",", ":"))
+                        )
+                        return True
+                    if self.external_worker_claim is not None:
+                        await self._require_same_external_worker_claim(
+                            self.external_worker_claim
+                        )
+                        async with self._external_worker_socket(
+                            self.external_worker_claim
+                        ) as detached_socket:
+                            await detached_socket.send(
+                                json.dumps(cancel_frame, separators=(",", ":"))
+                            )
+                            return True
             except (OSError, TimeoutError, WebSocketException):
-                pass
-        elif self.external_worker_claim is not None:
-            try:
-                await self._require_same_external_worker_claim(
-                    self.external_worker_claim
-                )
-                async with self._external_worker_socket(
-                    self.external_worker_claim
-                ) as socket:
-                    await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
-                    worker_requested = True
+                return False
             except (
                 StaleWorkerClaim,
                 WorkerLeaseUnavailable,
                 ExternalPiWorkerUnavailable,
                 ExternalPiWorkerControlRejected,
-                OSError,
-                TimeoutError,
-                WebSocketException,
                 httpx.HTTPError,
             ):
-                pass
-        if context is not None:
-            await self._cancel_executor(context)
+                return False
+            return False
+
+        async def cancel_executor() -> None:
+            if context is None:
+                return
+            try:
+                async with asyncio.timeout(self.cancel_timeout_seconds):
+                    await self._cancel_executor(context)
+            except TimeoutError:
+                return
+
+        worker_result, executor_result = await asyncio.gather(
+            cancel_worker(), cancel_executor(), return_exceptions=True
+        )
+        if isinstance(executor_result, Exception):
+            raise executor_result
+        if isinstance(worker_result, Exception):
+            raise worker_result
         return (
             CancelControlResult.REQUESTED
-            if worker_requested
+            if worker_result is True
             else CancelControlResult.MISSING
         )
 

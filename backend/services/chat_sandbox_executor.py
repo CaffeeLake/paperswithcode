@@ -73,6 +73,7 @@ class ExecutorExecutionResult:
     outputs: tuple[dict[str, object], ...]
     terminal: dict[str, object]
     responses: tuple[Mapping[str, object], ...] = ()
+    recovered: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +314,7 @@ class SandboxExecutorClient:
                 outputs=outputs,
                 terminal=attached.terminal,
                 responses=responses,
+                recovered=True,
             )
         raise ExecutorExecutionLost(
             execution_id=context.execution_id,

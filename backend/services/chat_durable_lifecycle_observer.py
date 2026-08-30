@@ -18,6 +18,7 @@ EVENTS = frozenset(
         "journal_bytes",
         "journal_cleanup",
         "worker_reconnect",
+        "capacity_saturation",
         "executor_recovery",
         "workspace_state",
         "turn_replay",
@@ -30,6 +31,7 @@ CODES = frozenset(
         "admitted",
         "leased",
         "running",
+        "reconnecting",
         "waiting_model",
         "waiting_tool",
         "cancelling",
@@ -74,7 +76,7 @@ class DurableLifecycleObserver:
             code or "none",
             value,
         )
-        if self.client is None or event not in {"turn_state", "typed_failure"}:
+        if self.client is None:
             return
         try:
             self.client.start_observation(

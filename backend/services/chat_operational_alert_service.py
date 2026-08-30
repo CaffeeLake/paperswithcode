@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import re
 from typing import Any
 
 import httpx
@@ -45,9 +46,26 @@ RUNTIME_FAILURE_PATTERNS = {
     "durable_lifecycle_telemetry_failure": (
         "chat durable lifecycle Langfuse emission failed"
     ),
+    "worker_reconnect": "chat durable lifecycle event=worker_reconnect code=none",
+    "executor_reattach": (
+        "chat durable lifecycle event=executor_recovery code=succeeded"
+    ),
+    "executor_loss": "chat durable lifecycle event=executor_recovery code=failed",
+    "capacity_saturation": (
+        "chat durable lifecycle event=capacity_saturation code=none"
+    ),
+    "event_journal_bound": (
+        "chat durable lifecycle event=typed_failure code=event_journal_exhausted"
+    ),
+    "workspace_created": ("chat durable lifecycle event=workspace_state code=created"),
+    "workspace_reused": "chat durable lifecycle event=workspace_state code=reused",
     "paper_curation_dispatch_pause": "paper curation dispatch paused",
     "paper_curation_dispatch_recovery": "paper curation dispatch resumed",
 }
+TTFT_PATTERN = re.compile(
+    r"chat durable lifecycle event=ttft_ms code=none value=(\d+)(?:\s|$)"
+)
+TTFT_REGRESSION_THRESHOLD_MS = 10_000
 
 
 @dataclass(frozen=True)
@@ -123,6 +141,11 @@ def runtime_failure_counts(messages: list[str]) -> dict[str, int]:
         "POST /api/internal/chat-gateway/session-store" in message
         and "403 Forbidden" in message
         for message in messages
+    )
+    counts["ttft_regression"] = sum(
+        int(match.group(1)) >= TTFT_REGRESSION_THRESHOLD_MS
+        for message in messages
+        if (match := TTFT_PATTERN.search(message)) is not None
     )
     return {name: count for name, count in counts.items() if count}
 

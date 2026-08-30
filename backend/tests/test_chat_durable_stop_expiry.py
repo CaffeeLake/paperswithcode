@@ -39,6 +39,10 @@ def _enabled_settings():
     )
 
 
+def test_session_service_has_no_immediate_terminal_journal_cleanup_bypass():
+    assert not hasattr(ChatSessionService, "cleanup_terminal_journal")
+
+
 async def _cancel_with(db, manager, sessions, session_id):
     coordinator = ChatTurnCancellationCoordinator(db, _enabled_settings(), manager)
     coordinator.sessions = sessions

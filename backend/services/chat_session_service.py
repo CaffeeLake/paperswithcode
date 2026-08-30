@@ -55,7 +55,6 @@ from backend.services.chat_turn_job_repository import (
     TurnLeaseClaim,
     TurnNotClaimable,
 )
-from backend.services.chat_turn_event_repository import TurnEventJournal
 from backend.services.latex_paper_service import LatexPaperService
 
 
@@ -542,12 +541,6 @@ class ChatSessionService:
         session.active_turn_id = None
         session.active_turn_expires_at = None
         session.updated_at = _now()
-
-    def cleanup_terminal_journal(self, request: CancelTurnRequest) -> int:
-        """Delete transient frames only after the terminal transaction commits."""
-        return TurnEventJournal(jobs=self._turn_job_repository()).delete_terminal(
-            self.db, turn_id=request.turn_id
-        )
 
     def _reconcile_durable_expiry(
         self, session: ChatSession, turn_id: uuid.UUID, now: datetime

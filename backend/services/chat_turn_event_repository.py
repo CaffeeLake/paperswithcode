@@ -142,16 +142,6 @@ class TurnEventJournal:
                         return tuple(frames)
         return tuple(frames)
 
-    def delete_terminal(self, db: Session, *, turn_id: uuid.UUID) -> int:
-        job = self._jobs.load_by_turn(db, turn_id, lock=True)
-        if job is None or job.state not in TERMINAL_STATES:
-            return 0
-        result = db.execute(
-            delete(ChatTurnEventChunk).where(ChatTurnEventChunk.turn_id == turn_id)
-        )
-        db.flush()
-        return max(result.rowcount or 0, 0)
-
     def cleanup_due_terminal(
         self,
         db: Session,

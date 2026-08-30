@@ -191,7 +191,7 @@ def test_limits_are_enforced_before_mutation(
     assert db.query(ChatTurnEventChunk).count() == 0
 
 
-def test_terminal_cleanup_deletes_chunks_without_deleting_turn_job(db):
+def test_terminal_cleanup_has_no_immediate_deletion_bypass(db):
     job, claim = _claimed_turn(db)
     journal = TurnEventJournal()
     journal.append(db, claim=claim, events=[event("delta", {"text": "a"})], now=NOW)
@@ -199,9 +199,9 @@ def test_terminal_cleanup_deletes_chunks_without_deleting_turn_job(db):
         db, claim=claim, state="completed", now=NOW + timedelta(seconds=1)
     )
 
-    assert journal.delete_terminal(db, turn_id=claim.turn_id) == 1
+    assert not hasattr(journal, "delete_terminal")
     assert db.get(ChatTurnJob, claim.turn_id) is job
-    assert db.query(ChatTurnEventChunk).count() == 0
+    assert db.query(ChatTurnEventChunk).count() == 1
 
 
 def test_durable_terminal_cleanup_waits_for_grace_and_survives_restart(db):
@@ -408,7 +408,15 @@ def test_postgresql_rejects_stale_and_limits_before_terminal_cleanup(
         ChatTurnJobRepository().write_terminal(
             db, claim=claim, state="completed", now=NOW + timedelta(seconds=1)
         )
-        assert journal.delete_terminal(db, turn_id=claim.turn_id) == 1
+        assert (
+            journal.cleanup_due_terminal(
+                db,
+                now=NOW + timedelta(seconds=301),
+                replay_grace_seconds=300,
+                limit=100,
+            )
+            == 1
+        )
         db.commit()
 
     with Session(engine) as verify:

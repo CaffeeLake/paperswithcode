@@ -818,7 +818,7 @@ def test_expired_detached_reconciler_terminalizes_projection_and_retains_replay(
     assert chunks == 1
 
 
-def test_expired_reconciler_poison_first_does_not_starve_later_turn_at_limit_one():
+def test_expired_reconciler_progresses_past_full_poison_window_across_restarts():
     async def scenario():
         harness = Harness()
         observations: list[tuple[str, str | None, int]] = []
@@ -829,63 +829,108 @@ def test_expired_reconciler_poison_first_does_not_starve_later_turn_at_limit_one
             poison.lease_expires_at = NOW - timedelta(seconds=2)
             poison_session.active_turn_id = poison.turn_id
 
-            healthy_session = ChatSession(
-                id=uuid.uuid4(),
-                hf_user_id="healthy-owner",
-                hf_username="healthy-owner",
-                selected_model="model",
-            )
-            healthy_turn_id = uuid.uuid4()
-            healthy_session.active_turn_id = healthy_turn_id
-            db.add(healthy_session)
-            db.add(
-                ChatTurnJob(
-                    turn_id=healthy_turn_id,
-                    chat_session_id=healthy_session.id,
-                    hf_user_id=healthy_session.hf_user_id,
-                    request_id=f"request-{uuid.uuid4()}",
-                    revision=1,
-                    dispatch_class="interactive",
-                    dispatch_route="external-pi",
-                    state="running",
-                    worker_id="worker-b",
-                    worker_generation=8,
-                    lease_generation=1,
-                    app_release_id="release-a",
-                    worker_contract_version="external-pi-v1",
-                    admitted_at=NOW - timedelta(seconds=2),
-                    heartbeat_at=NOW,
-                    lease_expires_at=NOW - timedelta(seconds=1),
-                )
-            )
-            db.add(
-                ChatMessageRecord(
+            for index in range(99):
+                poison_session = ChatSession(
                     id=uuid.uuid4(),
-                    session_id=healthy_session.id,
-                    turn_id=healthy_turn_id,
-                    sequence=1,
-                    role="user",
-                    content="irrelevant",
-                    status="generating",
+                    hf_user_id=f"poison-{index}",
+                    hf_username=f"poison-{index}",
+                    selected_model="model",
                 )
+                poison_turn = uuid.uuid4()
+                poison_session.active_turn_id = poison_turn
+                db.add(poison_session)
+                db.add(
+                    ChatTurnJob(
+                        turn_id=poison_turn,
+                        chat_session_id=poison_session.id,
+                        hf_user_id=poison_session.hf_user_id,
+                        request_id=f"request-{uuid.uuid4()}",
+                        revision=1,
+                        dispatch_class="interactive",
+                        dispatch_route="external-pi",
+                        state="running",
+                        worker_id=f"poison-worker-{index}",
+                        worker_generation=8,
+                        lease_generation=1,
+                        app_release_id="release-a",
+                        worker_contract_version="external-pi-v1",
+                        admitted_at=NOW - timedelta(seconds=3),
+                        heartbeat_at=NOW,
+                        lease_expires_at=NOW - timedelta(seconds=2),
+                    )
+                )
+
+            healthy_turn_ids = []
+            for index in range(2):
+                healthy_session = ChatSession(
+                    id=uuid.uuid4(),
+                    hf_user_id=f"healthy-owner-{index}",
+                    hf_username=f"healthy-owner-{index}",
+                    selected_model="model",
+                )
+                healthy_turn_id = uuid.uuid4()
+                healthy_turn_ids.append(healthy_turn_id)
+                healthy_session.active_turn_id = healthy_turn_id
+                db.add(healthy_session)
+                db.add(
+                    ChatTurnJob(
+                        turn_id=healthy_turn_id,
+                        chat_session_id=healthy_session.id,
+                        hf_user_id=healthy_session.hf_user_id,
+                        request_id=f"request-{uuid.uuid4()}",
+                        revision=1,
+                        dispatch_class="interactive",
+                        dispatch_route="external-pi",
+                        state="running",
+                        worker_id=f"worker-{index}",
+                        worker_generation=8,
+                        lease_generation=1,
+                        app_release_id="release-a",
+                        worker_contract_version="external-pi-v1",
+                        admitted_at=NOW - timedelta(seconds=2),
+                        heartbeat_at=NOW,
+                        lease_expires_at=NOW - timedelta(seconds=1),
+                    )
+                )
+                db.add(
+                    ChatMessageRecord(
+                        id=uuid.uuid4(),
+                        session_id=healthy_session.id,
+                        turn_id=healthy_turn_id,
+                        sequence=1,
+                        role="user",
+                        content="irrelevant",
+                        status="generating",
+                    )
+                )
+
+        results = []
+        for _restart in range(2):
+            reconciler = ExpiredDetachedTurnReconciler(
+                transaction=harness.transaction,
+                jobs=harness.jobs,
+                journal=harness.journal,
+                observe=lambda event, code, value: observations.append(
+                    (event, code, value)
+                ),
             )
-
-        reconciler = ExpiredDetachedTurnReconciler(
-            transaction=harness.transaction,
-            jobs=harness.jobs,
-            journal=harness.journal,
-            observe=lambda event, code, value: observations.append(
-                (event, code, value)
-            ),
-        )
-        result = await reconciler.reconcile(now=NOW, limit=1)
+            results.append(await reconciler.reconcile(now=NOW, limit=1))
         with harness.sessions() as db:
-            healthy = harness.jobs.load_by_turn(db, healthy_turn_id)
+            healthy_states = [
+                harness.jobs.load_by_turn(db, turn_id).state
+                for turn_id in healthy_turn_ids
+            ]
             poison = harness.jobs.load_by_turn(db, harness.turn.turn_id)
-            return result, observations, healthy.state, poison.state
+            return results, observations, healthy_states, poison.state
 
-    result, observations, healthy_state, poison_state = asyncio.run(scenario())
-    assert result == {"external_worker_lost": 1}
-    assert ("typed_failure", "projection_mismatch", 1) in observations
-    assert healthy_state == "interrupted"
+    results, observations, healthy_states, poison_state = asyncio.run(scenario())
+    assert results == [
+        {"external_worker_lost": 1},
+        {"external_worker_lost": 1},
+    ]
+    assert observations == [
+        ("typed_failure", "external_worker_lost", 1),
+        ("typed_failure", "external_worker_lost", 1),
+    ]
+    assert healthy_states == ["interrupted", "interrupted"]
     assert poison_state == "running"
