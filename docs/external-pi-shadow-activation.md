@@ -234,20 +234,24 @@ The guarded constructor accepts only the exact staging origin and dedicated,
 distinct signed synthetic cookies. Before each profile it creates an exact
 server-timed cohort with the staging-admin-only
 `POST /api/v1/chat/admin/qualification-scopes` endpoint. Streaming requests
-carry only the returned `X-PWC-Qualification-Scope-ID` plus the non-cookie
-admin credential; client-authored profile, release, and time-window headers are
+carry only the returned `X-PWC-Qualification-Scope-ID`, the closed
+`X-PWC-Qualification-Workload` value (`no_tool`, `read`, or `bash`), and the
+non-cookie admin credential; client-authored profile, release, and time-window headers are
 not evidence. It posts the real `/api/v1/chat/stream` route, resumes the admitted
-turn with `Last-Event-ID`, closes every HTTP session, tears down every exact
-cohort sandbox, and only then closes and reads the scope through
+turn with `Last-Event-ID`, closes every HTTP session, tears down the exact scope
+through `POST /api/v1/chat/admin/qualification-scopes/{scope_id}/teardown`,
+requires its bounded aggregate proof, and only then closes and reads the scope through
 `POST /api/v1/chat/admin/qualification-evidence`. The scope is deleted with the
 staging-admin `DELETE /api/v1/chat/admin/qualification-scopes/{scope_id}` path
 after collection or any abort.
 
 Apply `add_chat_qualification_evidence_events.sql` and then
-`add_chat_qualification_metadata.sql` to the environment-owned schema before
+`add_chat_qualification_metadata.sql`, followed by
+`repair_chat_qualification_evidence_contract.sql`, to the environment-owned schema before
 running the gate. Startup readiness validates the exact scope/event columns,
-foreign keys, checks, and index definitions. Expired scopes are removed only by
-the bounded retention cleanup; cascade deletion removes their event rows. The
+defaults, primary/foreign/unique keys, checks, and index uniqueness/order/predicate.
+The normal sandbox maintenance reconcile independently runs bounded expired-scope
+retention even when no later scope is issued; cascade deletion removes event rows. The
 protected staging runtime must explicitly provide all four rate attestations:
 `PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`,
 `PWC_MODAL_EXECUTOR_RATE_SOURCE_ID=modal-staging-price-v1`,
@@ -262,6 +266,12 @@ queueing is forbidden. The controller rechecks the approved 8 GiB VPS class and
 the existing 1.5 GiB projected `MemAvailable`/80% CPU guard before each cohort.
 A resource refusal is retained safety evidence and ends the operation; it never
 authorizes overcommit.
+
+The functional cohort must persist exactly 16/8/8 workload rows. Every tool turn
+must own exactly one executor start, one create-or-reuse event, one closed
+exact-release compute interval, and one teardown eviction; every no-tool turn
+must own zero of all four. The admission cohort must contain exactly 100 no-tool
+rows and 100 admission-denominator events.
 
 Qualification includes deterministic browser disconnect, API subscriber
 process loss, external worker WebSocket loss, one-worker drain, executor

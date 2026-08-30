@@ -24,6 +24,7 @@ SessionFactory = Callable[[], Session]
 CapacityLocker = Callable[[Session], bool]
 UtcClock = Callable[[], datetime]
 TokenFactory = Callable[[], str]
+QualificationCleanup = Callable[[], int]
 
 
 class MaintenanceSnapshotStore(Protocol):
@@ -45,6 +46,7 @@ class ChatSandboxLeaseMaintenanceCoordinator:
         capacity_locker: CapacityLocker = lock_capacity,
         utcnow: UtcClock | None = None,
         token_factory: TokenFactory | None = None,
+        qualification_cleanup: QualificationCleanup | None = None,
     ) -> None:
         idle_eviction = lifecycle.idle_eviction
         if lifecycle.settings is not settings or idle_eviction.settings is not settings:
@@ -88,6 +90,7 @@ class ChatSandboxLeaseMaintenanceCoordinator:
         self.capacity_locker = capacity_locker
         self.utcnow = utcnow or (lambda: datetime.now(UTC))
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(24))
+        self.qualification_cleanup = qualification_cleanup or (lambda: 0)
 
     @property
     def ready_timeout_seconds(self) -> float:
@@ -189,6 +192,7 @@ class ChatSandboxLeaseMaintenanceCoordinator:
                 alive = False
             if not alive:
                 repaired += self._mark_lost(candidate)
+        self.qualification_cleanup()
         return repaired
 
     async def expire_inactive_snapshots(self) -> int:

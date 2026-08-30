@@ -287,6 +287,7 @@ def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
         run_id="run-123",
         profile="32-functional-turns",
         scenario="forced_failure",
+        workload="read",
     )
     assert not service.mark_qualification(
         str(request_id),
@@ -294,6 +295,7 @@ def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
         run_id="run-456",
         profile="100-immediate-admission",
         scenario="reliability",
+        workload="no_tool",
     )
     with pytest.raises(ValueError, match="Unsupported qualification scenario"):
         service.mark_qualification(
@@ -302,6 +304,7 @@ def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
             run_id="run-123",
             profile="32-functional-turns",
             scenario="unknown",
+            workload="read",
         )
     db.refresh(row)
 
@@ -309,6 +312,7 @@ def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
     assert row.qualification_scope_id == scope_id
     assert row.qualification_profile == "32-functional-turns"
     assert row.qualification_scenario == "forced_failure"
+    assert row.qualification_workload == "read"
 
 
 def test_reconcile_stale_turns_repairs_expired_projection_and_latency(db):

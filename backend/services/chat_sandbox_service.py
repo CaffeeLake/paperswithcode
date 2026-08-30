@@ -345,9 +345,18 @@ class SandboxSessionManager:
                 lifecycle=lifecycle,
                 snapshots=self.snapshots,
                 capacity_locker=lifecycle.capacity_locker,
+                qualification_cleanup=self._cleanup_qualification_evidence,
             )
             self._sandbox_lease_maintenance = coordinator
         return coordinator
+
+    def _cleanup_qualification_evidence(self) -> int:
+        from backend.services.chat_durable_qualification_evidence import (
+            ChatDurableQualificationEvidenceService,
+        )
+
+        with self.session_factory() as db, db.begin():
+            return ChatDurableQualificationEvidenceService(db).cleanup_expired()
 
     def _spend_alert_dispatcher(self) -> ChatSandboxSpendAlertDispatcher:
         dispatcher = getattr(self, "_sandbox_spend_alerts", None)

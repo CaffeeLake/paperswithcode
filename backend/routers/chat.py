@@ -47,6 +47,7 @@ from backend.models.chat import (
     ChatQualificationEvidenceResponse,
     ChatQualificationScopeRequest,
     ChatQualificationScopeResponse,
+    ChatQualificationTeardownResponse,
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
@@ -295,7 +296,7 @@ class AdminCreateHarnessSession(BaseModel):
 
 def _durable_qualification_scope(
     request: Request, settings: Settings
-) -> uuid.UUID | None:
+) -> tuple[uuid.UUID, Literal["no_tool", "read", "bash"]] | None:
     raw_scope_id = request.headers.get("X-PWC-Qualification-Scope-ID")
     if raw_scope_id is None:
         return None
@@ -303,16 +304,18 @@ def _durable_qualification_scope(
         scope_id = uuid.UUID(raw_scope_id)
     except ValueError:
         scope_id = None
+    workload = request.headers.get("X-PWC-Qualification-Workload")
     if (
         settings.environment != "staging"
         or scope_id is None
+        or workload not in {"no_tool", "read", "bash"}
         or not (has_valid_non_cookie_admin_credential(request, settings))
     ):
         raise HTTPException(
             status_code=403,
             detail={"code": "qualification_scope_rejected"},
         )
-    return scope_id
+    return scope_id, workload
 
 
 OPENROUTER_UNAVAILABLE_MESSAGE = (
@@ -767,6 +770,35 @@ def chat_qualification_evidence(
         raise HTTPException(
             status_code=409,
             detail={"code": "qualification_evidence_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/admin/qualification-scopes/{scope_id}/teardown",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatQualificationTeardownResponse,
+)
+async def teardown_chat_qualification_scope(
+    scope_id: uuid.UUID,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Evict only the exact server-scoped qualification cohort."""
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        proof = await ChatDurableQualificationEvidenceService(db).teardown_scope(
+            scope_id=scope_id,
+            settings=settings,
+            sandbox_manager=shared_sandbox_manager(settings),
+        )
+        db.commit()
+        return proof
+    except QualificationEvidenceUnavailable:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "qualification_teardown_incomplete"},
         ) from None
 
 
@@ -2042,7 +2074,9 @@ async def stream_chat(
                     qualified_scope_record = (
                         ChatDurableQualificationEvidenceService(
                             db
-                        ).require_active_scope(qualification_scope, settings=settings)
+                        ).require_active_scope(
+                            qualification_scope[0], settings=settings
+                        )
                         if qualification_scope is not None
                         else None
                     )
@@ -2051,6 +2085,15 @@ async def stream_chat(
                         status_code=409,
                         detail={"code": "qualification_scope_unavailable"},
                     ) from None
+                if (
+                    qualified_scope_record is not None
+                    and qualified_scope_record.profile == "100-immediate-admission"
+                    and qualification_scope[1] != "no_tool"
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "qualification_workload_rejected"},
+                    )
                 service = ChatSessionService(db, settings)
                 admission = service.begin_turn(
                     owner,
@@ -2113,6 +2156,7 @@ async def stream_chat(
                             scope_id=qualified_scope_record.id,
                             run_id=qualified_scope_record.run_id,
                             profile=qualified_scope_record.profile,
+                            workload=qualification_scope[1],
                             scenario="reliability",
                         )
                     ):

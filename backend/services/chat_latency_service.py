@@ -87,6 +87,7 @@ QUALIFICATION_PROFILES = {
     "32-functional-turns",
     "100-immediate-admission",
 }
+QUALIFICATION_WORKLOADS = {"no_tool", "read", "bash"}
 
 
 def _bounded_duration(value: Any, name: str) -> int:
@@ -307,15 +308,18 @@ class ChatLatencyService:
         self,
         request_id: str,
         *,
-        scope_id: uuid.UUID,
         run_id: str,
-        profile: str,
+        scope_id: uuid.UUID | None = None,
+        profile: str | None = None,
+        workload: str | None = None,
         scenario: str,
     ) -> bool:
         if scenario not in QUALIFICATION_SCENARIOS:
             raise ValueError("Unsupported qualification scenario")
-        if profile not in QUALIFICATION_PROFILES:
+        if profile is not None and profile not in QUALIFICATION_PROFILES:
             raise ValueError("Unsupported qualification profile")
+        if workload is not None and workload not in QUALIFICATION_WORKLOADS:
+            raise ValueError("Unsupported qualification workload")
         normalized_run_id = run_id.strip()
         if not normalized_run_id or len(normalized_run_id) > 64:
             raise ValueError("qualification run_id must be 1-64 characters")
@@ -331,6 +335,7 @@ class ChatLatencyService:
                 qualification_scope_id=scope_id,
                 qualification_run_id=normalized_run_id,
                 qualification_profile=profile,
+                qualification_workload=workload,
                 qualification_scenario=scenario,
                 updated_at=datetime.now(UTC),
             )

@@ -129,7 +129,9 @@ class DurableQualificationOperator(Protocol):
         self, profile: DurableQualificationProfile
     ) -> DurableProfileReport: ...
 
-    def teardown_profile(self, profile: DurableQualificationProfile) -> None: ...
+    def teardown_profile(
+        self, profile: DurableQualificationProfile, scope_id: uuid.UUID | None
+    ) -> None: ...
 
     def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]: ...
 
@@ -150,8 +152,6 @@ class LiveQualificationControlPlane(Protocol):
     def run_resources(self, profile: DurableQualificationProfile) -> object: ...
 
     def setup_profile(self, profile: DurableQualificationProfile) -> None: ...
-
-    def teardown_profile(self, profile: DurableQualificationProfile) -> None: ...
 
     def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]: ...
 
@@ -204,21 +204,14 @@ class GuardedLiveDurableOperator:
         if not isinstance(scope_id, uuid.UUID):
             raise QualificationRefused("qualification_scope_invalid")
         self._scopes[profile.name] = scope_id
-        try:
-            if scope.get("app_release_id") != self.environment().target_release:
-                raise QualificationRefused("exact_staging_release_required")
-            return run_live_durable_profile(
-                profile_name=profile.name,
-                transport_config=self.transport_config,
-                resources=self.control_plane.run_resources(profile),
-                qualification_scope_id=scope_id,
-            )
-        except BaseException:
-            try:
-                self.cleanup_profile_evidence(profile)
-            except BaseException as cleanup_error:
-                raise QualificationRefused("cleanup_failed") from cleanup_error
-            raise
+        if scope.get("app_release_id") != self.environment().target_release:
+            raise QualificationRefused("exact_staging_release_required")
+        return run_live_durable_profile(
+            profile_name=profile.name,
+            transport_config=self.transport_config,
+            resources=self.control_plane.run_resources(profile),
+            qualification_scope_id=scope_id,
+        )
 
     def finalize_profile(self, profile: DurableQualificationProfile, measurement):
         from datetime import UTC, datetime
@@ -246,8 +239,18 @@ class GuardedLiveDurableOperator:
         if scope_id is not None:
             self.evidence_source.cleanup(scope_id)
 
-    def teardown_profile(self, profile: DurableQualificationProfile) -> None:
-        self.control_plane.teardown_profile(profile)
+    def qualification_scope_id(
+        self, profile: DurableQualificationProfile
+    ) -> uuid.UUID | None:
+        return self._scopes.get(profile.name)
+
+    def teardown_profile(
+        self, profile: DurableQualificationProfile, scope_id: uuid.UUID | None
+    ) -> None:
+        expected_scope_id = self._scopes.get(profile.name)
+        if scope_id is None or scope_id != expected_scope_id:
+            raise QualificationRefused("qualification_scope_invalid")
+        self.evidence_source.teardown(scope_id)
 
     def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]:
         return self.control_plane.restore_flags(flags)
@@ -352,12 +355,18 @@ def run_durable_qualification(
                 reason = refusal
                 break
             teardown_failed = False
+            result = None
             try:
                 operator.setup_profile(profile)
                 result = operator.run_profile(profile)
             finally:
                 try:
-                    operator.teardown_profile(profile)
+                    scope_id = getattr(result, "qualification_scope_id", None)
+                    if scope_id is None:
+                        scope_source = getattr(operator, "qualification_scope_id", None)
+                        if callable(scope_source):
+                            scope_id = scope_source(profile)
+                    operator.teardown_profile(profile, scope_id)
                 except BaseException:
                     teardown_failed = True
             cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)

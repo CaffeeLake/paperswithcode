@@ -1394,12 +1394,12 @@ def validate_external_worker_reservation_schema(db) -> None:
 def validate_qualification_evidence_schema(db) -> None:
     """Require the exact durable qualification storage contract."""
     columns = {
-        (table, column): (data_type, nullable, maximum_length)
-        for table, column, data_type, nullable, maximum_length in db.execute(
+        (table, column): (data_type, nullable, maximum_length, default)
+        for table, column, data_type, nullable, maximum_length, default in db.execute(
             text("""
                 /* qualification_evidence_exact_columns */
                 SELECT table_name, column_name, data_type, is_nullable,
-                       character_maximum_length
+                       character_maximum_length, column_default
                 FROM information_schema.columns
                 WHERE table_schema = current_schema()
                   AND table_name IN (
@@ -1411,65 +1411,108 @@ def validate_qualification_evidence_schema(db) -> None:
         ).all()
     }
     required_columns = {
-        ("chat_qualification_scopes", "id"): ("uuid", "NO", None),
-        ("chat_qualification_scopes", "run_id"): ("character varying", "NO", 64),
-        ("chat_qualification_scopes", "profile"): ("character varying", "NO", 32),
+        ("chat_qualification_scopes", "id"): ("uuid", "NO", None, None),
+        ("chat_qualification_scopes", "run_id"): ("character varying", "NO", 64, None),
+        ("chat_qualification_scopes", "profile"): ("character varying", "NO", 32, None),
         ("chat_qualification_scopes", "app_release_id"): (
             "character varying",
             "NO",
             255,
+            None,
         ),
         ("chat_qualification_scopes", "window_started_at"): (
             "timestamp with time zone",
             "NO",
+            None,
             None,
         ),
         ("chat_qualification_scopes", "window_ended_at"): (
             "timestamp with time zone",
             "YES",
             None,
+            None,
         ),
         ("chat_qualification_scopes", "expires_at"): (
             "timestamp with time zone",
             "NO",
+            None,
             None,
         ),
         ("chat_qualification_scopes", "created_at"): (
             "timestamp with time zone",
             "NO",
             None,
+            "now()",
         ),
-        ("chat_qualification_evidence_events", "id"): ("uuid", "NO", None),
+        ("chat_qualification_evidence_events", "id"): ("uuid", "NO", None, None),
         ("chat_qualification_evidence_events", "qualification_scope_id"): (
             "uuid",
             "NO",
             None,
+            None,
         ),
-        ("chat_qualification_evidence_events", "turn_id"): ("uuid", "NO", None),
-        ("chat_qualification_evidence_events", "chat_session_id"): ("uuid", "NO", None),
+        ("chat_qualification_evidence_events", "turn_id"): ("uuid", "NO", None, None),
+        ("chat_qualification_evidence_events", "chat_session_id"): (
+            "uuid",
+            "NO",
+            None,
+            None,
+        ),
         ("chat_qualification_evidence_events", "event_type"): (
             "character varying",
             "NO",
             32,
+            None,
         ),
         ("chat_qualification_evidence_events", "operation_digest"): (
             "character varying",
             "YES",
             64,
+            None,
         ),
         ("chat_qualification_evidence_events", "occurred_at"): (
             "timestamp with time zone",
             "NO",
             None,
+            None,
         ),
-        ("chat_turn_latency", "qualification_scope_id"): ("uuid", "YES", None),
+        ("chat_turn_latency", "qualification_run_id"): (
+            "character varying",
+            "YES",
+            64,
+            None,
+        ),
+        ("chat_turn_latency", "qualification_scope_id"): ("uuid", "YES", None, None),
         ("chat_turn_latency", "qualification_profile"): (
             "character varying",
             "YES",
             32,
+            None,
+        ),
+        ("chat_turn_latency", "qualification_workload"): (
+            "character varying",
+            "YES",
+            16,
+            None,
+        ),
+        ("chat_turn_latency", "qualification_scenario"): (
+            "character varying",
+            "YES",
+            32,
+            None,
         ),
     }
-    if any(columns.get(key) != value for key, value in required_columns.items()):
+    contract_columns = {
+        key: value
+        for key, value in columns.items()
+        if key[0]
+        in {
+            "chat_qualification_scopes",
+            "chat_qualification_evidence_events",
+        }
+        or key[1].startswith("qualification_")
+    }
+    if contract_columns != required_columns:
         raise RuntimeError("required qualification evidence schema is missing")
 
     constraints = {
@@ -1481,87 +1524,58 @@ def validate_qualification_evidence_schema(db) -> None:
                 FROM pg_constraint
                 WHERE connamespace = current_schema()::regnamespace
                   AND (
-                    (conrelid = 'chat_qualification_scopes'::regclass AND conname IN (
-                      'chat_qualification_scopes_run_id_key',
-                      'chat_qualification_scopes_profile_check',
-                      'chat_qualification_scopes_window_check',
-                      'chat_qualification_scopes_expiry_check'
-                    )) OR
-                    (conrelid = 'chat_qualification_evidence_events'::regclass AND conname IN (
-                      'chat_qualification_evidence_scope_fkey',
-                      'chat_qualification_evidence_turn_fkey',
-                      'chat_qualification_evidence_session_fkey',
-                      'chat_qualification_evidence_event_type_check',
-                      'chat_qualification_evidence_operation_shape_check'
-                    )) OR
-                    (conrelid = 'chat_turn_latency'::regclass AND conname IN (
-                      'chat_turn_latency_qualification_scope_fkey',
-                      'chat_turn_latency_qualification_profile_check'
-                    ))
+                    conrelid = 'chat_qualification_scopes'::regclass
+                    OR conrelid = 'chat_qualification_evidence_events'::regclass
+                    OR (
+                      conrelid = 'chat_turn_latency'::regclass
+                      AND conname LIKE 'chat_turn_latency_qualification_%'
+                    )
                   )
             """)
         ).all()
     }
-    required_constraint_fragments = {
-        "chat_qualification_scopes_run_id_key": ("unique (run_id)",),
-        "chat_qualification_scopes_profile_check": (
-            "32-functional-turns",
-            "100-immediate-admission",
-        ),
-        "chat_qualification_scopes_window_check": (
-            "window_ended_at",
-            "window_started_at",
-        ),
-        "chat_qualification_scopes_expiry_check": ("expires_at", "window_started_at"),
-        "chat_qualification_evidence_scope_fkey": (
-            "foreign key (qualification_scope_id)",
-            "chat_qualification_scopes(id)",
-            "on delete cascade",
-        ),
-        "chat_qualification_evidence_turn_fkey": (
-            "foreign key (turn_id)",
-            "chat_turn_jobs(turn_id)",
-            "on delete cascade",
-        ),
-        "chat_qualification_evidence_session_fkey": (
-            "foreign key (chat_session_id)",
-            "chat_sessions(id)",
-            "on delete cascade",
-        ),
-        "chat_qualification_evidence_event_type_check": (
-            "admitted_no_queue",
-            "queued",
-            "workspace_evicted",
-        ),
-        "chat_qualification_evidence_operation_shape_check": (
-            "executor_started",
-            "operation_digest",
-        ),
-        "chat_turn_latency_qualification_scope_fkey": (
-            "foreign key (qualification_scope_id)",
-            "chat_qualification_scopes(id)",
-            "on delete set null",
-        ),
-        "chat_turn_latency_qualification_profile_check": (
-            "32-functional-turns",
-            "100-immediate-admission",
-        ),
+    required_constraints = {
+        "chat_qualification_scopes_pkey": "primary key (id)",
+        "chat_qualification_scopes_run_id_key": "unique (run_id)",
+        "chat_qualification_scopes_profile_check": "check (((profile)::text = any ((array['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[])))",
+        "chat_qualification_scopes_window_check": "check (((window_ended_at is null) or (window_ended_at >= window_started_at)))",
+        "chat_qualification_scopes_expiry_check": "check ((expires_at > window_started_at))",
+        "chat_qualification_evidence_events_pkey": "primary key (id)",
+        "chat_qualification_evidence_scope_fkey": "foreign key (qualification_scope_id) references chat_qualification_scopes(id) on delete cascade",
+        "chat_qualification_evidence_turn_fkey": "foreign key (turn_id) references chat_turn_jobs(turn_id) on delete cascade",
+        "chat_qualification_evidence_session_fkey": "foreign key (chat_session_id) references chat_sessions(id) on delete cascade",
+        "chat_qualification_evidence_event_type_check": "check (((event_type)::text = any ((array['admitted_no_queue'::character varying, 'executor_started'::character varying, 'stale_fence'::character varying, 'queued'::character varying, 'workspace_created'::character varying, 'workspace_reused'::character varying, 'workspace_evicted'::character varying])::text[])))",
+        "chat_qualification_evidence_operation_shape_check": "check ((((event_type)::text = 'executor_started'::text) = (operation_digest is not null)))",
+        "chat_turn_latency_qualification_scope_fkey": "foreign key (qualification_scope_id) references chat_qualification_scopes(id) on delete set null",
+        "chat_turn_latency_qualification_profile_check": "check (((qualification_profile is null) or ((qualification_profile)::text = any ((array['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[]))))",
+        "chat_turn_latency_qualification_workload_check": "check (((qualification_workload is null) or ((qualification_workload)::text = any ((array['no_tool'::character varying, 'read'::character varying, 'bash'::character varying])::text[]))))",
+        "chat_turn_latency_qualification_scenario_check": "check (((qualification_scenario is null) or ((qualification_scenario)::text = any ((array['focused_latency'::character varying, 'reliability'::character varying, 'clean_cancel'::character varying, 'forced_failure'::character varying])::text[]))))",
     }
-    if set(constraints) != set(required_constraint_fragments) or any(
-        not all(fragment in constraints[name] for fragment in fragments)
-        for name, fragments in required_constraint_fragments.items()
-    ):
+    if constraints != required_constraints:
         raise RuntimeError("required qualification evidence schema is missing")
 
     indexes = {
-        name: " ".join(definition.lower().replace('"', "").split())
-        for name, definition in db.execute(
+        name: (unique, list(index_columns), predicate)
+        for name, unique, index_columns, predicate in db.execute(
             text("""
                 /* qualification_evidence_exact_indexes */
-                SELECT indexname, indexdef
-                FROM pg_indexes
-                WHERE schemaname = current_schema()
-                  AND indexname IN (
+                SELECT index_class.relname,
+                       index_meta.indisunique,
+                       ARRAY(
+                         SELECT attribute.attname
+                         FROM unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, position)
+                         JOIN pg_attribute attribute
+                           ON attribute.attrelid = table_class.oid
+                          AND attribute.attnum = key.attnum
+                         ORDER BY key.position
+                       ),
+                       pg_get_expr(index_meta.indpred, index_meta.indrelid)
+                FROM pg_index index_meta
+                JOIN pg_class index_class ON index_class.oid = index_meta.indexrelid
+                JOIN pg_class table_class ON table_class.oid = index_meta.indrelid
+                JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+                WHERE namespace.nspname = current_schema()
+                  AND index_class.relname IN (
                     'idx_chat_qualification_scopes_expiry',
                     'idx_chat_qualification_scopes_release_profile',
                     'idx_chat_qualification_evidence_scope_event_time',
@@ -1572,18 +1586,35 @@ def validate_qualification_evidence_schema(db) -> None:
             """)
         ).all()
     }
-    required_index_columns = {
-        "idx_chat_qualification_scopes_expiry": "(expires_at)",
-        "idx_chat_qualification_scopes_release_profile": "(app_release_id, profile)",
-        "idx_chat_qualification_evidence_scope_event_time": "(qualification_scope_id, event_type, occurred_at)",
-        "idx_chat_qualification_evidence_session_time": "(chat_session_id, occurred_at)",
-        "idx_chat_qualification_evidence_turn_event": "(turn_id, event_type)",
-        "idx_chat_turn_latency_qualification_scope": "(qualification_scope_id, admitted_at)",
+    required_indexes = {
+        "idx_chat_qualification_scopes_expiry": (False, ["expires_at"], None),
+        "idx_chat_qualification_scopes_release_profile": (
+            False,
+            ["app_release_id", "profile"],
+            None,
+        ),
+        "idx_chat_qualification_evidence_scope_event_time": (
+            False,
+            ["qualification_scope_id", "event_type", "occurred_at"],
+            None,
+        ),
+        "idx_chat_qualification_evidence_session_time": (
+            False,
+            ["chat_session_id", "occurred_at"],
+            None,
+        ),
+        "idx_chat_qualification_evidence_turn_event": (
+            False,
+            ["turn_id", "event_type"],
+            None,
+        ),
+        "idx_chat_turn_latency_qualification_scope": (
+            False,
+            ["qualification_scope_id", "admitted_at"],
+            None,
+        ),
     }
-    if set(indexes) != set(required_index_columns) or any(
-        not indexes[name].endswith(columns)
-        for name, columns in required_index_columns.items()
-    ):
+    if indexes != required_indexes:
         raise RuntimeError("required qualification evidence schema is missing")
 
 

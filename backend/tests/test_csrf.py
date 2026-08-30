@@ -163,13 +163,14 @@ def test_qualification_scope_requires_staging_and_protected_admin_credential():
 
     headers = [
         (b"x-pwc-qualification-scope-id", str(scope_id).encode()),
+        (b"x-pwc-qualification-workload", b"read"),
         (b"x-admin-token", b"a" * 32),
     ]
     request = Request(
         {"type": "http", "method": "POST", "path": "/", "headers": headers}
     )
     staging = Settings(environment="staging", admin_api_token="a" * 32)
-    assert _durable_qualification_scope(request, staging) == scope_id
+    assert _durable_qualification_scope(request, staging) == (scope_id, "read")
     with pytest.raises(HTTPException) as error:
         _durable_qualification_scope(
             request,

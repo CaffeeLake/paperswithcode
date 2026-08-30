@@ -237,7 +237,7 @@ class HttpSSEDurableChatTransport:
             "initial_model": self._config.initial_model,
         }
         started = time.perf_counter()
-        first = self._open(session, body, after_sequence=None)
+        first = self._open(session, body, after_sequence=None, workload=spec.workload)
         if first.status_code != 200:
             return self._refusal(first, started)
 
@@ -260,7 +260,9 @@ class HttpSSEDurableChatTransport:
                 raise FleetRunRefused("durable stream admission evidence is missing")
 
         body["session_id"] = session_id
-        second = self._open(session, body, after_sequence=cursor)
+        second = self._open(
+            session, body, after_sequence=cursor, workload=spec.workload
+        )
         if second.status_code != 200:
             raise FleetRunRefused("durable reconnect was refused")
         ttft_ms: int | None = None
@@ -313,7 +315,14 @@ class HttpSSEDurableChatTransport:
             "failure_code": failure_code,
         }
 
-    def _open(self, session, body: Mapping[str, object], *, after_sequence: int | None):
+    def _open(
+        self,
+        session,
+        body: Mapping[str, object],
+        *,
+        after_sequence: int | None,
+        workload: str,
+    ):
         headers = {
             "Accept": "text/event-stream",
             "Origin": _STAGING_ORIGIN,
@@ -323,6 +332,12 @@ class HttpSSEDurableChatTransport:
                 {
                     "X-Admin-Token": self._config.admin_token,
                     "X-PWC-Qualification-Scope-ID": str(self._scope_id),
+                    "X-PWC-Qualification-Workload": {
+                        "no_tool": "no_tool",
+                        "admission_stream": "no_tool",
+                        "read_only_cli": "read",
+                        "bash": "bash",
+                    }[workload],
                 }
             )
         if after_sequence is not None:
@@ -484,6 +499,36 @@ class HttpDurableQualificationEvidenceSource:
                     raise FleetRunRefused(
                         "durable qualification evidence is invalid"
                     ) from None
+        finally:
+            session.close()
+
+    def teardown(self, scope_id: uuid.UUID) -> Mapping[str, object]:
+        """Evict and close only the exact server-issued qualification cohort."""
+        session = self._session()
+        try:
+            response = session.post(
+                urljoin(
+                    self._config.base_url,
+                    f"{_QUALIFICATION_SCOPE_PATH}/{scope_id}/teardown",
+                ),
+                headers=self._headers() | {"X-Admin-Token": self._config.admin_token},
+                timeout=30.0,
+                allow_redirects=False,
+            )
+            with response:
+                payload = response.json() if response.status_code == 200 else None
+            if not isinstance(payload, dict):
+                raise FleetRunRefused("qualification scope teardown failed")
+            expected = payload.get("expected_tool_turns")
+            if (
+                expected not in {0, 16}
+                or payload.get("targeted_sessions") != expected
+                or payload.get("closed_intervals") != expected
+                or payload.get("eviction_events") != expected
+                or payload.get("source") != "exact_scope_canonical_eviction"
+            ):
+                raise FleetRunRefused("qualification scope teardown is incomplete")
+            return payload
         finally:
             session.close()
 

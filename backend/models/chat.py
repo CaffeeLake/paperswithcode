@@ -1017,6 +1017,16 @@ class ChatQualificationEvidenceRequest(BaseModel):
     scope_id: uuid.UUID
 
 
+class ChatQualificationTeardownResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_tool_turns: Literal[0, 16]
+    targeted_sessions: int = Field(ge=0, le=16)
+    closed_intervals: int = Field(ge=0, le=16)
+    eviction_events: int = Field(ge=0, le=16)
+    source: Literal["exact_scope_canonical_eviction"]
+
+
 class ChatQualificationEvidenceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

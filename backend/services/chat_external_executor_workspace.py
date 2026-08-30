@@ -165,7 +165,7 @@ class ChatExternalExecutorWorkspaceManager:
         deadline = self.monotonic() + self.acquisition.ready_timeout_seconds
         replacement_attempts = 0
         while True:
-            self._require_live_turn(turn_claim)
+            self._require_live_turn(session_id, turn_claim)
             outcome = await self.acquisition.acquire(
                 session_id,
                 launch_mode=SandboxLaunchMode.EXECUTOR,
@@ -203,13 +203,8 @@ class ChatExternalExecutorWorkspaceManager:
                 raise
             if healthy:
                 try:
-                    self._require_live_turn(turn_claim)
+                    self._require_live_turn(session_id, turn_claim)
                 except StaleTurnClaim:
-                    self.record_evidence(
-                        turn_id=turn_claim.turn_id,
-                        chat_session_id=session_id,
-                        event_type="stale_fence",
-                    )
                     await self._release_preserving_primary(workspace)
                     raise
                 self.observe(
@@ -317,10 +312,18 @@ class ChatExternalExecutorWorkspaceManager:
                 now=self.utcnow(),
             )
 
-    def _require_live_turn(self, claim: TurnLeaseClaim) -> None:
-        with self.session_factory() as db, db.begin():
-            self.turn_repository.require_live_claim(
-                db,
-                claim=claim,
-                now=self.utcnow(),
+    def _require_live_turn(self, session_id: uuid.UUID, claim: TurnLeaseClaim) -> None:
+        try:
+            with self.session_factory() as db, db.begin():
+                self.turn_repository.require_live_claim(
+                    db,
+                    claim=claim,
+                    now=self.utcnow(),
+                )
+        except StaleTurnClaim:
+            self.record_evidence(
+                turn_id=claim.turn_id,
+                chat_session_id=session_id,
+                event_type="stale_fence",
             )
+            raise

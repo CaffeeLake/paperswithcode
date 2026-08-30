@@ -52,6 +52,47 @@ class QualificationEvidenceUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class QualificationStaleSeam:
+    name: str
+    rejection: str
+    emitter: str
+
+
+# Closed inventory of post-admission ownership rejections. Adding another stale
+# rejection to the qualified turn path requires adding its durable emitter here.
+QUALIFICATION_STALE_SEAMS = (
+    QualificationStaleSeam(
+        "gateway_turn_claim", "gateway capability/turn fence", "chat_gateway_app"
+    ),
+    QualificationStaleSeam(
+        "workspace_pre_acquire_turn_claim",
+        "turn fence before sandbox acquisition",
+        "ChatExternalExecutorWorkspaceManager._require_live_turn",
+    ),
+    QualificationStaleSeam(
+        "workspace_post_health_turn_claim",
+        "turn fence after executor health",
+        "ChatExternalExecutorWorkspaceManager._require_live_turn",
+    ),
+    QualificationStaleSeam(
+        "workspace_release_ownership",
+        "false exact workspace release",
+        "ExternalPiToolWorkspaceExecutor._settle",
+    ),
+    QualificationStaleSeam(
+        "external_reservation_claim",
+        "reserved worker missing or fenced",
+        "ExternalPiChatTurnRunner._select_worker_claim_with_evidence",
+    ),
+    QualificationStaleSeam(
+        "external_worker_claim",
+        "worker selection/reconnect/cancel claim fenced",
+        "ExternalPiChatTurnRunner._require_same_external_worker_claim",
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class QualificationScope:
     scope_id: uuid.UUID
     run_id: str
@@ -78,6 +119,15 @@ class DurableQualificationEvidence:
     window_started_at_ms: int
     window_ended_at_ms: int
     source: str = "durable_qualification_records"
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationTeardownProof:
+    expected_tool_turns: int
+    targeted_sessions: int
+    closed_intervals: int
+    eviction_events: int
+    source: str = "exact_scope_canonical_eviction"
 
 
 class ChatQualificationEvidenceRepository:
@@ -222,6 +272,7 @@ class ChatDurableQualificationEvidenceService:
                 ChatTurnLatency.turn_id,
                 ChatTurnLatency.chat_session_id,
                 ChatTurnLatency.terminal_status,
+                ChatTurnLatency.qualification_workload,
             ).where(
                 ChatTurnLatency.qualification_scope_id == scope.id,
                 ChatTurnLatency.qualification_run_id == scope.run_id,
@@ -244,6 +295,16 @@ class ChatDurableQualificationEvidenceService:
             raise QualificationEvidenceUnavailable(
                 "qualification terminal evidence is incomplete"
             )
+        workload_counts = Counter(row.qualification_workload for row in latency_rows)
+        expected_workloads = (
+            {"no_tool": 16, "read": 8, "bash": 8}
+            if scope.profile == "32-functional-turns"
+            else {"no_tool": 100}
+        )
+        if dict(workload_counts) != expected_workloads:
+            raise QualificationEvidenceUnavailable(
+                "qualification workload evidence is incomplete"
+            )
         events = self.db.execute(
             select(
                 ChatQualificationEvidenceEvent.turn_id,
@@ -262,6 +323,7 @@ class ChatDurableQualificationEvidenceService:
                 "qualification cohort evidence collides"
             )
         event_counts = Counter(row.event_type for row in events)
+        per_turn_event_counts = Counter((row.turn_id, row.event_type) for row in events)
         denominator_turns = {
             row.turn_id for row in events if row.event_type == "admitted_no_queue"
         }
@@ -279,6 +341,7 @@ class ChatDurableQualificationEvidenceService:
         )
         intervals = self.db.execute(
             select(
+                ChatSandboxComputeInterval.chat_session_id,
                 ChatSandboxComputeInterval.reserved_at,
                 ChatSandboxComputeInterval.provider_created_at,
                 ChatSandboxComputeInterval.terminal_at,
@@ -290,6 +353,7 @@ class ChatDurableQualificationEvidenceService:
                 "qualification sandbox intervals are still open"
             )
         billed_duration_ms = 0
+        interval_counts_by_session: Counter[uuid.UUID] = Counter()
         for interval in intervals:
             interval_started = _as_utc(
                 interval.provider_created_at or interval.reserved_at
@@ -302,8 +366,28 @@ class ChatDurableQualificationEvidenceService:
                     raise QualificationEvidenceUnavailable(
                         "qualification sandbox evidence collides"
                     )
+                interval_counts_by_session[interval.chat_session_id] += 1
                 billed_duration_ms += round(
                     (overlap_end - overlap_start).total_seconds() * 1_000
+                )
+        for row in latency_rows:
+            is_tool_turn = row.qualification_workload in {"read", "bash"}
+            executor_starts = per_turn_event_counts[(row.turn_id, "executor_started")]
+            acquisitions = sum(
+                per_turn_event_counts[(row.turn_id, event_type)]
+                for event_type in ("workspace_created", "workspace_reused")
+            )
+            evictions = per_turn_event_counts[(row.turn_id, "workspace_evicted")]
+            interval_count = interval_counts_by_session[row.chat_session_id]
+            expected = 1 if is_tool_turn else 0
+            if (
+                executor_starts != expected
+                or acquisitions != expected
+                or evictions != expected
+                or interval_count != expected
+            ):
+                raise QualificationEvidenceUnavailable(
+                    "qualification per-turn evidence is incomplete"
                 )
         return DurableQualificationEvidence(
             expected_users=expected_users,
@@ -320,6 +404,112 @@ class ChatDurableQualificationEvidenceService:
             billed_duration_ms=billed_duration_ms,
             window_started_at_ms=round(started.timestamp() * 1_000),
             window_ended_at_ms=round(ended.timestamp() * 1_000),
+        )
+
+    async def teardown_scope(
+        self,
+        *,
+        scope_id: uuid.UUID,
+        settings: Settings,
+        sandbox_manager,
+    ) -> QualificationTeardownProof:
+        scope = self.require_active_scope(scope_id, settings=settings)
+        rows = self.db.execute(
+            select(
+                ChatTurnLatency.turn_id,
+                ChatTurnLatency.chat_session_id,
+                ChatTurnLatency.qualification_workload,
+                ChatTurnLatency.terminal_status,
+            ).where(
+                ChatTurnLatency.qualification_scope_id == scope.id,
+                ChatTurnLatency.qualification_run_id == scope.run_id,
+                ChatTurnLatency.qualification_profile == scope.profile,
+                ChatTurnLatency.qualification_scenario == "reliability",
+                ChatTurnLatency.app_release_id == scope.app_release_id,
+            )
+        ).all()
+        expected_users = QUALIFICATION_PROFILES[scope.profile]
+        expected_workloads = (
+            {"no_tool": 16, "read": 8, "bash": 8}
+            if scope.profile == "32-functional-turns"
+            else {"no_tool": 100}
+        )
+        if (
+            len(rows) != expected_users
+            or len({row.chat_session_id for row in rows}) != expected_users
+            or Counter(row.qualification_workload for row in rows) != expected_workloads
+            or any(row.terminal_status != "complete" for row in rows)
+        ):
+            raise QualificationEvidenceUnavailable(
+                "qualification teardown cohort is incomplete"
+            )
+        tool_rows = tuple(
+            row for row in rows if row.qualification_workload in {"read", "bash"}
+        )
+        for row in tool_rows:
+            try:
+                await sandbox_manager.snapshot_and_terminate(row.chat_session_id)
+            except Exception:
+                raise QualificationEvidenceUnavailable(
+                    "qualification teardown failed"
+                ) from None
+
+        self.db.expire_all()
+        interval_rows = self.db.execute(
+            select(
+                ChatSandboxComputeInterval.chat_session_id,
+                ChatSandboxComputeInterval.terminal_at,
+                ChatSandboxComputeInterval.app_release_id,
+            ).where(
+                ChatSandboxComputeInterval.chat_session_id.in_(
+                    tuple(row.chat_session_id for row in tool_rows)
+                )
+            )
+        ).all()
+        intervals_by_session = Counter(row.chat_session_id for row in interval_rows)
+        if (
+            len(interval_rows) != len(tool_rows)
+            or any(
+                row.app_release_id != scope.app_release_id or row.terminal_at is None
+                for row in interval_rows
+            )
+            or any(intervals_by_session[row.chat_session_id] != 1 for row in tool_rows)
+        ):
+            raise QualificationEvidenceUnavailable(
+                "qualification teardown intervals are incomplete"
+            )
+        eviction_counts = Counter(
+            self.db.execute(
+                select(ChatQualificationEvidenceEvent.turn_id).where(
+                    ChatQualificationEvidenceEvent.qualification_scope_id == scope.id,
+                    ChatQualificationEvidenceEvent.event_type == "workspace_evicted",
+                )
+            ).scalars()
+        )
+        if any(eviction_counts[row.turn_id] > 1 for row in tool_rows):
+            raise QualificationEvidenceUnavailable(
+                "qualification teardown evidence collides"
+            )
+        occurred_at = self.now()
+        for row in tool_rows:
+            if eviction_counts[row.turn_id] == 0:
+                self.db.add(
+                    ChatQualificationEvidenceEvent(
+                        id=uuid.uuid4(),
+                        qualification_scope_id=scope.id,
+                        turn_id=row.turn_id,
+                        chat_session_id=row.chat_session_id,
+                        event_type="workspace_evicted",
+                        occurred_at=occurred_at,
+                    )
+                )
+        self.db.flush()
+        expected_tool_turns = len(tool_rows)
+        return QualificationTeardownProof(
+            expected_tool_turns=expected_tool_turns,
+            targeted_sessions=expected_tool_turns,
+            closed_intervals=expected_tool_turns,
+            eviction_events=expected_tool_turns,
         )
 
     def cleanup_scope(self, scope_id: uuid.UUID) -> bool:

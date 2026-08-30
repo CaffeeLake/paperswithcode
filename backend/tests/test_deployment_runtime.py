@@ -1322,46 +1322,90 @@ class _ChatSchemaDB:
                 ("chat_turn_latency", "qualification_scope_id", "uuid", "YES", None),
                 (
                     "chat_turn_latency",
+                    "qualification_run_id",
+                    "character varying",
+                    "YES",
+                    64,
+                ),
+                (
+                    "chat_turn_latency",
                     "qualification_profile",
                     "character varying",
                     "YES",
                     32,
                 ),
+                (
+                    "chat_turn_latency",
+                    "qualification_workload",
+                    "character varying",
+                    "YES",
+                    16,
+                ),
+                (
+                    "chat_turn_latency",
+                    "qualification_scenario",
+                    "character varying",
+                    "YES",
+                    32,
+                ),
+            ]
+            rows = [
+                (
+                    *row,
+                    "now()"
+                    if row[:2] == ("chat_qualification_scopes", "created_at")
+                    else None,
+                )
+                for row in rows
             ]
             return _ChatSchemaResult(
                 rows=rows if self.include_reservation_schema else []
             )
         if "qualification_evidence_exact_constraints" in sql:
             fragments = {
+                "chat_qualification_scopes_pkey": "PRIMARY KEY (id)",
                 "chat_qualification_scopes_run_id_key": "UNIQUE (run_id)",
-                "chat_qualification_scopes_profile_check": "CHECK profile 32-functional-turns 100-immediate-admission",
-                "chat_qualification_scopes_window_check": "CHECK window_ended_at window_started_at",
-                "chat_qualification_scopes_expiry_check": "CHECK expires_at window_started_at",
+                "chat_qualification_scopes_profile_check": "CHECK (((profile)::text = ANY ((ARRAY['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[])))",
+                "chat_qualification_scopes_window_check": "CHECK (((window_ended_at IS NULL) OR (window_ended_at >= window_started_at)))",
+                "chat_qualification_scopes_expiry_check": "CHECK ((expires_at > window_started_at))",
+                "chat_qualification_evidence_events_pkey": "PRIMARY KEY (id)",
                 "chat_qualification_evidence_scope_fkey": "FOREIGN KEY (qualification_scope_id) REFERENCES chat_qualification_scopes(id) ON DELETE CASCADE",
                 "chat_qualification_evidence_turn_fkey": "FOREIGN KEY (turn_id) REFERENCES chat_turn_jobs(turn_id) ON DELETE CASCADE",
                 "chat_qualification_evidence_session_fkey": "FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE",
-                "chat_qualification_evidence_event_type_check": "CHECK admitted_no_queue queued workspace_evicted",
-                "chat_qualification_evidence_operation_shape_check": "CHECK executor_started operation_digest",
+                "chat_qualification_evidence_event_type_check": "CHECK (((event_type)::text = ANY ((ARRAY['admitted_no_queue'::character varying, 'executor_started'::character varying, 'stale_fence'::character varying, 'queued'::character varying, 'workspace_created'::character varying, 'workspace_reused'::character varying, 'workspace_evicted'::character varying])::text[])))",
+                "chat_qualification_evidence_operation_shape_check": "CHECK ((((event_type)::text = 'executor_started'::text) = (operation_digest IS NOT NULL)))",
                 "chat_turn_latency_qualification_scope_fkey": "FOREIGN KEY (qualification_scope_id) REFERENCES chat_qualification_scopes(id) ON DELETE SET NULL",
-                "chat_turn_latency_qualification_profile_check": "CHECK 32-functional-turns 100-immediate-admission",
+                "chat_turn_latency_qualification_profile_check": "CHECK (((qualification_profile IS NULL) OR ((qualification_profile)::text = ANY ((ARRAY['32-functional-turns'::character varying, '100-immediate-admission'::character varying])::text[]))))",
+                "chat_turn_latency_qualification_workload_check": "CHECK (((qualification_workload IS NULL) OR ((qualification_workload)::text = ANY ((ARRAY['no_tool'::character varying, 'read'::character varying, 'bash'::character varying])::text[]))))",
+                "chat_turn_latency_qualification_scenario_check": "CHECK (((qualification_scenario IS NULL) OR ((qualification_scenario)::text = ANY ((ARRAY['focused_latency'::character varying, 'reliability'::character varying, 'clean_cancel'::character varying, 'forced_failure'::character varying])::text[]))))",
             }
             return _ChatSchemaResult(
                 rows=list(fragments.items()) if self.include_reservation_schema else []
             )
         if "qualification_evidence_exact_indexes" in sql:
             columns = {
-                "idx_chat_qualification_scopes_expiry": "(expires_at)",
-                "idx_chat_qualification_scopes_release_profile": "(app_release_id, profile)",
-                "idx_chat_qualification_evidence_scope_event_time": "(qualification_scope_id, event_type, occurred_at)",
-                "idx_chat_qualification_evidence_session_time": "(chat_session_id, occurred_at)",
-                "idx_chat_qualification_evidence_turn_event": "(turn_id, event_type)",
-                "idx_chat_turn_latency_qualification_scope": "(qualification_scope_id, admitted_at)",
+                "idx_chat_qualification_scopes_expiry": ["expires_at"],
+                "idx_chat_qualification_scopes_release_profile": [
+                    "app_release_id",
+                    "profile",
+                ],
+                "idx_chat_qualification_evidence_scope_event_time": [
+                    "qualification_scope_id",
+                    "event_type",
+                    "occurred_at",
+                ],
+                "idx_chat_qualification_evidence_session_time": [
+                    "chat_session_id",
+                    "occurred_at",
+                ],
+                "idx_chat_qualification_evidence_turn_event": ["turn_id", "event_type"],
+                "idx_chat_turn_latency_qualification_scope": [
+                    "qualification_scope_id",
+                    "admitted_at",
+                ],
             }
             return _ChatSchemaResult(
-                rows=[
-                    (name, f"CREATE INDEX {name} ON table {value}")
-                    for name, value in columns.items()
-                ]
+                rows=[(name, False, value, None) for name, value in columns.items()]
                 if self.include_reservation_schema
                 else []
             )
@@ -3159,6 +3203,7 @@ def test_common_chat_migrations_support_isolated_production_schema():
         "add_chat_active_cost.sql",
         "add_chat_user_billing.sql",
         "add_chat_qualification_metadata.sql",
+        "repair_chat_qualification_evidence_contract.sql",
         "add_chat_sandbox_spend_cap.sql",
         "add_chat_shares.sql",
         "add_chat_edit_preparation_state.sql",

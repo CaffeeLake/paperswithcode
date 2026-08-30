@@ -241,7 +241,13 @@ class ExternalPiToolWorkspaceExecutor:
         manager = self._workspace_manager()
         if settlement == "release":
             try:
-                await manager.release(workspace)
+                released = await manager.release(workspace)
+                if not released:
+                    self.record_evidence(
+                        turn_id=self.admission.turn_id,
+                        chat_session_id=self.admission.session_id,
+                        event_type="stale_fence",
+                    )
                 return
             except asyncio.CancelledError:
                 await self._invalidate(

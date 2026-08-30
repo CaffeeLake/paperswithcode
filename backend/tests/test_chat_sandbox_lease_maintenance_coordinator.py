@@ -802,3 +802,29 @@ def test_manager_maintenance_methods_are_thin_count_preserving_delegates():
 
     assert asyncio.run(run()) == (1, 2, 3, 4)
     assert maintenance.calls == ["reap", "warm", "reconcile", "snapshots"]
+
+
+def test_periodic_reconcile_runs_restart_safe_qualification_retention_without_issuance():
+    harness = _Harness()
+    cleanup_results = iter((2, 0))
+    cleanup_calls = []
+
+    def cleanup():
+        result = next(cleanup_results)
+        cleanup_calls.append(result)
+        return result
+
+    coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=harness.repository,
+        provider=harness.provider,
+        lifecycle=harness.lifecycle,
+        snapshots=harness.snapshots,
+        capacity_locker=harness.capacity_locker,
+        qualification_cleanup=cleanup,
+    )
+
+    assert asyncio.run(coordinator.reconcile()) == 0
+    assert asyncio.run(coordinator.reconcile()) == 0
+    assert cleanup_calls == [2, 0]

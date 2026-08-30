@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import Counter
 from dataclasses import FrozenInstanceError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -516,7 +517,7 @@ class _DurableOperator:
             modal_rate=_MODAL_RATE,
         )
 
-    def teardown_profile(self, profile):
+    def teardown_profile(self, profile, scope_id=None):
         self.events.append(("teardown", profile.name))
         if self.failure_stage == f"teardown:{profile.name}":
             raise RuntimeError("TOP_SECRET_teardown")
@@ -1774,6 +1775,37 @@ def test_guarded_live_operator_delegates_run_only_to_live_runner(monkeypatch):
     assert operator.run_profile(profile) == "profile-report"
     assert captured["profile_name"] == profile.name
     assert captured["resources"] is resources
+
+
+def test_guarded_live_teardown_requires_and_evicts_only_the_exact_scope():
+    from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
+    from backend.scripts.qualify_durable_external_turns import (
+        GuardedLiveDurableOperator,
+        QualificationRefused,
+    )
+
+    profile = resolve_durable_profile("32-functional-turns")
+    operator = GuardedLiveDurableOperator(
+        control_plane=SimpleNamespace(),
+        transport_config=DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+            qualification_run_id="run",
+            admin_token="a" * 32,
+        ),
+    )
+    exact_scope = uuid.uuid4()
+    calls = []
+    operator._scopes[profile.name] = exact_scope
+    operator.evidence_source = SimpleNamespace(
+        teardown=lambda scope_id: calls.append(scope_id)
+    )
+
+    with pytest.raises(QualificationRefused, match="qualification_scope_invalid"):
+        operator.teardown_profile(profile, uuid.uuid4())
+    operator.teardown_profile(profile, exact_scope)
+    assert calls == [exact_scope]
 
 
 def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):

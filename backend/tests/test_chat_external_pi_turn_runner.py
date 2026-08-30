@@ -259,6 +259,7 @@ class FakeWorkspaceManager:
         self.sandbox = type("Sandbox", (), {"object_id": "sb-retained"})()
         self.worker_generation = "durable-workspace-generation"
         self.release_error = None
+        self.release_result = True
         self.invalidate_error = None
 
     async def acquire(self, *, session_id, turn_claim):
@@ -275,7 +276,7 @@ class FakeWorkspaceManager:
         self.released.append(workspace)
         if self.release_error is not None:
             raise self.release_error
-        return True
+        return self.release_result
 
     async def invalidate(self, workspace, *, failure_code="sandbox_worker_failed"):
         self.invalidated.append((workspace, failure_code))
@@ -985,10 +986,13 @@ def test_external_pi_runner_rejects_endpoint_status_mismatch_before_connect():
         worker_status_resolver=lambda: _async_value(worker_status(endpoint)),
         session_factory=SessionContext,
     )
+    stale_events = []
+    runner.record_evidence = lambda **values: stale_events.append(values) or True
 
     with pytest.raises(StaleWorkerClaim):
         asyncio.run(_collect(runner))
     assert connected is False
+    assert [event["event_type"] for event in stale_events] == ["stale_fence"]
 
 
 def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
@@ -1070,6 +1074,8 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
         session_factory=SessionContext,
     )
+    stale_events = []
+    runner.record_evidence = lambda **values: stale_events.append(values) or True
 
     assert asyncio.run(_collect(runner)) == []
     assert connection["url"] == "ws://127.0.0.1:18102/v1/turn"
@@ -1083,6 +1089,7 @@ def test_external_pi_runner_uses_the_exact_durable_reserved_endpoint():
     runner.worker_status_resolver = lambda: _async_value(mismatched)
     with pytest.raises(StaleWorkerClaim, match="identity mismatches"):
         asyncio.run(_collect(runner))
+    assert [event["event_type"] for event in stale_events] == ["stale_fence"]
 
 
 def test_external_pi_runner_rejects_worker_becoming_full_before_connect():
@@ -1144,6 +1151,8 @@ def test_external_pi_runner_observes_endpoint_capacity_saturation():
     runner.observe = lambda event, code, value: observations.append(
         (event, code, value)
     )
+    stale_events = []
+    runner.record_evidence = lambda **values: stale_events.append(values) or True
 
     with pytest.raises(WorkerLeaseUnavailable):
         asyncio.run(runner._select_worker_claim())
@@ -1378,6 +1387,35 @@ def test_cleanup_failures_do_not_override_successful_tool_result():
     assert result["ok"] is True
     assert len(manager.released) == 1
     assert len(manager.invalidated) == 1
+
+
+def test_false_workspace_release_records_stale_fence_without_changing_tool_result():
+    manager = FakeWorkspaceManager(FakeProvider())
+    manager.release_result = False
+    runner = _tool_runner(FakeExecutor(), manager)
+    events = []
+    runner.tool_executor.record_evidence = (
+        lambda **values: events.append(values) or True
+    )
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "operation-1",
+                "tool_call_id": "tool-1",
+                "operation": "exec",
+                "command": "printf x >> marker",
+                "timeout_ms": 1000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert [event["event_type"] for event in events] == [
+        "executor_started",
+        "stale_fence",
+    ]
+    assert manager.invalidated == []
 
 
 def test_new_cancellation_during_successful_release_propagates_after_invalidation():
@@ -2035,6 +2073,8 @@ def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run()
     runner.observe = lambda event, code, value: observations.append(
         (event, code, value)
     )
+    stale_events = []
+    runner.record_evidence = lambda **event: stale_events.append(event) or True
 
     assert asyncio.run(_collect(runner)) == [
         {"type": "workspace_ready"},
@@ -2047,6 +2087,7 @@ def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run()
     assert len(connector.calls) == 1
     assert ("typed_failure", "external_worker_lost", 1) in observations
     assert ("worker_reconnect", None, 1) not in observations
+    assert [event["event_type"] for event in stale_events] == ["stale_fence"]
 
 
 @pytest.mark.parametrize(

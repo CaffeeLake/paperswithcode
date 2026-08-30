@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -170,6 +171,40 @@ def test_real_transport_posts_chat_stream_and_resumes_same_turn_without_leaking_
     assert "TOP_SECRET" not in repr(evidence)
     assert "/v1/shadow" not in repr(session.calls)
     assert session.calls.count(("close",)) == 1
+
+
+@pytest.mark.parametrize(
+    ("workload", "persisted"),
+    (
+        ("no_tool", "no_tool"),
+        ("admission_stream", "no_tool"),
+        ("read_only_cli", "read"),
+        ("bash", "bash"),
+    ),
+)
+def test_qualified_transport_sends_the_closed_persisted_workload(workload, persisted):
+    from backend.loadtests.durable_chat_transport import (
+        DurableChatTransportConfig,
+        HttpSSEDurableChatTransport,
+    )
+
+    scope_id = uuid.uuid4()
+    session = _Session((_Response(200),))
+    transport = HttpSSEDurableChatTransport(
+        DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+            qualification_run_id="run",
+            admin_token="a" * 32,
+        ),
+        scope_id=scope_id,
+    )
+
+    transport._open(session, {}, after_sequence=None, workload=workload)
+    headers = session.calls[0][2]["headers"]
+    assert headers["X-PWC-Qualification-Scope-ID"] == str(scope_id)
+    assert headers["X-PWC-Qualification-Workload"] == persisted
 
 
 def test_real_transport_preserves_typed_immediate_429_without_queueing():
@@ -419,6 +454,16 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
                     "source": "durable_qualification_records",
                 },
             ),
+            _Response(
+                200,
+                payload={
+                    "expected_tool_turns": 16,
+                    "targeted_sessions": 16,
+                    "closed_intervals": 16,
+                    "eviction_events": 16,
+                    "source": "exact_scope_canonical_eviction",
+                },
+            ),
             _Response(204),
         )
     )
@@ -435,6 +480,7 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
 
     scope = source.begin_scope("32-functional-turns")
     snapshot = source.collect(scope["scope_id"])
+    proof = source.teardown(scope["scope_id"])
     source.cleanup(scope["scope_id"])
 
     posts = [call for call in session.calls if call[0] == "post"]
@@ -445,7 +491,11 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
     )
     assert posts[1][2]["json"] == {"scope_id": str(scope["scope_id"])}
     assert posts[1][2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
-    assert session.calls.count(("close",)) == 3
+    assert posts[2][1].endswith(
+        f"/api/v1/chat/admin/qualification-scopes/{scope['scope_id']}/teardown"
+    )
+    assert proof["closed_intervals"] == 16
+    assert session.calls.count(("close",)) == 4
     assert snapshot.billed_duration_ms == 4
     assert "signed-cookie" not in repr(snapshot)
 

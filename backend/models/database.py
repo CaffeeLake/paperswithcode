@@ -3863,6 +3863,9 @@ class ChatTurnLatency(Base):
     qualification_profile: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True
     )
+    qualification_workload: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     qualification_scenario: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True
     )
@@ -3966,6 +3969,11 @@ class ChatTurnLatency(Base):
             "qualification_profile IS NULL OR qualification_profile IN "
             "('32-functional-turns','100-immediate-admission')",
             name="chat_turn_latency_qualification_profile_check",
+        ),
+        CheckConstraint(
+            "qualification_workload IS NULL OR qualification_workload IN "
+            "('no_tool','read','bash')",
+            name="chat_turn_latency_qualification_workload_check",
         ),
         CheckConstraint(
             "attempt_kind IS NULL OR attempt_kind IN ('pool','reused','direct')",
