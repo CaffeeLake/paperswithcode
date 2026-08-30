@@ -85,12 +85,16 @@ def configure_release_environment(release: Path) -> dict:
             "restricted_hf_cli_version", ""
         )
         posterly_release = runtime.get("posterly_enabled") is True
-        os.environ["PWC_CHAT_ARTIFACTS_ENABLED"] = str(posterly_release).lower()
+        artifact_foundation = (
+            os.environ.get("PWC_ENVIRONMENT") == "staging"
+            and runtime.get("enabled") is True
+        )
+        os.environ["PWC_CHAT_ARTIFACTS_ENABLED"] = str(artifact_foundation).lower()
         os.environ["PWC_CHAT_POSTERLY_ENABLED"] = str(posterly_release).lower()
         os.environ["PWC_CHAT_ARTIFACT_SHARED_PREVIEW_ENABLED"] = str(
-            posterly_release
+            artifact_foundation
         ).lower()
-        if posterly_release:
+        if artifact_foundation:
             os.environ["PWC_CHAT_ARTIFACT_STORAGE_BACKEND"] = "hf_bucket"
             os.environ["PWC_CHAT_ARTIFACT_HF_BUCKET_ID"] = runtime[
                 "posterly_artifact_bucket_id"

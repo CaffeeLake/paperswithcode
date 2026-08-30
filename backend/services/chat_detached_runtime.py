@@ -64,7 +64,10 @@ async def replay_detached_frames(
         JournalFrame(
             sequence + 3,
             "done",
-            {"followups": replay.followups, "finish_reason": "success"},
+            {
+                "followups": replay.followups,
+                "finish_reason": replay.finish_reason,
+            },
         ),
     )
     for frame in fallback:

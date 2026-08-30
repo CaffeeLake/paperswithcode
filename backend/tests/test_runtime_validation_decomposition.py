@@ -788,9 +788,9 @@ def test_chat_provider_policy_owns_gateway_and_openrouter(
     ("field", "value", "message"),
     [
         (
-            "chat_openrouter_api_key",
+            "chat_title_hf_token",
             "",
-            "an OpenRouter title credential is required",
+            "an HF GLM title credential is required",
         ),
         (
             "chat_sandbox_cpu_limit",

@@ -69,6 +69,7 @@ class TerminalOutcome(StrEnum):
     SUCCESS = "success"
     MAX_TURNS = "max_turns"
     TOOL_LIMIT = "tool_limit"
+    SCOPE_BLOCKED = "scope_blocked"
     STOPPED = "stopped"
 
 

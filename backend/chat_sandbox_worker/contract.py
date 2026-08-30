@@ -58,7 +58,7 @@ POSTERLY_LICENSE = "AGPL-3.0-only"
 POSTERLY_PLAYWRIGHT_VERSION = "1.62.0"
 POSTERLY_CHROMIUM_REVISION = "1234"
 POSTERLY_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
-POSTERLY_ENABLED = True
+POSTERLY_ENABLED = False
 
 
 def restricted_hf_cli_digest(package_root: Path, wrapper: Path) -> str:

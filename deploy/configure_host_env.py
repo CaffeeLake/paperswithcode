@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 CONFIG_ROOT = Path("/etc/paperswithcode")
 PRODUCTION_CHAT_SEALED_CONFIG = CONFIG_ROOT / "production-chat-prepared.env"
+STAGING_CHAT_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
 
 STAGING_EXCLUDED_PREFIXES = (
     "PWC_POSTGRES_BACKUP_",
@@ -85,6 +86,10 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_SANDBOX_MEMORY_MIB",
     "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP",
     "PWC_CHAT_SANDBOX_WARNING_MICROUSD",
+    "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED",
+    "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN",
+    "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO",
+    "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY",
     "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED",
     "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD",
     "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD",
@@ -385,6 +390,132 @@ def staging_openai_direct_disable_values() -> dict[str, str]:
     }
 
 
+def staging_scope_guardrail_values(current: dict[str, str]) -> dict[str, str]:
+    """Install server-owned scope credentials without exposing user tokens."""
+
+    required = (
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_HF_BILL_TO",
+        "PWC_CODEX_JOBS_OPENAI_API_KEY",
+    )
+    values = {
+        key: decoded_value(current[key]).strip()
+        for key in required
+        if key in current and decoded_value(current[key]).strip()
+    }
+    missing = [key for key in required if key not in values]
+    if missing:
+        raise ValueError(
+            "staging scope guardrail source is missing: " + ", ".join(missing)
+        )
+    for dedicated, general in (
+        ("PWC_CHAT_TITLE_HF_TOKEN", "PWC_HF_TOKEN"),
+        ("PWC_CODEX_JOBS_OPENAI_API_KEY", "PWC_OPENAI_API_KEY"),
+    ):
+        if (
+            general in current
+            and decoded_value(current[general]).strip() == values[dedicated]
+        ):
+            raise ValueError(
+                f"staging scope guardrail credential must not reuse {general}"
+            )
+    return {
+        "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED": "true",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": values["PWC_CHAT_TITLE_HF_TOKEN"],
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": values["PWC_CHAT_HF_BILL_TO"],
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": values[
+            "PWC_CODEX_JOBS_OPENAI_API_KEY"
+        ],
+        "PWC_CHAT_ARTIFACT_STORAGE_BACKEND": "hf_bucket",
+        "PWC_CHAT_ARTIFACT_HF_BUCKET_ID": STAGING_CHAT_ARTIFACT_BUCKET_ID,
+        "PWC_CHAT_POSTERLY_ENABLED": "false",
+    }
+
+
+def scope_title_hf_values(
+    source: dict[str, str],
+    current: dict[str, str],
+    other_environment: dict[str, str],
+    *,
+    environment: str,
+) -> dict[str, str]:
+    """Build one environment-isolated HF title and scope policy."""
+
+    if environment not in {"staging", "production"}:
+        raise ValueError("scope/title environment must be staging or production")
+    required_source = (
+        "PWC_CHAT_TITLE_GENERATION_ENABLED",
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_TITLE_BILL_TO",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
+    )
+    source_values = {
+        key: decoded_value(source[key]).strip()
+        for key in required_source
+        if key in source and decoded_value(source[key]).strip()
+    }
+    missing = [key for key in required_source if key not in source_values]
+    if missing:
+        raise ValueError("scope/title source is missing: " + ", ".join(missing))
+    expected = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": environment,
+    }
+    for key, value in expected.items():
+        if source_values[key] != value:
+            raise ValueError(f"{key} must be {value}")
+
+    token = source_values["PWC_CHAT_TITLE_HF_TOKEN"]
+    forbidden_hf_tokens = {
+        decoded_value(lines[key]).strip()
+        for lines, key in (
+            (source, "PWC_HF_TOKEN"),
+            (current, "PWC_HF_TOKEN"),
+            (other_environment, "PWC_HF_TOKEN"),
+            (other_environment, "PWC_CHAT_TITLE_HF_TOKEN"),
+            (other_environment, "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN"),
+        )
+        if key in lines and decoded_value(lines[key]).strip()
+    }
+    if token in forbidden_hf_tokens:
+        raise ValueError(
+            "the title token must remain distinct from general and other-environment tokens"
+        )
+
+    fallback_line = current.get("PWC_CODEX_JOBS_OPENAI_API_KEY")
+    fallback = decoded_value(fallback_line).strip() if fallback_line else ""
+    if not fallback:
+        raise ValueError("PWC_CODEX_JOBS_OPENAI_API_KEY must be configured")
+    bill_to = source_values["PWC_CHAT_TITLE_BILL_TO"]
+    values = {
+        **source_values,
+        "PWC_CHAT_TITLE_MODEL": "zai-org/GLM-5.3-Flash:baseten",
+        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
+        "PWC_CHAT_TITLE_MAX_TOKENS": "64",
+        "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
+        "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
+        "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+        "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED": "true",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": token,
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": bill_to,
+        "PWC_CHAT_SCOPE_GUARDRAIL_GLM_MODEL": ("zai-org/GLM-5.3-Flash:baseten"),
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": fallback,
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_MODEL": "gpt-5.6-luna",
+        "PWC_CHAT_POSTERLY_ENABLED": "false",
+    }
+    if environment == "staging":
+        values.update(
+            {
+                "PWC_CHAT_ARTIFACT_STORAGE_BACKEND": "hf_bucket",
+                "PWC_CHAT_ARTIFACT_HF_BUCKET_ID": STAGING_CHAT_ARTIFACT_BUCKET_ID,
+            }
+        )
+    return values
+
+
 def production_openai_direct_values(current: dict[str, str]) -> dict[str, str]:
     """Promote the existing protected production key and Luna warm profile."""
 
@@ -531,8 +662,8 @@ def staging_title_values(
         )
     return {
         **values,
-        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
-        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
+        "PWC_CHAT_TITLE_MODEL": "zai-org/GLM-5.3-Flash:baseten",
+        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
@@ -545,10 +676,12 @@ def production_title_values(
     current_production: dict[str, str],
     current_staging: dict[str, str],
 ) -> dict[str, str]:
-    """Validate the production OpenRouter title policy."""
+    """Validate the isolated production HF title policy."""
 
     required = {
         "PWC_CHAT_TITLE_GENERATION_ENABLED",
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_TITLE_BILL_TO",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
     }
@@ -558,18 +691,33 @@ def production_title_values(
     values = {key: decoded_value(source[key]).strip() for key in required}
     expected = {
         "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
     }
     for key, value in expected.items():
         if values[key] != value:
             raise ValueError(f"{key} must be {value}")
+    token = values["PWC_CHAT_TITLE_HF_TOKEN"]
+    forbidden_tokens = {
+        decoded_value(lines[key]).strip()
+        for lines, key in (
+            (source, "PWC_HF_TOKEN"),
+            (current_production, "PWC_HF_TOKEN"),
+            (current_staging, "PWC_HF_TOKEN"),
+            (current_staging, "PWC_CHAT_TITLE_HF_TOKEN"),
+            (current_staging, "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN"),
+        )
+        if key in lines and decoded_value(lines[key]).strip()
+    }
+    if token in forbidden_tokens:
+        raise ValueError(
+            "the production title token must be distinct from general and staging tokens"
+        )
     return {
         **values,
-        "PWC_CHAT_TITLE_HF_TOKEN": "",
-        "PWC_CHAT_TITLE_BILL_TO": "",
-        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
-        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
+        "PWC_CHAT_TITLE_MODEL": "zai-org/GLM-5.3-Flash:baseten",
+        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
@@ -1123,6 +1271,9 @@ def main() -> int:
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openai-direct-only", action="store_true")
     parser.add_argument("--staging-openai-direct-disable-only", action="store_true")
+    parser.add_argument("--staging-scope-guardrail-only", action="store_true")
+    parser.add_argument("--staging-scope-title-hf-only", action="store_true")
+    parser.add_argument("--production-scope-title-hf-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
@@ -1205,6 +1356,96 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    scope_title_modes = (
+        args.staging_scope_title_hf_only,
+        args.production_scope_title_hf_only,
+    )
+    if any(scope_title_modes):
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "staging_scope_title_hf_only",
+                "production_scope_title_hf_only",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            sum(scope_title_modes) != 1
+            or other_modes
+            or args.codex_jobs_namespace
+            or args.modal_profile
+        ):
+            parser.error("HF scope/title mode must run alone")
+        environment = "staging" if args.staging_scope_title_hf_only else "production"
+        expected_confirmation = (
+            None
+            if environment == "staging"
+            else "ENABLE_PRODUCTION_HF_SCOPE_AND_TITLES"
+        )
+        if args.confirm != expected_confirmation:
+            if expected_confirmation is None:
+                parser.error("staging HF scope/title mode does not accept --confirm")
+            parser.error(f"--confirm must be {expected_confirmation}")
+        if (
+            not args.legacy_env.is_file()
+            or args.legacy_env.stat().st_uid != 0
+            or args.legacy_env.stat().st_mode & 0o077
+        ):
+            parser.error("HF scope/title source must be a protected root-only file")
+        target = CONFIG_ROOT / f"{environment}.env"
+        other = CONFIG_ROOT / (
+            "production.env" if environment == "staging" else "staging.env"
+        )
+        current = read_lines(target)
+        try:
+            values = scope_title_hf_values(
+                legacy,
+                current,
+                read_lines(other),
+                environment=environment,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            target,
+            assign(current, values),
+            f"pwc-{environment}",
+        )
+        print(
+            f"enabled {environment} HF GLM titles and research-scope guardrail; "
+            "no service was restarted"
+        )
+        return 0
+    if args.staging_scope_guardrail_only:
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key != "staging_scope_guardrail_only"
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            other_modes
+            or args.confirm is not None
+            or args.codex_jobs_namespace
+            or args.modal_profile
+        ):
+            parser.error("staging scope guardrail mode must run alone")
+        current = read_lines(CONFIG_ROOT / "staging.env")
+        try:
+            values = staging_scope_guardrail_values(current)
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "staging.env",
+            assign(current, values),
+            "pwc-staging",
+        )
+        print("enabled staging research-scope guardrail; no service was restarted")
+        return 0
     durable_dispatch_modes = (
         args.staging_chat_durable_dispatch_enable_only,
         args.staging_chat_durable_dispatch_disable_only,

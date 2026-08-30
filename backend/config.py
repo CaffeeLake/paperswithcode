@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.services.paper_markdown_job_profile import (
@@ -391,6 +391,39 @@ class Settings(BaseSettings):
     chat_openai_user_max_concurrency: int = Field(default=2, ge=1, le=16)
     chat_openai_global_max_concurrency: int = Field(default=4, ge=1, le=64)
     chat_openai_reconciliation_stale_minutes: int = Field(default=15, ge=1, le=24 * 60)
+    # Server-owned research-scope guardrail. These credentials, limits, and
+    # counters are deliberately separate from user inference credentials and
+    # the main direct-OpenAI chat allowance.
+    chat_scope_guardrail_enabled: bool = Field(default=False)
+    chat_scope_guardrail_hf_token: str = Field(default="")
+    chat_scope_guardrail_hf_bill_to: str = Field(default="", max_length=200)
+    chat_scope_guardrail_glm_model: str = Field(
+        default="zai-org/GLM-5.3-Flash:baseten",
+        pattern=r"^zai-org/GLM-5\.3-Flash:baseten$",
+    )
+    chat_scope_guardrail_openai_api_key: str = Field(default="")
+    chat_scope_guardrail_openai_model: str = Field(
+        default="gpt-5.6-luna", pattern=r"^gpt-5\.6-luna$"
+    )
+    chat_scope_guardrail_attempt_timeout_seconds: float = Field(
+        default=1.5, ge=0.1, le=1.5
+    )
+    chat_scope_guardrail_max_prior_messages: int = Field(default=6, ge=0, le=6)
+    chat_scope_guardrail_max_context_chars: int = Field(
+        default=8_000, ge=8_000, le=8_000
+    )
+    chat_scope_guardrail_buffer_max_events: int = Field(default=256, ge=8, le=4096)
+    chat_scope_guardrail_buffer_max_bytes: int = Field(
+        default=2 * 1024 * 1024, ge=64 * 1024, le=16 * 1024 * 1024
+    )
+    chat_scope_guardrail_max_concurrency: int = Field(default=16, ge=1, le=128)
+    chat_scope_guardrail_rate_limit_calls: int = Field(default=600, ge=1, le=100_000)
+    chat_scope_guardrail_rate_limit_window_seconds: int = Field(
+        default=10 * 60, ge=60, le=24 * 60 * 60
+    )
+    chat_scope_guardrail_daily_budget_usd: Decimal = Field(
+        default=Decimal("5.00"), gt=0, le=1000
+    )
     # Read-only compatibility input for rolling back releases whose staging
     # registry still exposed the Terra route.
     chat_terra_route: str = Field(default="openai/gpt-5.6-terra")
@@ -448,8 +481,8 @@ class Settings(BaseSettings):
     chat_openrouter_input_microusd_per_token: int = Field(default=2, ge=1)
     chat_openrouter_output_microusd_per_token: int = Field(default=9, ge=1)
     chat_openrouter_request_fee_microusd: int = Field(default=10_000, ge=0)
-    chat_title_model: str = Field(default="deepseek/deepseek-v4-flash-0731")
-    chat_title_provider: str = Field(default="openrouter")
+    chat_title_model: str = Field(default="zai-org/GLM-5.3-Flash:baseten")
+    chat_title_provider: str = Field(default="huggingface")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
     chat_title_max_tokens: int = Field(default=64, ge=8, le=64)
     chat_title_generation_enabled: bool = Field(default=False)
@@ -601,6 +634,7 @@ class Settings(BaseSettings):
     chat_artifact_max_version_bytes: int = Field(
         default=32 * 1024 * 1024, ge=4096, le=32 * 1024 * 1024
     )
+
     chat_artifact_owner_quota_bytes: int = Field(
         default=250 * 1024 * 1024, ge=4096, le=250 * 1024 * 1024
     )
@@ -766,6 +800,15 @@ class Settings(BaseSettings):
     catalog_mutations_enabled: bool = Field(default=True)
     thumbnail_mutations_enabled: bool = Field(default=True)
     cron_enabled: bool = Field(default=True)
+
+    @model_validator(mode="after")
+    def preserve_staging_artifacts_when_scope_guarded(self) -> "Settings":
+        """Keep non-Posterly research artifacts across the legacy host launcher."""
+
+        if self.environment == "staging" and self.chat_scope_guardrail_enabled:
+            self.chat_artifacts_enabled = True
+            self.chat_artifact_shared_preview_enabled = True
+        return self
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:

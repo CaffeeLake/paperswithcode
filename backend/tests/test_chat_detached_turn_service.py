@@ -18,13 +18,26 @@ from backend.models.database import (
     ChatTurnEventChunk,
     ChatTurnJob,
 )
+from backend.config import get_settings
+from backend.services import chat_stream_service
+from backend.services.chat_scope_guardrail_service import (
+    REFUSAL_TEXT,
+    ScopeDecision,
+    ScopeMessage,
+)
+from backend.services.chat_detached_runtime import replay_detached_frames
+from backend.services.chat_session_service import (
+    ChatOwner,
+    ReplayAssistant,
+    TurnAdmission,
+)
 from backend.services.chat_detached_turn_service import (
     DetachedTurn,
     DetachedTurnCoordinator,
     ExpiredDetachedTurnReconciler,
 )
 from backend.services.chat_live_stream_service import LiveChatStreamRegistry
-from backend.services.chat_stream_service import ChatStreamFrame
+from backend.services.chat_stream_service import ChatStreamFrame, ChatStreamOrchestrator
 from backend.services.chat_turn_event_repository import TurnEventJournal
 from backend.services.chat_turn_job_repository import (
     ChatTurnJobRepository,
@@ -209,6 +222,241 @@ def test_terminal_event_flushes_pending_frames_in_one_transactional_chunk() -> N
             )
 
     assert asyncio.run(scenario()) == ([(1, 3)], [3])
+
+
+def test_durable_scope_block_has_one_replayable_canonical_terminal(
+    monkeypatch,
+) -> None:
+    async def scenario():
+        harness = Harness()
+        with harness.sessions() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            assert job is not None
+            session_id = job.chat_session_id
+
+        class Runner:
+            sdk_directory = "/tmp/durable-scope-block"
+
+            def __init__(self) -> None:
+                self.cancel_calls = 0
+                self.close_calls = 0
+
+            async def events(self):
+                yield {"type": "answer_delta", "text": "suppressed"}
+                yield {"type": "done", "finish_reason": "success"}
+
+            async def cancel(self) -> None:
+                self.cancel_calls += 1
+
+            async def close(self) -> None:
+                self.close_calls += 1
+
+        runner = Runner()
+        executor_starts = 0
+
+        def create_runner(**_kwargs):
+            nonlocal executor_starts
+            executor_starts += 1
+            return runner
+
+        async def classify(_self, _messages):
+            await asyncio.sleep(0)
+            return ScopeDecision(
+                "unrelated application", "block", "huggingface-baseten", 1, False
+            )
+
+        monkeypatch.setattr(
+            chat_stream_service, "create_chat_turn_runner", create_runner
+        )
+        monkeypatch.setattr(
+            chat_stream_service.ScopeGuardrailService, "classify", classify
+        )
+        monkeypatch.setattr(
+            chat_stream_service, "_heartbeat_local_turn", lambda *_args: None
+        )
+        monkeypatch.setattr(
+            chat_stream_service, "_start_local_turn", lambda *_args: None
+        )
+
+        admission = TurnAdmission(
+            session_id=session_id,
+            turn_id=harness.turn.turn_id,
+            user_message_id=uuid.uuid4(),
+            selected_model="model",
+            model_route="route",
+            sdk_session_id=None,
+            sdk_project_key=None,
+            agent_harness="pi",
+            durable_claim=harness.claim,
+        )
+        title_token = uuid.uuid4()
+        settings = get_settings().model_copy(
+            update={
+                "chat_durable_turn_dispatch_enabled": True,
+                "chat_scope_guardrail_enabled": True,
+                "chat_scope_guardrail_hf_token": "hf-test",
+                "chat_scope_guardrail_hf_bill_to": "org",
+                "chat_scope_guardrail_openai_api_key": "sk-test",
+            }
+        )
+        orchestrator = ChatStreamOrchestrator(
+            settings=settings,
+            owner=ChatOwner("detached-owner", "detached-owner"),
+            admission=admission,
+            prompt="Build a miner GUI",
+            request_id="request",
+            title_token=title_token,
+            is_disconnected=lambda: asyncio.sleep(0, result=False),
+            release_admission=lambda: asyncio.sleep(0),
+            scope_messages=[ScopeMessage(role="user", content="Build a miner GUI")],
+        )
+        orchestrator._replacement_or_error = lambda: asyncio.sleep(
+            0, result=(True, None)
+        )
+        journal_before_persistence: list[list[str]] = []
+        completed: list[tuple[str, str]] = []
+        cancelled_titles: list[uuid.UUID] = []
+        commits: list[bool] = []
+
+        class PersistenceSession:
+            def commit(self) -> None:
+                commits.append(True)
+
+        class PersistenceContext:
+            def __enter__(self):
+                return PersistenceSession()
+
+            def __exit__(self, *_args):
+                return None
+
+        class PersistenceManager:
+            @staticmethod
+            def session_local():
+                return PersistenceContext()
+
+        class SessionService:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def complete_turn(self, _owner, _admission, answer, *_args) -> None:
+                completed.append((answer, _args[-1]))
+
+            def cancel_title(self, _owner, _session_id, token) -> None:
+                cancelled_titles.append(token)
+
+        monkeypatch.setattr(chat_stream_service, "db_manager", PersistenceManager())
+        monkeypatch.setattr(chat_stream_service, "ChatSessionService", SessionService)
+
+        async def persist_terminal(claim, state, failure_code):
+            with harness.sessions() as db:
+                journal_events = [
+                    frame.event
+                    for frame in harness.journal.read_after(
+                        db,
+                        turn_id=harness.turn.turn_id,
+                        after_sequence=0,
+                        limit=10,
+                    )
+                ]
+            journal_before_persistence.append(journal_events)
+            await orchestrator.persist_detached_terminal(claim, state, failure_code)
+            await harness.persist_terminal(claim, state, failure_code)
+
+        harness.coordinator = DetachedTurnCoordinator(
+            transaction=harness.transaction,
+            journal=harness.journal,
+            jobs=harness.jobs,
+            clock=lambda: harness.now,
+            persist_terminal=persist_terminal,
+            poll_seconds=0.01,
+        )
+        stream = await harness.coordinator.start(
+            turn=harness.turn, source=orchestrator.events()
+        )
+        await stream.source_task
+        replay = [
+            frame
+            async for frame in harness.coordinator.subscribe(
+                turn_id=harness.turn.turn_id, after_sequence=0
+            )
+        ]
+        return (
+            replay,
+            executor_starts,
+            runner,
+            orchestrator,
+            harness,
+            journal_before_persistence,
+            completed,
+            cancelled_titles,
+            commits,
+            title_token,
+        )
+
+    (
+        replay,
+        executor_starts,
+        runner,
+        orchestrator,
+        harness,
+        journal_before_persistence,
+        completed,
+        cancelled_titles,
+        commits,
+        title_token,
+    ) = asyncio.run(scenario())
+
+    assert [frame.event for frame in replay].count("done") == 1
+    assert replay[-2].payload == {"text": REFUSAL_TEXT}
+    assert replay[-1].payload["finish_reason"] == "scope_blocked"
+    assert journal_before_persistence == [["stream_start", "answer_delta", "done"]]
+    assert completed == [(REFUSAL_TEXT, "scope_blocked")]
+    assert cancelled_titles == [title_token]
+    assert commits == [True]
+    assert orchestrator.title_token is None
+    assert executor_starts == 1
+    assert runner.cancel_calls == 1
+    assert runner.close_calls == 1
+    assert orchestrator.runner is None
+    assert orchestrator.research_task is None
+    assert orchestrator.lease_heartbeat_task is None
+    assert harness.coordinator.active_turn_count == 0
+    assert harness.coordinator.condition_count == 0
+
+
+def test_reconstructed_detached_scope_block_preserves_finish_reason() -> None:
+    class EmptyCoordinator:
+        async def subscribe(self, **_kwargs):
+            if False:
+                yield
+
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="model",
+        model_route="route",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        replay_assistant=ReplayAssistant(
+            content=REFUSAL_TEXT,
+            followups=[],
+            finish_reason="scope_blocked",
+        ),
+        durable_event_sequence=4,
+    )
+
+    async def scenario():
+        return [
+            frame
+            async for frame in replay_detached_frames(
+                EmptyCoordinator(), admission, request_id="retry", after_sequence=0
+            )
+        ]
+
+    frames = asyncio.run(scenario())
+
+    assert frames[-1].payload["finish_reason"] == "scope_blocked"
 
 
 def test_detached_boundary_records_post_start_batched_append_stale_once(

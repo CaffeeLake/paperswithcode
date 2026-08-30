@@ -2872,11 +2872,11 @@ def test_completed_turn_persists_finish_reason_in_authenticated_history():
         citations=[],
         followups=[],
         display_blocks=[],
-        finish_reason="tool_limit",
+        finish_reason="scope_blocked",
     )
 
-    assert assistant.finish_reason == "tool_limit"
-    assert _message(assistant).finish_reason == "tool_limit"
+    assert assistant.finish_reason == "scope_blocked"
+    assert _message(assistant).finish_reason == "scope_blocked"
 
 
 def test_agent_timeout_emits_typed_error_and_closes_sdk_stream(monkeypatch):

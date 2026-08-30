@@ -99,6 +99,7 @@ class ChatOwner:
 class ReplayAssistant:
     content: str
     followups: list[str]
+    finish_reason: str = "success"
 
 
 @dataclass(frozen=True)
@@ -1089,6 +1090,9 @@ class ChatSessionService:
                     replay_assistant=ReplayAssistant(
                         content=assistant.content,
                         followups=list(assistant.followups or []),
+                        finish_reason=(
+                            getattr(assistant, "finish_reason", None) or "success"
+                        ),
                     ),
                     prompt_revision=existing.revision,
                     execution_backend=session.execution_backend,
@@ -2022,7 +2026,12 @@ class ChatSessionService:
         user_message = self.db.get(ChatMessageRecord, admission.user_message_id)
         if not user_message or session.active_turn_id != admission.turn_id:
             raise ChatServiceError("stale_turn", 409, "The chat turn lease changed")
-        if finish_reason not in {"success", "max_turns", "tool_limit"}:
+        if finish_reason not in {
+            "success",
+            "max_turns",
+            "tool_limit",
+            "scope_blocked",
+        }:
             raise ChatServiceError(
                 "invalid_finish_reason", 422, "Unsupported completion state"
             )
@@ -2197,6 +2206,17 @@ class ChatSessionService:
         session.title_generation_id = None
         session.updated_at = _now()
         return normalized
+
+    def cancel_title(
+        self, owner: ChatOwner, session_id: uuid.UUID, token: uuid.UUID
+    ) -> bool:
+        session = self._owned(owner, session_id, lock=True)
+        if session.title_generation_id != token or session.title_source == "user":
+            return False
+        session.title_generation_id = None
+        session.title_status = "pending"
+        session.updated_at = _now()
+        return True
 
     def delete_session(
         self, owner: ChatOwner, session_id: uuid.UUID

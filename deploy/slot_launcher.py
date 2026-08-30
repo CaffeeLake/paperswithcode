@@ -32,7 +32,7 @@ def resolve_slot(environment: str, slot: str) -> tuple[Path, Path, dict]:
     return release, runtime, manifest
 
 
-def configure_release(manifest: dict, release: Path) -> None:
+def configure_release(manifest: dict, release: Path, environment: str) -> None:
     features = manifest["backend_features"]
     runtime = manifest.get("chat_runtime") or {}
     values = {
@@ -100,16 +100,19 @@ def configure_release(manifest: dict, release: Path) -> None:
             }
         )
         posterly_release = runtime.get("posterly_enabled") is True
+        artifact_foundation = (
+            environment == "staging" and runtime.get("enabled") is True
+        )
         values.update(
             {
-                "PWC_CHAT_ARTIFACTS_ENABLED": str(posterly_release).lower(),
+                "PWC_CHAT_ARTIFACTS_ENABLED": str(artifact_foundation).lower(),
                 "PWC_CHAT_POSTERLY_ENABLED": str(posterly_release).lower(),
                 "PWC_CHAT_ARTIFACT_SHARED_PREVIEW_ENABLED": str(
-                    posterly_release
+                    artifact_foundation
                 ).lower(),
             }
         )
-        if posterly_release:
+        if artifact_foundation:
             values["PWC_CHAT_ARTIFACT_STORAGE_BACKEND"] = "hf_bucket"
             values["PWC_CHAT_ARTIFACT_HF_BUCKET_ID"] = str(
                 runtime["posterly_artifact_bucket_id"]
@@ -152,7 +155,7 @@ def main() -> None:
             "UVICORN_FD": "3",
         }
     )
-    configure_release(manifest, release)
+    configure_release(manifest, release, environment)
     configure_external_pi_slot(environment, slot)
     python = runtime / "bin" / "python"
     os.chdir(release)
