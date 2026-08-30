@@ -526,13 +526,17 @@ def test_staging_launcher_disables_only_posterly_artifact_generation(
 
 
 @pytest.mark.parametrize(
-    ("slot", "url"),
-    (("blue", "http://127.0.0.1:8766"), ("green", "http://127.0.0.1:8767")),
+    ("slot", "worker_id", "url"),
+    (
+        ("blue", "staging-blue", "http://127.0.0.1:8766"),
+        ("green", "staging-green", "http://127.0.0.1:8767"),
+    ),
 )
 def test_staging_slot_launcher_binds_external_pi_loopback_identity(
-    monkeypatch: pytest.MonkeyPatch, slot: str, url: str
+    monkeypatch: pytest.MonkeyPatch, slot: str, worker_id: str, url: str
 ):
     for key in (
+        "PWC_CHAT_EXTERNAL_PI_WORKER_ID",
         "PWC_CHAT_EXTERNAL_PI_WORKER_URL",
         "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION",
         "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS",
@@ -541,6 +545,7 @@ def test_staging_slot_launcher_binds_external_pi_loopback_identity(
 
     slot_launcher.configure_external_pi_slot("staging", slot)
 
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_ID"] == worker_id
     assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == url
     assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION"] == (
         "external-pi-v1"
@@ -551,11 +556,18 @@ def test_staging_slot_launcher_binds_external_pi_loopback_identity(
 def test_production_slot_launcher_does_not_bind_external_pi_worker(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_URL", "preserved")
+    preserved = {
+        "PWC_CHAT_EXTERNAL_PI_WORKER_ID": "preserved-id",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_URL": "preserved-url",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": "preserved-contract",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "preserved-capacity",
+    }
+    for key, value in preserved.items():
+        monkeypatch.setenv(key, value)
 
     slot_launcher.configure_external_pi_slot("production", "blue")
 
-    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "preserved"
+    assert {key: os.environ[key] for key in preserved} == preserved
 
 
 def test_production_chat_accepts_bounded_hf_catalog_policy(tmp_path: Path):
