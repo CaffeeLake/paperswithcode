@@ -6,12 +6,12 @@ import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 
-from backend.models.database import ChatTurnEventChunk
+from backend.models.database import ChatTurnEventChunk, ChatTurnJob
 from backend.services.chat_turn_job_repository import (
     TERMINAL_STATES,
     ChatTurnJobRepository,
@@ -148,6 +148,52 @@ class TurnEventJournal:
             return 0
         result = db.execute(
             delete(ChatTurnEventChunk).where(ChatTurnEventChunk.turn_id == turn_id)
+        )
+        db.flush()
+        return max(result.rowcount or 0, 0)
+
+    def cleanup_due_terminal(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        replay_grace_seconds: int,
+        limit: int,
+    ) -> int:
+        """Delete a bounded durable batch only after the replay grace expires."""
+        if (
+            now.tzinfo is None
+            or replay_grace_seconds < 30
+            or replay_grace_seconds > 3600
+            or limit <= 0
+            or limit > 100
+        ):
+            raise ValueError("Terminal journal cleanup bound is invalid")
+        cutoff = now - timedelta(seconds=replay_grace_seconds)
+        due_jobs = tuple(
+            db.execute(
+                select(ChatTurnJob)
+                .where(
+                    ChatTurnJob.state.in_(TERMINAL_STATES),
+                    ChatTurnJob.terminal_at <= cutoff,
+                    exists(
+                        select(ChatTurnEventChunk.id).where(
+                            ChatTurnEventChunk.turn_id == ChatTurnJob.turn_id
+                        )
+                    ),
+                )
+                .order_by(ChatTurnJob.terminal_at, ChatTurnJob.turn_id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            ).scalars()
+        )
+        if not due_jobs:
+            return 0
+        result = db.execute(
+            delete(ChatTurnEventChunk).where(
+                ChatTurnEventChunk.turn_id.in_(job.turn_id for job in due_jobs)
+            )
         )
         db.flush()
         return max(result.rowcount or 0, 0)

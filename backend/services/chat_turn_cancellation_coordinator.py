@@ -23,6 +23,7 @@ from backend.services.chat_session_service import (
     ChatOwner,
     ChatSessionService,
 )
+from backend.services.chat_turn_cancel_control import CancelControlResult
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class ChatTurnCancellationCoordinator:
         settings: Settings,
         manager: SandboxSessionManager,
         *,
-        external_cancel: Callable[[CancelTurnRequest], Awaitable[bool]] | None = None,
+        external_cancel: Callable[[CancelTurnRequest], Awaitable[CancelControlResult]]
+        | None = None,
         observe: Callable[[str, str | None, int], None] | None = None,
     ) -> None:
         self.db = db
@@ -53,8 +55,9 @@ class ChatTurnCancellationCoordinator:
             return
         self.observe("turn_state", "cancelling", 1)
         if self.external_cancel is not None:
+            control = CancelControlResult.MISSING
             try:
-                await self.external_cancel(request)
+                control = await self.external_cancel(request)
             except (
                 ExecutorTransportError,
                 OSError,
@@ -67,11 +70,10 @@ class ChatTurnCancellationCoordinator:
                     "durable external cancel control unavailable error=%s",
                     type(error).__name__,
                 )
-            self.sessions.finalize_cancel(owner, request)
-            self.db.commit()
-            self.observe("turn_state", "cancelled", 1)
-            self.sessions.cleanup_terminal_journal(request)
-            self.db.commit()
+            if control is not CancelControlResult.REQUESTED:
+                self.sessions.interrupt_cancel_without_control(owner, request)
+                self.db.commit()
+                self.observe("typed_failure", "cancel_control_missing", 1)
             return
         status: WorkerCancelStatus | None = None
         try:

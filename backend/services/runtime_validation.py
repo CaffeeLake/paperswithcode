@@ -1293,6 +1293,8 @@ def validate_chat_schema(db, settings: Settings) -> None:
         "chat_web_search_circuit_events",
         "chat_web_search_owner_usage",
     }
+    durable_turn_tables = {"chat_turn_jobs", "chat_turn_event_chunks"}
+    external_worker_tables = {"chat_external_workers"}
     required_tables = (
         common_tables
         | (
@@ -1302,6 +1304,16 @@ def validate_chat_schema(db, settings: Settings) -> None:
         )
         | (web_search_tables if settings.chat_web_search_enabled else set())
         | (pi_tables if settings.chat_pi_runtime_enabled else set())
+        | (
+            durable_turn_tables
+            if settings.chat_durable_turn_dispatch_enabled
+            else set()
+        )
+        | (
+            external_worker_tables
+            if settings.chat_external_pi_admission_enabled
+            else set()
+        )
     )
     rows = dict(
         db.execute(
@@ -1334,6 +1346,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ,('chat_pi_transcript_entries')
                     ,('chat_pi_prepared_forks')
                     ,('chat_harness_assignment_audit')
+                    ,('chat_turn_jobs')
+                    ,('chat_turn_event_chunks')
+                    ,('chat_external_workers')
                 ) AS required(name)
                 """)
         ).all()
@@ -1436,6 +1451,34 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_capabilities", "hf_catalog_calls"),
         ("chat_turn_capabilities", "hf_recursive_list_calls"),
     }
+    durable_turn_columns = {
+        ("chat_turn_jobs", "state"),
+        ("chat_turn_jobs", "worker_id"),
+        ("chat_turn_jobs", "worker_generation"),
+        ("chat_turn_jobs", "lease_generation"),
+        ("chat_turn_jobs", "lease_expires_at"),
+        ("chat_turn_jobs", "terminal_at"),
+        ("chat_turn_jobs", "failure_code"),
+        ("chat_turn_jobs", "event_sequence"),
+        ("chat_turn_jobs", "event_bytes"),
+        ("chat_turn_event_chunks", "turn_id"),
+        ("chat_turn_event_chunks", "first_sequence"),
+        ("chat_turn_event_chunks", "last_sequence"),
+        ("chat_turn_event_chunks", "events"),
+        ("chat_turn_event_chunks", "payload_bytes"),
+    }
+    external_worker_columns = {
+        ("chat_external_workers", "worker_id"),
+        ("chat_external_workers", "instance_id"),
+        ("chat_external_workers", "environment"),
+        ("chat_external_workers", "release_id"),
+        ("chat_external_workers", "contract_version"),
+        ("chat_external_workers", "generation"),
+        ("chat_external_workers", "state"),
+        ("chat_external_workers", "maximum_sessions"),
+        ("chat_external_workers", "active_sessions"),
+        ("chat_external_workers", "lease_expires_at"),
+    }
     expected_columns = (
         common_columns
         | (
@@ -1446,6 +1489,16 @@ def validate_chat_schema(db, settings: Settings) -> None:
         | (web_search_columns if settings.chat_web_search_enabled else set())
         | (hf_catalog_columns if settings.chat_hf_catalog_enabled else set())
         | (pi_columns if settings.chat_pi_runtime_enabled else set())
+        | (
+            durable_turn_columns
+            if settings.chat_durable_turn_dispatch_enabled
+            else set()
+        )
+        | (
+            external_worker_columns
+            if settings.chat_external_pi_admission_enabled
+            else set()
+        )
     )
     present_columns = set(
         db.execute(
@@ -1540,12 +1593,93 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_turn_capabilities', 'web_search_failed')
                 ,('chat_turn_capabilities', 'hf_catalog_calls')
                 ,('chat_turn_capabilities', 'hf_recursive_list_calls')
+                ,('chat_turn_jobs', 'state')
+                ,('chat_turn_jobs', 'worker_id')
+                ,('chat_turn_jobs', 'worker_generation')
+                ,('chat_turn_jobs', 'lease_generation')
+                ,('chat_turn_jobs', 'lease_expires_at')
+                ,('chat_turn_jobs', 'terminal_at')
+                ,('chat_turn_jobs', 'failure_code')
+                ,('chat_turn_jobs', 'event_sequence')
+                ,('chat_turn_jobs', 'event_bytes')
+                ,('chat_turn_event_chunks', 'turn_id')
+                ,('chat_turn_event_chunks', 'first_sequence')
+                ,('chat_turn_event_chunks', 'last_sequence')
+                ,('chat_turn_event_chunks', 'events')
+                ,('chat_turn_event_chunks', 'payload_bytes')
+                ,('chat_external_workers', 'worker_id')
+                ,('chat_external_workers', 'instance_id')
+                ,('chat_external_workers', 'environment')
+                ,('chat_external_workers', 'release_id')
+                ,('chat_external_workers', 'contract_version')
+                ,('chat_external_workers', 'generation')
+                ,('chat_external_workers', 'state')
+                ,('chat_external_workers', 'maximum_sessions')
+                ,('chat_external_workers', 'active_sessions')
+                ,('chat_external_workers', 'lease_expires_at')
             )
             """)
         ).all()
     )
     if missing or not expected_columns.issubset(present_columns):
         raise RuntimeError("required chat sandbox schema is missing")
+    if settings.chat_durable_turn_dispatch_enabled:
+        durable_contract = set(
+            db.execute(
+                text("""
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND indexname IN (
+                          'idx_chat_turn_jobs_expiry',
+                          'idx_chat_turn_jobs_terminal_cleanup',
+                          'idx_chat_turn_event_chunks_after',
+                          'uq_chat_turn_event_chunk_start'
+                      )
+                    """)
+            ).scalars()
+        )
+        if durable_contract != {
+            "idx_chat_turn_jobs_expiry",
+            "idx_chat_turn_jobs_terminal_cleanup",
+            "idx_chat_turn_event_chunks_after",
+            "uq_chat_turn_event_chunk_start",
+        }:
+            raise RuntimeError("required durable chat schema is missing")
+        durable_constraints = set(
+            db.execute(
+                text("""
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conname IN (
+                        'chat_turn_jobs_state_check',
+                        'chat_turn_jobs_lease_fields_check',
+                        'chat_turn_jobs_terminal_timestamp_check',
+                        'ck_chat_turn_event_chunk_range'
+                    )
+                    """)
+            ).scalars()
+        )
+        if durable_constraints != {
+            "chat_turn_jobs_state_check",
+            "chat_turn_jobs_lease_fields_check",
+            "chat_turn_jobs_terminal_timestamp_check",
+            "ck_chat_turn_event_chunk_range",
+        }:
+            raise RuntimeError("required durable chat schema is missing")
+    if settings.chat_external_pi_admission_enabled:
+        worker_indexes = set(
+            db.execute(
+                text("""
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND indexname = 'idx_chat_external_workers_dispatch'
+                    """)
+            ).scalars()
+        )
+        if worker_indexes != {"idx_chat_external_workers_dispatch"}:
+            raise RuntimeError("required external worker schema is missing")
     share_snapshot_constraint = db.execute(
         text("""
             SELECT 1

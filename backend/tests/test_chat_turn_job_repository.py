@@ -36,7 +36,7 @@ NOW = datetime(2026, 8, 26, 12, tzinfo=UTC)
         ("running", None, "external_worker_lost"),
         ("waiting_model", None, "external_worker_lost"),
         ("waiting_tool", None, "execution_lost"),
-        ("cancelling", None, "cancelled"),
+        ("cancelling", None, "cancel_control_missing"),
         ("running", "event_journal_exhausted", "event_journal_exhausted"),
         ("waiting_tool", "execution_lost", "execution_lost"),
     ],
@@ -49,24 +49,26 @@ def test_expired_turn_failure_classification_is_typed_and_content_free(
     assert classify_expired_turn(job) == expected
 
 
-def test_expired_reconciliation_query_uses_bounded_skip_locked_authority():
+def test_expired_reconciliation_candidate_scan_is_bounded_and_nonlocking():
     seen = []
 
-    class Scalars:
-        def scalars(self):
+    class Rows:
+        def tuples(self):
             return ()
 
     class DB:
         def execute(self, query):
             seen.append(query)
-            return Scalars()
+            return Rows()
 
     repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
-    assert repository.load_expired_for_reconciliation(DB(), now=NOW, limit=17) == ()
+    assert repository.load_expired_candidates(DB(), now=NOW, limit=17) == ()
 
     sql = str(seen[0].compile(dialect=postgresql.dialect()))
     assert "LIMIT" in sql
-    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "chat_session_id" in sql
+    assert "turn_id" in sql
+    assert "FOR UPDATE" not in sql
 
 
 def test_expired_reconciliation_does_not_mutate_a_newer_worker_generation(db):

@@ -18,6 +18,9 @@ from backend.services.chat_turn_job_repository import (
     IdempotencyMismatch,
     TurnAdmissionPreflight,
 )
+from backend.services.chat_durable_lifecycle_observer import (
+    durable_lifecycle_observer,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +41,12 @@ class ChatTurnAdmissionCoordinator:
         settings: Settings,
         *,
         repository: ChatTurnJobRepository | None = None,
+        observe=None,
     ):
         self.db = db
         self.settings = settings
         self.repository = repository or ChatTurnJobRepository()
+        self.observe = observe or durable_lifecycle_observer(settings)
 
     def preflight(
         self,
@@ -169,6 +174,8 @@ class ChatTurnAdmissionCoordinator:
             worker_contract_version=worker_contract_version,
             now=now,
         )
+        if admitted.created:
+            self.observe("turn_state", "admitted", 1)
         return admitted.job
 
     def validate_replay(
@@ -186,6 +193,7 @@ class ChatTurnAdmissionCoordinator:
     ) -> ChatTurnJob:
         if preflight.existing_job is None:
             raise IdempotencyMismatch("Durable replay has no persisted turn job")
+        self.observe("turn_replay", "accepted", 1)
         return self.admit(
             preflight,
             turn_id=turn_id,

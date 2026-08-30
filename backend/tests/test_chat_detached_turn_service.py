@@ -614,7 +614,7 @@ def test_journal_overflow_persists_one_terminal_failure() -> None:
     )
 
 
-def test_terminal_projection_is_committed_before_transient_journal_cleanup() -> None:
+def test_terminal_projection_retains_journal_for_durable_replay_grace() -> None:
     async def scenario() -> tuple[list[str], int]:
         harness = Harness()
         ordering: list[str] = []
@@ -625,15 +625,6 @@ def test_terminal_projection_is_committed_before_transient_journal_cleanup() -> 
             await original_persist(claim, state, code)
 
         harness.coordinator._persist_terminal = persist
-        original_transaction = harness.coordinator._transaction
-
-        async def transaction(operation):
-            result = await original_transaction(operation)
-            if getattr(operation, "__name__", "") == "cleanup_terminal_journal":
-                ordering.append("cleanup")
-            return result
-
-        harness.coordinator._transaction = transaction
 
         async def source():
             yield ChatStreamFrame("done", {"finish_reason": "success"})
@@ -645,7 +636,7 @@ def test_terminal_projection_is_committed_before_transient_journal_cleanup() -> 
             remaining = db.query(ChatTurnEventChunk).count()
         return ordering, remaining
 
-    assert asyncio.run(scenario()) == (["terminal", "cleanup"], 0)
+    assert asyncio.run(scenario()) == (["terminal"], 1)
 
 
 def test_detached_lifecycle_observer_receives_only_bounded_labels_and_counts() -> None:
@@ -671,10 +662,7 @@ def test_detached_lifecycle_observer_receives_only_bounded_labels_and_counts() -
     ]
     assert observations[2][0:2] == ("journal_bytes", None)
     assert observations[2][2] > 0
-    assert observations[3:] == [
-        ("turn_state", "completed", 1),
-        ("journal_cleanup", None, 1),
-    ]
+    assert observations[3:] == [("turn_state", "completed", 1)]
 
 
 def test_source_exception_appends_bounded_failure_before_terminal_persistence() -> None:
@@ -754,10 +742,10 @@ def test_unleased_admission_becomes_dispatch_failed() -> None:
         ("leased", "dispatch_failed"),
         ("running", "external_worker_lost"),
         ("waiting_tool", "execution_lost"),
-        ("cancelling", "cancelled"),
+        ("cancelling", "cancel_control_missing"),
     ],
 )
-def test_expired_detached_reconciler_terminalizes_projection_before_cleanup(
+def test_expired_detached_reconciler_terminalizes_projection_and_retains_replay(
     expired_state, expected_code
 ) -> None:
     async def scenario():
@@ -822,12 +810,82 @@ def test_expired_detached_reconciler_terminalizes_projection_before_cleanup(
         scenario()
     )
     assert result == {expected_code: 1}
-    assert ordering == ["terminalize_expired_turns", "cleanup_terminal_journal"]
-    assert observations == [
-        ("typed_failure", expected_code, 1),
-        ("journal_cleanup", None, 1),
-    ]
+    assert ordering == ["<lambda>", "<lambda>"]
+    assert observations == [("typed_failure", expected_code, 1)]
     assert (job.state, job.failure_code) == ("interrupted", expected_code)
     assert (message.status, message.error_code) == ("interrupted", expected_code)
     assert session.active_turn_id is None
-    assert chunks == 0
+    assert chunks == 1
+
+
+def test_expired_reconciler_poison_first_does_not_starve_later_turn_at_limit_one():
+    async def scenario():
+        harness = Harness()
+        observations: list[tuple[str, str | None, int]] = []
+        with harness.sessions.begin() as db:
+            poison = harness.jobs.load_by_turn(db, harness.turn.turn_id, lock=True)
+            poison_session = db.get(ChatSession, poison.chat_session_id)
+            poison.state = "running"
+            poison.lease_expires_at = NOW - timedelta(seconds=2)
+            poison_session.active_turn_id = poison.turn_id
+
+            healthy_session = ChatSession(
+                id=uuid.uuid4(),
+                hf_user_id="healthy-owner",
+                hf_username="healthy-owner",
+                selected_model="model",
+            )
+            healthy_turn_id = uuid.uuid4()
+            healthy_session.active_turn_id = healthy_turn_id
+            db.add(healthy_session)
+            db.add(
+                ChatTurnJob(
+                    turn_id=healthy_turn_id,
+                    chat_session_id=healthy_session.id,
+                    hf_user_id=healthy_session.hf_user_id,
+                    request_id=f"request-{uuid.uuid4()}",
+                    revision=1,
+                    dispatch_class="interactive",
+                    dispatch_route="external-pi",
+                    state="running",
+                    worker_id="worker-b",
+                    worker_generation=8,
+                    lease_generation=1,
+                    app_release_id="release-a",
+                    worker_contract_version="external-pi-v1",
+                    admitted_at=NOW - timedelta(seconds=2),
+                    heartbeat_at=NOW,
+                    lease_expires_at=NOW - timedelta(seconds=1),
+                )
+            )
+            db.add(
+                ChatMessageRecord(
+                    id=uuid.uuid4(),
+                    session_id=healthy_session.id,
+                    turn_id=healthy_turn_id,
+                    sequence=1,
+                    role="user",
+                    content="irrelevant",
+                    status="generating",
+                )
+            )
+
+        reconciler = ExpiredDetachedTurnReconciler(
+            transaction=harness.transaction,
+            jobs=harness.jobs,
+            journal=harness.journal,
+            observe=lambda event, code, value: observations.append(
+                (event, code, value)
+            ),
+        )
+        result = await reconciler.reconcile(now=NOW, limit=1)
+        with harness.sessions() as db:
+            healthy = harness.jobs.load_by_turn(db, healthy_turn_id)
+            poison = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            return result, observations, healthy.state, poison.state
+
+    result, observations, healthy_state, poison_state = asyncio.run(scenario())
+    assert result == {"external_worker_lost": 1}
+    assert ("typed_failure", "projection_mismatch", 1) in observations
+    assert healthy_state == "interrupted"
+    assert poison_state == "running"

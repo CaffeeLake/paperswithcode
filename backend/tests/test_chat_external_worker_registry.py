@@ -534,6 +534,97 @@ def test_ready_claim_rejects_worker_that_became_full(monkeypatch):
         repository.require_ready_claim(Mock(), claim=claim, now=now)
 
 
+@pytest.mark.parametrize(
+    "change",
+    ["missing", "stale", "draining", "full", "generation", "capacity", "active"],
+)
+def test_readiness_requires_exact_endpoint_and_registry_identity(monkeypatch, change):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    instance_id = uuid.UUID("10000000-0000-4000-8000-000000000001")
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=instance_id,
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    claim = ExternalWorkerClaim(
+        "worker-1", instance_id, 1, "release-a", "external-pi-v1"
+    )
+    endpoint_active = 1
+    endpoint_maximum = 8
+    if change == "missing":
+        row = None
+    elif change == "stale":
+        row.lease_expires_at = now
+    elif change == "draining":
+        row.state = "draining"
+    elif change == "full":
+        row.active_sessions = row.maximum_sessions
+        endpoint_active = row.maximum_sessions
+    elif change == "generation":
+        claim = ExternalWorkerClaim(
+            "worker-1", instance_id, 2, "release-a", "external-pi-v1"
+        )
+    elif change == "capacity":
+        endpoint_maximum = 7
+    elif change == "active":
+        endpoint_active = 2
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+
+    with pytest.raises((WorkerLeaseUnavailable, StaleWorkerClaim)):
+        repository.require_endpoint_ready(
+            Mock(),
+            claim=claim,
+            active_sessions=endpoint_active,
+            maximum_sessions=endpoint_maximum,
+            configured_maximum_sessions=8,
+            now=now,
+        )
+
+
+def test_readiness_accepts_exact_unexpired_worker_with_capacity(monkeypatch):
+    repository = ChatExternalWorkerRepository(environment="staging")
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    instance_id = uuid.UUID("10000000-0000-4000-8000-000000000001")
+    row = ChatExternalWorker(
+        worker_id="worker-1",
+        instance_id=instance_id,
+        environment="staging",
+        release_id="release-a",
+        contract_version="external-pi-v1",
+        generation=1,
+        state="ready",
+        maximum_sessions=8,
+        active_sessions=1,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=15),
+        created_at=now,
+        updated_at=now,
+    )
+    monkeypatch.setattr(repository, "load", Mock(return_value=row))
+
+    repository.require_endpoint_ready(
+        Mock(),
+        claim=ExternalWorkerClaim(
+            "worker-1", instance_id, 1, "release-a", "external-pi-v1"
+        ),
+        active_sessions=1,
+        maximum_sessions=8,
+        configured_maximum_sessions=8,
+        now=now,
+    )
+
+
 @pytest.mark.parametrize("state", ["ready", "draining"])
 def test_live_claim_allows_reattach_when_worker_is_full(monkeypatch, state):
     repository = ChatExternalWorkerRepository(environment="staging")

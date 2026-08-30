@@ -1150,6 +1150,9 @@ class _ChatSchemaResult:
     def first(self):
         return self._first
 
+    def scalars(self):
+        return (row[0] for row in self._rows)
+
 
 class _ChatSchemaDB:
     def __init__(
@@ -1164,6 +1167,7 @@ class _ChatSchemaDB:
         include_qualification_columns: bool = True,
         include_reader_context_columns: bool = True,
         include_artifact_foundation: bool = True,
+        include_durable_schema: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
@@ -1174,6 +1178,7 @@ class _ChatSchemaDB:
         self.include_qualification_columns = include_qualification_columns
         self.include_reader_context_columns = include_reader_context_columns
         self.include_artifact_foundation = include_artifact_foundation
+        self.include_durable_schema = include_durable_schema
 
     def execute(self, statement):
         sql = str(statement)
@@ -1201,6 +1206,12 @@ class _ChatSchemaDB:
             )
             if self.include_artifact_foundation:
                 names += ("chat_artifacts", "chat_latex_paper_versions")
+            if self.include_durable_schema:
+                names += (
+                    "chat_turn_jobs",
+                    "chat_turn_event_chunks",
+                    "chat_external_workers",
+                )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
         if "information_schema.columns" in sql:
             rows = [
@@ -1247,6 +1258,48 @@ class _ChatSchemaDB:
                         ("chat_messages", "primary_paper_context"),
                         ("chat_messages", "viewer_context"),
                         ("chat_messages", "paper_selection"),
+                    ]
+                )
+            if self.include_durable_schema:
+                rows.extend(
+                    [
+                        ("chat_turn_jobs", name)
+                        for name in (
+                            "state",
+                            "worker_id",
+                            "worker_generation",
+                            "lease_generation",
+                            "lease_expires_at",
+                            "terminal_at",
+                            "failure_code",
+                            "event_sequence",
+                            "event_bytes",
+                        )
+                    ]
+                    + [
+                        ("chat_turn_event_chunks", name)
+                        for name in (
+                            "turn_id",
+                            "first_sequence",
+                            "last_sequence",
+                            "events",
+                            "payload_bytes",
+                        )
+                    ]
+                    + [
+                        ("chat_external_workers", name)
+                        for name in (
+                            "worker_id",
+                            "instance_id",
+                            "environment",
+                            "release_id",
+                            "contract_version",
+                            "generation",
+                            "state",
+                            "maximum_sessions",
+                            "active_sessions",
+                            "lease_expires_at",
+                        )
                     ]
                 )
             if self.include_artifact_foundation:
@@ -1321,6 +1374,40 @@ class _ChatSchemaDB:
                     ]
                 )
             return _ChatSchemaResult(rows=rows)
+        if "FROM pg_indexes" in sql:
+            if "idx_chat_external_workers_dispatch" in sql:
+                return _ChatSchemaResult(
+                    rows=[("idx_chat_external_workers_dispatch",)]
+                    if self.include_durable_schema
+                    else []
+                )
+            return _ChatSchemaResult(
+                rows=[
+                    (name,)
+                    for name in (
+                        "idx_chat_turn_jobs_expiry",
+                        "idx_chat_turn_jobs_terminal_cleanup",
+                        "idx_chat_turn_event_chunks_after",
+                        "uq_chat_turn_event_chunk_start",
+                    )
+                ]
+                if self.include_durable_schema
+                else []
+            )
+        if "chat_turn_jobs_state_check" in sql:
+            return _ChatSchemaResult(
+                rows=[
+                    (name,)
+                    for name in (
+                        "chat_turn_jobs_state_check",
+                        "chat_turn_jobs_lease_fields_check",
+                        "chat_turn_jobs_terminal_timestamp_check",
+                        "ck_chat_turn_event_chunk_range",
+                    )
+                ]
+                if self.include_durable_schema
+                else []
+            )
         if "chat_shares_messages_array_check" in sql:
             return _ChatSchemaResult(
                 first=(1,) if self.include_share_constraint else None
@@ -1350,6 +1437,18 @@ def test_chat_schema_accepts_writable_staging_connection():
         _ChatSchemaDB("off"),
         Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
     )
+
+
+def test_chat_schema_requires_real_durable_tables_when_dispatch_is_armed():
+    settings = Settings(
+        environment="staging",
+        chat_durable_turn_dispatch_enabled=True,
+    )
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_durable_schema=False), settings
+        )
+    validate_chat_schema(_ChatSchemaDB("off"), settings)
 
 
 def test_chat_schema_production_profile_does_not_require_openrouter_tables():

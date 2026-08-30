@@ -34,6 +34,7 @@ _RECONCILABLE_FAILURE_CODES = frozenset(
         "event_journal_exhausted",
         "execution_lost",
         "cancelled",
+        "cancel_control_missing",
     }
 )
 
@@ -47,7 +48,7 @@ def classify_expired_turn(job: ChatTurnJob) -> str:
         "running": "external_worker_lost",
         "waiting_model": "external_worker_lost",
         "waiting_tool": "execution_lost",
-        "cancelling": "cancelled",
+        "cancelling": "cancel_control_missing",
     }.get(job.state, "external_worker_lost")
 
 
@@ -286,28 +287,26 @@ class ChatTurnJobRepository:
             ).scalars()
         )
 
-    def load_expired_for_reconciliation(
+    def load_expired_candidates(
         self,
         db: Session,
         *,
         now: datetime,
         limit: int,
-    ) -> tuple[ChatTurnJob, ...]:
-        """Claim a bounded expired batch without contending with other sweepers."""
+    ) -> tuple[tuple[uuid.UUID, uuid.UUID], ...]:
+        """Scan content-free candidates; authority is locked session-first later."""
         if now.tzinfo is None or limit <= 0 or limit > 100:
             raise ValueError("Expired turn reconciliation bound is invalid")
         return tuple(
             db.execute(
-                select(ChatTurnJob)
+                select(ChatTurnJob.chat_session_id, ChatTurnJob.turn_id)
                 .where(
                     ChatTurnJob.state.in_(_CLAIMED_STATES),
                     ChatTurnJob.lease_expires_at <= now,
                 )
                 .order_by(ChatTurnJob.lease_expires_at, ChatTurnJob.turn_id)
                 .limit(limit)
-                .with_for_update(skip_locked=True)
-                .execution_options(populate_existing=True)
-            ).scalars()
+            ).tuples()
         )
 
     def is_expired_claim(self, job: ChatTurnJob, *, now: datetime) -> bool:

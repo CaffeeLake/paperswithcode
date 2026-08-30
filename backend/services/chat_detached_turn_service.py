@@ -61,76 +61,103 @@ class ExpiredDetachedTurnReconciler:
         if now.tzinfo is None or limit <= 0 or limit > 100:
             raise ValueError("Expired detached reconciliation bound is invalid")
 
-        def terminalize_expired_turns(
-            db: Session,
-        ) -> tuple[tuple[uuid.UUID, str], ...]:
-            outcomes: list[tuple[uuid.UUID, str]] = []
-            edits = ChatEditService(db)
-            for job in self._jobs.load_expired_for_reconciliation(
-                db, now=now, limit=limit
-            ):
-                claim = self._jobs.claim_for(job)
-                session = db.execute(
-                    select(ChatSession)
-                    .where(ChatSession.id == job.chat_session_id)
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                ).scalar_one_or_none()
-                message = db.execute(
-                    select(ChatMessageRecord)
-                    .where(
-                        ChatMessageRecord.session_id == job.chat_session_id,
-                        ChatMessageRecord.turn_id == job.turn_id,
-                        ChatMessageRecord.role == "user",
-                    )
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                ).scalar_one_or_none()
-                if (
-                    session is None
-                    or message is None
-                    or session.hf_user_id != job.hf_user_id
-                    or session.active_turn_id != job.turn_id
-                    or message.status not in {"generating", PREPARING_STATUS}
-                ):
-                    raise ExpiryProjectionMismatch(
-                        "Expired detached turn projection mismatches"
-                    )
-                failure_code = classify_expired_turn(job)
-                self._jobs.interrupt_expired_claim(
-                    db,
-                    claim=claim,
-                    failure_code=failure_code,
-                    now=now,
-                )
-                if message.status == PREPARING_STATUS:
-                    edits.expire_preparation(session, message)
-                message.status = "interrupted"
-                message.error_code = failure_code
-                session.active_turn_id = None
-                session.active_turn_expires_at = None
-                session.updated_at = now
-                outcomes.append((job.turn_id, failure_code))
-            return tuple(outcomes)
+        candidates = await self._transaction(
+            lambda db: self._jobs.load_expired_candidates(db, now=now, limit=100)
+        )
 
-        outcomes = await self._transaction(terminalize_expired_turns)
+        def terminalize_one(
+            db: Session,
+            *,
+            session_id: uuid.UUID,
+            turn_id: uuid.UUID,
+        ) -> str | None:
+            edits = ChatEditService(db)
+            session = db.execute(
+                select(ChatSession)
+                .where(ChatSession.id == session_id)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if session is None:
+                return None
+            job = self._jobs.load_by_turn(db, turn_id, lock=True)
+            if job is None or not self._jobs.is_expired_claim(job, now=now):
+                return None
+            message = db.execute(
+                select(ChatMessageRecord)
+                .where(
+                    ChatMessageRecord.session_id == session_id,
+                    ChatMessageRecord.turn_id == turn_id,
+                    ChatMessageRecord.role == "user",
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if (
+                message is None
+                or job.chat_session_id != session_id
+                or session.hf_user_id != job.hf_user_id
+                or session.active_turn_id != job.turn_id
+                or message.status not in {"generating", PREPARING_STATUS}
+            ):
+                raise ExpiryProjectionMismatch(
+                    "Expired detached turn projection mismatches"
+                )
+            failure_code = classify_expired_turn(job)
+            self._jobs.interrupt_expired_claim(
+                db,
+                claim=self._jobs.claim_for(job),
+                failure_code=failure_code,
+                now=now,
+            )
+            if message.status == PREPARING_STATUS:
+                edits.expire_preparation(session, message)
+            message.status = "interrupted"
+            message.error_code = failure_code
+            session.active_turn_id = None
+            session.active_turn_expires_at = None
+            session.updated_at = now
+            return failure_code
+
+        outcomes: list[str] = []
+        for session_id, turn_id in candidates:
+            if len(outcomes) >= limit:
+                break
+            try:
+                outcome = await self._transaction(
+                    lambda db, session_id=session_id, turn_id=turn_id: terminalize_one(
+                        db, session_id=session_id, turn_id=turn_id
+                    )
+                )
+            except ExpiryProjectionMismatch:
+                self._observe("typed_failure", "projection_mismatch", 1)
+                continue
+            if outcome is not None:
+                outcomes.append(outcome)
         counts: dict[str, int] = {}
-        for _turn_id, code in outcomes:
+        for code in outcomes:
             counts[code] = counts.get(code, 0) + 1
         for code, count in counts.items():
             self._observe("typed_failure", code, count)
-        if outcomes:
-            turn_ids = tuple(turn_id for turn_id, _code in outcomes)
-
-            def cleanup_terminal_journal(db: Session) -> int:
-                return sum(
-                    self._journal.delete_terminal(db, turn_id=turn_id)
-                    for turn_id in turn_ids
-                )
-
-            deleted = await self._transaction(cleanup_terminal_journal)
-            self._observe("journal_cleanup", None, deleted)
         return counts
+
+    async def cleanup_terminal_journals(
+        self,
+        *,
+        now: datetime,
+        replay_grace_seconds: int,
+        limit: int,
+    ) -> int:
+        deleted = await self._transaction(
+            lambda db: self._journal.cleanup_due_terminal(
+                db,
+                now=now,
+                replay_grace_seconds=replay_grace_seconds,
+                limit=limit,
+            )
+        )
+        self._observe("journal_cleanup", None, deleted)
+        return deleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +216,6 @@ class DetachedTurnCoordinator:
         self._handles: dict[uuid.UUID, DetachedTurnHandle] = {}
         self._notifications: dict[uuid.UUID, _TurnNotificationState] = {}
         self._ambiguous_turns: dict[uuid.UUID, TurnLeaseClaim] = {}
-        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._tombstone_reaper: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
 
@@ -244,7 +270,10 @@ class DetachedTurnCoordinator:
                         db, claim=turn.claim, now=now
                     )
                 )
-            except BaseException:
+            except asyncio.CancelledError:
+                await self._close_source(source)
+                raise
+            except Exception:
                 await self._close_source(source)
                 raise
             self._acquire_producer(turn.turn_id)
@@ -422,32 +451,6 @@ class DetachedTurnCoordinator:
         )
         if not confirmed:
             raise RuntimeError("Terminal persistence was not durable")
-
-        def cleanup_terminal_journal(db: Session) -> int:
-            return self._cleanup_terminal_journal(db, claim.turn_id)
-
-        async def cleanup_after_replay_window() -> None:
-            await asyncio.sleep(self._poll_seconds * 2)
-            deleted = await self._transaction(cleanup_terminal_journal)
-            self._observe("journal_cleanup", None, deleted)
-
-        cleanup = asyncio.create_task(cleanup_after_replay_window())
-        self._cleanup_tasks.add(cleanup)
-        cleanup.add_done_callback(self._finish_cleanup)
-
-    def _cleanup_terminal_journal(self, db: Session, turn_id: uuid.UUID) -> int:
-        return self._journal.delete_terminal(db, turn_id=turn_id)
-
-    def _finish_cleanup(self, task: asyncio.Task[None]) -> None:
-        self._cleanup_tasks.discard(task)
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            logger.warning(
-                "detached terminal journal cleanup failed error=%s",
-                type(error).__name__,
-            )
 
     def _evict_handle(self, handle: DetachedTurnHandle) -> None:
         turn_id = handle.turn.turn_id

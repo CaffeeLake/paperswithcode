@@ -70,7 +70,7 @@ class ExpiringTurn(LiveTurns):
 TURN_CLAIM = TurnLeaseClaim(uuid.uuid4(), "worker", 3, 7)
 
 
-def setup_manager(*, health: ExecutorHealth | None = None):
+def setup_manager(*, health: ExecutorHealth | None = None, observe=None):
     settings = _settings(chat_workspace_snapshots_enabled=False)
     sessions = _database()
     session_id = uuid.uuid4()
@@ -87,12 +87,16 @@ def setup_manager(*, health: ExecutorHealth | None = None):
         maintenance=acquisition.lease_maintenance,
         executor=health or ExecutorHealth(),
         turn_repository=LiveTurns(),
+        observe=observe,
     )
     return manager, sessions, session_id, provider
 
 
 def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():
-    manager, sessions, session_id, provider = setup_manager()
+    observations = []
+    manager, sessions, session_id, provider = setup_manager(
+        observe=lambda event, code, value: observations.append((event, code, value))
+    )
 
     async def exercise():
         first = await manager.acquire(session_id=session_id, turn_claim=TURN_CLAIM)
@@ -109,6 +113,12 @@ def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():
     assert first.worker_generation == second.worker_generation
     assert len(provider.create_options) == 1
     assert provider.create_options[0]["launch_mode"] is SandboxLaunchMode.EXECUTOR
+    assert observations == [
+        ("workspace_state", "created", 1),
+        ("workspace_state", "released", 1),
+        ("workspace_state", "reused", 1),
+        ("workspace_state", "released", 1),
+    ]
     with sessions() as db:
         lease = manager.state_repository.load_lease(db, session_id, lock=False)
         assert lease is not None

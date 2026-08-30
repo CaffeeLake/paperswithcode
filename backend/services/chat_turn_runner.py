@@ -15,6 +15,9 @@ from backend.services.chat_capability_service import (
     IssuedCapability,
 )
 from backend.services.chat_external_pi_turn_runner import ExternalPiChatTurnRunner
+from backend.services.chat_durable_lifecycle_observer import (
+    durable_lifecycle_observer,
+)
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import ChatOwner, TurnAdmission
 from backend.services.chat_web_search_service import opaque_owner
@@ -275,7 +278,7 @@ def create_chat_turn_runner(
         if _uses_external_pi(settings, admission)
         else ModalChatTurnRunner
     )
-    return runner_type(
+    runner_kwargs = dict(
         settings=settings,
         admission=admission,
         prompt=prompt,
@@ -284,3 +287,6 @@ def create_chat_turn_runner(
         capability=capability,
         hf_username=owner.hf_username,
     )
+    if runner_type is ExternalPiChatTurnRunner:
+        runner_kwargs["observe"] = durable_lifecycle_observer(settings)
+    return runner_type(**runner_kwargs)

@@ -134,6 +134,9 @@ async def lifespan(app: FastAPI):
         from backend.services.chat_detached_turn_service import (
             ExpiredDetachedTurnReconciler,
         )
+        from backend.services.chat_durable_lifecycle_observer import (
+            durable_lifecycle_observer,
+        )
         from backend.services.chat_title_budget_service import (
             deliver_title_budget_alerts,
             reconcile_stale_title_calls,
@@ -165,23 +168,25 @@ async def lifespan(app: FastAPI):
         async def reconcile_stale_latency() -> None:
             await asyncio.to_thread(reconcile_stale_chat_turns)
 
+        async def detached_transaction(operation):
+            def run():
+                with db_manager.session_local() as db:
+                    try:
+                        result = operation(db)
+                        db.commit()
+                        return result
+                    except Exception:
+                        db.rollback()
+                        raise
+
+            return await asyncio.to_thread(run)
+
         async def reconcile_expired_detached_turns() -> None:
-            async def transaction(operation):
-                def run():
-                    with db_manager.session_local() as db:
-                        try:
-                            result = operation(db)
-                            db.commit()
-                            return result
-                        except BaseException:
-                            db.rollback()
-                            raise
-
-                return await asyncio.to_thread(run)
-
-            reconciled = await ExpiredDetachedTurnReconciler(
-                transaction=transaction
-            ).reconcile(
+            reconciler = ExpiredDetachedTurnReconciler(
+                transaction=detached_transaction,
+                observe=durable_lifecycle_observer(settings),
+            )
+            reconciled = await reconciler.reconcile(
                 now=datetime.now(UTC),
                 limit=min(settings.chat_max_concurrency, 100),
             )
@@ -192,6 +197,16 @@ async def lifespan(app: FastAPI):
                         f"{code}:{count}" for code, count in sorted(reconciled.items())
                     ),
                 )
+
+        async def cleanup_terminal_turn_journals() -> None:
+            await ExpiredDetachedTurnReconciler(
+                transaction=detached_transaction,
+                observe=durable_lifecycle_observer(settings),
+            ).cleanup_terminal_journals(
+                now=datetime.now(UTC),
+                replay_grace_seconds=settings.chat_turn_event_replay_grace_seconds,
+                limit=settings.chat_turn_event_cleanup_batch_size,
+            )
 
         async def reconcile_title_budget() -> None:
             await asyncio.to_thread(reconcile_stale_title_calls, settings)
@@ -231,6 +246,8 @@ async def lifespan(app: FastAPI):
                 ]
                 if settings.chat_external_pi_admission_enabled:
                     operations.append(reconcile_expired_detached_turns)
+                if settings.chat_durable_turn_dispatch_enabled:
+                    operations.append(cleanup_terminal_turn_journals)
                 today = datetime.now(UTC).date()
                 if latency_cleanup_date != today:
 
@@ -584,6 +601,12 @@ def create_app() -> FastAPI:
 
                 with db_manager.session_local() as db:
                     validate_chat_schema(db, settings)
+                if settings.chat_external_pi_admission_enabled:
+                    from backend.services.chat_external_pi_readiness import (
+                        validate_external_pi_readiness,
+                    )
+
+                    await validate_external_pi_readiness(settings)
                 await SandboxSessionManager(settings).validate_image_reference()
         except Exception as error:
             return JSONResponse(

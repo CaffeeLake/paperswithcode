@@ -33,6 +33,7 @@ from backend.services.chat_sandbox_executor import (
 from backend.services.chat_session_service import TurnAdmission
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
+from backend.services.chat_turn_cancel_control import CancelControlResult
 from backend.tests.test_chat_sandbox_executor_client import (
     _Broker,
     _DropFirstResponseSocketProvider,
@@ -60,6 +61,14 @@ class FakeSocket:
         if isinstance(value, BaseException):
             raise value
         return value
+
+
+@pytest.fixture(autouse=True)
+def _isolate_durable_turn_state(monkeypatch):
+    async def ignore(_runner, _state):
+        return None
+
+    monkeypatch.setattr(ExternalPiChatTurnRunner, "_persist_turn_state", ignore)
 
 
 class SocketContext:
@@ -923,6 +932,10 @@ async def _async_value(value):
     return value
 
 
+async def _ignore_turn_state(_state):
+    return None
+
+
 def _tool_runner(executor, workspace_manager):
     settings = get_settings().model_copy(deep=True)
     settings.environment = "staging"
@@ -956,7 +969,45 @@ def _tool_runner(executor, workspace_manager):
         executor=executor,
         workspace_manager=workspace_manager,
         session_factory=SessionContext,
+        turn_state_transition=_ignore_turn_state,
     )
+
+
+def test_tool_execution_persists_waiting_tool_until_safe_settlement():
+    states: list[str] = []
+    observations: list[tuple[str, str | None, int]] = []
+    manager = FakeWorkspaceManager(FakeProvider())
+    runner = _tool_runner(FakeExecutor(), manager)
+
+    async def record(state):
+        states.append(state)
+        if state == "running":
+            assert len(manager.released) == 1
+
+    runner.turn_state_transition = record
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "operation-1",
+                "tool_call_id": "tool-1",
+                "operation": "exec",
+                "command": "printf x >> marker",
+                "timeout_ms": 1000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert states == ["waiting_tool", "running"]
+    assert observations == [
+        ("turn_state", "waiting_tool", 1),
+        ("executor_recovery", "succeeded", 1),
+        ("turn_state", "running", 1),
+    ]
 
 
 def test_execution_lost_cancel_failure_invalidates_without_releasing():
@@ -1132,6 +1183,33 @@ def test_cancel_executor_requires_positive_terminal_proof(terminal, safe):
     context = SimpleNamespace()
 
     assert asyncio.run(runner._cancel_executor(context)) is safe
+
+
+def test_cancel_attempts_executor_when_worker_socket_fails_and_defers_revocation():
+    calls: list[str] = []
+
+    class BrokenSocket:
+        async def send(self, _frame):
+            calls.append("worker")
+            raise OSError("socket lost")
+
+    class CancelExecutor(FakeExecutor):
+        async def cancel_execution(self, _context):
+            calls.append("executor")
+            return ExecutorExecutionResult(
+                outputs=(),
+                terminal={"status": "cancelled", "exit_code": None, "error": None},
+            )
+
+    runner = _tool_runner(CancelExecutor(), FakeWorkspaceManager(FakeProvider()))
+    runner.socket = BrokenSocket()
+    runner.active_context = SimpleNamespace()
+    runner._revoke = lambda: calls.append("revoke")
+
+    result = asyncio.run(runner.cancel())
+
+    assert result is CancelControlResult.MISSING
+    assert calls == ["worker", "executor"]
 
 
 def test_execution_not_found_cancel_result_invalidates_ambiguous_workspace():

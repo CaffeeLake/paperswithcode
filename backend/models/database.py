@@ -2593,6 +2593,13 @@ class ChatTurnJob(Base):
         Index("idx_chat_turn_jobs_claim", "state", "admitted_at", "turn_id"),
         Index("idx_chat_turn_jobs_expiry", "state", "lease_expires_at"),
         Index(
+            "idx_chat_turn_jobs_terminal_cleanup",
+            "terminal_at",
+            "turn_id",
+            postgresql_where=text("state IN ('completed','failed','interrupted')"),
+            sqlite_where=text("state IN ('completed','failed','interrupted')"),
+        ),
+        Index(
             "uq_chat_turn_jobs_nonterminal_owner",
             "hf_user_id",
             unique=True,

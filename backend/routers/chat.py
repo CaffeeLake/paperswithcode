@@ -114,6 +114,10 @@ from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_turn_cancellation_coordinator import (
     ChatTurnCancellationCoordinator,
 )
+from backend.services.chat_turn_cancel_control import CancelControlResult
+from backend.services.chat_durable_lifecycle_observer import (
+    durable_lifecycle_observer,
+)
 from backend.services.chat_web_search_service import (
     ChatWebSearchBudgetService,
     web_search_available,
@@ -152,7 +156,7 @@ async def _detached_transaction(operation):
                 result = operation(db)
                 db.commit()
                 return result
-            except BaseException:
+            except Exception:
                 db.rollback()
                 raise
 
@@ -170,10 +174,10 @@ async def _persist_detached_terminal(claim, state, failure_code):
             _detached_orchestrators.pop(claim.turn_id, None)
 
 
-async def _cancel_external_detached_turn(request) -> bool:
+async def _cancel_external_detached_turn(request) -> CancelControlResult:
     orchestrator = _detached_orchestrators.get(request.turn_id)
     if orchestrator is None:
-        return False
+        return CancelControlResult.MISSING
     return await orchestrator.cancel_detached_turn(request.claim)
 
 
@@ -183,6 +187,7 @@ def detached_turn_coordinator() -> DetachedTurnCoordinator:
         _detached_coordinator = DetachedTurnCoordinator(
             transaction=_detached_transaction,
             persist_terminal=_persist_detached_terminal,
+            observe=durable_lifecycle_observer(get_settings()),
         )
     return _detached_coordinator
 
@@ -1733,6 +1738,7 @@ async def cancel_active_turn(
                 db,
                 settings,
                 shared_sandbox_manager(settings),
+                observe=durable_lifecycle_observer(settings),
                 **coordinator_kwargs,
             ).cancel(owner, session_id)
         except ChatServiceError as exc:

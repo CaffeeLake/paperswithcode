@@ -46,6 +46,7 @@ from backend.services.chat_turn_job_repository import (
 )
 
 SessionFactory = Callable[[], Session]
+LifecycleObserver = Callable[[str, str | None, int], None]
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class ChatExternalExecutorWorkspaceManager:
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         assignment_token_factory: Callable[[], str] | None = None,
+        observe: LifecycleObserver | None = None,
     ) -> None:
         if settings.chat_workspace_snapshots_enabled:
             raise ValueError("External executor workspaces require snapshots disabled")
@@ -114,6 +116,7 @@ class ChatExternalExecutorWorkspaceManager:
         self.assignment_token_factory = assignment_token_factory or (
             lambda: secrets.token_urlsafe(24)
         )
+        self.observe = observe or (lambda _event, _code, _value: None)
 
     @classmethod
     def from_settings(
@@ -126,6 +129,9 @@ class ChatExternalExecutorWorkspaceManager:
         # Local import keeps the compatibility façade out of the domain module's
         # import graph while reusing its single, validated dependency assembly.
         from backend.services.chat_sandbox_service import SandboxSessionManager
+        from backend.services.chat_durable_lifecycle_observer import (
+            durable_lifecycle_observer,
+        )
 
         owner = SandboxSessionManager(settings, sandbox_provider=provider)
         manager = cls(
@@ -136,6 +142,7 @@ class ChatExternalExecutorWorkspaceManager:
             lifecycle=owner._lease_lifecycle_coordinator(),
             maintenance=owner._lease_maintenance_coordinator(),
             executor=executor,
+            observe=durable_lifecycle_observer(settings),
         )
         manager._dependency_owner = owner
         return manager
@@ -189,6 +196,11 @@ class ChatExternalExecutorWorkspaceManager:
                 except StaleTurnClaim:
                     await self._release_preserving_primary(workspace)
                     raise
+                self.observe(
+                    "workspace_state",
+                    "created" if outcome.public_label == "created" else "reused",
+                    1,
+                )
                 return workspace
 
             invalidated = await self._invalidate_preserving_primary(workspace)
@@ -213,6 +225,7 @@ class ChatExternalExecutorWorkspaceManager:
                 now=self.utcnow(),
             )
         if released:
+            self.observe("workspace_state", "released", 1)
             await self.maintenance.enforce_warm_cap()
         return released
 
@@ -229,6 +242,7 @@ class ChatExternalExecutorWorkspaceManager:
             workspace.claim,
             failure_code=failure_code,
         )
+        self.observe("workspace_state", "invalidated", 1)
 
     async def _release_preserving_primary(
         self, workspace: ExternalExecutorWorkspace

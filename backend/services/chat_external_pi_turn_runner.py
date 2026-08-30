@@ -52,10 +52,15 @@ from backend.services.chat_sandbox_provider import (
     SandboxError,
 )
 from backend.services.chat_session_service import TurnAdmission
-from backend.services.chat_turn_job_repository import TurnLeaseClaim
+from backend.services.chat_turn_job_repository import (
+    ChatTurnJobRepository,
+    TurnLeaseClaim,
+)
+from backend.services.chat_turn_cancel_control import CancelControlResult
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
 type WorkspaceSettlement = Literal["release", "invalidate"]
+type LifecycleObserver = Callable[[str, str | None, int], None]
 
 
 def _is_safe_cancel_terminal(terminal: object) -> bool:
@@ -110,6 +115,8 @@ class ExternalPiChatTurnRunner:
         | None = None,
         session_factory: Callable[[], AbstractContextManager[Any]] | None = None,
         now: Callable[[], datetime] | None = None,
+        turn_state_transition: Callable[[str], Awaitable[None]] | None = None,
+        observe: LifecycleObserver | None = None,
     ) -> None:
         self.settings = settings
         self.admission = admission
@@ -129,6 +136,8 @@ class ExternalPiChatTurnRunner:
         self.worker_status_resolver = worker_status_resolver
         self.session_factory = session_factory or db_manager.session_local
         self.now = now or (lambda: datetime.now(UTC))
+        self.turn_state_transition = turn_state_transition or self._persist_turn_state
+        self.observe = observe or (lambda _event, _code, _value: None)
         self.socket: Any | None = None
         self.active_context: ExecutorContext | None = None
         self.external_worker_claim: ExternalWorkerClaim | None = None
@@ -158,6 +167,8 @@ class ExternalPiChatTurnRunner:
                     return
             try:
                 async with self._external_worker_socket(worker_claim) as socket:
+                    if _attempt:
+                        self.observe("worker_reconnect", None, 1)
                     self.socket = socket
                     await socket.send(
                         json.dumps(
@@ -235,6 +246,7 @@ class ExternalPiChatTurnRunner:
             finally:
                 self.socket = None
         yield self._worker_lost_event()
+        self.observe("typed_failure", "external_worker_lost", 1)
 
     async def _endpoint_status(self) -> ExternalPiWorkerStatus:
         if self.worker_status_resolver is not None:
@@ -414,15 +426,34 @@ class ExternalPiChatTurnRunner:
     async def _tool_result(self, request: dict[str, object]) -> dict[str, object]:
         operation_id = str(request.get("operation_id") or "")
         tool_call_id = str(request.get("tool_call_id") or "")
-        base: dict[str, object] = {
-            "type": "tool_result",
-            "operation_id": operation_id,
-        }
         if not operation_id or not tool_call_id:
             raise ValueError("invalid_tool_identity")
         operation = request.get("operation")
         if operation not in {"exec", "read"}:
             raise ValueError("unsupported_tool_operation")
+        await self.turn_state_transition("waiting_tool")
+        self.observe("turn_state", "waiting_tool", 1)
+        result = await self._execute_tool_result(
+            request,
+            operation_id=operation_id,
+            operation=operation,
+        )
+        await self.turn_state_transition("running")
+        self.observe("turn_state", "running", 1)
+        return result
+
+    async def _execute_tool_result(
+        self,
+        request: dict[str, object],
+        *,
+        operation_id: str,
+        operation: str,
+    ) -> dict[str, object]:
+        base: dict[str, object] = {
+            "type": "tool_result",
+            "operation_id": operation_id,
+        }
+        tool_call_id = str(request.get("tool_call_id") or "")
         context: ExecutorContext | None = None
         workspace: ExternalExecutorWorkspace | None = None
         settlement: WorkspaceSettlement = "invalidate"
@@ -439,6 +470,7 @@ class ExternalPiChatTurnRunner:
                     command=str(request["command"]),
                     timeout_ms=int(request["timeout_ms"]),
                 )
+                self.observe("executor_recovery", "succeeded", 1)
                 terminal = dict(result.terminal)
                 settlement = "release"
                 return {
@@ -468,6 +500,7 @@ class ExternalPiChatTurnRunner:
                 }
             raise AssertionError("validated tool operation was not handled")
         except ExecutorExecutionLost:
+            self.observe("executor_recovery", "failed", 1)
             primary_exception_active = True
             if context is not None:
                 settlement = (
@@ -506,6 +539,21 @@ class ExternalPiChatTurnRunner:
                     settlement=settlement,
                     primary_exception_active=primary_exception_active,
                 )
+
+    async def _persist_turn_state(self, state: str) -> None:
+        claim = self._durable_turn_claim()
+
+        def transition() -> None:
+            with self.session_factory() as db:
+                ChatTurnJobRepository().transition(
+                    db,
+                    claim=claim,
+                    state=state,
+                    now=self.now(),
+                )
+                db.commit()
+
+        await asyncio.to_thread(transition)
 
     async def _cancel_executor(self, context: ExecutorContext) -> bool:
         try:
@@ -587,16 +635,22 @@ class ExternalPiChatTurnRunner:
             db.commit()
         self.capability_id = None
 
-    async def cancel(self) -> None:
-        self._revoke()
+    async def cancel(self) -> CancelControlResult:
         cancel_frame = {
             "v": 1,
             "type": "cancel_turn",
             "request_id": self.request_id,
             "turnClaim": self._turn_claim_frame(),
         }
-        if self.socket is not None:
-            await self.socket.send(json.dumps(cancel_frame, separators=(",", ":")))
+        worker_requested = False
+        socket = self.socket
+        context = self.active_context
+        if socket is not None:
+            try:
+                await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
+                worker_requested = True
+            except (OSError, TimeoutError, WebSocketException):
+                pass
         elif self.external_worker_claim is not None:
             try:
                 await self._require_same_external_worker_claim(
@@ -606,6 +660,7 @@ class ExternalPiChatTurnRunner:
                     self.external_worker_claim
                 ) as socket:
                     await socket.send(json.dumps(cancel_frame, separators=(",", ":")))
+                    worker_requested = True
             except (
                 StaleWorkerClaim,
                 WorkerLeaseUnavailable,
@@ -617,8 +672,13 @@ class ExternalPiChatTurnRunner:
                 httpx.HTTPError,
             ):
                 pass
-        if self.active_context is not None:
-            await self.executor.cancel_execution(self.active_context)
+        if context is not None:
+            await self._cancel_executor(context)
+        return (
+            CancelControlResult.REQUESTED
+            if worker_requested
+            else CancelControlResult.MISSING
+        )
 
     async def close(self) -> None:
         self._revoke()

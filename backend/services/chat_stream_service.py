@@ -68,6 +68,10 @@ from backend.services.chat_tracing_service import (
     trace_chat_turn,
 )
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
+from backend.services.chat_turn_cancel_control import CancelControlResult
+from backend.services.chat_durable_lifecycle_observer import (
+    durable_lifecycle_observer,
+)
 from backend.services.chat_turn_job_repository import TurnJobError, TurnLeaseClaim
 from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
@@ -1355,6 +1359,7 @@ class ChatStreamOrchestrator:
         self._detached_terminal_event: dict[str, Any] | None = None
         self._detached_mirror_event: dict[str, Any] | None = None
         self._detached_cancel_requested = False
+        self.lifecycle_observer = durable_lifecycle_observer(settings)
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         if self.admission.replay_assistant:
@@ -1627,15 +1632,14 @@ class ChatStreamOrchestrator:
         """Release process-local lease maintenance when ownership setup fails."""
         await self._stop_lease_heartbeat()
 
-    async def cancel_detached_turn(self, claim: TurnLeaseClaim) -> bool:
+    async def cancel_detached_turn(self, claim: TurnLeaseClaim) -> CancelControlResult:
         """Cancel only the runner already bound to this exact durable claim."""
         if claim != self.admission.durable_claim:
-            return False
+            return CancelControlResult.MISSING
         self._detached_cancel_requested = True
         if self.runner is None:
-            return True
-        await self.runner.cancel()
-        return True
+            return CancelControlResult.REQUESTED
+        return await self.runner.cancel()
 
     async def persist_detached_terminal(
         self,
@@ -1971,6 +1975,7 @@ class ChatStreamOrchestrator:
                 "answer_delta",
             }:
                 self.first_application_delta_recorded = True
+                self.lifecycle_observer("ttft_ms", None, elapsed_ms)
                 self._record_latency_phase(
                     "first_semantic_event",
                     elapsed_ms,
@@ -2343,12 +2348,14 @@ class ChatStreamOrchestrator:
             "stopped": "stopped",
             "error": "error",
         }.get(self.terminal, "interrupted")
+        total_ms = round((time.perf_counter() - self.started) * 1000)
+        self.lifecycle_observer("terminal_latency_ms", None, total_ms)
         try:
             with db_manager.session_local() as db:
                 ChatLatencyService(db).finalize(
                     self.request_id,
                     status,
-                    round((time.perf_counter() - self.started) * 1000),
+                    total_ms,
                 )
                 db.commit()
         except Exception as exc:

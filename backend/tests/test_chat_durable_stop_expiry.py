@@ -24,6 +24,7 @@ from backend.services.chat_turn_admission_coordinator import (
 from backend.services.chat_turn_cancellation_coordinator import (
     ChatTurnCancellationCoordinator,
 )
+from backend.services.chat_turn_cancel_control import CancelControlResult
 from backend.services.chat_turn_job_repository import (
     AccountBusy,
     ExpiryProjectionMismatch,
@@ -45,7 +46,7 @@ async def _cancel_with(db, manager, sessions, session_id):
 
 
 @pytest.mark.parametrize("subscriber_connected", [True, False])
-def test_external_stop_is_independent_of_subscriber_and_cleans_up_last(
+def test_external_stop_is_independent_of_subscriber_and_waits_for_terminal_proof(
     subscriber_connected,
 ):
     session_id = uuid.uuid4()
@@ -62,19 +63,11 @@ def test_external_stop_is_independent_of_subscriber_and_cleans_up_last(
             ordering.append("cancelling")
             return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
 
-        def finalize_cancel(self, _owner, request):
-            assert request.claim == claim
-            ordering.append("terminal")
-
-        def cleanup_terminal_journal(self, request):
-            assert request.claim == claim
-            ordering.append("cleanup")
-
     async def cancel_external(request):
         assert request.claim == claim
         assert subscriber_connected in {True, False}
         ordering.append("external-and-executor-cancel")
-        return True
+        return CancelControlResult.REQUESTED
 
     class Manager:
         async def cancel_status(self, *_args):
@@ -98,15 +91,10 @@ def test_external_stop_is_independent_of_subscriber_and_cleans_up_last(
         "commit",
         "observe:turn_state:cancelling:1",
         "external-and-executor-cancel",
-        "terminal",
-        "commit",
-        "observe:turn_state:cancelled:1",
-        "cleanup",
-        "commit",
     ]
 
 
-def test_missing_process_local_external_control_terminalizes_without_replay():
+def test_missing_process_local_external_control_interrupts_with_exact_code():
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()
     claim = TurnLeaseClaim(turn_id, "dead-backend", 9, 5)
@@ -120,12 +108,9 @@ def test_missing_process_local_external_control_terminalizes_without_replay():
         def request_cancel(self, *_args):
             return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
 
-        def finalize_cancel(self, _owner, request):
+        def interrupt_cancel_without_control(self, _owner, request):
             assert request.claim == claim
-            calls.append("terminal")
-
-        def cleanup_terminal_journal(self, _request):
-            calls.append("cleanup")
+            calls.append("cancel-control-missing")
 
     async def missing(_request):
         calls.append("control-missing")
@@ -145,14 +130,12 @@ def test_missing_process_local_external_control_terminalizes_without_replay():
     assert calls == [
         "commit",
         "control-missing",
-        "terminal",
-        "commit",
-        "cleanup",
+        "cancel-control-missing",
         "commit",
     ]
 
 
-def test_external_cancel_transport_loss_terminalizes_without_replay():
+def test_external_cancel_transport_loss_interrupts_without_claiming_cancelled():
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()
     claim = TurnLeaseClaim(turn_id, "backend-a", 7, 3)
@@ -166,11 +149,8 @@ def test_external_cancel_transport_loss_terminalizes_without_replay():
         def request_cancel(self, *_args):
             return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
 
-        def finalize_cancel(self, *_args):
-            calls.append("terminal")
-
-        def cleanup_terminal_journal(self, *_args):
-            calls.append("cleanup")
+        def interrupt_cancel_without_control(self, *_args):
+            calls.append("cancel-control-missing")
 
     async def transport_lost(_request):
         calls.append("external-cancel")
@@ -186,9 +166,7 @@ def test_external_cancel_transport_loss_terminalizes_without_replay():
     assert calls == [
         "commit",
         "external-cancel",
-        "terminal",
-        "commit",
-        "cleanup",
+        "cancel-control-missing",
         "commit",
     ]
 
@@ -203,7 +181,7 @@ def test_external_cancel_before_runner_attach_fences_future_model_start():
 
     found = asyncio.run(orchestrator.cancel_detached_turn(claim))
 
-    assert found is True
+    assert found is CancelControlResult.REQUESTED
     assert orchestrator._detached_cancel_requested is True
 
 
@@ -465,7 +443,7 @@ def test_enabled_cancel_route_delegates_to_coordinator_and_preserves_204(monkeyp
     calls = []
 
     class Coordinator:
-        def __init__(self, db, settings, manager):
+        def __init__(self, db, settings, manager, **_kwargs):
             calls.append((db, settings, manager))
 
         async def cancel(self, owner, requested_session_id):

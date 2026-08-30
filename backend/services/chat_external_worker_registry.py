@@ -356,6 +356,30 @@ class ChatExternalWorkerRepository:
         row = self._load_claimed(db, claim)
         self._require_ready(row, claim, environment=self.environment, now=now)
 
+    def require_endpoint_ready(
+        self,
+        db: Session,
+        *,
+        claim: ExternalWorkerClaim,
+        active_sessions: int,
+        maximum_sessions: int,
+        configured_maximum_sessions: int,
+        now: datetime,
+    ) -> None:
+        """Prove the authenticated endpoint and durable registry are identical."""
+        row = self.load(db, claim.worker_id, lock=False)
+        if row is None:
+            raise WorkerLeaseUnavailable("External worker is not ready")
+        self._require_ready(row, claim, environment=self.environment, now=now)
+        if (
+            claim.release_id != row.release_id
+            or claim.contract_version != row.contract_version
+            or maximum_sessions != configured_maximum_sessions
+            or row.maximum_sessions != configured_maximum_sessions
+            or active_sessions != row.active_sessions
+        ):
+            raise WorkerLeaseUnavailable("External worker is not ready")
+
     def require_live_claim(
         self,
         db: Session,

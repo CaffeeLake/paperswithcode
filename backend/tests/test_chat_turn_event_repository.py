@@ -204,6 +204,57 @@ def test_terminal_cleanup_deletes_chunks_without_deleting_turn_job(db):
     assert db.query(ChatTurnEventChunk).count() == 0
 
 
+def test_durable_terminal_cleanup_waits_for_grace_and_survives_restart(db):
+    job, claim = _claimed_turn(db)
+    journal = TurnEventJournal()
+    journal.append(db, claim=claim, events=[event("delta", {"text": "a"})], now=NOW)
+    ChatTurnJobRepository().write_terminal(
+        db, claim=claim, state="completed", now=NOW + timedelta(seconds=1)
+    )
+    db.commit()
+
+    restarted = TurnEventJournal()
+    assert (
+        restarted.cleanup_due_terminal(
+            db,
+            now=NOW + timedelta(seconds=300),
+            replay_grace_seconds=300,
+            limit=100,
+        )
+        == 0
+    )
+    assert db.query(ChatTurnEventChunk).count() == 1
+
+    assert (
+        restarted.cleanup_due_terminal(
+            db,
+            now=NOW + timedelta(seconds=301),
+            replay_grace_seconds=300,
+            limit=100,
+        )
+        == 1
+    )
+    assert db.get(ChatTurnJob, claim.turn_id) is not None
+    assert db.query(ChatTurnEventChunk).count() == 0
+
+
+def test_durable_cleanup_never_deletes_nonterminal_journal(db):
+    _job, claim = _claimed_turn(db)
+    journal = TurnEventJournal()
+    journal.append(db, claim=claim, events=[event("delta", {"text": "a"})], now=NOW)
+
+    assert (
+        journal.cleanup_due_terminal(
+            db,
+            now=NOW + timedelta(hours=1),
+            replay_grace_seconds=300,
+            limit=100,
+        )
+        == 0
+    )
+    assert db.query(ChatTurnEventChunk).count() == 1
+
+
 def test_model_and_migration_define_the_bounded_event_journal():
     table = ChatTurnEventChunk.__table__
     ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
@@ -232,6 +283,22 @@ def test_model_and_migration_define_the_bounded_event_journal():
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "OWNER TO paperswithcode_user" in migration
+
+
+def test_terminal_cleanup_index_is_partial_and_migrated():
+    indexes = "\n".join(
+        str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+        for index in ChatTurnJob.__table__.indexes
+    )
+    migration = (
+        Path(__file__).parents[1]
+        / "database/migrations/add_chat_turn_terminal_cleanup_index.sql"
+    ).read_text()
+
+    assert "idx_chat_turn_jobs_terminal_cleanup" in indexes
+    assert "WHERE state IN ('completed','failed','interrupted')" in indexes
+    assert "idx_chat_turn_jobs_terminal_cleanup" in migration
+    assert "WHERE state IN ('completed','failed','interrupted')" in migration
 
 
 def test_postgresql_concurrent_appends_lock_one_turn_and_persist_jsonb(
