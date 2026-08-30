@@ -1354,6 +1354,7 @@ class ChatStreamOrchestrator:
         )
         self._detached_terminal_event: dict[str, Any] | None = None
         self._detached_mirror_event: dict[str, Any] | None = None
+        self._detached_cancel_requested = False
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         if self.admission.replay_assistant:
@@ -1437,12 +1438,26 @@ class ChatStreamOrchestrator:
                 )
                 return
 
+            if self._detached_cancel_requested:
+                self.terminal = "stopped"
+                yield ChatStreamFrame(
+                    "done", {"followups": [], "finish_reason": "stopped"}
+                )
+                return
+
             await self._renew_durable_turn()
             if self.settings.chat_durable_turn_dispatch_enabled:
                 await asyncio.to_thread(
                     _start_local_turn, self.settings, self.admission
                 )
             self._assert_durable_lease()
+
+            if self._detached_cancel_requested:
+                self.terminal = "stopped"
+                yield ChatStreamFrame(
+                    "done", {"followups": [], "finish_reason": "stopped"}
+                )
+                return
 
             queue: asyncio.Queue = asyncio.Queue()
             self.runner = create_chat_turn_runner(
@@ -1614,8 +1629,11 @@ class ChatStreamOrchestrator:
 
     async def cancel_detached_turn(self, claim: TurnLeaseClaim) -> bool:
         """Cancel only the runner already bound to this exact durable claim."""
-        if claim != self.admission.durable_claim or self.runner is None:
+        if claim != self.admission.durable_claim:
             return False
+        self._detached_cancel_requested = True
+        if self.runner is None:
+            return True
         await self.runner.cancel()
         return True
 

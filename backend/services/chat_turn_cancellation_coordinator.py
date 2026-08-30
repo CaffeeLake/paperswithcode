@@ -7,8 +7,11 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy.orm import Session
+from websockets.exceptions import WebSocketException
 
+from backend.chat_sandbox_worker.executor_protocol import ProtocolError
 from backend.config import Settings
+from backend.services.chat_sandbox_executor import ExecutorTransportError
 from backend.services.chat_sandbox_lease_lifecycle_coordinator import (
     SandboxCleanupUnverified,
 )
@@ -50,7 +53,20 @@ class ChatTurnCancellationCoordinator:
             return
         self.observe("turn_state", "cancelling", 1)
         if self.external_cancel is not None:
-            await self.external_cancel(request)
+            try:
+                await self.external_cancel(request)
+            except (
+                ExecutorTransportError,
+                OSError,
+                ProtocolError,
+                SandboxError,
+                TimeoutError,
+                WebSocketException,
+            ) as error:
+                logger.warning(
+                    "durable external cancel control unavailable error=%s",
+                    type(error).__name__,
+                )
             self.sessions.finalize_cancel(owner, request)
             self.db.commit()
             self.observe("turn_state", "cancelled", 1)

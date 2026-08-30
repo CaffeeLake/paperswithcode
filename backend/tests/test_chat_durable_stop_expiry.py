@@ -17,6 +17,7 @@ from backend.services.chat_session_service import (
     ChatServiceError,
     ChatSessionService,
 )
+from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_admission_coordinator import (
     ChatTurnAdmissionCoordinator,
 )
@@ -149,6 +150,61 @@ def test_missing_process_local_external_control_terminalizes_without_replay():
         "cleanup",
         "commit",
     ]
+
+
+def test_external_cancel_transport_loss_terminalizes_without_replay():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    claim = TurnLeaseClaim(turn_id, "backend-a", 7, 3)
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+    class Service:
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
+
+        def finalize_cancel(self, *_args):
+            calls.append("terminal")
+
+        def cleanup_terminal_journal(self, *_args):
+            calls.append("cleanup")
+
+    async def transport_lost(_request):
+        calls.append("external-cancel")
+        raise OSError("socket lost")
+
+    coordinator = ChatTurnCancellationCoordinator(
+        DB(), _enabled_settings(), object(), external_cancel=transport_lost
+    )
+    coordinator.sessions = Service()
+
+    asyncio.run(coordinator.cancel(ChatOwner("owner-1", "owner"), session_id))
+
+    assert calls == [
+        "commit",
+        "external-cancel",
+        "terminal",
+        "commit",
+        "cleanup",
+        "commit",
+    ]
+
+
+def test_external_cancel_before_runner_attach_fences_future_model_start():
+    turn_id = uuid.uuid4()
+    claim = TurnLeaseClaim(turn_id, "backend-a", 7, 3)
+    orchestrator = object.__new__(ChatStreamOrchestrator)
+    orchestrator.admission = SimpleNamespace(durable_claim=claim)
+    orchestrator.runner = None
+    orchestrator._detached_cancel_requested = False
+
+    found = asyncio.run(orchestrator.cancel_detached_turn(claim))
+
+    assert found is True
+    assert orchestrator._detached_cancel_requested is True
 
 
 def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
