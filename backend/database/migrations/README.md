@@ -91,6 +91,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_chat_qualification_evidence_events.sql` | Create or forward-repair staging/production qualification scopes and content-free cohort events, including exact FKs/checks/indexes and cascade retention cleanup; apply before qualification metadata |
 | `add_chat_qualification_metadata.sql` | Bind latency rows to a server-issued qualification scope/profile and install the exact scope/admission-time index; apply after qualification evidence scopes |
 | `repair_chat_qualification_evidence_contract.sql` | Final additive qualification repair: exact defaults, primary/foreign/unique/check/index contracts plus per-turn workload metadata; apply after both qualification migrations and refuse lossy populated conversions |
+| `add_chat_turn_latency_qualification_compatibility_production.sql` | Production-only nullable compatibility columns mapped by shared chat latency telemetry while external-Pi qualification remains disabled; apply before deploying source that maps scope/profile/workload |
 
 Before running `remove_task_datasets_featured_rank.sql`, deploy application
 code without `featured_rank` into both the current and previous release slots

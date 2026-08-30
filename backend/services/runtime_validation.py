@@ -1839,6 +1839,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_turn_latency", "session_reuse_cohort"),
         ("chat_turn_latency", "estimated_active_cost_usd"),
         ("chat_turn_latency", "qualification_run_id"),
+        ("chat_turn_latency", "qualification_scope_id"),
+        ("chat_turn_latency", "qualification_profile"),
+        ("chat_turn_latency", "qualification_workload"),
         ("chat_turn_latency", "qualification_scenario"),
         ("chat_turn_latency", "failure_stage"),
         ("chat_turn_latency", "failure_class"),
@@ -2099,6 +2102,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_qualification_scopes', 'expires_at')
                 ,('chat_turn_latency', 'qualification_scope_id')
                 ,('chat_turn_latency', 'qualification_profile')
+                ,('chat_turn_latency', 'qualification_workload')
             )
             """)
         ).all()

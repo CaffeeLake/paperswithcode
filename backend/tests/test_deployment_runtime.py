@@ -1249,6 +1249,7 @@ class _ChatSchemaDB:
         include_pool_columns: bool = True,
         include_latency_columns: bool = True,
         include_qualification_columns: bool = True,
+        include_mapped_qualification_columns: bool = True,
         include_reader_context_columns: bool = True,
         include_artifact_foundation: bool = True,
         include_durable_schema: bool = True,
@@ -1261,6 +1262,7 @@ class _ChatSchemaDB:
         self.include_pool_columns = include_pool_columns
         self.include_latency_columns = include_latency_columns
         self.include_qualification_columns = include_qualification_columns
+        self.include_mapped_qualification_columns = include_mapped_qualification_columns
         self.include_reader_context_columns = include_reader_context_columns
         self.include_artifact_foundation = include_artifact_foundation
         self.include_durable_schema = include_durable_schema
@@ -1714,8 +1716,14 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "failure_class"),
                         ("chat_turn_latency", "attempt_kind"),
                         ("chat_turn_latency", "retry_overhead_ms"),
+                    ]
+                )
+            if self.include_mapped_qualification_columns:
+                rows.extend(
+                    [
                         ("chat_turn_latency", "qualification_scope_id"),
                         ("chat_turn_latency", "qualification_profile"),
+                        ("chat_turn_latency", "qualification_workload"),
                     ]
                 )
             if self.include_qualification_columns:
@@ -2080,6 +2088,14 @@ def test_chat_schema_requires_qualification_metadata_columns():
         validate_chat_schema(
             _ChatSchemaDB("off", include_qualification_columns=False),
             Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
+
+
+def test_chat_schema_production_requires_mapped_qualification_metadata_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_mapped_qualification_columns=False),
+            Settings(environment="production"),
         )
 
 
