@@ -223,6 +223,11 @@ separately authorized Task 12 operation must bind a live adapter to
 `backend.scripts.qualify_durable_external_turns.run_durable_qualification` and
 must use the exact active immutable staging release while production remains a
 different release and all public external-admission flags are off.
+The executable Locust barrier, exact 16/8/8 and 100-user assignments, stream
+evidence normalization, identity-aware executor counts, fixed 80% CPU guard,
+and strict retained report/cleanup schema are Task 11 code. Task 12 supplies
+only the reviewed durable stream transport and host/operator lifecycle bindings;
+it must not route these users to `/v1/shadow` or accept no-op cleanup proof.
 
 The mandatory order is 32 simultaneous full functional turns (16 no-tool,
 eight read-only CLI, eight Bash), followed immediately by 100 simultaneous

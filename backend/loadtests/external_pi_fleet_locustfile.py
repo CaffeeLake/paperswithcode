@@ -5,10 +5,10 @@ from __future__ import annotations
 import itertools
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Literal
+from typing import Literal, Protocol
 
 import gevent
 from gevent.event import Event
@@ -17,7 +17,7 @@ from gevent.monkey import MonkeyPatchWarning
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", MonkeyPatchWarning)
-    from locust import HttpUser, between, events, task
+    from locust import HttpUser, User, between, events, task
     from locust.env import Environment
     from locust.exception import StopUser
     from locust.runners import LocalRunner
@@ -30,6 +30,7 @@ from backend.loadtests.external_pi_fleet_core import (
     DurableWorkload,
     FleetReplica,
     FleetRunRefused,
+    aggregate_durable_profile,
     build_external_pi_fleet_request,
     classify_external_pi_fleet_response,
     route_ordinal,
@@ -63,6 +64,28 @@ class DurableUserSpec:
     application_queue: Literal[False] = False
 
 
+@dataclass(frozen=True, slots=True)
+class DurableRunResources:
+    peak_memory_bytes: int
+    minimum_host_mem_available_bytes: int
+    peak_cpu_percent: float
+    peak_active_backend_turns: int
+    peak_active_external_workers: int
+    peak_active_sandboxes: int
+
+
+class DurableStreamTransport(Protocol):
+    def open_durable_stream(self, spec: DurableUserSpec) -> Mapping[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DurableRunConfig:
+    profile_name: str
+    specs: tuple[DurableUserSpec, ...]
+    transport: DurableStreamTransport = field(repr=False)
+    barrier_deadline: float
+
+
 def build_durable_user_specs(profile_name: str) -> tuple[DurableUserSpec, ...]:
     """Build one immediate, deterministic user assignment without queue state."""
     profile = resolve_durable_profile(profile_name)
@@ -73,8 +96,50 @@ def build_durable_user_specs(profile_name: str) -> tuple[DurableUserSpec, ...]:
 
 
 def build_durable_observation(**evidence) -> DurableTurnObservation:
-    """Validate the bounded measurement schema; unknown/content fields fail."""
-    return DurableTurnObservation.model_validate(evidence)
+    """Normalize stream evidence without reflecting rejected values."""
+    allowed = {
+        "outcome",
+        "ttft_ms",
+        "completion_ms",
+        "reconnects",
+        "reconnect_successes",
+        "model_starts",
+        "operation_start_ids",
+        "modal_creates",
+        "modal_reuses",
+        "queued_states",
+        "stale_mutations",
+        "duplicate_turns",
+        "terminal_cause",
+        "failure_code",
+    }
+    if set(evidence) != allowed:
+        raise FleetRunRefused("durable observation fields are invalid")
+    operation_ids = evidence.pop("operation_start_ids")
+    if (
+        not isinstance(operation_ids, (tuple, list))
+        or len(operation_ids) > 1_000
+        or any(
+            not isinstance(identity, str)
+            or not identity
+            or len(identity) > 64
+            or any(
+                not (character.islower() or character.isdigit() or character == "-")
+                for character in identity
+            )
+            for identity in operation_ids
+        )
+    ):
+        raise FleetRunRefused("durable operation identity evidence is invalid")
+    normalized = dict(evidence)
+    normalized["operation_start_count"] = len(set(operation_ids))
+    normalized["duplicate_operation_start_count"] = len(operation_ids) - len(
+        set(operation_ids)
+    )
+    try:
+        return DurableTurnObservation.model_validate(normalized)
+    except ValueError:
+        raise FleetRunRefused("durable observation evidence is invalid") from None
 
 
 _ordinals = itertools.count()
@@ -86,6 +151,13 @@ _arrival_gate = Event()
 _arrival_lock = Semaphore()
 _barrier_arrivals = 0
 _barrier_failure: str | None = None
+_durable_config: DurableRunConfig | None = None
+_durable_ordinals = itertools.count()
+_durable_observations: list[DurableTurnObservation] = []
+_durable_gate = Event()
+_durable_lock = Semaphore()
+_durable_barrier_arrivals = 0
+_durable_failure: str | None = None
 
 
 def configure_fleet_round(
@@ -99,7 +171,8 @@ def configure_fleet_round(
 ) -> None:
     """Set one bounded in-process round without serializing protected inputs."""
     global _arrival_gate, _arrival_lock, _barrier_arrivals, _barrier_failure
-    global _config, _ordinals, _observations, _protocol_errors, _transport_errors
+    global _config, _durable_config, _ordinals, _observations
+    global _protocol_errors, _transport_errors
     route_ordinal(0, replicas)
     if type(expected_users) is not int or not 1 <= expected_users <= EXPECTED_USERS:
         raise FleetRunRefused("external Pi fleet expected users are invalid")
@@ -115,6 +188,7 @@ def configure_fleet_round(
         barrier_deadline=time.monotonic() + barrier_timeout_seconds,
         abort_requested=abort_requested,
     )
+    _durable_config = None
     _ordinals = itertools.count()
     _observations = []
     _protocol_errors = 0
@@ -193,6 +267,121 @@ def run_local_fleet_round(
     return result
 
 
+def configure_durable_profile(
+    *,
+    profile_name: str,
+    transport: DurableStreamTransport,
+    barrier_timeout_seconds: float = 5.0,
+) -> None:
+    """Configure one executable immediate durable profile in one process."""
+    global _config, _durable_config, _durable_ordinals, _durable_observations
+    global _durable_gate, _durable_lock, _durable_barrier_arrivals, _durable_failure
+    if not 0 < barrier_timeout_seconds <= 10:
+        raise FleetRunRefused("durable concurrency barrier is not bounded")
+    specs = build_durable_user_specs(profile_name)
+    _config = None
+    _durable_config = DurableRunConfig(
+        profile_name=profile_name,
+        specs=specs,
+        transport=transport,
+        barrier_deadline=time.monotonic() + barrier_timeout_seconds,
+    )
+    _durable_ordinals = itertools.count()
+    _durable_observations = []
+    _durable_gate = Event()
+    _durable_lock = Semaphore()
+    _durable_barrier_arrivals = 0
+    _durable_failure = None
+
+
+def run_local_durable_profile(
+    *,
+    profile_name: str,
+    transport: DurableStreamTransport,
+    resources: DurableRunResources,
+    timeout_seconds: float = 60.0,
+    barrier_timeout_seconds: float = 5.0,
+    monotonic: Callable[[], float] = time.monotonic,
+):
+    """Execute the exact Locust profile through an injected durable transport."""
+    if not 0 < timeout_seconds <= 120:
+        raise FleetRunRefused("durable Locust timeout is not bounded")
+    if barrier_timeout_seconds > timeout_seconds:
+        raise FleetRunRefused("durable concurrency barrier exceeds timeout")
+    configure_durable_profile(
+        profile_name=profile_name,
+        transport=transport,
+        barrier_timeout_seconds=barrier_timeout_seconds,
+    )
+    config = _durable_config
+    assert config is not None
+    expected_users = len(config.specs)
+    environment = Environment(
+        user_classes=[DurableExternalTurnUser],
+        host=None,
+        parsed_options=SimpleNamespace(
+            num_users=expected_users,
+            spawn_rate=float(expected_users),
+        ),
+    )
+    runner = environment.create_local_runner()
+    _validate_durable_runner(environment)
+    deadline = monotonic() + timeout_seconds
+    try:
+        runner.start(user_count=expected_users, spawn_rate=float(expected_users))
+        while monotonic() < deadline:
+            if _durable_failure is not None:
+                raise FleetRunRefused(_durable_failure)
+            if runner.user_count == 0 and len(_durable_observations) == expected_users:
+                break
+            gevent.sleep(0.01)
+        else:
+            _fail_durable_barrier("durable Locust profile timed out")
+    finally:
+        _durable_gate.set()
+        runner.quit()
+    if _durable_failure is not None:
+        raise FleetRunRefused(_durable_failure)
+    if len(_durable_observations) != expected_users:
+        raise FleetRunRefused("durable Locust profile evidence is incomplete")
+    profile = resolve_durable_profile(profile_name)
+    return aggregate_durable_profile(
+        profile=profile,
+        observations=tuple(_durable_observations),
+        peak_memory_bytes=resources.peak_memory_bytes,
+        minimum_host_mem_available_bytes=resources.minimum_host_mem_available_bytes,
+        peak_cpu_percent=resources.peak_cpu_percent,
+        peak_active_backend_turns=resources.peak_active_backend_turns,
+        peak_active_external_workers=resources.peak_active_external_workers,
+        peak_active_sandboxes=resources.peak_active_sandboxes,
+    )
+
+
+def _fail_durable_barrier(reason: str) -> None:
+    global _durable_failure
+    with _durable_lock:
+        if _durable_failure is None:
+            _durable_failure = reason
+        _durable_gate.set()
+
+
+def _await_durable_barrier(config: DurableRunConfig) -> bool:
+    global _durable_barrier_arrivals, _durable_failure
+    expected_users = len(config.specs)
+    with _durable_lock:
+        if _durable_failure is not None:
+            return False
+        _durable_barrier_arrivals += 1
+        if _durable_barrier_arrivals == expected_users:
+            if time.monotonic() >= config.barrier_deadline:
+                _durable_failure = "durable concurrency barrier timed out"
+            _durable_gate.set()
+    while not _durable_gate.wait(timeout=0.01):
+        if time.monotonic() >= config.barrier_deadline:
+            _fail_durable_barrier("durable concurrency barrier timed out")
+    return _durable_failure is None
+
+
 def _elapsed_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1_000))
 
@@ -230,7 +419,10 @@ def _await_concurrency_barrier(config: FleetRoundConfig) -> bool:
 
 @events.test_start.add_listener
 def _start(environment, **_kwargs) -> None:
-    _validate_runner(environment)
+    if _durable_config is not None:
+        _validate_durable_runner(environment)
+    else:
+        _validate_runner(environment)
 
 
 def _validate_runner(environment: Environment) -> None:
@@ -248,6 +440,51 @@ def _validate_runner(environment: Environment) -> None:
         )
     if environment.host is not None:
         raise FleetRunRefused("external Pi fleet must not accept a Locust host")
+
+
+def _validate_durable_runner(environment: Environment) -> None:
+    if not isinstance(environment.runner, LocalRunner):
+        raise FleetRunRefused("durable profile requires one local Locust runner")
+    config = _durable_config
+    if config is None:
+        raise FleetRunRefused("durable profile is not configured")
+    expected_users = len(config.specs)
+    options = environment.parsed_options
+    if getattr(options, "num_users", None) != expected_users or getattr(
+        options, "spawn_rate", None
+    ) != float(expected_users):
+        raise FleetRunRefused(
+            "durable profile requires exact users and immediate spawn rate"
+        )
+    if environment.host is not None:
+        raise FleetRunRefused("durable profile must not accept a Locust host")
+
+
+class DurableExternalTurnUser(User):
+    wait_time = between(0, 0)
+
+    @task
+    def run_once(self) -> None:
+        if getattr(self, "_durable_stream_started", False):
+            raise StopUser()
+        self._durable_stream_started = True
+        config = _durable_config
+        if config is None or not _await_durable_barrier(config):
+            raise StopUser()
+        ordinal = next(_durable_ordinals)
+        if ordinal >= len(config.specs):
+            _fail_durable_barrier("durable profile produced an extra user")
+            raise StopUser()
+        try:
+            raw = config.transport.open_durable_stream(config.specs[ordinal])
+            if not isinstance(raw, Mapping):
+                raise FleetRunRefused("durable transport evidence is invalid")
+            observation = build_durable_observation(**dict(raw))
+        except BaseException:
+            _fail_durable_barrier("durable transport failed")
+            raise StopUser() from None
+        _durable_observations.append(observation)
+        raise StopUser()
 
 
 class ExternalPiFleetUser(HttpUser):

@@ -7,6 +7,9 @@ import pytest
 from backend.loadtests.durable_external_turn_faults import (
     FaultSchedule,
     OperationIdentity,
+    RetainedRunIdentity,
+    SubscriberCursorIdentity,
+    WorkerTurnClaimIdentity,
     built_in_fault_schedules,
     simulate_fault_schedule,
 )
@@ -91,6 +94,7 @@ def test_executor_identity_is_counted_directly_not_inferred_from_logs() -> None:
             steps=(
                 "model_start",
                 ("executor_start", identity),
+                ("executor_response_lost", identity),
                 ("executor_attach", identity),
                 "terminal_completed",
                 "terminal_log_lost",
@@ -102,3 +106,84 @@ def test_executor_identity_is_counted_directly_not_inferred_from_logs() -> None:
     assert result.durable_terminal_commits == 1
     assert result.terminal_log_records == 0
     assert result.terminal_cause == "completed"
+
+
+@pytest.mark.parametrize(
+    "steps",
+    (
+        ("model_start", "subscriber_cursor_reattach", "terminal_completed"),
+        ("model_start", "subscriber_detach", "terminal_completed"),
+        ("model_start", "worker_exact_claim_reattach", "terminal_completed"),
+        ("model_start", "worker_socket_lost", "terminal_completed"),
+        ("model_start", "executor_response_lost", "terminal_completed"),
+        ("model_start", "cancel_requested", "terminal_completed"),
+        ("model_start", "terminal_cancelled"),
+        ("model_start", "worker_drain", "terminal_completed"),
+        (
+            "model_start",
+            "terminal_completed",
+            "subscriber_detach",
+        ),
+    ),
+)
+def test_fault_schedule_rejects_missing_reordered_or_uncorrelated_recovery(
+    steps,
+) -> None:
+    with pytest.raises(ValueError, match="fault schedule"):
+        simulate_fault_schedule(FaultSchedule(name="invalid_recovery", steps=steps))
+
+
+def test_executor_response_loss_attach_requires_same_operation_identity() -> None:
+    first = OperationIdentity("turn-0001", "tool-0001", 0)
+    second = OperationIdentity("turn-0001", "tool-0002", 0)
+    schedule = FaultSchedule(
+        name="mismatched_executor_attach",
+        steps=(
+            "model_start",
+            ("executor_start", first),
+            ("executor_response_lost", first),
+            ("executor_start", second),
+            ("executor_attach", second),
+            "terminal_completed",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="same executor operation"):
+        simulate_fault_schedule(schedule)
+
+
+@pytest.mark.parametrize(
+    "steps",
+    (
+        (
+            "model_start",
+            ("subscriber_detach", SubscriberCursorIdentity("turn-0001", 10)),
+            ("subscriber_cursor_reattach", SubscriberCursorIdentity("turn-0001", 9)),
+            "terminal_completed",
+        ),
+        (
+            "model_start",
+            (
+                "worker_socket_lost",
+                WorkerTurnClaimIdentity("turn-0001", 1, "worker-0001", 1),
+            ),
+            (
+                "worker_exact_claim_reattach",
+                WorkerTurnClaimIdentity("turn-0001", 1, "worker-0001", 2),
+            ),
+            "terminal_completed",
+        ),
+        (
+            "model_start",
+            ("worker_drain", RetainedRunIdentity("turn-0001", "run-0001")),
+            (
+                "worker_drain_retained_run",
+                RetainedRunIdentity("turn-0001", "run-0002"),
+            ),
+            "terminal_completed",
+        ),
+    ),
+)
+def test_fault_recovery_requires_same_cursor_claim_and_retained_run(steps) -> None:
+    with pytest.raises(ValueError, match="same .*identity"):
+        simulate_fault_schedule(FaultSchedule(name="mismatched_identity", steps=steps))

@@ -68,7 +68,8 @@ class DurableTurnObservation(BaseModel):
     reconnects: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     reconnect_successes: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     model_starts: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
-    executor_starts: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    operation_start_count: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
+    duplicate_operation_start_count: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     modal_creates: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     modal_reuses: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     queued_states: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
@@ -95,9 +96,9 @@ class DurableProfileReport(BaseModel):
     typed_failures: int = Field(ge=0, le=EXPECTED_USERS)
     queued_states: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     model_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
-    executor_starts: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    operation_start_count: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     duplicate_model_starts: int = Field(ge=0, le=EXPECTED_USERS)
-    duplicate_executor_starts: int = Field(ge=0, le=EXPECTED_USERS)
+    duplicate_operation_start_count: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     duplicate_turns: int = Field(ge=0, le=EXPECTED_USERS)
     stale_mutations: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     terminal_outcomes: int = Field(ge=0, le=EXPECTED_USERS)
@@ -142,7 +143,7 @@ class DurableProfileReport(BaseModel):
             and self.queued_states == 0
             and self.model_starts == self.expected_users
             and self.duplicate_model_starts == 0
-            and self.duplicate_executor_starts == 0
+            and self.duplicate_operation_start_count == 0
             and self.duplicate_turns == 0
             and self.stale_mutations == 0
             and self.terminal_outcomes == self.expected_users
@@ -169,10 +170,52 @@ class DurableQualificationReport(BaseModel):
     reason: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
     profiles: tuple[DurableProfileReport, ...] = Field(max_length=2)
     flags_restored: bool
-    transient_workers_clean: bool
+    exact_workers_drained: bool
+    transient_workers_removed: bool
+    listeners_gone: bool
+    status_files_gone: bool
+    processes_gone: bool
     final_active_backend_turns: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     final_active_external_workers: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     final_active_sandboxes: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+
+    @property
+    def cleanup_passed(self) -> bool:
+        return (
+            self.flags_restored
+            and self.exact_workers_drained
+            and self.transient_workers_removed
+            and self.listeners_gone
+            and self.status_files_gone
+            and self.processes_gone
+            and self.final_active_backend_turns == 0
+            and self.final_active_external_workers == 0
+            and self.final_active_sandboxes == 0
+        )
+
+    @model_validator(mode="after")
+    def validate_status_evidence(self) -> DurableQualificationReport:
+        names = tuple(item.profile for item in self.profiles)
+        expected = ("32-functional-turns", "100-immediate-admission")
+        if names != expected[: len(names)] or any(
+            not item.passed for item in self.profiles
+        ):
+            raise ValueError("durable report profiles are invalid")
+        if self.status == "completed":
+            if self.reason is not None or names != expected or not self.cleanup_passed:
+                raise ValueError(
+                    "completed durable report requires both profiles and cleanup"
+                )
+        elif self.status == "resource_refused":
+            if (
+                self.reason not in {"memory_headroom", "cpu_headroom"}
+                or len(names) > 1
+                or not self.cleanup_passed
+            ):
+                raise ValueError("resource-refused durable report is inconsistent")
+        elif self.reason is None:
+            raise ValueError("failed durable report requires a typed reason")
+        return self
 
     @computed_field
     @property
@@ -183,11 +226,7 @@ class DurableQualificationReport(BaseModel):
             and tuple(item.profile for item in self.profiles)
             == ("32-functional-turns", "100-immediate-admission")
             and all(item.passed for item in self.profiles)
-            and self.flags_restored
-            and self.transient_workers_clean
-            and self.final_active_backend_turns == 0
-            and self.final_active_external_workers == 0
-            and self.final_active_sandboxes == 0
+            and self.cleanup_passed
         )
 
 
@@ -250,10 +289,10 @@ def aggregate_durable_profile(
         ),
         queued_states=sum(item.queued_states for item in observations),
         model_starts=sum(item.model_starts for item in observations),
-        executor_starts=sum(item.executor_starts for item in observations),
+        operation_start_count=sum(item.operation_start_count for item in observations),
         duplicate_model_starts=sum(item.model_starts > 1 for item in observations),
-        duplicate_executor_starts=sum(
-            item.executor_starts > 1 for item in observations
+        duplicate_operation_start_count=sum(
+            item.duplicate_operation_start_count for item in observations
         ),
         duplicate_turns=sum(item.duplicate_turns for item in observations),
         stale_mutations=sum(item.stale_mutations for item in observations),
@@ -1071,4 +1110,7 @@ def publish_durable_report(
     report: DurableQualificationReport, destination: Path, report_root: Path
 ) -> None:
     """Publish only validated content-free durable qualification evidence."""
-    publish_fleet_report(report, destination, report_root)
+    validated = DurableQualificationReport.model_validate(
+        report.model_dump(exclude_computed_fields=True)
+    )
+    publish_fleet_report(validated, destination, report_root)

@@ -160,7 +160,8 @@ def test_durable_profile_report_records_required_content_free_measurements():
             reconnects=1 if index == 0 else 0,
             reconnect_successes=1 if index == 0 else 0,
             model_starts=1,
-            executor_starts=0 if workload == "no_tool" else 1,
+            operation_start_count=0 if workload == "no_tool" else 1,
+            duplicate_operation_start_count=0,
             modal_creates=1 if workload == "read_only_cli" and index == 16 else 0,
             modal_reuses=1 if workload != "no_tool" and index != 16 else 0,
             terminal_cause="completed",
@@ -216,6 +217,7 @@ def test_durable_profile_report_fails_refusal_queue_duplicate_or_lost_terminal()
         base.model_copy(update={"outcome": "refused", "terminal_cause": "refused"}),
         base.model_copy(update={"queued_states": 1}),
         base.model_copy(update={"model_starts": 2}),
+        base.model_copy(update={"duplicate_operation_start_count": 1}),
         base.model_copy(update={"terminal_cause": "terminal_lost"}),
         base.model_copy(update={"stale_mutations": 1}),
         base.model_copy(update={"duplicate_turns": 1}),
@@ -284,16 +286,31 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
         peak_active_external_workers=4,
         peak_active_sandboxes=0,
     )
+    cleanup = {
+        "flags_restored": True,
+        "exact_workers_drained": True,
+        "transient_workers_removed": True,
+        "listeners_gone": True,
+        "status_files_gone": True,
+        "processes_gone": True,
+        "final_active_backend_turns": 0,
+        "final_active_external_workers": 0,
+        "final_active_sandboxes": 0,
+    }
+    with pytest.raises(ValidationError, match="completed.*both profiles"):
+        DurableQualificationReport(
+            release_id="0123456789ab-staging",
+            status="completed",
+            reason=None,
+            profiles=(profile_report,),
+            **cleanup,
+        )
     report = DurableQualificationReport(
         release_id="0123456789ab-staging",
-        status="completed",
-        reason=None,
+        status="failed",
+        reason="test_failure",
         profiles=(profile_report,),
-        flags_restored=True,
-        transient_workers_clean=True,
-        final_active_backend_turns=0,
-        final_active_external_workers=0,
-        final_active_sandboxes=0,
+        **cleanup,
     )
     destination = tmp_path / "durable.json"
 
@@ -309,6 +326,10 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
     assert "prompt" not in destination.read_text(encoding="utf-8")
     assert "token" not in destination.read_text(encoding="utf-8")
 
+    forged = report.model_copy(update={"status": "completed", "reason": None})
+    with pytest.raises(ValidationError, match="completed.*both profiles"):
+        publish_durable_report(forged, tmp_path / "forged.json", tmp_path)
+
 
 class _DurableOperator:
     def __init__(
@@ -316,8 +337,12 @@ class _DurableOperator:
         *,
         environment=None,
         refuse_profile=None,
-        fail_setup=False,
+        failure_stage=None,
         prior_flags=None,
+        cpu_percent=20.0,
+        cpu_guard_percent=80.0,
+        mutate_snapshot=False,
+        no_op_proof=False,
     ):
         from backend.scripts.qualify_durable_external_turns import (
             QualificationEnvironment,
@@ -332,41 +357,62 @@ class _DurableOperator:
             public_external_admission_flags=(False, False, False),
         )
         self.refuse_profile = refuse_profile
-        self.fail_setup = fail_setup
-        self.prior_flags = prior_flags or {
-            "external": False,
-            "executor": False,
-            "remote": False,
-        }
+        self.failure_stage = failure_stage
+        self.prior_flags = (
+            prior_flags
+            if prior_flags is not None
+            else {"external": False, "executor": False, "remote": False}
+        )
+        self.cpu_percent = cpu_percent
+        self.cpu_guard_percent = cpu_guard_percent
+        self.mutate_snapshot = mutate_snapshot
+        self.no_op_proof = no_op_proof
         self.events = []
+
+    def _fail(self, stage):
+        if self.failure_stage == stage:
+            raise RuntimeError(f"TOP_SECRET_{stage}")
+        if self.failure_stage == f"interrupt:{stage}":
+            raise KeyboardInterrupt(f"TOP_SECRET_{stage}")
 
     def environment(self):
         self.events.append(("environment",))
+        self._fail("environment")
         return self.current_environment
 
     def snapshot_flags(self):
         self.events.append(("snapshot_flags",))
+        self._fail("snapshot_flags")
         return self.prior_flags
 
     def resource_snapshot(self, profile):
         self.events.append(("resource", profile.name))
+        self._fail("resource")
         available = 1024**3 if profile.name == self.refuse_profile else 3 * 1024**3
-        return HostResourceSnapshot(available, 0, 20.0, 80.0)
+        return HostResourceSnapshot(
+            available,
+            0,
+            self.cpu_percent,
+            self.cpu_guard_percent,
+        )
 
     def setup_profile(self, profile):
         self.events.append(("setup", profile.name))
-        if self.fail_setup:
-            raise RuntimeError("setup failed")
+        if self.mutate_snapshot:
+            self.prior_flags["external"] = True
+        self._fail("setup")
 
     def run_profile(self, profile):
         self.events.append(("run", profile.name))
+        self._fail("run")
         observations = tuple(
             DurableTurnObservation(
                 outcome="completed",
                 ttft_ms=100,
                 completion_ms=1_000,
                 model_starts=1,
-                executor_starts=0,
+                operation_start_count=0,
+                duplicate_operation_start_count=0,
                 terminal_cause="completed",
             )
             for _ in profile.workloads
@@ -384,12 +430,31 @@ class _DurableOperator:
 
     def teardown_profile(self, profile):
         self.events.append(("teardown", profile.name))
+        self._fail("teardown")
 
     def restore_flags(self, flags):
-        self.events.append(("restore_flags", flags))
+        restored = dict(flags)
+        self.events.append(("restore_flags", restored))
+        self._fail("restore_flags")
+        return None if self.no_op_proof else restored
 
     def cleanup_transient_workers(self):
         self.events.append(("cleanup_transient_workers",))
+        self._fail("cleanup_transient_workers")
+        if self.no_op_proof:
+            return None
+        from backend.scripts.qualify_durable_external_turns import CleanupProof
+
+        return CleanupProof(
+            exact_workers_drained=True,
+            transient_workers_removed=True,
+            listeners_gone=True,
+            status_files_gone=True,
+            processes_gone=True,
+            final_active_backend_turns=0,
+            final_active_external_workers=0,
+            final_active_sandboxes=0,
+        )
 
 
 def test_durable_controller_runs_32_then_100_and_restores_everything():
@@ -401,6 +466,7 @@ def test_durable_controller_runs_32_then_100_and_restores_everything():
     result = run_durable_qualification(operator)
 
     assert result.status == "completed"
+    assert result.passed is True
     assert [report.profile for report in result.profiles] == [
         "32-functional-turns",
         "100-immediate-admission",
@@ -409,6 +475,12 @@ def test_durable_controller_runs_32_then_100_and_restores_everything():
         ("run", "32-functional-turns"),
         ("run", "100-immediate-admission"),
     ]
+    assert [event[1] for event in operator.events if event[0] == "resource"] == [
+        "32-functional-turns",
+        "100-immediate-admission",
+    ]
+    assert result.flags_restored is True
+    assert result.exact_workers_drained is True
     assert operator.events[-2][0] == "restore_flags"
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
@@ -425,6 +497,19 @@ def test_durable_controller_treats_resource_refusal_as_evidence_and_stops():
     assert result.reason == "memory_headroom"
     assert [report.profile for report in result.profiles] == ["32-functional-turns"]
     assert ("setup", "100-immediate-admission") not in operator.events
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_uses_fixed_cpu_guard_and_typed_refusal():
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    operator = _DurableOperator(cpu_percent=90.0, cpu_guard_percent=100.0)
+    result = run_durable_qualification(operator)
+
+    assert result.status == "resource_refused"
+    assert result.reason == "cpu_headroom"
+    assert not any(event[0] == "setup" for event in operator.events)
+    assert [event[0] for event in operator.events].count("resource") == 1
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
 
@@ -460,23 +545,19 @@ def test_durable_controller_refuses_unsafe_environment_but_still_restores(update
         run_durable_qualification(operator)
 
     assert not any(event[0] == "setup" for event in operator.events)
-    assert operator.events[-2][0] == "restore_flags"
+    assert not any(event[0] == "restore_flags" for event in operator.events)
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
 
 def test_durable_controller_restores_after_setup_failure():
-    from backend.scripts.qualify_durable_external_turns import (
-        QualificationRefused,
-        run_durable_qualification,
-    )
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
 
-    operator = _DurableOperator(fail_setup=True)
-    with pytest.raises(
-        QualificationRefused, match="durable_qualification_failed"
-    ) as exc:
-        run_durable_qualification(operator)
+    operator = _DurableOperator(failure_stage="setup")
+    result = run_durable_qualification(operator)
 
-    assert "setup failed" not in str(exc.value)
+    assert result.status == "failed"
+    assert result.reason == "durable_qualification_failed"
+    assert "TOP_SECRET" not in result.model_dump_json()
     assert ("teardown", "32-functional-turns") in operator.events
     assert operator.events[-2][0] == "restore_flags"
     assert operator.events[-1] == ("cleanup_transient_workers",)
@@ -499,18 +580,141 @@ def test_durable_controller_cannot_skip_or_reverse_the_binding_profile_order():
 
 
 def test_durable_controller_requires_snapshot_flags_off_before_setup():
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    operator = _DurableOperator(
+        prior_flags={"external": True, "executor": False, "remote": False}
+    )
+    result = run_durable_qualification(operator)
+    assert result.status == "failed"
+    assert result.reason == "public_external_admission_flags_must_be_off"
+    assert not any(event[0] == "setup" for event in operator.events)
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "snapshot_flags",
+        "resource",
+        "setup",
+        "run",
+        "teardown",
+        "restore_flags",
+        "cleanup_transient_workers",
+        "interrupt:snapshot_flags",
+        "interrupt:run",
+    ),
+)
+def test_durable_controller_attempts_cleanup_at_every_failure_boundary(stage):
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    operator = _DurableOperator(failure_stage=stage)
+    result = run_durable_qualification(operator)
+
+    assert result.status == "failed"
+    assert result.reason in {"durable_qualification_failed", "cleanup_failed"}
+    assert operator.events[-1] == ("cleanup_transient_workers",)
+    if stage in {"snapshot_flags", "interrupt:snapshot_flags"}:
+        assert not any(event[0] == "restore_flags" for event in operator.events)
+
+
+def test_durable_controller_cleans_after_environment_probe_failure():
     from backend.scripts.qualify_durable_external_turns import (
         QualificationRefused,
         run_durable_qualification,
     )
 
-    operator = _DurableOperator(
-        prior_flags={"external": True, "executor": False, "remote": False}
-    )
-    with pytest.raises(QualificationRefused, match="flags_must_be_off"):
+    operator = _DurableOperator(failure_stage="environment")
+    with pytest.raises(QualificationRefused) as exc:
         run_durable_qualification(operator)
-    assert not any(event[0] == "setup" for event in operator.events)
+
+    assert "TOP_SECRET" not in str(exc.value)
     assert operator.events[-1] == ("cleanup_transient_workers",)
+    assert not any(event[0] == "restore_flags" for event in operator.events)
+
+
+def test_durable_controller_copies_mutable_flag_snapshot_before_setup():
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    flags = {"external": False, "executor": False, "remote": False}
+    operator = _DurableOperator(prior_flags=flags, mutate_snapshot=True)
+    result = run_durable_qualification(operator)
+
+    assert result.status == "completed"
+    assert flags["external"] is True
+    restore = next(event for event in operator.events if event[0] == "restore_flags")
+    assert restore[1] == {"external": False, "executor": False, "remote": False}
+
+
+def test_durable_controller_no_op_cleanup_adapter_cannot_complete():
+    from backend.scripts.qualify_durable_external_turns import run_durable_qualification
+
+    result = run_durable_qualification(_DurableOperator(no_op_proof=True))
+
+    assert result.status == "failed"
+    assert result.reason == "cleanup_failed"
+    assert result.passed is False
+
+
+def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
+    profile = resolve_durable_profile("32-functional-turns")
+    observations = tuple(
+        DurableTurnObservation(
+            outcome="completed",
+            ttft_ms=100,
+            completion_ms=1_000,
+            model_starts=1,
+            terminal_cause="completed",
+        )
+        for _ in profile.workloads
+    )
+    profile_report = aggregate_durable_profile(
+        profile=profile,
+        observations=observations,
+        peak_memory_bytes=1024**3,
+        minimum_host_mem_available_bytes=2 * 1024**3,
+        peak_cpu_percent=20.0,
+        peak_active_backend_turns=32,
+        peak_active_external_workers=4,
+        peak_active_sandboxes=0,
+    )
+    cleanup = {
+        "flags_restored": True,
+        "exact_workers_drained": True,
+        "transient_workers_removed": True,
+        "listeners_gone": True,
+        "status_files_gone": True,
+        "processes_gone": True,
+        "final_active_backend_turns": 0,
+        "final_active_external_workers": 0,
+        "final_active_sandboxes": 0,
+    }
+
+    with pytest.raises(ValidationError, match="resource-refused"):
+        DurableQualificationReport(
+            release_id="0123456789ab-staging",
+            status="resource_refused",
+            reason="memory_headroom",
+            profiles=(profile_report,),
+            **{**cleanup, "listeners_gone": False},
+        )
+    with pytest.raises(ValidationError, match="typed reason"):
+        DurableQualificationReport(
+            release_id="0123456789ab-staging",
+            status="failed",
+            reason=None,
+            profiles=(profile_report,),
+            **cleanup,
+        )
+    with pytest.raises(ValidationError, match="profiles are invalid"):
+        DurableQualificationReport(
+            release_id="0123456789ab-staging",
+            status="failed",
+            reason="test_failure",
+            profiles=(profile_report, profile_report),
+            **cleanup,
+        )
 
 
 def test_ordinal_routing_is_deterministic_and_balanced_after_loss():
@@ -1092,8 +1296,7 @@ def test_durable_locust_specs_start_every_user_immediately_without_queue():
 
 
 def test_durable_locust_measurement_requires_content_free_typed_outcomes():
-    if importlib.util.find_spec("locust") is None:
-        return
+    pytest.importorskip("locust")
     adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
 
     observation = adapter.build_durable_observation(
@@ -1103,17 +1306,22 @@ def test_durable_locust_measurement_requires_content_free_typed_outcomes():
         reconnects=1,
         reconnect_successes=1,
         model_starts=1,
-        executor_starts=1,
+        operation_start_ids=("op-0001", "op-0002"),
         modal_creates=1,
         modal_reuses=0,
         queued_states=0,
+        stale_mutations=0,
+        duplicate_turns=0,
         terminal_cause="completed",
         failure_code=None,
     )
 
     assert observation.ttft_ms == 125
     assert observation.terminal_cause == "completed"
-    with pytest.raises(TypeError):
+    assert observation.operation_start_count == 2
+    assert observation.duplicate_operation_start_count == 0
+    secret = "TOP_SECRET_PROMPT"
+    with pytest.raises(FleetRunRefused) as exc:
         adapter.build_durable_observation(
             outcome="completed",
             ttft_ms=125,
@@ -1121,14 +1329,145 @@ def test_durable_locust_measurement_requires_content_free_typed_outcomes():
             reconnects=0,
             reconnect_successes=0,
             model_starts=1,
-            executor_starts=0,
+            operation_start_ids=(),
             modal_creates=0,
             modal_reuses=0,
             queued_states=0,
+            stale_mutations=0,
+            duplicate_turns=0,
             terminal_cause="completed",
             failure_code=None,
-            content="must-not-be-recorded",
+            prompt=secret,
         )
+    assert secret not in str(exc.value)
+    invalid = {
+        "outcome": "completed",
+        "ttft_ms": 125,
+        "completion_ms": 2_500,
+        "reconnects": 0,
+        "reconnect_successes": 0,
+        "model_starts": 1,
+        "operation_start_ids": (),
+        "modal_creates": 0,
+        "modal_reuses": 0,
+        "queued_states": 0,
+        "stale_mutations": 0,
+        "duplicate_turns": 0,
+        "terminal_cause": "completed",
+        "failure_code": secret,
+    }
+    with pytest.raises(FleetRunRefused) as exc:
+        adapter.build_durable_observation(**invalid)
+    assert secret not in str(exc.value)
+
+
+def test_durable_locust_observation_counts_duplicate_operation_identity():
+    pytest.importorskip("locust")
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+
+    observation = adapter.build_durable_observation(
+        outcome="completed",
+        ttft_ms=100,
+        completion_ms=1_000,
+        reconnects=0,
+        reconnect_successes=0,
+        model_starts=1,
+        operation_start_ids=("op-0001", "op-0002", "op-0001"),
+        modal_creates=1,
+        modal_reuses=1,
+        queued_states=0,
+        stale_mutations=0,
+        duplicate_turns=0,
+        terminal_cause="completed",
+        failure_code=None,
+    )
+
+    assert observation.operation_start_count == 2
+    assert observation.duplicate_operation_start_count == 1
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "expected_users", "expected_mix", "sandboxes"),
+    (
+        (
+            "32-functional-turns",
+            32,
+            Counter({"no_tool": 16, "read_only_cli": 8, "bash": 8}),
+            16,
+        ),
+        (
+            "100-immediate-admission",
+            100,
+            Counter({"admission_stream": 100}),
+            0,
+        ),
+    ),
+)
+def test_executable_durable_locust_runner_releases_exact_simultaneous_profile(
+    profile_name, expected_users, expected_mix, sandboxes
+):
+    pytest.importorskip("locust")
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    calls = []
+
+    class Transport:
+        def open_durable_stream(self, spec):
+            calls.append(
+                (
+                    spec.ordinal,
+                    spec.workload,
+                    adapter._durable_barrier_arrivals,
+                    spec.arrival_delay_ms,
+                    spec.application_queue,
+                )
+            )
+            operation_ids = (
+                (f"op-{spec.ordinal:04d}-1", f"op-{spec.ordinal:04d}-2")
+                if spec.workload == "bash"
+                else (
+                    (f"op-{spec.ordinal:04d}-1",)
+                    if spec.workload == "read_only_cli"
+                    else ()
+                )
+            )
+            return {
+                "outcome": "completed",
+                "ttft_ms": 100,
+                "completion_ms": 1_000,
+                "reconnects": 0,
+                "reconnect_successes": 0,
+                "model_starts": 1,
+                "operation_start_ids": operation_ids,
+                "modal_creates": 1 if operation_ids else 0,
+                "modal_reuses": 0,
+                "queued_states": 0,
+                "stale_mutations": 0,
+                "duplicate_turns": 0,
+                "terminal_cause": "completed",
+                "failure_code": None,
+            }
+
+    report = adapter.run_local_durable_profile(
+        profile_name=profile_name,
+        transport=Transport(),
+        resources=adapter.DurableRunResources(
+            peak_memory_bytes=1024**3,
+            minimum_host_mem_available_bytes=2 * 1024**3,
+            peak_cpu_percent=20.0,
+            peak_active_backend_turns=expected_users,
+            peak_active_external_workers=4,
+            peak_active_sandboxes=sandboxes,
+        ),
+        timeout_seconds=10.0,
+    )
+
+    assert report.passed is True
+    assert len(calls) == expected_users
+    assert Counter(workload for _, workload, *_ in calls) == expected_mix
+    assert {arrivals for _, _, arrivals, _, _ in calls} == {expected_users}
+    assert all(delay == 0 and queued is False for *_, delay, queued in calls)
+    assert report.operation_start_count == (24 if expected_users == 32 else 0)
+    assert report.duplicate_operation_start_count == 0
 
 
 def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):

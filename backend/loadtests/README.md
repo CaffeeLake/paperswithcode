@@ -354,7 +354,12 @@ from `ss -H -ltn`. Do not continue to another pair if any proof fails.
 
 Task 11 adds deterministic tooling and report contracts; it does **not**
 authorize or run a live qualification. Task 12 alone may provide the guarded
-staging adapter and invoke `run_durable_qualification`. The controller always
+staging bindings and invoke `run_durable_qualification`. Task 11 owns the
+executable harness: `run_local_durable_profile` creates one local Locust runner,
+releases every exact user through a simultaneous barrier, and calls only the
+injected `DurableStreamTransport.open_durable_stream`. Task 12 binds that
+transport to the reviewed durable admission/SSE path; it must not substitute
+the legacy `/v1/shadow` route or invent another load loop. The controller always
 runs `32-functional-turns` before `100-immediate-admission`. The first profile
 starts exactly 32 users at once: 16 no-tool turns, eight read-only CLI turns,
 and eight Bash turns. The second starts exactly 100 admission/stream users at
@@ -380,6 +385,8 @@ pwc-status staging
 the kernel-reported 7–9 GiB range). This is not a demand for 8 GiB free.
 Immediately before **each** profile, projected `MemAvailable` must remain at
 least 1,610,612,736 bytes (1.5 GiB) and observed host CPU must be below 80%.
+The CPU guard is fixed at exactly 80%; an adapter-supplied different guard is a
+`cpu_headroom` refusal rather than authority to raise the threshold.
 `resource_refused` with reason `memory_headroom` is valid evidence. Stop there;
 never skip the shape, retry with a larger load, or overcommit the VPS.
 
@@ -391,7 +398,11 @@ cohort. Its transaction must use the prior flag snapshot and exact transient
 worker identities with `try/finally`: tear down each profile, restore every
 prior flag, then drain/remove its transient workers even after refusal,
 exception, SIGINT, or SIGTERM. Do not kill by process pattern or reuse an
-unproven port.
+unproven port. The adapter returns the exact post-restoration flag mapping and a
+strict cleanup proof: workers drained and removed, listeners/status files/
+processes gone, and final active backend/worker/sandbox counts all zero. Missing,
+no-op, contradictory, or failed proof produces a retained `failed` report and
+can never produce `completed`.
 
 A passing profile requires the exact 32 or 100 observations; every user
 immediately admitted and durably terminal; one model start per turn; at most
@@ -400,8 +411,12 @@ failure, duplicate start, stale mutation, or lost terminal; reconnect successes
 equal reconnect attempts; p95 TTFT at most 10,000 ms; p99 completion at most
 60,000 ms; minimum host `MemAvailable` at least 1.5 GiB; and peak CPU below 80%.
 Reports also retain bounded peak RAM, Modal create/reuse, terminal-cause, and
-typed-failure counts. Durable outcomes and direct operation counts are the
-source of truth. Best-effort logs are not treated as exactly once: a crash
+typed-failure counts. The transport supplies opaque executor operation
+identities only to the in-process normalizer; the retained report contains only
+the unique operation-start count and duplicate-start count. Two distinct
+operations started once each pass; one identity started twice fails. Durable
+outcomes and direct operation counts are the source of truth. Best-effort logs
+are not treated as exactly once: a crash
 after canonical terminal commit but before log emission may undercount one
 executor-loss alert.
 
@@ -426,4 +441,6 @@ uv run --env-file backend/keys.env pytest -q \
   backend/tests/test_external_pi_fleet_qualification.py
 uv run --isolated --with locust python -c \
   "import backend.loadtests.external_pi_fleet_locustfile"
+uv run --isolated --with locust --with pytest --with pydantic \
+  python -m pytest -q backend/tests/test_external_pi_fleet_qualification.py
 ```
