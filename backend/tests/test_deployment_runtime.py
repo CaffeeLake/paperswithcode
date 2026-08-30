@@ -601,12 +601,30 @@ def test_enabled_chat_does_not_require_general_server_hf_token(tmp_path: Path):
     assert validate_runtime(settings) == profile_features("staging")
 
 
-def test_enabled_chat_requires_openrouter_title_credential(tmp_path: Path):
+def test_enabled_chat_requires_hf_glm_title_credential(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
-    settings.chat_openrouter_api_key = ""
+    settings.chat_title_hf_token = ""
 
-    with pytest.raises(RuntimeError, match="OpenRouter title credential"):
+    with pytest.raises(RuntimeError, match="HF GLM title credential"):
+        validate_runtime(settings)
+
+
+def test_bridge_runtime_accepts_legacy_openrouter_title_policy(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_title_provider = "openrouter"
+    settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
+
+    assert validate_runtime(settings) == profile_features("staging")
+
+
+def test_bridge_runtime_rejects_unapproved_hf_title_model(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_title_model = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+
+    with pytest.raises(RuntimeError, match="HF GLM title credential"):
         validate_runtime(settings)
 
 
@@ -3194,6 +3212,190 @@ def test_staging_scope_guardrail_uses_server_credentials_and_disables_posterly()
         )
 
 
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_scope_title_hf_values_are_exact_and_environment_isolated(environment):
+    other = "production" if environment == "staging" else "staging"
+    source = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": ("PWC_CHAT_TITLE_GENERATION_ENABLED=true"),
+        "PWC_CHAT_TITLE_HF_TOKEN": (f"PWC_CHAT_TITLE_HF_TOKEN=hf-title-{environment}"),
+        "PWC_CHAT_TITLE_BILL_TO": "PWC_CHAT_TITLE_BILL_TO=huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": ("PWC_CHAT_TITLE_CREDENTIAL_OWNER=nielsr"),
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": (
+            f"PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT={environment}"
+        ),
+    }
+    current = {
+        "PWC_HF_TOKEN": f"PWC_HF_TOKEN=hf-general-{environment}",
+        "PWC_OPENAI_API_KEY": f"PWC_OPENAI_API_KEY=sk-main-{environment}",
+        "PWC_CODEX_JOBS_OPENAI_API_KEY": (
+            f"PWC_CODEX_JOBS_OPENAI_API_KEY=sk-guardrail-{environment}"
+        ),
+    }
+    other_current = {
+        "PWC_CHAT_TITLE_HF_TOKEN": f"PWC_CHAT_TITLE_HF_TOKEN=hf-title-{other}"
+    }
+
+    values = configure_host_env.scope_title_hf_values(
+        source,
+        current,
+        other_current,
+        environment=environment,
+    )
+
+    assert values == {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_HF_TOKEN": f"hf-title-{environment}",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": environment,
+        "PWC_CHAT_TITLE_MODEL": "zai-org/GLM-5.3-Flash:baseten",
+        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
+        "PWC_CHAT_TITLE_MAX_TOKENS": "64",
+        "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
+        "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
+        "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+        "PWC_CHAT_SCOPE_GUARDRAIL_ENABLED": "true",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_TOKEN": f"hf-title-{environment}",
+        "PWC_CHAT_SCOPE_GUARDRAIL_HF_BILL_TO": "huggingface",
+        "PWC_CHAT_SCOPE_GUARDRAIL_GLM_MODEL": ("zai-org/GLM-5.3-Flash:baseten"),
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY": (f"sk-guardrail-{environment}"),
+        "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_MODEL": "gpt-5.6-luna",
+        "PWC_CHAT_POSTERLY_ENABLED": "false",
+        **(
+            {
+                "PWC_CHAT_ARTIFACT_STORAGE_BACKEND": "hf_bucket",
+                "PWC_CHAT_ARTIFACT_HF_BUCKET_ID": ("nielsr/pwc-chat-artifacts-staging"),
+            }
+            if environment == "staging"
+            else {}
+        ),
+    }
+
+    for reused in (
+        f"hf-general-{environment}",
+        f"hf-title-{other}",
+    ):
+        with pytest.raises(ValueError, match="distinct"):
+            configure_host_env.scope_title_hf_values(
+                {
+                    **source,
+                    "PWC_CHAT_TITLE_HF_TOKEN": (f"PWC_CHAT_TITLE_HF_TOKEN={reused}"),
+                },
+                current,
+                other_current,
+                environment=environment,
+            )
+
+
+def test_scope_title_hf_values_require_dedicated_luna_fallback():
+    source = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": ("PWC_CHAT_TITLE_GENERATION_ENABLED=true"),
+        "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=hf-title",
+        "PWC_CHAT_TITLE_BILL_TO": "PWC_CHAT_TITLE_BILL_TO=huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": ("PWC_CHAT_TITLE_CREDENTIAL_OWNER=nielsr"),
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": (
+            "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT=production"
+        ),
+    }
+
+    with pytest.raises(ValueError, match="PWC_CODEX_JOBS_OPENAI_API_KEY"):
+        configure_host_env.scope_title_hf_values(
+            source,
+            {"PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-general"},
+            {},
+            environment="production",
+        )
+    with pytest.raises(ValueError, match="other environment"):
+        configure_host_env.scope_title_hf_values(
+            source,
+            {
+                "PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-general",
+                "PWC_CODEX_JOBS_OPENAI_API_KEY": (
+                    "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
+                ),
+            },
+            {
+                "PWC_CODEX_JOBS_OPENAI_API_KEY": (
+                    "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
+                )
+            },
+            environment="production",
+        )
+
+
+def test_production_scope_title_hf_mode_updates_only_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "production-title.env"
+    source.write_text(
+        "\n".join(
+            (
+                "PWC_CHAT_TITLE_GENERATION_ENABLED=true",
+                "PWC_CHAT_TITLE_HF_TOKEN=hf-title-production",
+                "PWC_CHAT_TITLE_BILL_TO=huggingface",
+                "PWC_CHAT_TITLE_CREDENTIAL_OWNER=nielsr",
+                "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT=production",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text(
+        "\n".join(
+            (
+                "KEEP=production",
+                "PWC_HF_TOKEN=hf-general-production",
+                "PWC_OPENAI_API_KEY=sk-main-production",
+                "PWC_CODEX_JOBS_OPENAI_API_KEY=sk-guardrail-production",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (config_root / "staging.env").write_text(
+        "PWC_CHAT_TITLE_HF_TOKEN=hf-title-staging\n",
+        encoding="utf-8",
+    )
+    writes = []
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: writes.append((path, lines, group)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--production-scope-title-hf-only",
+            "--confirm",
+            "ENABLE_PRODUCTION_HF_SCOPE_AND_TITLES",
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert [(path.name, group) for path, _, group in writes] == [
+        ("production.env", "pwc-production")
+    ]
+    written = writes[0][1]
+    assert configure_host_env.decoded_value(written["KEEP"]) == "production"
+    assert (
+        configure_host_env.decoded_value(written["PWC_CHAT_TITLE_PROVIDER"])
+        == "huggingface"
+    )
+    assert (
+        configure_host_env.decoded_value(written["PWC_CHAT_SCOPE_GUARDRAIL_ENABLED"])
+        == "true"
+    )
+
+
 def test_production_openai_direct_configuration_reuses_protected_key_exactly():
     admitted = {
         "PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=true",
@@ -3923,8 +4125,8 @@ def test_staging_title_values_are_exact_and_isolated():
         "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "staging",
-        "PWC_CHAT_TITLE_MODEL": "deepseek/deepseek-v4-flash-0731",
-        "PWC_CHAT_TITLE_PROVIDER": "openrouter",
+        "PWC_CHAT_TITLE_MODEL": "zai-org/GLM-5.3-Flash:baseten",
+        "PWC_CHAT_TITLE_PROVIDER": "huggingface",
         "PWC_CHAT_TITLE_MAX_TOKENS": "64",
         "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
         "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
@@ -3958,6 +4160,8 @@ def _production_chat_preparation_source() -> dict[str, str]:
             "https://alerts-fallback.test/production"
         ),
         "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_HF_TOKEN": "production-title-secret",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
         "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
         "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
         "PWC_CHAT_OPENROUTER_API_KEY": "production-openrouter-secret",
@@ -4030,8 +4234,9 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD"] == "250000000"
     assert values["PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD"] == "25000000"
-    assert values["PWC_CHAT_TITLE_HF_TOKEN"] == ""
-    assert values["PWC_CHAT_TITLE_PROVIDER"] == "openrouter"
+    assert values["PWC_CHAT_TITLE_HF_TOKEN"] == "production-title-secret"
+    assert values["PWC_CHAT_TITLE_MODEL"] == "zai-org/GLM-5.3-Flash:baseten"
+    assert values["PWC_CHAT_TITLE_PROVIDER"] == "huggingface"
     assert values["PWC_CHAT_OPENROUTER_API_KEY"] == "production-openrouter-secret"
     assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "5.00"
     assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "200.00"

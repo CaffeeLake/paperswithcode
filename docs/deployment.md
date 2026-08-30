@@ -841,6 +841,32 @@ sudo python deploy/configure_host_env.py \
 After the explicit credential-rotation batch has re-encrypted every older row,
 retire unused decryption versions in a separately reviewed environment change.
 
+Chat titles and the research-scope guardrail use the same environment-isolated
+HF Inference Providers credential with the pinned
+`zai-org/GLM-5.3-Flash:baseten` route. Install the staging policy from its
+root-owned title source without restarting services:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/staging.env \
+  --staging-scope-title-hf-only
+```
+
+Production uses a distinct title token and an explicit confirmation:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/production.env \
+  --production-scope-title-hf-only \
+  --confirm ENABLE_PRODUCTION_HF_SCOPE_AND_TITLES
+```
+
+Both installers reject the general HF credential and the other environment's
+title token. They reuse only the target environment's dedicated direct-OpenAI
+fallback for guardrail provider failure, keep Posterly disabled, and require an
+ordinary exact-SHA deploy or environment refresh before processes read the new
+values.
+
 To retire the preview, use the provisioning command with
 `--staging-openrouter-disable-only`. This leaves the ledger intact for
 reconciliation and keeps Hugging Face-backed chat available.
