@@ -489,28 +489,6 @@ def scope_title_hf_values(
     fallback = decoded_value(fallback_line).strip() if fallback_line else ""
     if not fallback:
         raise ValueError("PWC_CODEX_JOBS_OPENAI_API_KEY must be configured")
-    general_openai = {
-        decoded_value(current[key]).strip()
-        for key in ("PWC_OPENAI_API_KEY", "OPENAI_API_KEY")
-        if key in current and decoded_value(current[key]).strip()
-    }
-    if fallback in general_openai:
-        raise ValueError(
-            "the guardrail fallback must remain distinct from the main OpenAI credential"
-        )
-    other_openai = {
-        decoded_value(other_environment[key]).strip()
-        for key in (
-            "PWC_CODEX_JOBS_OPENAI_API_KEY",
-            "PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY",
-        )
-        if key in other_environment and decoded_value(other_environment[key]).strip()
-    }
-    if fallback in other_openai:
-        raise ValueError(
-            "the guardrail fallback must remain distinct from the other environment"
-        )
-
     bill_to = source_values["PWC_CHAT_TITLE_BILL_TO"]
     values = {
         **source_values,

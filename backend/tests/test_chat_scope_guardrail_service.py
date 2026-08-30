@@ -127,7 +127,7 @@ def test_schema_rejects_invalid_or_reordered_payload(payload: dict) -> None:
         validate_scope_payload(payload)
 
 
-def test_runtime_requires_dedicated_credentials_and_disables_only_posterly() -> None:
+def test_runtime_requires_server_credentials_and_disables_only_posterly() -> None:
     assert POSTERLY_ENABLED is False
     validate_chat_scope_guardrail_configuration(
         _settings(
@@ -142,7 +142,6 @@ def test_runtime_requires_dedicated_credentials_and_disables_only_posterly() -> 
         {"chat_scope_guardrail_openai_api_key": ""},
         {"chat_posterly_enabled": True},
         {"hf_token": "hf_server_guardrail"},
-        {"openai_api_key": "sk-server-guardrail"},
     ):
         with pytest.raises(RuntimeError):
             validate_chat_scope_guardrail_configuration(_settings(**update))

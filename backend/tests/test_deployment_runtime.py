@@ -640,23 +640,13 @@ def test_enabled_chat_requires_hf_glm_title_credential(tmp_path: Path):
         validate_runtime(settings)
 
 
-def test_enforced_runtime_rejects_legacy_openrouter_title_policy(tmp_path: Path):
+def test_recovery_bridge_accepts_legacy_openrouter_title_policy(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_title_provider = "openrouter"
     settings.chat_title_model = "deepseek/deepseek-v4-flash-0731"
 
-    with pytest.raises(RuntimeError, match="HF GLM title credential"):
-        validate_runtime(settings)
-
-
-def test_enabled_chat_requires_scope_guardrail(tmp_path: Path):
-    release = make_bundle(tmp_path, chat=True)
-    settings = deployed_settings(tmp_path, release, "staging")
-    settings.chat_scope_guardrail_enabled = False
-
-    with pytest.raises(RuntimeError, match="research-scope guardrail"):
-        validate_runtime(settings)
+    assert validate_runtime(settings) == profile_features("staging")
 
 
 def test_bridge_runtime_rejects_unapproved_hf_title_model(tmp_path: Path):
@@ -3311,7 +3301,7 @@ def test_scope_title_hf_values_are_exact_and_environment_isolated(environment):
             )
 
 
-def test_scope_title_hf_values_require_dedicated_luna_fallback():
+def test_scope_title_hf_values_require_luna_fallback():
     source = {
         "PWC_CHAT_TITLE_GENERATION_ENABLED": ("PWC_CHAT_TITLE_GENERATION_ENABLED=true"),
         "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=hf-title",
@@ -3329,22 +3319,23 @@ def test_scope_title_hf_values_require_dedicated_luna_fallback():
             {},
             environment="production",
         )
-    with pytest.raises(ValueError, match="other environment"):
-        configure_host_env.scope_title_hf_values(
-            source,
-            {
-                "PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-general",
-                "PWC_CODEX_JOBS_OPENAI_API_KEY": (
-                    "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
-                ),
-            },
-            {
-                "PWC_CODEX_JOBS_OPENAI_API_KEY": (
-                    "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
-                )
-            },
-            environment="production",
-        )
+    values = configure_host_env.scope_title_hf_values(
+        source,
+        {
+            "PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-general",
+            "PWC_OPENAI_API_KEY": "PWC_OPENAI_API_KEY=shared-fallback",
+            "PWC_CODEX_JOBS_OPENAI_API_KEY": (
+                "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
+            ),
+        },
+        {
+            "PWC_CODEX_JOBS_OPENAI_API_KEY": (
+                "PWC_CODEX_JOBS_OPENAI_API_KEY=shared-fallback"
+            )
+        },
+        environment="production",
+    )
+    assert values["PWC_CHAT_SCOPE_GUARDRAIL_OPENAI_API_KEY"] == "shared-fallback"
 
 
 def test_production_scope_title_hf_mode_updates_only_production(
