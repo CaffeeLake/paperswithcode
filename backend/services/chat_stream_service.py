@@ -982,6 +982,15 @@ def _persist_failure(
                 raise
 
 
+def _legacy_turn_is_active(
+    owner: ChatOwner, settings: Settings, admission: TurnAdmission
+) -> bool:
+    with db_manager.session_local() as db:
+        return ChatSessionService(db, settings).turn_is_active(
+            owner, admission.session_id, admission.turn_id
+        )
+
+
 def _persist_preparation_failure(
     owner: ChatOwner,
     settings: Settings,
@@ -1370,6 +1379,8 @@ class ChatStreamOrchestrator:
         self._detached_mirror_event: dict[str, Any] | None = None
         self._detached_scope_block: tuple[str, str] | None = None
         self._detached_cancel_requested = False
+        self.legacy_cancel_seen = False
+        self.legacy_cancel_polled_at = 0.0
         self.lifecycle_observer = durable_lifecycle_observer(settings)
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
@@ -1440,6 +1451,9 @@ class ChatStreamOrchestrator:
                 return
 
             await self._claim_durable_turn()
+            if await self._legacy_cancel_requested(force=True):
+                yield await self._finish_legacy_cancel()
+                return
             replacement_ready, resume_id = await self._replacement_or_error()
             if not replacement_ready:
                 self.trace.finish(
@@ -1452,6 +1466,10 @@ class ChatStreamOrchestrator:
                         "code": "replacement_prepare_failed",
                     },
                 )
+                return
+
+            if await self._legacy_cancel_requested(force=True):
+                yield await self._finish_legacy_cancel()
                 return
 
             if self._detached_cancel_requested:
@@ -1493,6 +1511,9 @@ class ChatStreamOrchestrator:
                 ScopeGuardrailService(self.settings).classify(self.scope_messages)
             )
             decision = await guardrail_task
+            if await self._legacy_cancel_requested(force=True):
+                yield await self._finish_legacy_cancel()
+                return
             if decision.decision == "block":
                 pre_block_events = queue.event_count
                 pre_block_bytes = queue.byte_count
@@ -1880,6 +1901,9 @@ class ChatStreamOrchestrator:
         last_write = time.monotonic()
         while not (research_finished and title_finished):
             self._assert_durable_lease()
+            if await self._legacy_cancel_requested():
+                yield await self._finish_legacy_cancel()
+                return
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=1)
             except TimeoutError:
@@ -1926,7 +1950,7 @@ class ChatStreamOrchestrator:
                         self.owner,
                         self.settings,
                         self.admission,
-                        "interrupted",
+                        "cancelled",
                         True,
                         self.projection.completed_blocks(),
                     )
@@ -2420,6 +2444,47 @@ class ChatStreamOrchestrator:
             return "cancel_timeout"
         except Exception:
             return "cancel_failed"
+
+    async def _legacy_cancel_requested(self, *, force: bool = False) -> bool:
+        if self.settings.chat_durable_turn_dispatch_enabled:
+            return False
+        if self.legacy_cancel_seen:
+            return True
+        now = time.monotonic()
+        if not force and now - self.legacy_cancel_polled_at < 1.0:
+            return False
+        self.legacy_cancel_polled_at = now
+        try:
+            active = await asyncio.to_thread(
+                _legacy_turn_is_active, self.owner, self.settings, self.admission
+            )
+        except (OSError, SQLAlchemyError) as error:
+            logger.warning(
+                "chat legacy cancel fence unavailable session_id=%s error=%s",
+                self.admission.session_id,
+                type(error).__name__,
+            )
+            return False
+        self.legacy_cancel_seen = not active
+        return self.legacy_cancel_seen
+
+    async def _finish_legacy_cancel(self) -> ChatStreamFrame:
+        await self._cancel_runner(force=True)
+        if self.title_task is not None and not self.title_task.done():
+            self.title_task.cancel()
+        if not self.terminal_cleanup_completed:
+            await self._persist_terminal_with_lease(
+                _persist_failure,
+                self.owner,
+                self.settings,
+                self.admission,
+                "cancelled",
+                True,
+                self.projection.completed_blocks(),
+            )
+        self.terminal = "stopped"
+        self.trace.finish("".join(self.projection.answer_parts), "stopped")
+        return ChatStreamFrame("done", {"followups": [], "finish_reason": "stopped"})
 
     async def _close(self) -> None:
         # Starlette may close an async response generator with GeneratorExit

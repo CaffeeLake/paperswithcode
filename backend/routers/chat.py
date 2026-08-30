@@ -1802,15 +1802,17 @@ async def cancel_active_turn(
             _raise(exc)
         return Response(status_code=204)
     try:
-        session, _messages = ChatSessionService(db, settings).get_session(
+        turn_id = ChatSessionService(db, settings).request_legacy_cancel(
             owner, session_id
         )
+        db.commit()
     except ChatServiceError as exc:
+        db.rollback()
         _raise(exc)
-    if session.active_turn_id is None:
+    if turn_id is None:
         return Response(status_code=204)
     manager = shared_sandbox_manager(settings)
-    cancelled = await manager.cancel(session_id, session.active_turn_id)
+    cancelled = await manager.cancel(session_id, turn_id)
     if not cancelled:
         await manager.terminate(session_id, failure_code="cancel_control_missing")
     return Response(status_code=204)

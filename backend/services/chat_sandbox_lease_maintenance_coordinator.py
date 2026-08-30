@@ -147,16 +147,17 @@ class ChatSandboxLeaseMaintenanceCoordinator:
             primary_error = error
             raise
         finally:
-            try:
-                self.qualification_cleanup()
-            except (OSError, SQLAlchemyError) as error:
-                logger.warning(
-                    "chat qualification evidence_missing operation=retention error=%s",
-                    type(error).__name__,
-                )
-            except BaseException:
-                if primary_error is None:
-                    raise
+            if self.settings.environment == "staging":
+                try:
+                    self.qualification_cleanup()
+                except (OSError, SQLAlchemyError) as error:
+                    logger.warning(
+                        "chat qualification evidence_missing operation=retention error=%s",
+                        type(error).__name__,
+                    )
+                except BaseException:
+                    if primary_error is None:
+                        raise
 
     async def _reconcile_sandboxes(self) -> int:
         stale_cutoff = self.utcnow()

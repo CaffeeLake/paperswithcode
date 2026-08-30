@@ -83,7 +83,7 @@ class ChatTurnCancellationCoordinator:
                 "Durable chat cancel delivery failed",
                 extra={"chat_session_id": str(session_id)},
             )
-        if status is WorkerCancelStatus.COMPLETED:
+        if status in {WorkerCancelStatus.COMPLETED, WorkerCancelStatus.PENDING}:
             return
         try:
             await self.manager.terminate(

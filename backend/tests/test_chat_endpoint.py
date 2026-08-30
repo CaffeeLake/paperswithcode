@@ -566,16 +566,24 @@ def test_browser_latency_request_is_strict_bounded_and_nonempty():
 def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()
-    calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+    calls = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+        def rollback(self):
+            calls.append("rollback")
 
     class Service:
         def __init__(self, _db, _settings):
             pass
 
-        def get_session(self, owner, requested_session_id):
+        def request_legacy_cancel(self, owner, requested_session_id):
             assert owner.hf_user_id == "owner-1"
             assert requested_session_id == session_id
-            return SimpleNamespace(active_turn_id=turn_id), []
+            calls.append("fence")
+            return turn_id
 
     class Manager:
         async def cancel(self, requested_session_id, requested_turn_id):
@@ -590,13 +598,13 @@ def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
         chat_router.cancel_active_turn(
             session_id,
             user={"hf_user_id": "owner-1", "username": "owner"},
-            db=object(),
+            db=DB(),
             settings=object(),
         )
     )
 
     assert response.status_code == 204
-    assert calls == [(session_id, turn_id)]
+    assert calls == ["fence", "commit", (session_id, turn_id)]
 
 
 def test_session_detail_never_caches_private_paper_metadata(monkeypatch):
@@ -1803,7 +1811,9 @@ def test_pi_tool_timing_fallback_measures_parallel_calls_and_preserves_worker_ti
     assert slow["took_ms"] == 73
 
 
-def test_pi_recovery_telemetry_is_logged_without_becoming_a_public_frame(caplog):
+def test_pi_recovery_telemetry_is_logged_without_becoming_a_public_frame(
+    caplog, monkeypatch
+):
     admission = TurnAdmission(
         session_id=uuid.uuid4(),
         turn_id=uuid.uuid4(),
@@ -1825,6 +1835,7 @@ def test_pi_recovery_telemetry_is_logged_without_becoming_a_public_frame(caplog)
         is_disconnected=lambda: asyncio.sleep(0, result=False),
         release_admission=lambda: asyncio.sleep(0),
     )
+    monkeypatch.setattr(chat_stream_service, "_legacy_turn_is_active", lambda *_: True)
 
     async def consume():
         queue: asyncio.Queue = asyncio.Queue()
@@ -3116,6 +3127,9 @@ def test_chat_endpoint_stream_contract(monkeypatch):
 
         def citation_history(self, *_args, **_kwargs):
             return []
+
+        def turn_is_active(self, *_args, **_kwargs):
+            return True
 
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)

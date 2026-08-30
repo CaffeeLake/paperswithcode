@@ -462,6 +462,52 @@ class ChatSessionService:
             return None
         return CancelTurnRequest(session.id, turn_id, claim)
 
+    def request_legacy_cancel(
+        self, owner: ChatOwner, session_id: uuid.UUID
+    ) -> uuid.UUID | None:
+        """Fence a legacy turn durably before process-local cancellation."""
+        if self.settings.chat_durable_turn_dispatch_enabled:
+            raise RuntimeError("Legacy turn cancellation is disabled")
+        session = self._owned(owner, session_id, lock=True)
+        turn_id = session.active_turn_id
+        if turn_id is None:
+            return None
+        message = self.db.scalar(
+            select(ChatMessageRecord).where(
+                ChatMessageRecord.session_id == session.id,
+                ChatMessageRecord.turn_id == turn_id,
+                ChatMessageRecord.role == "user",
+            )
+        )
+        if message is not None and message.status in ("generating", PREPARING_STATUS):
+            if not self.edits.fail_preparation(session, message, "cancelled"):
+                message.status = "interrupted"
+                message.error_code = "cancelled"
+        session.updated_at = _now()
+        return turn_id
+
+    def turn_is_active(
+        self, owner: ChatOwner, session_id: uuid.UUID, turn_id: uuid.UUID
+    ) -> bool:
+        return (
+            self.db.scalar(
+                select(ChatSession.id)
+                .join(
+                    ChatMessageRecord,
+                    ChatMessageRecord.session_id == ChatSession.id,
+                )
+                .where(
+                    ChatSession.id == session_id,
+                    ChatSession.hf_user_id == owner.hf_user_id,
+                    ChatSession.active_turn_id == turn_id,
+                    ChatMessageRecord.turn_id == turn_id,
+                    ChatMessageRecord.role == "user",
+                    ChatMessageRecord.status.in_(("generating", PREPARING_STATUS)),
+                )
+            )
+            is not None
+        )
+
     def interrupt_cancel_without_control(
         self, owner: ChatOwner, request: CancelTurnRequest
     ) -> None:

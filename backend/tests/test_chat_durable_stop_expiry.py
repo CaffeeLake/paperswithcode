@@ -189,7 +189,10 @@ def test_external_cancel_before_runner_attach_fences_future_model_start():
     assert orchestrator._detached_cancel_requested is True
 
 
-def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
+@pytest.mark.parametrize(
+    "status", [WorkerCancelStatus.COMPLETED, WorkerCancelStatus.PENDING]
+)
+def test_enabled_stop_accepts_delivered_or_deferred_manager_signal(monkeypatch, status):
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()
     ordering: list[str] = []
@@ -215,7 +218,7 @@ def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
         async def cancel_status(self, requested_session_id, requested_turn_id):
             assert (requested_session_id, requested_turn_id) == (session_id, turn_id)
             ordering.append("signal")
-            return WorkerCancelStatus.COMPLETED
+            return status
 
     db = DB()
     asyncio.run(_cancel_with(db, Manager(), Service(db, None), session_id))
@@ -614,7 +617,7 @@ def test_expired_claim_projection_mismatch_fails_before_mutation():
     assert session.active_turn_id != turn_id
 
 
-def test_false_mode_cancel_keeps_old_path_without_durable_method(monkeypatch):
+def test_false_mode_cancel_uses_legacy_fence_without_durable_method(monkeypatch):
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()
 
@@ -622,8 +625,8 @@ def test_false_mode_cancel_keeps_old_path_without_durable_method(monkeypatch):
         def __init__(self, *_args):
             pass
 
-        def get_session(self, *_args):
-            return SimpleNamespace(active_turn_id=turn_id), []
+        def request_legacy_cancel(self, *_args):
+            return turn_id
 
         def request_cancel(self, *_args):
             pytest.fail("durable Stop queried while switch is false")
@@ -635,11 +638,18 @@ def test_false_mode_cancel_keeps_old_path_without_durable_method(monkeypatch):
     monkeypatch.setattr(chat_router, "ChatSessionService", Service)
     monkeypatch.setattr(chat_router, "shared_sandbox_manager", lambda _: Manager())
 
+    class DB:
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
     asyncio.run(
         chat_router.cancel_active_turn(
             session_id,
             user={"hf_user_id": "owner-1", "username": "owner"},
-            db=SimpleNamespace(),
+            db=DB(),
             settings=get_settings().model_copy(
                 update={"chat_durable_turn_dispatch_enabled": False}
             ),

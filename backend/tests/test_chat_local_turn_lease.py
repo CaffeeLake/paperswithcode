@@ -209,6 +209,7 @@ def test_execution_lost_event_persists_canonical_terminal_code(monkeypatch):
         "_persist_failure",
         lambda _owner, _settings, _admission, code, *_args: persisted.append(code),
     )
+    monkeypatch.setattr(chat_stream_service, "_legacy_turn_is_active", lambda *_: True)
 
     async def consume():
         queue = asyncio.Queue()
@@ -706,6 +707,75 @@ def test_disabled_terminal_projection_never_constructs_lease_service(monkeypatch
 
     assert session.active_turn_id is None
     assert message.status == "error"
+
+
+def test_legacy_cancel_fences_projection_before_cross_process_control():
+    turn_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        active_turn_id=turn_id,
+        active_turn_expires_at=NOW,
+        updated_at=NOW,
+    )
+    message = SimpleNamespace(status="generating", error_code=None)
+
+    class DB:
+        def scalar(self, _query):
+            return message
+
+    service = ChatSessionService(DB(), get_settings())
+    service._owned = lambda *_args, **_kwargs: session
+
+    assert (
+        service.request_legacy_cancel(ChatOwner("owner-1", "owner"), session.id)
+        == turn_id
+    )
+    assert message.status == "interrupted"
+    assert message.error_code == "cancelled"
+    assert session.active_turn_id == turn_id
+    assert session.active_turn_expires_at == NOW
+
+
+def test_legacy_stream_observes_cross_process_cancel_fence(monkeypatch):
+    admission = _admission()
+    orchestrator = _orchestrator(get_settings(), admission)
+    cancel_calls = []
+
+    class Runner:
+        async def cancel(self):
+            cancel_calls.append("cancel")
+
+    orchestrator.runner = Runner()
+    monkeypatch.setattr(chat_stream_service, "_legacy_turn_is_active", lambda *_: False)
+    monkeypatch.setattr(chat_stream_service, "_persist_failure", lambda *_: None)
+
+    async def exercise():
+        orchestrator.research_task = asyncio.create_task(asyncio.sleep(60))
+        queue = asyncio.Queue()
+        frames = [frame async for frame in orchestrator._consume(queue)]
+        orchestrator.research_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await orchestrator.research_task
+        return frames
+
+    frames = asyncio.run(exercise())
+
+    assert [frame.event for frame in frames] == ["done"]
+    assert frames[0].payload["finish_reason"] == "stopped"
+    assert cancel_calls == ["cancel"]
+    assert orchestrator.terminal == "stopped"
+
+
+def test_legacy_cancel_poll_outage_does_not_fail_an_active_turn(monkeypatch):
+    orchestrator = _orchestrator(get_settings(), _admission())
+
+    def unavailable(*_args):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(chat_stream_service, "_legacy_turn_is_active", unavailable)
+
+    assert asyncio.run(orchestrator._legacy_cancel_requested(force=True)) is False
+    assert orchestrator.legacy_cancel_seen is False
 
 
 def test_completion_writes_durable_terminal_before_legacy_projection(monkeypatch):

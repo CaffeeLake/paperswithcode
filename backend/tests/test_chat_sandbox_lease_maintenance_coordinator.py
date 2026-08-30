@@ -830,6 +830,24 @@ def test_periodic_reconcile_runs_restart_safe_qualification_retention_without_is
     assert cleanup_calls == [2, 0]
 
 
+def test_periodic_reconcile_skips_staging_only_qualification_retention_in_production():
+    harness = _Harness(_settings(environment="production"))
+    cleanup_calls = []
+    coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+        harness.settings,
+        session_factory=harness.sessions,
+        repository=harness.repository,
+        provider=harness.provider,
+        lifecycle=harness.lifecycle,
+        snapshots=harness.snapshots,
+        capacity_locker=harness.capacity_locker,
+        qualification_cleanup=lambda: cleanup_calls.append("cleanup") or 0,
+    )
+
+    assert asyncio.run(coordinator.reconcile()) == 0
+    assert cleanup_calls == []
+
+
 def test_qualification_retention_runs_after_reconcile_failure_without_masking_primary():
     harness = _Harness()
     primary = RuntimeError("sandbox reconcile failed")
