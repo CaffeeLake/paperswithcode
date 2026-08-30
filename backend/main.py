@@ -131,6 +131,9 @@ async def lifespan(app: FastAPI):
     if settings.is_deployed and settings.chat_enabled:
         from backend.database.connection import db_manager
         from backend.services.chat_latency_service import ChatLatencyService
+        from backend.services.chat_detached_turn_service import (
+            ExpiredDetachedTurnReconciler,
+        )
         from backend.services.chat_title_budget_service import (
             deliver_title_budget_alerts,
             reconcile_stale_title_calls,
@@ -161,6 +164,34 @@ async def lifespan(app: FastAPI):
 
         async def reconcile_stale_latency() -> None:
             await asyncio.to_thread(reconcile_stale_chat_turns)
+
+        async def reconcile_expired_detached_turns() -> None:
+            async def transaction(operation):
+                def run():
+                    with db_manager.session_local() as db:
+                        try:
+                            result = operation(db)
+                            db.commit()
+                            return result
+                        except BaseException:
+                            db.rollback()
+                            raise
+
+                return await asyncio.to_thread(run)
+
+            reconciled = await ExpiredDetachedTurnReconciler(
+                transaction=transaction
+            ).reconcile(
+                now=datetime.now(UTC),
+                limit=min(settings.chat_max_concurrency, 100),
+            )
+            if reconciled:
+                logging.getLogger(__name__).warning(
+                    "expired detached chat turns reconciled outcomes=%s",
+                    ",".join(
+                        f"{code}:{count}" for code, count in sorted(reconciled.items())
+                    ),
+                )
 
         async def reconcile_title_budget() -> None:
             await asyncio.to_thread(reconcile_stale_title_calls, settings)
@@ -198,6 +229,8 @@ async def lifespan(app: FastAPI):
                     manager.enforce_warm_cap,
                     manager.expire_inactive_snapshots,
                 ]
+                if settings.chat_external_pi_admission_enabled:
+                    operations.append(reconcile_expired_detached_turns)
                 today = datetime.now(UTC).date()
                 if latency_cleanup_date != today:
 

@@ -29,7 +29,9 @@ from backend.chat_sandbox_worker.contract import (
 )
 from backend.config import Settings
 from backend.services.chat_runtime_contract import (
+    ExternalAdmissionContract,
     dedicated_gateway_hostname,
+    require_external_admission_contract,
     require_immutable_image_id,
 )
 
@@ -1043,6 +1045,9 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
     }
     migration_switches = {
         **worker_switches,
+        "ready_registry": settings.chat_external_pi_ready_registry_enabled,
+        "event_journal_schema": settings.chat_turn_event_journal_schema_enabled,
+        "runtime_contract": bool(settings.chat_external_pi_runtime_contract_version),
         "remote_tools": settings.chat_remote_workspace_tools_enabled,
         "safe_cli": settings.chat_safe_cli_fast_path_enabled,
         "lazy_workspace": settings.chat_lazy_workspace_enabled,
@@ -1120,6 +1125,37 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         raise RuntimeError(
             "external Pi admission requires the sandbox executor with Bash and Read"
         )
+    if settings.chat_external_pi_admission_enabled:
+        try:
+            require_external_admission_contract(
+                ExternalAdmissionContract(
+                    durable_dispatch=settings.chat_durable_turn_dispatch_enabled,
+                    event_journal_schema=(
+                        settings.chat_turn_event_journal_schema_enabled
+                    ),
+                    external_supervisor=settings.chat_external_pi_supervisor_enabled,
+                    ready_worker_registry=(
+                        settings.chat_external_pi_ready_registry_enabled
+                    ),
+                    remote_workspace_tools=(
+                        settings.chat_remote_workspace_tools_enabled
+                    ),
+                    lazy_workspace=settings.chat_lazy_workspace_enabled,
+                    sandbox_executor=settings.chat_sandbox_executor_enabled,
+                    remote_bash=settings.chat_remote_bash_enabled,
+                    remote_read=settings.chat_remote_read_enabled,
+                    worker_contract_version=(
+                        settings.chat_external_pi_worker_contract_version
+                    ),
+                    runtime_contract_version=(
+                        settings.chat_external_pi_runtime_contract_version
+                    ),
+                )
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "external Pi admission requires the complete durable runtime contract"
+            ) from error
 
 
 def _validate_chat_execution_identity(settings: Settings) -> None:

@@ -43,6 +43,114 @@ async def _cancel_with(db, manager, sessions, session_id):
     await coordinator.cancel(ChatOwner("owner-1", "owner"), session_id)
 
 
+@pytest.mark.parametrize("subscriber_connected", [True, False])
+def test_external_stop_is_independent_of_subscriber_and_cleans_up_last(
+    subscriber_connected,
+):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    claim = TurnLeaseClaim(turn_id, "backend-a", 7, 3)
+    ordering: list[str] = []
+
+    class DB:
+        def commit(self):
+            ordering.append("commit")
+
+    class Service:
+        def request_cancel(self, *_args):
+            ordering.append("cancelling")
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
+
+        def finalize_cancel(self, _owner, request):
+            assert request.claim == claim
+            ordering.append("terminal")
+
+        def cleanup_terminal_journal(self, request):
+            assert request.claim == claim
+            ordering.append("cleanup")
+
+    async def cancel_external(request):
+        assert request.claim == claim
+        assert subscriber_connected in {True, False}
+        ordering.append("external-and-executor-cancel")
+        return True
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            pytest.fail("external cancellation must not use the legacy sandbox path")
+
+    coordinator = ChatTurnCancellationCoordinator(
+        DB(),
+        _enabled_settings(),
+        Manager(),
+        external_cancel=cancel_external,
+        observe=lambda event, code, value: ordering.append(
+            f"observe:{event}:{code}:{value}"
+        ),
+    )
+    coordinator.sessions = Service()
+
+    asyncio.run(coordinator.cancel(ChatOwner("owner-1", "owner"), session_id))
+
+    assert ordering == [
+        "cancelling",
+        "commit",
+        "observe:turn_state:cancelling:1",
+        "external-and-executor-cancel",
+        "terminal",
+        "commit",
+        "observe:turn_state:cancelled:1",
+        "cleanup",
+        "commit",
+    ]
+
+
+def test_missing_process_local_external_control_terminalizes_without_replay():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    claim = TurnLeaseClaim(turn_id, "dead-backend", 9, 5)
+    calls: list[str] = []
+
+    class DB:
+        def commit(self):
+            calls.append("commit")
+
+    class Service:
+        def request_cancel(self, *_args):
+            return SimpleNamespace(session_id=session_id, turn_id=turn_id, claim=claim)
+
+        def finalize_cancel(self, _owner, request):
+            assert request.claim == claim
+            calls.append("terminal")
+
+        def cleanup_terminal_journal(self, _request):
+            calls.append("cleanup")
+
+    async def missing(_request):
+        calls.append("control-missing")
+        return False
+
+    class Manager:
+        async def cancel_status(self, *_args):
+            pytest.fail("must not start or search for replacement model control")
+
+    coordinator = ChatTurnCancellationCoordinator(
+        DB(), _enabled_settings(), Manager(), external_cancel=missing
+    )
+    coordinator.sessions = Service()
+
+    asyncio.run(coordinator.cancel(ChatOwner("owner-1", "owner"), session_id))
+
+    assert calls == [
+        "commit",
+        "control-missing",
+        "terminal",
+        "commit",
+        "cleanup",
+        "commit",
+    ]
+
+
 def test_enabled_stop_commits_cancelling_before_manager_signal(monkeypatch):
     session_id = uuid.uuid4()
     turn_id = uuid.uuid4()

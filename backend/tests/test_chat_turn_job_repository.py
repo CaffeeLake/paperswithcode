@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Lock
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, update
@@ -22,9 +23,82 @@ from backend.services.chat_turn_job_repository import (
     InvalidTurnTransition,
     StaleTurnClaim,
     TurnNotClaimable,
+    classify_expired_turn,
 )
 
 NOW = datetime(2026, 8, 26, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("state", "failure_code", "expected"),
+    [
+        ("leased", None, "dispatch_failed"),
+        ("running", None, "external_worker_lost"),
+        ("waiting_model", None, "external_worker_lost"),
+        ("waiting_tool", None, "execution_lost"),
+        ("cancelling", None, "cancelled"),
+        ("running", "event_journal_exhausted", "event_journal_exhausted"),
+        ("waiting_tool", "execution_lost", "execution_lost"),
+    ],
+)
+def test_expired_turn_failure_classification_is_typed_and_content_free(
+    state, failure_code, expected
+):
+    job = SimpleNamespace(state=state, failure_code=failure_code)
+
+    assert classify_expired_turn(job) == expected
+
+
+def test_expired_reconciliation_query_uses_bounded_skip_locked_authority():
+    seen = []
+
+    class Scalars:
+        def scalars(self):
+            return ()
+
+    class DB:
+        def execute(self, query):
+            seen.append(query)
+            return Scalars()
+
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    assert repository.load_expired_for_reconciliation(DB(), now=NOW, limit=17) == ()
+
+    sql = str(seen[0].compile(dialect=postgresql.dialect()))
+    assert "LIMIT" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+
+
+def test_expired_reconciliation_does_not_mutate_a_newer_worker_generation(db):
+    repository = ChatTurnJobRepository(advisory_locker=lambda *_args: None)
+    session = _session(db)
+    job = _admit(repository, db, session).job
+    old_claim = repository.claim(
+        db,
+        turn_id=job.turn_id,
+        worker_id="external-worker",
+        worker_generation=7,
+        now=NOW,
+        lease_seconds=1,
+    )
+    job.worker_generation = 8
+    job.lease_generation += 1
+    job.lease_expires_at = NOW + timedelta(seconds=60)
+    db.flush()
+
+    with pytest.raises(StaleTurnClaim, match="fenced"):
+        repository.interrupt_expired_claim(
+            db,
+            claim=old_claim,
+            failure_code="external_worker_lost",
+            now=NOW + timedelta(seconds=2),
+        )
+
+    assert (job.state, job.worker_generation, job.lease_generation) == (
+        "leased",
+        8,
+        old_claim.lease_generation + 1,
+    )
 
 
 @pytest.fixture

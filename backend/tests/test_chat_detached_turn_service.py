@@ -5,13 +5,22 @@ import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 
-from backend.models.database import ChatSession, ChatTurnEventChunk, ChatTurnJob
+from backend.models.database import (
+    ChatMessageRecord,
+    ChatSession,
+    ChatTurnEventChunk,
+    ChatTurnJob,
+)
 from backend.services.chat_detached_turn_service import (
     DetachedTurn,
     DetachedTurnCoordinator,
+    ExpiredDetachedTurnReconciler,
 )
 from backend.services.chat_stream_service import ChatStreamFrame
 from backend.services.chat_turn_event_repository import TurnEventJournal
@@ -24,10 +33,16 @@ from backend.services.chat_turn_job_repository import (
 NOW = datetime(2026, 8, 29, 12, tzinfo=UTC)
 
 
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type, _compiler, **_kwargs):
+    return "JSON"
+
+
 class Harness:
     def __init__(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         ChatSession.__table__.create(engine)
+        ChatMessageRecord.__table__.create(engine)
         ChatTurnJob.__table__.create(engine)
         ChatTurnEventChunk.__table__.create(engine)
         self.sessions = sessionmaker(engine, expire_on_commit=False)
@@ -599,6 +614,69 @@ def test_journal_overflow_persists_one_terminal_failure() -> None:
     )
 
 
+def test_terminal_projection_is_committed_before_transient_journal_cleanup() -> None:
+    async def scenario() -> tuple[list[str], int]:
+        harness = Harness()
+        ordering: list[str] = []
+        original_persist = harness.coordinator._persist_terminal
+
+        async def persist(claim, state, code):
+            ordering.append("terminal")
+            await original_persist(claim, state, code)
+
+        harness.coordinator._persist_terminal = persist
+        original_transaction = harness.coordinator._transaction
+
+        async def transaction(operation):
+            result = await original_transaction(operation)
+            if getattr(operation, "__name__", "") == "cleanup_terminal_journal":
+                ordering.append("cleanup")
+            return result
+
+        harness.coordinator._transaction = transaction
+
+        async def source():
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        await asyncio.sleep(0.03)
+        with harness.sessions() as db:
+            remaining = db.query(ChatTurnEventChunk).count()
+        return ordering, remaining
+
+    assert asyncio.run(scenario()) == (["terminal", "cleanup"], 0)
+
+
+def test_detached_lifecycle_observer_receives_only_bounded_labels_and_counts() -> None:
+    async def scenario():
+        harness = Harness()
+        observations: list[tuple[str, str | None, int]] = []
+        harness.coordinator._observe = lambda event, code, value: observations.append(
+            (event, code, value)
+        )
+
+        async def source():
+            yield ChatStreamFrame("done", {"finish_reason": "success"})
+
+        stream = await harness.coordinator.start(turn=harness.turn, source=source())
+        await stream.source_task
+        await asyncio.sleep(0.03)
+        return observations
+
+    observations = asyncio.run(scenario())
+    assert observations[:2] == [
+        ("turn_state", "running", 1),
+        ("journal_events", None, 1),
+    ]
+    assert observations[2][0:2] == ("journal_bytes", None)
+    assert observations[2][2] > 0
+    assert observations[3:] == [
+        ("turn_state", "completed", 1),
+        ("journal_cleanup", None, 1),
+    ]
+
+
 def test_source_exception_appends_bounded_failure_before_terminal_persistence() -> None:
     async def scenario() -> tuple[list[str], list[tuple[str, str | None]]]:
         harness = Harness()
@@ -668,3 +746,88 @@ def test_unleased_admission_becomes_dispatch_failed() -> None:
             )
 
     assert asyncio.run(scenario()) == (True, "interrupted", "dispatch_failed", 0)
+
+
+@pytest.mark.parametrize(
+    ("expired_state", "expected_code"),
+    [
+        ("leased", "dispatch_failed"),
+        ("running", "external_worker_lost"),
+        ("waiting_tool", "execution_lost"),
+        ("cancelling", "cancelled"),
+    ],
+)
+def test_expired_detached_reconciler_terminalizes_projection_before_cleanup(
+    expired_state, expected_code
+) -> None:
+    async def scenario():
+        harness = Harness()
+        ordering: list[str] = []
+        observations: list[tuple[str, str | None, int]] = []
+        with harness.sessions.begin() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id, lock=True)
+            assert job is not None
+            session = db.get(ChatSession, job.chat_session_id)
+            assert session is not None
+            session.active_turn_id = job.turn_id
+            session.active_turn_expires_at = NOW + timedelta(seconds=180)
+            job.state = expired_state
+            job.lease_expires_at = NOW - timedelta(seconds=1)
+            db.add(
+                ChatMessageRecord(
+                    id=uuid.uuid4(),
+                    session_id=session.id,
+                    turn_id=job.turn_id,
+                    sequence=1,
+                    role="user",
+                    content="content is irrelevant to reconciliation",
+                    status="generating",
+                )
+            )
+            db.add(
+                ChatTurnEventChunk(
+                    turn_id=job.turn_id,
+                    first_sequence=1,
+                    last_sequence=1,
+                    events=[{"sequence": 1, "event": "stream_start", "payload": {}}],
+                    payload_bytes=1,
+                    created_at=NOW,
+                )
+            )
+
+        async def transaction(operation):
+            with harness.sessions.begin() as db:
+                result = operation(db)
+            ordering.append(operation.__name__)
+            return result
+
+        reconciler = ExpiredDetachedTurnReconciler(
+            transaction=transaction,
+            jobs=harness.jobs,
+            journal=harness.journal,
+            observe=lambda event, code, value: observations.append(
+                (event, code, value)
+            ),
+        )
+        result = await reconciler.reconcile(now=NOW, limit=10)
+
+        with harness.sessions() as db:
+            job = harness.jobs.load_by_turn(db, harness.turn.turn_id)
+            session = db.get(ChatSession, job.chat_session_id)
+            message = db.query(ChatMessageRecord).one()
+            chunks = db.query(ChatTurnEventChunk).count()
+            return result, ordering, observations, job, session, message, chunks
+
+    result, ordering, observations, job, session, message, chunks = asyncio.run(
+        scenario()
+    )
+    assert result == {expected_code: 1}
+    assert ordering == ["terminalize_expired_turns", "cleanup_terminal_journal"]
+    assert observations == [
+        ("typed_failure", expected_code, 1),
+        ("journal_cleanup", None, 1),
+    ]
+    assert (job.state, job.failure_code) == ("interrupted", expected_code)
+    assert (message.status, message.error_code) == ("interrupted", expected_code)
+    assert session.active_turn_id is None
+    assert chunks == 0

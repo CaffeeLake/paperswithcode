@@ -27,6 +27,28 @@ _TRANSITIONS = {
 }
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _FAILURE_CODE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+_RECONCILABLE_FAILURE_CODES = frozenset(
+    {
+        "dispatch_failed",
+        "external_worker_lost",
+        "event_journal_exhausted",
+        "execution_lost",
+        "cancelled",
+    }
+)
+
+
+def classify_expired_turn(job: ChatTurnJob) -> str:
+    """Classify an expired owner from durable, content-free evidence only."""
+    if job.failure_code in _RECONCILABLE_FAILURE_CODES:
+        return job.failure_code
+    return {
+        "leased": "dispatch_failed",
+        "running": "external_worker_lost",
+        "waiting_model": "external_worker_lost",
+        "waiting_tool": "execution_lost",
+        "cancelling": "cancelled",
+    }.get(job.state, "external_worker_lost")
 
 
 class TurnJobError(RuntimeError):
@@ -260,6 +282,30 @@ class ChatTurnJobRepository:
                     ChatTurnJob.turn_id,
                 )
                 .limit(limit)
+                .execution_options(populate_existing=True)
+            ).scalars()
+        )
+
+    def load_expired_for_reconciliation(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> tuple[ChatTurnJob, ...]:
+        """Claim a bounded expired batch without contending with other sweepers."""
+        if now.tzinfo is None or limit <= 0 or limit > 100:
+            raise ValueError("Expired turn reconciliation bound is invalid")
+        return tuple(
+            db.execute(
+                select(ChatTurnJob)
+                .where(
+                    ChatTurnJob.state.in_(_CLAIMED_STATES),
+                    ChatTurnJob.lease_expires_at <= now,
+                )
+                .order_by(ChatTurnJob.lease_expires_at, ChatTurnJob.turn_id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
                 .execution_options(populate_existing=True)
             ).scalars()
         )
@@ -688,6 +734,28 @@ class ChatTurnJobRepository:
             job.lease_expires_at = None
         db.flush()
         return len(jobs)
+
+    def interrupt_expired_claim(
+        self,
+        db: Session,
+        *,
+        claim: TurnLeaseClaim,
+        failure_code: str,
+        now: datetime,
+    ) -> ChatTurnJob:
+        """Terminalize one exact expired owner without creating replacement work."""
+        if now.tzinfo is None or failure_code not in _RECONCILABLE_FAILURE_CODES:
+            raise ValueError("Expired turn outcome is invalid")
+        job = self._load_claimed(db, claim)
+        if job.state not in _CLAIMED_STATES or not self._lease_expired(job, now):
+            raise StaleTurnClaim("Expired turn claim is no longer authoritative")
+        job.state = "interrupted"
+        job.failure_code = failure_code
+        job.terminal_at = now
+        job.heartbeat_at = now
+        job.lease_expires_at = None
+        db.flush()
+        return job
 
     def interrupt_exact_expired(
         self,

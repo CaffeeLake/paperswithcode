@@ -290,6 +290,24 @@ def test_external_pi_migration_controls_remain_staging_only(settings_factory):
     with pytest.raises(RuntimeError, match="staging-only"):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("chat_external_pi_ready_registry_enabled", True),
+        ("chat_turn_event_journal_schema_enabled", True),
+        ("chat_external_pi_runtime_contract_version", "durable-external-pi-v1"),
+    ],
+)
+def test_durable_external_contract_attestations_remain_staging_only(
+    settings_factory, field, value
+):
+    settings, _release = settings_factory("production")
+    setattr(settings, field, value)
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
     settings.chat_external_pi_shadow_enabled = False
     settings.chat_external_pi_supervisor_enabled = True
     with pytest.raises(RuntimeError, match="staging-only"):
@@ -415,6 +433,13 @@ def test_external_pi_admission_requires_durable_bridge_and_exact_contracts(
         runtime_validation.validate_external_pi_migration_policy(settings)
 
     settings.chat_durable_turn_dispatch_enabled = True
+    with pytest.raises(RuntimeError, match="complete durable runtime contract"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+    settings.chat_turn_event_journal_schema_enabled = True
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_ready_registry_enabled = True
+    settings.chat_external_pi_runtime_contract_version = "durable-external-pi-v1"
     runtime_validation.validate_external_pi_migration_policy(settings)
 
     settings.chat_sandbox_executor_contract_version = "sandbox-executor-v2"

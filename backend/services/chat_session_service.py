@@ -55,6 +55,7 @@ from backend.services.chat_turn_job_repository import (
     TurnLeaseClaim,
     TurnNotClaimable,
 )
+from backend.services.chat_turn_event_repository import TurnEventJournal
 from backend.services.latex_paper_service import LatexPaperService
 
 
@@ -499,6 +500,54 @@ class ChatSessionService:
         session.active_turn_id = None
         session.active_turn_expires_at = None
         session.updated_at = _now()
+
+    def finalize_cancel(self, owner: ChatOwner, request: CancelTurnRequest) -> None:
+        """Persist the canonical cancelled projection for the exact live claim."""
+        session = self._owned(owner, request.session_id, lock=True)
+        if session.active_turn_id != request.turn_id:
+            return
+        repository = self._turn_job_repository()
+        job = repository.load_by_turn(self.db, request.turn_id, lock=True)
+        if (
+            job is None
+            or job.chat_session_id != session.id
+            or job.hf_user_id != owner.hf_user_id
+        ):
+            raise self._durable_control_error()
+        try:
+            repository.write_terminal(
+                self.db,
+                claim=request.claim,
+                state="interrupted",
+                failure_code="cancelled",
+                now=_now(),
+            )
+        except InvalidTurnTransition:
+            return
+        except (TurnJobError, ValueError, SQLAlchemyError) as error:
+            raise self._durable_control_error() from error
+        message = self.db.scalar(
+            select(ChatMessageRecord).where(
+                ChatMessageRecord.session_id == session.id,
+                ChatMessageRecord.turn_id == request.turn_id,
+                ChatMessageRecord.role == "user",
+            )
+        )
+        if message is not None and message.status in ("generating", PREPARING_STATUS):
+            if message.status == PREPARING_STATUS:
+                self.edits.expire_preparation(session, message)
+            else:
+                message.status = "interrupted"
+                message.error_code = "cancelled"
+        session.active_turn_id = None
+        session.active_turn_expires_at = None
+        session.updated_at = _now()
+
+    def cleanup_terminal_journal(self, request: CancelTurnRequest) -> int:
+        """Delete transient frames only after the terminal transaction commits."""
+        return TurnEventJournal(jobs=self._turn_job_repository()).delete_terminal(
+            self.db, turn_id=request.turn_id
+        )
 
     def _reconcile_durable_expiry(
         self, session: ChatSession, turn_id: uuid.UUID, now: datetime

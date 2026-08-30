@@ -1612,6 +1612,13 @@ class ChatStreamOrchestrator:
         """Release process-local lease maintenance when ownership setup fails."""
         await self._stop_lease_heartbeat()
 
+    async def cancel_detached_turn(self, claim: TurnLeaseClaim) -> bool:
+        """Cancel only the runner already bound to this exact durable claim."""
+        if claim != self.admission.durable_claim or self.runner is None:
+            return False
+        await self.runner.cancel()
+        return True
+
     async def persist_detached_terminal(
         self,
         claim: TurnLeaseClaim,

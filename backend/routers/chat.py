@@ -170,6 +170,13 @@ async def _persist_detached_terminal(claim, state, failure_code):
             _detached_orchestrators.pop(claim.turn_id, None)
 
 
+async def _cancel_external_detached_turn(request) -> bool:
+    orchestrator = _detached_orchestrators.get(request.turn_id)
+    if orchestrator is None:
+        return False
+    return await orchestrator.cancel_detached_turn(request.claim)
+
+
 def detached_turn_coordinator() -> DetachedTurnCoordinator:
     global _detached_coordinator
     if _detached_coordinator is None:
@@ -1717,8 +1724,16 @@ async def cancel_active_turn(
     owner = owner_from_user(user)
     if getattr(settings, "chat_durable_turn_dispatch_enabled", False):
         try:
+            coordinator_kwargs = (
+                {"external_cancel": _cancel_external_detached_turn}
+                if settings.chat_external_pi_admission_enabled
+                else {}
+            )
             await ChatTurnCancellationCoordinator(
-                db, settings, shared_sandbox_manager(settings)
+                db,
+                settings,
+                shared_sandbox_manager(settings),
+                **coordinator_kwargs,
             ).cancel(owner, session_id)
         except ChatServiceError as exc:
             db.rollback()
