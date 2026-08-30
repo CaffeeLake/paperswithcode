@@ -402,7 +402,9 @@ unproven port. The adapter returns the exact post-restoration flag mapping and a
 strict cleanup proof: workers drained and removed, listeners/status files/
 processes gone, and final active backend/worker/sandbox counts all zero. Missing,
 no-op, contradictory, or failed proof produces a retained `failed` report and
-can never produce `completed`.
+can never produce `completed`. Failed reports use a closed reason set and only
+retain the passing profile prefix the controller could have completed;
+`cleanup_failed` always carries incomplete cleanup proof.
 
 A passing profile requires the exact 32 or 100 observations; every user
 immediately admitted and durably terminal; one model start per turn; at most

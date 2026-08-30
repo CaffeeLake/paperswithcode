@@ -124,6 +124,11 @@ def test_executor_identity_is_counted_directly_not_inferred_from_logs() -> None:
             "terminal_completed",
             "subscriber_detach",
         ),
+        (
+            "model_start",
+            ("executor_start", OperationIdentity("turn-0001", "tool-0001", 0)),
+            "terminal_completed",
+        ),
     ),
 )
 def test_fault_schedule_rejects_missing_reordered_or_uncorrelated_recovery(
@@ -187,3 +192,89 @@ def test_executor_response_loss_attach_requires_same_operation_identity() -> Non
 def test_fault_recovery_requires_same_cursor_claim_and_retained_run(steps) -> None:
     with pytest.raises(ValueError, match="same .*identity"):
         simulate_fault_schedule(FaultSchedule(name="mismatched_identity", steps=steps))
+
+
+def test_subscriber_loss_before_model_start_is_not_repaired_by_later_reattach() -> None:
+    cursor = SubscriberCursorIdentity("turn-0001", 10)
+    schedule = FaultSchedule(
+        name="subscriber_loss_before_start",
+        steps=(
+            ("subscriber_detach", cursor),
+            "model_start",
+            ("subscriber_cursor_reattach", cursor),
+            "terminal_completed",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="model start must precede"):
+        simulate_fault_schedule(schedule)
+
+
+def test_cancelled_executor_requires_exact_cancel_attach_before_terminal() -> None:
+    identity = OperationIdentity("turn-0001", "tool-0001", 0)
+    schedule = FaultSchedule(
+        name="cancel_without_executor_settlement",
+        steps=(
+            "model_start",
+            ("executor_start", identity),
+            "cancel_requested",
+            "terminal_cancelled",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="executor cancellation settlement"):
+        simulate_fault_schedule(schedule)
+
+
+@pytest.mark.parametrize(
+    "steps",
+    (
+        (
+            "model_start",
+            ("executor_start", OperationIdentity("turn-0001", "tool-0001", 0)),
+            (
+                "executor_attach_cancel",
+                OperationIdentity("turn-0001", "tool-0001", 0),
+            ),
+            "cancel_requested",
+            "terminal_cancelled",
+        ),
+        (
+            "model_start",
+            ("executor_start", OperationIdentity("turn-0001", "tool-0001", 0)),
+            (
+                "executor_start",
+                OperationIdentity("turn-0001", "tool-0002", 0),
+            ),
+            "cancel_requested",
+            (
+                "executor_attach_cancel",
+                OperationIdentity("turn-0001", "tool-0002", 0),
+            ),
+            "terminal_cancelled",
+        ),
+        (
+            "model_start",
+            "cancel_requested",
+            ("executor_start", OperationIdentity("turn-0001", "tool-0001", 0)),
+            "terminal_cancelled",
+        ),
+    ),
+)
+def test_cancel_settlement_requires_request_order_and_every_active_operation(
+    steps,
+) -> None:
+    with pytest.raises(ValueError, match="fault schedule"):
+        simulate_fault_schedule(
+            FaultSchedule(name="invalid_cancel_settlement", steps=steps)
+        )
+
+
+def test_terminal_log_loss_requires_canonical_terminal_log_opportunity() -> None:
+    schedule = FaultSchedule(
+        name="log_loss_before_terminal",
+        steps=("model_start", "terminal_log_lost", "terminal_completed"),
+    )
+
+    with pytest.raises(ValueError, match="terminal log loss precedes"):
+        simulate_fault_schedule(schedule)

@@ -235,11 +235,13 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
     terminal_log_records = 0
     queued_states = 0
     started_operations: set[OperationIdentity] = set()
+    active_executor_operations: set[OperationIdentity] = set()
     subscriber_fault_pending: SubscriberCursorIdentity | None = None
     worker_socket_loss_pending: WorkerTurnClaimIdentity | None = None
     worker_drain_pending: RetainedRunIdentity | None = None
     lost_executor_operation: OperationIdentity | None = None
     cancel_requested = False
+    cancel_pending_operations: set[OperationIdentity] = set()
 
     for step in schedule.steps:
         action = step[0] if isinstance(step, tuple) else step
@@ -248,6 +250,8 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
             raise ValueError("fault schedule contains an unknown action")
         if terminal_cause is not None and action != "terminal_log_lost":
             raise ValueError("fault schedule continues after terminal outcome")
+        if action != "model_start" and model_starts != 1:
+            raise ValueError("fault schedule model start must precede every action")
         if action == "model_start":
             model_starts += 1
             if model_starts > 1:
@@ -255,8 +259,11 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
         elif action == "executor_start":
             if not isinstance(identity, OperationIdentity):
                 raise ValueError("fault schedule executor identity is invalid")
+            if cancel_requested:
+                raise ValueError("fault schedule starts an executor after cancellation")
             executor_starts[identity] += 1
             started_operations.add(identity)
+            active_executor_operations.add(identity)
             if executor_starts[identity] > 1:
                 raise ValueError("fault schedule repeated an executor operation")
         elif action == "subscriber_detach" or action == "subscriber_process_lost":
@@ -323,17 +330,21 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
                     "fault schedule must attach the same executor operation"
                 )
             lost_executor_operation = None
+            active_executor_operations.remove(identity)
         elif action == "cancel_requested":
             if cancel_requested:
                 raise ValueError("fault schedule repeats cancellation")
             cancel_requested = True
+            cancel_pending_operations = set(active_executor_operations)
         elif action == "executor_attach_cancel":
             if (
                 not cancel_requested
                 or not isinstance(identity, OperationIdentity)
-                or identity not in started_operations
+                or identity not in cancel_pending_operations
             ):
                 raise ValueError("fault schedule cancellation attach is invalid")
+            cancel_pending_operations.remove(identity)
+            active_executor_operations.remove(identity)
         elif action == "queued":
             queued_states += 1
         elif action in {"terminal_completed", "terminal_cancelled"}:
@@ -343,11 +354,16 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
                     worker_socket_loss_pending is not None,
                     worker_drain_pending is not None,
                     lost_executor_operation is not None,
+                    action == "terminal_completed" and bool(active_executor_operations),
                 )
             ):
                 raise ValueError("fault schedule terminal precedes recovery")
             if action == "terminal_cancelled" and not cancel_requested:
                 raise ValueError("fault schedule cancellation was not requested")
+            if action == "terminal_cancelled" and cancel_pending_operations:
+                raise ValueError(
+                    "fault schedule lacks executor cancellation settlement"
+                )
             if action == "terminal_completed" and cancel_requested:
                 raise ValueError("fault schedule completed after cancellation")
             durable_terminal_commits += 1
@@ -358,7 +374,9 @@ def simulate_fault_schedule(schedule: FaultSchedule) -> FaultResult:
                 "completed" if action == "terminal_completed" else "cancelled"
             )
         elif action == "terminal_log_lost":
-            terminal_log_records = max(0, terminal_log_records - 1)
+            if terminal_cause is None or terminal_log_records != 1:
+                raise ValueError("fault schedule terminal log loss precedes commit")
+            terminal_log_records = 0
 
     if model_starts != 1 or durable_terminal_commits != 1 or terminal_cause is None:
         raise ValueError("fault schedule lacks one model start and terminal outcome")

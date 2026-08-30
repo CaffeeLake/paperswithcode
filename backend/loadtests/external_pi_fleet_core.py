@@ -213,8 +213,33 @@ class DurableQualificationReport(BaseModel):
                 or not self.cleanup_passed
             ):
                 raise ValueError("resource-refused durable report is inconsistent")
-        elif self.reason is None:
-            raise ValueError("failed durable report requires a typed reason")
+        else:
+            if self.reason is None:
+                raise ValueError("failed durable report requires a typed reason")
+            failed_profile_limits = {
+                "durable_qualification_failed": 2,
+                "durable_profile_failed": 1,
+                "cleanup_failed": 2,
+                "staging_isolation_required": 1,
+                "exact_staging_release_required": 1,
+                "approved_8_gib_host_required": 1,
+                "public_external_admission_flags_must_be_off": 1,
+                "public_external_admission_flags_are_invalid": 0,
+            }
+            maximum_profiles = failed_profile_limits.get(self.reason or "")
+            if maximum_profiles is None or len(names) > maximum_profiles:
+                raise ValueError("failed durable report reason or profiles are invalid")
+            if self.reason == "cleanup_failed" and self.cleanup_passed:
+                raise ValueError(
+                    "failed durable report cleanup evidence is contradictory"
+                )
+            if (
+                self.reason == "public_external_admission_flags_are_invalid"
+                and self.flags_restored
+            ):
+                raise ValueError(
+                    "failed durable report flag snapshot evidence is contradictory"
+                )
         return self
 
     @computed_field

@@ -308,7 +308,7 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
     report = DurableQualificationReport(
         release_id="0123456789ab-staging",
         status="failed",
-        reason="test_failure",
+        reason="durable_profile_failed",
         profiles=(profile_report,),
         **cleanup,
     )
@@ -715,6 +715,123 @@ def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
             profiles=(profile_report, profile_report),
             **cleanup,
         )
+
+
+@pytest.mark.parametrize("reason", ("test_failure", "cleanup_failed"))
+def test_completed_report_cannot_be_forged_as_contradictory_failure(
+    reason: str, tmp_path: Path
+) -> None:
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    completed = run_durable_qualification(_DurableOperator())
+    forged = completed.model_copy(update={"status": "failed", "reason": reason})
+    payload = forged.model_dump(exclude_computed_fields=True)
+
+    with pytest.raises(ValidationError, match="failed durable report"):
+        DurableQualificationReport.model_validate(payload)
+    with pytest.raises(ValidationError, match="failed durable report"):
+        publish_durable_report(forged, tmp_path / f"{reason}.json", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("reason", "profile_count"),
+    (
+        ("arbitrary_failure", 0),
+        ("durable_profile_failed", 2),
+        ("public_external_admission_flags_must_be_off", 2),
+    ),
+)
+def test_failed_report_reasons_and_profile_prefixes_are_closed(
+    reason: str, profile_count: int
+) -> None:
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    completed = run_durable_qualification(_DurableOperator())
+    payload = completed.model_dump(exclude_computed_fields=True)
+    payload.update(
+        status="failed",
+        reason=reason,
+        profiles=payload["profiles"][:profile_count],
+    )
+
+    with pytest.raises(ValidationError, match="failed durable report"):
+        DurableQualificationReport.model_validate(payload)
+
+
+def test_controller_generated_cleanup_failure_is_a_valid_failed_report() -> None:
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    report = run_durable_qualification(_DurableOperator(no_op_proof=True))
+
+    assert report.status == "failed"
+    assert report.reason == "cleanup_failed"
+    assert report.cleanup_passed is False
+    assert (
+        DurableQualificationReport.model_validate(
+            report.model_dump(exclude_computed_fields=True)
+        )
+        == report
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "profile_count", "flags_restored"),
+    (
+        ("durable_qualification_failed", 2, True),
+        ("durable_profile_failed", 1, True),
+        ("staging_isolation_required", 1, True),
+        ("exact_staging_release_required", 1, True),
+        ("approved_8_gib_host_required", 1, True),
+        ("public_external_admission_flags_must_be_off", 1, True),
+        ("public_external_admission_flags_are_invalid", 0, False),
+    ),
+)
+def test_failed_report_accepts_only_controller_producible_reason_prefixes(
+    reason: str, profile_count: int, flags_restored: bool
+) -> None:
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    completed = run_durable_qualification(_DurableOperator())
+    payload = completed.model_dump(exclude_computed_fields=True)
+    payload.update(
+        status="failed",
+        reason=reason,
+        profiles=payload["profiles"][:profile_count],
+        flags_restored=flags_restored,
+    )
+
+    report = DurableQualificationReport.model_validate(payload)
+
+    assert report.status == "failed"
+    assert report.reason == reason
+
+
+def test_failed_report_rejects_a_retained_nonpassing_profile() -> None:
+    from backend.scripts.qualify_durable_external_turns import (
+        run_durable_qualification,
+    )
+
+    completed = run_durable_qualification(_DurableOperator())
+    failed_profile = completed.profiles[0].model_copy(
+        update={"typed_failures": 1, "typed_failure_counts": {"test": 1}}
+    )
+    payload = completed.model_dump(exclude_computed_fields=True)
+    payload.update(
+        status="failed",
+        reason="durable_profile_failed",
+        profiles=(failed_profile,),
+    )
+
+    with pytest.raises(ValidationError, match="profiles are invalid"):
+        DurableQualificationReport.model_validate(payload)
 
 
 def test_ordinal_routing_is_deterministic_and_balanced_after_loss():

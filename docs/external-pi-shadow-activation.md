@@ -243,8 +243,11 @@ response loss, and cancellation schedules. Browser/API reconnect resumes by
 event cursor, worker reconnect uses the exact retained worker/turn claim, and
 executor recovery attaches to the same operation identity. Every schedule
 proves exactly one model start and no more than one executor start for an
-operation identity. Verdicts use canonical terminal rows and direct operation
-counts, not assumed exactly-once logging.
+operation identity. Fault actions cannot precede that model start; cancellation
+settles every active executor through its exact operation identity before the
+cancelled terminal, and terminal-log loss requires a prior canonical terminal
+commit. Verdicts use canonical terminal rows and direct operation counts, not
+assumed exactly-once logging.
 
 The exact preflight, thresholds, cleanup proof, report path and permission rules
 are in `backend/loadtests/README.md`. Production activation remains forbidden
