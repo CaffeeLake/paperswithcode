@@ -17,6 +17,7 @@ from deploy.external_pi_shadow_activation import (
     QualificationEvidence,
     ShadowActivationError,
     ShadowActivationInterrupted,
+    _unit_is_inactive,
     _validate_report,
     activation_signal_context,
     apply_staging_shadow_activation,
@@ -531,6 +532,52 @@ def test_refresh_command_uses_positional_git_sha():
         "a" * 40,
         "--refresh-environment",
     ]
+
+
+@pytest.mark.parametrize("state", ("inactive", "failed"))
+def test_unit_inactive_accepts_exact_non_running_states(
+    monkeypatch: pytest.MonkeyPatch, state: str
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"{state}\n"),
+    )
+
+    assert _unit_is_inactive("external-pi.service") is True
+
+
+@pytest.mark.parametrize("state", ("active", "activating", "deactivating"))
+def test_unit_inactive_refuses_running_or_transitional_states(
+    monkeypatch: pytest.MonkeyPatch, state: str
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"{state}\n"),
+    )
+
+    assert _unit_is_inactive("external-pi.service") is False
+
+
+def test_unit_inactive_fails_closed_on_systemctl_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "failed\n"),
+    )
+
+    assert _unit_is_inactive("external-pi.service") is False
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("systemctl missing")),
+    )
+
+    assert _unit_is_inactive("external-pi.service") is False
 
 
 def test_false_false_disable_still_deactivates_orphan_units(tmp_path: Path):

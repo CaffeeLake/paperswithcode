@@ -362,13 +362,16 @@ def refresh_command(environment: str, git_sha: str) -> list[str]:
 
 
 def _unit_is_inactive(unit: str) -> bool:
-    result = subprocess.run(
-        ["systemctl", "show", "--property=ActiveState", "--value", unit],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    return result.returncode == 0 and result.stdout.strip() == "inactive"
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "--property=ActiveState", "--value", unit],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() in {"inactive", "failed"}
 
 
 def deactivate_external_pi_slots(
