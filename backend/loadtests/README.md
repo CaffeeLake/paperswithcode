@@ -346,7 +346,14 @@ cleanup_replica(resolved, generation=generation, owned_units=owned_units)
 An absent status file is acceptable only for a worker-only partial start when
 the supervisor is omitted from the report's `owned_units` and its live metadata
 affirmatively proves `not-found`/`inactive`; it is not permission to assume both
-units are owned. After each recovery command, require both exact units to be `not-found` and
+units are owned. If an owned supervisor failed before registration and overwrote
+its durable status, generation-null cleanup may stop the worker only after the
+supervisor is stopped and an authenticated bounded loopback status proves the
+exact protocol, worker and release identities, explicit null worker generation,
+integer-zero active sessions, the shape's exact integer capacity, and exactly
+the six integer-zero operation counters. Missing, malformed, mismatched, or
+nonzero evidence remains fenced for operator recovery. After each recovery
+command, require both exact units to be `not-found` and
 inactive, the corresponding status file absent, and its loopback port absent
 from `ss -H -ltn`. Do not continue to another pair if any proof fails.
 

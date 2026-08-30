@@ -9,6 +9,8 @@ import re
 import socket
 import subprocess
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +43,15 @@ STATUS_ROOT = Path(
     )
 )
 CONTRACT_VERSION = "external-pi-v1"
+MAXIMUM_WORKER_STATUS_BYTES = 64 * 1024
+OPERATION_COUNTER_NAMES = (
+    "shadow_requests",
+    "model_calls",
+    "tool_calls",
+    "provider_calls",
+    "modal_calls",
+    "billing_events",
+)
 _IMMUTABLE_STAGING_RELEASE = re.compile(r"^[0-9a-f]{12}-staging$")
 _SUPERVISOR_PROTECTED_KEYS = (
     "PWC_DB_HOST",
@@ -207,6 +218,7 @@ def supervisor_environment(
             "PWC_ENVIRONMENT": "staging",
             "PWC_RELEASE_ID": resolved.release_id,
             "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED": "true",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_ID": resolved.worker_id,
             "PWC_CHAT_EXTERNAL_PI_WORKER_URL": f"http://127.0.0.1:{resolved.port}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": CONTRACT_VERSION,
             "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": str(resolved.maximum_sessions),
@@ -470,6 +482,47 @@ def replica_status(
     return {"units": units, "status": _read_status(resolved.status_path)}
 
 
+def _authenticated_unclaimed_worker_is_safe(
+    resolved: QualificationReplica,
+) -> bool:
+    token = os.environ.get("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "")
+    if len(token) < 32 or "\n" in token or "\r" in token:
+        return False
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{resolved.port}/v1/status",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = response.read(MAXIMUM_WORKER_STATUS_BYTES + 1)
+            if len(payload) > MAXIMUM_WORKER_STATUS_BYTES:
+                return False
+            status = json.loads(payload)
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+    counters = status.get("operation_counters") if isinstance(status, dict) else None
+    return (
+        isinstance(status, dict)
+        and status.get("protocol") == CONTRACT_VERSION
+        and status.get("worker_id") == resolved.worker_id
+        and status.get("release_id") == resolved.release_id
+        and status.get("state") == "ready"
+        and "worker_generation" in status
+        and status.get("worker_generation") is None
+        and type(status.get("active_sessions")) is int
+        and status.get("active_sessions") == 0
+        and type(status.get("maximum_sessions")) is int
+        and status.get("maximum_sessions") == resolved.maximum_sessions
+        and isinstance(counters, dict)
+        and set(counters) == set(OPERATION_COUNTER_NAMES)
+        and all(
+            type(counters[name]) is int and counters[name] == 0
+            for name in OPERATION_COUNTER_NAMES
+        )
+    )
+
+
 def cleanup_replica(
     resolved: QualificationReplica,
     *,
@@ -502,6 +555,13 @@ def cleanup_replica(
             check=False,
             timeout=timeout_seconds,
         )
+        if _unit_state(resolved.supervisor_unit, runner=runner)[1] not in {
+            "inactive",
+            "failed",
+        }:
+            raise QualificationLifecycleError(
+                "external Pi qualification supervisor did not stop"
+            )
     registry_offline = False
     if not supervisor_owned:
         registry_offline = _unit_state(resolved.supervisor_unit, runner=runner) == (
@@ -513,10 +573,14 @@ def cleanup_replica(
                 "external Pi qualification has ambiguous bounded recovery evidence: "
                 "an unowned supervisor exists"
             )
-    if supervisor_owned and generation is None:
+    if (
+        generation is None
+        and not registry_offline
+        and (supervisor_owned or worker_owned)
+    ):
         last = read_status(resolved.status_path)
         observed_generation = last.get("generation")
-        registry_offline = (
+        durable_registry_offline = supervisor_owned and (
             last.get("release_id") == resolved.release_id
             and last.get("worker_id") == resolved.worker_id
             and (
@@ -532,6 +596,9 @@ def cleanup_replica(
                     and last.get("registered") is False
                 )
             )
+        )
+        registry_offline = durable_registry_offline or (
+            worker_owned and _authenticated_unclaimed_worker_is_safe(resolved)
         )
         if not registry_offline:
             raise QualificationLifecycleError(

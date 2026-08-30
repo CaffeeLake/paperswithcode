@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 from backend.loadtests import external_pi_fleet_core as fleet_core
+from backend.config import Settings
+from backend.services.chat_external_worker_capacity import external_worker_endpoints
+from backend.services.runtime_validation import validate_external_pi_migration_policy
 from deploy import external_pi_qualification_contract as contract
 from deploy import external_pi_qualification_lifecycle as lifecycle
 from deploy import external_pi_qualification_supervisor_launcher as supervisor_launcher
@@ -169,6 +175,7 @@ def test_worker_and_supervisor_environments_scrub_unrelated_credentials(tmp_path
         "PWC_DB_PASSWORD",
         "PWC_DB_SEARCH_PATH",
         "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_ID",
         "PWC_CHAT_EXTERNAL_PI_WORKER_URL",
         "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN",
         "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION",
@@ -182,6 +189,32 @@ def test_worker_and_supervisor_environments_scrub_unrelated_credentials(tmp_path
         "PWC_EXTERNAL_PI_WORKER_ID",
     }
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "http://127.0.0.1:8783"
+
+
+def test_qualification_supervisor_settings_resolve_dynamic_worker_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolved = _resolved(tmp_path)
+    child = lifecycle.supervisor_environment(
+        resolved, {"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "t" * 32}
+    )
+
+    assert child["PWC_CHAT_EXTERNAL_PI_WORKER_ID"] == resolved.worker_id
+
+    with monkeypatch.context() as scoped:
+        for key in tuple(os.environ):
+            if key.startswith("PWC_CHAT_EXTERNAL_PI_WORKER_"):
+                scoped.delenv(key)
+        for key, value in child.items():
+            scoped.setenv(key, value)
+        settings = Settings(_env_file=None)
+
+    validate_external_pi_migration_policy(settings)
+    (endpoint,) = external_worker_endpoints(settings)
+    assert endpoint.worker_id == resolved.worker_id
+    assert endpoint.base_url == "http://127.0.0.1:8783"
+    assert endpoint.token == "t" * 32
+    assert settings.chat_external_pi_worker_max_sessions == 16
 
 
 def test_exec_launchers_use_recorded_runtimes_and_keep_token_off_argv(
@@ -765,13 +798,21 @@ def test_cleanup_orders_drain_before_worker_and_proves_postconditions(tmp_path: 
     assert evidence.registry_offline is True
     assert evidence.ports_free is True
     assert evidence.units_removed is True
-    assert commands[:4] == [
+    assert commands[:5] == [
         ["systemctl", "stop", resolved.supervisor_unit],
+        [
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "--value",
+            resolved.supervisor_unit,
+        ],
         ["systemctl", "stop", resolved.worker_unit],
         ["systemctl", "reset-failed", resolved.supervisor_unit],
         ["systemctl", "reset-failed", resolved.worker_unit],
     ]
-    assert commands[4:] == [
+    assert commands[5:] == [
         [
             "systemctl",
             "show",
@@ -828,3 +869,251 @@ def test_owned_supervisor_without_claim_requires_matching_pre_registration_evide
 
     assert evidence.registry_offline is True
     assert ["systemctl", "stop", resolved.worker_unit] in commands
+
+
+def _unclaimed_live_worker_status(resolved: lifecycle.QualificationReplica) -> dict:
+    return {
+        "protocol": "external-pi-v1",
+        "worker_id": resolved.worker_id,
+        "instance_id": "00000000-0000-0000-0000-000000000001",
+        "release_id": resolved.release_id,
+        "state": "ready",
+        "active_sessions": 0,
+        "maximum_sessions": resolved.maximum_sessions,
+        "worker_generation": None,
+        "operation_counters": {
+            "shadow_requests": 0,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+        "capability_evidence": {
+            "provider_credentials_present": False,
+            "modal_credentials_present": False,
+            "registered_tool_count": 0,
+        },
+    }
+
+
+_DELETE = object()
+
+
+def test_generation_none_cleanup_accepts_exact_authenticated_unclaimed_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolved = _resolved(tmp_path)
+    resolved.status_path.parent.mkdir(parents=True)
+    resolved.status_path.write_text("failed")
+    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "t" * 32)
+    events: list[object] = []
+
+    def run(command, **_kwargs):
+        events.append(command)
+        output = "not-found\ninactive\n" if command[:2] == ["systemctl", "show"] else ""
+        return subprocess.CompletedProcess(command, 0, output)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size):
+            assert size == 65_537
+            return json.dumps(_unclaimed_live_worker_status(resolved)).encode()
+
+    def open_status(request, *, timeout):
+        events.append("authenticated-status")
+        assert request.full_url == "http://127.0.0.1:8783/v1/status"
+        assert request.get_header("Authorization") == f"Bearer {'t' * 32}"
+        assert timeout == 5
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_status)
+
+    evidence = lifecycle.cleanup_replica(
+        resolved,
+        generation=None,
+        owned_units={resolved.supervisor_unit, resolved.worker_unit},
+        runner=run,
+        read_status=lambda _path: {
+            "release_id": resolved.release_id,
+            "worker_id": resolved.worker_id,
+            "state": "failed",
+            "authenticated": False,
+            "registered": False,
+            "generation": None,
+        },
+        port_is_free=lambda _host, _port: True,
+    )
+
+    assert evidence.registry_offline is True
+    supervisor_stop = ["systemctl", "stop", resolved.supervisor_unit]
+    worker_stop = ["systemctl", "stop", resolved.worker_unit]
+    assert events.index(supervisor_stop) < events.index("authenticated-status")
+    assert events.index("authenticated-status") < events.index(worker_stop)
+
+
+@pytest.mark.parametrize(
+    ("path", "unsafe_value"),
+    (
+        (("protocol",), "external-pi-v2"),
+        (("worker_id",), "staging-qualification-04"),
+        (("release_id",), "ffffffffffff-staging"),
+        (("state",), "draining"),
+        (("worker_generation",), _DELETE),
+        (("worker_generation",), 0),
+        (("active_sessions",), 0.0),
+        (("active_sessions",), 1),
+        (("maximum_sessions",), 16.0),
+        (("maximum_sessions",), 32),
+        (("operation_counters", "shadow_requests"), True),
+        (("operation_counters", "model_calls"), 0.0),
+        (("operation_counters", "tool_calls"), 1),
+        (("operation_counters", "provider_calls"), 1),
+        (("operation_counters", "modal_calls"), 1),
+        (("operation_counters", "billing_events"), 1),
+        (("operation_counters", "billing_events"), _DELETE),
+        (("operation_counters", "unexpected"), 0),
+    ),
+)
+def test_generation_none_cleanup_refuses_ambiguous_live_worker_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: tuple[str, ...],
+    unsafe_value: object,
+):
+    resolved = _resolved(tmp_path)
+    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "t" * 32)
+    status = _unclaimed_live_worker_status(resolved)
+    target = status
+    for key in path[:-1]:
+        target = target[key]
+    if unsafe_value is _DELETE:
+        del target[path[-1]]
+    else:
+        target[path[-1]] = unsafe_value
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        output = "not-found\ninactive\n" if command[:2] == ["systemctl", "show"] else ""
+        return subprocess.CompletedProcess(command, 0, output)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size):
+            return json.dumps(status).encode()
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(lifecycle.QualificationLifecycleError, match="ambiguous"):
+        lifecycle.cleanup_replica(
+            resolved,
+            generation=None,
+            owned_units={resolved.supervisor_unit, resolved.worker_unit},
+            runner=run,
+            read_status=lambda _path: {
+                "release_id": resolved.release_id,
+                "worker_id": resolved.worker_id,
+                "state": "failed",
+                "generation": None,
+            },
+            port_is_free=lambda _host, _port: True,
+        )
+
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
+
+
+@pytest.mark.parametrize("failure", ("missing_token", "transport", "oversized"))
+def test_generation_none_cleanup_fails_closed_without_bounded_authenticated_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+):
+    resolved = _resolved(tmp_path)
+    monkeypatch.setenv(
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN",
+        "short" if failure == "missing_token" else "t" * 32,
+    )
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        output = "not-found\ninactive\n" if command[:2] == ["systemctl", "show"] else ""
+        return subprocess.CompletedProcess(command, 0, output)
+
+    class OversizedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size):
+            return b"x" * size
+
+    def open_status(*_args, **_kwargs):
+        if failure == "transport":
+            raise urllib.error.URLError("unavailable")
+        return OversizedResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_status)
+
+    with pytest.raises(lifecycle.QualificationLifecycleError, match="ambiguous"):
+        lifecycle.cleanup_replica(
+            resolved,
+            generation=None,
+            owned_units={resolved.supervisor_unit, resolved.worker_unit},
+            runner=run,
+            read_status=lambda _path: {
+                "release_id": resolved.release_id,
+                "worker_id": resolved.worker_id,
+                "state": "failed",
+                "generation": None,
+            },
+            port_is_free=lambda _host, _port: True,
+        )
+
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
+
+
+def test_generation_none_cleanup_refuses_worker_stop_until_supervisor_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolved = _resolved(tmp_path)
+    monkeypatch.setenv("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "t" * 32)
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        output = "loaded\nactive\n" if command[:2] == ["systemctl", "show"] else ""
+        return subprocess.CompletedProcess(command, 0, output)
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("worker status must not be read before supervisor stop")
+        ),
+    )
+
+    with pytest.raises(lifecycle.QualificationLifecycleError, match="did not stop"):
+        lifecycle.cleanup_replica(
+            resolved,
+            generation=None,
+            owned_units={resolved.supervisor_unit, resolved.worker_unit},
+            runner=run,
+            read_status=lambda _path: {},
+            port_is_free=lambda _host, _port: True,
+        )
+
+    assert ["systemctl", "stop", resolved.worker_unit] not in commands
