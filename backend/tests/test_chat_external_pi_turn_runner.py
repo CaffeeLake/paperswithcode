@@ -734,7 +734,6 @@ def test_external_pi_runner_delivers_contiguous_worker_buffer_exhaustion():
         worker_status_resolver=lambda: _async_value(worker_status(claim)),
         session_factory=SessionContext,
     )
-
     assert asyncio.run(_collect(runner)) == [
         {"type": "workspace_ready"},
         {
@@ -1544,14 +1543,20 @@ def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
         '"command":"printf x >> marker","timeout_ms":1000,"worker_sequence":1}'
     )
     first = FakeSocket([tool, OSError("tool result acknowledgement lost")])
-    second = FakeSocket(
+
+    class FailedAttachSocket(FakeSocket):
+        async def send(self, _value):
+            raise OSError("attach request was not delivered")
+
+    failed_attach = FailedAttachSocket([])
+    reattached = FakeSocket(
         [
             tool,
             '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":2}',
             '{"type":"worker_done","status":"complete","worker_sequence":3}',
         ]
     )
-    connector = SequencedConnector(first, second)
+    connector = SequencedConnector(first, failed_attach, reattached)
     claim = ExternalWorkerClaim(
         "external-pi-1", uuid.uuid4(), 7, "release-a", "external-pi-v1"
     )
@@ -1582,13 +1587,15 @@ def test_external_pi_runner_never_reexecutes_bash_after_websocket_reconnect():
 
     assert [event["type"] for event in asyncio.run(_collect(runner))] == ["done"]
     assert executor.exec_calls == 1
-    assert json.loads(first.sent[1]) == json.loads(second.sent[1])
+    assert json.loads(first.sent[1]) == json.loads(reattached.sent[1])
     assert ("turn_state", "reconnecting", 1) in observations
     assert ("worker_reconnect", None, 1) in observations
     assert observations.index(("turn_state", "reconnecting", 1)) < observations.index(
         ("worker_reconnect", None, 1)
     )
     assert ("turn_state", "running", 1) in observations
+    assert observations.count(("worker_reconnect", None, 1)) == 1
+    assert observations.count(("turn_state", "running", 1)) == 2
 
 
 def test_external_pi_reconnect_reuses_real_recovered_bash_result(tmp_path):
@@ -1815,6 +1822,10 @@ def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run()
         worker_status_resolver=lambda: _async_value(next(statuses)),
         session_factory=SessionContext,
     )
+    observations: list[tuple[str, str | None, int]] = []
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
 
     assert asyncio.run(_collect(runner)) == [
         {"type": "workspace_ready"},
@@ -1825,6 +1836,8 @@ def test_external_pi_runner_classifies_exact_worker_loss_without_new_model_run()
         },
     ]
     assert len(connector.calls) == 1
+    assert ("typed_failure", "external_worker_lost", 1) in observations
+    assert ("worker_reconnect", None, 1) not in observations
 
 
 @pytest.mark.parametrize(
@@ -1887,6 +1900,10 @@ def test_external_pi_runner_classifies_status_control_failure_as_worker_loss(
         worker_status_resolver=resolve_status,
         session_factory=SessionContext,
     )
+    observations: list[tuple[str, str | None, int]] = []
+    runner.observe = lambda event, code, value: observations.append(
+        (event, code, value)
+    )
 
     assert asyncio.run(_collect(runner)) == [
         {"type": "workspace_ready"},
@@ -1897,6 +1914,8 @@ def test_external_pi_runner_classifies_status_control_failure_as_worker_loss(
         },
     ]
     assert len(connector.calls) == 1
+    assert ("typed_failure", "external_worker_lost", 1) in observations
+    assert ("worker_reconnect", None, 1) not in observations
 
 
 @pytest.mark.parametrize(

@@ -28,7 +28,7 @@ def test_observer_emits_only_bounded_content_free_labels(caplog):
         metadata={"event": "typed_failure", "code": "execution_lost", "value": 1},
     )
     observation.end.assert_called_once_with()
-    assert runtime_failure_counts(caplog.messages) == {"durable_lifecycle_failure": 1}
+    assert runtime_failure_counts(caplog.messages) == {}
 
 
 def test_observer_sends_bounded_latency_signal_to_langfuse():

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from backend.config import Settings
 from backend.scripts import monitor_chat_operational_alerts as monitor
 from backend.services.chat_operational_alert_service import (
     ProviderHealth,
+    lifecycle_window_alerts,
     operational_alert_payload,
     provider_health,
     provider_transition,
@@ -35,33 +38,147 @@ def test_runtime_failure_counts_never_return_raw_journal_content():
     }
 
 
-def test_runtime_failure_counts_classifies_durable_capacity_and_latency_signals():
+def test_runtime_failure_counts_does_not_page_on_routine_lifecycle_success():
     messages = [
         "chat durable lifecycle event=worker_reconnect code=none value=1",
         "chat durable lifecycle event=executor_recovery code=succeeded value=1",
-        "chat durable lifecycle event=executor_recovery code=failed value=1",
-        "chat durable lifecycle event=capacity_saturation code=none value=1",
-        (
-            "chat durable lifecycle event=typed_failure "
-            "code=event_journal_exhausted value=1"
-        ),
         "chat durable lifecycle event=workspace_state code=created value=1",
         "chat durable lifecycle event=workspace_state code=reused value=1",
-        "chat durable lifecycle event=ttft_ms code=none value=9999",
-        "chat durable lifecycle event=ttft_ms code=none value=10000",
+        "chat durable lifecycle event=ttft_ms code=none value=12000",
     ]
 
-    assert runtime_failure_counts(messages) == {
-        "durable_lifecycle_failure": 1,
-        "worker_reconnect": 1,
-        "executor_reattach": 1,
-        "executor_loss": 1,
-        "capacity_saturation": 1,
-        "event_journal_bound": 1,
-        "workspace_created": 1,
-        "workspace_reused": 1,
-        "ttft_regression": 1,
+    assert runtime_failure_counts(messages) == {}
+    assert lifecycle_window_alerts(messages, Settings()) == {}
+
+
+def test_lifecycle_window_alerts_require_configured_rate_or_ratio_breaches():
+    settings = Settings(
+        chat_lifecycle_alert_min_samples=5,
+        chat_lifecycle_alert_failure_percent=50,
+        chat_lifecycle_capacity_saturation_count=3,
+        chat_lifecycle_workspace_create_percent=75,
+        chat_lifecycle_ttft_threshold_ms=1_000,
+        chat_lifecycle_ttft_regression_percent=50,
+    )
+    messages = [
+        *[
+            "chat durable lifecycle event=worker_reconnect code=none value=1"
+            for _ in range(2)
+        ],
+        *[
+            (
+                "chat durable lifecycle event=typed_failure "
+                "code=external_worker_lost value=1"
+            )
+            for _ in range(3)
+        ],
+        *[
+            "chat durable lifecycle event=executor_recovery code=succeeded value=1"
+            for _ in range(2)
+        ],
+        *[
+            "chat durable lifecycle event=turn_state code=waiting_tool value=1"
+            for _ in range(5)
+        ],
+        *[
+            "chat durable lifecycle event=executor_recovery code=failed value=1"
+            for _ in range(3)
+        ],
+        *[
+            "chat durable lifecycle event=capacity_saturation code=none value=1"
+            for _ in range(3)
+        ],
+        *[
+            "chat durable lifecycle event=workspace_state code=created value=1"
+            for _ in range(4)
+        ],
+        "chat durable lifecycle event=workspace_state code=reused value=1",
+        *[
+            "chat durable lifecycle event=ttft_ms code=none value=1000"
+            for _ in range(3)
+        ],
+        *["chat durable lifecycle event=ttft_ms code=none value=999" for _ in range(2)],
+    ]
+
+    assert lifecycle_window_alerts(messages, settings) == {
+        "worker_reattach_failure_rate": 3,
+        "executor_lost_rate": 3,
+        "capacity_saturation": 3,
+        "workspace_create_ratio": 4,
+        "ttft_regression_rate": 3,
     }
+
+
+def test_event_journal_bound_remains_an_explicit_runtime_failure():
+    assert runtime_failure_counts(
+        [
+            "chat durable lifecycle event=typed_failure "
+            "code=event_journal_exhausted value=1"
+        ]
+    ) == {"event_journal_bound": 1}
+
+
+def test_monitor_pages_once_on_window_breach_and_recovers_once(monkeypatch):
+    now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+    settings = Settings(
+        chat_lifecycle_alert_min_samples=2,
+        chat_lifecycle_alert_failure_percent=50,
+    )
+    failed_window = [
+        "chat durable lifecycle event=turn_state code=waiting_tool value=2",
+        "chat durable lifecycle event=executor_recovery code=failed value=1",
+    ]
+    current_window = [
+        "chat durable lifecycle event=worker_reconnect code=none value=1",
+        "chat durable lifecycle event=executor_recovery code=succeeded value=1",
+        "chat durable lifecycle event=workspace_state code=created value=1",
+    ]
+    monkeypatch.setattr(
+        monitor,
+        "read_journal",
+        lambda _cursor, _now: ([], "cursor-next", False),
+    )
+    monkeypatch.setattr(
+        monitor, "read_lifecycle_window", lambda _now, _seconds: current_window
+    )
+    monkeypatch.setattr(
+        monitor,
+        "db_manager",
+        SimpleNamespace(session_local=lambda: nullcontext(None)),
+    )
+    monkeypatch.setattr(
+        monitor,
+        "provider_health",
+        lambda _db, _settings, observed_now: ProviderHealth(
+            0,
+            0,
+            observed_now - timedelta(minutes=5),
+            observed_now,
+        ),
+    )
+    state = monitor.empty_state()
+
+    events, failed = monitor.collect_events(state, settings, now)
+    assert failed is False
+    assert events == []
+
+    current_window = failed_window
+    events, failed = monitor.collect_events(state, settings, now)
+    assert failed is False
+    assert [event["signal"] for event in events] == ["chat_lifecycle_threshold"]
+    assert events[0]["classifications"] == {"executor_lost_rate": 1}
+
+    events, failed = monitor.collect_events(state, settings, now)
+    assert failed is False
+    assert events == []
+
+    current_window = []
+    events, failed = monitor.collect_events(state, settings, now)
+    assert failed is False
+    assert [event["signal"] for event in events] == [
+        "chat_lifecycle_threshold_recovered"
+    ]
+    assert events[0]["classifications"] == {"executor_lost_rate": 1}
 
 
 def test_provider_health_counts_only_content_free_aggregates():
@@ -196,6 +313,17 @@ def test_state_round_trip_is_private_and_atomic(tmp_path):
     assert not list(tmp_path.glob(".state.json.new-*"))
 
 
+@pytest.mark.parametrize("active", [["user-controlled-label"], [{"bad": "shape"}]])
+def test_state_rejects_unbounded_lifecycle_labels(tmp_path, active):
+    path = tmp_path / "state.json"
+    state = monitor.empty_state()
+    state["lifecycle_active"] = active
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(TypeError, match="invalid lifecycle state"):
+        monitor.load_state(path)
+
+
 def test_dashboard_health_record_is_content_free_and_group_readable(tmp_path):
     monitor.write_health_record(
         tmp_path,
@@ -263,6 +391,35 @@ def test_journal_reader_recovers_from_a_vacuumed_cursor(monkeypatch):
     assert messages == ["recent"]
     assert cursor == "fresh-cursor"
     assert reset is True
+
+
+def test_lifecycle_window_reader_uses_configured_window(monkeypatch):
+    now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+    observed = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command)
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "MESSAGE": (
+                        "chat durable lifecycle event=worker_reconnect "
+                        "code=none value=1"
+                    )
+                }
+            )
+        )
+
+    monkeypatch.setattr(monitor.subprocess, "run", fake_run)
+
+    assert monitor.read_lifecycle_window(now, 300) == [
+        "chat durable lifecycle event=worker_reconnect code=none value=1"
+    ]
+    assert "--after-cursor" not in observed[0]
+    assert (now - timedelta(seconds=300)).isoformat() in observed[0]
+    assert observed[0][observed[0].index("--grep") + 1] == (
+        "chat durable lifecycle event="
+    )
 
 
 def test_delivery_uses_primary_then_fallback(monkeypatch):

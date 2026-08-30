@@ -42,30 +42,38 @@ RUNTIME_FAILURE_PATTERNS = {
     "langfuse_finalization_failure": "chat Langfuse trace finalization failed",
     "langfuse_client_failure": "chat Langfuse client initialization failed",
     "excalidraw_mcp_unready": "chat Excalidraw MCP registration failed",
-    "durable_lifecycle_failure": "chat durable lifecycle event=typed_failure",
     "durable_lifecycle_telemetry_failure": (
         "chat durable lifecycle Langfuse emission failed"
-    ),
-    "worker_reconnect": "chat durable lifecycle event=worker_reconnect code=none",
-    "executor_reattach": (
-        "chat durable lifecycle event=executor_recovery code=succeeded"
-    ),
-    "executor_loss": "chat durable lifecycle event=executor_recovery code=failed",
-    "capacity_saturation": (
-        "chat durable lifecycle event=capacity_saturation code=none"
     ),
     "event_journal_bound": (
         "chat durable lifecycle event=typed_failure code=event_journal_exhausted"
     ),
-    "workspace_created": ("chat durable lifecycle event=workspace_state code=created"),
-    "workspace_reused": "chat durable lifecycle event=workspace_state code=reused",
+    "projection_mismatch": (
+        "chat durable lifecycle event=typed_failure code=projection_mismatch"
+    ),
+    "cancel_control_missing": (
+        "chat durable lifecycle event=typed_failure code=cancel_control_missing"
+    ),
+    "dispatch_failed": (
+        "chat durable lifecycle event=typed_failure code=dispatch_failed"
+    ),
     "paper_curation_dispatch_pause": "paper curation dispatch paused",
     "paper_curation_dispatch_recovery": "paper curation dispatch resumed",
 }
-TTFT_PATTERN = re.compile(
-    r"chat durable lifecycle event=ttft_ms code=none value=(\d+)(?:\s|$)"
+LIFECYCLE_PATTERN = re.compile(
+    r"chat durable lifecycle event=(?P<event>[a-z_]+) "
+    r"code=(?P<code>[a-z_]+|none) value=(?P<value>\d+)(?:\s|$)"
 )
-TTFT_REGRESSION_THRESHOLD_MS = 10_000
+LIFECYCLE_ALERT_NAMES = frozenset(
+    {
+        "worker_reattach_failure_rate",
+        "executor_lost_rate",
+        "capacity_saturation",
+        "workspace_create_ratio",
+        "ttft_regression_rate",
+    }
+)
+MAX_LIFECYCLE_VALUE = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -142,12 +150,81 @@ def runtime_failure_counts(messages: list[str]) -> dict[str, int]:
         and "403 Forbidden" in message
         for message in messages
     )
-    counts["ttft_regression"] = sum(
-        int(match.group(1)) >= TTFT_REGRESSION_THRESHOLD_MS
-        for message in messages
-        if (match := TTFT_PATTERN.search(message)) is not None
-    )
     return {name: count for name, count in counts.items() if count}
+
+
+def lifecycle_window_alerts(messages: list[str], settings: Settings) -> dict[str, int]:
+    """Return only configured lifecycle threshold breaches for one log window."""
+
+    observations: list[tuple[str, str, int]] = []
+    for message in messages:
+        match = LIFECYCLE_PATTERN.search(message)
+        if match is None:
+            continue
+        value = int(match.group("value"))
+        if value <= MAX_LIFECYCLE_VALUE:
+            observations.append((match.group("event"), match.group("code"), value))
+
+    def count(event: str, code: str) -> int:
+        return sum(
+            value
+            for observed_event, observed_code, value in observations
+            if observed_event == event and observed_code == code
+        )
+
+    def rate_breached(numerator: int, denominator: int, percent: int) -> bool:
+        return (
+            denominator >= settings.chat_lifecycle_alert_min_samples
+            and numerator * 100 >= denominator * percent
+        )
+
+    alerts: dict[str, int] = {}
+    worker_failures = count("typed_failure", "external_worker_lost")
+    worker_successes = count("worker_reconnect", "none")
+    if rate_breached(
+        worker_failures,
+        worker_failures + worker_successes,
+        settings.chat_lifecycle_alert_failure_percent,
+    ):
+        alerts["worker_reattach_failure_rate"] = worker_failures
+
+    executor_failures = count("executor_recovery", "failed")
+    executor_attempts = count("turn_state", "waiting_tool")
+    if rate_breached(
+        executor_failures,
+        executor_attempts,
+        settings.chat_lifecycle_alert_failure_percent,
+    ):
+        alerts["executor_lost_rate"] = executor_failures
+
+    saturations = count("capacity_saturation", "none")
+    if saturations >= settings.chat_lifecycle_capacity_saturation_count:
+        alerts["capacity_saturation"] = saturations
+
+    workspace_creates = count("workspace_state", "created")
+    workspace_reuses = count("workspace_state", "reused")
+    if rate_breached(
+        workspace_creates,
+        workspace_creates + workspace_reuses,
+        settings.chat_lifecycle_workspace_create_percent,
+    ):
+        alerts["workspace_create_ratio"] = workspace_creates
+
+    ttft_values = [
+        value
+        for event, code, value in observations
+        if event == "ttft_ms" and code == "none"
+    ]
+    slow_ttft = sum(
+        value >= settings.chat_lifecycle_ttft_threshold_ms for value in ttft_values
+    )
+    if rate_breached(
+        slow_ttft,
+        len(ttft_values),
+        settings.chat_lifecycle_ttft_regression_percent,
+    ):
+        alerts["ttft_regression_rate"] = slow_ttft
+    return alerts
 
 
 def operational_alert_payload(

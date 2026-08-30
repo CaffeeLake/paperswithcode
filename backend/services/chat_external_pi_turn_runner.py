@@ -168,13 +168,11 @@ class ExternalPiChatTurnRunner:
                     httpx.HTTPError,
                     ValueError,
                 ):
+                    self.observe("typed_failure", "external_worker_lost", 1)
                     yield self._worker_lost_event()
                     return
             try:
                 async with self._external_worker_socket(worker_claim) as socket:
-                    if _attempt:
-                        self.observe("worker_reconnect", None, 1)
-                        self.observe("turn_state", "running", 1)
                     self.socket = socket
                     await socket.send(
                         json.dumps(
@@ -184,6 +182,9 @@ class ExternalPiChatTurnRunner:
                             separators=(",", ":"),
                         )
                     )
+                    if _attempt:
+                        self.observe("worker_reconnect", None, 1)
+                        self.observe("turn_state", "running", 1)
                     started = True
                     async for raw in socket:
                         event = self._decode(raw)
