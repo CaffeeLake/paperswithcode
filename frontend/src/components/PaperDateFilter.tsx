@@ -249,14 +249,14 @@ export const PaperDateFilter: React.FC<PaperDateRangeValue & {
         className={`sort-btn sort-btn-time${sameRange(current, week) ? " active" : ""}`}
         onClick={() => onChange(week)}
       >
-        This Week
+        Last Week
       </button>
       <button
         type="button"
         className={`sort-btn sort-btn-time${sameRange(current, month) ? " active" : ""}`}
         onClick={() => onChange(month)}
       >
-        This Month
+        Last Month
       </button>
       <button
         type="button"
