@@ -657,8 +657,12 @@ def test_postgresql_fresh_evidence_catalog_and_repair_are_exact_and_idempotent()
             ),
         }
         for _ in range(2):
-            with database.connect() as connection:
-                connection.exec_driver_sql(repair_sql)
+            raw_connection = database.raw_connection()
+            try:
+                with raw_connection.cursor() as cursor:
+                    cursor.execute(repair_sql)
+            finally:
+                raw_connection.close()
         with Session(database) as db:
             validate_qualification_evidence_schema(db)
     finally:
