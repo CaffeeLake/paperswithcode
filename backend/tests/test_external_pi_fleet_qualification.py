@@ -2470,6 +2470,260 @@ def test_controller_always_cleans_every_observed_generation_on_round_failure(
     assert report_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_controller_recovery_reports_allowlisted_content_free_failure_reason(
+    tmp_path: Path,
+):
+    from backend.loadtests.external_pi_fleet_core import FleetRecoveryReport
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    secret = "protected_response_body_token"
+
+    class FailingOperator(_FleetOperator):
+        def run_round(
+            self,
+            name,
+            workers,
+            *,
+            expected_users,
+            abort_requested=lambda: False,
+        ):
+            raise RuntimeError(secret)
+
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(RuntimeError, match=secret):
+        run_fleet_controller(
+            FailingOperator(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("2x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained_text = report_path.read_text(encoding="utf-8")
+    retained = json.loads(retained_text)
+    assert retained["failure_stage"] == "locust_round"
+    assert retained["failure_code"] == "locust_round_failed"
+    assert secret not in retained_text
+
+    validation_payload = {
+        key: value for key, value in retained.items() if key != "cleanup_complete"
+    }
+    for field in ("failure_stage", "failure_code"):
+        invalid = dict(validation_payload)
+        invalid[field] = "protected_response_body_token"
+        with pytest.raises(ValidationError):
+            FleetRecoveryReport.model_validate_json(json.dumps(invalid))
+
+    mismatched = dict(validation_payload)
+    mismatched["failure_code"] = "cleanup_failed"
+    with pytest.raises(ValidationError):
+        FleetRecoveryReport.model_validate_json(json.dumps(mismatched))
+
+
+def test_controller_preserves_round_failure_when_sampler_fails_later(tmp_path: Path):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class OrderedFailureOperator(_FleetOperator):
+        guard_started = threading.Event()
+        round_failed = threading.Event()
+
+        def prepare_round(self):
+            self.guard_started.set()
+            return super().prepare_round()
+
+        def sample_resources(self, shape):
+            if (
+                self.guard_started.is_set()
+                and threading.current_thread() is not threading.main_thread()
+            ):
+                assert self.round_failed.wait(timeout=1)
+                raise RuntimeError("later sampler detail")
+            return super().sample_resources(shape)
+
+        def run_round(self, name, workers, *, expected_users, abort_requested):
+            self.round_failed.set()
+            raise RuntimeError("first round detail")
+
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(RuntimeError, match="first round detail"):
+        run_fleet_controller(
+            OrderedFailureOperator(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("2x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained = json.loads(report_path.read_text(encoding="utf-8"))
+    assert retained["failure_stage"] == "locust_round"
+    assert retained["failure_code"] == "locust_round_failed"
+
+
+def test_controller_publishes_conservative_recovery_when_inspection_fails(
+    tmp_path: Path,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    class InspectionFailureOperator(_FleetOperator):
+        def run_round(self, name, workers, *, expected_users, abort_requested):
+            raise RuntimeError("first round detail")
+
+        def recovery_postconditions(self, resolved, owned_units):
+            raise RuntimeError("later cleanup inspection detail")
+
+    report_path = tmp_path / "fleet.json"
+    report_path.write_text('{"previous":true}\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="first round detail"):
+        run_fleet_controller(
+            InspectionFailureOperator(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("2x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained_text = report_path.read_text(encoding="utf-8")
+    retained = json.loads(retained_text)
+    assert retained["report_type"] == "recovery"
+    assert retained["failure_stage"] == "locust_round"
+    assert retained["failure_code"] == "locust_round_failed"
+    assert retained["cleanup_complete"] is False
+    assert len(retained["replicas"]) == 16
+    assert all(not item["cleanup"]["units_removed"] for item in retained["replicas"])
+    assert all(len(item["unresolved_units"]) == 2 for item in retained["replicas"])
+    assert all(
+        item["unresolved_units"] == item["owned_units"]
+        for item in retained["replicas"][:2]
+    )
+    assert all(not item["owned_units"] for item in retained["replicas"][2:])
+    assert "first round detail" not in retained_text
+    assert "later cleanup inspection detail" not in retained_text
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_stage", "expected_code"),
+    (
+        ("revalidation", "revalidation", "revalidation_failed"),
+        ("resource_sampling", "resource_sampling", "resource_sampling_failed"),
+        ("resource_threshold", "resource_threshold", "resource_threshold_crossed"),
+        ("replica_lifecycle", "replica_lifecycle", "replica_lifecycle_failed"),
+        ("cleanup", "cleanup", "cleanup_failed"),
+    ),
+)
+def test_controller_recovery_distinguishes_failure_stage_without_error_text(
+    tmp_path: Path,
+    failure: str,
+    expected_stage: str,
+    expected_code: str,
+):
+    from backend.scripts.qualify_external_pi_fleet import run_fleet_controller
+
+    secret = "protected_failure_detail"
+
+    class FailingOperator(_FleetOperator):
+        def revalidate(self, shape, active):
+            if failure == "revalidation":
+                raise RuntimeError(secret)
+            return super().revalidate(shape, active)
+
+        def sample_resources(self, shape):
+            if failure == "resource_sampling":
+                raise RuntimeError(secret)
+            evidence = super().sample_resources(shape)
+            if failure == "resource_threshold":
+                return evidence.model_copy(update={"peak_cpu_percent": 80.0})
+            return evidence
+
+        def start(self, resolved):
+            if failure == "replica_lifecycle":
+                raise RuntimeError(secret)
+            return super().start(resolved)
+
+        def cleanup(self, resolved, generation):
+            if failure == "cleanup":
+                raise RuntimeError(secret)
+            return super().cleanup(resolved, generation)
+
+    report_path = tmp_path / "fleet.json"
+    with pytest.raises(RuntimeError):
+        run_fleet_controller(
+            FailingOperator(),
+            release_id="0123456789ab-staging",
+            report_path=report_path,
+            report_root=tmp_path,
+            shape_names=("2x32",),
+            geteuid=lambda: 0,
+        )
+
+    retained_text = report_path.read_text(encoding="utf-8")
+    retained = json.loads(retained_text)
+    assert retained["failure_stage"] == expected_stage
+    assert retained["failure_code"] == expected_code
+    assert secret not in retained_text
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_stage", "expected_code"),
+    (
+        ("worker_status", "worker_status", "worker_status_failed"),
+        ("locust_round", "locust_round", "locust_round_failed"),
+        ("counter", "counter", "counter_mismatch"),
+    ),
+)
+def test_system_round_classifies_only_allowlisted_failure_reason(
+    tmp_path: Path,
+    failure: str,
+    expected_stage: str,
+    expected_code: str,
+):
+    from backend.scripts.qualify_external_pi_fleet import (
+        SystemFleetOperator,
+        _FleetOperationFailure,
+    )
+
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("synthetic", encoding="utf-8")
+    operator = object.__new__(SystemFleetOperator)
+    operator._prompt_path = prompt
+    operator.environ = {"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": "protected"}
+    status = SimpleNamespace(operation_counters=SimpleNamespace(shadow_requests=0))
+    if failure == "worker_status":
+        operator._worker_status = lambda _worker: (_ for _ in ()).throw(
+            RuntimeError("protected worker detail")
+        )
+    else:
+        operator._worker_status = lambda _worker: status
+    operator._validate_worker_status = lambda _worker, _status: None
+    if failure == "locust_round":
+        operator._round_runner = lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("protected Locust detail")
+        )
+    else:
+        operator._round_runner = lambda **_kwargs: SimpleNamespace(
+            observations=(), protocol_errors=0, transport_errors=0
+        )
+    worker = WorkerEvidence(
+        worker_id="staging-qualification-00",
+        port=8780,
+        generation=1,
+        maximum_sessions=32,
+    )
+
+    with pytest.raises(_FleetOperationFailure) as raised:
+        operator.run_round(
+            "healthy",
+            (worker,),
+            expected_users=1,
+            abort_requested=lambda: False,
+        )
+
+    assert raised.value.stage == expected_stage
+    assert raised.value.code == expected_code
+
+
 @pytest.mark.parametrize(
     ("shape_names", "failure_round", "expected_workers"),
     (
@@ -3177,6 +3431,37 @@ def test_system_resource_preflight_scales_worker_memory_by_session_limit(monkeyp
     assert preflight.projected_mem_available_bytes == 4 * 1024**3 - 2250 * 1024**2
 
 
+def test_system_resource_samples_host_cpu_over_at_least_one_tenth_second():
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    operator = object.__new__(SystemFleetOperator)
+    operator._unit_cpu_state = {}
+    operator._systemctl_properties = lambda _unit, *_names: {
+        "MemoryPeak": 1,
+        "CPUUsageNSec": 1,
+        "TasksCurrent": 1,
+    }
+    operator._mem_available_bytes = lambda: 2 * 1024**3
+    cpu = iter(((100, 80), (200, 100)))
+    operator._read_host_cpu = lambda: next(cpu)
+    slept = []
+    operator.sleep = lambda seconds: slept.append(seconds)
+
+    evidence = operator.sample_resources(resolve_fleet_shape("2x32"))
+
+    assert slept == [0.1]
+    assert evidence.peak_cpu_percent == 80.0
+
+
+def test_system_host_cpu_sampler_rejects_sub_tenth_second_window():
+    from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
+
+    operator = object.__new__(SystemFleetOperator)
+
+    with pytest.raises(FleetRunRefused, match="sample interval"):
+        operator._sample_host_cpu_percent(0.099)
+
+
 def test_system_resource_adapter_parses_only_requested_numeric_properties():
     from backend.scripts.qualify_external_pi_fleet import SystemFleetOperator
 
@@ -3243,9 +3528,10 @@ def test_system_sample_resources_aggregates_injected_exact_unit_and_host_evidenc
     operator = object.__new__(controller.SystemFleetOperator)
     operator.runner = systemctl
     operator._unit_cpu_state = {}
-    operator._host_cpu_state = None
-    host_cpu = iter(((100, 80), (200, 100)))
+    host_cpu = iter(((100, 80), (200, 100), (200, 100), (300, 120)))
     operator._read_host_cpu = lambda: next(host_cpu)
+    slept = []
+    operator.sleep = lambda seconds: slept.append(seconds)
     operator._mem_available_bytes = lambda: 2 * 1024**3
     monotonic = iter((10.0, 12.0))
     monkeypatch.setattr(controller.time, "monotonic", lambda: next(monotonic))
@@ -3254,7 +3540,7 @@ def test_system_sample_resources_aggregates_injected_exact_unit_and_host_evidenc
     first = operator.sample_resources(shape)
     second = operator.sample_resources(shape)
 
-    assert first.peak_cpu_percent == 0.0
+    assert first.peak_cpu_percent == 80.0
     assert second.peak_memory_bytes == 150 * 1024**2
     assert second.peak_cpu_percent == 80.0
     assert second.peak_tasks == 30
@@ -3262,6 +3548,7 @@ def test_system_sample_resources_aggregates_injected_exact_unit_and_host_evidenc
     assert len(second.unit_peaks) == 10
     assert {item.peak_cpu_percent for item in second.unit_peaks} == {50.0}
     assert set(calls.values()) == {2}
+    assert slept == [0.1, 0.1]
 
 
 def test_controller_concurrently_aborts_round_when_live_resource_guard_crosses(

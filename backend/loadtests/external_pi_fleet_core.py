@@ -36,6 +36,27 @@ MAX_DURABLE_DURATION_MS = 600_000
 MAX_REPORT_BYTES = 2**63 - 1
 FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
 DurableWorkload = Literal["no_tool", "read", "bash", "admission_stream"]
+FleetFailureStage = Literal[
+    "revalidation",
+    "resource_sampling",
+    "resource_threshold",
+    "worker_status",
+    "locust_round",
+    "counter",
+    "replica_lifecycle",
+    "cleanup",
+]
+FleetFailureCode = Literal[
+    "revalidation_failed",
+    "resource_sampling_failed",
+    "resource_threshold_crossed",
+    "resource_sampler_stalled",
+    "worker_status_failed",
+    "locust_round_failed",
+    "counter_mismatch",
+    "replica_lifecycle_failed",
+    "cleanup_failed",
+]
 
 
 class FleetRunRefused(RuntimeError):
@@ -838,6 +859,8 @@ class FleetRecoveryReport(BaseModel):
     release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
     runtime_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
     owner_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
+    failure_stage: FleetFailureStage
+    failure_code: FleetFailureCode
     replicas: tuple[RecoveryReplicaEvidence, ...] = Field(max_length=16)
 
     @model_validator(mode="after")
@@ -845,6 +868,21 @@ class FleetRecoveryReport(BaseModel):
         worker_ids = tuple(item.worker_id for item in self.replicas)
         if len(set(worker_ids)) != len(worker_ids):
             raise ValueError("external Pi fleet recovery replicas are duplicated")
+        valid_failure_pairs = {
+            ("revalidation", "revalidation_failed"),
+            ("resource_sampling", "resource_sampling_failed"),
+            ("resource_sampling", "resource_sampler_stalled"),
+            ("resource_threshold", "resource_threshold_crossed"),
+            ("worker_status", "worker_status_failed"),
+            ("locust_round", "locust_round_failed"),
+            ("counter", "counter_mismatch"),
+            ("replica_lifecycle", "replica_lifecycle_failed"),
+            ("cleanup", "cleanup_failed"),
+        }
+        if (self.failure_stage, self.failure_code) not in valid_failure_pairs:
+            raise ValueError(
+                "external Pi fleet recovery failure reason is inconsistent"
+            )
         return self
 
     @computed_field

@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +23,8 @@ from backend.loadtests.external_pi_fleet_core import (
     MIN_PROJECTED_MEM_AVAILABLE_BYTES,
     CleanupEvidence,
     FleetQualificationReport,
+    FleetFailureCode,
+    FleetFailureStage,
     FleetRecoveryReport,
     FleetReplica,
     FleetRoundReport,
@@ -102,6 +104,46 @@ class AttemptedReplica:
     resolved: object
     generation: int | None = None
     owned_units: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class _FailureDiagnostic:
+    stage: FleetFailureStage = "replica_lifecycle"
+    code: FleetFailureCode = "replica_lifecycle_failed"
+    captured: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def mark(self, stage: FleetFailureStage, code: FleetFailureCode) -> None:
+        with self.lock:
+            if not self.captured:
+                self.stage = stage
+                self.code = code
+
+    def capture(
+        self,
+        stage: FleetFailureStage | None = None,
+        code: FleetFailureCode | None = None,
+    ) -> None:
+        with self.lock:
+            if self.captured:
+                return
+            if stage is not None and code is not None:
+                self.stage = stage
+                self.code = code
+            self.captured = True
+
+
+class _FleetOperationFailure(Exception):
+    def __init__(
+        self,
+        stage: FleetFailureStage,
+        code: FleetFailureCode,
+        cause: BaseException,
+    ) -> None:
+        super().__init__("external Pi fleet operation failed")
+        self.stage = stage
+        self.code = code
+        self.cause = cause
 
 
 class FleetQualificationInterrupted(FleetRunRefused):
@@ -205,7 +247,6 @@ class SystemFleetOperator:
         self.owner_id = str(uuid.uuid4())
         self._prompt_path: Path | None = None
         self._round_runner: Callable | None = None
-        self._host_cpu_state: tuple[int, int] | None = None
         self._unit_cpu_state: dict[str, tuple[int, float]] = {}
         self.runtime_id = self._manifest()["external_pi_runtime"]["runtime_id"]
 
@@ -476,15 +517,6 @@ class SystemFleetOperator:
                 return min(value, 2**63 - 1)
         raise FleetRunRefused("external Pi fleet host memory evidence is unavailable")
 
-    def _host_cpu_percent(self) -> float:
-        total, idle = self._read_host_cpu()
-        previous = self._host_cpu_state
-        self._host_cpu_state = (total, idle)
-        if previous is None or total <= previous[0]:
-            return 0.0
-        busy_delta = (total - previous[0]) - (idle - previous[1])
-        return max(0.0, min(100.0, busy_delta * 100 / (total - previous[0])))
-
     @staticmethod
     def _read_host_cpu() -> tuple[int, int]:
         fields = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
@@ -494,7 +526,7 @@ class SystemFleetOperator:
         return sum(counters), counters[3] + counters[4]
 
     def _sample_host_cpu_percent(self, interval_seconds: float = 0.1) -> float:
-        if not 0.05 <= interval_seconds <= 1.0:
+        if not 0.1 <= interval_seconds <= 1.0:
             raise FleetRunRefused("external Pi fleet CPU sample interval is invalid")
         before_total, before_idle = self._read_host_cpu()
         self.sleep(interval_seconds)
@@ -617,28 +649,46 @@ class SystemFleetOperator:
             raise FleetRunRefused("external Pi fleet runtime prompt is unavailable")
         if self._round_runner is None:
             raise FleetRunRefused("external Pi fleet round runtime is unavailable")
-        before = tuple(self._worker_status(worker) for worker in workers)
-        for worker, status in zip(workers, before, strict=True):
-            self._validate_worker_status(worker, status)
-        result = self._round_runner(
-            replicas=tuple(
-                FleetReplica(worker.worker_id, worker.port) for worker in workers
-            ),
-            prompt=self._prompt_path.read_text(encoding="utf-8"),
-            token=self.environ["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"],
-            expected_users=expected_users,
-            abort_requested=abort_requested,
-        )
-        after = tuple(self._worker_status(worker) for worker in workers)
-        for worker, status in zip(workers, after, strict=True):
-            self._validate_worker_status(worker, status)
+        try:
+            before = tuple(self._worker_status(worker) for worker in workers)
+            for worker, status in zip(workers, before, strict=True):
+                self._validate_worker_status(worker, status)
+        except BaseException as error:  # noqa: BLE001 - retain safe stage only
+            raise _FleetOperationFailure(
+                "worker_status", "worker_status_failed", error
+            ) from error
+        try:
+            result = self._round_runner(
+                replicas=tuple(
+                    FleetReplica(worker.worker_id, worker.port) for worker in workers
+                ),
+                prompt=self._prompt_path.read_text(encoding="utf-8"),
+                token=self.environ["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"],
+                expected_users=expected_users,
+                abort_requested=abort_requested,
+            )
+        except BaseException as error:  # noqa: BLE001 - retain safe stage only
+            raise _FleetOperationFailure(
+                "locust_round", "locust_round_failed", error
+            ) from error
+        try:
+            after = tuple(self._worker_status(worker) for worker in workers)
+            for worker, status in zip(workers, after, strict=True):
+                self._validate_worker_status(worker, status)
+        except BaseException as error:  # noqa: BLE001 - retain safe stage only
+            raise _FleetOperationFailure(
+                "worker_status", "worker_status_failed", error
+            ) from error
         shadow_delta = sum(
             final.operation_counters.shadow_requests
             - initial.operation_counters.shadow_requests
             for initial, final in zip(before, after, strict=True)
         )
         if shadow_delta != expected_users:
-            raise FleetRunRefused("external Pi fleet shadow counter is inconsistent")
+            error = FleetRunRefused("external Pi fleet shadow counter is inconsistent")
+            raise _FleetOperationFailure(
+                "counter", "counter_mismatch", error
+            ) from error
         return aggregate_round(
             name=name,
             expected_users=expected_users,
@@ -678,7 +728,7 @@ class SystemFleetOperator:
             )
         return ResourceEvidence(
             peak_memory_bytes=sum(item.peak_memory_bytes for item in unit_peaks),
-            peak_cpu_percent=self._host_cpu_percent(),
+            peak_cpu_percent=self._sample_host_cpu_percent(),
             peak_tasks=sum(item.peak_tasks for item in unit_peaks),
             minimum_host_mem_available_bytes=self._mem_available_bytes(),
             unit_peaks=tuple(unit_peaks),
@@ -783,6 +833,18 @@ def _cleanup_evidence(results: Sequence[object]) -> CleanupEvidence:
     )
 
 
+def _unknown_cleanup_evidence() -> CleanupEvidence:
+    return CleanupEvidence(
+        drain_proven=False,
+        registry_offline=False,
+        supervisors_stopped_before_workers=False,
+        units_removed=False,
+        status_files_removed=False,
+        ports_free=False,
+        processes_gone=False,
+    )
+
+
 def _merge_resources(samples: Sequence[ResourceEvidence]) -> ResourceEvidence:
     if not samples:
         raise FleetRunRefused("external Pi fleet resource evidence is missing")
@@ -828,7 +890,10 @@ def _run_guarded_round(
     shape: FleetShape,
     name: str,
     workers: tuple[WorkerEvidence, ...],
+    diagnostic: _FailureDiagnostic | None = None,
 ) -> tuple[FleetRoundReport, tuple[ResourceEvidence, ...]]:
+    diagnostic = diagnostic or _FailureDiagnostic()
+    diagnostic.mark("locust_round", "locust_round_failed")
     operator.prepare_round()
     stop = threading.Event()
     abort = threading.Event()
@@ -841,10 +906,14 @@ def _run_guarded_round(
                 evidence = operator.sample_resources(shape)
                 samples.append(evidence)
                 if not _resources_safe(evidence):
+                    diagnostic.capture(
+                        "resource_threshold", "resource_threshold_crossed"
+                    )
                     abort.set()
                     return
             except BaseException as error:  # noqa: BLE001 - fail round closed
                 sampling_errors.append(error)
+                diagnostic.capture("resource_sampling", "resource_sampling_failed")
                 abort.set()
                 return
             stop.wait(0.1)
@@ -856,16 +925,27 @@ def _run_guarded_round(
     )
     sampler.start()
     try:
-        report = operator.run_round(
-            name,
-            workers,
-            expected_users=shape.expected_users,
-            abort_requested=abort.is_set,
-        )
+        diagnostic.mark("locust_round", "locust_round_failed")
+        try:
+            report = operator.run_round(
+                name,
+                workers,
+                expected_users=shape.expected_users,
+                abort_requested=abort.is_set,
+            )
+        except _FleetOperationFailure as error:
+            diagnostic.capture(error.stage, error.code)
+            raise error.cause.with_traceback(error.cause.__traceback__) from error
+        except BaseException:  # noqa: BLE001 - capture the first failure immediately
+            diagnostic.capture("locust_round", "locust_round_failed")
+            raise
     finally:
         stop.set()
         sampler.join(timeout=2.0)
-    if sampler.is_alive() or sampling_errors or abort.is_set():
+    if sampler.is_alive():
+        diagnostic.capture("resource_sampling", "resource_sampler_stalled")
+        raise FleetRunRefused("external Pi fleet live resource guard crossed")
+    if sampling_errors or abort.is_set():
         raise FleetRunRefused("external Pi fleet live resource guard crossed")
     if not samples:
         raise FleetRunRefused("external Pi fleet live resource evidence is missing")
@@ -876,6 +956,7 @@ def _run_shape(
     operator: FleetOperator,
     shape: FleetShape,
     attempted: list[AttemptedReplica],
+    diagnostic: _FailureDiagnostic,
 ):
     active: list[object] = []
     generations: dict[str, int] = {}
@@ -896,16 +977,21 @@ def _run_shape(
             else resolved
             for resolved in active
         )
+        diagnostic.mark("revalidation", "revalidation_failed")
         operator.revalidate(shape, evidence)
+        diagnostic.mark("resource_sampling", "resource_sampling_failed")
         resource_evidence = operator.sample_resources(shape)
         samples.append(resource_evidence)
         if not _resources_safe(resource_evidence):
+            diagnostic.capture("resource_threshold", "resource_threshold_crossed")
             raise FleetRunRefused("external Pi fleet live resource guard crossed")
 
     checkpoint()
+    diagnostic.mark("resource_sampling", "resource_sampling_failed")
     preflight = operator.resource_preflight(shape)
     checkpoint()
     if preflight.status == "resource_refused":
+        diagnostic.mark("cleanup", "cleanup_failed")
         return build_resource_refused_shape_report(
             shape, preflight, operator.cleanup_postconditions(shape)
         )
@@ -917,10 +1003,12 @@ def _run_shape(
     try:
         for index, replica in enumerate(shape.replicas):
             checkpoint()
+            diagnostic.mark("replica_lifecycle", "replica_lifecycle_failed")
             resolved = operator.resolve(shape, index)
             attempt = AttemptedReplica(resolved=resolved)
             attempted.append(attempt)
             try:
+                diagnostic.mark("replica_lifecycle", "replica_lifecycle_failed")
                 operator.start(resolved)
             except BaseException:
                 attempt.owned_units = operator.owned_units(resolved)
@@ -932,6 +1020,7 @@ def _run_shape(
             active.append(resolved)
             resolved_by_id[replica.worker_id] = resolved
             checkpoint()
+            diagnostic.mark("replica_lifecycle", "replica_lifecycle_failed")
             generation = operator.wait_ready(resolved)
             generations[replica.worker_id] = generation
             attempt.generation = generation
@@ -947,7 +1036,7 @@ def _run_shape(
 
         checkpoint()
         healthy, round_samples = _run_guarded_round(
-            operator, shape, "healthy", tuple(workers)
+            operator, shape, "healthy", tuple(workers), diagnostic
         )
         samples.extend(round_samples)
         checkpoint()
@@ -956,6 +1045,7 @@ def _run_shape(
         removed_worker_id = removed.worker_id
         removed_resolved = resolved_by_id[removed.worker_id]
         checkpoint()
+        diagnostic.mark("cleanup", "cleanup_failed")
         cleanup_results.append(operator.cleanup(removed_resolved, removed.generation))
         active.remove(removed_resolved)
         checkpoint()
@@ -963,11 +1053,12 @@ def _run_shape(
         survivor_workers = tuple(worker for worker in workers if worker != removed)
         checkpoint()
         survivor, round_samples = _run_guarded_round(
-            operator, shape, "survivor", survivor_workers
+            operator, shape, "survivor", survivor_workers, diagnostic
         )
         samples.extend(round_samples)
         checkpoint()
     except BaseException as exc:  # noqa: BLE001 - signals must enter cleanup
+        diagnostic.capture()
         error = exc
     finally:
         for resolved in tuple(active):
@@ -977,18 +1068,22 @@ def _run_shape(
                 checkpoint()
             except BaseException as checkpoint_error:  # noqa: BLE001
                 if error is None:
+                    diagnostic.capture()
                     error = checkpoint_error
             try:
+                diagnostic.mark("cleanup", "cleanup_failed")
                 cleanup_results.append(operator.cleanup(resolved, generation))
                 active.remove(resolved)
             except BaseException as cleanup_error:  # noqa: BLE001 - keep cleaning
                 if error is None:
+                    diagnostic.capture()
                     error = cleanup_error
                 continue
             try:
                 checkpoint()
             except BaseException as checkpoint_error:  # noqa: BLE001
                 if error is None:
+                    diagnostic.capture()
                     error = checkpoint_error
 
     if error is not None:
@@ -1026,6 +1121,7 @@ def run_fleet_controller(
     operator.set_owner(owner_id)
     current_shape: FleetShape | None = None
     attempted: list[AttemptedReplica] = []
+    diagnostic = _FailureDiagnostic()
     with qualification_signal_context():
         shapes = tuple(resolve_fleet_shape(name) for name in shape_names)
         recovery_descriptors = {
@@ -1040,7 +1136,10 @@ def run_fleet_controller(
             for shape in shapes:
                 current_shape = shape
                 attempted = []
-                shape_report = _run_shape(operator, current_shape, attempted)
+                diagnostic = _FailureDiagnostic()
+                shape_report = _run_shape(
+                    operator, current_shape, attempted, diagnostic
+                )
                 reports.append(shape_report)
                 if stop_on_nonpassing_shape and not shape_report.overall_passed:
                     break
@@ -1053,6 +1152,7 @@ def run_fleet_controller(
         except BaseException:
             if current_shape is None:
                 raise
+            diagnostic.capture()
             attempts_by_index = {
                 attempt.resolved.index: attempt for attempt in attempted
             }
@@ -1064,14 +1164,30 @@ def run_fleet_controller(
                     if attempt is not None
                     else recovery_descriptors[current_shape.name][index]
                 )
-                owned_units = (
-                    attempt.owned_units
-                    if attempt is not None
-                    else operator.owned_units(resolved)
-                )
-                cleanup, unresolved = operator.recovery_postconditions(
-                    resolved, owned_units
-                )
+                inspection_failed = False
+                if attempt is not None:
+                    owned_units = attempt.owned_units
+                else:
+                    try:
+                        owned_units = operator.owned_units(resolved)
+                    except FleetQualificationInterrupted:
+                        raise
+                    except Exception:
+                        owned_units = ()
+                        inspection_failed = True
+                if inspection_failed:
+                    cleanup = _unknown_cleanup_evidence()
+                    unresolved = (resolved.supervisor_unit, resolved.worker_unit)
+                else:
+                    try:
+                        cleanup, unresolved = operator.recovery_postconditions(
+                            resolved, owned_units
+                        )
+                    except FleetQualificationInterrupted:
+                        raise
+                    except Exception:
+                        cleanup = _unknown_cleanup_evidence()
+                        unresolved = (resolved.supervisor_unit, resolved.worker_unit)
                 if attempt is None and cleanup.passed and not unresolved:
                     continue
                 replicas.append(
@@ -1094,6 +1210,8 @@ def run_fleet_controller(
                 release_id=release_id,
                 runtime_id=operator.runtime_id,
                 owner_id=owner_id,
+                failure_stage=diagnostic.stage,
+                failure_code=diagnostic.code,
                 replicas=tuple(replicas),
             )
             publish_fleet_report(recovery, report_path, report_root)

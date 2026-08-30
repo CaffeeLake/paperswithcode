@@ -271,8 +271,11 @@ cleanup. A failed attempt atomically replaces the report at the same path with
 `report_type=recovery`, a fresh `attempt_id`, the exact release and owner, and
 one bounded record for every current-shape attempted replica plus any foreign,
 stale, status-retaining, or listening slot found by a fresh all-16-slot
-inspection. Fully cleaned earlier shapes are not duplicated in later-shape
-recovery. Treat only that current-attempt record as recovery evidence;
+inspection. The report also records only allowlisted, content-free
+`failure_stage` and `failure_code` values; it never retains exception text,
+request content, credentials, tokens, or other runtime details. Fully cleaned
+earlier shapes are not duplicated in later-shape recovery. Treat only that
+current-attempt record as recovery evidence;
 `cleanup_complete=false`, any `unresolved_units`, or `ports_free=false` requires
 operator recovery. Do not kill processes by pattern and do not rerun
 while any qualification unit or port remains. Inspect only the exact
