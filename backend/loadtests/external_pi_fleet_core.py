@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
@@ -33,7 +34,6 @@ MAX_REPORT_COUNTER = 1_000_000
 MAX_REPORT_DURATION_MS = 60_000
 MAX_DURABLE_DURATION_MS = 600_000
 MAX_REPORT_BYTES = 2**63 - 1
-DEFAULT_MODAL_RATE_MICROUSD_PER_SECOND = 25
 FleetShapeName = Literal["2x32", "3x32", "4x16", "5x32", "8x16", "16x8"]
 DurableWorkload = Literal["no_tool", "read_only_cli", "bash", "admission_stream"]
 
@@ -71,9 +71,6 @@ class DurableTurnObservation(BaseModel):
     model_starts: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     operation_start_count: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     duplicate_operation_start_count: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
-    modal_creates: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
-    modal_reuses: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
-    modal_evictions: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     queued_states: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     stale_mutations: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
     duplicate_turns: int = Field(default=0, ge=0, le=MAX_REPORT_COUNTER)
@@ -85,6 +82,72 @@ class DurableTurnObservation(BaseModel):
         if self.reconnect_successes > self.reconnects:
             raise ValueError("durable turn reconnect counts are inconsistent")
         return self
+
+
+class ModalLifecycleSnapshot(BaseModel):
+    """Cumulative content-free application lifecycle evidence at one boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    captured_at_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    creates: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    active_duration_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    source: Literal["application_modal_lifecycle"]
+
+
+class ModalLifecycleDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    creates: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
+    active_duration_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+
+
+class ModalRateEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    microusd_per_second: int = Field(ge=1, le=MAX_REPORT_COUNTER)
+    source: Literal["protected_runtime"]
+
+
+def load_modal_rate_evidence(
+    environment: Mapping[str, str],
+) -> ModalRateEvidence:
+    """Load one explicit protected runtime rate; source code has no fallback."""
+    raw = environment.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise FleetRunRefused(
+            "explicit protected Modal rate evidence is required"
+        ) from None
+    try:
+        return ModalRateEvidence(
+            microusd_per_second=value,
+            source="protected_runtime",
+        )
+    except ValueError:
+        raise FleetRunRefused("protected Modal rate evidence is invalid") from None
+
+
+def modal_lifecycle_delta(
+    before: ModalLifecycleSnapshot, after: ModalLifecycleSnapshot
+) -> ModalLifecycleDelta:
+    if after.captured_at_ms <= before.captured_at_ms or after.source != before.source:
+        raise FleetRunRefused("Modal lifecycle window evidence is inconsistent")
+    values = {
+        "creates": after.creates - before.creates,
+        "reuses": after.reuses - before.reuses,
+        "evictions": after.evictions - before.evictions,
+        "active_duration_ms": (after.active_duration_ms - before.active_duration_ms),
+    }
+    try:
+        return ModalLifecycleDelta.model_validate(values)
+    except ValueError:
+        raise FleetRunRefused("Modal lifecycle counters are inconsistent") from None
 
 
 class DurableProfileReport(BaseModel):
@@ -123,6 +186,7 @@ class DurableProfileReport(BaseModel):
     modal_evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     modal_active_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
     modal_rate_microusd_per_second: int = Field(ge=1, le=MAX_REPORT_COUNTER)
+    modal_rate_source: Literal["protected_runtime"]
     modal_estimated_cost_microusd: int = Field(ge=0, le=MAX_REPORT_BYTES)
 
     @model_validator(mode="after")
@@ -170,6 +234,23 @@ class DurableProfileReport(BaseModel):
             and self.peak_cpu_percent < 80.0
             and self.peak_active_backend_turns == self.expected_users
             and self.peak_active_external_workers > 0
+            and (
+                (
+                    self.profile == "32-functional-turns"
+                    and self.modal_creates + self.modal_reuses == 16
+                    and self.modal_evictions == 0
+                    and self.modal_active_ms > 0
+                    and self.peak_active_sandboxes > 0
+                )
+                or (
+                    self.profile == "100-immediate-admission"
+                    and self.modal_creates == 0
+                    and self.modal_reuses == 0
+                    and self.modal_evictions == 0
+                    and self.modal_active_ms == 0
+                    and self.peak_active_sandboxes == 0
+                )
+            )
         )
 
 
@@ -299,7 +380,8 @@ def aggregate_durable_profile(
     peak_active_backend_turns: int,
     peak_active_external_workers: int,
     peak_active_sandboxes: int,
-    modal_rate_microusd_per_second: int = DEFAULT_MODAL_RATE_MICROUSD_PER_SECOND,
+    modal_lifecycle: ModalLifecycleDelta,
+    modal_rate: ModalRateEvidence,
 ) -> DurableProfileReport:
     expected = resolve_durable_profile(profile.name)
     if profile != expected or len(observations) != profile.expected_users:
@@ -314,11 +396,7 @@ def aggregate_durable_profile(
     typed_failure_counts = Counter(
         item.failure_code for item in observations if item.failure_code is not None
     )
-    modal_active_ms = sum(
-        item.completion_ms or 0
-        for item in observations
-        if item.modal_creates or item.modal_reuses
-    )
+    modal_active_ms = modal_lifecycle.active_duration_ms
     return DurableProfileReport(
         profile=profile.name,
         expected_users=profile.expected_users,
@@ -355,13 +433,14 @@ def aggregate_durable_profile(
         peak_active_backend_turns=peak_active_backend_turns,
         peak_active_external_workers=peak_active_external_workers,
         peak_active_sandboxes=peak_active_sandboxes,
-        modal_creates=sum(item.modal_creates for item in observations),
-        modal_reuses=sum(item.modal_reuses for item in observations),
-        modal_evictions=sum(item.modal_evictions for item in observations),
+        modal_creates=modal_lifecycle.creates,
+        modal_reuses=modal_lifecycle.reuses,
+        modal_evictions=modal_lifecycle.evictions,
         modal_active_ms=modal_active_ms,
-        modal_rate_microusd_per_second=modal_rate_microusd_per_second,
+        modal_rate_microusd_per_second=modal_rate.microusd_per_second,
+        modal_rate_source=modal_rate.source,
         modal_estimated_cost_microusd=math.ceil(
-            modal_active_ms * modal_rate_microusd_per_second / 1000
+            modal_active_ms * modal_rate.microusd_per_second / 1000
         ),
     )
 

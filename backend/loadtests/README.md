@@ -352,14 +352,15 @@ from `ss -H -ltn`. Do not continue to another pair if any proof fails.
 
 ## Durable external-turn 32/100 qualification tooling
 
-Task 11 adds deterministic tooling and report contracts; it does **not**
-authorize or run a live qualification. Task 12 alone may provide the guarded
-staging bindings and invoke `run_durable_qualification`. Task 11 owns the
-executable harness: `run_local_durable_profile` creates one local Locust runner,
-releases every exact user through a simultaneous barrier, and calls only the
-injected `DurableStreamTransport.open_durable_stream`. Task 12 binds that
-transport to the reviewed durable admission/SSE path; it must not substitute
-the legacy `/v1/shadow` route or invent another load loop. The controller always
+The tooling does **not** authorize or run a live qualification by itself. The
+executable harness creates one local Locust runner and releases every exact
+user through a simultaneous barrier. Guarded live mode constructs
+`HttpSSEDurableChatTransport` itself: it authenticates dedicated synthetic
+staging cookies, posts only `/api/v1/chat/stream`, detaches after durable
+admission, and resumes the same session/client-message identity with
+`Last-Event-ID`. Dependency injection remains available only to pure tests;
+`run_live_durable_profile` has no transport argument and never targets
+`/v1/shadow`. The controller always
 runs `32-functional-turns` before `100-immediate-admission`. The first profile
 starts exactly 32 users at once: 16 no-tool turns, eight read-only CLI turns,
 and eight Bash turns. The second starts exactly 100 admission/stream users at
@@ -412,8 +413,15 @@ one executor start per operation identity; no queued state, refusal, typed
 failure, duplicate start, stale mutation, or lost terminal; reconnect successes
 equal reconnect attempts; p95 TTFT at most 10,000 ms; p99 completion at most
 60,000 ms; minimum host `MemAvailable` at least 1.5 GiB; and peak CPU below 80%.
-Reports also retain bounded peak RAM, Modal create/reuse, terminal-cause, and
-typed-failure counts. The transport supplies opaque executor operation
+Reports also retain bounded peak RAM, Modal create/reuse/eviction,
+terminal-cause, and typed-failure counts. Each profile is bracketed by the
+admin-only, content-free `/api/v1/chat/admin/modal-lifecycle` snapshot. Its
+delta contains application-observed workspace creates, reuses, evictions, and
+actual acquire-to-release/invalidate active duration; chat completion latency
+is never substituted for Modal duration. Cost additionally requires explicit
+protected runtime `PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`; there is no
+code default, and missing/decreasing/inconsistent snapshot or rate evidence
+refuses publication. The transport supplies opaque executor operation
 identities only to the in-process normalizer; the retained report contains only
 the unique operation-start count and duplicate-start count. Two distinct
 operations started once each pass; one identity started twice fails. Durable

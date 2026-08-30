@@ -218,6 +218,7 @@ def test_external_pi_migration_switches_are_independent_and_fail_closed(
     assert settings.chat_lazy_workspace_enabled is False
     assert settings.chat_durable_turn_dispatch_enabled is False
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
 
@@ -276,11 +277,130 @@ def test_external_pi_shadow_can_be_armed_without_changing_chat_admission(
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
     runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
     assert settings.chat_external_pi_admission_enabled is False
+
+
+def test_external_pi_endpoint_list_is_a_complete_runtime_configuration(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_worker_endpoints = [
+        {
+            "endpoint_id": "blue",
+            "worker_id": "worker-blue",
+            "base_url": "http://127.0.0.1:8780",
+            "token": "b" * 32,
+        },
+        {
+            "endpoint_id": "green",
+            "worker_id": "worker-green",
+            "base_url": "http://[::1]:8781",
+            "token": "g" * 32,
+        },
+    ]
+
+    runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("base_url", "https://127.0.0.1:8780"),
+        ("base_url", "http://worker.internal:8780"),
+        ("base_url", "http://127.0.0.1:8780/path"),
+        ("token", "short"),
+    ),
+)
+def test_external_pi_runtime_validates_every_list_endpoint(
+    settings_factory, field, value
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    endpoint = {
+        "endpoint_id": "blue",
+        "worker_id": "worker-blue",
+        "base_url": "http://127.0.0.1:8780",
+        "token": "b" * 32,
+    }
+    endpoint[field] = value
+    settings.chat_external_pi_worker_endpoints = [endpoint]
+
+    with pytest.raises(RuntimeError, match="external Pi worker"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+@pytest.mark.parametrize(
+    "duplicate_field", ("endpoint_id", "worker_id", "base_url", "token")
+)
+def test_external_pi_runtime_rejects_ambiguous_endpoint_list(
+    settings_factory, duplicate_field
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_shadow_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    first = {
+        "endpoint_id": "blue",
+        "worker_id": "worker-blue",
+        "base_url": "http://127.0.0.1:8780",
+        "token": "b" * 32,
+    }
+    second = {
+        "endpoint_id": "green",
+        "worker_id": "worker-green",
+        "base_url": "http://127.0.0.1:8781",
+        "token": "g" * 32,
+    }
+    second[duplicate_field] = first[duplicate_field]
+    settings.chat_external_pi_worker_endpoints = [first, second]
+
+    with pytest.raises(RuntimeError, match="topology is ambiguous"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+def test_external_pi_runtime_rejects_mixed_list_and_legacy_configuration(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_shadow_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_worker_endpoints = [
+        {
+            "endpoint_id": "blue",
+            "worker_id": "worker-blue",
+            "base_url": "http://127.0.0.1:8780",
+            "token": "b" * 32,
+        }
+    ]
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
+
+    with pytest.raises(RuntimeError, match="topology is ambiguous"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
+
+
+def test_external_pi_runtime_keeps_complete_legacy_singleton_compatible_and_rejects_partial(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    settings.chat_external_pi_shadow_enabled = True
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_worker_id = "worker-legacy"
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_token = "l" * 32
+
+    runtime_validation.validate_external_pi_migration_policy(settings)
+
+    settings.chat_external_pi_worker_token = ""
+    with pytest.raises(RuntimeError, match="topology is incomplete"):
+        runtime_validation.validate_external_pi_migration_policy(settings)
 
 
 def test_external_pi_migration_controls_remain_staging_only(settings_factory):
@@ -403,6 +523,7 @@ def test_executor_bridge_contract_does_not_admit_external_pi(settings_factory):
 def test_external_pi_admission_requires_the_executor_bridge(settings_factory):
     settings, _release = settings_factory("staging")
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
     settings.chat_external_pi_admission_enabled = True
@@ -419,6 +540,7 @@ def test_external_pi_admission_requires_durable_bridge_and_exact_contracts(
 ):
     settings, _release = settings_factory("staging")
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
     settings.chat_external_pi_admission_enabled = True
@@ -463,6 +585,7 @@ def test_external_pi_supervisor_requires_a_safe_heartbeat_lease_ratio(
     settings, _release = settings_factory("staging")
     settings.chat_external_pi_supervisor_enabled = True
     settings.chat_external_pi_worker_url = "http://127.0.0.1:8766"
+    settings.chat_external_pi_worker_id = "worker-legacy"
     settings.chat_external_pi_worker_token = "s" * 32
     settings.chat_external_pi_worker_contract_version = "external-pi-v1"
     settings.chat_external_pi_heartbeat_seconds = 30

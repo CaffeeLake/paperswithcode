@@ -59,6 +59,7 @@ class ExternalExecutorWorkspace:
     worker_generation: str
     workspace_generation: int
     claim: WorkerClaim
+    acquired_monotonic: float
 
 
 def _workspace_generation(worker_generation: str) -> int:
@@ -179,6 +180,7 @@ class ChatExternalExecutorWorkspaceManager:
                 worker_generation=claim.worker_generation,
                 workspace_generation=_workspace_generation(claim.worker_generation),
                 claim=claim,
+                acquired_monotonic=self.monotonic(),
             )
             try:
                 healthy = await self.executor.health(workspace.sandbox) == "ok"
@@ -225,6 +227,7 @@ class ChatExternalExecutorWorkspaceManager:
                 now=self.utcnow(),
             )
         if released:
+            self._observe_active_duration(workspace)
             self.observe("workspace_state", "released", 1)
             await self.maintenance.enforce_warm_cap()
         return released
@@ -242,7 +245,18 @@ class ChatExternalExecutorWorkspaceManager:
             workspace.claim,
             failure_code=failure_code,
         )
+        self._observe_active_duration(workspace)
         self.observe("workspace_state", "invalidated", 1)
+
+    def _observe_active_duration(self, workspace: ExternalExecutorWorkspace) -> None:
+        elapsed_ms = max(
+            0,
+            min(
+                round((self.monotonic() - workspace.acquired_monotonic) * 1_000),
+                16 * 1024 * 1024,
+            ),
+        )
+        self.observe("workspace_active_ms", None, elapsed_ms)
 
     async def _release_preserving_primary(
         self, workspace: ExternalExecutorWorkspace

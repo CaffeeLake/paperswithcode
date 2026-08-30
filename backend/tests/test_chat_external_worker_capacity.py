@@ -54,8 +54,8 @@ def _worker(db: Session, ordinal: int) -> ExternalWorkerEndpoint:
     return ExternalWorkerEndpoint(
         endpoint_id=f"endpoint-{ordinal}",
         worker_id=worker_id,
-        base_url=f"https://worker-{ordinal}.internal",
-        token=f"secret-{ordinal}",
+        base_url=f"http://127.0.0.1:{8780 + ordinal}",
+        token=str(ordinal) * 32,
     )
 
 
@@ -153,20 +153,23 @@ def test_bound_reservation_reattaches_to_exact_original_endpoint(db):
 def test_topology_is_bounded_typed_and_keeps_tokens_out_of_repr():
     settings = get_settings().model_copy(
         update={
+            "chat_external_pi_worker_id": "",
+            "chat_external_pi_worker_url": "",
+            "chat_external_pi_worker_token": "",
             "chat_external_pi_worker_endpoints": [
                 {
                     "endpoint_id": "blue",
                     "worker_id": "worker-blue",
-                    "base_url": "https://blue.internal",
-                    "token": "secret-blue",
+                    "base_url": "http://127.0.0.1:8780",
+                    "token": "b" * 32,
                 },
                 {
                     "endpoint_id": "green",
                     "worker_id": "worker-green",
-                    "base_url": "https://green.internal",
-                    "token": "secret-green",
+                    "base_url": "http://127.0.0.1:8781",
+                    "token": "g" * 32,
                 },
-            ]
+            ],
         }
     )
 
@@ -182,7 +185,7 @@ def test_legacy_single_endpoint_requires_explicit_worker_identity():
             "chat_external_pi_worker_endpoints": [],
             "chat_external_pi_worker_id": "worker-legacy",
             "chat_external_pi_worker_url": "http://127.0.0.1:8766",
-            "chat_external_pi_worker_token": "legacy-secret",
+            "chat_external_pi_worker_token": "l" * 32,
         }
     )
 
@@ -191,7 +194,7 @@ def test_legacy_single_endpoint_requires_explicit_worker_identity():
             endpoint_id="legacy",
             worker_id="worker-legacy",
             base_url="http://127.0.0.1:8766",
-            token="legacy-secret",
+            token="l" * 32,
         ),
     )
 
@@ -206,7 +209,32 @@ def test_capacity_reservation_migration_is_additive_and_environment_scoped():
     assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "turn_id UUID UNIQUE" in migration
     assert "worker_generation BIGINT NOT NULL" in migration
+    assert "chat_external_worker_reservations_worker_generation_check" in migration
+    assert "chat_external_worker_reservations_maximum_sessions_check" in migration
     assert (
         "REVOKE ALL ON chat_external_worker_reservations FROM paperswithcode_user"
         in migration
     )
+    assert "idx_chat_external_worker_reservations_unbound_expiry" in migration
+    assert "WHERE turn_id IS NULL" in migration
+
+    from backend.models.database import ChatExternalWorkerReservation
+
+    table = ChatExternalWorkerReservation.__table__
+    assert {column.name for column in table.columns} == {
+        "request_id",
+        "turn_id",
+        "endpoint_id",
+        "worker_id",
+        "instance_id",
+        "worker_generation",
+        "release_id",
+        "contract_version",
+        "maximum_sessions",
+        "reserved_at",
+        "expires_at",
+    }
+    assert {index.name for index in table.indexes} == {
+        "idx_chat_external_worker_reservations_capacity",
+        "idx_chat_external_worker_reservations_unbound_expiry",
+    }

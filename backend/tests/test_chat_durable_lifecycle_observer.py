@@ -4,6 +4,7 @@ import pytest
 
 from backend.config import Settings
 from backend.services.chat_durable_lifecycle_observer import (
+    application_modal_lifecycle_snapshot,
     DurableLifecycleObserver,
 )
 from backend.services.chat_operational_alert_service import runtime_failure_counts
@@ -45,6 +46,23 @@ def test_observer_sends_bounded_latency_signal_to_langfuse():
         metadata={"event": "ttft_ms", "code": "none", "value": 12_000},
     )
     observation.end.assert_called_once_with()
+
+
+def test_observer_exposes_content_free_cumulative_modal_lifecycle_snapshot():
+    observer = DurableLifecycleObserver(Settings(environment="staging"), client=None)
+    before = application_modal_lifecycle_snapshot()
+
+    observer("workspace_state", "created", 1)
+    observer("workspace_state", "reused", 2)
+    observer("workspace_state", "invalidated", 1)
+    observer("workspace_active_ms", None, 345)
+    after = application_modal_lifecycle_snapshot()
+
+    assert after.creates - before.creates == 1
+    assert after.reuses - before.reuses == 2
+    assert after.evictions - before.evictions == 1
+    assert after.active_duration_ms - before.active_duration_ms == 345
+    assert after.source == "application_modal_lifecycle"
 
 
 @pytest.mark.parametrize(

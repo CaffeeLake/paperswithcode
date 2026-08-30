@@ -115,10 +115,14 @@ def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():
     assert provider.create_options[0]["launch_mode"] is SandboxLaunchMode.EXECUTOR
     assert observations == [
         ("workspace_state", "created", 1),
+        ("workspace_active_ms", None, observations[1][2]),
         ("workspace_state", "released", 1),
         ("workspace_state", "reused", 1),
+        ("workspace_active_ms", None, observations[4][2]),
         ("workspace_state", "released", 1),
     ]
+    assert observations[1][2] >= 0
+    assert observations[4][2] >= 0
     with sessions() as db:
         lease = manager.state_repository.load_lease(db, session_id, lock=False)
         assert lease is not None

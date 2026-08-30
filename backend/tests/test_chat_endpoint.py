@@ -78,6 +78,37 @@ def _cookie_request() -> Request:
     )
 
 
+def test_admin_modal_lifecycle_endpoint_is_content_free_and_bounded(monkeypatch):
+    monkeypatch.setattr(get_settings(), "chat_enabled", True)
+    monkeypatch.setattr(
+        chat_router,
+        "application_modal_lifecycle_snapshot",
+        lambda: {
+            "captured_at_ms": 10,
+            "creates": 1,
+            "reuses": 2,
+            "evictions": 3,
+            "active_duration_ms": 4,
+            "source": "application_modal_lifecycle",
+        },
+    )
+    app = create_app()
+    app.dependency_overrides[chat_router.require_admin] = lambda: {"role": "admin"}
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/chat/admin/modal-lifecycle")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "captured_at_ms": 10,
+        "creates": 1,
+        "reuses": 2,
+        "evictions": 3,
+        "active_duration_ms": 4,
+        "source": "application_modal_lifecycle",
+    }
+
+
 def test_chat_quota_configuration_and_billing_api_fields_are_removed():
     settings = get_settings()
 

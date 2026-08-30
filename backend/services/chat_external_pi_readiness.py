@@ -15,6 +15,9 @@ from backend.services.chat_external_worker_registry import (
     WorkerLeaseUnavailable,
 )
 from backend.services.chat_external_worker_capacity import external_worker_endpoints
+from backend.services.runtime_validation import (
+    validate_external_worker_reservation_schema,
+)
 
 
 async def validate_external_pi_readiness(settings: Settings) -> None:
@@ -39,6 +42,7 @@ async def validate_external_pi_readiness(settings: Settings) -> None:
                 raise WorkerLeaseUnavailable("External worker is not ready")
             statuses.append(status)
     with db_manager.session_local() as db:
+        validate_external_worker_reservation_schema(db)
         repository = ChatExternalWorkerRepository(environment=settings.environment)
         for status in statuses:
             repository.require_endpoint_ready(

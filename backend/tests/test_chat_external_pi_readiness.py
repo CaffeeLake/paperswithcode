@@ -24,7 +24,7 @@ def _settings():
         release_id="release-a",
         chat_external_pi_worker_id="worker-1",
         chat_external_pi_worker_url="http://127.0.0.1:8766",
-        chat_external_pi_worker_token="secret",
+        chat_external_pi_worker_token="s" * 32,
         chat_external_pi_worker_contract_version="external-pi-v1",
         chat_external_pi_worker_max_sessions=8,
     )
@@ -47,6 +47,7 @@ def _status(**changes):
 
 def test_readiness_authenticates_endpoint_then_matches_exact_registry(monkeypatch):
     observed = []
+    schema_checks = []
     status = _status()
 
     async def resolve(_client):
@@ -62,6 +63,11 @@ def test_readiness_authenticates_endpoint_then_matches_exact_registry(monkeypatc
     monkeypatch.setattr(
         readiness.ChatExternalWorkerRepository, "require_endpoint_ready", require
     )
+    monkeypatch.setattr(
+        readiness,
+        "validate_external_worker_reservation_schema",
+        lambda db: schema_checks.append(db),
+    )
 
     asyncio.run(readiness.validate_external_pi_readiness(_settings()))
 
@@ -70,6 +76,7 @@ def test_readiness_authenticates_endpoint_then_matches_exact_registry(monkeypatc
     assert observed[0]["active_sessions"] == 1
     assert observed[0]["configured_maximum_sessions"] == 8
     assert observed[0]["now"].tzinfo is UTC
+    assert len(schema_checks) == 1
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,9 @@ from backend.loadtests.external_pi_fleet_core import (
     DurableQualificationProfile,
     HostResourceSnapshot,
     resolve_durable_profile,
+    ModalRateEvidence,
 )
+from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
 
 _STAGING_RELEASE = re.compile(r"^[0-9a-f]{12}-staging$")
 _MIN_APPROVED_HOST_MEMORY_BYTES = 7 * 1024**3
@@ -131,6 +133,93 @@ class DurableQualificationOperator(Protocol):
     def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]: ...
 
     def cleanup_transient_workers(self) -> CleanupProof: ...
+
+
+class LiveQualificationControlPlane(Protocol):
+    """Protected mutations and runtime evidence supplied by the live operation."""
+
+    def environment(self) -> QualificationEnvironment: ...
+
+    def snapshot_flags(self) -> Mapping[str, bool]: ...
+
+    def resource_snapshot(
+        self, profile: DurableQualificationProfile
+    ) -> HostResourceSnapshot: ...
+
+    def run_resources(self, profile: DurableQualificationProfile) -> object: ...
+
+    def setup_profile(self, profile: DurableQualificationProfile) -> None: ...
+
+    def teardown_profile(self, profile: DurableQualificationProfile) -> None: ...
+
+    def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]: ...
+
+    def cleanup_transient_workers(self) -> CleanupProof: ...
+
+
+class GuardedLiveDurableOperator:
+    """Bind the controller to the concrete chat transport and exact Locust profile."""
+
+    def __init__(
+        self,
+        *,
+        control_plane: LiveQualificationControlPlane,
+        transport_config: DurableChatTransportConfig,
+        modal_rate: ModalRateEvidence,
+    ) -> None:
+        self.control_plane = control_plane
+        self.transport_config = transport_config
+        self.modal_rate = modal_rate
+
+    def environment(self) -> QualificationEnvironment:
+        return self.control_plane.environment()
+
+    def snapshot_flags(self) -> Mapping[str, bool]:
+        return self.control_plane.snapshot_flags()
+
+    def resource_snapshot(
+        self, profile: DurableQualificationProfile
+    ) -> HostResourceSnapshot:
+        return self.control_plane.resource_snapshot(profile)
+
+    def setup_profile(self, profile: DurableQualificationProfile) -> None:
+        self.control_plane.setup_profile(profile)
+
+    def run_profile(self, profile: DurableQualificationProfile) -> DurableProfileReport:
+        from backend.loadtests.external_pi_fleet_locustfile import (
+            run_live_durable_profile,
+        )
+
+        return run_live_durable_profile(
+            profile_name=profile.name,
+            transport_config=self.transport_config,
+            resources=self.control_plane.run_resources(profile),
+            modal_rate=self.modal_rate,
+        )
+
+    def teardown_profile(self, profile: DurableQualificationProfile) -> None:
+        self.control_plane.teardown_profile(profile)
+
+    def restore_flags(self, flags: Mapping[str, bool]) -> Mapping[str, bool]:
+        return self.control_plane.restore_flags(flags)
+
+    def cleanup_transient_workers(self) -> CleanupProof:
+        return self.control_plane.cleanup_transient_workers()
+
+
+def run_live_durable_qualification(
+    *,
+    control_plane: LiveQualificationControlPlane,
+    transport_config: DurableChatTransportConfig,
+    modal_rate: ModalRateEvidence,
+) -> DurableQualificationReport:
+    return run_durable_qualification(
+        GuardedLiveDurableOperator(
+            control_plane=control_plane,
+            transport_config=transport_config,
+            modal_rate=modal_rate,
+        )
+    )
 
 
 def validate_qualification_environment(environment: QualificationEnvironment) -> None:
@@ -276,11 +365,14 @@ def run_durable_qualification(
 
 __all__ = (
     "DurableQualificationOperator",
+    "GuardedLiveDurableOperator",
+    "LiveQualificationControlPlane",
     "CleanupProof",
     "ImmutableFlagSnapshot",
     "QualificationEnvironment",
     "QualificationRefused",
     "QualificationResult",
     "run_durable_qualification",
+    "run_live_durable_qualification",
     "validate_qualification_environment",
 )

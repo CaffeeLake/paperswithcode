@@ -36,15 +36,28 @@ class ExternalWorkerEndpoint:
             or len(self.endpoint_id) > 128
             or not self.worker_id
             or len(self.worker_id) > 128
-            or parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or not self.token
+            or parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "::1"}
+            or parsed.port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or len(self.token) < 32
         ):
             raise ValueError("External worker endpoint is invalid")
 
 
 def external_worker_endpoints(settings: Settings) -> tuple[ExternalWorkerEndpoint, ...]:
     """Return one validated bounded topology, preserving a safe legacy singleton."""
+    legacy_values = (
+        settings.chat_external_pi_worker_id,
+        settings.chat_external_pi_worker_url,
+        settings.chat_external_pi_worker_token,
+    )
+    if settings.chat_external_pi_worker_endpoints and any(legacy_values):
+        raise ValueError("External worker topology is ambiguous")
     configured = tuple(
         ExternalWorkerEndpoint(
             endpoint_id=str(item.get("endpoint_id", "")),
@@ -57,11 +70,7 @@ def external_worker_endpoints(settings: Settings) -> tuple[ExternalWorkerEndpoin
     if configured:
         ChatExternalWorkerCapacityRepository._endpoint_map(configured)
         return configured
-    if (
-        settings.chat_external_pi_worker_id
-        and settings.chat_external_pi_worker_url
-        and settings.chat_external_pi_worker_token
-    ):
+    if all(legacy_values):
         return (
             ExternalWorkerEndpoint(
                 endpoint_id="legacy",
@@ -70,6 +79,8 @@ def external_worker_endpoints(settings: Settings) -> tuple[ExternalWorkerEndpoin
                 token=settings.chat_external_pi_worker_token,
             ),
         )
+    if any(legacy_values):
+        raise ValueError("External worker topology is incomplete")
     raise ValueError("External worker topology is not configured")
 
 
@@ -119,9 +130,15 @@ class ChatExternalWorkerCapacityRepository:
         if not 1 <= len(endpoints) <= 16:
             raise ValueError("External worker topology is invalid")
         by_worker = {endpoint.worker_id: endpoint for endpoint in endpoints}
-        if len(by_worker) != len(endpoints) or len(
-            {endpoint.endpoint_id for endpoint in endpoints}
-        ) != len(endpoints):
+        if any(
+            len(values) != len(endpoints)
+            for values in (
+                by_worker,
+                {endpoint.endpoint_id for endpoint in endpoints},
+                {endpoint.base_url for endpoint in endpoints},
+                {endpoint.token for endpoint in endpoints},
+            )
+        ):
             raise ValueError("External worker topology is ambiguous")
         return by_worker
 

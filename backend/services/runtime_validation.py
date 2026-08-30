@@ -34,6 +34,7 @@ from backend.services.chat_runtime_contract import (
     require_external_admission_contract,
     require_immutable_image_id,
 )
+from backend.services.chat_external_worker_capacity import external_worker_endpoints
 
 _ASSET_RE = re.compile(
     r"""(?:src|href)=["'](?P<path>/assets/[^"'?#]+\.(?:js|css))(?:[?#][^"']*)?["']"""
@@ -1065,24 +1066,20 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
             "external Pi migration controls are staging-only until production approval"
         )
     if any(worker_switches.values()):
-        endpoint = urlsplit(settings.chat_external_pi_worker_url)
-        if (
-            endpoint.scheme != "http"
-            or endpoint.hostname not in {"127.0.0.1", "::1"}
-            or endpoint.port is None
-            or endpoint.username is not None
-            or endpoint.password is not None
-            or endpoint.path not in {"", "/"}
-            or endpoint.query
-            or endpoint.fragment
-        ):
+        try:
+            external_worker_endpoints(settings)
+        except ValueError as error:
+            message = str(error).lower()
+            if "ambiguous" in message:
+                raise RuntimeError("external Pi worker topology is ambiguous") from None
+            if "incomplete" in message or "not configured" in message:
+                raise RuntimeError(
+                    "external Pi worker endpoint topology is incomplete"
+                ) from None
             raise RuntimeError(
                 "external Pi worker endpoint must be an authenticated loopback service"
-            )
-        if (
-            len(settings.chat_external_pi_worker_token) < 32
-            or settings.chat_external_pi_worker_contract_version != "external-pi-v1"
-        ):
+            ) from None
+        if settings.chat_external_pi_worker_contract_version != "external-pi-v1":
             raise RuntimeError("external Pi worker identity is invalid")
     if any(executor_switches.values()):
         if settings.chat_sandbox_executor_contract_version != "sandbox-executor-v1":
@@ -1254,6 +1251,57 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     return validate_frontend_dist(settings)
 
 
+def validate_external_worker_reservation_schema(db) -> None:
+    """Require model/migration parity for protected external-worker admission."""
+    indexes = set(
+        db.execute(
+            text("""
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND indexname IN (
+                      'chat_external_worker_reservations_pkey',
+                      'chat_external_worker_reservations_turn_id_key',
+                      'idx_chat_external_worker_reservations_capacity',
+                      'idx_chat_external_worker_reservations_unbound_expiry'
+                  )
+                """)
+        ).scalars()
+    )
+    if indexes != {
+        "chat_external_worker_reservations_pkey",
+        "chat_external_worker_reservations_turn_id_key",
+        "idx_chat_external_worker_reservations_capacity",
+        "idx_chat_external_worker_reservations_unbound_expiry",
+    }:
+        raise RuntimeError("required external worker schema is missing")
+    constraints = set(
+        db.execute(
+            text("""
+                SELECT conname
+                FROM pg_constraint AS constraint_row
+                JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
+                JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname = 'chat_external_worker_reservations'
+                  AND conname IN (
+                      'chat_external_worker_reservations_pkey',
+                      'chat_external_worker_reservations_turn_id_key',
+                      'chat_external_worker_reservations_worker_generation_check',
+                      'chat_external_worker_reservations_maximum_sessions_check'
+                  )
+                """)
+        ).scalars()
+    )
+    if constraints != {
+        "chat_external_worker_reservations_pkey",
+        "chat_external_worker_reservations_turn_id_key",
+        "chat_external_worker_reservations_worker_generation_check",
+        "chat_external_worker_reservations_maximum_sessions_check",
+    }:
+        raise RuntimeError("required external worker schema is missing")
+
+
 def validate_chat_schema(db, settings: Settings) -> None:
     """Validate only the tables required by the enabled provider profile."""
 
@@ -1294,7 +1342,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
         "chat_web_search_owner_usage",
     }
     durable_turn_tables = {"chat_turn_jobs", "chat_turn_event_chunks"}
-    external_worker_tables = {"chat_external_workers"}
+    external_worker_tables = {
+        "chat_external_workers",
+        "chat_external_worker_reservations",
+    }
     required_tables = (
         common_tables
         | (
@@ -1349,6 +1400,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ,('chat_turn_jobs')
                     ,('chat_turn_event_chunks')
                     ,('chat_external_workers')
+                    ,('chat_external_worker_reservations')
                 ) AS required(name)
                 """)
         ).all()
@@ -1478,6 +1530,17 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_external_workers", "maximum_sessions"),
         ("chat_external_workers", "active_sessions"),
         ("chat_external_workers", "lease_expires_at"),
+        ("chat_external_worker_reservations", "request_id"),
+        ("chat_external_worker_reservations", "turn_id"),
+        ("chat_external_worker_reservations", "endpoint_id"),
+        ("chat_external_worker_reservations", "worker_id"),
+        ("chat_external_worker_reservations", "instance_id"),
+        ("chat_external_worker_reservations", "worker_generation"),
+        ("chat_external_worker_reservations", "release_id"),
+        ("chat_external_worker_reservations", "contract_version"),
+        ("chat_external_worker_reservations", "maximum_sessions"),
+        ("chat_external_worker_reservations", "reserved_at"),
+        ("chat_external_worker_reservations", "expires_at"),
     }
     expected_columns = (
         common_columns
@@ -1617,11 +1680,31 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_external_workers', 'maximum_sessions')
                 ,('chat_external_workers', 'active_sessions')
                 ,('chat_external_workers', 'lease_expires_at')
+                ,('chat_external_worker_reservations', 'request_id')
+                ,('chat_external_worker_reservations', 'turn_id')
+                ,('chat_external_worker_reservations', 'endpoint_id')
+                ,('chat_external_worker_reservations', 'worker_id')
+                ,('chat_external_worker_reservations', 'instance_id')
+                ,('chat_external_worker_reservations', 'worker_generation')
+                ,('chat_external_worker_reservations', 'release_id')
+                ,('chat_external_worker_reservations', 'contract_version')
+                ,('chat_external_worker_reservations', 'maximum_sessions')
+                ,('chat_external_worker_reservations', 'reserved_at')
+                ,('chat_external_worker_reservations', 'expires_at')
             )
             """)
         ).all()
     )
-    if missing or not expected_columns.issubset(present_columns):
+    missing_columns = expected_columns - present_columns
+    if settings.chat_external_pi_admission_enabled and (
+        "chat_external_worker_reservations" in missing
+        or any(
+            table == "chat_external_worker_reservations"
+            for table, _column in missing_columns
+        )
+    ):
+        raise RuntimeError("required external worker schema is missing")
+    if missing or missing_columns:
         raise RuntimeError("required chat sandbox schema is missing")
     if settings.chat_durable_turn_dispatch_enabled:
         durable_contract = set(
@@ -1680,6 +1763,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
         )
         if worker_indexes != {"idx_chat_external_workers_dispatch"}:
             raise RuntimeError("required external worker schema is missing")
+        validate_external_worker_reservation_schema(db)
     share_snapshot_constraint = db.execute(
         text("""
             SELECT 1

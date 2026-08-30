@@ -23,10 +23,13 @@ CREATE TABLE IF NOT EXISTS chat_external_worker_reservations (
     endpoint_id VARCHAR(128) NOT NULL,
     worker_id VARCHAR(128) NOT NULL,
     instance_id UUID NOT NULL,
-    worker_generation BIGINT NOT NULL CHECK (worker_generation > 0),
+    worker_generation BIGINT NOT NULL
+        CONSTRAINT chat_external_worker_reservations_worker_generation_check
+        CHECK (worker_generation > 0),
     release_id VARCHAR(255) NOT NULL,
     contract_version VARCHAR(128) NOT NULL,
     maximum_sessions INTEGER NOT NULL
+        CONSTRAINT chat_external_worker_reservations_maximum_sessions_check
         CHECK (maximum_sessions BETWEEN 1 AND 32),
     reserved_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
@@ -38,6 +41,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_external_worker_reservations_capacity
         instance_id,
         worker_generation
     );
+
+CREATE INDEX IF NOT EXISTS idx_chat_external_worker_reservations_unbound_expiry
+    ON chat_external_worker_reservations (expires_at)
+    WHERE turn_id IS NULL;
 
 DO $$
 BEGIN

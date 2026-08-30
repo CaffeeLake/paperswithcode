@@ -3266,7 +3266,7 @@ class ChatExternalWorkerReservation(Base):
     __table_args__ = (
         CheckConstraint(
             "worker_generation > 0",
-            name="chat_external_worker_reservations_generation_check",
+            name="chat_external_worker_reservations_worker_generation_check",
         ),
         CheckConstraint(
             "maximum_sessions BETWEEN 1 AND 32",
@@ -3277,6 +3277,11 @@ class ChatExternalWorkerReservation(Base):
             "worker_id",
             "instance_id",
             "worker_generation",
+        ),
+        Index(
+            "idx_chat_external_worker_reservations_unbound_expiry",
+            "expires_at",
+            postgresql_where=text("turn_id IS NULL"),
         ),
     )
 

@@ -219,15 +219,25 @@ them in ascending order and stop at the first refusal or failure.
 The durable 32/100 qualification is distinct from the synthetic shadow and
 transient compatibility fleet checks above. Task 11 provides only deterministic
 fault/load contracts. It must not be used to generate staging traffic. A
-separately authorized Task 12 operation must bind a live adapter to
-`backend.scripts.qualify_durable_external_turns.run_durable_qualification` and
+separately authorized operation must invoke guarded
+`backend.scripts.qualify_durable_external_turns.run_live_durable_qualification` and
 must use the exact active immutable staging release while production remains a
 different release and all public external-admission flags are off.
 The executable Locust barrier, exact 16/8/8 and 100-user assignments, stream
 evidence normalization, identity-aware executor counts, fixed 80% CPU guard,
 and strict retained report/cleanup schema are Task 11 code. Task 12 supplies
-only the reviewed durable stream transport and host/operator lifecycle bindings;
-it must not route these users to `/v1/shadow` or accept no-op cleanup proof.
+only protected credentials, exact release/host control, and bounded runtime
+evidence. Source constructs the reviewed real chat transport; it must not route
+these users to `/v1/shadow` or accept no-op cleanup proof.
+
+The guarded constructor accepts only the exact staging origin and dedicated,
+distinct signed synthetic cookies. It posts the real
+`/api/v1/chat/stream` route and resumes the admitted turn with
+`Last-Event-ID`. Before and after each profile it reads the admin-only,
+content-free Modal lifecycle snapshot. The protected staging runtime must
+explicitly provide `PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`; missing or
+contradictory create/reuse/eviction/active-duration/rate evidence refuses the
+report.
 
 The mandatory order is 32 simultaneous full functional turns (16 no-tool,
 eight read-only CLI, eight Bash), followed immediately by 100 simultaneous

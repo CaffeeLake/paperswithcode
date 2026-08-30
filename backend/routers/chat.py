@@ -43,6 +43,7 @@ from backend.models.chat import (
     LatexPaperRestoreRequest,
     LatexPaperSaveCompileRequest,
     ChatSandboxSpendResponse,
+    ChatModalLifecycleResponse,
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
@@ -114,6 +115,7 @@ from backend.services.chat_turn_cancellation_coordinator import (
 )
 from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_durable_lifecycle_observer import (
+    application_modal_lifecycle_snapshot,
     durable_lifecycle_observer,
 )
 from backend.services.chat_web_search_service import (
@@ -681,6 +683,16 @@ def chat_sandbox_spend(environment: str | None = None):
         settings,
         session_factory=db_manager.session_local,
     )
+
+
+@router.get(
+    "/admin/modal-lifecycle",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatModalLifecycleResponse,
+)
+def chat_modal_lifecycle():
+    """Return only cumulative content-free lifecycle counters for window deltas."""
+    return application_modal_lifecycle_snapshot()
 
 
 @router.get("/usage")

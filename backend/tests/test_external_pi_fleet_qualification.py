@@ -49,6 +49,9 @@ from backend.loadtests.external_pi_fleet_core import (
     DurableTurnObservation,
     DurableQualificationReport,
     publish_durable_report,
+    ModalLifecycleDelta,
+    ModalLifecycleSnapshot,
+    ModalRateEvidence,
 )
 from backend.loadtests.external_pi_shadow_core import (
     BaselineObservation,
@@ -61,6 +64,30 @@ from deploy.external_pi_qualification_contract import (
     QUALIFICATION_WORKER_IDS,
     QUALIFICATION_WORKER_UNITS,
 )
+
+_NO_MODAL = ModalLifecycleDelta(creates=0, reuses=0, evictions=0, active_duration_ms=0)
+_FUNCTIONAL_MODAL = ModalLifecycleDelta(
+    creates=1, reuses=15, evictions=0, active_duration_ms=16_000
+)
+_MODAL_RATE = ModalRateEvidence(microusd_per_second=25, source="protected_runtime")
+
+
+class _LifecycleSource:
+    def __init__(self, delta: ModalLifecycleDelta = _NO_MODAL):
+        self.delta = delta
+        self.calls = 0
+
+    def snapshot(self, _profile_name):
+        self.calls += 1
+        before = self.calls % 2 == 1
+        return ModalLifecycleSnapshot(
+            captured_at_ms=self.calls,
+            creates=0 if before else self.delta.creates,
+            reuses=0 if before else self.delta.reuses,
+            evictions=0 if before else self.delta.evictions,
+            active_duration_ms=0 if before else self.delta.active_duration_ms,
+            source="application_modal_lifecycle",
+        )
 
 
 def test_fleet_shapes_have_exact_allowlisted_topology_and_capacity():
@@ -163,8 +190,6 @@ def test_durable_profile_report_records_required_content_free_measurements():
             model_starts=1,
             operation_start_count=0 if workload == "no_tool" else 1,
             duplicate_operation_start_count=0,
-            modal_creates=1 if workload == "read_only_cli" and index == 16 else 0,
-            modal_reuses=1 if workload != "no_tool" and index != 16 else 0,
             terminal_cause="completed",
         )
         for index, workload in enumerate(profile.workloads)
@@ -179,6 +204,8 @@ def test_durable_profile_report_records_required_content_free_measurements():
         peak_active_backend_turns=32,
         peak_active_external_workers=4,
         peak_active_sandboxes=8,
+        modal_lifecycle=_FUNCTIONAL_MODAL,
+        modal_rate=_MODAL_RATE,
     )
 
     assert report.passed is True
@@ -200,6 +227,7 @@ def test_durable_profile_report_records_required_content_free_measurements():
     assert report.peak_active_backend_turns == 32
     assert report.peak_active_external_workers == 4
     assert report.peak_active_sandboxes == 8
+    assert report.model_copy(update={"modal_active_ms": 0}).passed is False
     assert "content" not in report.model_dump()
     assert (
         report.model_copy(update={"terminal_cause_counts": {"completed": 1}}).passed
@@ -241,6 +269,8 @@ def test_durable_profile_report_fails_refusal_queue_duplicate_or_lost_terminal()
             peak_active_backend_turns=100,
             peak_active_external_workers=8,
             peak_active_sandboxes=0,
+            modal_lifecycle=_NO_MODAL,
+            modal_rate=_MODAL_RATE,
         )
         assert report.passed is False
 
@@ -264,7 +294,9 @@ def test_durable_profile_retains_slow_completion_as_failing_evidence():
         peak_cpu_percent=20.0,
         peak_active_backend_turns=32,
         peak_active_external_workers=4,
-        peak_active_sandboxes=0,
+        peak_active_sandboxes=1,
+        modal_lifecycle=_FUNCTIONAL_MODAL,
+        modal_rate=_MODAL_RATE,
     )
 
     assert report.p99_completion_ms == 60_001
@@ -291,7 +323,9 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
         peak_cpu_percent=20.0,
         peak_active_backend_turns=32,
         peak_active_external_workers=4,
-        peak_active_sandboxes=0,
+        peak_active_sandboxes=1,
+        modal_lifecycle=_FUNCTIONAL_MODAL,
+        modal_rate=_MODAL_RATE,
     )
     cleanup = {
         "flags_restored": True,
@@ -432,7 +466,13 @@ class _DurableOperator:
             peak_cpu_percent=20.0,
             peak_active_backend_turns=profile.expected_users,
             peak_active_external_workers=4,
-            peak_active_sandboxes=0,
+            peak_active_sandboxes=(1 if profile.name == "32-functional-turns" else 0),
+            modal_lifecycle=(
+                _FUNCTIONAL_MODAL
+                if profile.name == "32-functional-turns"
+                else _NO_MODAL
+            ),
+            modal_rate=_MODAL_RATE,
         )
 
     def teardown_profile(self, profile):
@@ -701,7 +741,9 @@ def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
         peak_cpu_percent=20.0,
         peak_active_backend_turns=32,
         peak_active_external_workers=4,
-        peak_active_sandboxes=0,
+        peak_active_sandboxes=1,
+        modal_lifecycle=_FUNCTIONAL_MODAL,
+        modal_rate=_MODAL_RATE,
     )
     cleanup = {
         "flags_restored": True,
@@ -1450,8 +1492,6 @@ def test_durable_locust_measurement_requires_content_free_typed_outcomes():
         reconnect_successes=1,
         model_starts=1,
         operation_start_ids=("op-0001", "op-0002"),
-        modal_creates=1,
-        modal_reuses=0,
         queued_states=0,
         stale_mutations=0,
         duplicate_turns=0,
@@ -1473,8 +1513,6 @@ def test_durable_locust_measurement_requires_content_free_typed_outcomes():
             reconnect_successes=0,
             model_starts=1,
             operation_start_ids=(),
-            modal_creates=0,
-            modal_reuses=0,
             queued_states=0,
             stale_mutations=0,
             duplicate_turns=0,
@@ -1491,8 +1529,6 @@ def test_durable_locust_measurement_requires_content_free_typed_outcomes():
         "reconnect_successes": 0,
         "model_starts": 1,
         "operation_start_ids": (),
-        "modal_creates": 0,
-        "modal_reuses": 0,
         "queued_states": 0,
         "stale_mutations": 0,
         "duplicate_turns": 0,
@@ -1516,8 +1552,6 @@ def test_durable_locust_observation_counts_duplicate_operation_identity():
         reconnect_successes=0,
         model_starts=1,
         operation_start_ids=("op-0001", "op-0002", "op-0001"),
-        modal_creates=1,
-        modal_reuses=1,
         queued_states=0,
         stale_mutations=0,
         duplicate_turns=0,
@@ -1581,8 +1615,6 @@ def test_executable_durable_locust_runner_releases_exact_simultaneous_profile(
                 "reconnect_successes": 0,
                 "model_starts": 1,
                 "operation_start_ids": operation_ids,
-                "modal_creates": 1 if operation_ids else 0,
-                "modal_reuses": 0,
                 "queued_states": 0,
                 "stale_mutations": 0,
                 "duplicate_turns": 0,
@@ -1601,6 +1633,10 @@ def test_executable_durable_locust_runner_releases_exact_simultaneous_profile(
             peak_active_external_workers=4,
             peak_active_sandboxes=sandboxes,
         ),
+        lifecycle_source=_LifecycleSource(
+            _FUNCTIONAL_MODAL if profile_name == "32-functional-turns" else _NO_MODAL
+        ),
+        modal_rate=_MODAL_RATE,
         timeout_seconds=10.0,
     )
 
@@ -1611,6 +1647,74 @@ def test_executable_durable_locust_runner_releases_exact_simultaneous_profile(
     assert all(delay == 0 and queued is False for *_, delay, queued in calls)
     assert report.operation_start_count == (24 if expected_users == 32 else 0)
     assert report.duplicate_operation_start_count == 0
+
+
+def test_live_durable_runner_constructs_real_transport_and_accepts_no_fake(monkeypatch):
+    pytest.importorskip("locust")
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    from backend.loadtests.durable_chat_transport import (
+        DurableChatTransportConfig,
+        HttpModalLifecycleEvidenceSource,
+        HttpSSEDurableChatTransport,
+    )
+
+    captured = {}
+
+    def run_local(**kwargs):
+        captured.update(kwargs)
+        return "report"
+
+    monkeypatch.setattr(adapter, "run_local_durable_profile", run_local)
+    config = DurableChatTransportConfig(
+        base_url="https://staging.paperswithcode.co",
+        synthetic_cookies=("signed-cookie",),
+        initial_model="gpt-5.6-luna@openai",
+    )
+
+    result = adapter.run_live_durable_profile(
+        profile_name="32-functional-turns",
+        transport_config=config,
+        resources=adapter.DurableRunResources(1, 2 * 1024**3, 1.0, 32, 4, 0),
+        modal_rate=_MODAL_RATE,
+    )
+
+    assert result == "report"
+    assert type(captured["transport"]) is HttpSSEDurableChatTransport
+    assert type(captured["lifecycle_source"]) is HttpModalLifecycleEvidenceSource
+    assert "/v1/shadow" not in repr(captured)
+
+
+def test_guarded_live_operator_delegates_run_only_to_live_runner(monkeypatch):
+    pytest.importorskip("locust")
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
+    from backend.scripts.qualify_durable_external_turns import (
+        GuardedLiveDurableOperator,
+    )
+
+    profile = resolve_durable_profile("32-functional-turns")
+    resources = adapter.DurableRunResources(1, 2 * 1024**3, 1.0, 32, 4, 0)
+    control = SimpleNamespace(run_resources=lambda selected: resources)
+    captured = {}
+
+    def run_live(**kwargs):
+        captured.update(kwargs)
+        return "profile-report"
+
+    monkeypatch.setattr(adapter, "run_live_durable_profile", run_live)
+    operator = GuardedLiveDurableOperator(
+        control_plane=control,
+        transport_config=DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+        ),
+        modal_rate=_MODAL_RATE,
+    )
+
+    assert operator.run_profile(profile) == "profile-report"
+    assert captured["profile_name"] == profile.name
+    assert captured["resources"] is resources
 
 
 def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):

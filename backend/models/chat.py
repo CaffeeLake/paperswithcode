@@ -993,6 +993,17 @@ class ChatSandboxSpendResponse(BaseModel):
     events: list[ChatSandboxSpendEventResponse]
 
 
+class ChatModalLifecycleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    captured_at_ms: int = Field(ge=0)
+    creates: int = Field(ge=0)
+    reuses: int = Field(ge=0)
+    evictions: int = Field(ge=0)
+    active_duration_ms: int = Field(ge=0)
+    source: Literal["application_modal_lifecycle"]
+
+
 class _StrictEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
