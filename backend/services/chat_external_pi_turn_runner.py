@@ -116,7 +116,7 @@ class ExternalPiChatTurnRunner:
         self.now = now or (lambda: datetime.now(UTC))
         self.observe = observe or (lambda _event, _code, _value: None)
         from backend.services.chat_durable_qualification_evidence import (
-            record_qualification_event,
+            record_qualification_event_safely,
         )
 
         self.tool_executor = ExternalPiToolWorkspaceExecutor(
@@ -128,7 +128,7 @@ class ExternalPiChatTurnRunner:
             workspace_manager=workspace_manager,
             transition=lambda state: self.turn_state_transition(state),
             observe=lambda event, code, value: self.observe(event, code, value),
-            record_evidence=record_qualification_event,
+            record_evidence=record_qualification_event_safely,
         )
         self.lifecycle = ExternalPiTurnLifecycle(
             capability_id=self.capability_id,

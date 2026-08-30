@@ -231,13 +231,29 @@ evidence. Source constructs the reviewed real chat transport; it must not route
 these users to `/v1/shadow` or accept no-op cleanup proof.
 
 The guarded constructor accepts only the exact staging origin and dedicated,
-distinct signed synthetic cookies. It posts the real
-`/api/v1/chat/stream` route and resumes the admitted turn with
-`Last-Event-ID`. Before and after each profile it reads the admin-only,
-content-free Modal lifecycle snapshot. The protected staging runtime must
-explicitly provide `PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`; missing or
-contradictory create/reuse/eviction/active-duration/rate evidence refuses the
-report.
+distinct signed synthetic cookies. Before each profile it creates an exact
+server-timed cohort with the staging-admin-only
+`POST /api/v1/chat/admin/qualification-scopes` endpoint. Streaming requests
+carry only the returned `X-PWC-Qualification-Scope-ID` plus the non-cookie
+admin credential; client-authored profile, release, and time-window headers are
+not evidence. It posts the real `/api/v1/chat/stream` route, resumes the admitted
+turn with `Last-Event-ID`, closes every HTTP session, tears down every exact
+cohort sandbox, and only then closes and reads the scope through
+`POST /api/v1/chat/admin/qualification-evidence`. The scope is deleted with the
+staging-admin `DELETE /api/v1/chat/admin/qualification-scopes/{scope_id}` path
+after collection or any abort.
+
+Apply `add_chat_qualification_evidence_events.sql` and then
+`add_chat_qualification_metadata.sql` to the environment-owned schema before
+running the gate. Startup readiness validates the exact scope/event columns,
+foreign keys, checks, and index definitions. Expired scopes are removed only by
+the bounded retention cleanup; cascade deletion removes their event rows. The
+protected staging runtime must explicitly provide all four rate attestations:
+`PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND`,
+`PWC_MODAL_EXECUTOR_RATE_SOURCE_ID=modal-staging-price-v1`,
+`PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS`, and the exact `PWC_RELEASE_ID`.
+Attestation time must fall inside the server-issued cohort window; old, future,
+wrong-source, or wrong-release evidence refuses the report.
 
 The mandatory order is 32 simultaneous full functional turns (16 no-tool,
 eight read-only CLI, eight Bash), followed immediately by 100 simultaneous

@@ -246,6 +246,7 @@ def test_live_report_requires_durable_executor_start_and_duplicate_evidence():
     base = {
         "expected_users": 32,
         "admitted_turns": 32,
+        "admission_denominator_events": 32,
         "terminal_turns": 32,
         "queued_states": 0,
         "stale_fences": 0,
@@ -253,8 +254,10 @@ def test_live_report_requires_durable_executor_start_and_duplicate_evidence():
         "duplicate_executor_starts": 0,
         "workspace_creates": 1,
         "workspace_reuses": 15,
-        "workspace_evictions": 0,
+        "workspace_evictions": 16,
         "billed_duration_ms": 16_000,
+        "window_started_at_ms": 1,
+        "window_ended_at_ms": 2,
         "source": "durable_qualification_records",
     }
 
@@ -680,7 +683,7 @@ def test_durable_controller_second_teardown_failure_retains_only_first_profile()
     result = run_durable_qualification(operator)
 
     assert result.status == "failed"
-    assert result.reason == "durable_qualification_failed"
+    assert result.reason == "cleanup_failed"
     assert [profile.profile for profile in result.profiles] == ["32-functional-turns"]
     assert result.cleanup_passed is True
 
@@ -841,9 +844,7 @@ def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
         )
 
 
-@pytest.mark.parametrize(
-    "reason", ("test_failure", "cleanup_failed", "durable_qualification_failed")
-)
+@pytest.mark.parametrize("reason", ("test_failure", "durable_qualification_failed"))
 def test_completed_report_cannot_be_forged_as_contradictory_failure(
     reason: str, tmp_path: Path
 ) -> None:

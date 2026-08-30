@@ -715,10 +715,10 @@ def _scope(
     except (StaleTurnClaim, ValueError):
         db.rollback()
         from backend.services.chat_durable_qualification_evidence import (
-            record_qualification_event,
+            record_qualification_event_safely,
         )
 
-        record_qualification_event(
+        record_qualification_event_safely(
             turn_id=uuid.UUID(turn_id),
             chat_session_id=uuid.UUID(session_id),
             event_type="stale_fence",

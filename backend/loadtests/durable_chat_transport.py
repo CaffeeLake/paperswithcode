@@ -8,7 +8,6 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
@@ -19,6 +18,7 @@ from backend.loadtests.external_pi_fleet_core import (
 
 _STAGING_ORIGIN = "https://staging.paperswithcode.co"
 _CHAT_STREAM_PATH = "/api/v1/chat/stream"
+_QUALIFICATION_SCOPE_PATH = "/api/v1/chat/admin/qualification-scopes"
 _QUALIFICATION_EVIDENCE_PATH = "/api/v1/chat/admin/qualification-evidence"
 _MAX_EVENT_BYTES = 128 * 1024
 _MAX_STREAM_BYTES = 2 * 1024 * 1024
@@ -76,6 +76,10 @@ class _HttpSession(Protocol):
     proxies: dict
 
     def post(self, url: str, **kwargs): ...
+
+    def delete(self, url: str, **kwargs): ...
+
+    def close(self) -> None: ...
 
 
 def _requests_session() -> _HttpSession:
@@ -191,26 +195,29 @@ class HttpSSEDurableChatTransport:
         self,
         config: DurableChatTransportConfig,
         *,
-        profile_name: str | None = None,
+        scope_id: uuid.UUID | None = None,
         session_factory: Callable[[], _HttpSession] = _requests_session,
     ) -> None:
         self._config = config
-        if profile_name is not None and profile_name not in {
-            "32-functional-turns",
-            "100-immediate-admission",
-        }:
-            raise FleetRunRefused("durable qualification profile is invalid")
-        self._profile_name = profile_name
+        self._scope_id = scope_id
         self._session_factory = session_factory
 
     def open_durable_stream(self, spec: DurableUser) -> Mapping[str, object]:
+        session = self._session_factory()
+        try:
+            return self._open_durable_stream_with_session(spec, session)
+        finally:
+            session.close()
+
+    def _open_durable_stream_with_session(
+        self, spec: DurableUser, session: _HttpSession
+    ) -> Mapping[str, object]:
         if (
             type(spec.ordinal) is not int
             or not 0 <= spec.ordinal < len(self._config.synthetic_cookies)
             or spec.workload not in _PROMPTS
         ):
             raise FleetRunRefused("durable user assignment is invalid")
-        session = self._session_factory()
         session.trust_env = False
         session.proxies.clear()
         hostname = urlsplit(self._config.base_url).hostname
@@ -311,14 +318,11 @@ class HttpSSEDurableChatTransport:
             "Accept": "text/event-stream",
             "Origin": _STAGING_ORIGIN,
         }
-        if self._profile_name is not None:
+        if self._scope_id is not None:
             headers.update(
                 {
                     "X-Admin-Token": self._config.admin_token,
-                    "X-PWC-Qualification-Run-ID": _profile_run_id(
-                        self._config.qualification_run_id, self._profile_name
-                    ),
-                    "X-PWC-Qualification-Profile": self._profile_name,
+                    "X-PWC-Qualification-Scope-ID": str(self._scope_id),
                 }
             )
         if after_sequence is not None:
@@ -400,17 +404,7 @@ class HttpDurableQualificationEvidenceSource:
         self._config = config
         self._session_factory = session_factory
 
-    def collect(
-        self,
-        profile_name: str,
-        *,
-        window_started_at: datetime,
-        window_ended_at: datetime,
-    ) -> DurableQualificationEvidence:
-        if profile_name not in {"32-functional-turns", "100-immediate-admission"}:
-            raise FleetRunRefused("durable qualification profile is invalid")
-        if not self._config.admin_token or not self._config.qualification_run_id:
-            raise FleetRunRefused("durable qualification credentials are incomplete")
+    def _session(self) -> _HttpSession:
         session = self._session_factory()
         session.trust_env = False
         session.proxies.clear()
@@ -420,44 +414,106 @@ class HttpDurableQualificationEvidenceSource:
             domain=urlsplit(self._config.base_url).hostname,
             secure=True,
         )
-        response = session.post(
-            urljoin(self._config.base_url, _QUALIFICATION_EVIDENCE_PATH),
-            json={
-                "run_id": _profile_run_id(
-                    self._config.qualification_run_id, profile_name
+        return session
+
+    @staticmethod
+    def _headers() -> dict[str, str]:
+        return {"Accept": "application/json", "Origin": _STAGING_ORIGIN}
+
+    def begin_scope(self, profile_name: str) -> Mapping[str, object]:
+        if profile_name not in {"32-functional-turns", "100-immediate-admission"}:
+            raise FleetRunRefused("durable qualification profile is invalid")
+        if not self._config.admin_token or not self._config.qualification_run_id:
+            raise FleetRunRefused("durable qualification credentials are incomplete")
+        session = self._session()
+        try:
+            headers = self._headers() | {"X-Admin-Token": self._config.admin_token}
+            response = session.post(
+                urljoin(self._config.base_url, _QUALIFICATION_SCOPE_PATH),
+                json={
+                    "run_id": _profile_run_id(
+                        self._config.qualification_run_id, profile_name
+                    ),
+                    "profile": profile_name,
+                },
+                headers=headers,
+                timeout=10.0,
+                allow_redirects=False,
+            )
+            with response:
+                payload = response.json() if response.status_code == 201 else None
+            if not isinstance(payload, dict):
+                raise FleetRunRefused("durable qualification scope is unavailable")
+            scope_id = uuid.UUID(str(payload.get("scope_id")))
+            if (
+                payload.get("profile") != profile_name
+                or payload.get("run_id")
+                != _profile_run_id(self._config.qualification_run_id, profile_name)
+                or not re.fullmatch(
+                    r"[0-9a-f]{12}-staging",
+                    str(payload.get("app_release_id", "")),
+                )
+                or not payload.get("window_started_at")
+                or not payload.get("expires_at")
+            ):
+                raise ValueError
+            return payload | {"scope_id": scope_id}
+        except (TypeError, ValueError, KeyError):
+            raise FleetRunRefused("durable qualification scope is invalid") from None
+        finally:
+            session.close()
+
+    def collect(self, scope_id: uuid.UUID) -> DurableQualificationEvidence:
+        session = self._session()
+        try:
+            response = session.post(
+                urljoin(self._config.base_url, _QUALIFICATION_EVIDENCE_PATH),
+                json={"scope_id": str(scope_id)},
+                headers=self._headers() | {"X-Admin-Token": self._config.admin_token},
+                timeout=10.0,
+                allow_redirects=False,
+            )
+            with response:
+                if response.status_code != 200:
+                    raise FleetRunRefused(
+                        "durable qualification evidence is unavailable"
+                    )
+                try:
+                    return DurableQualificationEvidence.model_validate(response.json())
+                except (ValueError, TypeError):
+                    raise FleetRunRefused(
+                        "durable qualification evidence is invalid"
+                    ) from None
+        finally:
+            session.close()
+
+    def cleanup(self, scope_id: uuid.UUID) -> None:
+        session = self._session()
+        try:
+            response = session.delete(
+                urljoin(
+                    self._config.base_url,
+                    f"{_QUALIFICATION_SCOPE_PATH}/{scope_id}",
                 ),
-                "profile": profile_name,
-                "window_started_at": window_started_at.isoformat(),
-                "window_ended_at": window_ended_at.isoformat(),
-            },
-            headers={
-                "Accept": "application/json",
-                "Origin": _STAGING_ORIGIN,
-                "X-Admin-Token": self._config.admin_token,
-            },
-            timeout=10.0,
-            allow_redirects=False,
-        )
-        with response:
-            if response.status_code != 200:
-                raise FleetRunRefused("durable qualification evidence is unavailable")
-            try:
-                payload = response.json()
-                return DurableQualificationEvidence.model_validate(payload)
-            except (ValueError, TypeError):
-                raise FleetRunRefused(
-                    "durable qualification evidence is invalid"
-                ) from None
+                headers=self._headers() | {"X-Admin-Token": self._config.admin_token},
+                timeout=10.0,
+                allow_redirects=False,
+            )
+            with response:
+                if response.status_code != 204:
+                    raise FleetRunRefused("qualification scope cleanup failed")
+        finally:
+            session.close()
 
 
 def create_live_durable_transport(
     config: DurableChatTransportConfig,
-    profile_name: str,
+    scope_id: uuid.UUID,
 ) -> HttpSSEDurableChatTransport:
     """Construct the only transport accepted by guarded live qualification."""
     if not config.admin_token or not config.qualification_run_id:
         raise FleetRunRefused("live qualification credentials are incomplete")
-    return HttpSSEDurableChatTransport(config, profile_name=profile_name)
+    return HttpSSEDurableChatTransport(config, scope_id=scope_id)
 
 
 __all__ = (

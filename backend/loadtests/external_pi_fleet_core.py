@@ -120,6 +120,9 @@ def load_modal_rate_evidence(
     environment: Mapping[str, str],
     *,
     expected_release: str,
+    window_started_at_ms: int,
+    window_ended_at_ms: int,
+    now_ms: int,
 ) -> ModalRateEvidence:
     """Load one explicit protected runtime rate; source code has no fallback."""
     raw = environment.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND", "")
@@ -134,6 +137,10 @@ def load_modal_rate_evidence(
         ) from None
     if environment.get("PWC_RELEASE_ID") != expected_release:
         raise FleetRunRefused("protected Modal rate evidence release is inconsistent")
+    if environment.get("PWC_MODAL_EXECUTOR_RATE_SOURCE_ID") != "modal-staging-price-v1":
+        raise FleetRunRefused("protected Modal rate evidence source is inconsistent")
+    if not (window_started_at_ms <= attested_at_ms <= window_ended_at_ms <= now_ms):
+        raise FleetRunRefused("protected Modal rate evidence window is inconsistent")
     try:
         return ModalRateEvidence(
             microusd_per_second=value,
@@ -153,6 +160,7 @@ class DurableQualificationEvidence(BaseModel):
 
     expected_users: Literal[32, 100]
     admitted_turns: int = Field(ge=0, le=100)
+    admission_denominator_events: int = Field(ge=0, le=100)
     terminal_turns: int = Field(ge=0, le=100)
     queued_states: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     stale_fences: int = Field(ge=0, le=MAX_REPORT_COUNTER)
@@ -162,6 +170,8 @@ class DurableQualificationEvidence(BaseModel):
     workspace_reuses: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     workspace_evictions: int = Field(ge=0, le=MAX_REPORT_COUNTER)
     billed_duration_ms: int = Field(ge=0, le=MAX_REPORT_BYTES)
+    window_started_at_ms: int = Field(ge=1, le=MAX_REPORT_BYTES)
+    window_ended_at_ms: int = Field(ge=1, le=MAX_REPORT_BYTES)
     source: Literal["durable_qualification_records"]
 
 
@@ -280,7 +290,12 @@ class DurableProfileReport(BaseModel):
                         self.qualification_evidence_source == "isolated_test_harness"
                         or self.operation_start_count == 16
                     )
-                    and self.modal_evictions == 0
+                    and self.modal_evictions
+                    == (
+                        0
+                        if self.qualification_evidence_source == "isolated_test_harness"
+                        else 16
+                    )
                     and self.modal_active_ms > 0
                     and self.peak_active_sandboxes > 0
                 )
@@ -368,10 +383,6 @@ class DurableQualificationReport(BaseModel):
             maximum_profiles = failed_profile_limits.get(self.reason or "")
             if maximum_profiles is None or len(names) > maximum_profiles:
                 raise ValueError("failed durable report reason or profiles are invalid")
-            if self.reason == "cleanup_failed" and self.cleanup_passed:
-                raise ValueError(
-                    "failed durable report cleanup evidence is contradictory"
-                )
             if (
                 self.reason == "public_external_admission_flags_are_invalid"
                 and self.flags_restored
@@ -448,6 +459,8 @@ def aggregate_durable_profile(
         if (
             qualification_evidence.expected_users != profile.expected_users
             or qualification_evidence.admitted_turns != profile.expected_users
+            or qualification_evidence.admission_denominator_events
+            != profile.expected_users
             or qualification_evidence.terminal_turns != profile.expected_users
         ):
             raise FleetRunRefused("durable qualification evidence is incomplete")

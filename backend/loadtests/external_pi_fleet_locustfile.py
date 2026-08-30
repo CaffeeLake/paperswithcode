@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import time
+import uuid
 import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -85,6 +86,7 @@ class DurableProfileMeasurement:
     observations: tuple[DurableTurnObservation, ...]
     resources: DurableRunResources
     window_started_at: datetime
+    qualification_scope_id: uuid.UUID
 
 
 class DurableStreamTransport(Protocol):
@@ -96,13 +98,7 @@ class ModalLifecycleEvidenceSource(Protocol):
 
 
 class DurableQualificationEvidenceSource(Protocol):
-    def collect(
-        self,
-        profile_name: str,
-        *,
-        window_started_at: datetime,
-        window_ended_at: datetime,
-    ) -> DurableQualificationEvidence: ...
+    def collect(self, scope_id: uuid.UUID) -> DurableQualificationEvidence: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,15 +409,15 @@ def _run_durable_observations(
 def finalize_live_durable_profile(
     measurement: DurableProfileMeasurement,
     *,
-    evidence_source: DurableQualificationEvidenceSource,
+    evidence_source: DurableQualificationEvidenceSource | None = None,
+    qualification_evidence: DurableQualificationEvidence | None = None,
     modal_rate: ModalRateEvidence,
-    window_ended_at: datetime,
 ):
     profile = resolve_durable_profile(measurement.profile_name)
-    evidence = evidence_source.collect(
-        profile.name,
-        window_started_at=measurement.window_started_at,
-        window_ended_at=window_ended_at,
+    if (evidence_source is None) == (qualification_evidence is None):
+        raise FleetRunRefused("exactly one durable evidence input is required")
+    evidence = qualification_evidence or evidence_source.collect(
+        measurement.qualification_scope_id
     )
     resources = measurement.resources
     return aggregate_durable_profile(
@@ -443,6 +439,7 @@ def run_live_durable_profile(
     profile_name: str,
     transport_config,
     resources: DurableRunResources,
+    qualification_scope_id: uuid.UUID,
     timeout_seconds: float = 60.0,
     barrier_timeout_seconds: float = 5.0,
 ):
@@ -452,7 +449,9 @@ def run_live_durable_profile(
     started_at = datetime.now(UTC)
     observations = _run_durable_observations(
         profile_name=profile_name,
-        transport=create_live_durable_transport(transport_config, profile_name),
+        transport=create_live_durable_transport(
+            transport_config, qualification_scope_id
+        ),
         timeout_seconds=timeout_seconds,
         barrier_timeout_seconds=barrier_timeout_seconds,
     )
@@ -461,6 +460,7 @@ def run_live_durable_profile(
         observations=observations,
         resources=resources,
         window_started_at=started_at,
+        qualification_scope_id=qualification_scope_id,
     )
 
 

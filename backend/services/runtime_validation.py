@@ -1391,6 +1391,202 @@ def validate_external_worker_reservation_schema(db) -> None:
         raise RuntimeError("required external worker schema is missing")
 
 
+def validate_qualification_evidence_schema(db) -> None:
+    """Require the exact durable qualification storage contract."""
+    columns = {
+        (table, column): (data_type, nullable, maximum_length)
+        for table, column, data_type, nullable, maximum_length in db.execute(
+            text("""
+                /* qualification_evidence_exact_columns */
+                SELECT table_name, column_name, data_type, is_nullable,
+                       character_maximum_length
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name IN (
+                    'chat_qualification_scopes',
+                    'chat_qualification_evidence_events',
+                    'chat_turn_latency'
+                  )
+            """)
+        ).all()
+    }
+    required_columns = {
+        ("chat_qualification_scopes", "id"): ("uuid", "NO", None),
+        ("chat_qualification_scopes", "run_id"): ("character varying", "NO", 64),
+        ("chat_qualification_scopes", "profile"): ("character varying", "NO", 32),
+        ("chat_qualification_scopes", "app_release_id"): (
+            "character varying",
+            "NO",
+            255,
+        ),
+        ("chat_qualification_scopes", "window_started_at"): (
+            "timestamp with time zone",
+            "NO",
+            None,
+        ),
+        ("chat_qualification_scopes", "window_ended_at"): (
+            "timestamp with time zone",
+            "YES",
+            None,
+        ),
+        ("chat_qualification_scopes", "expires_at"): (
+            "timestamp with time zone",
+            "NO",
+            None,
+        ),
+        ("chat_qualification_scopes", "created_at"): (
+            "timestamp with time zone",
+            "NO",
+            None,
+        ),
+        ("chat_qualification_evidence_events", "id"): ("uuid", "NO", None),
+        ("chat_qualification_evidence_events", "qualification_scope_id"): (
+            "uuid",
+            "NO",
+            None,
+        ),
+        ("chat_qualification_evidence_events", "turn_id"): ("uuid", "NO", None),
+        ("chat_qualification_evidence_events", "chat_session_id"): ("uuid", "NO", None),
+        ("chat_qualification_evidence_events", "event_type"): (
+            "character varying",
+            "NO",
+            32,
+        ),
+        ("chat_qualification_evidence_events", "operation_digest"): (
+            "character varying",
+            "YES",
+            64,
+        ),
+        ("chat_qualification_evidence_events", "occurred_at"): (
+            "timestamp with time zone",
+            "NO",
+            None,
+        ),
+        ("chat_turn_latency", "qualification_scope_id"): ("uuid", "YES", None),
+        ("chat_turn_latency", "qualification_profile"): (
+            "character varying",
+            "YES",
+            32,
+        ),
+    }
+    if any(columns.get(key) != value for key, value in required_columns.items()):
+        raise RuntimeError("required qualification evidence schema is missing")
+
+    constraints = {
+        name: " ".join(definition.lower().replace('"', "").split())
+        for name, definition in db.execute(
+            text("""
+                /* qualification_evidence_exact_constraints */
+                SELECT conname, pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE connamespace = current_schema()::regnamespace
+                  AND (
+                    (conrelid = 'chat_qualification_scopes'::regclass AND conname IN (
+                      'chat_qualification_scopes_run_id_key',
+                      'chat_qualification_scopes_profile_check',
+                      'chat_qualification_scopes_window_check',
+                      'chat_qualification_scopes_expiry_check'
+                    )) OR
+                    (conrelid = 'chat_qualification_evidence_events'::regclass AND conname IN (
+                      'chat_qualification_evidence_scope_fkey',
+                      'chat_qualification_evidence_turn_fkey',
+                      'chat_qualification_evidence_session_fkey',
+                      'chat_qualification_evidence_event_type_check',
+                      'chat_qualification_evidence_operation_shape_check'
+                    )) OR
+                    (conrelid = 'chat_turn_latency'::regclass AND conname IN (
+                      'chat_turn_latency_qualification_scope_fkey',
+                      'chat_turn_latency_qualification_profile_check'
+                    ))
+                  )
+            """)
+        ).all()
+    }
+    required_constraint_fragments = {
+        "chat_qualification_scopes_run_id_key": ("unique (run_id)",),
+        "chat_qualification_scopes_profile_check": (
+            "32-functional-turns",
+            "100-immediate-admission",
+        ),
+        "chat_qualification_scopes_window_check": (
+            "window_ended_at",
+            "window_started_at",
+        ),
+        "chat_qualification_scopes_expiry_check": ("expires_at", "window_started_at"),
+        "chat_qualification_evidence_scope_fkey": (
+            "foreign key (qualification_scope_id)",
+            "chat_qualification_scopes(id)",
+            "on delete cascade",
+        ),
+        "chat_qualification_evidence_turn_fkey": (
+            "foreign key (turn_id)",
+            "chat_turn_jobs(turn_id)",
+            "on delete cascade",
+        ),
+        "chat_qualification_evidence_session_fkey": (
+            "foreign key (chat_session_id)",
+            "chat_sessions(id)",
+            "on delete cascade",
+        ),
+        "chat_qualification_evidence_event_type_check": (
+            "admitted_no_queue",
+            "queued",
+            "workspace_evicted",
+        ),
+        "chat_qualification_evidence_operation_shape_check": (
+            "executor_started",
+            "operation_digest",
+        ),
+        "chat_turn_latency_qualification_scope_fkey": (
+            "foreign key (qualification_scope_id)",
+            "chat_qualification_scopes(id)",
+            "on delete set null",
+        ),
+        "chat_turn_latency_qualification_profile_check": (
+            "32-functional-turns",
+            "100-immediate-admission",
+        ),
+    }
+    if set(constraints) != set(required_constraint_fragments) or any(
+        not all(fragment in constraints[name] for fragment in fragments)
+        for name, fragments in required_constraint_fragments.items()
+    ):
+        raise RuntimeError("required qualification evidence schema is missing")
+
+    indexes = {
+        name: " ".join(definition.lower().replace('"', "").split())
+        for name, definition in db.execute(
+            text("""
+                /* qualification_evidence_exact_indexes */
+                SELECT indexname, indexdef
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND indexname IN (
+                    'idx_chat_qualification_scopes_expiry',
+                    'idx_chat_qualification_scopes_release_profile',
+                    'idx_chat_qualification_evidence_scope_event_time',
+                    'idx_chat_qualification_evidence_session_time',
+                    'idx_chat_qualification_evidence_turn_event',
+                    'idx_chat_turn_latency_qualification_scope'
+                  )
+            """)
+        ).all()
+    }
+    required_index_columns = {
+        "idx_chat_qualification_scopes_expiry": "(expires_at)",
+        "idx_chat_qualification_scopes_release_profile": "(app_release_id, profile)",
+        "idx_chat_qualification_evidence_scope_event_time": "(qualification_scope_id, event_type, occurred_at)",
+        "idx_chat_qualification_evidence_session_time": "(chat_session_id, occurred_at)",
+        "idx_chat_qualification_evidence_turn_event": "(turn_id, event_type)",
+        "idx_chat_turn_latency_qualification_scope": "(qualification_scope_id, admitted_at)",
+    }
+    if set(indexes) != set(required_index_columns) or any(
+        not indexes[name].endswith(columns)
+        for name, columns in required_index_columns.items()
+    ):
+        raise RuntimeError("required qualification evidence schema is missing")
+
+
 def validate_chat_schema(db, settings: Settings) -> None:
     """Validate only the tables required by the enabled provider profile."""
 
@@ -1434,6 +1630,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
     external_worker_tables = {
         "chat_external_workers",
         "chat_external_worker_reservations",
+        "chat_qualification_scopes",
         "chat_qualification_evidence_events",
     }
     required_tables = (
@@ -1491,6 +1688,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ,('chat_turn_event_chunks')
                     ,('chat_external_workers')
                     ,('chat_external_worker_reservations')
+                    ,('chat_qualification_scopes')
                     ,('chat_qualification_evidence_events')
                 ) AS required(name)
                 """)
@@ -1633,11 +1831,21 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_external_worker_reservations", "reserved_at"),
         ("chat_external_worker_reservations", "expires_at"),
         ("chat_qualification_evidence_events", "id"),
+        ("chat_qualification_evidence_events", "qualification_scope_id"),
         ("chat_qualification_evidence_events", "turn_id"),
         ("chat_qualification_evidence_events", "chat_session_id"),
         ("chat_qualification_evidence_events", "event_type"),
         ("chat_qualification_evidence_events", "operation_digest"),
         ("chat_qualification_evidence_events", "occurred_at"),
+        ("chat_qualification_scopes", "id"),
+        ("chat_qualification_scopes", "run_id"),
+        ("chat_qualification_scopes", "profile"),
+        ("chat_qualification_scopes", "app_release_id"),
+        ("chat_qualification_scopes", "window_started_at"),
+        ("chat_qualification_scopes", "window_ended_at"),
+        ("chat_qualification_scopes", "expires_at"),
+        ("chat_turn_latency", "qualification_scope_id"),
+        ("chat_turn_latency", "qualification_profile"),
     }
     expected_columns = (
         common_columns
@@ -1789,11 +1997,21 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ,('chat_external_worker_reservations', 'reserved_at')
                 ,('chat_external_worker_reservations', 'expires_at')
                 ,('chat_qualification_evidence_events', 'id')
+                ,('chat_qualification_evidence_events', 'qualification_scope_id')
                 ,('chat_qualification_evidence_events', 'turn_id')
                 ,('chat_qualification_evidence_events', 'chat_session_id')
                 ,('chat_qualification_evidence_events', 'event_type')
                 ,('chat_qualification_evidence_events', 'operation_digest')
                 ,('chat_qualification_evidence_events', 'occurred_at')
+                ,('chat_qualification_scopes', 'id')
+                ,('chat_qualification_scopes', 'run_id')
+                ,('chat_qualification_scopes', 'profile')
+                ,('chat_qualification_scopes', 'app_release_id')
+                ,('chat_qualification_scopes', 'window_started_at')
+                ,('chat_qualification_scopes', 'window_ended_at')
+                ,('chat_qualification_scopes', 'expires_at')
+                ,('chat_turn_latency', 'qualification_scope_id')
+                ,('chat_turn_latency', 'qualification_profile')
             )
             """)
         ).all()
@@ -1867,6 +2085,7 @@ def validate_chat_schema(db, settings: Settings) -> None:
         if worker_indexes != {"idx_chat_external_workers_dispatch"}:
             raise RuntimeError("required external worker schema is missing")
         validate_external_worker_reservation_schema(db)
+        validate_qualification_evidence_schema(db)
     share_snapshot_constraint = db.execute(
         text("""
             SELECT 1

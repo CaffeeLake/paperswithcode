@@ -1,29 +1,36 @@
-"""Durable, cohort-scoped evidence for protected external-Pi qualification."""
+"""Durable, server-scoped evidence for protected external-Pi qualification."""
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.models.database import (
     ChatQualificationEvidenceEvent,
+    ChatQualificationScope,
     ChatSandboxComputeInterval,
     ChatTurnLatency,
 )
 
+logger = logging.getLogger(__name__)
 QUALIFICATION_PROFILES = {
     "32-functional-turns": 32,
     "100-immediate-admission": 100,
 }
 QUALIFICATION_EVENT_TYPES = frozenset(
     {
+        "admitted_no_queue",
         "executor_started",
         "stale_fence",
         "queued",
@@ -35,7 +42,6 @@ QUALIFICATION_EVENT_TYPES = frozenset(
 
 
 def _as_utc(value: datetime) -> datetime:
-    """Normalize SQLite's timezone-naive test values and PostgreSQL timestamps."""
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
@@ -46,9 +52,20 @@ class QualificationEvidenceUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class QualificationScope:
+    scope_id: uuid.UUID
+    run_id: str
+    profile: str
+    app_release_id: str
+    window_started_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DurableQualificationEvidence:
     expected_users: int
     admitted_turns: int
+    admission_denominator_events: int
     terminal_turns: int
     queued_states: int
     stale_fences: int
@@ -58,6 +75,8 @@ class DurableQualificationEvidence:
     workspace_reuses: int
     workspace_evictions: int
     billed_duration_ms: int
+    window_started_at_ms: int
+    window_ended_at_ms: int
     source: str = "durable_qualification_records"
 
 
@@ -76,19 +95,20 @@ class ChatQualificationEvidenceRepository:
             raise ValueError("qualification evidence event is invalid")
         if (event_type == "executor_started") != bool(operation_id):
             raise ValueError("qualification executor evidence is invalid")
-        qualified = db.execute(
-            select(ChatTurnLatency.turn_id).where(
+        scope_id = db.execute(
+            select(ChatTurnLatency.qualification_scope_id).where(
                 ChatTurnLatency.turn_id == turn_id,
                 ChatTurnLatency.chat_session_id == chat_session_id,
-                ChatTurnLatency.qualification_run_id.is_not(None),
+                ChatTurnLatency.qualification_scope_id.is_not(None),
                 ChatTurnLatency.qualification_scenario == "reliability",
             )
         ).scalar_one_or_none()
-        if qualified is None:
+        if scope_id is None:
             return False
         db.add(
             ChatQualificationEvidenceEvent(
                 id=uuid.uuid4(),
+                qualification_scope_id=scope_id,
                 turn_id=turn_id,
                 chat_session_id=chat_session_id,
                 event_type=event_type,
@@ -108,42 +128,113 @@ def record_qualification_event(**kwargs) -> bool:
         return ChatQualificationEvidenceRepository().record(db, **kwargs)
 
 
+def record_qualification_event_safely(**kwargs) -> bool:
+    """Preserve chat semantics for expected evidence-store outages."""
+    try:
+        return record_qualification_event(**kwargs)
+    except (OSError, SQLAlchemyError) as error:
+        logger.warning(
+            "chat qualification evidence_missing event=%s error=%s",
+            kwargs.get("event_type", "unknown"),
+            type(error).__name__,
+        )
+        return False
+
+
 class ChatDurableQualificationEvidenceService:
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
         self.db = db
+        self.now = now or (lambda: datetime.now(UTC))
+
+    def create_scope(
+        self, *, run_id: str, profile: str, settings: Settings
+    ) -> QualificationScope:
+        normalized = run_id.strip()
+        if (
+            settings.environment != "staging"
+            or profile not in QUALIFICATION_PROFILES
+            or not normalized
+            or len(normalized) > 64
+        ):
+            raise QualificationEvidenceUnavailable("qualification scope is invalid")
+        self.cleanup_expired(limit=500)
+        started = self.now()
+        scope = ChatQualificationScope(
+            id=uuid.uuid4(),
+            run_id=normalized,
+            profile=profile,
+            app_release_id=settings.release_id,
+            window_started_at=started,
+            expires_at=started
+            + timedelta(hours=settings.chat_qualification_evidence_retention_hours),
+        )
+        self.db.add(scope)
+        try:
+            self.db.flush()
+        except SQLAlchemyError:
+            raise QualificationEvidenceUnavailable(
+                "qualification run_id is already used"
+            ) from None
+        return QualificationScope(
+            scope.id,
+            scope.run_id,
+            scope.profile,
+            scope.app_release_id,
+            scope.window_started_at,
+            scope.expires_at,
+        )
+
+    def require_active_scope(
+        self, scope_id: uuid.UUID, *, settings: Settings
+    ) -> ChatQualificationScope:
+        scope = self.db.get(ChatQualificationScope, scope_id)
+        now = self.now()
+        if (
+            scope is None
+            or settings.environment != "staging"
+            or scope.app_release_id != settings.release_id
+            or scope.profile not in QUALIFICATION_PROFILES
+            or scope.window_ended_at is not None
+            or _as_utc(scope.expires_at) <= now
+        ):
+            raise QualificationEvidenceUnavailable("qualification scope is unavailable")
+        return scope
 
     def collect(
         self,
         *,
-        run_id: str,
-        profile: str,
-        window_started_at: datetime,
-        window_ended_at: datetime,
+        scope_id: uuid.UUID,
+        settings: Settings,
     ) -> DurableQualificationEvidence:
-        expected_users = QUALIFICATION_PROFILES.get(profile)
-        if (
-            expected_users is None
-            or not run_id
-            or len(run_id) > 64
-            or window_started_at.tzinfo is None
-            or window_ended_at.tzinfo is None
-            or window_ended_at <= window_started_at
-        ):
-            raise QualificationEvidenceUnavailable(
-                "qualification evidence scope is invalid"
-            )
+        scope = self.require_active_scope(scope_id, settings=settings)
+        ended = self.now()
+        scope.window_ended_at = ended
+        self.db.flush()
+        started = _as_utc(scope.window_started_at)
+        expected_users = QUALIFICATION_PROFILES[scope.profile]
         latency_rows = self.db.execute(
             select(
                 ChatTurnLatency.turn_id,
                 ChatTurnLatency.chat_session_id,
                 ChatTurnLatency.terminal_status,
             ).where(
-                ChatTurnLatency.qualification_run_id == run_id,
+                ChatTurnLatency.qualification_scope_id == scope.id,
+                ChatTurnLatency.qualification_run_id == scope.run_id,
+                ChatTurnLatency.qualification_profile == scope.profile,
                 ChatTurnLatency.qualification_scenario == "reliability",
+                ChatTurnLatency.app_release_id == scope.app_release_id,
+                ChatTurnLatency.admitted_at >= started,
+                ChatTurnLatency.admitted_at <= ended,
             )
         ).all()
         session_ids = {row.chat_session_id for row in latency_rows}
         turn_ids = {row.turn_id for row in latency_rows}
+        turn_sessions = {row.turn_id: row.chat_session_id for row in latency_rows}
         if len(latency_rows) != expected_users or len(session_ids) != expected_users:
             raise QualificationEvidenceUnavailable(
                 "qualification cohort evidence is incomplete"
@@ -153,55 +244,105 @@ class ChatDurableQualificationEvidenceService:
             raise QualificationEvidenceUnavailable(
                 "qualification terminal evidence is incomplete"
             )
-
         events = self.db.execute(
             select(
                 ChatQualificationEvidenceEvent.turn_id,
+                ChatQualificationEvidenceEvent.chat_session_id,
                 ChatQualificationEvidenceEvent.event_type,
                 ChatQualificationEvidenceEvent.operation_digest,
             ).where(
-                ChatQualificationEvidenceEvent.chat_session_id.in_(session_ids),
+                ChatQualificationEvidenceEvent.qualification_scope_id == scope.id,
                 ChatQualificationEvidenceEvent.turn_id.in_(turn_ids),
-                ChatQualificationEvidenceEvent.occurred_at >= window_started_at,
-                ChatQualificationEvidenceEvent.occurred_at <= window_ended_at,
+                ChatQualificationEvidenceEvent.occurred_at >= started,
+                ChatQualificationEvidenceEvent.occurred_at <= ended,
             )
         ).all()
+        if any(turn_sessions.get(row.turn_id) != row.chat_session_id for row in events):
+            raise QualificationEvidenceUnavailable(
+                "qualification cohort evidence collides"
+            )
         event_counts = Counter(row.event_type for row in events)
+        denominator_turns = {
+            row.turn_id for row in events if row.event_type == "admitted_no_queue"
+        }
+        if (
+            event_counts["admitted_no_queue"] != expected_users
+            or denominator_turns != turn_ids
+        ):
+            raise QualificationEvidenceUnavailable(
+                "qualification admission evidence is incomplete"
+            )
         operations = Counter(
             (row.turn_id, row.operation_digest)
             for row in events
             if row.event_type == "executor_started"
         )
-        duplicate_executor_starts = sum(count - 1 for count in operations.values())
-
         intervals = self.db.execute(
             select(
                 ChatSandboxComputeInterval.reserved_at,
                 ChatSandboxComputeInterval.provider_created_at,
                 ChatSandboxComputeInterval.terminal_at,
+                ChatSandboxComputeInterval.app_release_id,
             ).where(ChatSandboxComputeInterval.chat_session_id.in_(session_ids))
         ).all()
+        if any(interval.terminal_at is None for interval in intervals):
+            raise QualificationEvidenceUnavailable(
+                "qualification sandbox intervals are still open"
+            )
         billed_duration_ms = 0
         for interval in intervals:
-            started_at = _as_utc(interval.provider_created_at or interval.reserved_at)
-            ended_at = _as_utc(interval.terminal_at or window_ended_at)
-            overlap_start = max(started_at, window_started_at)
-            overlap_end = min(ended_at, window_ended_at)
+            interval_started = _as_utc(
+                interval.provider_created_at or interval.reserved_at
+            )
+            interval_ended = _as_utc(interval.terminal_at)
+            overlap_start = max(interval_started, started)
+            overlap_end = min(interval_ended, ended)
             if overlap_end > overlap_start:
+                if interval.app_release_id != scope.app_release_id:
+                    raise QualificationEvidenceUnavailable(
+                        "qualification sandbox evidence collides"
+                    )
                 billed_duration_ms += round(
                     (overlap_end - overlap_start).total_seconds() * 1_000
                 )
-
         return DurableQualificationEvidence(
             expected_users=expected_users,
             admitted_turns=len(latency_rows),
+            admission_denominator_events=event_counts["admitted_no_queue"],
             terminal_turns=terminal_turns,
             queued_states=event_counts["queued"],
             stale_fences=event_counts["stale_fence"],
             executor_starts=event_counts["executor_started"],
-            duplicate_executor_starts=duplicate_executor_starts,
+            duplicate_executor_starts=sum(count - 1 for count in operations.values()),
             workspace_creates=event_counts["workspace_created"],
             workspace_reuses=event_counts["workspace_reused"],
             workspace_evictions=event_counts["workspace_evicted"],
             billed_duration_ms=billed_duration_ms,
+            window_started_at_ms=round(started.timestamp() * 1_000),
+            window_ended_at_ms=round(ended.timestamp() * 1_000),
+        )
+
+    def cleanup_scope(self, scope_id: uuid.UUID) -> bool:
+        result = self.db.execute(
+            delete(ChatQualificationScope).where(ChatQualificationScope.id == scope_id)
+        )
+        return bool(result.rowcount)
+
+    def cleanup_expired(self, *, limit: int = 500) -> int:
+        if type(limit) is not int or not 1 <= limit <= 1_000:
+            raise ValueError("qualification cleanup limit is invalid")
+        expired_ids = self.db.execute(
+            select(ChatQualificationScope.id)
+            .where(ChatQualificationScope.expires_at < self.now())
+            .order_by(ChatQualificationScope.expires_at)
+            .limit(limit)
+        ).scalars()
+        ids = tuple(expired_ids)
+        if not ids:
+            return 0
+        return int(
+            self.db.execute(
+                delete(ChatQualificationScope).where(ChatQualificationScope.id.in_(ids))
+            ).rowcount
+            or 0
         )

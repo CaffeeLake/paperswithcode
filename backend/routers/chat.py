@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 import uuid
 from collections import deque
@@ -46,6 +45,8 @@ from backend.models.chat import (
     ChatSandboxSpendResponse,
     ChatQualificationEvidenceRequest,
     ChatQualificationEvidenceResponse,
+    ChatQualificationScopeRequest,
+    ChatQualificationScopeResponse,
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
@@ -120,6 +121,7 @@ from backend.services.chat_durable_lifecycle_observer import durable_lifecycle_o
 from backend.services.chat_durable_qualification_evidence import (
     ChatDurableQualificationEvidenceService,
     QualificationEvidenceUnavailable,
+    record_qualification_event_safely,
 )
 from backend.services.chat_web_search_service import (
     ChatWebSearchBudgetService,
@@ -293,23 +295,24 @@ class AdminCreateHarnessSession(BaseModel):
 
 def _durable_qualification_scope(
     request: Request, settings: Settings
-) -> tuple[str, str] | None:
-    run_id = request.headers.get("X-PWC-Qualification-Run-ID")
-    profile = request.headers.get("X-PWC-Qualification-Profile")
-    if run_id is None and profile is None:
+) -> uuid.UUID | None:
+    raw_scope_id = request.headers.get("X-PWC-Qualification-Scope-ID")
+    if raw_scope_id is None:
         return None
+    try:
+        scope_id = uuid.UUID(raw_scope_id)
+    except ValueError:
+        scope_id = None
     if (
         settings.environment != "staging"
-        or run_id is None
-        or profile not in {"32-functional-turns", "100-immediate-admission"}
-        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id)
-        or not has_valid_non_cookie_admin_credential(request, settings)
+        or scope_id is None
+        or not (has_valid_non_cookie_admin_credential(request, settings))
     ):
         raise HTTPException(
             status_code=403,
             detail={"code": "qualification_scope_rejected"},
         )
-    return run_id, profile
+    return scope_id
 
 
 OPENROUTER_UNAVAILABLE_MESSAGE = (
@@ -711,6 +714,36 @@ def chat_sandbox_spend(environment: str | None = None):
 
 
 @router.post(
+    "/admin/qualification-scopes",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatQualificationScopeResponse,
+    status_code=201,
+)
+def create_chat_qualification_scope(
+    body: ChatQualificationScopeRequest,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Issue one release-bound, server-timed protected staging cohort."""
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        scope = ChatDurableQualificationEvidenceService(db).create_scope(
+            run_id=body.run_id,
+            profile=body.profile,
+            settings=settings,
+        )
+        db.commit()
+        return scope
+    except QualificationEvidenceUnavailable:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "qualification_scope_unavailable"},
+        ) from None
+
+
+@router.post(
     "/admin/qualification-evidence",
     dependencies=[Depends(require_admin)],
     response_model=ChatQualificationEvidenceResponse,
@@ -718,20 +751,40 @@ def chat_sandbox_spend(environment: str | None = None):
 def chat_qualification_evidence(
     body: ChatQualificationEvidenceRequest,
     db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
 ):
     """Return the exact protected run cohort without identities or content."""
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
     try:
-        return ChatDurableQualificationEvidenceService(db).collect(
-            run_id=body.run_id,
-            profile=body.profile,
-            window_started_at=body.window_started_at,
-            window_ended_at=body.window_ended_at,
+        evidence = ChatDurableQualificationEvidenceService(db).collect(
+            scope_id=body.scope_id, settings=settings
         )
+        db.commit()
+        return evidence
     except QualificationEvidenceUnavailable:
+        db.rollback()
         raise HTTPException(
             status_code=409,
             detail={"code": "qualification_evidence_unavailable"},
         ) from None
+
+
+@router.delete(
+    "/admin/qualification-scopes/{scope_id}",
+    dependencies=[Depends(require_admin)],
+    status_code=204,
+)
+def delete_chat_qualification_scope(
+    scope_id: uuid.UUID,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
+    ChatDurableQualificationEvidenceService(db).cleanup_scope(scope_id)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/usage")
@@ -1985,6 +2038,19 @@ async def stream_chat(
     try:
         with db_manager.session_local() as db:
             try:
+                try:
+                    qualified_scope_record = (
+                        ChatDurableQualificationEvidenceService(
+                            db
+                        ).require_active_scope(qualification_scope, settings=settings)
+                        if qualification_scope is not None
+                        else None
+                    )
+                except QualificationEvidenceUnavailable:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "qualification_scope_unavailable"},
+                    ) from None
                 service = ChatSessionService(db, settings)
                 admission = service.begin_turn(
                     owner,
@@ -2041,10 +2107,12 @@ async def stream_chat(
                         agent_harness=admission.agent_harness,
                     )
                     if (
-                        qualification_scope is not None
+                        qualified_scope_record is not None
                         and not latency.mark_qualification(
                             request_id,
-                            run_id=qualification_scope[0],
+                            scope_id=qualified_scope_record.id,
+                            run_id=qualified_scope_record.run_id,
+                            profile=qualified_scope_record.profile,
                             scenario="reliability",
                         )
                     ):
@@ -2056,6 +2124,16 @@ async def stream_chat(
                 else:
                     db.rollback()
                 raise
+        if (
+            qualified_scope_record is not None
+            and not admission.replay_assistant
+            and not getattr(admission, "attach_only", False)
+        ):
+            record_qualification_event_safely(
+                turn_id=admission.turn_id,
+                chat_session_id=admission.session_id,
+                event_type="admitted_no_queue",
+            )
         if (
             transport == "openrouter"
             and not admission.replay_assistant

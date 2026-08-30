@@ -72,6 +72,13 @@ class _Session:
         self.calls.append(("get", url, kwargs))
         return next(self.responses)
 
+    def delete(self, url, **kwargs):
+        self.calls.append(("delete", url, kwargs))
+        return next(self.responses)
+
+    def close(self):
+        self.calls.append(("close",))
+
 
 def _frame(sequence: int, event: str, payload: dict) -> bytes:
     return (
@@ -162,6 +169,7 @@ def test_real_transport_posts_chat_stream_and_resumes_same_turn_without_leaking_
     assert evidence["reconnects"] == evidence["reconnect_successes"] == 1
     assert "TOP_SECRET" not in repr(evidence)
     assert "/v1/shadow" not in repr(session.calls)
+    assert session.calls.count(("close",)) == 1
 
 
 def test_real_transport_preserves_typed_immediate_429_without_queueing():
@@ -185,6 +193,7 @@ def test_real_transport_preserves_typed_immediate_429_without_queueing():
     assert evidence["outcome"] == "refused"
     assert evidence["failure_code"] == "chat_overload"
     assert "queued_states" not in evidence
+    assert session.calls.count(("close",)) == 1
 
 
 @pytest.mark.parametrize(
@@ -202,17 +211,19 @@ def test_real_transport_rejects_untyped_queue_and_invalid_sse(response):
         HttpSSEDurableChatTransport,
     )
 
+    session = _Session((response,))
     transport = HttpSSEDurableChatTransport(
         DurableChatTransportConfig(
             base_url="https://staging.paperswithcode.co",
             synthetic_cookies=("signed-cookie",),
             initial_model="gpt-5.6-luna@openai",
         ),
-        session_factory=lambda: _Session((response,)),
+        session_factory=lambda: session,
     )
 
     with pytest.raises(FleetRunRefused):
         transport.open_durable_stream(_spec(0, "no_tool"))
+    assert session.calls.count(("close",)) == 1
 
 
 def test_real_transport_rejects_a_truncated_sse_tail():
@@ -251,6 +262,7 @@ def test_real_transport_rejects_a_truncated_sse_tail():
 
     with pytest.raises(FleetRunRefused, match="mid-event"):
         transport.open_durable_stream(_spec(0, "no_tool"))
+    assert session.calls.count(("close",)) == 1
 
 
 def test_live_constructor_refuses_non_staging_hosts_and_injected_fakes():
@@ -377,10 +389,22 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
     session = _Session(
         (
             _Response(
+                201,
+                payload={
+                    "scope_id": "00000000-0000-4000-8000-000000000099",
+                    "run_id": "run-f32",
+                    "profile": "32-functional-turns",
+                    "app_release_id": "0123456789ab-staging",
+                    "window_started_at": "2026-08-30T12:00:00Z",
+                    "expires_at": "2026-08-31T12:00:00Z",
+                },
+            ),
+            _Response(
                 200,
                 payload={
                     "expected_users": 32,
                     "admitted_turns": 32,
+                    "admission_denominator_events": 32,
                     "terminal_turns": 32,
                     "queued_states": 0,
                     "stale_fences": 0,
@@ -388,11 +412,14 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
                     "duplicate_executor_starts": 0,
                     "workspace_creates": 1,
                     "workspace_reuses": 15,
-                    "workspace_evictions": 0,
+                    "workspace_evictions": 16,
                     "billed_duration_ms": 4,
+                    "window_started_at_ms": 1,
+                    "window_ended_at_ms": 2,
                     "source": "durable_qualification_records",
                 },
             ),
+            _Response(204),
         )
     )
     source = HttpDurableQualificationEvidenceSource(
@@ -406,21 +433,19 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
         session_factory=lambda: session,
     )
 
-    from datetime import UTC, datetime, timedelta
+    scope = source.begin_scope("32-functional-turns")
+    snapshot = source.collect(scope["scope_id"])
+    source.cleanup(scope["scope_id"])
 
-    started = datetime.now(UTC)
-    snapshot = source.collect(
-        "32-functional-turns",
-        window_started_at=started,
-        window_ended_at=started + timedelta(seconds=1),
-    )
-
-    post = next(call for call in session.calls if call[0] == "post")
-    assert post[1] == (
+    posts = [call for call in session.calls if call[0] == "post"]
+    assert posts[0][1].endswith("/api/v1/chat/admin/qualification-scopes")
+    assert posts[0][2]["json"]["run_id"] == "run-f32"
+    assert posts[1][1] == (
         "https://staging.paperswithcode.co/api/v1/chat/admin/qualification-evidence"
     )
-    assert post[2]["json"]["run_id"] == "run-f32"
-    assert post[2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
+    assert posts[1][2]["json"] == {"scope_id": str(scope["scope_id"])}
+    assert posts[1][2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
+    assert session.calls.count(("close",)) == 3
     assert snapshot.billed_duration_ms == 4
     assert "signed-cookie" not in repr(snapshot)
 
@@ -429,7 +454,13 @@ def test_modal_rate_has_no_code_default_and_requires_explicit_protected_input():
     from backend.loadtests.external_pi_fleet_core import load_modal_rate_evidence
 
     with pytest.raises(FleetRunRefused, match="explicit protected Modal rate"):
-        load_modal_rate_evidence({}, expected_release="0123456789ab-staging")
+        load_modal_rate_evidence(
+            {},
+            expected_release="0123456789ab-staging",
+            window_started_at_ms=1,
+            window_ended_at_ms=2,
+            now_ms=2,
+        )
 
     rate = load_modal_rate_evidence(
         {
@@ -439,7 +470,40 @@ def test_modal_rate_has_no_code_default_and_requires_explicit_protected_input():
             "PWC_RELEASE_ID": "0123456789ab-staging",
         },
         expected_release="0123456789ab-staging",
+        window_started_at_ms=1,
+        window_ended_at_ms=2,
+        now_ms=2,
     )
 
     assert rate.microusd_per_second == 25
     assert rate.source == "protected_runtime"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    (
+        ({"PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "other"}, "source"),
+        ({"PWC_RELEASE_ID": "ffffffffffff-staging"}, "release"),
+        ({"PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS": "9"}, "window"),
+        ({"PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS": "21"}, "window"),
+    ),
+)
+def test_modal_rate_refuses_wrong_source_release_old_or_future_attestation(
+    changes, message
+):
+    from backend.loadtests.external_pi_fleet_core import load_modal_rate_evidence
+
+    environment = {
+        "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "25",
+        "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+        "PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS": "10",
+        "PWC_RELEASE_ID": "0123456789ab-staging",
+    }
+    with pytest.raises(FleetRunRefused, match=message):
+        load_modal_rate_evidence(
+            environment | changes,
+            expected_release="0123456789ab-staging",
+            window_started_at_ms=10,
+            window_ended_at_ms=20,
+            now_ms=20,
+        )

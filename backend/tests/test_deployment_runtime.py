@@ -34,6 +34,7 @@ from backend.services.runtime_validation import (
     validate_chat_capacity_and_spend_policy,
     validate_chat_provider_policy,
     validate_chat_schema,
+    validate_qualification_evidence_schema,
     validate_runtime,
 )
 from deploy.cli import (
@@ -1217,6 +1218,7 @@ class _ChatSchemaDB:
             if self.include_reservation_schema:
                 names += (
                     "chat_external_worker_reservations",
+                    "chat_qualification_scopes",
                     "chat_qualification_evidence_events",
                 )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
@@ -1239,6 +1241,129 @@ class _ChatSchemaDB:
             ]
             return _ChatSchemaResult(
                 rows=rows if self.include_reservation_schema else []
+            )
+        if "qualification_evidence_exact_columns" in sql:
+            rows = [
+                ("chat_qualification_scopes", "id", "uuid", "NO", None),
+                ("chat_qualification_scopes", "run_id", "character varying", "NO", 64),
+                ("chat_qualification_scopes", "profile", "character varying", "NO", 32),
+                (
+                    "chat_qualification_scopes",
+                    "app_release_id",
+                    "character varying",
+                    "NO",
+                    255,
+                ),
+                (
+                    "chat_qualification_scopes",
+                    "window_started_at",
+                    "timestamp with time zone",
+                    "NO",
+                    None,
+                ),
+                (
+                    "chat_qualification_scopes",
+                    "window_ended_at",
+                    "timestamp with time zone",
+                    "YES",
+                    None,
+                ),
+                (
+                    "chat_qualification_scopes",
+                    "expires_at",
+                    "timestamp with time zone",
+                    "NO",
+                    None,
+                ),
+                (
+                    "chat_qualification_scopes",
+                    "created_at",
+                    "timestamp with time zone",
+                    "NO",
+                    None,
+                ),
+                ("chat_qualification_evidence_events", "id", "uuid", "NO", None),
+                (
+                    "chat_qualification_evidence_events",
+                    "qualification_scope_id",
+                    "uuid",
+                    "NO",
+                    None,
+                ),
+                ("chat_qualification_evidence_events", "turn_id", "uuid", "NO", None),
+                (
+                    "chat_qualification_evidence_events",
+                    "chat_session_id",
+                    "uuid",
+                    "NO",
+                    None,
+                ),
+                (
+                    "chat_qualification_evidence_events",
+                    "event_type",
+                    "character varying",
+                    "NO",
+                    32,
+                ),
+                (
+                    "chat_qualification_evidence_events",
+                    "operation_digest",
+                    "character varying",
+                    "YES",
+                    64,
+                ),
+                (
+                    "chat_qualification_evidence_events",
+                    "occurred_at",
+                    "timestamp with time zone",
+                    "NO",
+                    None,
+                ),
+                ("chat_turn_latency", "qualification_scope_id", "uuid", "YES", None),
+                (
+                    "chat_turn_latency",
+                    "qualification_profile",
+                    "character varying",
+                    "YES",
+                    32,
+                ),
+            ]
+            return _ChatSchemaResult(
+                rows=rows if self.include_reservation_schema else []
+            )
+        if "qualification_evidence_exact_constraints" in sql:
+            fragments = {
+                "chat_qualification_scopes_run_id_key": "UNIQUE (run_id)",
+                "chat_qualification_scopes_profile_check": "CHECK profile 32-functional-turns 100-immediate-admission",
+                "chat_qualification_scopes_window_check": "CHECK window_ended_at window_started_at",
+                "chat_qualification_scopes_expiry_check": "CHECK expires_at window_started_at",
+                "chat_qualification_evidence_scope_fkey": "FOREIGN KEY (qualification_scope_id) REFERENCES chat_qualification_scopes(id) ON DELETE CASCADE",
+                "chat_qualification_evidence_turn_fkey": "FOREIGN KEY (turn_id) REFERENCES chat_turn_jobs(turn_id) ON DELETE CASCADE",
+                "chat_qualification_evidence_session_fkey": "FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE",
+                "chat_qualification_evidence_event_type_check": "CHECK admitted_no_queue queued workspace_evicted",
+                "chat_qualification_evidence_operation_shape_check": "CHECK executor_started operation_digest",
+                "chat_turn_latency_qualification_scope_fkey": "FOREIGN KEY (qualification_scope_id) REFERENCES chat_qualification_scopes(id) ON DELETE SET NULL",
+                "chat_turn_latency_qualification_profile_check": "CHECK 32-functional-turns 100-immediate-admission",
+            }
+            return _ChatSchemaResult(
+                rows=list(fragments.items()) if self.include_reservation_schema else []
+            )
+        if "qualification_evidence_exact_indexes" in sql:
+            columns = {
+                "idx_chat_qualification_scopes_expiry": "(expires_at)",
+                "idx_chat_qualification_scopes_release_profile": "(app_release_id, profile)",
+                "idx_chat_qualification_evidence_scope_event_time": "(qualification_scope_id, event_type, occurred_at)",
+                "idx_chat_qualification_evidence_session_time": "(chat_session_id, occurred_at)",
+                "idx_chat_qualification_evidence_turn_event": "(turn_id, event_type)",
+                "idx_chat_turn_latency_qualification_scope": "(qualification_scope_id, admitted_at)",
+            }
+            return _ChatSchemaResult(
+                rows=[
+                    (name, f"CREATE INDEX {name} ON table {value}")
+                    for name, value in columns.items()
+                ]
+                if self.include_reservation_schema
+                else []
             )
         if "information_schema.columns" in sql:
             rows = [
@@ -1347,9 +1472,22 @@ class _ChatSchemaDB:
                     )
                 )
                 rows.extend(
+                    ("chat_qualification_scopes", name)
+                    for name in (
+                        "id",
+                        "run_id",
+                        "profile",
+                        "app_release_id",
+                        "window_started_at",
+                        "window_ended_at",
+                        "expires_at",
+                    )
+                )
+                rows.extend(
                     ("chat_qualification_evidence_events", name)
                     for name in (
                         "id",
+                        "qualification_scope_id",
                         "turn_id",
                         "chat_session_id",
                         "event_type",
@@ -1419,6 +1557,8 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "failure_class"),
                         ("chat_turn_latency", "attempt_kind"),
                         ("chat_turn_latency", "retry_overhead_ms"),
+                        ("chat_turn_latency", "qualification_scope_id"),
+                        ("chat_turn_latency", "qualification_profile"),
                     ]
                 )
             if self.include_qualification_columns:
@@ -5100,3 +5240,76 @@ def test_role_allowlist_installer_normalizes_and_rejects_usernames():
     )
     with pytest.raises(ValueError, match="Malformed"):
         configure_role_allowlists.normalized_subjects(["not a subject"])
+
+
+_QUALIFICATION_SCHEMA_OBJECTS = (
+    *(
+        ("columns", name)
+        for name in (
+            "id",
+            "run_id",
+            "profile",
+            "app_release_id",
+            "window_started_at",
+            "window_ended_at",
+            "expires_at",
+            "created_at",
+            "qualification_scope_id",
+            "turn_id",
+            "chat_session_id",
+            "event_type",
+            "operation_digest",
+            "occurred_at",
+            "qualification_profile",
+        )
+    ),
+    *(
+        ("constraints", name)
+        for name in (
+            "chat_qualification_scopes_run_id_key",
+            "chat_qualification_scopes_profile_check",
+            "chat_qualification_scopes_window_check",
+            "chat_qualification_scopes_expiry_check",
+            "chat_qualification_evidence_scope_fkey",
+            "chat_qualification_evidence_turn_fkey",
+            "chat_qualification_evidence_session_fkey",
+            "chat_qualification_evidence_event_type_check",
+            "chat_qualification_evidence_operation_shape_check",
+            "chat_turn_latency_qualification_scope_fkey",
+            "chat_turn_latency_qualification_profile_check",
+        )
+    ),
+    *(
+        ("indexes", name)
+        for name in (
+            "idx_chat_qualification_scopes_expiry",
+            "idx_chat_qualification_scopes_release_profile",
+            "idx_chat_qualification_evidence_scope_event_time",
+            "idx_chat_qualification_evidence_session_time",
+            "idx_chat_qualification_evidence_turn_event",
+            "idx_chat_turn_latency_qualification_scope",
+        )
+    ),
+)
+
+
+@pytest.mark.parametrize(("kind", "missing_name"), _QUALIFICATION_SCHEMA_OBJECTS)
+def test_qualification_schema_readiness_refuses_each_missing_contract_object(
+    kind, missing_name
+):
+    class BrokenQualificationSchemaDB(_ChatSchemaDB):
+        def execute(self, statement):
+            result = super().execute(statement)
+            if f"qualification_evidence_exact_{kind}" not in str(statement):
+                return result
+            identifier_index = 1 if kind == "columns" else 0
+            return _ChatSchemaResult(
+                rows=[
+                    row for row in result.all() if row[identifier_index] != missing_name
+                ]
+            )
+
+    with pytest.raises(
+        RuntimeError, match="required qualification evidence schema is missing"
+    ):
+        validate_qualification_evidence_schema(BrokenQualificationSchemaDB("off"))

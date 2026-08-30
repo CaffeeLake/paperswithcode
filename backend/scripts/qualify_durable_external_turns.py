@@ -7,6 +7,7 @@ intentionally supplied by the separately authorized staging operation in Task 12
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -172,6 +173,12 @@ class GuardedLiveDurableOperator:
     ) -> None:
         self.control_plane = control_plane
         self.transport_config = transport_config
+        from backend.loadtests.durable_chat_transport import (
+            HttpDurableQualificationEvidenceSource,
+        )
+
+        self.evidence_source = HttpDurableQualificationEvidenceSource(transport_config)
+        self._scopes: dict[str, uuid.UUID] = {}
 
     def environment(self) -> QualificationEnvironment:
         return self.control_plane.environment()
@@ -192,34 +199,52 @@ class GuardedLiveDurableOperator:
             run_live_durable_profile,
         )
 
-        return run_live_durable_profile(
-            profile_name=profile.name,
-            transport_config=self.transport_config,
-            resources=self.control_plane.run_resources(profile),
-        )
+        scope = self.evidence_source.begin_scope(profile.name)
+        scope_id = scope["scope_id"]
+        if not isinstance(scope_id, uuid.UUID):
+            raise QualificationRefused("qualification_scope_invalid")
+        self._scopes[profile.name] = scope_id
+        try:
+            if scope.get("app_release_id") != self.environment().target_release:
+                raise QualificationRefused("exact_staging_release_required")
+            return run_live_durable_profile(
+                profile_name=profile.name,
+                transport_config=self.transport_config,
+                resources=self.control_plane.run_resources(profile),
+                qualification_scope_id=scope_id,
+            )
+        except BaseException:
+            try:
+                self.cleanup_profile_evidence(profile)
+            except BaseException as cleanup_error:
+                raise QualificationRefused("cleanup_failed") from cleanup_error
+            raise
 
     def finalize_profile(self, profile: DurableQualificationProfile, measurement):
         from datetime import UTC, datetime
-        from backend.loadtests.durable_chat_transport import (
-            HttpDurableQualificationEvidenceSource,
-        )
         from backend.loadtests.external_pi_fleet_locustfile import (
             finalize_live_durable_profile,
         )
 
         environment = self.environment()
+        evidence = self.evidence_source.collect(measurement.qualification_scope_id)
         rate = load_modal_rate_evidence(
             self.control_plane.protected_runtime_evidence(profile),
             expected_release=environment.target_release,
+            window_started_at_ms=evidence.window_started_at_ms,
+            window_ended_at_ms=evidence.window_ended_at_ms,
+            now_ms=round(datetime.now(UTC).timestamp() * 1_000),
         )
         return finalize_live_durable_profile(
             measurement,
-            evidence_source=HttpDurableQualificationEvidenceSource(
-                self.transport_config
-            ),
+            qualification_evidence=evidence,
             modal_rate=rate,
-            window_ended_at=datetime.now(UTC),
         )
+
+    def cleanup_profile_evidence(self, profile: DurableQualificationProfile) -> None:
+        scope_id = self._scopes.pop(profile.name, None)
+        if scope_id is not None:
+            self.evidence_source.cleanup(scope_id)
 
     def teardown_profile(self, profile: DurableQualificationProfile) -> None:
         self.control_plane.teardown_profile(profile)
@@ -326,13 +351,29 @@ def run_durable_qualification(
                 status = "resource_refused"
                 reason = refusal
                 break
+            teardown_failed = False
             try:
                 operator.setup_profile(profile)
                 result = operator.run_profile(profile)
             finally:
-                operator.teardown_profile(profile)
-            finalize = getattr(operator, "finalize_profile", None)
-            report = finalize(profile, result) if callable(finalize) else result
+                try:
+                    operator.teardown_profile(profile)
+                except BaseException:
+                    teardown_failed = True
+            cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
+            try:
+                if teardown_failed:
+                    raise QualificationRefused("cleanup_failed")
+                finalize = getattr(operator, "finalize_profile", None)
+                report = finalize(profile, result) if callable(finalize) else result
+            finally:
+                if callable(cleanup_evidence):
+                    try:
+                        cleanup_evidence(profile)
+                    except BaseException:
+                        teardown_failed = True
+            if teardown_failed:
+                raise QualificationRefused("cleanup_failed")
             if report.profile != profile.name or not report.passed:
                 raise QualificationRefused("durable_profile_failed")
             reports.append(report)

@@ -993,13 +993,28 @@ class ChatSandboxSpendResponse(BaseModel):
     events: list[ChatSandboxSpendEventResponse]
 
 
-class ChatQualificationEvidenceRequest(BaseModel):
+class ChatQualificationScopeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     profile: Literal["32-functional-turns", "100-immediate-admission"]
+
+
+class ChatQualificationScopeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scope_id: uuid.UUID
+    run_id: str
+    profile: Literal["32-functional-turns", "100-immediate-admission"]
+    app_release_id: str
     window_started_at: datetime
-    window_ended_at: datetime
+    expires_at: datetime
+
+
+class ChatQualificationEvidenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scope_id: uuid.UUID
 
 
 class ChatQualificationEvidenceResponse(BaseModel):
@@ -1007,6 +1022,7 @@ class ChatQualificationEvidenceResponse(BaseModel):
 
     expected_users: Literal[32, 100]
     admitted_turns: int = Field(ge=0, le=100)
+    admission_denominator_events: int = Field(ge=0, le=100)
     terminal_turns: int = Field(ge=0, le=100)
     queued_states: int = Field(ge=0, le=1_000_000)
     stale_fences: int = Field(ge=0, le=1_000_000)
@@ -1016,6 +1032,8 @@ class ChatQualificationEvidenceResponse(BaseModel):
     workspace_reuses: int = Field(ge=0, le=1_000_000)
     workspace_evictions: int = Field(ge=0, le=1_000_000)
     billed_duration_ms: int = Field(ge=0, le=2**63 - 1)
+    window_started_at_ms: int = Field(ge=1, le=2**63 - 1)
+    window_ended_at_ms: int = Field(ge=1, le=2**63 - 1)
     source: Literal["durable_qualification_records"]
 
 

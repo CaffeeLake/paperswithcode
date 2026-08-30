@@ -79,18 +79,20 @@ def _cookie_request() -> Request:
 
 
 def test_admin_qualification_evidence_is_content_free_and_bounded(monkeypatch):
-    from datetime import UTC, datetime, timedelta
     from backend.models.chat import ChatQualificationEvidenceRequest
+
+    scope_id = uuid.uuid4()
 
     class EvidenceService:
         def __init__(self, db):
             assert db is not None
 
         def collect(self, **scope):
-            assert scope["run_id"] == "run-f32"
+            assert scope["scope_id"] == scope_id
             return {
                 "expected_users": 32,
                 "admitted_turns": 32,
+                "admission_denominator_events": 32,
                 "terminal_turns": 32,
                 "queued_states": 0,
                 "stale_fences": 0,
@@ -98,23 +100,29 @@ def test_admin_qualification_evidence_is_content_free_and_bounded(monkeypatch):
                 "duplicate_executor_starts": 0,
                 "workspace_creates": 1,
                 "workspace_reuses": 15,
-                "workspace_evictions": 0,
+                "workspace_evictions": 16,
                 "billed_duration_ms": 4,
+                "window_started_at_ms": 1,
+                "window_ended_at_ms": 2,
                 "source": "durable_qualification_records",
             }
 
     monkeypatch.setattr(
         chat_router, "ChatDurableQualificationEvidenceService", EvidenceService
     )
-    started = datetime.now(UTC)
+
+    class DB:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    db = DB()
     response = chat_router.chat_qualification_evidence(
-        ChatQualificationEvidenceRequest(
-            run_id="run-f32",
-            profile="32-functional-turns",
-            window_started_at=started,
-            window_ended_at=started + timedelta(seconds=1),
-        ),
-        object(),
+        ChatQualificationEvidenceRequest(scope_id=scope_id),
+        db,
+        Settings(environment="staging"),
     )
 
     assert response["executor_starts"] == 16

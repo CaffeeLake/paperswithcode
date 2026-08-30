@@ -119,7 +119,7 @@ def test_workspace_lifecycle_records_exact_turn_and_session_evidence():
     ]
 
 
-def test_workspace_evidence_failure_invalidates_busy_claim():
+def test_workspace_programming_failure_is_visible_without_invalidating_busy_claim():
     def fail_record(**_values):
         raise RuntimeError("evidence unavailable")
 
@@ -131,11 +131,11 @@ def test_workspace_evidence_failure_invalidates_busy_claim():
 
     asyncio.run(exercise())
 
-    assert [call[0] for call in provider.calls].count("terminate") == 1
+    assert [call[0] for call in provider.calls].count("terminate") == 0
     with sessions() as db:
         lease = manager.state_repository.load_lease(db, session_id, lock=False)
         assert lease is not None
-        assert lease.state == "failed"
+        assert lease.state == "busy"
 
 
 def test_first_bash_creates_executor_and_later_turn_reuses_exact_workspace():

@@ -3286,20 +3286,81 @@ class ChatExternalWorkerReservation(Base):
     )
 
 
+class ChatQualificationScope(Base):
+    """Server-issued staging qualification cohort and retention boundary."""
+
+    __tablename__ = "chat_qualification_scopes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    profile: Mapped[str] = mapped_column(String(32), nullable=False)
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    window_ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "profile IN ('32-functional-turns','100-immediate-admission')",
+            name="chat_qualification_scopes_profile_check",
+        ),
+        CheckConstraint(
+            "window_ended_at IS NULL OR window_ended_at >= window_started_at",
+            name="chat_qualification_scopes_window_check",
+        ),
+        CheckConstraint(
+            "expires_at > window_started_at",
+            name="chat_qualification_scopes_expiry_check",
+        ),
+        Index("idx_chat_qualification_scopes_expiry", "expires_at"),
+        Index(
+            "idx_chat_qualification_scopes_release_profile",
+            "app_release_id",
+            "profile",
+        ),
+    )
+
+
 class ChatQualificationEvidenceEvent(Base):
     """Content-free durable evidence emitted only for protected qualification turns."""
 
     __tablename__ = "chat_qualification_evidence_events"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    turn_id: Mapped[str] = mapped_column(
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    qualification_scope_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("chat_turn_jobs.turn_id", ondelete="CASCADE"),
+        ForeignKey(
+            "chat_qualification_scopes.id",
+            ondelete="CASCADE",
+            name="chat_qualification_evidence_scope_fkey",
+        ),
         nullable=False,
     )
-    chat_session_id: Mapped[str] = mapped_column(
+    turn_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        ForeignKey(
+            "chat_turn_jobs.turn_id",
+            ondelete="CASCADE",
+            name="chat_qualification_evidence_turn_fkey",
+        ),
+        nullable=False,
+    )
+    chat_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "chat_sessions.id",
+            ondelete="CASCADE",
+            name="chat_qualification_evidence_session_fkey",
+        ),
         nullable=False,
     )
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -3310,13 +3371,19 @@ class ChatQualificationEvidenceEvent(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('executor_started','stale_fence','queued',"
+            "event_type IN ('admitted_no_queue','executor_started','stale_fence','queued',"
             "'workspace_created','workspace_reused','workspace_evicted')",
             name="chat_qualification_evidence_event_type_check",
         ),
         CheckConstraint(
             "(event_type = 'executor_started') = (operation_digest IS NOT NULL)",
             name="chat_qualification_evidence_operation_shape_check",
+        ),
+        Index(
+            "idx_chat_qualification_evidence_scope_event_time",
+            "qualification_scope_id",
+            "event_type",
+            "occurred_at",
         ),
         Index(
             "idx_chat_qualification_evidence_session_time",
@@ -3784,6 +3851,18 @@ class ChatTurnLatency(Base):
     qualification_run_id: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
+    qualification_scope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "chat_qualification_scopes.id",
+            ondelete="SET NULL",
+            name="chat_turn_latency_qualification_scope_fkey",
+        ),
+        nullable=True,
+    )
+    qualification_profile: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
     qualification_scenario: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True
     )
@@ -3884,6 +3963,11 @@ class ChatTurnLatency(Base):
             name="chat_turn_latency_qualification_scenario_check",
         ),
         CheckConstraint(
+            "qualification_profile IS NULL OR qualification_profile IN "
+            "('32-functional-turns','100-immediate-admission')",
+            name="chat_turn_latency_qualification_profile_check",
+        ),
+        CheckConstraint(
             "attempt_kind IS NULL OR attempt_kind IN ('pool','reused','direct')",
             name="chat_turn_latency_attempt_kind_check",
         ),
@@ -3893,6 +3977,11 @@ class ChatTurnLatency(Base):
         ),
         Index("idx_chat_turn_latency_admitted", "admitted_at", "turn_id"),
         Index("idx_chat_turn_latency_session", "chat_session_id"),
+        Index(
+            "idx_chat_turn_latency_qualification_scope",
+            "qualification_scope_id",
+            "admitted_at",
+        ),
     )
 
 

@@ -519,6 +519,7 @@ class Settings(BaseSettings):
         default_factory=list, max_length=16, repr=False
     )
     chat_external_pi_worker_contract_version: str = Field(default="", max_length=64)
+    chat_qualification_evidence_retention_hours: int = Field(default=24, ge=1, le=168)
     chat_external_pi_worker_max_sessions: int = Field(default=8, ge=1, le=32)
     chat_external_pi_heartbeat_seconds: float = Field(default=10, ge=1, le=30)
     chat_external_pi_lease_seconds: int = Field(default=30, ge=5, le=60)

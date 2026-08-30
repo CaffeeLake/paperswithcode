@@ -88,6 +88,8 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `remove_tasks_is_visible.sql` | Remove retired task visibility state after the production compatibility gate |
 | `add_chat_active_cost.sql` | Add requested-resource and estimated active-turn cost fields to staging chat latency telemetry |
 | `add_chat_external_worker_reservations.sql` | Add protected pre-admission capacity reservations for exact external worker claims |
+| `add_chat_qualification_evidence_events.sql` | Create or forward-repair staging/production qualification scopes and content-free cohort events, including exact FKs/checks/indexes and cascade retention cleanup; apply before qualification metadata |
+| `add_chat_qualification_metadata.sql` | Bind latency rows to a server-issued qualification scope/profile and install the exact scope/admission-time index; apply after qualification evidence scopes |
 
 Before running `remove_task_datasets_featured_rank.sql`, deploy application
 code without `featured_rank` into both the current and previous release slots

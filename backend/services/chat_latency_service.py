@@ -83,6 +83,10 @@ QUALIFICATION_SCENARIOS = {
     "clean_cancel",
     "forced_failure",
 }
+QUALIFICATION_PROFILES = {
+    "32-functional-turns",
+    "100-immediate-admission",
+}
 
 
 def _bounded_duration(value: Any, name: str) -> int:
@@ -303,11 +307,15 @@ class ChatLatencyService:
         self,
         request_id: str,
         *,
+        scope_id: uuid.UUID,
         run_id: str,
+        profile: str,
         scenario: str,
     ) -> bool:
         if scenario not in QUALIFICATION_SCENARIOS:
             raise ValueError("Unsupported qualification scenario")
+        if profile not in QUALIFICATION_PROFILES:
+            raise ValueError("Unsupported qualification profile")
         normalized_run_id = run_id.strip()
         if not normalized_run_id or len(normalized_run_id) > 64:
             raise ValueError("qualification run_id must be 1-64 characters")
@@ -317,9 +325,12 @@ class ChatLatencyService:
                 ChatTurnLatency.request_id == uuid.UUID(request_id),
                 ChatTurnLatency.qualification_run_id.is_(None),
                 ChatTurnLatency.qualification_scenario.is_(None),
+                ChatTurnLatency.qualification_scope_id.is_(None),
             )
             .values(
+                qualification_scope_id=scope_id,
                 qualification_run_id=normalized_run_id,
+                qualification_profile=profile,
                 qualification_scenario=scenario,
                 updated_at=datetime.now(UTC),
             )

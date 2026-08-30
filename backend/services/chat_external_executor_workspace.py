@@ -138,7 +138,7 @@ class ChatExternalExecutorWorkspaceManager:
             durable_lifecycle_observer,
         )
         from backend.services.chat_durable_qualification_evidence import (
-            record_qualification_event,
+            record_qualification_event_safely,
         )
 
         owner = SandboxSessionManager(settings, sandbox_provider=provider)
@@ -151,7 +151,7 @@ class ChatExternalExecutorWorkspaceManager:
             maintenance=owner._lease_maintenance_coordinator(),
             executor=executor,
             observe=durable_lifecycle_observer(settings),
-            record_evidence=record_qualification_event,
+            record_evidence=record_qualification_event_safely,
         )
         manager._dependency_owner = owner
         return manager
@@ -205,6 +205,11 @@ class ChatExternalExecutorWorkspaceManager:
                 try:
                     self._require_live_turn(turn_claim)
                 except StaleTurnClaim:
+                    self.record_evidence(
+                        turn_id=turn_claim.turn_id,
+                        chat_session_id=session_id,
+                        event_type="stale_fence",
+                    )
                     await self._release_preserving_primary(workspace)
                     raise
                 self.observe(
@@ -212,19 +217,15 @@ class ChatExternalExecutorWorkspaceManager:
                     "created" if outcome.public_label == "created" else "reused",
                     1,
                 )
-                try:
-                    self.record_evidence(
-                        turn_id=turn_claim.turn_id,
-                        chat_session_id=session_id,
-                        event_type=(
-                            "workspace_created"
-                            if outcome.public_label == "created"
-                            else "workspace_reused"
-                        ),
-                    )
-                except Exception:
-                    await self._invalidate_preserving_primary(workspace)
-                    raise
+                self.record_evidence(
+                    turn_id=turn_claim.turn_id,
+                    chat_session_id=session_id,
+                    event_type=(
+                        "workspace_created"
+                        if outcome.public_label == "created"
+                        else "workspace_reused"
+                    ),
+                )
                 return workspace
 
             invalidated = await self._invalidate_preserving_primary(workspace)

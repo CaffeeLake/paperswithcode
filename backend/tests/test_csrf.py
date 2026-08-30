@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 import httpx
 import pytest
@@ -158,19 +159,17 @@ def test_staging_chat_initial_and_reconnect_origin_pass_central_csrf(monkeypatch
 def test_qualification_scope_requires_staging_and_protected_admin_credential():
     from backend.routers.chat import _durable_qualification_scope
 
+    scope_id = uuid.uuid4()
+
     headers = [
-        (b"x-pwc-qualification-run-id", b"run-f32"),
-        (b"x-pwc-qualification-profile", b"32-functional-turns"),
+        (b"x-pwc-qualification-scope-id", str(scope_id).encode()),
         (b"x-admin-token", b"a" * 32),
     ]
     request = Request(
         {"type": "http", "method": "POST", "path": "/", "headers": headers}
     )
     staging = Settings(environment="staging", admin_api_token="a" * 32)
-    assert _durable_qualification_scope(request, staging) == (
-        "run-f32",
-        "32-functional-turns",
-    )
+    assert _durable_qualification_scope(request, staging) == scope_id
     with pytest.raises(HTTPException) as error:
         _durable_qualification_scope(
             request,
