@@ -18,6 +18,11 @@ submits the old generation to the real repository and requires it to be fenced.
 The guard performs a real drain/offline stop, starts one final recovery
 generation, runs the qualification command with the exact release runtime, and
 always drains/stops the temporary units before it changes either flag.
+Each temporary qualification claims cleanup ownership and exact-stops its slot
+before the first start, so a deploy-qualified worker is drained rather than
+started over and an interruption during that pre-stop still triggers final
+cleanup. The final successful recovery remains live only when explicitly owned
+by the completed qualification.
 
 The integrated command is equivalent to:
 

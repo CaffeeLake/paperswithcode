@@ -212,6 +212,7 @@ def run_temporary_shadow_qualification(
     qualified = False
     try:
         cleanup_owned = True
+        stop(environment, slot, release_id)
         start(environment, slot)
         initial = authenticated(environment, slot, release_id)
         restarted = expire_and_restart(environment, slot, release_id, initial)

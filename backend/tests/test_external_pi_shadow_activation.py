@@ -190,6 +190,11 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
             leave_recovery_running=leave_recovery_running,
         )
 
+    def refresh(sha):
+        refreshed.append(sha)
+        units.update(worker="active", supervisor="active")
+        events.append("deploy-qualified-active")
+
     result = apply_staging_shadow_activation(
         environment="staging",
         expected_release_id="release-a",
@@ -199,7 +204,7 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
         config_root=config,
         qualify=qualify,
         deactivate=None,
-        refresh=lambda sha: refreshed.append(sha),
+        refresh=refresh,
     )
 
     values = dict(
@@ -208,6 +213,7 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
     assert result == {"release_id": "release-a", "enabled": True}
     assert refreshed == ["a" * 40]
     lifecycle_events = [
+        "temporary-stop",
         "temporary-start",
         "authenticated",
         "lease-expiry-restart",
@@ -218,7 +224,9 @@ def test_guard_enables_only_shadow_lifecycle_and_preserves_token(tmp_path: Path)
         "qualified",
         "temporary-stop",
     ]
-    assert events == lifecycle_events + lifecycle_events[:-1]
+    assert (
+        events == lifecycle_events + ["deploy-qualified-active"] + lifecycle_events[:-1]
+    )
     assert units == {"worker": "active", "supervisor": "active"}
     assert values["PWC_DB_NAME"] == "pwc"
     assert values["PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED"] == "true"
@@ -439,6 +447,7 @@ def test_temporary_qualification_always_drains_and_stops_on_failure(tmp_path: Pa
         )
 
     assert events == [
+        "stop",
         "start",
         "authenticated",
         "restart",
@@ -447,6 +456,41 @@ def test_temporary_qualification_always_drains_and_stops_on_failure(tmp_path: Pa
         "authenticated",
         "stop",
     ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (RuntimeError("pre-stop failed"), KeyboardInterrupt()),
+)
+def test_temporary_qualification_pre_stop_failure_still_runs_final_cleanup(
+    tmp_path: Path,
+    failure: BaseException,
+):
+    events = []
+    stop_calls = 0
+
+    def stop(*_args):
+        nonlocal stop_calls
+        stop_calls += 1
+        events.append("stop")
+        if stop_calls == 1:
+            raise failure
+
+    with pytest.raises(type(failure)):
+        run_temporary_shadow_qualification(
+            environment="staging",
+            slot="blue",
+            release_id="release-a",
+            report_path=tmp_path / "report.json",
+            start=lambda *_args: events.append("start"),
+            authenticated=lambda *_args: 4,
+            expire_and_restart=lambda *_args: 5,
+            stale_probe=lambda *_args: True,
+            qualify=lambda *_args: None,
+            stop=stop,
+        )
+
+    assert events == ["stop", "stop"]
 
 
 def test_disable_drains_active_units_before_flags_false_and_refresh(tmp_path: Path):
@@ -637,7 +681,7 @@ def test_temporary_qualification_cleans_up_on_base_exception(tmp_path: Path):
             stop=lambda *_args: events.append("stop"),
         )
 
-    assert events == ["start", "stop", "start", "stop"]
+    assert events == ["stop", "start", "stop", "start", "stop"]
 
 
 def test_enable_restores_flags_and_token_on_refresh_base_exception(tmp_path: Path):
@@ -760,6 +804,7 @@ with activation_signal_context():
     assert process.returncode == 1
     assert "ShadowActivationInterrupted" in stderr
     assert (tmp_path / "events").read_text().splitlines() == [
+        "stop",
         "start",
         "stop",
         "start",
@@ -852,6 +897,7 @@ with activation_signal_context():
     assert process.returncode == 1
     assert "ShadowActivationInterrupted" in stderr
     assert (tmp_path / "events").read_text().splitlines() == [
+        "stop",
         "partially-started",
         "stop",
     ]
@@ -910,6 +956,8 @@ except ShadowActivationInterrupted:
 
     assert process.returncode == 0, stderr
     assert (tmp_path / "events").read_text().splitlines() == [
+        "cleanup-enter",
+        "cleanup-complete",
         "partially-started",
         "cleanup-enter",
         "cleanup-complete",
