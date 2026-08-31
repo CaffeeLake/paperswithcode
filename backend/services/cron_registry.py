@@ -105,6 +105,11 @@ class CronJobDefinition:
     # (for example the five preload_thumbnails lanes).
     systemd_extra_units: Tuple[Tuple[str, str], ...] = ()
     output_evaluator: Optional[str] = None
+    work_metrics_provider: Optional[
+        Literal["paper_markdown_monitor", "chat_monitor", "submission_review"]
+    ] = None
+    db_metrics_provider: Optional[Literal["thumbnail_cache"]] = None
+    dependency_job_id: Optional[str] = None
 
     @property
     def systemd_unit_pairs(self) -> Tuple[Tuple[str, str], ...]:
@@ -175,6 +180,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         healthy_no_work_allowed=True,
         workflow_file="cron-paper-markdown.yml",
         workflow_jobs=("run",),
+        work_metrics_provider="paper_markdown_monitor",
     ),
     CronJobDefinition(
         id="update_hot_github_trending",
@@ -392,6 +398,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
         workflow_file="cron-calculate-paper-trending-scores.yml",
         workflow_jobs=("run",),
+        dependency_job_id="calculate_trending_scores",
     ),
     CronJobDefinition(
         id="update_hf_artifacts",
@@ -1197,6 +1204,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         db_freshness_query=None,
         workflow_file="cron-mirror-thumbnails-to-disk.yml",
         workflow_jobs=("run",),
+        db_metrics_provider="thumbnail_cache",
     ),
     CronJobDefinition(
         id="link_methods_by_references",
@@ -1361,6 +1369,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         systemd_timer="submission-review.timer",
         systemd_service="submission-review.service",
         output_evaluator="submission_review",
+        work_metrics_provider="submission_review",
     ),
     CronJobDefinition(
         id="monitor_chat_operational_alerts",
@@ -1381,6 +1390,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         systemd_timer="pwc-chat-alert-monitor.timer",
         systemd_service="pwc-chat-alert-monitor.service",
         output_evaluator="chat_alert_monitor",
+        work_metrics_provider="chat_monitor",
     ),
     CronJobDefinition(
         id="process_curation_thumbnails",

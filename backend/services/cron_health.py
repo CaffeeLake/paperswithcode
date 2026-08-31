@@ -10,10 +10,11 @@ import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from posixpath import basename
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -29,6 +30,27 @@ WORKFLOW_STATUS_CACHE_SECONDS = 60
 WORKFLOW_RUN_BATCH_PAGES = 3
 _WORKFLOW_STATUS_CACHE: Dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
 logger = logging.getLogger(__name__)
+
+HealthStatus = Literal["healthy", "running", "unknown", "degraded", "broken", "stuck"]
+
+
+class HealthResult(TypedDict):
+    status: HealthStatus
+    reason: str
+
+
+class ExecutionHealthResult(HealthResult, total=False):
+    scheduler: str
+    applicable: bool
+    last_expected_at: str | None
+    next_expected_at: str | None
+    last_started_at: str | None
+    last_completed_at: str | None
+    evidence_source: str | None
+
+
+class OutputHealthResult(HealthResult):
+    last_verified_at: str | None
 
 
 def _utcnow() -> datetime:
@@ -681,7 +703,7 @@ def _execution_health(
     workflow_status: Dict[str, Any],
     systemd_status: Optional[Dict[str, Any]],
     now: datetime,
-) -> Dict[str, Any]:
+) -> ExecutionHealthResult:
     previous_expected, next_expected = _schedule_slots(job, now)
     base = {
         "scheduler": job.scheduler,
@@ -854,16 +876,19 @@ def _execution_health(
     }
 
 
-def _aggregate_health(execution: str, output: str) -> str:
-    if "stuck" in {execution, output}:
+def _aggregate_health(
+    execution: ExecutionHealthResult, output: OutputHealthResult
+) -> HealthStatus:
+    statuses = {execution["status"], output["status"]}
+    if "stuck" in statuses:
         return "stuck"
-    if "broken" in {execution, output}:
+    if "broken" in statuses:
         return "broken"
-    if "degraded" in {execution, output}:
+    if "degraded" in statuses:
         return "degraded"
-    if "unknown" in {execution, output}:
+    if "unknown" in statuses:
         return "unknown"
-    if "running" in {execution, output}:
+    if "running" in statuses:
         return "running"
     return "healthy"
 
@@ -882,17 +907,30 @@ def _worse_output(current: str, candidate: str) -> str:
     return candidate if _OUTPUT_RANK[candidate] > _OUTPUT_RANK[current] else current
 
 
+@dataclass(frozen=True)
+class OutputEvaluationContext:
+    """Typed evidence available to one registry-selected output policy."""
+
+    work: Dict[str, Any]
+    db: Dict[str, Any]
+    workflow: Dict[str, Any]
+    systemd: Dict[str, Any]
+    now: datetime
+    running: bool
+    recent_log_success: bool
+    db_reason: str | None
+    dependency_status: str | None
+
+
 def _workflow_output_contract(
     status: str,
     reasons: List[str],
-    _work: Dict[str, Any],
-    _db: Dict[str, Any],
-    workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
     if status != "unknown":
         return status, reasons
-    conclusion = workflow.get("conclusion")
-    completed = workflow.get("status") == "completed"
+    conclusion = context.workflow.get("conclusion")
+    completed = context.workflow.get("status") == "completed"
     if completed and conclusion in {"success", "skipped"}:
         return "healthy", ["workflow completed its job-owned output contract"]
     return status, reasons
@@ -901,10 +939,9 @@ def _workflow_output_contract(
 def _paper_markdown_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    _db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work = context.work
     remaining = int(work.get("missing_after_upstream", 0) or 0)
     blocker = work.get("blocker_classification")
     budget_blocked = blocker in {"budget", "reliability_and_budget"}
@@ -1027,10 +1064,9 @@ def _merge_paper_markdown_monitor_metrics(
 def _paper_embeddings_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work, db = context.work, context.db
     missing = int(db.get("missing_embeddings", 0) or 0)
     hash_mismatches = int(db.get("content_hash_mismatches", 0) or 0)
     candidates = work.get("candidates")
@@ -1060,10 +1096,9 @@ def _paper_embeddings_contract(
 def _hf_import_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    _db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work = context.work
     if work.get("upstream_fetch_succeeded") is False:
         return "broken", reasons + ["Hugging Face daily-paper feed fetch failed"]
     if work.get("upstream_fetch_succeeded") is True:
@@ -1080,10 +1115,34 @@ def _hf_import_contract(
 def _github_stars_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    _db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work = context.work
+    if not context.running:
+        for queue in ("fresh", "weekly"):
+            selected = int(work.get(f"{queue}_selected_groups", 0) or 0)
+            successes = int(work.get(f"{queue}_successes", 0) or 0)
+            failures = int(work.get(f"{queue}_failures", 0) or 0)
+            credential_failures = int(work.get(f"{queue}_credential_failures", 0) or 0)
+            credential = work.get(f"{queue}_credential", f"{queue} GitHub credential")
+            if selected and not successes and failures:
+                status = _worse_output(status, "broken")
+                if credential_failures:
+                    reasons.append(
+                        f"{credential} was rejected by GitHub; "
+                        f"the {queue} queue had no successful fetches"
+                    )
+                else:
+                    reasons.append(
+                        f"{queue} GitHub queue had no successful fetches "
+                        f"({failures} failures)"
+                    )
+            elif credential_failures:
+                status = _worse_output(status, "degraded")
+                reasons.append(
+                    f"{credential} had {credential_failures} rejected request(s)"
+                )
+
     for queue in ("fresh", "weekly"):
         stops = int(work.get(f"{queue}_rate_limit_stops", 0) or 0)
         selected = int(work.get(f"{queue}_selected_groups", 0) or 0)
@@ -1095,13 +1154,59 @@ def _github_stars_contract(
     return status, reasons
 
 
+def _hot_github_trending_contract(
+    status: str,
+    reasons: List[str],
+    context: OutputEvaluationContext,
+) -> tuple[str, List[str]]:
+    work, db = context.work, context.db
+    oldest_wait = int(db.get("oldest_eligible_wait_minutes", 0) or 0)
+    stale_scores = int(db.get("stale_paper_scores", 0) or 0)
+    one_snapshot = int(db.get("one_snapshot_over_30m", 0) or 0)
+    reserve_stops = int(work.get("rate_limit_stops", 0) or 0)
+    remaining = work.get("rate_limit_remaining")
+    reserve = work.get("rate_limit_reserve")
+    credential_failures = int(work.get("credential_failures", 0) or 0)
+    credential = work.get("credential", "GitHub credential")
+
+    if db.get("hot_repository_count") == 0 and context.recent_log_success:
+        status = "healthy"
+        if context.db_reason:
+            reasons = [reason for reason in reasons if reason != context.db_reason]
+
+    if oldest_wait > 30:
+        status = _worse_output(status, "broken")
+        reasons.append(f"oldest eligible hot repository has waited {oldest_wait}m")
+    if stale_scores:
+        status = _worse_output(status, "broken")
+        reasons.append(f"{stale_scores} hot paper scores are missing or stale")
+    if credential_failures:
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"{credential} was rejected by GitHub "
+            f"({credential_failures} failed requests)"
+        )
+    if one_snapshot and status == "healthy":
+        status = "degraded"
+        reasons.append(f"{one_snapshot} hot repositories have one snapshot after 30m")
+    if reserve_stops:
+        if status == "healthy":
+            status = "degraded"
+        reasons.append(f"rate-limit reserve stopped {reserve_stops} run(s)")
+    if remaining is not None and reserve is not None and int(remaining) < int(reserve):
+        status = _worse_output(status, "broken")
+        reasons.append(
+            f"rate-limit reserve violated ({remaining} remaining < {reserve})"
+        )
+    return status, reasons
+
+
 def _counter_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work, db = context.work, context.db
     scanned = work.get(
         "papers_scanned",
         work.get(
@@ -1118,11 +1223,10 @@ def _counter_contract(
 def _provider_counter_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
-    status, reasons = _counter_contract(status, reasons, work, db, workflow)
+    work = context.work
+    status, reasons = _counter_contract(status, reasons, context)
     throttled = int(work.get("rate_limit_hits", 0) or 0)
     failures = int(
         work.get("api_errors", 0)
@@ -1142,11 +1246,10 @@ def _provider_counter_contract(
 def _trending_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
-    status, reasons = _counter_contract(status, reasons, work, db, workflow)
+    db = context.db
+    status, reasons = _counter_contract(status, reasons, context)
     eligible = int(db.get("eligible_population", 0) or 0)
     positive = int(
         db.get("fresh_positive_scores", db.get("fresh_github_component_scores", 0)) or 0
@@ -1160,17 +1263,20 @@ def _trending_contract(
     elif status == "unknown" and positive and int(db.get("recent_writes", 0) or 0) > 0:
         status = "healthy"
         reasons.append("database confirms fresh positive trending output")
+    dependency_status = context.dependency_status
+    if dependency_status and dependency_status not in {"healthy", "running"}:
+        status = _worse_output(status, "degraded")
+        reasons.append(f"dependency calculate_trending_scores is {dependency_status}")
     return status, reasons
 
 
 def _organization_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
-    status, reasons = _counter_contract(status, reasons, work, db, workflow)
+    db = context.db
+    status, reasons = _counter_contract(status, reasons, context)
     missing = int(db.get("missing_today_snapshots", 0) or 0)
     if missing:
         status = _worse_output(status, "degraded")
@@ -1181,11 +1287,10 @@ def _organization_contract(
 def _thumbnail_preload_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
-    status, reasons = _workflow_output_contract(status, reasons, work, db, workflow)
+    work = context.work
+    status, reasons = _workflow_output_contract(status, reasons, context)
     failures = int(work.get("failed_downloads", 0) or 0)
     if failures:
         status = _worse_output(status, "degraded")
@@ -1196,10 +1301,9 @@ def _thumbnail_preload_contract(
 def _backfill_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work, db = context.work, context.db
     stale_running = int(db.get("stale_running", 0) or 0)
     if stale_running:
         status = _worse_output(status, "broken")
@@ -1241,10 +1345,9 @@ def _backfill_contract(
 def _daily_curation_contract(
     status: str,
     reasons: List[str],
-    _work: Dict[str, Any],
-    db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    db = context.db
     pause_condition = db.get("pause_condition")
     if pause_condition:
         status = _worse_output(status, "broken")
@@ -1279,10 +1382,17 @@ def _daily_curation_contract(
 def _curation_thumbnail_contract(
     status: str,
     reasons: List[str],
-    _work: Dict[str, Any],
-    db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    db = context.db
+    queue_is_empty = not any(
+        int(db.get(key, 0) or 0)
+        for key in ("queued", "processing", "stale_processing", "failed")
+    )
+    if context.systemd.get("service_result") == "success" and queue_is_empty:
+        return "healthy", [
+            "latest queue poll completed and no thumbnail work is pending"
+        ]
     stale = int(db.get("stale_processing", 0) or 0)
     failed = int(db.get("failed", 0) or 0)
     if stale:
@@ -1297,17 +1407,14 @@ def _curation_thumbnail_contract(
 def _chat_alert_contract(
     status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    _db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work = context.work
     if not work.get("monitor_record_available"):
         return "unknown", reasons + [
             "content-free monitor output record is unavailable"
         ]
-    age = _minutes_since(
-        work.get("monitor_completed_at"), now=work.get("_evaluation_now")
-    )
+    age = _minutes_since(work.get("monitor_completed_at"), now=context.now)
     if age is None or age > 5:
         return "broken", reasons + ["latest operational poll output is stale"]
     pending = int(work.get("undelivered_alert_events", 0) or 0)
@@ -1328,17 +1435,14 @@ def _chat_alert_contract(
 def _submission_review_contract(
     _status: str,
     reasons: List[str],
-    work: Dict[str, Any],
-    _db: Dict[str, Any],
-    _workflow: Dict[str, Any],
+    context: OutputEvaluationContext,
 ) -> tuple[str, List[str]]:
+    work = context.work
     if not work.get("review_record_available"):
         return "unknown", reasons + [
             "content-free submission review output record is unavailable"
         ]
-    age = _minutes_since(
-        work.get("review_completed_at"), now=work.get("_evaluation_now")
-    )
+    age = _minutes_since(work.get("review_completed_at"), now=context.now)
     if age is None:
         return "unknown", reasons + ["submission review completion time is unavailable"]
     if age > 135:
@@ -1353,30 +1457,55 @@ def _submission_review_contract(
     return "unknown", reasons + ["submission review output state is unknown"]
 
 
-OUTPUT_EVALUATORS = {
-    "generic": lambda status, reasons, _work, _db, _workflow: (status, reasons),
-    "github_stars": _github_stars_contract,
-    "hot_github_trending": lambda status, reasons, _work, _db, _workflow: (
-        status,
-        reasons,
+OutputEvaluator = Callable[
+    [str, List[str], OutputEvaluationContext],
+    tuple[str, List[str]],
+]
+
+
+@dataclass(frozen=True)
+class OutputPolicy:
+    """Registry-selected output rules and their operator guidance."""
+
+    evaluate: OutputEvaluator
+    dependency_diagnostic: str | None = None
+    refresh_db_freshness: bool = False
+    accept_systemd_completion: bool = False
+
+
+OUTPUT_POLICIES = {
+    "generic": OutputPolicy(lambda status, reasons, _context: (status, reasons)),
+    "github_stars": OutputPolicy(_github_stars_contract),
+    "hot_github_trending": OutputPolicy(_hot_github_trending_contract),
+    "repository_trending": OutputPolicy(_trending_contract),
+    "paper_trending": OutputPolicy(
+        _trending_contract,
+        dependency_diagnostic=(
+            "Fix repo trending scores before trusting paper trending output"
+        ),
     ),
-    "repository_trending": _trending_contract,
-    "paper_trending": _trending_contract,
-    "hf_paper_import": _hf_import_contract,
-    "daily_curation": _daily_curation_contract,
-    "citations": _provider_counter_contract,
-    "hf_artifacts": _provider_counter_contract,
-    "paper_markdown": _paper_markdown_contract,
-    "paper_embeddings": _paper_embeddings_contract,
-    "organization_sync": _organization_contract,
-    "organization_trending": _organization_contract,
-    "backfill": _backfill_contract,
-    "thumbnail_preload": _thumbnail_preload_contract,
-    "thumbnail_mirror": _workflow_output_contract,
-    "weekly_linker": _workflow_output_contract,
-    "curation_thumbnails": _curation_thumbnail_contract,
-    "chat_alert_monitor": _chat_alert_contract,
-    "submission_review": _submission_review_contract,
+    "hf_paper_import": OutputPolicy(_hf_import_contract),
+    "daily_curation": OutputPolicy(_daily_curation_contract),
+    "citations": OutputPolicy(_provider_counter_contract),
+    "hf_artifacts": OutputPolicy(_provider_counter_contract),
+    "paper_markdown": OutputPolicy(_paper_markdown_contract),
+    "paper_embeddings": OutputPolicy(_paper_embeddings_contract),
+    "organization_sync": OutputPolicy(_organization_contract),
+    "organization_trending": OutputPolicy(_organization_contract),
+    "backfill": OutputPolicy(_backfill_contract),
+    "thumbnail_preload": OutputPolicy(_thumbnail_preload_contract),
+    "thumbnail_mirror": OutputPolicy(
+        _workflow_output_contract,
+        refresh_db_freshness=True,
+        accept_systemd_completion=True,
+    ),
+    "weekly_linker": OutputPolicy(
+        _workflow_output_contract,
+        accept_systemd_completion=True,
+    ),
+    "curation_thumbnails": OutputPolicy(_curation_thumbnail_contract),
+    "chat_alert_monitor": OutputPolicy(_chat_alert_contract),
+    "submission_review": OutputPolicy(_submission_review_contract),
 }
 
 
@@ -1738,6 +1867,7 @@ def evaluate_job_health(
     log_result = log_status.get("status", "unknown")
     work_metrics = dict(log_status.get("work_metrics") or {})
     db_metrics = db_metrics or {}
+    output_policy = OUTPUT_POLICIES[job.output_evaluator or "generic"]
     log_no_work = log_result == "success_no_work"
     safe_log_error = (
         _sanitized_job_error(log_status["error"], job.id)
@@ -1765,17 +1895,7 @@ def evaluate_job_health(
                 db_metrics, job.stale_after_minutes, now=now
             )
 
-    recent_log_success, recent_log_reason = _recent_log_success(
-        job, log_status, now=now
-    )
-    if (
-        job.id == "update_hot_github_trending"
-        and db_metrics.get("hot_repository_count") == 0
-        and recent_log_success
-    ):
-        db_stale = False
-        db_reason = None
-
+    recent_log_success, _ = _recent_log_success(job, log_status, now=now)
     # An inode may persist forever; only a currently held kernel lock is evidence.
     # Give the wrapper a short handoff window before calling a held orphan broken.
     lock_blocks_job = (
@@ -1817,26 +1937,14 @@ def evaluate_job_health(
         status = "healthy"
         reasons.append("completed with no work (allowed for this job)")
     else:
-        if job.id == "mirror_thumbnails_to_disk":
+        if output_policy.refresh_db_freshness:
             db_stale, db_reason = _db_is_stale(
                 db_metrics, job.stale_after_minutes, now=now
             )
             if db_stale and db_reason:
                 reasons.append(db_reason or "thumbnail cache looks stale")
 
-        import_recent_no_work = (
-            job.id == "import_hf_daily_papers"
-            and db_stale
-            and recent_log_success
-            and job.healthy_no_work_allowed
-        )
-
-        if (
-            db_stale
-            and db_reason
-            and db_reason not in reasons
-            and not import_recent_no_work
-        ):
+        if db_stale and db_reason and db_reason not in reasons:
             reasons.append(db_reason)
 
         log_success = log_result in {"success", "success_no_work"}
@@ -1850,10 +1958,6 @@ def evaluate_job_health(
                 status = "degraded"
             else:
                 status = "degraded"
-        elif import_recent_no_work:
-            status = "healthy"
-            reasons.append(recent_log_reason or "recent import completed successfully")
-            reasons.append("no new papers imported in the freshness window")
         elif db_stale and job.db_freshness_query and job.critical:
             status = "broken"
             diagnostics.append(
@@ -1873,107 +1977,29 @@ def evaluate_job_health(
             status = "degraded"
             reasons.append(f"log status is {log_result}")
 
-    if job.id == "update_hot_github_trending":
-        oldest_wait = db_metrics.get("oldest_eligible_wait_minutes", 0)
-        stale_scores = db_metrics.get("stale_paper_scores", 0)
-        one_snapshot = db_metrics.get("one_snapshot_over_30m", 0)
-        reserve_stops = work_metrics.get("rate_limit_stops", 0)
-        remaining = work_metrics.get("rate_limit_remaining")
-        reserve = work_metrics.get("rate_limit_reserve")
-        credential_failures = work_metrics.get("credential_failures", 0)
-        credential = work_metrics.get("credential", "GitHub credential")
-
-        if oldest_wait > 30:
-            status = "broken"
-            reasons.append(f"oldest eligible hot repository has waited {oldest_wait}m")
-        if stale_scores:
-            status = "broken"
-            reasons.append(f"{stale_scores} hot paper scores are missing or stale")
-        if credential_failures:
-            status = "broken"
-            reasons.append(
-                f"{credential} was rejected by GitHub "
-                f"({credential_failures} failed requests)"
-            )
-        if one_snapshot and status == "healthy":
-            status = "degraded"
-            reasons.append(
-                f"{one_snapshot} hot repositories have one snapshot after 30m"
-            )
-        if reserve_stops:
-            if status == "healthy":
-                status = "degraded"
-            reasons.append(f"rate-limit reserve stopped {reserve_stops} run(s)")
-        if (
-            remaining is not None
-            and reserve is not None
-            and int(remaining) < int(reserve)
-        ):
-            status = "broken"
-            reasons.append(
-                f"rate-limit reserve violated ({remaining} remaining < {reserve})"
-            )
-
-    if job.id == "update_github_stars" and not running:
-        for queue in ("fresh", "weekly"):
-            selected = int(work_metrics.get(f"{queue}_selected_groups", 0) or 0)
-            successes = int(work_metrics.get(f"{queue}_successes", 0) or 0)
-            failures = int(work_metrics.get(f"{queue}_failures", 0) or 0)
-            credential_failures = int(
-                work_metrics.get(f"{queue}_credential_failures", 0) or 0
-            )
-            credential = work_metrics.get(
-                f"{queue}_credential", f"{queue} GitHub credential"
-            )
-            if selected and successes == 0 and failures:
-                status = "broken"
-                if credential_failures:
-                    reasons.append(
-                        f"{credential} was rejected by GitHub; "
-                        f"the {queue} queue had no successful fetches"
-                    )
-                else:
-                    reasons.append(
-                        f"{queue} GitHub queue had no successful fetches "
-                        f"({failures} failures)"
-                    )
-            elif credential_failures:
-                if status == "healthy":
-                    status = "degraded"
-                reasons.append(
-                    f"{credential} had {credential_failures} rejected request(s)"
-                )
-
-    if dependency_status and dependency_status not in {"healthy", "running"}:
-        if status == "healthy":
-            status = "degraded"
-        reasons.append(f"dependency calculate_trending_scores is {dependency_status}")
-        diagnostics.append(
-            "Fix repo trending scores before trusting paper trending output"
-        )
-
     workflow_status = workflow_status or {}
-    evaluator = OUTPUT_EVALUATORS[job.output_evaluator or "generic"]
-    evaluator_work = {**work_metrics, "_evaluation_now": now}
-    semantic_status, semantic_reasons = evaluator(
-        "healthy", [], evaluator_work, db_metrics, workflow_status
+    evaluator = output_policy.evaluate
+    evaluation_context = OutputEvaluationContext(
+        work=work_metrics,
+        db=db_metrics,
+        workflow=workflow_status,
+        systemd=systemd_status or {},
+        now=now,
+        running=running,
+        recent_log_success=recent_log_success,
+        db_reason=db_reason,
+        dependency_status=dependency_status,
     )
-    status, reasons = evaluator(
-        status, reasons, evaluator_work, db_metrics, workflow_status
-    )
+    semantic_status, semantic_reasons = evaluator("healthy", [], evaluation_context)
+    status, reasons = evaluator(status, reasons, evaluation_context)
     if (
-        job.id == "process_curation_thumbnails"
-        and systemd_status
-        and systemd_status.get("service_result") == "success"
-        and not any(
-            int(db_metrics.get(key, 0) or 0)
-            for key in ("queued", "processing", "stale_processing", "failed")
-        )
+        output_policy.dependency_diagnostic
+        and dependency_status
+        and dependency_status not in {"healthy", "running"}
     ):
-        status = "healthy"
-        reasons = ["latest queue poll completed and no thumbnail work is pending"]
+        diagnostics.append(output_policy.dependency_diagnostic)
     if (
-        job.output_evaluator in {"thumbnail_mirror", "weekly_linker"}
+        output_policy.accept_systemd_completion
         and status == "unknown"
         and systemd_status
         and systemd_status.get("service_result") == "success"
@@ -1992,7 +2018,12 @@ def evaluate_job_health(
         systemd_status=systemd_status,
         now=now,
     )
-    status = _aggregate_health(execution_health["status"], output_status)
+    output_health: OutputHealthResult = {
+        "status": output_status,
+        "reason": output_reason,
+        "last_verified_at": last_db_write_iso or last_run_iso,
+    }
+    status = _aggregate_health(execution_health, output_health)
     if execution_health["status"] not in {"healthy", "running"}:
         diagnostics.append(execution_health["reason"])
 
@@ -2037,11 +2068,7 @@ def evaluate_job_health(
         "workflow_status": workflow_status or None,
         "systemd_status": systemd_status,
         "execution_health": execution_health,
-        "output_health": {
-            "status": output_status,
-            "reason": output_reason,
-            "last_verified_at": last_db_write_iso or last_run_iso,
-        },
+        "output_health": output_health,
         "output_contract_evidence": {
             "semantic": {
                 "status": semantic_status,
@@ -2080,6 +2107,27 @@ def _dashboard_job_summary(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
         **counts,
         "health_score": (passing / scheduled_total * 100) if scheduled_total else 0.0,
     }
+
+
+def _paper_markdown_work_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    return _merge_paper_markdown_monitor_metrics(
+        metrics, _paper_markdown_monitor_snapshot()
+    )
+
+
+def _chat_monitor_work_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    return {**metrics, **fetch_chat_monitor_output()}
+
+
+def _submission_review_work_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    return {**metrics, **fetch_submission_review_output()}
+
+
+WORK_METRICS_PROVIDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
+    "paper_markdown_monitor": _paper_markdown_work_metrics,
+    "chat_monitor": _chat_monitor_work_metrics,
+    "submission_review": _submission_review_work_metrics,
+}
 
 
 def build_cron_dashboard(
@@ -2140,6 +2188,7 @@ def build_cron_dashboard(
         database_by_id, database_ms = database_future.result()
         workflow_by_id, workflow_ms = workflow_future.result()
         thumbnail_metrics, thumbnail_ms = thumbnail_future.result()
+    supplemental_db_metrics = {"thumbnail_cache": thumbnail_metrics}
 
     def get_recent_log_status(job: CronJobDefinition) -> Dict[str, Any]:
         max_days = max(0, min(14, job.stale_after_minutes // (24 * 60) + 1))
@@ -2156,29 +2205,20 @@ def build_cron_dashboard(
 
     for job in definitions:
         log_status = get_recent_log_status(job)
-        if job.id == "paper_markdown_backfill":
-            remote = _paper_markdown_monitor_snapshot()
-            log_status["work_metrics"] = _merge_paper_markdown_monitor_metrics(
-                log_status.get("work_metrics") or {},
-                remote,
+        if job.work_metrics_provider:
+            provider = WORK_METRICS_PROVIDERS[job.work_metrics_provider]
+            log_status["work_metrics"] = provider(
+                dict(log_status.get("work_metrics") or {})
             )
-        elif job.id == "monitor_chat_operational_alerts":
-            metrics = dict(log_status.get("work_metrics") or {})
-            metrics.update(fetch_chat_monitor_output())
-            log_status["work_metrics"] = metrics
-        elif job.id == "review_submissions":
-            metrics = dict(log_status.get("work_metrics") or {})
-            metrics.update(fetch_submission_review_output())
-            log_status["work_metrics"] = metrics
 
         db_metrics = database_by_id.get(job.id, {})
-        if job.id == "mirror_thumbnails_to_disk":
-            db_metrics = thumbnail_metrics
+        if job.db_metrics_provider:
+            db_metrics = supplemental_db_metrics[job.db_metrics_provider]
 
         lock_state = get_lock_state(job.lock_file, job.expected_runtime_minutes)
-        dependency_status = None
-        if job.id == "calculate_paper_trending_scores":
-            dependency_status = status_by_id.get("calculate_trending_scores")
+        dependency_status = (
+            status_by_id.get(job.dependency_job_id) if job.dependency_job_id else None
+        )
         workflow_status = workflow_by_id.get(job.id)
         systemd_status = (
             fetch_systemd_status(job) if job.scheduler == "systemd" else None
