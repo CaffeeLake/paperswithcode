@@ -1544,6 +1544,27 @@ def test_stop_slot_cleans_exact_unclaimed_request_free_worker(
     ] in commands
 
 
+def test_stop_slot_cleans_unclaimed_worker_from_validated_orphan_release(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    status = _unclaimed_worker_status()
+    status["release_id"] = "validated-previous-release"
+    commands = _install_active_worker_status(monkeypatch, status)
+
+    lifecycle.stop_slot(
+        "staging",
+        "blue",
+        "candidate-release",
+        validated_orphan_release_ids=frozenset({"validated-previous-release"}),
+    )
+
+    assert [
+        "systemctl",
+        "stop",
+        "paperswithcode-staging-external-pi-worker@blue.service",
+    ] in commands
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     (

@@ -1257,7 +1257,7 @@ def test_interrupted_candidate_recovery_does_not_abandon_unproven_cleanup(
     monkeypatch.setattr(
         deploy_cli,
         "stop_slot_if_enabled",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
             deploy_cli.ExternalPiSlotError("worker did not prove graceful drain")
         ),
     )
@@ -1275,3 +1275,77 @@ def test_interrupted_candidate_recovery_does_not_abandon_unproven_cleanup(
     assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
     assert (root / "current").resolve() == old
     assert (root / "previous").resolve() == older
+
+
+def test_interrupted_candidate_recovery_trusts_only_validated_release_pointers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_cli, "RELEASES", tmp_path)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_journal",
+        lambda _environment: {
+            "phase": "candidate-preparing",
+            "candidate_slot": "green",
+            "candidate_release": candidate.name,
+        },
+    )
+    calls: list[tuple[str, str, str, frozenset[str]]] = []
+
+    def stop(
+        environment: str,
+        slot: str,
+        release_id: str,
+        *,
+        validated_orphan_release_ids: frozenset[str],
+    ) -> None:
+        calls.append((environment, slot, release_id, validated_orphan_release_ids))
+
+    monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", stop)
+    phases: list[str] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **_values: phases.append(phase),
+    )
+
+    deploy_cli._recover_interrupted_activation("staging")
+
+    assert calls == [
+        ("staging", "green", "candidate", frozenset({old.name, older.name}))
+    ]
+    assert phases == ["candidate-abandoned"]
+
+
+def test_interrupted_candidate_recovery_does_not_inspect_pointers_in_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _root, _old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_cli, "RELEASES", tmp_path)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_journal",
+        lambda _environment: {
+            "phase": "candidate-preparing",
+            "candidate_slot": "green",
+            "candidate_release": candidate.name,
+        },
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "read_pointers",
+        lambda _root: pytest.fail("production inspected release pointers"),
+    )
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "stop_slot_if_enabled",
+        lambda environment, slot, release_id: calls.append(
+            (environment, slot, release_id)
+        ),
+    )
+
+    deploy_cli._recover_interrupted_activation("production")
+
+    assert calls == [("production", "green", "candidate")]

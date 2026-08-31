@@ -293,6 +293,7 @@ def _stop_proven_orphaned_worker_if_active(
     *,
     worker_active_proven: bool = False,
     expected_release_id: str | None = None,
+    validated_orphan_release_ids: frozenset[str] = frozenset(),
 ) -> None:
     if not worker_active_proven and _worker_is_inactive(environment, slot):
         return
@@ -326,10 +327,12 @@ def _stop_proven_orphaned_worker_if_active(
         and status.get("maximum_sessions") == MAXIMUM_SESSIONS
     )
     counters = status.get("operation_counters") if isinstance(status, dict) else None
+    trusted_release_ids = validated_orphan_release_ids
+    if expected_release_id is not None:
+        trusted_release_ids = trusted_release_ids | {expected_release_id}
     request_free_unclaimed = (
         isinstance(status, dict)
-        and expected_release_id is not None
-        and status.get("release_id") == expected_release_id
+        and status.get("release_id") in trusted_release_ids
         and status.get("state") == "ready"
         and "worker_generation" in status
         and status.get("worker_generation") is None
@@ -563,6 +566,8 @@ def stop_slot(
     environment: str,
     slot: str,
     release_id: str,
+    *,
+    validated_orphan_release_ids: frozenset[str] = frozenset(),
 ) -> None:
     timeout_seconds = drain_stop_timeout_seconds(environment)
     previous = _read_status(environment, slot)
@@ -593,6 +598,7 @@ def stop_slot(
             slot,
             worker_active_proven=True,
             expected_release_id=release_id,
+            validated_orphan_release_ids=validated_orphan_release_ids,
         )
     except ExternalPiSlotError as error:
         raise ExternalPiSlotError(
@@ -653,8 +659,19 @@ def prepare_candidate_if_enabled(environment: str, slot: str, release_id: str) -
     return True
 
 
-def stop_slot_if_enabled(environment: str, slot: str, release_id: str) -> bool:
+def stop_slot_if_enabled(
+    environment: str,
+    slot: str,
+    release_id: str,
+    *,
+    validated_orphan_release_ids: frozenset[str] = frozenset(),
+) -> bool:
     if not lifecycle_enabled(environment):
         return False
-    stop_slot(environment, slot, release_id)
+    stop_slot(
+        environment,
+        slot,
+        release_id,
+        validated_orphan_release_ids=validated_orphan_release_ids,
+    )
     return True
