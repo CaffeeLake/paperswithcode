@@ -142,13 +142,20 @@ def test_untrusted_or_inactive_scope_cannot_derive_capacity_context(
 
 def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
     unrelated_turn = uuid.uuid4()
+    lock_requests = []
+
+    class LockedService(ChatDurableQualificationEvidenceService):
+        def require_active_scope(self, scope_id, *, settings, lock=False):
+            lock_requests.append((scope_id, lock))
+            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+
     with Session(engine) as db:
         db.add(_scope())
         latency = _latency(24, workload="bash")
         latency.terminal_status = None
         db.add(latency)
         db.commit()
-        service = ChatDurableQualificationEvidenceService(db, now=lambda: START)
+        service = LockedService(db, now=lambda: START)
 
         assert (
             service.executor_live_cap(
@@ -166,6 +173,7 @@ def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
             )
             is None
         )
+
         scope = db.get(ChatQualificationScope, SCOPE_ID)
         scope.window_ended_at = START
         db.flush()
@@ -177,6 +185,8 @@ def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
             )
             is None
         )
+
+    assert lock_requests == [(SCOPE_ID, True), (SCOPE_ID, True)]
 
 
 def test_external_pi_authority_survives_admission_reconstruction(engine):
@@ -203,6 +213,13 @@ def test_external_pi_authority_survives_admission_reconstruction(engine):
     )
     latency = _latency(0, workload="no_tool")
     latency.terminal_status = None
+    lock_requests = []
+
+    class LockedService(ChatDurableQualificationEvidenceService):
+        def require_active_scope(self, scope_id, *, settings, lock=False):
+            lock_requests.append((scope_id, lock))
+            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+
     with Session(engine) as db:
         db.add_all(
             (
@@ -239,7 +256,7 @@ def test_external_pi_authority_survives_admission_reconstruction(engine):
             )
         )
         db.commit()
-        service = ChatDurableQualificationEvidenceService(db, now=lambda: START)
+        service = LockedService(db, now=lambda: START)
 
         assert service.external_pi_authorized(
             turn_id=latency.turn_id,
@@ -255,6 +272,8 @@ def test_external_pi_authority_survives_admission_reconstruction(engine):
                 chat_session_id=latency.chat_session_id,
                 settings=settings,
             )
+
+    assert lock_requests == [(SCOPE_ID, True), (SCOPE_ID, True)]
 
 
 def _latency(
@@ -461,6 +480,24 @@ def test_exact_cohort_aggregates_cross_session_writes_and_clips_billed_lifetime(
     assert evidence.billed_duration_ms == 940_000
 
 
+def test_collect_locks_scope_before_closing_authorization(engine):
+    lock_requests = []
+
+    class LockedService(ChatDurableQualificationEvidenceService):
+        def require_active_scope(self, scope_id, *, settings, lock=False):
+            lock_requests.append((scope_id, lock))
+            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+
+    with Session(engine) as db, db.begin():
+        _add_valid_functional_evidence(db)
+    with Session(engine) as db:
+        LockedService(db, now=lambda: END).collect(
+            scope_id=SCOPE_ID, settings=_settings()
+        )
+
+    assert lock_requests == [(SCOPE_ID, True)]
+
+
 def test_admission_profile_requires_exact_100_no_tool_denominator(engine):
     run_id = "qualified-a100"
     with Session(engine) as db, db.begin():
@@ -603,9 +640,14 @@ def test_exact_scope_teardown_is_isolated_and_idempotent(engine):
     lock_requests = []
 
     class LockedService(ChatDurableQualificationEvidenceService):
-        def require_active_scope(self, scope_id, *, settings, lock=False):
-            lock_requests.append(lock)
-            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+        def _require_scope(self, scope_id, *, settings, lock, allow_ended):
+            lock_requests.append((lock, allow_ended))
+            return super()._require_scope(
+                scope_id,
+                settings=settings,
+                lock=lock,
+                allow_ended=allow_ended,
+            )
 
     with Session(engine) as db:
         service = LockedService(db, now=lambda: END)
@@ -615,6 +657,9 @@ def test_exact_scope_teardown_is_isolated_and_idempotent(engine):
             )
         )
         db.commit()
+    with Session(engine) as db:
+        ended_at = db.get(ChatQualificationScope, SCOPE_ID).window_ended_at
+        assert ended_at.replace(tzinfo=UTC) == END
     with Session(engine) as db:
         service = LockedService(db, now=lambda: END)
         second = asyncio.run(
@@ -631,7 +676,7 @@ def test_exact_scope_teardown_is_isolated_and_idempotent(engine):
     expected_sessions = {_latency(index).chat_session_id for index in range(16, 32)}
     assert set(manager.sessions) == expected_sessions
     assert first == second
-    assert lock_requests == [True, True]
+    assert lock_requests == [(True, True), (True, True)]
     assert first.expected_tool_turns == first.closed_intervals == 16
     assert evictions == 16
 
@@ -989,7 +1034,7 @@ def test_scope_collision_and_bounded_expiry_cleanup(engine):
         )
 
 
-def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_per_turn():
+def test_postgresql_teardown_serializes_authorization_capacity_and_eviction():
     url = os.getenv("PWC_QUALIFICATION_TEST_DATABASE_URL")
     if not url:
         pytest.skip("explicit disposable qualification PostgreSQL URL is required")
@@ -1029,6 +1074,25 @@ def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_
                   turn_id UUID NOT NULL, chat_session_id UUID NOT NULL,
                   event_type VARCHAR(32) NOT NULL, operation_digest VARCHAR(64),
                   operation_kind VARCHAR(8), occurred_at TIMESTAMPTZ NOT NULL
+                );
+                CREATE TABLE chat_external_workers (
+                  worker_id VARCHAR(128) PRIMARY KEY, instance_id UUID NOT NULL UNIQUE,
+                  environment VARCHAR(16) NOT NULL, release_id VARCHAR(255) NOT NULL,
+                  contract_version VARCHAR(128) NOT NULL, generation BIGINT NOT NULL,
+                  state VARCHAR(16) NOT NULL, maximum_sessions INTEGER NOT NULL,
+                  active_sessions INTEGER NOT NULL, heartbeat_at TIMESTAMPTZ NOT NULL,
+                  lease_expires_at TIMESTAMPTZ NOT NULL,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                CREATE TABLE chat_external_worker_reservations (
+                  request_id VARCHAR(200) PRIMARY KEY, turn_id UUID UNIQUE,
+                  endpoint_id VARCHAR(128) NOT NULL, worker_id VARCHAR(128) NOT NULL,
+                  instance_id UUID NOT NULL, worker_generation BIGINT NOT NULL,
+                  release_id VARCHAR(255) NOT NULL,
+                  contract_version VARCHAR(128) NOT NULL,
+                  maximum_sessions INTEGER NOT NULL, reserved_at TIMESTAMPTZ NOT NULL,
+                  expires_at TIMESTAMPTZ NOT NULL
                 );
                 CREATE UNIQUE INDEX uq_chat_qualification_evidence_eviction_turn
                   ON chat_qualification_evidence_events (qualification_scope_id, turn_id)
@@ -1086,10 +1150,46 @@ def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_
                 for index in range(16, 32)
             ],
         )
+        instance_id = uuid.uuid4()
+        connection.execute(
+            text(
+                "INSERT INTO chat_external_workers "
+                "(worker_id,instance_id,environment,release_id,contract_version,"
+                "generation,state,maximum_sessions,active_sessions,heartbeat_at,"
+                "lease_expires_at) VALUES "
+                "('worker-qualified',:instance_id,'staging',:release,'external-pi-v1',"
+                "1,'ready',32,1,:start,:expiry)"
+            ),
+            {
+                "instance_id": instance_id,
+                "release": _settings().release_id,
+                "start": START,
+                "expiry": END + timedelta(hours=1),
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO chat_external_worker_reservations "
+                "(request_id,turn_id,endpoint_id,worker_id,instance_id,worker_generation,"
+                "release_id,contract_version,maximum_sessions,reserved_at,expires_at) "
+                "VALUES ('qualified-request',:turn_id,'qualified','worker-qualified',"
+                ":instance_id,1,:release,'external-pi-v1',32,:start,:expiry)"
+            ),
+            {
+                "turn_id": _latency(0).turn_id,
+                "instance_id": instance_id,
+                "release": _settings().release_id,
+                "start": START,
+                "expiry": END + timedelta(hours=1),
+            },
+        )
 
     active = 0
     maximum_active = 0
     active_lock = threading.Lock()
+
+    teardown_holds_scope = threading.Event()
+    release_teardown = threading.Event()
 
     class Manager:
         async def snapshot_and_terminate(self, _session_id):
@@ -1097,17 +1197,19 @@ def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_
             with active_lock:
                 active += 1
                 maximum_active = max(maximum_active, active)
-            await asyncio.sleep(0.002)
+            if not teardown_holds_scope.is_set():
+                teardown_holds_scope.set()
+                await asyncio.to_thread(release_teardown.wait, 5)
             with active_lock:
                 active -= 1
 
-    attempted = threading.Barrier(2)
     proofs = []
+    capacity_results = []
+    authorization_results = []
 
     def teardown():
         with Session(postgres) as db, db.begin():
             db.execute(text(f"SET search_path TO {schema}"))
-            attempted.wait(timeout=5)
             proofs.append(
                 asyncio.run(
                     ChatDurableQualificationEvidenceService(
@@ -1120,10 +1222,63 @@ def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_
                 )
             )
 
+    settings = _settings().model_copy(
+        update={
+            "chat_external_pi_worker_endpoints": [
+                {
+                    "endpoint_id": "qualified",
+                    "worker_id": "worker-qualified",
+                    "base_url": "http://127.0.0.1:8780",
+                    "token": "q" * 32,
+                }
+            ],
+            "chat_external_pi_worker_contract_version": "external-pi-v1",
+        }
+    )
+
+    def resolve_capacity():
+        target = _latency(24)
+        with Session(postgres) as db, db.begin():
+            db.execute(text(f"SET search_path TO {schema}"))
+            capacity_results.append(
+                ChatDurableQualificationEvidenceService(
+                    db, now=lambda: END
+                ).executor_live_cap(
+                    turn_id=target.turn_id,
+                    chat_session_id=target.chat_session_id,
+                    settings=settings,
+                )
+            )
+
+    def reconstruct_authorization():
+        target = _latency(0)
+        with Session(postgres) as db, db.begin():
+            db.execute(text(f"SET search_path TO {schema}"))
+            authorization_results.append(
+                ChatDurableQualificationEvidenceService(
+                    db, now=lambda: END
+                ).external_pi_authorized(
+                    turn_id=target.turn_id,
+                    chat_session_id=target.chat_session_id,
+                    settings=settings,
+                )
+            )
+
     threads = [threading.Thread(target=teardown) for _ in range(2)]
     for thread in threads:
         thread.start()
-    for thread in threads:
+    assert teardown_holds_scope.wait(timeout=5)
+    racing = [
+        threading.Thread(target=resolve_capacity),
+        threading.Thread(target=reconstruct_authorization),
+    ]
+    for thread in racing:
+        thread.start()
+    for thread in racing:
+        thread.join(timeout=0.1)
+        assert thread.is_alive()
+    release_teardown.set()
+    for thread in threads + racing:
         thread.join(timeout=10)
         assert not thread.is_alive()
     with postgres.connect() as connection:
@@ -1142,3 +1297,5 @@ def test_postgresql_concurrent_teardown_serializes_scope_and_keeps_one_eviction_
     assert proofs[0] == proofs[1]
     assert maximum_active == 1
     assert count == 16
+    assert capacity_results == [None]
+    assert authorization_results == [False]

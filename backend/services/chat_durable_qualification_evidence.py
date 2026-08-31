@@ -226,6 +226,21 @@ class ChatDurableQualificationEvidenceService:
     def require_active_scope(
         self, scope_id: uuid.UUID, *, settings: Settings, lock: bool = False
     ) -> ChatQualificationScope:
+        return self._require_scope(
+            scope_id,
+            settings=settings,
+            lock=lock,
+            allow_ended=False,
+        )
+
+    def _require_scope(
+        self,
+        scope_id: uuid.UUID,
+        *,
+        settings: Settings,
+        lock: bool,
+        allow_ended: bool,
+    ) -> ChatQualificationScope:
         statement = select(ChatQualificationScope).where(
             ChatQualificationScope.id == scope_id
         )
@@ -238,7 +253,7 @@ class ChatDurableQualificationEvidenceService:
             or settings.environment != "staging"
             or scope.app_release_id != settings.release_id
             or scope.profile not in QUALIFICATION_PROFILES
-            or scope.window_ended_at is not None
+            or (scope.window_ended_at is not None and not allow_ended)
             or _as_utc(scope.expires_at) <= now
         ):
             raise QualificationEvidenceUnavailable("qualification scope is unavailable")
@@ -331,35 +346,43 @@ class ChatDurableQualificationEvidenceService:
     ) -> bool:
         if settings.environment != "staging":
             return False
-        filters = [
+        latency_filters = [
             ChatTurnLatency.turn_id == turn_id,
             ChatTurnLatency.chat_session_id == chat_session_id,
             ChatTurnLatency.qualification_profile == "32-functional-turns",
             ChatTurnLatency.qualification_workload.in_(workloads),
             ChatTurnLatency.qualification_scenario == "reliability",
             ChatTurnLatency.app_release_id == settings.release_id,
-            ChatQualificationScope.profile == "32-functional-turns",
-            ChatQualificationScope.app_release_id == settings.release_id,
-            ChatQualificationScope.window_ended_at.is_(None),
         ]
         if require_pi:
-            filters.extend(
+            latency_filters.extend(
                 (
                     ChatTurnLatency.agent_harness == "pi",
                     ChatTurnLatency.execution_backend == "modal_cli",
                 )
             )
-        row = self.db.execute(
-            select(ChatTurnLatency, ChatQualificationScope)
-            .join(
-                ChatQualificationScope,
-                ChatQualificationScope.id == ChatTurnLatency.qualification_scope_id,
-            )
-            .where(*filters)
-        ).one_or_none()
-        if row is None:
+        scope_id = self.db.scalar(
+            select(ChatTurnLatency.qualification_scope_id).where(*latency_filters)
+        )
+        if scope_id is None:
             return False
-        latency, scope = row
+        # Lock order is qualification scope first, then the caller's downstream
+        # reservation/capacity locks. The caller transaction retains this row lock
+        # through capability issuance or the sandbox-capacity decision.
+        try:
+            scope = self.require_active_scope(scope_id, settings=settings, lock=True)
+        except QualificationEvidenceUnavailable:
+            return False
+        if scope.profile != "32-functional-turns":
+            return False
+        latency = self.db.scalar(
+            select(ChatTurnLatency).where(
+                *latency_filters,
+                ChatTurnLatency.qualification_scope_id == scope.id,
+            )
+        )
+        if latency is None:
+            return False
         now = self.now()
         if (
             latency.qualification_run_id != scope.run_id
@@ -375,7 +398,7 @@ class ChatDurableQualificationEvidenceService:
         scope_id: uuid.UUID,
         settings: Settings,
     ) -> DurableQualificationEvidence:
-        scope = self.require_active_scope(scope_id, settings=settings)
+        scope = self.require_active_scope(scope_id, settings=settings, lock=True)
         ended = self.now()
         scope.window_ended_at = ended
         self.db.flush()
@@ -540,7 +563,15 @@ class ChatDurableQualificationEvidenceService:
         settings: Settings,
         sandbox_manager,
     ) -> QualificationTeardownProof:
-        scope = self.require_active_scope(scope_id, settings=settings, lock=True)
+        scope = self._require_scope(
+            scope_id,
+            settings=settings,
+            lock=True,
+            allow_ended=True,
+        )
+        if scope.window_ended_at is None:
+            scope.window_ended_at = self.now()
+            self.db.flush()
         rows = self.db.execute(
             select(
                 ChatTurnLatency.turn_id,
