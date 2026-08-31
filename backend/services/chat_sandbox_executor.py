@@ -481,6 +481,7 @@ class SandboxExecutorClient:
             write = process.stdin.write
             payload_delivery_attempted = True
             write(payload)
+            process.stdin.write_eof()
             await process.stdin.drain.aio()
 
             async def receive() -> None:

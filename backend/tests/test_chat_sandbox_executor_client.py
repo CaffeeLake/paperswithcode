@@ -57,6 +57,7 @@ class _Input:
     ):
         self.writes: list[bytes] = []
         self.write_attempts = 0
+        self.eof_writes = 0
         self.write_error = write_error
         self.drain_error = drain_error
         self.partial_write_bytes = partial_write_bytes
@@ -69,6 +70,9 @@ class _Input:
                 self.writes.append(value[: self.partial_write_bytes])
             raise self.write_error
         self.writes.append(value)
+
+    def write_eof(self) -> None:
+        self.eof_writes += 1
 
     async def _drain(self) -> None:
         if self.drain_error is not None:
@@ -193,6 +197,8 @@ class _SocketInput:
     def write(self, value: bytes) -> None:
         self.writes.append(value)
         self.connection.sendall(value)
+
+    def write_eof(self) -> None:
         self.connection.shutdown(socket.SHUT_WR)
 
     async def _drain(self) -> None:
@@ -350,6 +356,7 @@ def test_exec_sends_fenced_bootstrap_and_returns_validated_output():
         "command": "pwc paper list",
         "timeout_ms": 9000,
     }
+    assert process.stdin.eof_writes == 1
     assert provider.calls == [(context.sandbox, 14)]
 
 
