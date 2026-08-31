@@ -387,8 +387,10 @@ def test_production_provider_limits_never_query_staging_qualification_tables():
 class _ConcurrencyDB:
     def __init__(self, values):
         self.values = iter(values)
+        self.queries = []
 
-    def scalar(self, _query):
+    def scalar(self, query):
+        self.queries.append(query)
         return next(self.values)
 
 
@@ -418,3 +420,42 @@ def test_ordinary_openai_global_concurrency_remains_configured_four():
     )
     with pytest.raises(OpenAILimitExceeded, match="global_concurrency"):
         blocked._enforce_concurrency("owner", uuid.uuid4(), None, now)
+
+
+def test_qualification_openai_rate_allows_exact_fixed_workload_per_scope():
+    scope_id = uuid.uuid4()
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    database = _ConcurrencyDB((47, 47))
+
+    ChatOpenAIBudgetService(database, _settings())._enforce_rate_limits(
+        "owner", scope_id, now
+    )
+
+    assert all(
+        scope_id in query.compile().params.values() for query in database.queries
+    )
+    with pytest.raises(OpenAILimitExceeded, match="user_rate"):
+        ChatOpenAIBudgetService(
+            _ConcurrencyDB((48, 0)), _settings()
+        )._enforce_rate_limits("owner", scope_id, now)
+    with pytest.raises(OpenAILimitExceeded, match="global_rate"):
+        ChatOpenAIBudgetService(
+            _ConcurrencyDB((47, 48)), _settings()
+        )._enforce_rate_limits("owner", scope_id, now)
+
+
+def test_ordinary_openai_rate_limits_remain_configured():
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    settings = _settings(
+        chat_openai_user_rate_limit_calls=30,
+        chat_openai_global_rate_limit_calls=80,
+    )
+
+    with pytest.raises(OpenAILimitExceeded, match="user_rate"):
+        ChatOpenAIBudgetService(_ConcurrencyDB((30, 0)), settings)._enforce_rate_limits(
+            "owner", None, now
+        )
+    with pytest.raises(OpenAILimitExceeded, match="global_rate"):
+        ChatOpenAIBudgetService(
+            _ConcurrencyDB((29, 80)), settings
+        )._enforce_rate_limits("owner", None, now)

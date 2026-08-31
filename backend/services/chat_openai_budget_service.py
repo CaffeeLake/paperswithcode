@@ -20,6 +20,7 @@ from backend.models.database import (
 )
 from backend.services.durable_external_qualification_contract import (
     DURABLE_QUALIFICATION_OPENAI_GLOBAL_CONCURRENCY,
+    DURABLE_QUALIFICATION_OPENAI_REQUEST_LIMIT,
 )
 from backend.services.chat_openai_usage_extractor import ExtractedOpenAIUsage
 from backend.services.openrouter_user_budget_service import usd_to_microusd, utc_month
@@ -235,6 +236,58 @@ class ChatOpenAIBudgetService:
         if global_active >= limit:
             raise OpenAILimitExceeded("global_concurrency")
 
+    def _enforce_rate_limits(
+        self,
+        owner_id: str,
+        qualification_scope_id: uuid.UUID | None,
+        now: datetime,
+    ) -> None:
+        cutoff = now - timedelta(
+            seconds=self.settings.chat_openai_rate_limit_window_seconds
+        )
+        retry_at = now + timedelta(
+            seconds=self.settings.chat_openai_rate_limit_window_seconds
+        )
+        if qualification_scope_id is not None:
+            rate_query = (
+                select(func.count())
+                .select_from(ChatOpenAIProviderCall)
+                .join(
+                    ChatTurnLatency,
+                    ChatTurnLatency.turn_id == ChatOpenAIProviderCall.turn_id,
+                )
+                .where(
+                    ChatOpenAIProviderCall.environment == self.settings.environment,
+                    ChatOpenAIProviderCall.reserved_at >= cutoff,
+                    ChatOpenAIProviderCall.state != "released",
+                    ChatTurnLatency.qualification_scope_id == qualification_scope_id,
+                )
+            )
+            user_limit = global_limit = DURABLE_QUALIFICATION_OPENAI_REQUEST_LIMIT
+        else:
+            rate_query = (
+                select(func.count())
+                .select_from(ChatOpenAIProviderCall)
+                .where(
+                    ChatOpenAIProviderCall.environment == self.settings.environment,
+                    ChatOpenAIProviderCall.reserved_at >= cutoff,
+                    ChatOpenAIProviderCall.state != "released",
+                )
+            )
+            user_limit = self.settings.chat_openai_user_rate_limit_calls
+            global_limit = self.settings.chat_openai_global_rate_limit_calls
+        user_rate = int(
+            self.db.scalar(
+                rate_query.where(ChatOpenAIProviderCall.owner_id == owner_id)
+            )
+            or 0
+        )
+        global_rate = int(self.db.scalar(rate_query) or 0)
+        if user_rate >= user_limit:
+            raise OpenAILimitExceeded("user_rate", retry_at)
+        if global_rate >= global_limit:
+            raise OpenAILimitExceeded("global_rate", retry_at)
+
     def _enforce_limits(
         self,
         owner_id: str,
@@ -255,40 +308,7 @@ class ChatOpenAIBudgetService:
             )
         )
         self._enforce_concurrency(owner_id, turn_id, qualification_scope_id, now)
-        cutoff = now - timedelta(
-            seconds=self.settings.chat_openai_rate_limit_window_seconds
-        )
-        retry_at = now + timedelta(
-            seconds=self.settings.chat_openai_rate_limit_window_seconds
-        )
-        user_rate = int(
-            self.db.scalar(
-                select(func.count())
-                .select_from(ChatOpenAIProviderCall)
-                .where(
-                    ChatOpenAIProviderCall.owner_id == owner_id,
-                    ChatOpenAIProviderCall.reserved_at >= cutoff,
-                    ChatOpenAIProviderCall.state != "released",
-                )
-            )
-            or 0
-        )
-        global_rate = int(
-            self.db.scalar(
-                select(func.count())
-                .select_from(ChatOpenAIProviderCall)
-                .where(
-                    ChatOpenAIProviderCall.environment == self.settings.environment,
-                    ChatOpenAIProviderCall.reserved_at >= cutoff,
-                    ChatOpenAIProviderCall.state != "released",
-                )
-            )
-            or 0
-        )
-        if user_rate >= self.settings.chat_openai_user_rate_limit_calls:
-            raise OpenAILimitExceeded("user_rate", retry_at)
-        if global_rate >= self.settings.chat_openai_global_rate_limit_calls:
-            raise OpenAILimitExceeded("global_rate", retry_at)
+        self._enforce_rate_limits(owner_id, qualification_scope_id, now)
         guarded = case(
             (
                 ChatOpenAIProviderCall.state.in_(
