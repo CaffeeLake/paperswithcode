@@ -26,6 +26,12 @@ from backend.services.chat_session_service import (
     TurnAdmission,
 )
 from backend.services.chat_stream_service import ChatStreamOrchestrator
+from backend.services.chat_turn_event_service import (
+    CompletionEvent,
+    ResearchFinishedEvent,
+    TerminalOutcome,
+    TurnTerminalState,
+)
 from backend.services.chat_turn_job_repository import TurnLeaseClaim
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
@@ -191,6 +197,75 @@ def test_durable_done_waits_for_detached_terminal_callback(monkeypatch):
 
     assert terminal.event == "done"
     assert persisted == [{"followups": [], "finish_reason": "success", "citations": []}]
+    assert orchestrator.lifecycle.terminal is TurnTerminalState.COMPLETED
+    assert isinstance(orchestrator.terminal_persistence.completion, CompletionEvent)
+
+
+def test_durable_consumer_accepts_typed_events_without_changing_stream_contract(
+    monkeypatch,
+):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+    persisted = []
+    monkeypatch.setattr(
+        orchestrator, "_complete_turn", lambda event: persisted.append(dict(event))
+    )
+
+    async def exercise():
+        queue = asyncio.Queue()
+        await queue.put(
+            CompletionEvent(
+                TerminalOutcome.SUCCESS,
+                followups=[],
+            )
+        )
+        await queue.put(ResearchFinishedEvent())
+        frames = [frame async for frame in orchestrator._consume(queue)]
+        await orchestrator.persist_detached_terminal(claim, "completed", None)
+        return frames
+
+    frames = asyncio.run(exercise())
+
+    assert [(frame.event, frame.payload) for frame in frames] == [
+        (
+            "done",
+            {"followups": [], "finish_reason": "success", "citations": []},
+        )
+    ]
+    assert persisted == [{"followups": [], "finish_reason": "success", "citations": []}]
+    assert orchestrator.lifecycle.terminal is TurnTerminalState.COMPLETED
+    assert isinstance(orchestrator.terminal_persistence.completion, CompletionEvent)
+
+
+def test_detached_terminal_callback_transitions_lifecycle_without_source_terminal(
+    monkeypatch,
+):
+    claim = TurnLeaseClaim(uuid.uuid4(), "local-runner:abc", 7, 1)
+    settings = get_settings().model_copy(
+        update={"chat_durable_turn_dispatch_enabled": True}
+    )
+    orchestrator = _orchestrator(settings, _admission(claim=claim))
+    persisted = []
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_persist_failure",
+        lambda _owner, _settings, _admission, code, *_args: persisted.append(code),
+    )
+
+    asyncio.run(
+        orchestrator.persist_detached_terminal(
+            claim,
+            "failed",
+            "event_journal_exhausted",
+        )
+    )
+
+    assert persisted == ["event_journal_exhausted"]
+    assert orchestrator.lifecycle.terminal is TurnTerminalState.FAILED
+    assert orchestrator.terminal_label == "error"
 
 
 def test_execution_lost_event_persists_canonical_terminal_code(monkeypatch):
@@ -240,7 +315,8 @@ def test_durable_stream_start_payload_is_journal_serializable():
     async def exercise():
         stream = orchestrator._events()
         frame = await anext(stream)
-        orchestrator.terminal_cleanup_completed = True
+        assert orchestrator.terminal_persistence.begin()
+        orchestrator.terminal_persistence.finish()
         await stream.aclose()
         return frame
 
@@ -584,7 +660,11 @@ def test_orchestrator_cancellation_during_terminal_cleanup_is_exactly_once(
 
     assert terminal_calls == [terminal_path]
     assert orchestrator.lease_heartbeat_task is None
-    assert orchestrator.terminal_cleanup_completed is True
+    assert orchestrator.terminal_persistence.completed is True
+    assert orchestrator.lifecycle.terminal is not TurnTerminalState.ACTIVE
+    assert orchestrator.terminal_label == (
+        "interrupted" if terminal_path == "outer" else "error"
+    )
 
 
 async def _collect_stream_events(orchestrator):
@@ -763,7 +843,7 @@ def test_legacy_stream_observes_cross_process_cancel_fence(monkeypatch):
     assert [frame.event for frame in frames] == ["done"]
     assert frames[0].payload["finish_reason"] == "stopped"
     assert cancel_calls == ["cancel"]
-    assert orchestrator.terminal == "stopped"
+    assert orchestrator.terminal_label == "stopped"
 
 
 def test_legacy_cancel_poll_outage_does_not_fail_an_active_turn(monkeypatch):

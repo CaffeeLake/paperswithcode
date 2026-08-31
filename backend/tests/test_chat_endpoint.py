@@ -3288,7 +3288,7 @@ def test_closing_stream_persists_interrupted_turn(monkeypatch):
     assert first.event == "stream_start"
     assert persisted[0][2] == admission
     assert persisted[0][3:] == ("interrupted", True, [])
-    assert orchestrator.terminal == "interrupted"
+    assert orchestrator.terminal_label == "interrupted"
     assert trace.finishes[-1] == (
         "",
         "interrupted",
