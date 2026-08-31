@@ -120,6 +120,12 @@ def _scheduler_finding_state(
     boundary = _schedule_boundary(definition, now)
     if definition.scheduler == "manual":
         return FindingState.HEALTHY, "manual job has no scheduler contract", {}
+    if execution.get("applicable") is False and execution.get("status") == "healthy":
+        return (
+            FindingState.HEALTHY,
+            "scheduler is intentionally disabled by configuration",
+            {"scheduler": definition.scheduler},
+        )
     if systemd.get("available") and (
         systemd.get("enabled") is False or systemd.get("timer_active") is False
     ):

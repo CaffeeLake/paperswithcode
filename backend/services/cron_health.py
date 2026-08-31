@@ -28,6 +28,8 @@ SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
 GITHUB_REPOSITORY = "huggingface/paperswithcode"
 WORKFLOW_STATUS_CACHE_SECONDS = 60
 WORKFLOW_RUN_BATCH_PAGES = 3
+MAX_LAUNCHER_EVIDENCE_BYTES = 1024 * 1024
+MAX_SCHEDULE_STATE_BYTES = 4096
 _WORKFLOW_STATUS_CACHE: Dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
 logger = logging.getLogger(__name__)
 
@@ -359,6 +361,91 @@ def fetch_submission_review_output() -> Dict[str, Any]:
     }
 
 
+def _persistent_execution_paths(settings: Any) -> tuple[Path, Path] | None:
+    if settings.environment not in {"production", "staging"}:
+        return None
+    return (
+        Path(settings.cron_log_dir) / "launcher.jsonl",
+        Path("/srv/paperswithcode/environments")
+        / settings.environment
+        / "current/release.json",
+    )
+
+
+def fetch_persistent_execution(
+    job: CronJobDefinition,
+    log_status: Dict[str, Any],
+    *,
+    launcher_path: Path | None = None,
+    manifest_path: Path | None = None,
+) -> Dict[str, Any] | None:
+    """Pair an exact-release launcher start with a terminal file-log result."""
+
+    if launcher_path is None or manifest_path is None:
+        paths = _persistent_execution_paths(get_settings())
+        if paths is None:
+            return None
+        launcher_path, manifest_path = paths
+
+    try:
+        manifest_raw = manifest_path.read_bytes()
+    except OSError:
+        return None
+    if len(manifest_raw) > 64 * 1024:
+        return None
+    try:
+        manifest = json.loads(manifest_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    release_sha = manifest.get("git_sha") if isinstance(manifest, dict) else None
+    if not isinstance(release_sha, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", release_sha
+    ):
+        return None
+
+    try:
+        with launcher_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            offset = max(0, size - MAX_LAUNCHER_EVIDENCE_BYTES)
+            handle.seek(offset)
+            raw = handle.read(MAX_LAUNCHER_EVIDENCE_BYTES)
+    except OSError:
+        return None
+    if offset:
+        raw = raw.partition(b"\n")[2]
+
+    terminal_status = str(log_status.get("status") or "unknown")
+    if terminal_status not in {"success", "success_no_work", "failed"}:
+        return None
+    completed = _parse_log_timestamp(log_status.get("last_run"))
+    if completed is None:
+        return None
+
+    for raw_line in reversed(raw.splitlines()):
+        try:
+            record = json.loads(raw_line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("job") != job.id and record.get("health_job") != job.id:
+            continue
+        if record.get("git_sha") != release_sha:
+            continue
+        started = _parse_log_timestamp(record.get("at"))
+        if started is None or completed < started:
+            return None
+        return {
+            "status": "failed" if terminal_status == "failed" else "success",
+            "started_at": to_iso8601(started),
+            "completed_at": to_iso8601(completed),
+            "release_sha": release_sha,
+            "source": "launcher_and_file_log",
+        }
+    return None
+
+
 def _gh_json(args: list[str], timeout: int = 10) -> tuple[Any, Optional[str]]:
     env = os.environ.copy()
     github_token = get_settings().github_token
@@ -571,6 +658,18 @@ def _systemd_show(unit: str, requested: str) -> Optional[Dict[str, str]]:
     )
 
 
+def _system_boot_started_at() -> str | None:
+    try:
+        proc_stat = Path("/proc/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^btime\s+(\d+)$", proc_stat, re.MULTILINE)
+    if match is None:
+        return None
+    started = datetime.fromtimestamp(int(match.group(1)), tz=timezone.utc)
+    return to_iso8601(started)
+
+
 def _read_systemd_pair(timer_unit: str, service_unit: str) -> Optional[Dict[str, Any]]:
     timer = _systemd_show(
         timer_unit,
@@ -599,10 +698,14 @@ def _read_systemd_pair(timer_unit: str, service_unit: str) -> Optional[Dict[str,
         "last_started_at": service.get("ExecMainStartTimestamp") or None,
         "last_completed_at": service.get("ExecMainExitTimestamp") or None,
         "service_active": service.get("ActiveState") == "active",
+        "boot_started_at": _system_boot_started_at(),
     }
 
 
-def fetch_systemd_status(job: CronJobDefinition) -> Dict[str, Any]:
+def fetch_systemd_status(
+    job: CronJobDefinition,
+    log_status: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     """Read bounded timer/service properties for the registry-owned units.
 
     Duties driven by several timer/service pairs (for example the five
@@ -653,6 +756,10 @@ def fetch_systemd_status(job: CronJobDefinition) -> Dict[str, Any]:
         ),
         units=[status["service"] for status in statuses],
     )
+    if not merged.get("last_completed_at") and log_status is not None:
+        persistent = fetch_persistent_execution(job, log_status)
+        if persistent is not None:
+            merged["persistent_execution"] = persistent
     return merged
 
 
@@ -695,6 +802,40 @@ def _schedule_slots(
     return max(pair[0] for pair in pairs), min(pair[1] for pair in pairs)
 
 
+def schedule_enabled(
+    job: CronJobDefinition, settings: Any | None = None
+) -> bool | None:
+    """Return the configured scheduler state for conditionally enabled duties."""
+
+    if not job.enablement_settings:
+        return None
+    active_settings = settings or get_settings()
+    cron_log_dir = getattr(active_settings, "cron_log_dir", None)
+    if cron_log_dir:
+        state_path = Path(cron_log_dir) / "submission-review-schedule.json"
+        try:
+            state_raw = state_path.read_bytes()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None
+        else:
+            if len(state_raw) > MAX_SCHEDULE_STATE_BYTES:
+                return None
+            try:
+                state = json.loads(state_raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            if not isinstance(state, dict) or not isinstance(
+                state.get("enabled"), bool
+            ):
+                return None
+            return state["enabled"]
+    return all(
+        bool(getattr(active_settings, setting)) for setting in job.enablement_settings
+    )
+
+
 def _execution_health(
     job: CronJobDefinition,
     *,
@@ -702,6 +843,7 @@ def _execution_health(
     log_status: Dict[str, Any],
     workflow_status: Dict[str, Any],
     systemd_status: Optional[Dict[str, Any]],
+    schedule_enabled: bool | None,
     now: datetime,
 ) -> ExecutionHealthResult:
     previous_expected, next_expected = _schedule_slots(job, now)
@@ -739,6 +881,33 @@ def _execution_health(
     grace = timedelta(minutes=job.schedule_grace_minutes)
     if job.scheduler == "systemd":
         evidence = systemd_status or {}
+        if schedule_enabled is False:
+            if not evidence.get("available"):
+                return {
+                    **base,
+                    "status": "unknown",
+                    "applicable": False,
+                    "reason": (
+                        "cannot verify disabled scheduler state because systemd "
+                        "evidence is unavailable"
+                    ),
+                }
+            if evidence.get("enabled") or evidence.get("timer_active"):
+                return {
+                    **base,
+                    "status": "broken",
+                    "applicable": False,
+                    "reason": (
+                        "autonomous submission review timer is active while "
+                        "disabled by configuration"
+                    ),
+                }
+            return {
+                **base,
+                "status": "healthy",
+                "applicable": False,
+                "reason": "autonomous submission review is disabled by configuration",
+            }
         if not evidence.get("available"):
             return {
                 **base,
@@ -775,6 +944,35 @@ def _execution_health(
                 "reason": "latest systemd service invocation failed",
             }
         completed = _parse_log_timestamp(evidence.get("last_completed_at"))
+        if completed is None and (persistent := evidence.get("persistent_execution")):
+            base.update(
+                last_started_at=to_iso8601(persistent.get("started_at")),
+                last_completed_at=to_iso8601(persistent.get("completed_at")),
+                evidence_source=persistent.get("source"),
+            )
+            if persistent.get("status") == "failed":
+                return {
+                    **base,
+                    "status": "broken",
+                    "reason": "persistent execution evidence reports failure",
+                }
+            completed = _parse_log_timestamp(persistent.get("completed_at"))
+        if completed is None and previous_expected:
+            boot_started = _parse_log_timestamp(evidence.get("boot_started_at"))
+            last_trigger = _parse_log_timestamp(evidence.get("last_trigger_at"))
+            if (
+                boot_started is not None
+                and previous_expected < boot_started
+                and last_trigger is not None
+                and last_trigger < boot_started
+            ):
+                return {
+                    **base,
+                    "status": "unknown",
+                    "reason": (
+                        "pre-reboot systemd slot lacks persistent terminal evidence"
+                    ),
+                }
         if previous_expected and (
             completed is None or completed < previous_expected - grace
         ):
@@ -1852,6 +2050,7 @@ def evaluate_job_health(
     systemd_status: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
     process_running: bool | None = None,
+    schedule_enabled: bool | None = None,
 ) -> Dict[str, Any]:
     """Combine log, process, lock, and DB signals into a dashboard status."""
 
@@ -2016,8 +2215,18 @@ def evaluate_job_health(
         log_status=log_status,
         workflow_status=workflow_status,
         systemd_status=systemd_status,
+        schedule_enabled=schedule_enabled,
         now=now,
     )
+    if (
+        execution_health.get("applicable") is False
+        and execution_health["status"] == "healthy"
+    ):
+        output_status = "healthy"
+        output_reason = "output is not applicable while the schedule is disabled"
+        semantic_status = "healthy"
+        semantic_reasons = [output_reason]
+        reasons = [output_reason]
     output_health: OutputHealthResult = {
         "status": output_status,
         "reason": output_reason,
@@ -2221,7 +2430,9 @@ def build_cron_dashboard(
         )
         workflow_status = workflow_by_id.get(job.id)
         systemd_status = (
-            fetch_systemd_status(job) if job.scheduler == "systemd" else None
+            fetch_systemd_status(job, log_status)
+            if job.scheduler == "systemd"
+            else None
         )
 
         evaluated = evaluate_job_health(
@@ -2232,6 +2443,7 @@ def build_cron_dashboard(
             dependency_status=dependency_status,
             workflow_status=workflow_status,
             systemd_status=systemd_status,
+            schedule_enabled=schedule_enabled(job),
             now=collection_now,
             process_running=running_by_id[job.id],
         )

@@ -16,6 +16,11 @@ INSTALL_ROOT = Path("/usr/local/lib/paperswithcode-deploy")
 BIN_ROOT = Path("/usr/local/sbin")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
 SUDOERS_PATH = Path("/etc/sudoers.d/paperswithcode-autonomous-operations")
+PRODUCTION_ENV_PATH = Path("/etc/paperswithcode/production.env")
+PRODUCTION_CRON_ENV_PATH = Path("/etc/paperswithcode/production-cron.env")
+SUBMISSION_REVIEW_SCHEDULE_STATE_PATH = Path(
+    "/var/lib/paperswithcode/production/cron-logs/submission-review-schedule.json"
+)
 COMMANDS = (
     "pwc-deploy",
     "pwc-rollback",
@@ -80,6 +85,79 @@ def cron_wrapper() -> str:
         "fi\n"
         f"exec {common}{launcher}"
     )
+
+
+def submission_review_timer_action(
+    *,
+    review_enabled: bool,
+    jobs_enabled: bool,
+    primary_alert_url: str,
+    fallback_alert_url: str,
+) -> list[str]:
+    alert_configured = bool(
+        primary_alert_url
+        and fallback_alert_url
+        and primary_alert_url != fallback_alert_url
+    )
+    action = (
+        "enable" if review_enabled and jobs_enabled and alert_configured else "disable"
+    )
+    return ["systemctl", action, "--now", "submission-review.timer"]
+
+
+def _environment_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return values
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def reconcile_submission_review_timer(
+    environment_path: Path = PRODUCTION_ENV_PATH,
+    cron_environment_path: Path = PRODUCTION_CRON_ENV_PATH,
+    state_path: Path = SUBMISSION_REVIEW_SCHEDULE_STATE_PATH,
+) -> None:
+    values = _environment_values(environment_path)
+    values.update(_environment_values(cron_environment_path))
+
+    def enabled(name: str) -> bool:
+        return values.get(name, "").casefold() in {"1", "true", "yes", "on"}
+
+    action = submission_review_timer_action(
+        review_enabled=enabled("PWC_AUTONOMOUS_SUBMISSION_ENABLED"),
+        jobs_enabled=enabled("PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED"),
+        primary_alert_url=values.get("PWC_AUTONOMOUS_ALERT_SLACK_WEBHOOK_URL", ""),
+        fallback_alert_url=values.get("PWC_AUTONOMOUS_ALERT_FALLBACK_WEBHOOK_URL", ""),
+    )
+    subprocess.run(action, check=True)
+    schedule_enabled = action[1] == "enable"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f".{state_path.name}.new-{os.getpid()}")
+    temporary.write_text(
+        json.dumps(
+            {
+                "enabled": schedule_enabled,
+                "reason": (
+                    "complete configuration"
+                    if schedule_enabled
+                    else "incomplete or unsafe configuration"
+                ),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.chmod(0o644)
+    os.replace(temporary, state_path)
 
 
 def autonomous_check_wrapper() -> str:
@@ -283,6 +361,7 @@ def main() -> int:
             check=True,
         )
         subprocess.run(["systemctl", "daemon-reload"], check=True)
+        reconcile_submission_review_timer()
         if backup.exists():
             shutil.rmtree(backup)
     finally:

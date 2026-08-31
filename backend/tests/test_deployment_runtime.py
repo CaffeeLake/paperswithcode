@@ -48,6 +48,8 @@ from deploy.install_deploy_tools import (
     bundle_runtime_contract,
     cron_wrapper,
     deployment_wrapper,
+    reconcile_submission_review_timer,
+    submission_review_timer_action,
 )
 from deploy.nginx_validate import (
     CURATION_CALLBACK_LOCATION,
@@ -156,6 +158,66 @@ def test_cron_wrapper_grants_journal_access_only_to_chat_monitor():
     assert 'if [ "$1" = "monitor_chat_operational_alerts" ]' in wrapper
     assert wrapper.count("SupplementaryGroups=systemd-journal") == 1
     assert wrapper.count("cron_launcher.py") == 2
+
+
+@pytest.mark.parametrize(
+    ("review_enabled", "jobs_enabled", "primary_alert_url", "fallback_alert_url"),
+    [
+        (False, False, "https://primary", "https://fallback"),
+        (True, False, "https://primary", "https://fallback"),
+        (False, True, "https://primary", "https://fallback"),
+        (True, True, "", "https://fallback"),
+        (True, True, "https://primary", ""),
+        (True, True, "https://same", "https://same"),
+    ],
+)
+def test_submission_review_timer_stays_disabled_without_complete_configuration(
+    review_enabled: bool,
+    jobs_enabled: bool,
+    primary_alert_url: str,
+    fallback_alert_url: str,
+):
+    assert submission_review_timer_action(
+        review_enabled=review_enabled,
+        jobs_enabled=jobs_enabled,
+        primary_alert_url=primary_alert_url,
+        fallback_alert_url=fallback_alert_url,
+    ) == ["systemctl", "disable", "--now", "submission-review.timer"]
+
+
+def test_submission_review_timer_can_run_only_with_alert_delivery():
+    assert submission_review_timer_action(
+        review_enabled=True,
+        jobs_enabled=True,
+        primary_alert_url="https://primary",
+        fallback_alert_url="https://fallback",
+    ) == ["systemctl", "enable", "--now", "submission-review.timer"]
+
+
+def test_submission_timer_reconciliation_merges_cron_env_and_writes_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    environment = tmp_path / "production.env"
+    cron_environment = tmp_path / "production-cron.env"
+    state = tmp_path / "submission-review-schedule.json"
+    environment.write_text(
+        "PWC_AUTONOMOUS_SUBMISSION_ENABLED=true\n"
+        "PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED=false\n"
+        "PWC_AUTONOMOUS_ALERT_SLACK_WEBHOOK_URL=https://primary\n"
+    )
+    cron_environment.write_text(
+        "PWC_AUTONOMOUS_SUBMISSION_JOBS_ENABLED=true\n"
+        "PWC_AUTONOMOUS_ALERT_FALLBACK_WEBHOOK_URL=https://fallback\n"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
+
+    reconcile_submission_review_timer(environment, cron_environment, state)
+
+    assert json.loads(state.read_text()) == {
+        "enabled": True,
+        "reason": "complete configuration",
+    }
+    assert state.stat().st_mode & 0o777 == 0o644
 
 
 def test_chat_alert_timer_uses_only_the_allowlisted_cron_interface():

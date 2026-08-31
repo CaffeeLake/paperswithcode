@@ -411,6 +411,7 @@ def test_failed_scheduled_run_wins_over_fresh_manual_recovery_output():
                 "stale_paper_scores": 0,
                 "one_snapshot_over_30m": 0,
             },
+            lock_state={"exists": False, "held": False, "stale": False},
             systemd_status=failed_systemd,
             now=now,
         )
@@ -512,17 +513,57 @@ def test_systemd_adapter_reads_only_registry_units():
         )(),
     ]
     job = _job("monitor_chat_operational_alerts")
-    with patch(
-        "backend.services.cron_health.subprocess.run", side_effect=responses
-    ) as run:
+    with (
+        patch(
+            "backend.services.cron_health.subprocess.run", side_effect=responses
+        ) as run,
+        patch(
+            "backend.services.cron_health._system_boot_started_at",
+            return_value="2026-08-14T08:00:00Z",
+        ),
+    ):
         status = fetch_systemd_status(job)
     assert status["available"] is True
     assert status["enabled"] is True
     assert status["service_result"] == "success"
+    assert status["boot_started_at"] == "2026-08-14T08:00:00Z"
     assert [call.args[0][2] for call in run.call_args_list] == [
         job.systemd_timer,
         job.systemd_service,
     ]
+
+
+def test_systemd_adapter_attaches_persistent_execution_when_boot_lost_timestamps():
+    job = _job("mirror_thumbnails_to_disk")
+    pair = {
+        "available": True,
+        "timer": job.systemd_timer,
+        "service": job.systemd_service,
+        "enabled": True,
+        "timer_active": True,
+        "service_active": False,
+        "last_started_at": None,
+        "last_completed_at": None,
+        "next_trigger_at": None,
+    }
+    persistent = {
+        "status": "success",
+        "started_at": "2026-08-14T05:00:00Z",
+        "completed_at": "2026-08-14T05:04:00Z",
+        "release_sha": "a" * 40,
+        "source": "launcher_and_file_log",
+    }
+    with (
+        patch("backend.services.cron_health._read_systemd_pair", return_value=pair),
+        patch(
+            "backend.services.cron_health.fetch_persistent_execution",
+            return_value=persistent,
+        ) as fetch_persistent,
+    ):
+        status = fetch_systemd_status(job, {"status": "success"})
+
+    assert status["persistent_execution"] == persistent
+    fetch_persistent.assert_called_once_with(job, {"status": "success"})
 
 
 def test_chat_monitor_surfaces_dormant_and_undelivered_states():

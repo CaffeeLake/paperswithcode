@@ -386,6 +386,10 @@ def test_hourly_persistent_unit_is_allowlisted_and_installed():
     assert registry_job.scheduler == "systemd"
     assert registry_job.systemd_timer == "submission-review.timer"
     assert registry_job.critical is True
+    assert registry_job.enablement_settings == (
+        "autonomous_submission_enabled",
+        "autonomous_submission_jobs_enabled",
+    )
     assert "--uid=pwc-cron" in (ROOT / "deploy/install_deploy_tools.py").read_text()
     assert "OnCalendar=hourly" in timer
     assert "RandomizedDelaySec=" in timer

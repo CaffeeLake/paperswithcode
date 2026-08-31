@@ -22,6 +22,20 @@ import os
 
 from backend.config import get_settings
 
+MAX_CRON_LOG_READ_BYTES = 2 * 1024 * 1024
+
+
+def _read_log_tail(path: Path) -> list[str]:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        offset = max(0, size - MAX_CRON_LOG_READ_BYTES)
+        handle.seek(offset)
+        raw = handle.read(MAX_CRON_LOG_READ_BYTES)
+    if offset:
+        raw = raw.partition(b"\n")[2]
+    return raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+
 
 class CronJobBase(ABC):
     """
@@ -316,8 +330,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         pass  # If ps command fails, continue with log analysis
 
     try:
-        with open(log_file, "r") as f:
-            lines = f.readlines()
+        lines = _read_log_tail(log_file)
 
         # Parse log file for status information
         found_completion = False

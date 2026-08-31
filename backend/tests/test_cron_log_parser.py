@@ -99,6 +99,30 @@ def test_get_cron_job_status_ignores_untimestamped_failure_before_current_run():
     assert status["last_run"] == afternoon
 
 
+def test_get_cron_job_status_reads_only_a_bounded_log_tail(monkeypatch, tmp_path):
+    cron_helpers = _load_cron_helpers()
+    monkeypatch.setenv("PWC_CRON_LOG_DIR", str(tmp_path))
+    test_date = "20990103"
+    log_file = tmp_path / f"bounded_{test_date}.log"
+    log_file.write_bytes(
+        b"x" * (cron_helpers.MAX_CRON_LOG_READ_BYTES + 128)
+        + b"\n2099-01-03 17:00:00 - Starting cron job: bounded\n"
+        + b"2099-01-03 17:00:01 - Cron job completed successfully: bounded\n"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        ),
+    )
+
+    status = cron_helpers.get_cron_job_status("bounded", test_date)
+
+    assert status["status"] == "success_no_work"
+    assert status["last_run"] == "2099-01-03 17:00:01"
+
+
 def test_evaluate_job_health_does_not_mark_recent_run_as_stuck():
     job = get_cron_job("extract_urls")
     assert job is not None

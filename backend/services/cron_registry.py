@@ -110,6 +110,7 @@ class CronJobDefinition:
     ] = None
     db_metrics_provider: Optional[Literal["thumbnail_cache"]] = None
     dependency_job_id: Optional[str] = None
+    enablement_settings: Tuple[str, ...] = ()
 
     @property
     def systemd_unit_pairs(self) -> Tuple[Tuple[str, str], ...]:
@@ -1370,6 +1371,10 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         systemd_service="submission-review.service",
         output_evaluator="submission_review",
         work_metrics_provider="submission_review",
+        enablement_settings=(
+            "autonomous_submission_enabled",
+            "autonomous_submission_jobs_enabled",
+        ),
     ),
     CronJobDefinition(
         id="monitor_chat_operational_alerts",
