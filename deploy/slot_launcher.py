@@ -133,7 +133,7 @@ def configure_external_pi_slot(environment: str, slot: str) -> None:
             "PWC_CHAT_EXTERNAL_PI_WORKER_ID": f"staging-{slot}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_URL": f"http://127.0.0.1:{port}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": "external-pi-v1",
-            "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "8",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "32",
         }
     )
 

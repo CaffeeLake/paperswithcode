@@ -727,7 +727,7 @@ def test_staging_slot_launcher_binds_external_pi_loopback_identity(
     assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION"] == (
         "external-pi-v1"
     )
-    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
 
 
 def test_production_slot_launcher_does_not_bind_external_pi_worker(
@@ -3877,11 +3877,11 @@ def test_qualified_staging_capacity_keeps_one_warm_sandbox():
 
 
 @pytest.mark.parametrize(
-    ("environment", "active_turn_limit"),
-    [("staging", "2"), ("production", "1")],
+    ("environment", "active_turn_limit", "external_worker_limit"),
+    [("staging", "2", "32"), ("production", "1", "8")],
 )
 def test_environment_examples_keep_durable_dispatch_disabled_and_current_safe(
-    environment, active_turn_limit
+    environment, active_turn_limit, external_worker_limit
 ):
     values = {
         key: value
@@ -3894,7 +3894,7 @@ def test_environment_examples_keep_durable_dispatch_disabled_and_current_safe(
 
     assert values["PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED"] == "false"
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == active_turn_limit
-    assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
+    assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == external_worker_limit
     assert values["PWC_CHAT_EXTERNAL_PI_HEARTBEAT_SECONDS"] == "10"
     assert values["PWC_CHAT_EXTERNAL_PI_LEASE_SECONDS"] == "30"
 
@@ -3936,6 +3936,228 @@ def test_staging_chat_durable_dispatch_toggle_is_single_key(enabled: bool):
     assert configure_host_env.staging_chat_durable_dispatch_values(enabled=enabled) == {
         "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false"
     }
+
+
+def _staging_durable_external_qualification_baseline() -> dict[str, str]:
+    return {
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED": (
+            "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED=false"
+        ),
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED": (
+            "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED=true"
+        ),
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED": (
+            "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED=true"
+        ),
+        "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": (
+            "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED=true"
+        ),
+        "PWC_CHAT_MAX_CONCURRENCY": "PWC_CHAT_MAX_CONCURRENCY=2",
+        "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": ("PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP=3"),
+        "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true",
+        "PWC_CHAT_PI_PREWARM_ENABLED": "PWC_CHAT_PI_PREWARM_ENABLED=true",
+    }
+
+
+def test_staging_durable_external_qualification_profile_is_exact_and_reversible():
+    baseline = _staging_durable_external_qualification_baseline()
+
+    enabled = configure_host_env.staging_durable_external_qualification_values(
+        baseline, enabled=True
+    )
+    assert enabled == {
+        "PWC_CHAT_EXTERNAL_PI_READY_REGISTRY_ENABLED": "true",
+        "PWC_CHAT_EXTERNAL_PI_RUNTIME_CONTRACT_VERSION": "durable-external-pi-v1",
+        "PWC_CHAT_TURN_EVENT_JOURNAL_SCHEMA_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_EXECUTOR_CONTRACT_VERSION": "sandbox-executor-v1",
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "true",
+        "PWC_CHAT_REMOTE_BASH_ENABLED": "true",
+        "PWC_CHAT_REMOTE_READ_ENABLED": "true",
+        "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "true",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "false",
+        "PWC_CHAT_PI_PREWARM_ENABLED": "false",
+    }
+
+    active = configure_host_env.assign(baseline, enabled)
+    disabled = configure_host_env.staging_durable_external_qualification_values(
+        active, enabled=False
+    )
+    assert disabled == {
+        "PWC_CHAT_EXTERNAL_PI_READY_REGISTRY_ENABLED": "false",
+        "PWC_CHAT_EXTERNAL_PI_RUNTIME_CONTRACT_VERSION": "",
+        "PWC_CHAT_TURN_EVENT_JOURNAL_SCHEMA_ENABLED": "false",
+        "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "false",
+        "PWC_CHAT_SANDBOX_EXECUTOR_CONTRACT_VERSION": "",
+        "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "false",
+        "PWC_CHAT_REMOTE_BASH_ENABLED": "false",
+        "PWC_CHAT_REMOTE_READ_ENABLED": "false",
+        "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "false",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED", "true"),
+        ("PWC_CHAT_MAX_CONCURRENCY", "32"),
+        ("PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP", "16"),
+        ("PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false"),
+        ("PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED", "false"),
+        ("PWC_CHAT_REMOTE_BASH_ENABLED", "true"),
+    ),
+)
+def test_staging_durable_external_qualification_refuses_baseline_drift(key, value):
+    baseline = _staging_durable_external_qualification_baseline()
+    baseline[key] = f"{key}={value}"
+
+    with pytest.raises(ValueError, match="qualification baseline"):
+        configure_host_env.staging_durable_external_qualification_values(
+            baseline, enabled=True
+        )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_staging_durable_external_qualification_mode_is_atomic_and_staging_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    enabled: bool,
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    baseline = _staging_durable_external_qualification_baseline()
+    current = (
+        baseline
+        if enabled
+        else configure_host_env.assign(
+            baseline,
+            configure_host_env.staging_durable_external_qualification_values(
+                baseline, enabled=True
+            ),
+        )
+    )
+    staging_path = config_root / "staging.env"
+    staging_path.write_text(
+        "".join(f"{current[key]}\n" for key in sorted(current)), encoding="utf-8"
+    )
+    production_path = config_root / "production.env"
+    production_bytes = b"PRODUCTION=untouched\n"
+    production_path.write_bytes(production_bytes)
+    written = {}
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_env",
+        lambda path, lines, group: written.update(
+            {"path": path, "lines": lines, "group": group}
+        ),
+    )
+    action = "enable" if enabled else "disable"
+    confirmation = (
+        "ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION"
+        if enabled
+        else "DISABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            f"--staging-durable-external-qualification-{action}-only",
+            "--confirm",
+            confirmation,
+        ],
+    )
+
+    assert configure_host_env.main() == 0
+    assert written["path"] == staging_path
+    assert written["group"] == "pwc-staging"
+    assert production_path.read_bytes() == production_bytes
+    expected = configure_host_env.staging_durable_external_qualification_values(
+        current, enabled=enabled
+    )
+    assert {
+        key: configure_host_env.decoded_value(written["lines"][key]) for key in expected
+    } == expected
+    assert capsys.readouterr().out == (
+        f"{'enabled' if enabled else 'disabled'} staging durable external "
+        "qualification profile; no service was restarted\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    (
+        (),
+        ("--confirm", "DEPLOY_PRODUCTION"),
+        (
+            "--staging-chat-capacity-only",
+            "--confirm",
+            "ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION",
+        ),
+        (
+            "--staging-durable-external-qualification-disable-only",
+            "--confirm",
+            "ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION",
+        ),
+    ),
+)
+def test_staging_durable_external_qualification_requires_exact_confirmation_and_runs_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra_args: tuple[str, ...],
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    staging_path = config_root / "staging.env"
+    staging_path.write_text("KEEP=value\n", encoding="utf-8")
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--staging-durable-external-qualification-enable-only",
+            *extra_args,
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        configure_host_env.main()
+    assert staging_path.read_text(encoding="utf-8") == "KEEP=value\n"
+    assert "staging durable external qualification" in capsys.readouterr().err
+
+
+def test_deployment_runbook_has_reversible_staging_external_qualification_gate():
+    runbook = Path("docs/deployment.md").read_text(encoding="utf-8")
+
+    assert "--staging-durable-external-qualification-enable-only" in runbook
+    assert "--confirm ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION" in runbook
+    assert "--staging-durable-external-qualification-disable-only" in runbook
+    assert "--confirm DISABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION" in runbook
+    assert 'pwc-deploy staging "$qualification_sha" --refresh-environment' in runbook
+    assert "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED=false" in runbook
+    assert "PWC_CHAT_MAX_CONCURRENCY=2" in runbook
+    assert "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP=3" in runbook
+    assert "maximum_sessions=32" in runbook
+    assert "chat_sandbox_pool" in runbook
+    assert "must return `0`" in runbook
+    assert "`pwc-rollback staging` does not restore" in runbook
+    assert "Production remains unchanged" in runbook
 
 
 def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():

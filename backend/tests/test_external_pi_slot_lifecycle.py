@@ -122,7 +122,7 @@ def test_child_environments_are_strictly_scrubbed(tmp_path: Path):
         "PWC_EXTERNAL_PI_HOST": "127.0.0.1",
         "PWC_EXTERNAL_PI_PORT": "8767",
         "PWC_EXTERNAL_PI_TOKEN": "t" * 32,
-        "PWC_EXTERNAL_PI_MAX_SESSIONS": "8",
+        "PWC_EXTERNAL_PI_MAX_SESSIONS": "32",
         "PWC_EXTERNAL_PI_WORKER_ID": "staging-green",
         "PWC_EXTERNAL_PI_INSTANCE_ID": "i" * 36,
         "PWC_EXTERNAL_PI_RELEASE_ID": "release-green",
@@ -153,7 +153,7 @@ def test_child_environments_are_strictly_scrubbed(tmp_path: Path):
         "PWC_EXTERNAL_PI_WORKER_ID",
     }
     assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "http://127.0.0.1:8767"
-    assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "8"
+    assert supervisor["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
     assert "PWC_HF_TOKEN" not in supervisor
 
 
@@ -1299,7 +1299,7 @@ def test_lifecycle_restarts_exact_zero_session_worker_before_supervisor(
                     "release_id": "older-release-staging",
                     "state": "draining",
                     "active_sessions": 0,
-                    "maximum_sessions": 8,
+                    "maximum_sessions": 32,
                     "worker_generation": 7,
                     "operation_counters": {
                         "shadow_requests": 0,
@@ -1377,7 +1377,7 @@ def test_lifecycle_refuses_ambiguous_active_session_evidence(
                     "release_id": "older-release-staging",
                     "state": worker_state,
                     "active_sessions": active_sessions,
-                    "maximum_sessions": 8,
+                    "maximum_sessions": 32,
                 }
             ).encode()
 
@@ -1512,7 +1512,7 @@ def _unclaimed_worker_status() -> dict:
         "release_id": "release-blue",
         "state": "ready",
         "active_sessions": 0,
-        "maximum_sessions": 8,
+        "maximum_sessions": 32,
         "worker_generation": None,
         "operation_counters": {
             "shadow_requests": 0,
@@ -1575,8 +1575,8 @@ def test_stop_slot_cleans_unclaimed_worker_from_validated_orphan_release(
         ("worker_generation", 0),
         ("active_sessions", 0.0),
         ("active_sessions", 1),
-        ("maximum_sessions", 8.0),
-        ("maximum_sessions", 7),
+        ("maximum_sessions", 32.0),
+        ("maximum_sessions", 31),
     ),
 )
 def test_stop_slot_refuses_ambiguous_unclaimed_worker_identity_or_capacity(
@@ -1706,7 +1706,7 @@ def test_stop_slot_cleans_exact_orphan_with_authenticated_zero_session_proof(
                     "worker_id": "staging-blue",
                     "state": "draining",
                     "active_sessions": 0,
-                    "maximum_sessions": 8,
+                    "maximum_sessions": 32,
                 }
             ).encode()
 

@@ -504,6 +504,95 @@ print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
 test "$rollback_refreshed_sha" = "$rollback_sha" || exit 1
 ```
 
+### Staging durable external Pi qualification profile
+
+The 32-turn durable external Pi qualification is a staging-only, explicitly
+confirmed configuration profile. It does not enable ordinary external
+admission: public staging remains at two ordinary concurrent turns with the
+three-sandbox safety cap. Resolve the exact active immutable release, enable
+the profile with that release's helper, and refresh that same SHA:
+
+```bash
+qualification_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+case "$qualification_release" in
+  /srv/paperswithcode/releases/????????????-staging) ;;
+  *) echo "qualification release is not immutable staging" >&2; exit 1 ;;
+esac
+qualification_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, re, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+sha = manifest.get("git_sha")
+assert isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
+assert manifest.get("release_id") == f"{sha[:12]}-staging"
+print(sha)
+' "$qualification_release/release.json")" || exit 1
+test "$(basename -- "$qualification_release")" = "${qualification_sha:0:12}-staging" || exit 1
+
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$qualification_release/deploy/configure_host_env.py" \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-durable-external-qualification-enable-only \
+  --confirm ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION || exit 1
+sudo pwc-deploy staging "$qualification_sha" --refresh-environment || exit 1
+test "$(readlink -e /srv/paperswithcode/environments/staging/current)" = \
+  "$qualification_release" || exit 1
+```
+
+Before starting an explicitly authorized qualifier, run `pwc-status` and verify
+the active external worker without exposing its bearer token:
+
+```bash
+pwc-status || exit 1
+sudo grep -E '^(PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED|PWC_CHAT_MAX_CONCURRENCY|PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP|PWC_CHAT_BLANK_POOL_ENABLED|PWC_CHAT_PI_PREWARM_ENABLED)=' \
+  /etc/paperswithcode/staging.env
+sudo /srv/paperswithcode/.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+
+slot = Path("/srv/paperswithcode/environments/staging/active").resolve().name
+status = json.loads(
+    Path(f"/run/paperswithcode/external-pi/staging-{slot}.json").read_text()
+)
+assert status["state"] == "ready"
+assert status["authenticated"] is True
+assert status["registered"] is True
+assert status["maximum_sessions"] == 32
+print("external worker ready; maximum_sessions=32")
+PY
+sudo -u postgres psql -d paperswithcode_hf -Atc \
+  "SELECT count(*) FROM staging.chat_sandbox_pool WHERE state IN ('starting','blank_ready','claimed','draining');"
+```
+
+The selected environment values must include
+`PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED=false`,
+`PWC_CHAT_MAX_CONCURRENCY=2`, `PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP=3`, and both
+pool/prewarm flags set to `false`. The pool query must return `0`; any other
+value is a stop gate, not authorization to delete rows. The qualifier itself is
+a separate, explicitly authorized operation.
+
+Restore the paired baseline with the same still-active release and refresh the
+same SHA whether qualification passes or fails:
+
+```bash
+qualification_release="$(readlink -e /srv/paperswithcode/environments/staging/current)" || exit 1
+qualification_sha="$(/srv/paperswithcode/.venv/bin/python -c '
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])
+' "$qualification_release/release.json")" || exit 1
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$qualification_release/deploy/configure_host_env.py" \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-durable-external-qualification-disable-only \
+  --confirm DISABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION || exit 1
+sudo pwc-deploy staging "$qualification_sha" --refresh-environment || exit 1
+```
+
+Verify ordinary admission is still false, concurrency/cap remain `2`/`3`, and
+pool/prewarm are restored to `true`. `pwc-rollback staging` does not restore
+protected `/etc` configuration, so release rollback alone is not this profile's
+rollback. Production remains unchanged and has no corresponding activation
+mode.
+
 Pi prewarming and blank-pool admission are independent protected staging
 controls. Toggle Pi prewarming without changing admission, then refresh the
 exact active release through the immutable deployment path:

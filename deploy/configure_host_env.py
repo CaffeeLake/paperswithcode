@@ -883,6 +883,74 @@ def staging_chat_durable_dispatch_values(*, enabled: bool) -> dict[str, str]:
     return {"PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false"}
 
 
+_STAGING_DURABLE_EXTERNAL_QUALIFICATION_ENABLED = {
+    "PWC_CHAT_EXTERNAL_PI_READY_REGISTRY_ENABLED": "true",
+    "PWC_CHAT_EXTERNAL_PI_RUNTIME_CONTRACT_VERSION": "durable-external-pi-v1",
+    "PWC_CHAT_TURN_EVENT_JOURNAL_SCHEMA_ENABLED": "true",
+    "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "true",
+    "PWC_CHAT_SANDBOX_EXECUTOR_CONTRACT_VERSION": "sandbox-executor-v1",
+    "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "true",
+    "PWC_CHAT_REMOTE_BASH_ENABLED": "true",
+    "PWC_CHAT_REMOTE_READ_ENABLED": "true",
+    "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "true",
+    "PWC_CHAT_BLANK_POOL_ENABLED": "false",
+    "PWC_CHAT_PI_PREWARM_ENABLED": "false",
+}
+_STAGING_DURABLE_EXTERNAL_QUALIFICATION_DISABLED = {
+    "PWC_CHAT_EXTERNAL_PI_READY_REGISTRY_ENABLED": "false",
+    "PWC_CHAT_EXTERNAL_PI_RUNTIME_CONTRACT_VERSION": "",
+    "PWC_CHAT_TURN_EVENT_JOURNAL_SCHEMA_ENABLED": "false",
+    "PWC_CHAT_SANDBOX_EXECUTOR_ENABLED": "false",
+    "PWC_CHAT_SANDBOX_EXECUTOR_CONTRACT_VERSION": "",
+    "PWC_CHAT_REMOTE_WORKSPACE_TOOLS_ENABLED": "false",
+    "PWC_CHAT_REMOTE_BASH_ENABLED": "false",
+    "PWC_CHAT_REMOTE_READ_ENABLED": "false",
+    "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "false",
+    "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+    "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+}
+
+
+def staging_durable_external_qualification_values(
+    current: dict[str, str], *, enabled: bool
+) -> dict[str, str]:
+    """Enter or leave the exact staging-only 32-turn qualification profile."""
+
+    required = {
+        "PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED": "false",
+        "PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED": "true",
+        "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED": "true",
+        "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true",
+        "PWC_CHAT_MAX_CONCURRENCY": "2",
+        "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": "3",
+        **(
+            _STAGING_DURABLE_EXTERNAL_QUALIFICATION_DISABLED
+            if enabled
+            else _STAGING_DURABLE_EXTERNAL_QUALIFICATION_ENABLED
+        ),
+    }
+    drifted = sorted(
+        key
+        for key, expected in required.items()
+        if (
+            _decoded_flag(current, key)
+            if expected in {"true", "false"}
+            else (decoded_value(current[key]).strip() if key in current else "")
+        )
+        != expected
+    )
+    if drifted:
+        raise ValueError(
+            "staging durable external qualification baseline has drifted: "
+            + ", ".join(drifted)
+        )
+    return dict(
+        _STAGING_DURABLE_EXTERNAL_QUALIFICATION_ENABLED
+        if enabled
+        else _STAGING_DURABLE_EXTERNAL_QUALIFICATION_DISABLED
+    )
+
+
 # Must match Settings.chat_deepseek_v4_flash_route when Hugging Face is selected.
 STAGING_DEEPSEEK_PREWARM_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
 
@@ -1320,6 +1388,12 @@ def main() -> int:
     parser.add_argument(
         "--staging-chat-durable-dispatch-disable-only", action="store_true"
     )
+    parser.add_argument(
+        "--staging-durable-external-qualification-enable-only", action="store_true"
+    )
+    parser.add_argument(
+        "--staging-durable-external-qualification-disable-only", action="store_true"
+    )
     parser.add_argument("--staging-chat-pi-prewarm-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
     parser.add_argument("--staging-chat-routing-enable-only", action="store_true")
@@ -1479,6 +1553,59 @@ def main() -> int:
             "pwc-staging",
         )
         print("enabled staging research-scope guardrail; no service was restarted")
+        return 0
+    qualification_modes = (
+        args.staging_durable_external_qualification_enable_only,
+        args.staging_durable_external_qualification_disable_only,
+    )
+    if any(qualification_modes):
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "staging_durable_external_qualification_enable_only",
+                "staging_durable_external_qualification_disable_only",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            sum(qualification_modes) != 1
+            or other_modes
+            or args.codex_jobs_namespace
+            or args.modal_profile
+        ):
+            parser.error(
+                "staging durable external qualification enable/disable must run alone"
+            )
+        enabled = args.staging_durable_external_qualification_enable_only
+        confirmation = (
+            "ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION"
+            if enabled
+            else "DISABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION"
+        )
+        if args.confirm != confirmation:
+            parser.error(
+                "staging durable external qualification --confirm must be "
+                f"{confirmation}"
+            )
+        current = read_lines(CONFIG_ROOT / "staging.env")
+        try:
+            values = staging_durable_external_qualification_values(
+                current, enabled=enabled
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            CONFIG_ROOT / "staging.env",
+            assign(current, values),
+            "pwc-staging",
+        )
+        print(
+            f"{'enabled' if enabled else 'disabled'} staging durable external "
+            "qualification profile; no service was restarted"
+        )
         return 0
     durable_dispatch_modes = (
         args.staging_chat_durable_dispatch_enable_only,
