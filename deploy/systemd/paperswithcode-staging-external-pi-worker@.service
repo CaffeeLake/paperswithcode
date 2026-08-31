@@ -22,6 +22,6 @@ ProtectSystem=strict
 ProtectProc=invisible
 ProcSubset=pid
 ReadOnlyPaths=/srv/paperswithcode
-CPUQuota=50%
+CPUQuota=25%
 MemoryMax=805306368
 TasksMax=128
