@@ -516,5 +516,3 @@ export function SuggestTaxonomyDialog({
     </Dialog>
   );
 }
-
-export default SuggestTaxonomyDialog;
