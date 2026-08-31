@@ -322,6 +322,36 @@ def test_real_transport_rejects_untyped_queue_and_invalid_sse(response):
     assert session.calls.count(("close",)) == 1
 
 
+def test_real_transport_names_an_unexpected_sse_event_without_exposing_data():
+    from backend.loadtests.durable_chat_transport import (
+        DurableChatTransportConfig,
+        HttpSSEDurableChatTransport,
+    )
+
+    session = _Session(
+        (
+            _Response(
+                200,
+                (_frame(1, "warning", {"text": "TOP_SECRET_OUTPUT"}),),
+            ),
+        )
+    )
+    transport = HttpSSEDurableChatTransport(
+        DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("signed-cookie",),
+            initial_model="gpt-5.6-luna@openai",
+        ),
+        session_factory=lambda: session,
+    )
+
+    with pytest.raises(FleetRunRefused) as exc_info:
+        transport.open_durable_stream(_spec(0, "no_tool"))
+
+    assert str(exc_info.value) == "durable SSE event is not allowed: warning"
+    assert "TOP_SECRET_OUTPUT" not in str(exc_info.value)
+
+
 def test_real_transport_rejects_a_truncated_sse_tail():
     from backend.loadtests.durable_chat_transport import (
         DurableChatTransportConfig,

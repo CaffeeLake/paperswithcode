@@ -190,8 +190,10 @@ class _SSEParser:
             data = json.loads(fields["data"])
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
             raise FleetRunRefused("durable SSE event is malformed") from None
-        if sequence < 1 or event not in _EVENTS or not isinstance(data, dict):
+        if sequence < 1 or not isinstance(data, dict):
             raise FleetRunRefused("durable SSE event contract is invalid")
+        if event not in _EVENTS:
+            raise FleetRunRefused(f"durable SSE event is not allowed: {event}")
         if data.get("type") != event:
             raise FleetRunRefused("durable SSE event type is inconsistent")
         return _SSEEvent(sequence, event, data)

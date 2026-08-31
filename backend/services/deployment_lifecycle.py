@@ -43,7 +43,12 @@ class DeploymentLifecycle:
     @contextmanager
     def request(self, path: str) -> Iterator[None]:
         chat = path == "/api/v1/chat/stream"
-        gateway = path.endswith("/api/internal/chat-gateway/v1/messages")
+        gateway = path.endswith(
+            (
+                "/api/internal/chat-gateway/v1/messages",
+                "/api/internal/chat-gateway/v1/responses",
+            )
+        )
         with self._lock:
             self._active_http_requests += 1
             if chat:

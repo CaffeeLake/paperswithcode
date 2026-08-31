@@ -267,6 +267,13 @@ class ExternalPiChatTurnRunner:
                                 )
                             )
                             return
+                        if event.get("type") == "worker_ready":
+                            # Readiness proves that the trusted harness accepted
+                            # the run, but it is not part of the browser SSE
+                            # contract.
+                            self.observe("worker_ready", None, 1)
+                            acknowledged_sequence = sequence
+                            continue
                         yield event
                         acknowledged_sequence = sequence
                     raise OSError("External Pi transport ended before terminal")

@@ -389,11 +389,12 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     executor = FakeExecutor()
     socket = FakeSocket(
         [
+            '{"type":"worker_ready","worker_sequence":1}',
             '{"type":"tool_request","operation_id":"operation-1","tool_call_id":"tool-1",'
-            '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,"max_bytes":1024,"worker_sequence":1}',
-            '{"type":"workspace_ready","worker_sequence":2}',
-            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":3}',
-            '{"type":"worker_done","status":"complete","worker_sequence":4}',
+            '"operation":"read","path":"/opt/pwc/PWC_CLI_SKILL.md","offset":0,"max_bytes":1024,"worker_sequence":2}',
+            '{"type":"workspace_ready","worker_sequence":3}',
+            '{"type":"done","finish_reason":"success","followups":[],"worker_sequence":4}',
+            '{"type":"worker_done","status":"complete","worker_sequence":5}',
         ]
     )
     turn_id = uuid.uuid4()
