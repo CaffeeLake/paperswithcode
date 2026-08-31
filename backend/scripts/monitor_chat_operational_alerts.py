@@ -101,7 +101,7 @@ def read_journal(
             command.extend(("--after-cursor", active_cursor))
         else:
             command.extend(("--since", (now - timedelta(minutes=2)).isoformat()))
-        command.extend(("--output=json", "--no-pager", "--quiet"))
+        command.extend(("--output=json", "--show-cursor", "--no-pager", "--quiet"))
         return command
 
     reset = False
@@ -119,6 +119,9 @@ def read_journal(
     messages: list[str] = []
     latest_cursor = cursor
     for line in result.stdout.splitlines():
+        if line.startswith("-- cursor: "):
+            latest_cursor = line.removeprefix("-- cursor: ")
+            continue
         record = json.loads(line)
         message = record.get("MESSAGE")
         record_cursor = record.get("__CURSOR")
@@ -144,7 +147,9 @@ def read_lifecycle_window(now: datetime, window_seconds: int) -> list[str]:
             "--quiet",
         )
     )
-    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if getattr(result, "returncode", 0) not in (0, 1):
+        raise subprocess.CalledProcessError(result.returncode, command)
     messages: list[str] = []
     for line in result.stdout.splitlines():
         message = json.loads(line).get("MESSAGE")

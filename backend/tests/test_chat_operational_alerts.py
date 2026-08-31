@@ -445,6 +445,27 @@ def test_journal_reader_advances_cursor_without_returning_records(monkeypatch):
     assert "previous-cursor" in observed[0]
 
 
+def test_journal_reader_advances_to_reported_tail_when_no_unit_record_matches(
+    monkeypatch,
+):
+    observed = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command)
+        return SimpleNamespace(stdout="-- cursor: journal-tail-cursor\n")
+
+    monkeypatch.setattr(monitor.subprocess, "run", fake_run)
+
+    messages, cursor, reset = monitor.read_journal(
+        "previous-cursor", datetime(2026, 8, 6, 12, tzinfo=UTC)
+    )
+
+    assert messages == []
+    assert cursor == "journal-tail-cursor"
+    assert reset is False
+    assert "--show-cursor" in observed[0]
+
+
 def test_journal_reader_recovers_from_a_vacuumed_cursor(monkeypatch):
     calls = 0
 
@@ -494,6 +515,20 @@ def test_lifecycle_window_reader_uses_configured_window(monkeypatch):
     assert (now - timedelta(seconds=300)).isoformat() in observed[0]
     assert observed[0][observed[0].index("--grep") + 1] == (
         "chat durable lifecycle event="
+    )
+
+
+def test_lifecycle_window_reader_treats_no_grep_match_as_an_empty_window(
+    monkeypatch,
+):
+    def fake_run(_command, **kwargs):
+        assert kwargs["check"] is False
+        return SimpleNamespace(stdout="", returncode=1)
+
+    monkeypatch.setattr(monitor.subprocess, "run", fake_run)
+
+    assert (
+        monitor.read_lifecycle_window(datetime(2026, 8, 6, 12, tzinfo=UTC), 300) == []
     )
 
 
