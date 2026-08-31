@@ -570,7 +570,6 @@ def test_qualified_pi_replay_preserves_identity_without_duplicate_reservation(
     assert admission.turn_id == existing.turn_id
     assert admission.session_id == session.id
     assert admission.attach_only is True
-    assert admission.qualified_external_pi is True
 
 
 def test_enabled_different_active_message_remains_rejected(monkeypatch):

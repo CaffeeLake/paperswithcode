@@ -146,14 +146,13 @@ class ChatExternalExecutorWorkspaceManager:
         )
 
     def _executor_live_cap(
-        self, session_id: uuid.UUID, turn_claim: TurnLeaseClaim
+        self, db: Session, session_id: uuid.UUID, turn_claim: TurnLeaseClaim
     ) -> int:
-        with self.session_factory() as db:
-            qualified = self.qualification_capacity(
-                db,
-                turn_id=turn_claim.turn_id,
-                chat_session_id=session_id,
-            )
+        qualified = self.qualification_capacity(
+            db,
+            turn_id=turn_claim.turn_id,
+            chat_session_id=session_id,
+        )
         return qualified or self.settings.chat_sandbox_total_live_cap
 
     @classmethod
@@ -195,7 +194,6 @@ class ChatExternalExecutorWorkspaceManager:
         session_id: uuid.UUID,
         turn_claim: TurnLeaseClaim,
     ) -> ExternalExecutorWorkspace:
-        total_live_cap = self._executor_live_cap(session_id, turn_claim)
         deadline = self.monotonic() + self.acquisition.ready_timeout_seconds
         replacement_attempts = 0
         while True:
@@ -204,7 +202,9 @@ class ChatExternalExecutorWorkspaceManager:
                 session_id,
                 launch_mode=SandboxLaunchMode.EXECUTOR,
                 allow_pool=False,
-                total_live_cap=total_live_cap,
+                live_cap_resolver=lambda db: self._executor_live_cap(
+                    db, session_id, turn_claim
+                ),
             )
             try:
                 claim = self._claim(session_id, str(outcome.sandbox.object_id))

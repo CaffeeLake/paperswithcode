@@ -62,6 +62,7 @@ type LegacyEnsureReadyResult = tuple[
     int | None,
 ]
 SessionFactory = Callable[[], Session]
+LiveCapResolver = Callable[[Session], int]
 SpendFactory = Callable[[Session], ChatSandboxSpendService]
 UtcClock = Callable[[], datetime]
 FloatClock = Callable[[], float]
@@ -284,7 +285,7 @@ class ChatSandboxAcquisitionCoordinator:
         pool_lookup_ms: int | None = None,
         budget_prechecked: bool = False,
         pool_miss_reason: str | None = None,
-        total_live_cap: int | None = None,
+        live_cap_resolver: LiveCapResolver | None = None,
     ) -> SandboxAcquisitionOutcome:
         started = self.perf_counter()
         if not budget_prechecked and self.spend_enforced:
@@ -317,7 +318,7 @@ class ChatSandboxAcquisitionCoordinator:
             deadline=deadline,
             started=started,
             pool_lookup_ms=pool_lookup_ms,
-            total_live_cap=total_live_cap,
+            live_cap_resolver=live_cap_resolver,
         )
         if isinstance(selected, LeaseReused):
             return selected
@@ -339,13 +340,13 @@ class ChatSandboxAcquisitionCoordinator:
         deadline: float,
         started: float,
         pool_lookup_ms: int | None,
-        total_live_cap: int | None,
+        live_cap_resolver: LiveCapResolver | None,
     ) -> StartSelected | LeaseReused:
         restarted = False
         while True:
             try:
                 acquisition = self._acquire_once(
-                    chat_session_id, total_live_cap=total_live_cap
+                    chat_session_id, live_cap_resolver=live_cap_resolver
                 )
             except LeaseDecisionChanged:
                 continue
@@ -400,7 +401,10 @@ class ChatSandboxAcquisitionCoordinator:
             raise AssertionError("Unhandled sandbox acquisition outcome")
 
     def _acquire_once(
-        self, chat_session_id: uuid.UUID, *, total_live_cap: int | None = None
+        self,
+        chat_session_id: uuid.UUID,
+        *,
+        live_cap_resolver: LiveCapResolver | None = None,
     ):
         creation_token = self.creation_token_factory()
         worker_generation = self.generation_factory()
@@ -432,7 +436,9 @@ class ChatSandboxAcquisitionCoordinator:
                     now=now,
                     ready_timeout_seconds=self.ready_timeout_seconds,
                     reserve_interval=reserve_interval,
-                    total_live_cap=total_live_cap,
+                    total_live_cap=(
+                        live_cap_resolver(db) if live_cap_resolver is not None else None
+                    ),
                 )
             except ChatComputeDisabled as error:
                 # Exiting the transaction normally preserves the durable trip.

@@ -28,6 +28,8 @@ QUALIFICATION_PROFILES = {
     "32-functional-turns": 32,
     "100-immediate-admission": 100,
 }
+FUNCTIONAL_QUALIFICATION_TURN_CAPACITY = 32
+FUNCTIONAL_QUALIFICATION_EXECUTOR_LIVE_CAP = 16
 QUALIFICATION_EVENT_TYPES = frozenset(
     {
         "admitted_no_queue",
@@ -72,8 +74,8 @@ class QualificationContext:
     app_release_id: str
     window_started_at: datetime
     expires_at: datetime
-    turn_capacity: int = 32
-    executor_live_cap: int = 16
+    turn_capacity: int = FUNCTIONAL_QUALIFICATION_TURN_CAPACITY
+    executor_live_cap: int = FUNCTIONAL_QUALIFICATION_EXECUTOR_LIVE_CAP
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +251,7 @@ class ChatDurableQualificationEvidenceService:
         workload: str,
         settings: Settings,
     ) -> QualificationContext:
-        scope = self.require_active_scope(scope_id, settings=settings)
+        scope = self.require_active_scope(scope_id, settings=settings, lock=True)
         if (
             not settings.chat_durable_turn_dispatch_enabled
             or scope.profile != "32-functional-turns"
@@ -277,28 +279,86 @@ class ChatDurableQualificationEvidenceService:
     ) -> int | None:
         """Authorize elevated executor capacity from exact persisted evidence."""
 
-        if settings.environment != "staging":
+        if not self._active_functional_turn(
+            turn_id=turn_id,
+            chat_session_id=chat_session_id,
+            settings=settings,
+            workloads=("read", "bash"),
+        ):
             return None
+        return FUNCTIONAL_QUALIFICATION_EXECUTOR_LIVE_CAP
+
+    def external_pi_authorized(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        chat_session_id: uuid.UUID,
+        settings: Settings,
+    ) -> bool:
+        """Verify persisted qualification and its exact external reservation."""
+
+        if not self._active_functional_turn(
+            turn_id=turn_id,
+            chat_session_id=chat_session_id,
+            settings=settings,
+            workloads=("no_tool", "read", "bash"),
+            require_pi=True,
+        ):
+            return False
+        from backend.services.chat_external_worker_capacity import (
+            ChatExternalWorkerCapacityRepository,
+            external_worker_endpoints,
+        )
+
+        ChatExternalWorkerCapacityRepository(
+            environment=settings.environment
+        ).require_turn(
+            self.db,
+            turn_id=turn_id,
+            endpoints=external_worker_endpoints(settings),
+            now=self.now(),
+        )
+        return True
+
+    def _active_functional_turn(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        chat_session_id: uuid.UUID,
+        settings: Settings,
+        workloads: tuple[str, ...],
+        require_pi: bool = False,
+    ) -> bool:
+        if settings.environment != "staging":
+            return False
+        filters = [
+            ChatTurnLatency.turn_id == turn_id,
+            ChatTurnLatency.chat_session_id == chat_session_id,
+            ChatTurnLatency.qualification_profile == "32-functional-turns",
+            ChatTurnLatency.qualification_workload.in_(workloads),
+            ChatTurnLatency.qualification_scenario == "reliability",
+            ChatTurnLatency.app_release_id == settings.release_id,
+            ChatQualificationScope.profile == "32-functional-turns",
+            ChatQualificationScope.app_release_id == settings.release_id,
+            ChatQualificationScope.window_ended_at.is_(None),
+        ]
+        if require_pi:
+            filters.extend(
+                (
+                    ChatTurnLatency.agent_harness == "pi",
+                    ChatTurnLatency.execution_backend == "modal_cli",
+                )
+            )
         row = self.db.execute(
             select(ChatTurnLatency, ChatQualificationScope)
             .join(
                 ChatQualificationScope,
                 ChatQualificationScope.id == ChatTurnLatency.qualification_scope_id,
             )
-            .where(
-                ChatTurnLatency.turn_id == turn_id,
-                ChatTurnLatency.chat_session_id == chat_session_id,
-                ChatTurnLatency.qualification_profile == "32-functional-turns",
-                ChatTurnLatency.qualification_workload.in_(("read", "bash")),
-                ChatTurnLatency.qualification_scenario == "reliability",
-                ChatTurnLatency.app_release_id == settings.release_id,
-                ChatQualificationScope.profile == "32-functional-turns",
-                ChatQualificationScope.app_release_id == settings.release_id,
-                ChatQualificationScope.window_ended_at.is_(None),
-            )
+            .where(*filters)
         ).one_or_none()
         if row is None:
-            return None
+            return False
         latency, scope = row
         now = self.now()
         if (
@@ -306,8 +366,8 @@ class ChatDurableQualificationEvidenceService:
             or _as_utc(scope.expires_at) <= now
             or _as_utc(latency.admitted_at) < _as_utc(scope.window_started_at)
         ):
-            return None
-        return 16
+            return False
+        return True
 
     def collect(
         self,

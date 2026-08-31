@@ -140,7 +140,6 @@ class TurnAdmission:
     durable_claim: TurnLeaseClaim | None = None
     attach_only: bool = False
     durable_event_sequence: int = 0
-    qualified_external_pi: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1777,8 +1776,6 @@ class ChatSessionService:
         if replay.kind == "admitted":
             assert replay.admission is not None
             admission = replay.admission
-            if qualification is not None:
-                admission = replace(admission, qualified_external_pi=True)
             if durable_coordinator is not None:
                 assert durable_preflight is not None
                 try:
@@ -1998,7 +1995,7 @@ class ChatSessionService:
                 ),
             )
         )
-        admission = self._turn_admission(
+        return self._turn_admission(
             session,
             plan,
             fetchable_urls,
@@ -2009,10 +2006,6 @@ class ChatSessionService:
                 and self.settings.chat_posterly_enabled
                 and detect_poster_intent(text)
             ),
-        )
-        return replace(
-            admission,
-            qualified_external_pi=qualification is not None,
         )
 
     def bind_sdk_session(

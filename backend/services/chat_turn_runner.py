@@ -18,6 +18,9 @@ from backend.services.chat_external_pi_turn_runner import ExternalPiChatTurnRunn
 from backend.services.chat_durable_lifecycle_observer import (
     durable_lifecycle_observer,
 )
+from backend.services.chat_durable_qualification_evidence import (
+    ChatDurableQualificationEvidenceService,
+)
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import ChatOwner, TurnAdmission
 from backend.services.chat_web_search_service import opaque_owner
@@ -34,9 +37,14 @@ class ChatTurnRunner(Protocol):
     async def close(self) -> None: ...
 
 
-def _uses_external_pi(settings: Settings, admission: TurnAdmission) -> bool:
+def _uses_external_pi(
+    settings: Settings,
+    admission: TurnAdmission,
+    *,
+    qualification_authorized: bool = False,
+) -> bool:
     return bool(
-        (settings.chat_external_pi_admission_enabled or admission.qualified_external_pi)
+        (settings.chat_external_pi_admission_enabled or qualification_authorized)
         and admission.agent_harness == "pi"
         and admission.execution_backend == "modal_cli"
     )
@@ -226,6 +234,20 @@ def create_chat_turn_runner(
             "openrouter_byok",
         }:
             raise ValueError("OpenRouter turn has no typed credential admission")
+        qualification_authorized = (
+            False
+            if settings.chat_external_pi_admission_enabled
+            else ChatDurableQualificationEvidenceService(db).external_pi_authorized(
+                turn_id=admission.turn_id,
+                chat_session_id=admission.session_id,
+                settings=settings,
+            )
+        )
+        uses_external_pi = _uses_external_pi(
+            settings,
+            admission,
+            qualification_authorized=qualification_authorized,
+        )
         # WebFetch is intentionally dormant for both harnesses during the
         # controlled Pi comparison. The trusted gateway route remains intact.
         scopes = {"model", "catalog", "session_store"}
@@ -237,7 +259,7 @@ def create_chat_turn_runner(
             scopes.add("artifact")
         if admission.paper_artifacts_enabled:
             scopes.add("paper")
-        if _uses_external_pi(settings, admission):
+        if uses_external_pi:
             scopes.add("external_turn")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
@@ -273,11 +295,7 @@ def create_chat_turn_runner(
             ),
         )
         db.commit()
-    runner_type = (
-        ExternalPiChatTurnRunner
-        if _uses_external_pi(settings, admission)
-        else ModalChatTurnRunner
-    )
+    runner_type = ExternalPiChatTurnRunner if uses_external_pi else ModalChatTurnRunner
     runner_kwargs = dict(
         settings=settings,
         admission=admission,

@@ -20,6 +20,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.responses import Response
 from starlette.requests import Request
@@ -921,7 +922,7 @@ def test_duplicate_durable_post_attaches_without_preparation_or_source(monkeypat
 
 
 def test_failed_detached_terminal_callback_releases_orchestrator_registration():
-    from backend.services.chat_detached_runtime import ChatDetachedRuntime
+    from backend.services import chat_detached_runtime as runtime_module
 
     turn_id = uuid.uuid4()
     claim = SimpleNamespace(turn_id=turn_id)
@@ -931,37 +932,116 @@ def test_failed_detached_terminal_callback_releases_orchestrator_registration():
             raise RuntimeError("ambiguous terminal")
 
     orchestrator = Orchestrator()
-    runtime = ChatDetachedRuntime(get_settings())
+    released = []
+    runtime = runtime_module.ChatDetachedRuntime(get_settings())
     runtime._orchestrators[turn_id] = orchestrator
+
+    async def transaction(operation):
+        operation(SimpleNamespace())
+
+    runtime._transaction = transaction
+    original_release = runtime_module.ChatExternalWorkerCapacityRepository.release_turn
+    runtime_module.ChatExternalWorkerCapacityRepository.release_turn = (
+        lambda _db, *, turn_id: released.append(turn_id)
+    )
     try:
         with pytest.raises(RuntimeError, match="ambiguous terminal"):
             asyncio.run(runtime._persist_terminal(claim, "failed", "turn_failed"))
         assert turn_id not in runtime._orchestrators
+        assert released == [turn_id]
     finally:
+        runtime_module.ChatExternalWorkerCapacityRepository.release_turn = (
+            original_release
+        )
         runtime._orchestrators.pop(turn_id, None)
 
 
-def test_qualified_external_turn_releases_reservation_when_global_flag_is_off(
+def test_process_loss_terminal_cleanup_releases_persisted_reservation():
+    from backend.services import chat_detached_runtime as runtime_module
+
+    turn_id = uuid.uuid4()
+    released = []
+    runtime = runtime_module.ChatDetachedRuntime(get_settings())
+
+    async def transaction(operation):
+        operation(SimpleNamespace())
+
+    runtime._transaction = transaction
+    original_release = runtime_module.ChatExternalWorkerCapacityRepository.release_turn
+    runtime_module.ChatExternalWorkerCapacityRepository.release_turn = (
+        lambda _db, *, turn_id: released.append(turn_id)
+    )
+    try:
+        with pytest.raises(RuntimeError, match="owner is unavailable"):
+            asyncio.run(
+                runtime._persist_terminal(
+                    SimpleNamespace(turn_id=turn_id), "failed", "process_lost"
+                )
+            )
+    finally:
+        runtime_module.ChatExternalWorkerCapacityRepository.release_turn = (
+            original_release
+        )
+
+    assert released == [turn_id]
+
+
+def test_terminal_release_failure_does_not_mask_persistence_failure(
     monkeypatch,
 ):
     from backend.services import chat_detached_runtime as runtime_module
 
     turn_id = uuid.uuid4()
     claim = SimpleNamespace(turn_id=turn_id)
-    admission = SimpleNamespace(qualified_external_pi=True)
-    released = []
 
     class Orchestrator:
         async def persist_detached_terminal(self, *_args):
-            return None
+            raise RuntimeError("primary persistence failure")
 
     orchestrator = Orchestrator()
-    orchestrator.admission = admission
-    settings = get_settings().model_copy(
-        update={"chat_external_pi_admission_enabled": False}
-    )
-    runtime = runtime_module.ChatDetachedRuntime(settings)
+    runtime = runtime_module.ChatDetachedRuntime(get_settings())
     runtime._orchestrators[turn_id] = orchestrator
+    cleanup_attempted = []
+
+    async def transaction(operation):
+        cleanup_attempted.append(True)
+        raise OSError("cleanup database unavailable")
+
+    runtime._transaction = transaction
+    monkeypatch.setattr(
+        runtime_module.ChatExternalWorkerCapacityRepository,
+        "release_turn",
+        lambda _db, *, turn_id: None,
+    )
+
+    with pytest.raises(RuntimeError, match="primary persistence failure"):
+        asyncio.run(runtime._persist_terminal(claim, "failed", "turn_failed"))
+    assert cleanup_attempted == [True]
+
+
+def test_detached_start_failure_releases_reservation_without_masking_primary_error(
+    monkeypatch,
+):
+    from backend.services import chat_detached_runtime as runtime_module
+
+    turn_id = uuid.uuid4()
+    admission = SimpleNamespace(turn_id=turn_id, session_id=uuid.uuid4())
+    released = []
+    abandoned = []
+
+    class Registry:
+        async def start_detached(self, **_kwargs):
+            raise RuntimeError("primary detached start failure")
+
+    class Orchestrator:
+        def events(self):
+            return None
+
+        async def abandon_detached_start(self):
+            abandoned.append(True)
+
+    runtime = runtime_module.ChatDetachedRuntime(get_settings())
+    runtime.registry = Registry()
 
     async def transaction(operation):
         operation(SimpleNamespace())
@@ -973,9 +1053,59 @@ def test_qualified_external_turn_releases_reservation_when_global_flag_is_off(
         lambda _db, *, turn_id: released.append(turn_id),
     )
 
-    asyncio.run(runtime._persist_terminal(claim, "completed", None))
+    with pytest.raises(RuntimeError, match="primary detached start failure"):
+        asyncio.run(
+            runtime.start(
+                admission=admission,
+                owner_id="owner",
+                claim=SimpleNamespace(turn_id=turn_id),
+                orchestrator=Orchestrator(),
+            )
+        )
 
+    assert abandoned == [True]
     assert released == [turn_id]
+    assert turn_id not in runtime._orchestrators
+
+
+def test_detached_start_cleanup_failures_preserve_original_start_error():
+    from backend.services import chat_detached_runtime as runtime_module
+
+    turn_id = uuid.uuid4()
+    admission = SimpleNamespace(turn_id=turn_id, session_id=uuid.uuid4())
+    cleanup_attempted = []
+
+    class Registry:
+        async def start_detached(self, **_kwargs):
+            raise RuntimeError("original start error")
+
+    class Orchestrator:
+        def events(self):
+            return None
+
+        async def abandon_detached_start(self):
+            raise OSError("abandonment unavailable")
+
+    runtime = runtime_module.ChatDetachedRuntime(get_settings())
+    runtime.registry = Registry()
+
+    async def transaction(_operation):
+        cleanup_attempted.append(True)
+        raise OSError("reservation cleanup unavailable")
+
+    runtime._transaction = transaction
+
+    with pytest.raises(RuntimeError, match="original start error"):
+        asyncio.run(
+            runtime.start(
+                admission=admission,
+                owner_id="owner",
+                claim=SimpleNamespace(turn_id=turn_id),
+                orchestrator=Orchestrator(),
+            )
+        )
+
+    assert cleanup_attempted == [True]
 
 
 def test_stream_rejects_paper_selection_when_flag_is_off(monkeypatch):
@@ -3396,6 +3526,119 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch, caplog):
     assert "ceiling=" in caplog.text
     assert "denial_count=" in caplog.text
     assert "hello" not in caplog.text
+
+
+def test_stream_endpoint_rejects_forged_qualification_scope_header(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        environment="staging",
+        release_id="0123456789ab-staging",
+        chat_durable_turn_dispatch_enabled=True,
+    )
+    monkeypatch.setattr(
+        chat_router, "has_valid_non_cookie_admin_credential", lambda *_args: True
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/chat/stream",
+            "headers": [
+                (b"x-pwc-qualification-scope-id", b"forged-not-a-uuid"),
+                (b"x-pwc-qualification-workload", b"no_tool"),
+            ],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        chat_router._durable_qualification_scope(request, settings)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == {"code": "qualification_scope_rejected"}
+
+
+def test_stream_endpoint_rejects_nonexistent_active_qualification_scope(
+    monkeypatch,
+):
+    from backend.services.chat_durable_qualification_evidence import (
+        QualificationEvidenceUnavailable,
+    )
+
+    scope_id = uuid.uuid4()
+    settings = Settings(
+        _env_file=None,
+        environment="staging",
+        release_id="0123456789ab-staging",
+        chat_enabled=True,
+        chat_public_admission_enabled=True,
+        chat_sandbox_admission_enabled=True,
+        chat_durable_turn_dispatch_enabled=True,
+        hf_token="test-token",
+    )
+
+    class FakeDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rollback(self):
+            return None
+
+    class MissingScope:
+        def __init__(self, _db):
+            pass
+
+        def require_active_context(self, *_args, **_kwargs):
+            raise QualificationEvidenceUnavailable("scope does not exist")
+
+    monkeypatch.setattr(chat_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        chat_router, "has_valid_non_cookie_admin_credential", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        chat_router,
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="user-token", bill_to=None),
+    )
+    monkeypatch.setattr(
+        chat_router.deployment_lifecycle,
+        "status",
+        lambda: SimpleNamespace(accepting_chat_turns=True),
+    )
+    monkeypatch.setattr(
+        chat_router,
+        "_prepare_paper_turn",
+        lambda *_args: chat_router.PreparedPaperTurn("hello", "hello", [], 0, 0, 0),
+    )
+    monkeypatch.setattr(
+        chat_router, "ChatDurableQualificationEvidenceService", MissingScope
+    )
+    monkeypatch.setattr(chat_router.db_manager, "_session_local", FakeDB)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/chat/stream",
+            "headers": [
+                (b"x-pwc-qualification-scope-id", str(scope_id).encode()),
+                (b"x-pwc-qualification-workload", b"no_tool"),
+            ],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_router.stream_chat(
+                ChatRequest(message="hello", client_message_id="qualified-request"),
+                request,
+                {"hf_user_id": "operator", "username": "operator"},
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {"code": "qualification_scope_unavailable"}
 
 
 def test_paper_hydration_failure_precedes_turn_admission_and_runner(monkeypatch):

@@ -16,6 +16,8 @@ from backend.config import Settings
 from backend.models.database import (
     ChatQualificationEvidenceEvent,
     ChatQualificationScope,
+    ChatExternalWorker,
+    ChatExternalWorkerReservation,
     ChatSandboxComputeInterval,
     ChatTurnLatency,
 )
@@ -49,6 +51,8 @@ def engine():
     ChatSandboxComputeInterval.__table__.create(value)
     ChatQualificationScope.__table__.create(value)
     ChatQualificationEvidenceEvent.__table__.create(value)
+    ChatExternalWorker.__table__.create(value)
+    ChatExternalWorkerReservation.__table__.create(value)
     return value
 
 
@@ -72,13 +76,18 @@ def _scope(
 
 
 def test_active_functional_scope_derives_server_trusted_capacity_context(engine):
+    lock_requests = []
+
+    class LockedService(ChatDurableQualificationEvidenceService):
+        def require_active_scope(self, scope_id, *, settings, lock=False):
+            lock_requests.append(lock)
+            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+
     with Session(engine) as db:
         db.add(_scope())
         db.commit()
 
-        context = ChatDurableQualificationEvidenceService(
-            db, now=lambda: START
-        ).require_active_context(
+        context = LockedService(db, now=lambda: START).require_active_context(
             SCOPE_ID,
             workload="bash",
             settings=_settings(),
@@ -95,6 +104,7 @@ def test_active_functional_scope_derives_server_trusted_capacity_context(engine)
         turn_capacity=32,
         executor_live_cap=16,
     )
+    assert lock_requests == [True]
 
 
 @pytest.mark.parametrize(
@@ -156,6 +166,95 @@ def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
             )
             is None
         )
+        scope = db.get(ChatQualificationScope, SCOPE_ID)
+        scope.window_ended_at = START
+        db.flush()
+        assert (
+            service.executor_live_cap(
+                turn_id=latency.turn_id,
+                chat_session_id=latency.chat_session_id,
+                settings=_settings(),
+            )
+            is None
+        )
+
+
+def test_external_pi_authority_survives_admission_reconstruction(engine):
+    from backend.services.chat_external_worker_capacity import (
+        ExternalWorkerCapacityUnavailable,
+    )
+
+    instance_id = uuid.uuid4()
+    settings = _settings().model_copy(
+        update={
+            "chat_external_pi_worker_id": "",
+            "chat_external_pi_worker_url": "",
+            "chat_external_pi_worker_token": "",
+            "chat_external_pi_worker_endpoints": [
+                {
+                    "endpoint_id": "qualified",
+                    "worker_id": "worker-qualified",
+                    "base_url": "http://127.0.0.1:8780",
+                    "token": "q" * 32,
+                }
+            ],
+            "chat_external_pi_worker_contract_version": "external-pi-v1",
+        }
+    )
+    latency = _latency(0, workload="no_tool")
+    latency.terminal_status = None
+    with Session(engine) as db:
+        db.add_all(
+            (
+                _scope(),
+                latency,
+                ChatExternalWorker(
+                    worker_id="worker-qualified",
+                    instance_id=instance_id,
+                    environment="staging",
+                    release_id=settings.release_id,
+                    contract_version="external-pi-v1",
+                    generation=1,
+                    state="ready",
+                    maximum_sessions=32,
+                    active_sessions=1,
+                    heartbeat_at=START,
+                    lease_expires_at=END + timedelta(minutes=1),
+                    created_at=START,
+                    updated_at=START,
+                ),
+                ChatExternalWorkerReservation(
+                    request_id="qualified-request",
+                    turn_id=latency.turn_id,
+                    endpoint_id="qualified",
+                    worker_id="worker-qualified",
+                    instance_id=instance_id,
+                    worker_generation=1,
+                    release_id=settings.release_id,
+                    contract_version="external-pi-v1",
+                    maximum_sessions=32,
+                    reserved_at=START,
+                    expires_at=END + timedelta(minutes=1),
+                ),
+            )
+        )
+        db.commit()
+        service = ChatDurableQualificationEvidenceService(db, now=lambda: START)
+
+        assert service.external_pi_authorized(
+            turn_id=latency.turn_id,
+            chat_session_id=latency.chat_session_id,
+            settings=settings,
+        )
+
+        db.query(ChatExternalWorkerReservation).delete()
+        db.flush()
+        with pytest.raises(ExternalWorkerCapacityUnavailable, match="missing"):
+            service.external_pi_authorized(
+                turn_id=latency.turn_id,
+                chat_session_id=latency.chat_session_id,
+                settings=settings,
+            )
 
 
 def _latency(
