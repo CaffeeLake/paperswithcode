@@ -64,6 +64,13 @@ export function turnFailureDiagnostic(phase: TurnFailurePhase, error: unknown): 
   return `External Pi turn failed phase=${phase} error=${errorClass}\n`;
 }
 
+export function externalPiStateEnvironment(stateRoot: string): Record<string, string> {
+  return {
+    PI_CODING_AGENT_DIR: path.join(stateRoot, "agent"),
+    PI_CODING_AGENT_SESSION_DIR: path.join(stateRoot, "sessions"),
+  };
+}
+
 const externalStateRoot = process.env.PWC_EXTERNAL_PI_STATE_ROOT;
 const harnessWorkspace = externalStateRoot
   ? path.join(externalStateRoot, "workspace")
@@ -127,6 +134,9 @@ export class PiWorker {
   }
 
   private async initializeImmutableProfile(): Promise<void> {
+    if (externalStateRoot) {
+      Object.assign(process.env, externalPiStateEnvironment(externalStateRoot));
+    }
     await Promise.all([
       mkdir(harnessWorkspace, { recursive: true, mode: 0o700 }),
       mkdir(sessionDirectory, { recursive: true, mode: 0o700 }),
