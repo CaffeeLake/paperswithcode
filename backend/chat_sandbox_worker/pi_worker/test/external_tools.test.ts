@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RemoteToolBridge, type RemoteToolRequest } from "../src/external_tools.js";
+import {
+  createRemoteToolsExtension,
+  RemoteToolBridge,
+  type RemoteToolRequest,
+} from "../src/external_tools.js";
 
 test("remote tool bridge correlates Bash output and Read bytes", async () => {
   const requests: RemoteToolRequest[] = [];
@@ -62,4 +66,32 @@ test("remote tool bridge fails closed on an uncorrelated result", async () => {
     bridge.read("tool-1", "/workspace/file"),
     /uncorrelated remote tool result/u,
   );
+});
+
+test("remote Read preflight and read use one sandbox operation", async () => {
+  const requests: RemoteToolRequest[] = [];
+  const bridge = new RemoteToolBridge({
+    async request(frame) {
+      requests.push(frame);
+      return {
+        type: "tool_result" as const,
+        operation_id: frame.operation_id,
+        ok: true,
+        data_base64: Buffer.from("durable-ready").toString("base64"),
+        eof: true,
+      };
+    },
+  });
+  let readTool: { execute: (...args: unknown[]) => Promise<unknown> } | undefined;
+  createRemoteToolsExtension(bridge)({
+    registerTool(tool: { name: string }) {
+      if (tool.name === "read") readTool = tool as unknown as typeof readTool;
+    },
+  } as never);
+
+  assert.ok(readTool);
+  await readTool.execute("tool-1", { path: "durable-ready.txt" }, undefined, undefined);
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.operation, "read");
 });

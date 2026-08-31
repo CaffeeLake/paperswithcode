@@ -113,9 +113,19 @@ export function createRemoteToolsExtension(bridge: RemoteToolBridge): ExtensionF
     pi.registerTool({
       ...localRead,
       async execute(id, params, signal, onUpdate) {
+        let prefetched: { path: string; data: Buffer } | undefined;
         const operations: ReadOperations = {
-          readFile: (path) => bridge.read(id, path),
-          access: (path) => bridge.read(id, path).then(() => undefined),
+          readFile: (path) => {
+            if (prefetched?.path === path) {
+              const data = prefetched.data;
+              prefetched = undefined;
+              return Promise.resolve(data);
+            }
+            return bridge.read(id, path);
+          },
+          access: (path) => bridge.read(id, path).then((data) => {
+            prefetched = { path, data };
+          }),
           detectImageMimeType: async () => null,
         };
         return createReadTool("/workspace", { operations }).execute(
