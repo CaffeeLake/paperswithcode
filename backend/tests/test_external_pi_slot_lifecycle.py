@@ -16,6 +16,7 @@ import deploy.cli as deploy_cli
 import deploy.external_pi_slot_launcher as launcher
 import deploy.external_pi_slot_lifecycle as lifecycle
 import deploy.external_pi_worker_launcher as worker_launcher
+import deploy.install_host_layout as install_host_layout
 from backend.config import Settings
 from backend.services.chat_external_worker_capacity import external_worker_endpoints
 from backend.services.runtime_validation import validate_external_pi_migration_policy
@@ -1776,6 +1777,9 @@ def test_systemd_templates_split_worker_and_supervisor_credentials():
     assert "external_pi_slot_launcher.py staging %i" in supervisor
     assert "User=pwc-external-pi" in worker
     assert "EnvironmentFile=/etc/paperswithcode/external-pi-worker.env" in worker
+    assert (
+        "BindReadOnlyPaths=/etc/paperswithcode/external-pi-hosts:/etc/hosts" in worker
+    )
     assert "RuntimeDirectory=paperswithcode/external-pi-%i" in worker
     assert "PWC_EXTERNAL_PI_STATE_ROOT=/run/paperswithcode/external-pi-%i" in worker
     assert "external_pi_worker_launcher.py staging %i" in worker
@@ -1794,6 +1798,20 @@ def test_systemd_templates_split_worker_and_supervisor_credentials():
         int(timeout_line.partition("=")[2])
         > lifecycle.MAXIMUM_DRAIN_STOP_TIMEOUT_SECONDS
     )
+
+
+def test_external_pi_hosts_bypasses_the_public_cdn_only_for_the_worker(
+    tmp_path: Path,
+):
+    hosts = tmp_path / "external-pi-hosts"
+
+    install_host_layout.install_external_pi_hosts(hosts)
+
+    assert hosts.read_text() == (
+        "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
+        "::1 localhost ip6-localhost ip6-loopback\n"
+    )
+    assert hosts.stat().st_mode & 0o777 == 0o644
 
 
 def test_deployment_status_reports_shadow_unit_and_durable_evidence(

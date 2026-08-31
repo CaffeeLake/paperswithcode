@@ -38,6 +38,10 @@ SYSTEMD_UNITS = (
     "autonomous/cron-audit.service",
     "autonomous/cron-audit.timer",
 )
+EXTERNAL_PI_HOSTS = (
+    "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
+    "::1 localhost ip6-localhost ip6-loopback\n"
+)
 
 
 def ensure_user(name: str) -> None:
@@ -94,6 +98,14 @@ def install_uv() -> None:
     os.replace(temporary, UV_DESTINATION)
 
 
+def install_external_pi_hosts(path: Path) -> None:
+    """Keep trusted-host gateway calls local without changing host DNS."""
+
+    path.write_text(EXTERNAL_PI_HOSTS, encoding="utf-8")
+    os.chown(path, 0, 0)
+    path.chmod(0o644)
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("run through sudo")
@@ -133,6 +145,7 @@ def main() -> int:
         grp.getgrnam("pwc-external-pi").gr_gid,
     )
     worker_environment.chmod(0o640)
+    install_external_pi_hosts(CONFIG_ROOT / "external-pi-hosts")
     for path in (
         APP_ROOT / "releases",
         APP_ROOT / "runtimes",

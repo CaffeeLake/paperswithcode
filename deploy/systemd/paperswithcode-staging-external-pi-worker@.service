@@ -25,6 +25,7 @@ ProtectSystem=strict
 ProtectProc=invisible
 ProcSubset=pid
 ReadOnlyPaths=/srv/paperswithcode
+BindReadOnlyPaths=/etc/paperswithcode/external-pi-hosts:/etc/hosts
 CPUQuota=100%
 MemoryMax=805306368
 TasksMax=128
