@@ -4142,6 +4142,180 @@ def test_staging_durable_external_qualification_requires_exact_confirmation_and_
     assert "staging durable external qualification" in capsys.readouterr().err
 
 
+def _active_staging_release(tmp_path: Path, release_id: str) -> Path:
+    app_root = tmp_path / "app"
+    release = app_root / "releases" / release_id
+    release.mkdir(parents=True)
+    sha = release_id.removesuffix("-staging") + "a" * 28
+    (release / "release.json").write_text(
+        json.dumps({"git_sha": sha, "release_id": release_id}), encoding="utf-8"
+    )
+    environment = app_root / "environments" / "staging"
+    environment.mkdir(parents=True)
+    (environment / "current").symlink_to(release)
+    return app_root
+
+
+def test_staging_modal_rate_evidence_is_exact_release_bound_and_has_no_default(
+    tmp_path: Path,
+):
+    release_id = "a" * 12 + "-staging"
+    app_root = _active_staging_release(tmp_path, release_id)
+
+    assert configure_host_env.staging_modal_rate_evidence(
+        app_root=app_root,
+        release_id=release_id,
+        microusd_per_second=53,
+    ) == {
+        "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "53",
+        "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+        "PWC_RELEASE_ID": release_id,
+    }
+    with pytest.raises(TypeError):
+        configure_host_env.staging_modal_rate_evidence(
+            app_root=app_root,
+            release_id=release_id,
+        )
+    with pytest.raises(ValueError, match="active immutable staging release"):
+        configure_host_env.staging_modal_rate_evidence(
+            app_root=app_root,
+            release_id="b" * 12 + "-staging",
+            microusd_per_second=53,
+        )
+
+
+def test_write_staging_modal_rate_evidence_is_atomic_root_only_and_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "staging-modal-rate-evidence.json"
+    ownership = []
+    monkeypatch.setattr(
+        configure_host_env.os,
+        "chown",
+        lambda path, uid, gid: ownership.append((path, uid, gid)),
+    )
+    values = {
+        "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "53",
+        "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+        "PWC_RELEASE_ID": "a" * 12 + "-staging",
+    }
+
+    configure_host_env.write_staging_modal_rate_evidence(target, values)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == values
+    assert target.stat().st_mode & 0o777 == 0o600
+    temporary = target.with_name(f".{target.name}.new-{os.getpid()}")
+    assert ownership == [(temporary, 0, 0)]
+    assert not temporary.exists()
+    assert target.stat().st_size <= 4096
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_staging_modal_rate_mode_is_confirmed_staging_only_and_content_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    remove: bool,
+):
+    release_id = "a" * 12 + "-staging"
+    app_root = _active_staging_release(tmp_path, release_id)
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    production = config_root / "production.env"
+    production.write_bytes(b"PRODUCTION=untouched\n")
+    target = config_root / "staging-modal-rate-evidence.json"
+    if remove:
+        target.write_text(
+            json.dumps(
+                configure_host_env.staging_modal_rate_evidence(
+                    app_root=app_root,
+                    release_id=release_id,
+                    microusd_per_second=53,
+                )
+            ),
+            encoding="utf-8",
+        )
+        target.chmod(0o600)
+    written = {}
+    monkeypatch.setattr(configure_host_env, "APP_ROOT", app_root)
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        configure_host_env,
+        "write_staging_modal_rate_evidence",
+        lambda path, values: written.update({"path": path, "values": values}),
+    )
+    monkeypatch.setattr(
+        configure_host_env,
+        "remove_staging_modal_rate_evidence",
+        lambda path, expected_release_id: written.update(
+            {"removed": path, "release_id": expected_release_id}
+        ),
+    )
+    mode = "remove" if remove else "install"
+    confirmation = (
+        "REMOVE_STAGING_MODAL_RATE_EVIDENCE"
+        if remove
+        else "INSTALL_STAGING_MODAL_RATE_EVIDENCE"
+    )
+    arguments = [
+        "configure_host_env.py",
+        "--legacy-env",
+        str(source),
+        f"--staging-modal-rate-evidence-{mode}-only",
+        "--staging-modal-rate-release-id",
+        release_id,
+        "--confirm",
+        confirmation,
+    ]
+    if not remove:
+        arguments.extend(["--staging-modal-rate-microusd-per-second", "53"])
+    monkeypatch.setattr(sys, "argv", arguments)
+
+    assert configure_host_env.main() == 0
+    output = capsys.readouterr().out
+    assert "53" not in output
+    assert release_id not in output
+    assert production.read_bytes() == b"PRODUCTION=untouched\n"
+    if remove:
+        assert written == {"removed": target, "release_id": release_id}
+    else:
+        assert written["path"] == target
+        assert written["values"]["PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND"] == "53"
+
+
+def test_staging_modal_rate_mode_rejects_missing_confirmation_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "source.env"
+    source.write_text("SOURCE=unused\n", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+    monkeypatch.setattr(configure_host_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "configure_host_env.py",
+            "--legacy-env",
+            str(source),
+            "--staging-modal-rate-evidence-install-only",
+            "--staging-modal-rate-release-id",
+            "a" * 12 + "-staging",
+            "--staging-modal-rate-microusd-per-second",
+            "53",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        configure_host_env.main()
+    assert not (config_root / "staging-modal-rate-evidence.json").exists()
+
+
 def test_deployment_runbook_has_reversible_staging_external_qualification_gate():
     runbook = Path("docs/deployment.md").read_text(encoding="utf-8")
 
@@ -4158,6 +4332,11 @@ def test_deployment_runbook_has_reversible_staging_external_qualification_gate()
     assert "must return `0`" in runbook
     assert "`pwc-rollback staging` does not restore" in runbook
     assert "Production remains unchanged" in runbook
+    assert "--staging-modal-rate-evidence-install-only" in runbook
+    assert "--staging-modal-rate-microusd-per-second 53" in runbook
+    assert "--confirm INSTALL_STAGING_MODAL_RATE_EVIDENCE" in runbook
+    assert "--staging-modal-rate-evidence-remove-only" in runbook
+    assert "--confirm REMOVE_STAGING_MODAL_RATE_EVIDENCE" in runbook
 
 
 def test_staging_chat_pi_prewarm_toggle_is_narrow_and_profiled():

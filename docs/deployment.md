@@ -531,12 +531,26 @@ test "$(basename -- "$qualification_release")" = "${qualification_sha:0:12}-stag
 sudo /srv/paperswithcode/.venv/bin/python \
   "$qualification_release/deploy/configure_host_env.py" \
   --legacy-env /etc/paperswithcode/staging.env \
+  --staging-modal-rate-evidence-install-only \
+  --staging-modal-rate-release-id "$(basename -- "$qualification_release")" \
+  --staging-modal-rate-microusd-per-second 53 \
+  --confirm INSTALL_STAGING_MODAL_RATE_EVIDENCE || exit 1
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$qualification_release/deploy/configure_host_env.py" \
+  --legacy-env /etc/paperswithcode/staging.env \
   --staging-durable-external-qualification-enable-only \
   --confirm ENABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION || exit 1
 sudo pwc-deploy staging "$qualification_sha" --refresh-environment || exit 1
 test "$(readlink -e /srv/paperswithcode/environments/staging/current)" = \
   "$qualification_release" || exit 1
 ```
+
+`53` is the explicitly reviewed current Modal executor rate in microusd per
+second. The helper has no rate default or fallback: re-review and supply the
+rate explicitly for each candidate. It binds the three-key evidence file to
+the exact active staging release and atomically installs it as root-owned mode
+`0600`. It does not invent an attestation timestamp or print the rate, release,
+credentials, or file contents.
 
 Before starting an explicitly authorized qualifier, run `pwc-status` and verify
 the active external worker without exposing its bearer token:
@@ -585,13 +599,21 @@ sudo /srv/paperswithcode/.venv/bin/python \
   --staging-durable-external-qualification-disable-only \
   --confirm DISABLE_STAGING_DURABLE_EXTERNAL_QUALIFICATION || exit 1
 sudo pwc-deploy staging "$qualification_sha" --refresh-environment || exit 1
+sudo /srv/paperswithcode/.venv/bin/python \
+  "$qualification_release/deploy/configure_host_env.py" \
+  --legacy-env /etc/paperswithcode/staging.env \
+  --staging-modal-rate-evidence-remove-only \
+  --staging-modal-rate-release-id "$(basename -- "$qualification_release")" \
+  --confirm REMOVE_STAGING_MODAL_RATE_EVIDENCE || exit 1
 ```
 
 Verify ordinary admission is still false, concurrency/cap remain `2`/`3`, and
 pool/prewarm are restored to `true`. `pwc-rollback staging` does not restore
 protected `/etc` configuration, so release rollback alone is not this profile's
-rollback. Production remains unchanged and has no corresponding activation
-mode.
+rollback. Run the separately confirmed exact-release removal even when the
+qualifier fails; it refuses a missing, symlinked, misowned, mispermissioned,
+wrong-source, or wrong-release evidence file. Production remains unchanged and
+has no corresponding activation mode.
 
 Pi prewarming and blank-pool admission are independent protected staging
 controls. Toggle Pi prewarming without changing admission, then refresh the

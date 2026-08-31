@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import secrets
 import subprocess
 import tomllib
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 CONFIG_ROOT = Path("/etc/paperswithcode")
+APP_ROOT = Path("/srv/paperswithcode")
 PRODUCTION_CHAT_SEALED_CONFIG = CONFIG_ROOT / "production-chat-prepared.env"
 STAGING_CHAT_ARTIFACT_BUCKET_ID = "nielsr/pwc-chat-artifacts-staging"
 
@@ -844,6 +846,125 @@ def write_env(path: Path, lines: dict[str, str], group: str) -> None:
     os.replace(temporary, path)
 
 
+def validate_active_staging_release(app_root: Path, release_id: str) -> None:
+    """Require one exact active immutable staging release and manifest identity."""
+
+    if re.fullmatch(r"[0-9a-f]{12}-staging", release_id) is None:
+        raise ValueError("active immutable staging release is invalid")
+    current = app_root / "environments" / "staging" / "current"
+    if not current.is_symlink():
+        raise ValueError("active immutable staging release is required")
+    try:
+        release = current.resolve(strict=True)
+        manifest_path = release / "release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("active immutable staging release is required") from None
+    sha = manifest.get("git_sha") if isinstance(manifest, dict) else None
+    if (
+        release.parent != app_root / "releases"
+        or release.name != release_id
+        or not isinstance(manifest, dict)
+        or manifest.get("release_id") != release_id
+        or not isinstance(sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+        or release_id != f"{sha[:12]}-staging"
+    ):
+        raise ValueError("active immutable staging release is required")
+
+
+def staging_modal_rate_evidence(
+    *, app_root: Path, release_id: str, microusd_per_second: int
+) -> dict[str, str]:
+    """Build explicit release-bound Modal rate evidence with no fallback."""
+
+    validate_active_staging_release(app_root, release_id)
+    if (
+        type(microusd_per_second) is not int
+        or not 1 <= microusd_per_second <= 1_000_000
+    ):
+        raise ValueError("staging Modal rate must be an explicit bounded integer")
+    return {
+        "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": str(microusd_per_second),
+        "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+        "PWC_RELEASE_ID": release_id,
+    }
+
+
+def write_staging_modal_rate_evidence(path: Path, values: dict[str, str]) -> None:
+    """Atomically install the fixed root-only Modal rate evidence contract."""
+
+    expected_keys = {
+        "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND",
+        "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID",
+        "PWC_RELEASE_ID",
+    }
+    if set(values) != expected_keys:
+        raise ValueError("staging Modal rate evidence keys are invalid")
+    payload = json.dumps(values, sort_keys=True, separators=(",", ":")) + "\n"
+    if len(payload.encode("utf-8")) > 4_096:
+        raise ValueError("staging Modal rate evidence is too large")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o711)
+    temporary = path.with_name(f".{path.name}.new-{os.getpid()}")
+    descriptor = None
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chown(temporary, 0, 0)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def remove_staging_modal_rate_evidence(path: Path, expected_release_id: str) -> None:
+    """Remove only the exact protected evidence for the active staging release."""
+
+    try:
+        metadata = path.lstat()
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError(
+            "protected staging Modal rate evidence is unavailable"
+        ) from None
+    try:
+        rate = int(values.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND", ""))
+    except (AttributeError, TypeError, ValueError):
+        rate = 0
+    if (
+        not path.is_file()
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_mode & 0o777 != 0o600
+        or metadata.st_size > 4_096
+        or not isinstance(values, dict)
+        or set(values)
+        != {
+            "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND",
+            "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID",
+            "PWC_RELEASE_ID",
+        }
+        or values.get("PWC_RELEASE_ID") != expected_release_id
+        or values.get("PWC_MODAL_EXECUTOR_RATE_SOURCE_ID") != "modal-staging-price-v1"
+        or not 1 <= rate <= 1_000_000
+        or values.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND") != str(rate)
+    ):
+        raise ValueError("protected staging Modal rate evidence does not match")
+    path.unlink()
+
+
 def staging_chat_capacity_values() -> dict[str, str]:
     """Qualified staging shape: two turns plus one warm blank sandbox."""
 
@@ -1394,6 +1515,14 @@ def main() -> int:
     parser.add_argument(
         "--staging-durable-external-qualification-disable-only", action="store_true"
     )
+    parser.add_argument(
+        "--staging-modal-rate-evidence-install-only", action="store_true"
+    )
+    parser.add_argument(
+        "--staging-modal-rate-evidence-remove-only", action="store_true"
+    )
+    parser.add_argument("--staging-modal-rate-release-id")
+    parser.add_argument("--staging-modal-rate-microusd-per-second", type=int)
     parser.add_argument("--staging-chat-pi-prewarm-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pi-prewarm-disable-only", action="store_true")
     parser.add_argument("--staging-chat-routing-enable-only", action="store_true")
@@ -1464,6 +1593,63 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    modal_rate_modes = (
+        args.staging_modal_rate_evidence_install_only,
+        args.staging_modal_rate_evidence_remove_only,
+    )
+    if any(modal_rate_modes):
+        other_modes = [
+            value
+            for key, value in vars(args).items()
+            if key
+            not in {
+                "staging_modal_rate_evidence_install_only",
+                "staging_modal_rate_evidence_remove_only",
+            }
+            and isinstance(value, bool)
+            and value
+        ]
+        if (
+            sum(modal_rate_modes) != 1
+            or other_modes
+            or args.codex_jobs_namespace
+            or args.modal_profile
+            or not args.staging_modal_rate_release_id
+        ):
+            parser.error("staging Modal rate evidence mode must run alone")
+        install = args.staging_modal_rate_evidence_install_only
+        confirmation = (
+            "INSTALL_STAGING_MODAL_RATE_EVIDENCE"
+            if install
+            else "REMOVE_STAGING_MODAL_RATE_EVIDENCE"
+        )
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        if install != (args.staging_modal_rate_microusd_per_second is not None):
+            parser.error("install requires one explicit staging Modal rate")
+        try:
+            validate_active_staging_release(
+                APP_ROOT, args.staging_modal_rate_release_id
+            )
+            path = CONFIG_ROOT / "staging-modal-rate-evidence.json"
+            if install:
+                values = staging_modal_rate_evidence(
+                    app_root=APP_ROOT,
+                    release_id=args.staging_modal_rate_release_id,
+                    microusd_per_second=args.staging_modal_rate_microusd_per_second,
+                )
+                write_staging_modal_rate_evidence(path, values)
+            else:
+                remove_staging_modal_rate_evidence(
+                    path, args.staging_modal_rate_release_id
+                )
+        except ValueError as error:
+            parser.error(str(error))
+        print(
+            f"{'installed' if install else 'removed'} protected staging Modal rate "
+            "evidence; no service was restarted"
+        )
+        return 0
     scope_title_modes = (
         args.staging_scope_title_hf_only,
         args.production_scope_title_hf_only,
