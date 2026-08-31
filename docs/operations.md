@@ -589,6 +589,19 @@ admin-triggered jobs:
 sudo pwc-cron enqueue_hf_daily_paper_curation --retry-job <job-uuid>
 ```
 
+To launch one explicit queued daily or trending canary while normal dispatch
+remains paused by an explicit operator action, use its durable job UUID. This
+command rechecks the token guardrail and shared capacity, dispatches only the
+selected row, and never resumes the scheduler:
+
+```bash
+sudo pwc-cron enqueue_hf_daily_paper_curation --canary-job <job-uuid>
+```
+
+For a terminal daily job, first use `--retry-job` and then pass the returned
+queued retry UUID to `--canary-job`. Admin jobs and non-queued rows are rejected.
+The command exits nonzero if the remote job does not reach the running state.
+
 Replay a saved proposal through the currently deployed callback validators
 without applying writes. The command reports current policy validity and
 isolated benchmark-gap rejections and exits nonzero when the mutation proposal
