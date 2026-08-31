@@ -96,3 +96,24 @@ def test_external_pi_admission_selects_only_pi_modal_turns():
         )
         is False
     )
+
+
+def test_qualified_pi_turn_selects_external_runner_when_global_admission_is_off():
+    settings = get_settings().model_copy(deep=True)
+    settings.environment = "staging"
+    settings.chat_external_pi_admission_enabled = False
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="test",
+        model_route=settings.chat_deepseek_v4_flash_route,
+        sdk_session_id=None,
+        sdk_project_key=None,
+        agent_harness="pi",
+        execution_backend="modal_cli",
+        reasoning_effort="low",
+        qualified_external_pi=True,
+    )
+
+    assert _uses_external_pi(settings, admission) is True

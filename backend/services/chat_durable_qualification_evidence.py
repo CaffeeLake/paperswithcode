@@ -8,7 +8,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Callable
+from typing import Callable, Literal
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -59,6 +59,21 @@ class QualificationScope:
     app_release_id: str
     window_started_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationContext:
+    """Server-derived authority for one protected functional turn."""
+
+    scope_id: uuid.UUID
+    run_id: str
+    profile: Literal["32-functional-turns"]
+    workload: Literal["no_tool", "read", "bash"]
+    app_release_id: str
+    window_started_at: datetime
+    expires_at: datetime
+    turn_capacity: int = 32
+    executor_live_cap: int = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +241,73 @@ class ChatDurableQualificationEvidenceService:
         ):
             raise QualificationEvidenceUnavailable("qualification scope is unavailable")
         return scope
+
+    def require_active_context(
+        self,
+        scope_id: uuid.UUID,
+        *,
+        workload: str,
+        settings: Settings,
+    ) -> QualificationContext:
+        scope = self.require_active_scope(scope_id, settings=settings)
+        if (
+            not settings.chat_durable_turn_dispatch_enabled
+            or scope.profile != "32-functional-turns"
+            or workload not in {"no_tool", "read", "bash"}
+        ):
+            raise QualificationEvidenceUnavailable(
+                "qualification capacity scope is unavailable"
+            )
+        return QualificationContext(
+            scope_id=scope.id,
+            run_id=scope.run_id,
+            profile="32-functional-turns",
+            workload=workload,
+            app_release_id=scope.app_release_id,
+            window_started_at=_as_utc(scope.window_started_at),
+            expires_at=_as_utc(scope.expires_at),
+        )
+
+    def executor_live_cap(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        chat_session_id: uuid.UUID,
+        settings: Settings,
+    ) -> int | None:
+        """Authorize elevated executor capacity from exact persisted evidence."""
+
+        if settings.environment != "staging":
+            return None
+        row = self.db.execute(
+            select(ChatTurnLatency, ChatQualificationScope)
+            .join(
+                ChatQualificationScope,
+                ChatQualificationScope.id == ChatTurnLatency.qualification_scope_id,
+            )
+            .where(
+                ChatTurnLatency.turn_id == turn_id,
+                ChatTurnLatency.chat_session_id == chat_session_id,
+                ChatTurnLatency.qualification_profile == "32-functional-turns",
+                ChatTurnLatency.qualification_workload.in_(("read", "bash")),
+                ChatTurnLatency.qualification_scenario == "reliability",
+                ChatTurnLatency.app_release_id == settings.release_id,
+                ChatQualificationScope.profile == "32-functional-turns",
+                ChatQualificationScope.app_release_id == settings.release_id,
+                ChatQualificationScope.window_ended_at.is_(None),
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        latency, scope = row
+        now = self.now()
+        if (
+            latency.qualification_run_id != scope.run_id
+            or _as_utc(scope.expires_at) <= now
+            or _as_utc(latency.admitted_at) < _as_utc(scope.window_started_at)
+        ):
+            return None
+        return 16
 
     def collect(
         self,

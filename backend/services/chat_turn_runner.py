@@ -36,7 +36,7 @@ class ChatTurnRunner(Protocol):
 
 def _uses_external_pi(settings: Settings, admission: TurnAdmission) -> bool:
     return bool(
-        settings.chat_external_pi_admission_enabled
+        (settings.chat_external_pi_admission_enabled or admission.qualified_external_pi)
         and admission.agent_harness == "pi"
         and admission.execution_backend == "modal_cli"
     )

@@ -22,6 +22,7 @@ from backend.models.database import (
 from backend.services.chat_durable_qualification_evidence import (
     ChatDurableQualificationEvidenceService,
     ChatQualificationEvidenceRepository,
+    QualificationContext,
     QualificationEvidenceUnavailable,
     record_qualification_event_safely,
 )
@@ -34,7 +35,11 @@ END = START + timedelta(minutes=1)
 
 
 def _settings() -> Settings:
-    return Settings(environment="staging", release_id="0123456789ab-staging")
+    return Settings(
+        environment="staging",
+        release_id="0123456789ab-staging",
+        chat_durable_turn_dispatch_enabled=True,
+    )
 
 
 @pytest.fixture
@@ -64,6 +69,93 @@ def _scope(
         window_started_at=START,
         expires_at=END + timedelta(hours=1),
     )
+
+
+def test_active_functional_scope_derives_server_trusted_capacity_context(engine):
+    with Session(engine) as db:
+        db.add(_scope())
+        db.commit()
+
+        context = ChatDurableQualificationEvidenceService(
+            db, now=lambda: START
+        ).require_active_context(
+            SCOPE_ID,
+            workload="bash",
+            settings=_settings(),
+        )
+
+    assert context == QualificationContext(
+        scope_id=SCOPE_ID,
+        run_id="qualified-f32",
+        profile="32-functional-turns",
+        workload="bash",
+        app_release_id="0123456789ab-staging",
+        window_started_at=START,
+        expires_at=END + timedelta(hours=1),
+        turn_capacity=32,
+        executor_live_cap=16,
+    )
+
+
+@pytest.mark.parametrize(
+    ("scope_changes", "settings_changes", "now", "workload"),
+    [
+        ({"profile": "100-immediate-admission"}, {}, START, "no_tool"),
+        ({"window_ended_at": START}, {}, START, "no_tool"),
+        ({"expires_at": START + timedelta(seconds=1)}, {}, END, "no_tool"),
+        ({"app_release_id": "wrong-release"}, {}, START, "no_tool"),
+        ({}, {"environment": "production"}, START, "no_tool"),
+        ({}, {"chat_durable_turn_dispatch_enabled": False}, START, "no_tool"),
+        ({}, {}, START, "unsupported"),
+    ],
+)
+def test_untrusted_or_inactive_scope_cannot_derive_capacity_context(
+    engine, scope_changes, settings_changes, now, workload
+):
+    with Session(engine) as db:
+        scope = _scope()
+        for name, value in scope_changes.items():
+            setattr(scope, name, value)
+        db.add(scope)
+        db.commit()
+        settings = _settings().model_copy(update=settings_changes)
+
+        with pytest.raises(QualificationEvidenceUnavailable):
+            ChatDurableQualificationEvidenceService(
+                db, now=lambda: now
+            ).require_active_context(
+                SCOPE_ID,
+                workload=workload,
+                settings=settings,
+            )
+
+
+def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
+    unrelated_turn = uuid.uuid4()
+    with Session(engine) as db:
+        db.add(_scope())
+        latency = _latency(24, workload="bash")
+        latency.terminal_status = None
+        db.add(latency)
+        db.commit()
+        service = ChatDurableQualificationEvidenceService(db, now=lambda: START)
+
+        assert (
+            service.executor_live_cap(
+                turn_id=latency.turn_id,
+                chat_session_id=latency.chat_session_id,
+                settings=_settings(),
+            )
+            == 16
+        )
+        assert (
+            service.executor_live_cap(
+                turn_id=unrelated_turn,
+                chat_session_id=latency.chat_session_id,
+                settings=_settings(),
+            )
+            is None
+        )
 
 
 def _latency(

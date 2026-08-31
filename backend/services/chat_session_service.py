@@ -39,6 +39,7 @@ from backend.services.chat_edit_service import (
     user_message_projection_bytes,
 )
 from backend.services.chat_local_turn_lease import ChatLocalTurnLeaseService
+from backend.services.chat_durable_qualification_evidence import QualificationContext
 from backend.services.chat_title_service import normalize_title
 from backend.services.chat_turn_admission_coordinator import (
     ChatTurnAdmissionCoordinator,
@@ -139,6 +140,7 @@ class TurnAdmission:
     durable_claim: TurnLeaseClaim | None = None
     attach_only: bool = False
     durable_event_sequence: int = 0
+    qualified_external_pi: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1686,6 +1688,7 @@ class ChatSessionService:
         web_search_enabled: bool = False,
         reasoning_effort: str | None = None,
         update_web_search_preference: bool = True,
+        qualification: QualificationContext | None = None,
     ) -> TurnAdmission:
         durable_coordinator: ChatTurnAdmissionCoordinator | None = None
         durable_preflight: DurableAdmissionPreflight | None = None
@@ -1698,6 +1701,7 @@ class ChatSessionService:
                     hf_user_id=owner.hf_user_id,
                     request_id=client_message_id,
                     requested_session_id=session_id,
+                    qualification=qualification,
                 )
                 recovered_durable_preflight_expiry = (
                     durable_preflight.reconciled_expired_count > 0
@@ -1718,6 +1722,7 @@ class ChatSessionService:
                         hf_user_id=owner.hf_user_id,
                         request_id=client_message_id,
                         requested_session_id=session_id,
+                        qualification=qualification,
                     )
                 except (TurnJobError, ValueError, SQLAlchemyError) as retry_error:
                     raise self._durable_admission_error(retry_error) from retry_error
@@ -1734,6 +1739,16 @@ class ChatSessionService:
                 None
                 if session_id is None
                 else self._owned(owner, session_id, lock=True)
+            )
+        if (
+            qualification is not None
+            and session is not None
+            and getattr(session, "agent_harness", "claude") != "pi"
+        ):
+            raise ChatServiceError(
+                "qualification_session_harness_mismatch",
+                409,
+                "Qualification sessions must already use the Pi harness",
             )
         effective_reasoning_effort = self._validate_reasoning_effort(
             reasoning_effort
@@ -1762,6 +1777,8 @@ class ChatSessionService:
         if replay.kind == "admitted":
             assert replay.admission is not None
             admission = replay.admission
+            if qualification is not None:
+                admission = replace(admission, qualified_external_pi=True)
             if durable_coordinator is not None:
                 assert durable_preflight is not None
                 try:
@@ -1832,14 +1849,18 @@ class ChatSessionService:
             if session is not None
             else (
                 "pi"
-                if self.settings.chat_new_session_pi_percentage == 100
+                if qualification is not None
+                or self.settings.chat_new_session_pi_percentage == 100
                 else self.settings.chat_default_agent_harness
             )
         )
         if (
             durable_coordinator is not None
             and durable_preflight is not None
-            and self.settings.chat_external_pi_admission_enabled
+            and (
+                self.settings.chat_external_pi_admission_enabled
+                or qualification is not None
+            )
             and target_harness == "pi"
         ):
             try:
@@ -1866,6 +1887,7 @@ class ChatSessionService:
                     if primary_paper_id is not None
                     else {}
                 ),
+                agent_harness_override=("pi" if qualification is not None else None),
             )
 
         stale = self._load_expired_active_message(session, now)
@@ -1976,7 +1998,7 @@ class ChatSessionService:
                 ),
             )
         )
-        return self._turn_admission(
+        admission = self._turn_admission(
             session,
             plan,
             fetchable_urls,
@@ -1987,6 +2009,10 @@ class ChatSessionService:
                 and self.settings.chat_posterly_enabled
                 and detect_poster_intent(text)
             ),
+        )
+        return replace(
+            admission,
+            qualified_external_pi=qualification is not None,
         )
 
     def bind_sdk_session(

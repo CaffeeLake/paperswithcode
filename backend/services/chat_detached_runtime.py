@@ -107,7 +107,9 @@ class ChatDetachedRuntime:
         finally:
             if self._orchestrators.get(claim.turn_id) is orchestrator:
                 self._orchestrators.pop(claim.turn_id, None)
-        if self.settings.chat_external_pi_admission_enabled:
+        if self.settings.chat_external_pi_admission_enabled or getattr(
+            orchestrator.admission, "qualified_external_pi", False
+        ):
             await self._transaction(
                 lambda db: ChatExternalWorkerCapacityRepository.release_turn(
                     db, turn_id=claim.turn_id

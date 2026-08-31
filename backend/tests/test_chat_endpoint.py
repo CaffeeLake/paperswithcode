@@ -941,6 +941,43 @@ def test_failed_detached_terminal_callback_releases_orchestrator_registration():
         runtime._orchestrators.pop(turn_id, None)
 
 
+def test_qualified_external_turn_releases_reservation_when_global_flag_is_off(
+    monkeypatch,
+):
+    from backend.services import chat_detached_runtime as runtime_module
+
+    turn_id = uuid.uuid4()
+    claim = SimpleNamespace(turn_id=turn_id)
+    admission = SimpleNamespace(qualified_external_pi=True)
+    released = []
+
+    class Orchestrator:
+        async def persist_detached_terminal(self, *_args):
+            return None
+
+    orchestrator = Orchestrator()
+    orchestrator.admission = admission
+    settings = get_settings().model_copy(
+        update={"chat_external_pi_admission_enabled": False}
+    )
+    runtime = runtime_module.ChatDetachedRuntime(settings)
+    runtime._orchestrators[turn_id] = orchestrator
+
+    async def transaction(operation):
+        operation(SimpleNamespace())
+
+    runtime._transaction = transaction
+    monkeypatch.setattr(
+        runtime_module.ChatExternalWorkerCapacityRepository,
+        "release_turn",
+        lambda _db, *, turn_id: released.append(turn_id),
+    )
+
+    asyncio.run(runtime._persist_terminal(claim, "completed", None))
+
+    assert released == [turn_id]
+
+
 def test_stream_rejects_paper_selection_when_flag_is_off(monkeypatch):
     settings = Settings(
         _env_file=None,

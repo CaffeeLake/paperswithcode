@@ -18,6 +18,7 @@ from backend.services.chat_external_worker_capacity import (
     ExternalWorkerReservation,
     external_worker_endpoints,
 )
+from backend.services.chat_durable_qualification_evidence import QualificationContext
 from backend.services.chat_turn_job_repository import (
     ChatOverload,
     ChatTurnJobRepository,
@@ -64,6 +65,7 @@ class ChatTurnAdmissionCoordinator:
         hf_user_id: str,
         request_id: str,
         requested_session_id: uuid.UUID | None,
+        qualification: QualificationContext | None = None,
         now: datetime | None = None,
     ) -> DurableAdmissionPreflight:
         now = now or datetime.now(UTC)
@@ -78,7 +80,11 @@ class ChatTurnAdmissionCoordinator:
             hf_user_id=hf_user_id,
             request_id=request_id,
             chat_session_id=requested_session_id,
-            emergency_capacity=self.settings.chat_max_concurrency,
+            emergency_capacity=(
+                qualification.turn_capacity
+                if qualification is not None
+                else self.settings.chat_max_concurrency
+            ),
             authority_locked=True,
             now=now,
         )

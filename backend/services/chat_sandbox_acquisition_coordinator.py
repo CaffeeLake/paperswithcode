@@ -284,6 +284,7 @@ class ChatSandboxAcquisitionCoordinator:
         pool_lookup_ms: int | None = None,
         budget_prechecked: bool = False,
         pool_miss_reason: str | None = None,
+        total_live_cap: int | None = None,
     ) -> SandboxAcquisitionOutcome:
         started = self.perf_counter()
         if not budget_prechecked and self.spend_enforced:
@@ -316,6 +317,7 @@ class ChatSandboxAcquisitionCoordinator:
             deadline=deadline,
             started=started,
             pool_lookup_ms=pool_lookup_ms,
+            total_live_cap=total_live_cap,
         )
         if isinstance(selected, LeaseReused):
             return selected
@@ -337,11 +339,14 @@ class ChatSandboxAcquisitionCoordinator:
         deadline: float,
         started: float,
         pool_lookup_ms: int | None,
+        total_live_cap: int | None,
     ) -> StartSelected | LeaseReused:
         restarted = False
         while True:
             try:
-                acquisition = self._acquire_once(chat_session_id)
+                acquisition = self._acquire_once(
+                    chat_session_id, total_live_cap=total_live_cap
+                )
             except LeaseDecisionChanged:
                 continue
 
@@ -394,7 +399,9 @@ class ChatSandboxAcquisitionCoordinator:
                 self._raise_capacity()
             raise AssertionError("Unhandled sandbox acquisition outcome")
 
-    def _acquire_once(self, chat_session_id: uuid.UUID):
+    def _acquire_once(
+        self, chat_session_id: uuid.UUID, *, total_live_cap: int | None = None
+    ):
         creation_token = self.creation_token_factory()
         worker_generation = self.generation_factory()
         now = self.utcnow()
@@ -425,6 +432,7 @@ class ChatSandboxAcquisitionCoordinator:
                     now=now,
                     ready_timeout_seconds=self.ready_timeout_seconds,
                     reserve_interval=reserve_interval,
+                    total_live_cap=total_live_cap,
                 )
             except ChatComputeDisabled as error:
                 # Exiting the transaction normally preserves the durable trip.

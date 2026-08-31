@@ -2078,11 +2078,13 @@ async def stream_chat(
         with db_manager.session_local() as db:
             try:
                 try:
-                    qualified_scope_record = (
+                    qualification_context = (
                         ChatDurableQualificationEvidenceService(
                             db
-                        ).require_active_scope(
-                            qualification_scope[0], settings=settings
+                        ).require_active_context(
+                            qualification_scope[0],
+                            workload=qualification_scope[1],
+                            settings=settings,
                         )
                         if qualification_scope is not None
                         else None
@@ -2092,15 +2094,6 @@ async def stream_chat(
                         status_code=409,
                         detail={"code": "qualification_scope_unavailable"},
                     ) from None
-                if (
-                    qualified_scope_record is not None
-                    and qualified_scope_record.profile == "100-immediate-admission"
-                    and qualification_scope[1] != "no_tool"
-                ):
-                    raise HTTPException(
-                        status_code=409,
-                        detail={"code": "qualification_workload_rejected"},
-                    )
                 service = ChatSessionService(db, settings)
                 admission = service.begin_turn(
                     owner,
@@ -2119,6 +2112,7 @@ async def stream_chat(
                     web_search_enabled=body.web_search_enabled,
                     reasoning_effort=body.reasoning_effort,
                     update_web_search_preference=search_is_available,
+                    qualification=qualification_context,
                 )
                 transport = settings.chat_route_providers[admission.model_route]
                 if (
@@ -2157,12 +2151,12 @@ async def stream_chat(
                         agent_harness=admission.agent_harness,
                     )
                     if (
-                        qualified_scope_record is not None
+                        qualification_context is not None
                         and not latency.mark_qualification(
                             request_id,
-                            scope_id=qualified_scope_record.id,
-                            run_id=qualified_scope_record.run_id,
-                            profile=qualified_scope_record.profile,
+                            scope_id=qualification_context.scope_id,
+                            run_id=qualification_context.run_id,
+                            profile=qualification_context.profile,
                             workload=qualification_scope[1],
                             scenario="reliability",
                         )
@@ -2218,7 +2212,7 @@ async def stream_chat(
                     db.rollback()
                 raise
         if (
-            qualified_scope_record is not None
+            qualification_context is not None
             and not admission.replay_assistant
             and not getattr(admission, "attach_only", False)
         ):

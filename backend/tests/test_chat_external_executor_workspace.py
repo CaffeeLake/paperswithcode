@@ -81,8 +81,18 @@ class ExpiringTurnAt(LiveTurns):
 TURN_CLAIM = TurnLeaseClaim(uuid.uuid4(), "worker", 3, 7)
 
 
-def setup_manager(*, health: ExecutorHealth | None = None, observe=None, record=None):
-    settings = _settings(chat_workspace_snapshots_enabled=False)
+def setup_manager(
+    *,
+    health: ExecutorHealth | None = None,
+    observe=None,
+    record=None,
+    qualification_capacity=None,
+    sandbox_cap=2,
+):
+    settings = _settings(
+        chat_workspace_snapshots_enabled=False,
+        chat_sandbox_total_live_cap=sandbox_cap,
+    )
     sessions = _database()
     session_id = uuid.uuid4()
     with sessions() as db, db.begin():
@@ -100,8 +110,45 @@ def setup_manager(*, health: ExecutorHealth | None = None, observe=None, record=
         turn_repository=LiveTurns(),
         observe=observe,
         record_evidence=record,
+        qualification_capacity=(
+            qualification_capacity
+            if qualification_capacity is not None
+            else (lambda *_args, **_kwargs: None)
+        ),
     )
     return manager, sessions, session_id, provider
+
+
+@pytest.mark.parametrize(
+    ("qualified_cap", "expected_cap"),
+    [(16, 16), (None, 3)],
+)
+def test_workspace_capacity_uses_only_persisted_turn_authorization(
+    qualified_cap, expected_cap
+):
+    manager, _sessions, session_id, _provider = setup_manager(
+        qualification_capacity=lambda *_args, **_kwargs: qualified_cap,
+        sandbox_cap=3,
+    )
+    recorded_caps = []
+    acquire = manager.acquisition.capacity_repository.acquire
+
+    def recording_acquire(*args, **kwargs):
+        recorded_caps.append(kwargs["total_live_cap"])
+        return acquire(*args, **kwargs)
+
+    manager.acquisition.capacity_repository.acquire = recording_acquire
+
+    async def exercise():
+        workspace = await manager.acquire(
+            session_id=session_id,
+            turn_claim=TURN_CLAIM,
+        )
+        assert await manager.release(workspace)
+
+    asyncio.run(exercise())
+
+    assert recorded_caps == [expected_cap]
 
 
 def test_workspace_lifecycle_records_exact_turn_and_session_evidence():
