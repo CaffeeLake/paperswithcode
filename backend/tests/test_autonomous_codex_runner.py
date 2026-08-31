@@ -89,6 +89,12 @@ def db():
 
 @pytest.fixture(autouse=True)
 def provider_reservation(monkeypatch):
+    monkeypatch.setattr(
+        AutonomousOperationsRepository,
+        "_database_now",
+        staticmethod(lambda _db: NOW),
+    )
+
     def reserve(_broker, value, existing_reservation_id, attestation_context):
         reservation_id = existing_reservation_id or f"run:{value.context.run_id.hex}"
         return VerifiedCredentialReservation(
