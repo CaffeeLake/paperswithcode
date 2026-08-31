@@ -648,6 +648,35 @@ def test_chat_stream_producer_preserves_execution_lost_terminal_code():
     assert queue.get_nowait() == {"type": "_research_finished"}
 
 
+def test_chat_stream_producer_cancels_worker_after_unexpected_failure():
+    class FailedRunner:
+        def __init__(self):
+            self.cancelled = False
+
+        async def events(self):
+            raise TypeError("provider detail must not escape")
+            yield
+
+        async def cancel(self):
+            self.cancelled = True
+
+    runner = FailedRunner()
+    coordinator = ChatStreamOrchestrator.__new__(ChatStreamOrchestrator)
+    coordinator.runner = runner
+    coordinator.admission = SimpleNamespace(session_id=uuid.uuid4())
+    queue = asyncio.Queue()
+
+    asyncio.run(coordinator._produce_research(queue))
+
+    assert runner.cancelled is True
+    assert queue.get_nowait() == {
+        "type": "error",
+        "message": "The model provider is unavailable.",
+        "code": "provider_error",
+    }
+    assert queue.get_nowait() == {"type": "_research_finished"}
+
+
 @pytest.mark.parametrize("failure", ["cursor_gap", "aggregate_limit"])
 def test_external_pi_runner_aborts_on_recovery_validation_failure(monkeypatch, failure):
     if failure == "aggregate_limit":

@@ -2076,6 +2076,9 @@ class ChatStreamOrchestrator:
         except SandboxError as exc:
             await queue.put({"type": "error", "message": str(exc), "code": exc.code})
         except Exception as exc:
+            assert self.runner is not None
+            with contextlib.suppress(Exception):
+                await self.runner.cancel()
             logger.warning(
                 "chat research producer failed session_id=%s error=%s origin=%s",
                 self.admission.session_id,
