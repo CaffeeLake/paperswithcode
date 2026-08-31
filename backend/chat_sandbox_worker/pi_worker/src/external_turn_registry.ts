@@ -45,6 +45,7 @@ export class ExternalTurnRun {
   }>();
   private readonly completedToolDigests = new Map<string, string>();
   private cancelWorker: (() => Promise<void>) | undefined;
+  private disposeWorker: (() => Promise<void>) | undefined;
   private cancellation: Promise<void> | undefined;
   private terminalSequence: number | undefined;
   private terminalTimer: NodeJS.Timeout | undefined;
@@ -65,6 +66,10 @@ export class ExternalTurnRun {
 
   setCancelWorker(cancel: () => Promise<void>): void {
     this.cancelWorker = cancel;
+  }
+
+  setDisposeWorker(dispose: () => Promise<void>): void {
+    this.disposeWorker = dispose;
   }
 
   emit = (_requestId: string, event: PwCEvent): void => {
@@ -216,6 +221,7 @@ export class ExternalTurnRun {
     this.frames.length = 0;
     this.bufferedBytes = 0;
     this.transport = undefined;
+    void this.disposeWorker?.().catch(() => undefined);
     this.release();
   }
 }

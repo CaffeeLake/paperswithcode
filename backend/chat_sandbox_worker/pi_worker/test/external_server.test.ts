@@ -199,6 +199,17 @@ test("external worker streams one authenticated Pi turn without a local shell", 
       leaseGeneration: 9,
     });
     await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(disposals, 0);
+    const terminal = messages.find((message) => message.type === "worker_done");
+    assert(terminal);
+    socket.send(JSON.stringify({
+      v: 1,
+      type: "ack_terminal",
+      request_id: "request-1",
+      turnClaim: durableTurnClaim,
+      sequence: terminal.worker_sequence,
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(disposals, 1);
   } finally {
     socket.close();

@@ -341,7 +341,8 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
         candidate = turns.start(run.request_id, run.turnClaim, socket);
         const worker = options.createTurnWorker!(candidate.emit, run, candidate.channel);
         candidate.setCancelWorker(() => worker.cancel(run.request_id));
-        const running = worker.run(run).finally(() => worker.dispose());
+        candidate.setDisposeWorker(() => worker.dispose());
+        const running = worker.run(run);
         retained = candidate;
         operationCounters.model_calls += 1;
         void running;
