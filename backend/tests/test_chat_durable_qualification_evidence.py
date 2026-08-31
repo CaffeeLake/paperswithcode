@@ -189,8 +189,11 @@ def test_executor_live_cap_requires_exact_persisted_functional_turn(engine):
     assert lock_requests == [(SCOPE_ID, True), (SCOPE_ID, True)]
 
 
-def test_external_pi_authority_survives_admission_reconstruction(engine):
+def test_external_pi_authority_locks_reservation_for_capability_transaction(
+    engine, monkeypatch
+):
     from backend.services.chat_external_worker_capacity import (
+        ChatExternalWorkerCapacityRepository,
         ExternalWorkerCapacityUnavailable,
     )
 
@@ -214,6 +217,18 @@ def test_external_pi_authority_survives_admission_reconstruction(engine):
     latency = _latency(0, workload="no_tool")
     latency.terminal_status = None
     lock_requests = []
+    reservation_locks = []
+    require_turn = ChatExternalWorkerCapacityRepository.require_turn
+
+    def recording_require_turn(self, db, *, lock=False, **kwargs):
+        reservation_locks.append(lock)
+        if lock:
+            return require_turn(self, db, lock=True, **kwargs)
+        return require_turn(self, db, **kwargs)
+
+    monkeypatch.setattr(
+        ChatExternalWorkerCapacityRepository, "require_turn", recording_require_turn
+    )
 
     class LockedService(ChatDurableQualificationEvidenceService):
         def require_active_scope(self, scope_id, *, settings, lock=False):
@@ -274,6 +289,7 @@ def test_external_pi_authority_survives_admission_reconstruction(engine):
             )
 
     assert lock_requests == [(SCOPE_ID, True), (SCOPE_ID, True)]
+    assert reservation_locks == [True, True]
 
 
 def _latency(
@@ -1034,7 +1050,7 @@ def test_scope_collision_and_bounded_expiry_cleanup(engine):
         )
 
 
-def test_postgresql_teardown_serializes_authorization_capacity_and_eviction():
+def test_postgresql_qualification_locks_serialize_cleanup_and_teardown_races():
     url = os.getenv("PWC_QUALIFICATION_TEST_DATABASE_URL")
     if not url:
         pytest.skip("explicit disposable qualification PostgreSQL URL is required")
@@ -1093,6 +1109,9 @@ def test_postgresql_teardown_serializes_authorization_capacity_and_eviction():
                   contract_version VARCHAR(128) NOT NULL,
                   maximum_sessions INTEGER NOT NULL, reserved_at TIMESTAMPTZ NOT NULL,
                   expires_at TIMESTAMPTZ NOT NULL
+                );
+                CREATE TABLE issued_external_capabilities (
+                  id UUID PRIMARY KEY, turn_id UUID NOT NULL
                 );
                 CREATE UNIQUE INDEX uq_chat_qualification_evidence_eviction_turn
                   ON chat_qualification_evidence_events (qualification_scope_id, turn_id)
@@ -1263,6 +1282,116 @@ def test_postgresql_teardown_serializes_authorization_capacity_and_eviction():
                     settings=settings,
                 )
             )
+
+    from backend.services.chat_external_worker_capacity import (
+        ChatExternalWorkerCapacityRepository,
+        ExternalWorkerCapacityUnavailable,
+    )
+
+    authorization_holds_reservation = threading.Event()
+    release_authorization = threading.Event()
+    cleanup_finished = threading.Event()
+
+    def authorize_and_issue():
+        target = _latency(0)
+        with Session(postgres) as db, db.begin():
+            db.execute(text(f"SET search_path TO {schema}"))
+            assert ChatDurableQualificationEvidenceService(
+                db, now=lambda: START
+            ).external_pi_authorized(
+                turn_id=target.turn_id,
+                chat_session_id=target.chat_session_id,
+                settings=settings,
+            )
+            db.execute(
+                text(
+                    "INSERT INTO issued_external_capabilities (id,turn_id) "
+                    "VALUES (:id,:turn_id)"
+                ),
+                {"id": uuid.uuid4(), "turn_id": target.turn_id},
+            )
+            authorization_holds_reservation.set()
+            release_authorization.wait(timeout=5)
+
+    def cleanup_reservation():
+        with Session(postgres) as db, db.begin():
+            db.execute(text(f"SET search_path TO {schema}"))
+            ChatExternalWorkerCapacityRepository.release_turn(
+                db, turn_id=_latency(0).turn_id
+            )
+        cleanup_finished.set()
+
+    authorization_thread = threading.Thread(target=authorize_and_issue)
+    authorization_thread.start()
+    assert authorization_holds_reservation.wait(timeout=5)
+    cleanup_thread = threading.Thread(target=cleanup_reservation)
+    cleanup_thread.start()
+    cleanup_thread.join(timeout=0.1)
+    assert cleanup_thread.is_alive()
+    assert not cleanup_finished.is_set()
+    release_authorization.set()
+    for thread in (authorization_thread, cleanup_thread):
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    with postgres.begin() as connection:
+        connection.execute(text(f"SET search_path TO {schema}"))
+        assert (
+            connection.scalar(text("SELECT count(*) FROM issued_external_capabilities"))
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM chat_external_worker_reservations")
+            )
+            == 0
+        )
+        connection.execute(
+            text(
+                "INSERT INTO chat_external_worker_reservations "
+                "(request_id,turn_id,endpoint_id,worker_id,instance_id,worker_generation,"
+                "release_id,contract_version,maximum_sessions,reserved_at,expires_at) "
+                "VALUES ('cleanup-first',:turn_id,'qualified','worker-qualified',"
+                ":instance_id,1,:release,'external-pi-v1',32,:start,:expiry)"
+            ),
+            {
+                "turn_id": _latency(0).turn_id,
+                "instance_id": instance_id,
+                "release": _settings().release_id,
+                "start": START,
+                "expiry": END + timedelta(hours=1),
+            },
+        )
+
+    cleanup_reservation()
+    cleanup_first_authorized = False
+    with Session(postgres) as db, db.begin():
+        db.execute(text(f"SET search_path TO {schema}"))
+        try:
+            cleanup_first_authorized = ChatDurableQualificationEvidenceService(
+                db, now=lambda: START
+            ).external_pi_authorized(
+                turn_id=_latency(0).turn_id,
+                chat_session_id=_latency(0).chat_session_id,
+                settings=settings,
+            )
+        except ExternalWorkerCapacityUnavailable:
+            pass
+        if cleanup_first_authorized:
+            db.execute(
+                text(
+                    "INSERT INTO issued_external_capabilities (id,turn_id) "
+                    "VALUES (:id,:turn_id)"
+                ),
+                {"id": uuid.uuid4(), "turn_id": _latency(0).turn_id},
+            )
+    assert not cleanup_first_authorized
+    with postgres.begin() as connection:
+        connection.execute(text(f"SET search_path TO {schema}"))
+        assert (
+            connection.scalar(text("SELECT count(*) FROM issued_external_capabilities"))
+            == 1
+        )
 
     threads = [threading.Thread(target=teardown) for _ in range(2)]
     for thread in threads:

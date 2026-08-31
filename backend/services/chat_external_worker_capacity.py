@@ -275,13 +275,15 @@ class ChatExternalWorkerCapacityRepository:
         turn_id: uuid.UUID,
         endpoints: tuple[ExternalWorkerEndpoint, ...],
         now: datetime,
+        lock: bool = False,
     ) -> ExternalWorkerReservation:
         endpoint_by_worker = self._endpoint_map(endpoints)
-        row = db.scalar(
-            select(ChatExternalWorkerReservation).where(
-                ChatExternalWorkerReservation.turn_id == turn_id
-            )
+        statement = select(ChatExternalWorkerReservation).where(
+            ChatExternalWorkerReservation.turn_id == turn_id
         )
+        if lock:
+            statement = statement.with_for_update()
+        row = db.scalar(statement)
         if row is None:
             raise ExternalWorkerCapacityUnavailable(
                 "External worker reservation is missing"

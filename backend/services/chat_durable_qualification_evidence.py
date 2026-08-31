@@ -310,7 +310,7 @@ class ChatDurableQualificationEvidenceService:
         chat_session_id: uuid.UUID,
         settings: Settings,
     ) -> bool:
-        """Verify persisted qualification and its exact external reservation."""
+        """Lock scope then reservation through external capability issuance."""
 
         if not self._active_functional_turn(
             turn_id=turn_id,
@@ -332,6 +332,7 @@ class ChatDurableQualificationEvidenceService:
             turn_id=turn_id,
             endpoints=external_worker_endpoints(settings),
             now=self.now(),
+            lock=True,
         )
         return True
 
@@ -366,9 +367,9 @@ class ChatDurableQualificationEvidenceService:
         )
         if scope_id is None:
             return False
-        # Lock order is qualification scope first, then the caller's downstream
-        # reservation/capacity locks. The caller transaction retains this row lock
-        # through capability issuance or the sandbox-capacity decision.
+        # Lock order is scope -> reservation -> capability for reconstructed Pi
+        # runners, and scope -> capacity -> sandbox lease for executor acquisition.
+        # The caller transaction retains this row lock through the final mutation.
         try:
             scope = self.require_active_scope(scope_id, settings=settings, lock=True)
         except QualificationEvidenceUnavailable:
