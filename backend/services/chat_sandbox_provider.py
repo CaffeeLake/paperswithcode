@@ -473,7 +473,6 @@ class ModalSandboxProviderAdapter:
             "python",
             "-m",
             "backend.chat_sandbox_worker.executor_relay",
-            stdin=StreamType.PIPE,
             stdout=StreamType.PIPE,
             stderr=StreamType.DEVNULL,
             timeout=timeout_seconds,

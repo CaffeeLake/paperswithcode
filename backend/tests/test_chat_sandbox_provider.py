@@ -681,7 +681,6 @@ def test_open_executor_relay_uses_bounded_binary_process():
                 "backend.chat_sandbox_worker.executor_relay",
             ),
             {
-                "stdin": StreamType.PIPE,
                 "stdout": StreamType.PIPE,
                 "stderr": StreamType.DEVNULL,
                 "timeout": 31,
