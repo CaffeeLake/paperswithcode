@@ -319,6 +319,29 @@ def test_protected_staging_settings_ignore_unrelated_pwc_keys(tmp_path):
     assert settings.environment == "staging"
 
 
+def test_bind_active_staging_worker_uses_verified_slot(tmp_path):
+    from backend.config import Settings
+    from backend.services.durable_external_qualification_system import (
+        bind_active_staging_worker,
+        configured_worker_ids,
+    )
+
+    slot = tmp_path / "environments" / "staging" / "slots" / "green"
+    slot.mkdir(parents=True)
+    active = slot.parents[1] / "active"
+    active.symlink_to(slot)
+    settings = Settings(
+        environment="staging",
+        chat_external_pi_worker_token="t" * 64,
+    )
+
+    bound = bind_active_staging_worker(settings, app_root=tmp_path)
+
+    assert bound.chat_external_pi_worker_id == "staging-green"
+    assert bound.chat_external_pi_worker_url == "http://127.0.0.1:8767"
+    assert configured_worker_ids(bound) == ("staging-green",)
+
+
 @pytest.mark.parametrize("mode", (0o600, 0o644, 0o660))
 def test_protected_staging_settings_reject_wrong_mode(tmp_path, mode):
     from backend.services.durable_external_qualification_system import (
