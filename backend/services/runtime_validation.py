@@ -1006,6 +1006,35 @@ def _validate_chat_openrouter_policy(settings: Settings) -> None:
         ) from error
 
 
+def _is_staging_durable_external_qualification_profile(settings: Settings) -> bool:
+    """Recognize only the exact pool-free staging qualification bridge."""
+
+    return all(
+        (
+            settings.environment == "staging",
+            settings.chat_openai_direct_enabled,
+            not settings.chat_external_pi_admission_enabled,
+            settings.chat_external_pi_supervisor_enabled,
+            settings.chat_external_pi_ready_registry_enabled,
+            settings.chat_external_pi_runtime_contract_version
+            == "durable-external-pi-v1",
+            settings.chat_external_pi_worker_contract_version == "external-pi-v1",
+            settings.chat_durable_turn_dispatch_enabled,
+            settings.chat_turn_event_journal_schema_enabled,
+            settings.chat_sandbox_executor_enabled,
+            settings.chat_sandbox_executor_contract_version == "sandbox-executor-v1",
+            settings.chat_remote_workspace_tools_enabled,
+            settings.chat_remote_bash_enabled,
+            settings.chat_remote_read_enabled,
+            settings.chat_lazy_workspace_enabled,
+            not settings.chat_blank_pool_enabled,
+            not settings.chat_pi_prewarm_enabled,
+            settings.chat_max_concurrency == 2,
+            settings.chat_sandbox_total_live_cap == 3,
+        )
+    )
+
+
 def _validate_chat_resource_policy(settings: Settings) -> None:
     """Validate sandbox resources and warm-pool lifetime."""
 
@@ -1035,7 +1064,10 @@ def _validate_chat_resource_policy(settings: Settings) -> None:
         ):
             raise RuntimeError("blank pool rotation window is invalid")
     if settings.chat_openai_direct_enabled:
-        if (
+        qualification_profile = _is_staging_durable_external_qualification_profile(
+            settings
+        )
+        if not qualification_profile and (
             not settings.chat_pi_prewarm_enabled
             or not settings.chat_blank_pool_enabled
             or settings.chat_blank_pool_min != 1

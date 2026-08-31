@@ -694,6 +694,70 @@ def test_direct_openai_requires_exact_low_reasoning_warm_profile(settings_factor
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
+def _durable_external_qualification_resource_profile(settings):
+    settings.chat_openai_direct_enabled = True
+    settings.openai_api_key = "test-only"
+    settings.chat_blank_pool_enabled = False
+    settings.chat_pi_prewarm_enabled = False
+    settings.chat_external_pi_admission_enabled = False
+    settings.chat_external_pi_supervisor_enabled = True
+    settings.chat_external_pi_ready_registry_enabled = True
+    settings.chat_external_pi_runtime_contract_version = "durable-external-pi-v1"
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_durable_turn_dispatch_enabled = True
+    settings.chat_turn_event_journal_schema_enabled = True
+    settings.chat_sandbox_executor_enabled = True
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+    settings.chat_remote_workspace_tools_enabled = True
+    settings.chat_remote_bash_enabled = True
+    settings.chat_remote_read_enabled = True
+    settings.chat_lazy_workspace_enabled = True
+    settings.chat_max_concurrency = 2
+    settings.chat_sandbox_total_live_cap = 3
+    return settings
+
+
+def test_direct_openai_accepts_only_complete_staging_durable_qualification_profile(
+    settings_factory,
+):
+    settings, _release = settings_factory("staging")
+    _durable_external_qualification_resource_profile(settings)
+
+    runtime_validation._validate_chat_resource_policy(settings)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    (
+        ("environment", "production"),
+        ("chat_external_pi_admission_enabled", True),
+        ("chat_external_pi_supervisor_enabled", False),
+        ("chat_external_pi_ready_registry_enabled", False),
+        ("chat_external_pi_runtime_contract_version", ""),
+        ("chat_external_pi_worker_contract_version", ""),
+        ("chat_durable_turn_dispatch_enabled", False),
+        ("chat_turn_event_journal_schema_enabled", False),
+        ("chat_sandbox_executor_enabled", False),
+        ("chat_sandbox_executor_contract_version", ""),
+        ("chat_remote_workspace_tools_enabled", False),
+        ("chat_remote_bash_enabled", False),
+        ("chat_remote_read_enabled", False),
+        ("chat_lazy_workspace_enabled", False),
+        ("chat_max_concurrency", 3),
+        ("chat_sandbox_total_live_cap", 4),
+    ),
+)
+def test_direct_openai_rejects_partial_or_nonstaging_durable_qualification_profile(
+    settings_factory, field, invalid
+):
+    settings, _release = settings_factory("staging")
+    _durable_external_qualification_resource_profile(settings)
+    setattr(settings, field, invalid)
+
+    with pytest.raises(RuntimeError, match="one direct-Luna low-reasoning warm blank"):
+        runtime_validation._validate_chat_resource_policy(settings)
+
+
 def test_chat_provider_policy_rejects_unreviewed_kimi_route(settings_factory):
     settings, _release = settings_factory("staging")
     settings.chat_kimi_route = "moonshotai/Kimi-K3:fastest"
