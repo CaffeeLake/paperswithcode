@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import grp
 import os
 import re
+import stat
 import subprocess
 import time
 import uuid
@@ -266,16 +268,18 @@ def load_protected_staging_settings(
     from backend.config import Settings
 
     try:
-        metadata = path.stat()
+        metadata = path.lstat()
+        staging_gid = grp.getgrnam("pwc-staging").gr_gid
         if (
-            not path.is_file()
+            not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != 0
-            or metadata.st_mode & 0o777 != 0o600
+            or metadata.st_gid != staging_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o640
             or metadata.st_size > 256 * 1024
         ):
             raise OSError
         raw = dotenv_values(path)
-    except (OSError, UnicodeError):
+    except (KeyError, OSError, UnicodeError):
         raise QualificationRefused("protected_staging_settings_invalid") from None
     values = {
         key.removeprefix("PWC_").lower(): value

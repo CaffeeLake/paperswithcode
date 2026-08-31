@@ -419,6 +419,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validated_active_release_id(
+    requested_release_id: str, release_settings: object
+) -> str:
+    """Bind CLI identity to the already validated active immutable manifest."""
+    active_release_id = getattr(release_settings, "release_id", None)
+    if (
+        not isinstance(active_release_id, str)
+        or _STAGING_RELEASE.fullmatch(active_release_id) is None
+        or active_release_id != requested_release_id
+    ):
+        raise QualificationRefused("exact_staging_release_required")
+    return active_release_id
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -438,12 +452,15 @@ def main() -> int:
 
         current = Path("/srv/paperswithcode/environments/staging/current")
         release_settings = settings_for_release(current)
+        active_release_id = validated_active_release_id(
+            args.release_id, release_settings
+        )
         protected_settings = load_protected_staging_settings()
         settings = merge_release_settings(protected_settings, release_settings)
         control_plane = build_system_control_plane(
             release_id=args.release_id,
             settings=settings,
-            environ={"PWC_RELEASE_ID": protected_settings.release_id},
+            environ={"PWC_RELEASE_ID": active_release_id},
         )
         model = select_staging_pi_openai_model(settings)
         run_id = uuid.uuid4().hex[:24]

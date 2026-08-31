@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import signal
 import json
+import grp
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -283,18 +285,77 @@ def test_protected_staging_settings_ignore_ambient_admin_credential(
     path = tmp_path / "staging.env"
     path.write_text(
         "PWC_ENVIRONMENT=staging\n"
-        "PWC_RELEASE_ID=0123456789ab-staging\n"
         f"PWC_ADMIN_API_TOKEN={'p' * 40}\n"
         f"PWC_JWT_SECRET={'j' * 40}\n"
     )
-    path.chmod(0o600)
+    path.chmod(0o640)
+    os.chown(path, 0, grp.getgrnam("pwc-staging").gr_gid)
     monkeypatch.setenv("PWC_ADMIN_API_TOKEN", "ambient-must-not-win")
 
     settings = load_protected_staging_settings(path)
 
     assert settings.admin_api_token == "p" * 40
     assert settings.jwt_secret == "j" * 40
-    assert settings.release_id == "0123456789ab-staging"
+    assert settings.release_id == "development"
+
+
+@pytest.mark.parametrize("mode", (0o600, 0o644, 0o660))
+def test_protected_staging_settings_reject_wrong_mode(tmp_path, mode):
+    from backend.services.durable_external_qualification_system import (
+        QualificationRefused,
+        load_protected_staging_settings,
+    )
+
+    path = tmp_path / "staging.env"
+    path.write_text("PWC_ENVIRONMENT=staging\n")
+    path.chmod(mode)
+    os.chown(path, 0, grp.getgrnam("pwc-staging").gr_gid)
+
+    with pytest.raises(QualificationRefused, match="protected_staging_settings"):
+        load_protected_staging_settings(path)
+
+
+def test_protected_staging_settings_reject_symlink_wrong_group_and_oversize(tmp_path):
+    from backend.services.durable_external_qualification_system import (
+        QualificationRefused,
+        load_protected_staging_settings,
+    )
+
+    path = tmp_path / "staging.env"
+    path.write_text("x" * (256 * 1024 + 1))
+    path.chmod(0o640)
+    os.chown(path, 0, grp.getgrnam("pwc-staging").gr_gid)
+    with pytest.raises(QualificationRefused):
+        load_protected_staging_settings(path)
+
+    path.write_text("PWC_ENVIRONMENT=staging\n")
+    os.chown(path, 0, 0)
+    with pytest.raises(QualificationRefused):
+        load_protected_staging_settings(path)
+
+    os.chown(path, 1, grp.getgrnam("pwc-staging").gr_gid)
+    with pytest.raises(QualificationRefused):
+        load_protected_staging_settings(path)
+
+    os.chown(path, 0, grp.getgrnam("pwc-staging").gr_gid)
+    link = tmp_path / "linked.env"
+    link.symlink_to(path)
+    with pytest.raises(QualificationRefused):
+        load_protected_staging_settings(link)
+
+
+def test_cli_release_identity_must_match_validated_active_manifest():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        validated_active_release_id,
+    )
+
+    active = SimpleNamespace(release_id="0123456789ab-staging")
+    assert (
+        validated_active_release_id("0123456789ab-staging", active) == active.release_id
+    )
+    with pytest.raises(QualificationRefused, match="exact_staging_release"):
+        validated_active_release_id("fedcba987654-staging", active)
 
 
 def _release_tree(tmp_path: Path):
