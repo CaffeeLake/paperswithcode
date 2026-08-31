@@ -392,7 +392,7 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
         release_id="0123456789ab-staging",
         status="failed",
         reason="durable_profile_failed",
-        profiles=(profile_report,),
+        profiles=(),
         **cleanup,
     )
     destination = tmp_path / "durable.json"
@@ -550,7 +550,7 @@ class _DurableOperator:
         )
 
 
-def test_durable_controller_runs_32_then_100_and_restores_everything():
+def test_durable_controller_runs_only_32_and_restores_everything():
     from backend.scripts.qualify_durable_external_turns import (
         run_durable_qualification,
     )
@@ -576,21 +576,16 @@ def test_durable_controller_finalizes_billed_evidence_after_profile_teardown():
     result = run_durable_qualification(operator)
 
     assert result.passed is True
-    for name in ("32-functional-turns", "100-immediate-admission"):
+    for name in ("32-functional-turns",):
         assert operator.events.index(("teardown", name)) < operator.events.index(
             ("finalize", name)
         )
-    assert [report.profile for report in result.profiles] == [
-        "32-functional-turns",
-        "100-immediate-admission",
-    ]
+    assert [report.profile for report in result.profiles] == ["32-functional-turns"]
     assert [event for event in operator.events if event[0] == "run"] == [
         ("run", "32-functional-turns"),
-        ("run", "100-immediate-admission"),
     ]
     assert [event[1] for event in operator.events if event[0] == "resource"] == [
         "32-functional-turns",
-        "100-immediate-admission",
     ]
     assert result.flags_restored is True
     assert result.exact_workers_drained is True
@@ -603,13 +598,13 @@ def test_durable_controller_treats_resource_refusal_as_evidence_and_stops():
         run_durable_qualification,
     )
 
-    operator = _DurableOperator(refuse_profile="100-immediate-admission")
+    operator = _DurableOperator(refuse_profile="32-functional-turns")
     result = run_durable_qualification(operator)
 
     assert result.status == "resource_refused"
     assert result.reason == "memory_headroom"
-    assert [report.profile for report in result.profiles] == ["32-functional-turns"]
-    assert ("setup", "100-immediate-admission") not in operator.events
+    assert result.profiles == ()
+    assert ("setup", "32-functional-turns") not in operator.events
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
 
@@ -632,6 +627,7 @@ def test_durable_controller_uses_fixed_cpu_guard_and_typed_refusal():
         {"name": "production"},
         {"target_release": "fedcba987654-staging"},
         {"production_release": "0123456789ab-staging"},
+        {"production_release": "0123456789ab-production"},
         {"host_mem_total_bytes": 4 * 1024**3},
         {"public_external_admission_flags": (False, True, False)},
     ),
@@ -676,18 +672,36 @@ def test_durable_controller_restores_after_setup_failure():
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
 
-def test_durable_controller_second_teardown_failure_retains_only_first_profile():
+def test_post_validation_typed_prerequisite_failure_returns_bounded_report():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    class RefusingOperator(_DurableOperator):
+        def setup_profile(self, profile):
+            self.events.append(("setup", profile.name))
+            raise QualificationRefused("staging_prerequisite_missing")
+
+    report = run_durable_qualification(RefusingOperator())
+
+    assert report.status == "failed"
+    assert report.reason == "staging_prerequisite_missing"
+    assert "traceback" not in report.model_dump_json().lower()
+
+
+def test_durable_controller_teardown_failure_retains_no_profile():
     from backend.scripts.qualify_durable_external_turns import (
         run_durable_qualification,
     )
 
-    operator = _DurableOperator(failure_stage="teardown:100-immediate-admission")
+    operator = _DurableOperator(failure_stage="teardown:32-functional-turns")
 
     result = run_durable_qualification(operator)
 
     assert result.status == "failed"
     assert result.reason == "cleanup_failed"
-    assert [profile.profile for profile in result.profiles] == ["32-functional-turns"]
+    assert result.profiles == ()
     assert result.cleanup_passed is True
 
 
@@ -698,11 +712,12 @@ def test_durable_controller_cannot_skip_or_reverse_the_binding_profile_order():
     )
 
     operator = _DurableOperator()
-    with pytest.raises(QualificationRefused, match="profile_order"):
-        run_durable_qualification(
-            operator,
-            profiles=("100-immediate-admission", "32-functional-turns"),
-        )
+    for forbidden in (
+        ("100-immediate-admission", "32-functional-turns"),
+        ("32-functional-turns", "100-immediate-admission"),
+    ):
+        with pytest.raises(QualificationRefused, match="profile_order"):
+            run_durable_qualification(operator, profiles=forbidden)
     assert not any(event[0] == "setup" for event in operator.events)
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
@@ -781,7 +796,7 @@ def test_durable_controller_attempts_cleanup_at_every_failure_boundary(stage):
         ("cleanup_evidence", "cleanup_failed"),
     ),
 )
-def test_durable_controller_deletes_server_scope_at_every_profile_failure_boundary(
+def test_durable_controller_retains_scope_when_teardown_fails_for_cleanup_retry(
     stage, expected_reason
 ):
     from backend.scripts.qualify_durable_external_turns import run_durable_qualification
@@ -810,7 +825,10 @@ def test_durable_controller_deletes_server_scope_at_every_profile_failure_bounda
     assert report.status == "failed"
     assert report.reason == expected_reason
     assert ("teardown", "32-functional-turns") in operator.events
-    assert ("cleanup_evidence", "32-functional-turns") in operator.events
+    if stage == "teardown":
+        assert ("cleanup_evidence", "32-functional-turns") not in operator.events
+    else:
+        assert ("cleanup_evidence", "32-functional-turns") in operator.events
     assert operator.events[-2][0] == "restore_flags"
     assert operator.events[-1] == ("cleanup_transient_workers",)
 
@@ -920,7 +938,7 @@ def test_durable_report_rejects_status_reason_profile_and_cleanup_mismatches():
             profiles=(profile_report,),
             **cleanup,
         )
-    with pytest.raises(ValidationError, match="profiles are invalid"):
+    with pytest.raises(ValidationError, match="at most 1"):
         DurableQualificationReport(
             release_id="0123456789ab-staging",
             status="failed",
@@ -996,12 +1014,12 @@ def test_controller_generated_cleanup_failure_is_a_valid_failed_report() -> None
 @pytest.mark.parametrize(
     ("reason", "profile_count", "flags_restored"),
     (
-        ("durable_qualification_failed", 1, True),
-        ("durable_profile_failed", 1, True),
-        ("staging_isolation_required", 1, True),
-        ("exact_staging_release_required", 1, True),
-        ("approved_16_gib_host_required", 1, True),
-        ("public_external_admission_flags_must_be_off", 1, True),
+        ("durable_qualification_failed", 0, True),
+        ("durable_profile_failed", 0, True),
+        ("staging_isolation_required", 0, True),
+        ("exact_staging_release_required", 0, True),
+        ("approved_16_gib_host_required", 0, True),
+        ("public_external_admission_flags_must_be_off", 0, True),
         ("public_external_admission_flags_are_invalid", 0, False),
     ),
 )
@@ -1900,6 +1918,57 @@ def test_guarded_live_teardown_requires_and_evicts_only_the_exact_scope():
         operator.teardown_profile(profile, uuid.uuid4())
     operator.teardown_profile(profile, exact_scope)
     assert calls == [exact_scope]
+
+
+def test_guarded_live_finalization_attests_static_rate_inside_closed_scope_window(
+    monkeypatch,
+):
+    pytest.importorskip("locust")
+    adapter = importlib.import_module("backend.loadtests.external_pi_fleet_locustfile")
+    from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
+    from backend.scripts.qualify_durable_external_turns import (
+        GuardedLiveDurableOperator,
+    )
+
+    scope_id = uuid.uuid4()
+    captured = {}
+    monkeypatch.setattr(
+        adapter,
+        "finalize_live_durable_profile",
+        lambda measurement, **kwargs: captured.update(kwargs)
+        or SimpleNamespace(modal_estimated_cost_microusd=1),
+    )
+    operator = GuardedLiveDurableOperator(
+        control_plane=SimpleNamespace(
+            environment=lambda: SimpleNamespace(target_release="0123456789ab-staging"),
+            protected_runtime_evidence=lambda _profile: {
+                "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "25",
+                "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+                "PWC_RELEASE_ID": "0123456789ab-staging",
+            },
+        ),
+        transport_config=DurableChatTransportConfig(
+            base_url="https://staging.paperswithcode.co",
+            synthetic_cookies=("cookie",),
+            initial_model="gpt-5.6-luna@openai",
+            qualification_run_id="run",
+            admin_token="a" * 32,
+        ),
+    )
+    operator.evidence_source = SimpleNamespace(
+        collect=lambda _scope_id: SimpleNamespace(
+            window_started_at_ms=10,
+            window_ended_at_ms=20,
+        )
+    )
+
+    result = operator.finalize_profile(
+        resolve_durable_profile("32-functional-turns"),
+        SimpleNamespace(qualification_scope_id=scope_id),
+    )
+
+    assert result.modal_estimated_cost_microusd == 1
+    assert captured["modal_rate"].attested_at_ms == 20
 
 
 def test_fleet_locust_requires_one_local_exact_configured_user_runner(monkeypatch):

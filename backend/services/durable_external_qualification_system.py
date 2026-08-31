@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 from backend.loadtests.external_pi_fleet_core import (
     DurableQualificationProfile,
     HostResourceSnapshot,
@@ -34,13 +36,15 @@ class SystemDurableQualificationControlPlane:
 
     _FLAG_FIELDS = {
         "external_pi_admission": "chat_external_pi_admission_enabled",
-        "new_session_pi_rollout": "chat_new_session_pi_percentage",
-        "sandbox_executor": "chat_sandbox_executor_enabled",
-        "remote_workspace_tools": "chat_remote_workspace_tools_enabled",
-        "remote_bash": "chat_remote_bash_enabled",
-        "remote_read": "chat_remote_read_enabled",
-        "lazy_workspace": "chat_lazy_workspace_enabled",
     }
+
+    _REQUIRED_RUNTIME_FLAGS = (
+        "chat_sandbox_executor_enabled",
+        "chat_remote_workspace_tools_enabled",
+        "chat_remote_bash_enabled",
+        "chat_remote_read_enabled",
+        "chat_lazy_workspace_enabled",
+    )
 
     def __init__(
         self,
@@ -69,6 +73,12 @@ class SystemDurableQualificationControlPlane:
         self._cleanup_probe = cleanup_probe
         self.modal_rate_path = modal_rate_path
         self.qualification_scope_id: uuid.UUID | None = None
+        self.scope_attempted = False
+
+    def mark_scope_attempted(self) -> None:
+        if self.scope_attempted:
+            raise QualificationRefused("qualification_scope_invalid")
+        self.scope_attempted = True
 
     def bind_scope(self, scope_id: uuid.UUID) -> None:
         if (
@@ -76,6 +86,7 @@ class SystemDurableQualificationControlPlane:
             or self.qualification_scope_id is not None
         ):
             raise QualificationRefused("qualification_scope_invalid")
+        self.scope_attempted = True
         self.qualification_scope_id = scope_id
 
     def _resolve_current(self, environment: str) -> str:
@@ -102,6 +113,7 @@ class SystemDurableQualificationControlPlane:
             or self.environ.get("PWC_RELEASE_ID") != self.release_id
             or staging_release != self.release_id
             or production_release == staging_release
+            or production_release.partition("-")[0] == staging_release.partition("-")[0]
         ):
             raise QualificationRefused("exact_staging_release_required")
         flags = self.snapshot_flags()
@@ -118,13 +130,7 @@ class SystemDurableQualificationControlPlane:
         result: dict[str, bool] = {}
         for name, field_name in self._FLAG_FIELDS.items():
             value = getattr(self.settings, field_name, None)
-            if field_name == "chat_new_session_pi_percentage":
-                if type(value) is not int:
-                    raise QualificationRefused(
-                        "public_external_admission_flags_are_invalid"
-                    )
-                result[name] = value != 0
-            elif type(value) is bool:
+            if type(value) is bool:
                 result[name] = value
             else:
                 raise QualificationRefused(
@@ -148,6 +154,7 @@ class SystemDurableQualificationControlPlane:
         if profile.name != "32-functional-turns":
             raise QualificationRefused("binding_profile_order_required")
         evidence = self._prerequisites()
+        configured_workers = configured_worker_ids(self.settings)
         if not isinstance(evidence, StagingQualificationPrerequisites):
             raise QualificationRefused("staging_prerequisite_missing")
         if (
@@ -155,11 +162,17 @@ class SystemDurableQualificationControlPlane:
             or not evidence.runtime_ready
             or evidence.worker_environment != "staging"
             or evidence.worker_id != evidence.configured_worker_id
+            or configured_workers != (evidence.worker_id,)
             or evidence.worker_release_id != self.release_id
             or evidence.worker_state != "ready"
             or evidence.worker_contract_version != "external-pi-v1"
             or evidence.maximum_sessions < 32
             or evidence.active_sessions != 0
+            or getattr(self.settings, "chat_new_session_pi_percentage", None) != 100
+            or not all(
+                getattr(self.settings, field, None) is True
+                for field in self._REQUIRED_RUNTIME_FLAGS
+            )
         ):
             raise QualificationRefused("staging_prerequisite_missing")
 
@@ -205,16 +218,81 @@ class SystemDurableQualificationControlPlane:
             raise QualificationRefused(
                 "protected_modal_rate_evidence_invalid"
             ) from None
+        expected_keys = {
+            "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND",
+            "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID",
+            "PWC_RELEASE_ID",
+        }
+        try:
+            rate = int(payload.get("PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND", ""))
+        except (AttributeError, TypeError, ValueError):
+            rate = 0
         if (
             not isinstance(payload, dict)
-            or len(payload) > 8
+            or set(payload) != expected_keys
             or any(
                 not isinstance(key, str) or not isinstance(value, str)
                 for key, value in payload.items()
             )
+            or payload["PWC_RELEASE_ID"] != self.release_id
+            or payload["PWC_MODAL_EXECUTOR_RATE_SOURCE_ID"] != "modal-staging-price-v1"
+            or not 1 <= rate <= 1_000_000
         ):
             raise QualificationRefused("protected_modal_rate_evidence_invalid")
         return payload
+
+
+def configured_worker_ids(settings: object) -> tuple[str, ...]:
+    endpoints = getattr(settings, "chat_external_pi_worker_endpoints", ())
+    if not isinstance(endpoints, (tuple, list)):
+        return ()
+    result = []
+    for endpoint in endpoints:
+        worker_id = (
+            endpoint.get("worker_id")
+            if isinstance(endpoint, Mapping)
+            else getattr(endpoint, "worker_id", None)
+        )
+        if not isinstance(worker_id, str) or not worker_id:
+            return ()
+        result.append(worker_id)
+    return tuple(result)
+
+
+def load_protected_staging_settings(
+    path: Path = Path("/etc/paperswithcode/staging.env"),
+):
+    """Load staging credentials from one root-owned file, without ambient env."""
+    from backend.config import Settings
+
+    try:
+        metadata = path.stat()
+        if (
+            not path.is_file()
+            or metadata.st_uid != 0
+            or metadata.st_mode & 0o777 != 0o600
+            or metadata.st_size > 256 * 1024
+        ):
+            raise OSError
+        raw = dotenv_values(path)
+    except (OSError, UnicodeError):
+        raise QualificationRefused("protected_staging_settings_invalid") from None
+    values = {
+        key.removeprefix("PWC_").lower(): value
+        for key, value in raw.items()
+        if key.startswith("PWC_") and value is not None
+    }
+    try:
+        settings = Settings.model_validate(values)
+    except ValueError:
+        raise QualificationRefused("protected_staging_settings_invalid") from None
+    if (
+        settings.environment != "staging"
+        or len(settings.admin_api_token) < 32
+        or len(settings.jwt_secret) < 32
+    ):
+        raise QualificationRefused("protected_staging_settings_invalid")
+    return settings
 
 
 def _proc_memory_value(name: str) -> int:
@@ -276,6 +354,9 @@ class _SystemResourceEvidence:
         scope_id = self.control_plane.qualification_scope_id
         if scope_id is None:
             raise QualificationRefused("qualification_scope_invalid")
+        worker_ids = configured_worker_ids(self.control_plane.settings)
+        if len(worker_ids) != 1:
+            raise QualificationRefused("staging_prerequisite_missing")
         from sqlalchemy import text
 
         from backend.database.connection import db_manager
@@ -298,16 +379,22 @@ class _SystemResourceEvidence:
                 db.execute(
                     text(
                         """
-                        SELECT count(*)
-                        FROM chat_external_workers
-                        WHERE environment = 'staging'
-                          AND release_id = :release_id
-                          AND state = 'ready'
-                          AND lease_expires_at > now()
-                          AND active_sessions > 0
+                        SELECT count(DISTINCT reservation.worker_id)
+                        FROM chat_external_worker_reservations AS reservation
+                        JOIN chat_turn_latency AS latency
+                          ON latency.turn_id = reservation.turn_id
+                        WHERE latency.qualification_scope_id = :scope_id
+                          AND latency.terminal_status = 'running'
+                          AND reservation.worker_id = :worker_id
+                          AND reservation.release_id = :release_id
+                          AND reservation.expires_at > now()
                         """
                     ),
-                    {"release_id": self.control_plane.release_id},
+                    {
+                        "scope_id": scope_id,
+                        "worker_id": worker_ids[0],
+                        "release_id": self.control_plane.release_id,
+                    },
                 ).scalar_one()
             )
             sandbox_delta = int(
@@ -364,7 +451,8 @@ def _system_prerequisites(settings: object, release_id: str):
         validate_qualification_evidence_schema,
     )
 
-    worker_id = getattr(settings, "chat_external_pi_worker_id", "")
+    configured_workers = configured_worker_ids(settings)
+    worker_id = configured_workers[0] if len(configured_workers) == 1 else ""
     migrations_ready = False
     worker = None
     with db_manager.session_local() as db:
@@ -393,9 +481,15 @@ def _system_prerequisites(settings: object, release_id: str):
             "chat_external_pi_ready_registry_enabled",
             "chat_durable_turn_dispatch_enabled",
             "chat_turn_event_journal_schema_enabled",
+            "chat_sandbox_executor_enabled",
+            "chat_remote_workspace_tools_enabled",
+            "chat_remote_bash_enabled",
+            "chat_remote_read_enabled",
+            "chat_lazy_workspace_enabled",
         )
     ) and (
-        getattr(settings, "chat_external_pi_worker_contract_version", "")
+        getattr(settings, "chat_new_session_pi_percentage", None) == 100
+        and getattr(settings, "chat_external_pi_worker_contract_version", "")
         == "external-pi-v1"
         and getattr(settings, "chat_external_pi_runtime_contract_version", "")
         == "durable-external-pi-v1"
@@ -451,67 +545,25 @@ def _system_resource_preflight(
     )
 
 
-def _system_cleanup_state(
+def system_cleanup_state(
     control_plane: SystemDurableQualificationControlPlane,
 ) -> ScopedCleanupState:
     scope_id = control_plane.qualification_scope_id
     if scope_id is None:
-        return ScopedCleanupState(True, 0, 0, 0, 0, 0, 0, 0)
-    evidence = _SystemResourceEvidence(control_plane)
-    active_turns, _, sandboxes = evidence._scope_counts()
-    from sqlalchemy import text
-
-    from backend.database.connection import db_manager
-
-    with db_manager.session_local() as db:
-        transient_workers = int(
-            db.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM chat_external_workers
-                    WHERE environment = 'staging'
-                      AND worker_id LIKE 'staging-qualification-%'
-                      AND state != 'offline'
-                    """
-                )
-            ).scalar_one()
+        return ScopedCleanupState(
+            not control_plane.scope_attempted, 0, 0, 0, 0, 0, 0, 0
         )
-    from backend.scripts.qualify_external_pi_fleet import _listener_hosts
-    from deploy.external_pi_qualification_contract import QUALIFICATION_PORTS
-
-    listeners = sum(bool(_listener_hosts(port)) for port in QUALIFICATION_PORTS)
-    status_root = Path("/run/paperswithcode/external-pi-qualification")
-    status_files = (
-        sum(1 for path in status_root.iterdir() if path.is_file())
-        if status_root.is_dir()
-        else 0
-    )
-    process_result = subprocess.run(
-        [
-            "systemctl",
-            "list-units",
-            "--state=active",
-            "--plain",
-            "--no-legend",
-            "paperswithcode-staging-external-pi-qualification-*",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    processes = (
-        len(process_result.stdout.splitlines()) if process_result.returncode == 0 else 1
-    )
+    evidence = _SystemResourceEvidence(control_plane)
+    active_turns, active_workers, sandboxes = evidence._scope_counts()
+    exact_drained = active_turns == 0 and active_workers == 0 and sandboxes == 0
     return ScopedCleanupState(
-        exact_workers_drained=active_turns == 0 and sandboxes == 0,
-        transient_workers=transient_workers,
-        listeners=listeners,
-        status_files=status_files,
-        processes=processes,
+        exact_workers_drained=exact_drained,
+        transient_workers=0,
+        listeners=0,
+        status_files=0,
+        processes=0,
         active_backend_turns=active_turns,
-        active_external_workers=transient_workers,
+        active_external_workers=active_workers,
         active_sandboxes=sandboxes,
     )
 
@@ -536,7 +588,7 @@ def build_system_control_plane(
             sample=_SystemResourceEvidence(control).sample,
             interval_seconds=1.0,
         ),
-        cleanup_probe=lambda: _system_cleanup_state(control),
+        cleanup_probe=lambda: system_cleanup_state(control),
         modal_rate_path=MODAL_RATE_EVIDENCE_PATH,
     )
     return control

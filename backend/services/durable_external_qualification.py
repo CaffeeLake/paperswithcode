@@ -195,6 +195,8 @@ def build_synthetic_transport_config(
     model: str,
     cookie_encoder: Callable[[str], str],
     max_spend_usd: str,
+    required_spend_microusd: int = 0,
+    provider_spend_ceiling_microusd: int = 0,
 ) -> DurableChatTransportConfig:
     """Build the exact in-memory 32-user cohort after validating spend authority."""
     try:
@@ -202,6 +204,12 @@ def build_synthetic_transport_config(
     except (InvalidOperation, TypeError):
         raise QualificationRefused("spend_envelope_invalid") from None
     if not spend.is_finite() or not Decimal("0") < spend <= Decimal("10"):
+        raise QualificationRefused("spend_envelope_invalid")
+    max_spend_microusd = int(spend * Decimal("1000000"))
+    if (
+        not 0 <= provider_spend_ceiling_microusd <= required_spend_microusd
+        or required_spend_microusd > max_spend_microusd
+    ):
         raise QualificationRefused("spend_envelope_invalid")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", run_id):
         raise QualificationRefused("qualification_run_id_invalid")
@@ -215,7 +223,45 @@ def build_synthetic_transport_config(
         initial_model=model,
         qualification_run_id=run_id,
         admin_token=admin_token,
+        max_spend_microusd=max_spend_microusd,
+        provider_spend_ceiling_microusd=provider_spend_ceiling_microusd,
     )
+
+
+def qualification_spend_ceiling_microusd(
+    settings: object, *, modal_rate_microusd_per_second: int
+) -> tuple[int, int]:
+    """Return provider and total worst-case costs for the fixed live profile."""
+    from backend.services.chat_openai_budget_service import (
+        MAX_REQUEST_BYTES,
+        OpenAIRequestBounds,
+        safe_maximum_microusd,
+    )
+    from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
+    from backend.services.durable_external_qualification_contract import (
+        DURABLE_QUALIFICATION_EXPECTED_USERS,
+        DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN,
+        DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS,
+        DURABLE_QUALIFICATION_TOOL_TURNS,
+    )
+
+    provider = (
+        DURABLE_QUALIFICATION_EXPECTED_USERS
+        * DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN
+        * safe_maximum_microusd(
+            settings,
+            OpenAIRequestBounds(
+                request_bytes=MAX_REQUEST_BYTES,
+                maximum_output_tokens=PROVIDER_OUTPUT_TOKEN_LIMIT,
+            ),
+        )
+    )
+    modal = round(
+        DURABLE_QUALIFICATION_TOOL_TURNS
+        * DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS
+        * modal_rate_microusd_per_second
+    )
+    return provider, provider + modal
 
 
 @dataclass(frozen=True, slots=True)

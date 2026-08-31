@@ -259,6 +259,19 @@ class ModalSandboxProviderAdapter:
         persistent_enabled = bool(
             getattr(self.settings, "chat_persistent_worker_enabled", False)
         )
+        qualification_profile = tags.get("qualification_profile")
+        if qualification_profile == "32-functional-turns":
+            from backend.services.durable_external_qualification_contract import (
+                DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS,
+            )
+
+            sandbox_lifetime_seconds = DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS
+        else:
+            sandbox_lifetime_seconds = (
+                self.settings.chat_persistent_sandbox_lifetime_seconds
+                if persistent_enabled
+                else 3600
+            )
         worker_generation = worker_generation or secrets.token_hex(16)
         command = (
             ("python", "-m", "backend.chat_sandbox_worker.executor_daemon")
@@ -306,15 +319,15 @@ class ModalSandboxProviderAdapter:
             name=name,
             tags=tags,
             region=CHAT_SANDBOX_REGION,
-            timeout=(
-                self.settings.chat_persistent_sandbox_lifetime_seconds
-                if persistent_enabled
-                else 3600
-            ),
+            timeout=sandbox_lifetime_seconds,
             idle_timeout=(
-                self.settings.chat_persistent_sandbox_lifetime_seconds
-                if persistent_enabled
-                else max(60, self.settings.chat_sandbox_warm_seconds)
+                sandbox_lifetime_seconds
+                if qualification_profile == "32-functional-turns"
+                else (
+                    self.settings.chat_persistent_sandbox_lifetime_seconds
+                    if persistent_enabled
+                    else max(60, self.settings.chat_sandbox_warm_seconds)
+                )
             ),
             workdir="/workspace",
             cpu=(self.settings.chat_sandbox_cpu, cpu_limit),

@@ -39,6 +39,7 @@ from backend.models.database import (
     ChatOpenRouterProviderCall,
     ChatSession,
     ChatTurnCapability,
+    ChatTurnLatency,
 )
 from backend.services.chat_artifact_service import (
     ArtifactError,
@@ -57,6 +58,9 @@ from backend.services.chat_hf_hub_service import (
     validate_hf_request,
 )
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.durable_external_qualification_contract import (
+    DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN,
+)
 from backend.services.chat_openai_budget_service import (
     MAX_REQUEST_BYTES as MAX_OPENAI_REQUEST_BYTES,
 )
@@ -130,6 +134,10 @@ hf_telemetry_logger = logging.getLogger("uvicorn.error")
 MAX_PROVIDER_OUTPUT_TOKENS = PROVIDER_OUTPUT_TOKEN_LIMIT
 MAX_PROVIDER_TURN_TOKENS = 512_000
 MAX_POSTER_PROVIDER_TURN_TOKENS = 2_000_000
+QUALIFICATION_PROVIDER_REQUESTS = DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN
+QUALIFICATION_PROVIDER_TURN_TOKENS = 2 * (
+    MAX_OPENAI_REQUEST_BYTES // 4 + MAX_PROVIDER_OUTPUT_TOKENS
+)
 
 
 def _hf_latency_bucket(elapsed_seconds: float) -> str:
@@ -224,7 +232,14 @@ def _output_tokens_allowed(value: int) -> bool:
     return 1 <= value <= MAX_PROVIDER_OUTPUT_TOKENS
 
 
-def _provider_turn_limits(row: ChatTurnCapability) -> tuple[int, int]:
+def _provider_turn_limits(row: ChatTurnCapability, db: Session) -> tuple[int, int]:
+    qualification_profile = db.scalar(
+        select(ChatTurnLatency.qualification_profile).where(
+            ChatTurnLatency.turn_id == row.turn_id
+        )
+    )
+    if qualification_profile == "32-functional-turns":
+        return QUALIFICATION_PROVIDER_REQUESTS, QUALIFICATION_PROVIDER_TURN_TOKENS
     if {"artifact", "paper_grant"} & set(getattr(row, "scopes", ())):
         return MAX_POSTER_PROVIDER_REQUESTS, MAX_POSTER_PROVIDER_TURN_TOKENS
     return MAX_PROVIDER_REQUESTS, MAX_PROVIDER_TURN_TOKENS
@@ -1392,7 +1407,7 @@ async def responses(
     owner_id = _capability_owner(row, db)
     capability_id = row.id
     try:
-        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row)
+        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row, db)
         ChatCapabilityService(db).meter_provider(
             row,
             request_tokens=max(1, len(trusted_raw) // 4) + maximum_tokens,
@@ -1721,7 +1736,7 @@ async def messages(
     capability_id = row.id
     funded_call_id: uuid.UUID | None = None
     try:
-        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row)
+        maximum_requests, maximum_turn_tokens = _provider_turn_limits(row, db)
         ChatCapabilityService(db).meter_provider(
             row,
             request_tokens=max(1, len(raw) // 4) + maximum_tokens,

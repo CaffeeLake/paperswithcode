@@ -233,6 +233,17 @@ class ChatDurableQualificationEvidenceService:
             allow_ended=False,
         )
 
+    def require_collectable_scope(
+        self, scope_id: uuid.UUID, *, settings: Settings, lock: bool = False
+    ) -> ChatQualificationScope:
+        """Lock one exact active or teardown-closed scope for bounded evidence."""
+        return self._require_scope(
+            scope_id,
+            settings=settings,
+            lock=lock,
+            allow_ended=True,
+        )
+
     def _require_scope(
         self,
         scope_id: uuid.UUID,
@@ -399,10 +410,11 @@ class ChatDurableQualificationEvidenceService:
         scope_id: uuid.UUID,
         settings: Settings,
     ) -> DurableQualificationEvidence:
-        scope = self.require_active_scope(scope_id, settings=settings, lock=True)
-        ended = self.now()
-        scope.window_ended_at = ended
-        self.db.flush()
+        scope = self.require_collectable_scope(scope_id, settings=settings, lock=True)
+        ended = _as_utc(scope.window_ended_at) if scope.window_ended_at else self.now()
+        if scope.window_ended_at is None:
+            scope.window_ended_at = ended
+            self.db.flush()
         started = _as_utc(scope.window_started_at)
         expected_users = QUALIFICATION_PROFILES[scope.profile]
         latency_rows = self.db.execute(

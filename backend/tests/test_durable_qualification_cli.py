@@ -25,9 +25,13 @@ def test_build_synthetic_transport_config_keeps_32_distinct_secrets_redacted():
         model="gpt-5.6-luna@openai",
         cookie_encoder=encode,
         max_spend_usd="1.25",
+        required_spend_microusd=1_100_000,
+        provider_spend_ceiling_microusd=1_000_000,
     )
 
     assert len(config.synthetic_cookies) == 32
+    assert config.max_spend_microusd == 1_250_000
+    assert config.provider_spend_ceiling_microusd == 1_000_000
     assert len(set(config.synthetic_cookies)) == 32
     assert subjects == [
         f"operator:pi-qualification:run-123:{ordinal}" for ordinal in range(32)
@@ -35,6 +39,75 @@ def test_build_synthetic_transport_config_keeps_32_distinct_secrets_redacted():
     rendered = repr(config)
     assert "secret-cookie" not in rendered
     assert "a" * 32 not in rendered
+
+
+def test_synthetic_transport_rejects_declared_cap_below_live_cost_ceiling():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        build_synthetic_transport_config,
+    )
+
+    with pytest.raises(QualificationRefused, match="spend_envelope"):
+        build_synthetic_transport_config(
+            run_id="run-123",
+            admin_token="a" * 32,
+            model="gpt-5.6-luna@openai",
+            cookie_encoder=lambda subject: f"cookie-{subject}",
+            max_spend_usd="1",
+            required_spend_microusd=1_000_001,
+            provider_spend_ceiling_microusd=900_000,
+        )
+
+
+def test_live_spend_ceiling_uses_enforced_provider_and_lifecycle_limits():
+    from backend.config import Settings
+    from backend.services.chat_openai_budget_service import (
+        MAX_REQUEST_BYTES,
+        OpenAIRequestBounds,
+        safe_maximum_microusd,
+    )
+    from backend.services.durable_external_qualification import (
+        qualification_spend_ceiling_microusd,
+    )
+    from backend.services.durable_external_qualification_contract import (
+        DURABLE_QUALIFICATION_EXPECTED_USERS,
+        DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN,
+        DURABLE_QUALIFICATION_RUN_TIMEOUT_SECONDS,
+        DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS,
+        DURABLE_QUALIFICATION_TEARDOWN_TIMEOUT_SECONDS,
+        DURABLE_QUALIFICATION_TOOL_TURNS,
+    )
+
+    settings = Settings(
+        chat_openai_pricing_verified_at="2026-08-31",
+        chat_openai_pricing_max_age_days=30,
+    )
+    provider, total = qualification_spend_ceiling_microusd(
+        settings, modal_rate_microusd_per_second=53
+    )
+    per_call = safe_maximum_microusd(
+        settings,
+        OpenAIRequestBounds(
+            request_bytes=MAX_REQUEST_BYTES,
+            maximum_output_tokens=8_000,
+        ),
+    )
+
+    assert provider == (
+        DURABLE_QUALIFICATION_EXPECTED_USERS
+        * DURABLE_QUALIFICATION_PROVIDER_REQUESTS_PER_TURN
+        * per_call
+    )
+    assert DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS >= (
+        DURABLE_QUALIFICATION_RUN_TIMEOUT_SECONDS
+        + DURABLE_QUALIFICATION_TEARDOWN_TIMEOUT_SECONDS
+    )
+    assert total == provider + round(
+        DURABLE_QUALIFICATION_TOOL_TURNS
+        * DURABLE_QUALIFICATION_SANDBOX_LIFETIME_SECONDS
+        * 53
+    )
+    assert total < 10_000_000
 
 
 @pytest.mark.parametrize("value", ("", "0", "10.01", "nan", "inf"))
@@ -200,6 +273,30 @@ def test_cli_report_destination_is_fixed(tmp_path: Path):
     )
 
 
+def test_protected_staging_settings_ignore_ambient_admin_credential(
+    tmp_path, monkeypatch
+):
+    from backend.services.durable_external_qualification_system import (
+        load_protected_staging_settings,
+    )
+
+    path = tmp_path / "staging.env"
+    path.write_text(
+        "PWC_ENVIRONMENT=staging\n"
+        "PWC_RELEASE_ID=0123456789ab-staging\n"
+        f"PWC_ADMIN_API_TOKEN={'p' * 40}\n"
+        f"PWC_JWT_SECRET={'j' * 40}\n"
+    )
+    path.chmod(0o600)
+    monkeypatch.setenv("PWC_ADMIN_API_TOKEN", "ambient-must-not-win")
+
+    settings = load_protected_staging_settings(path)
+
+    assert settings.admin_api_token == "p" * 40
+    assert settings.jwt_secret == "j" * 40
+    assert settings.release_id == "0123456789ab-staging"
+
+
 def _release_tree(tmp_path: Path):
     app_root = tmp_path / "paperswithcode"
     releases = app_root / "releases"
@@ -220,12 +317,15 @@ def _safe_settings(**updates):
         "environment": "staging",
         "release_id": "0123456789ab-staging",
         "chat_external_pi_admission_enabled": False,
-        "chat_new_session_pi_percentage": 0,
-        "chat_sandbox_executor_enabled": False,
-        "chat_remote_workspace_tools_enabled": False,
-        "chat_remote_bash_enabled": False,
-        "chat_remote_read_enabled": False,
-        "chat_lazy_workspace_enabled": False,
+        "chat_new_session_pi_percentage": 100,
+        "chat_sandbox_executor_enabled": True,
+        "chat_remote_workspace_tools_enabled": True,
+        "chat_remote_bash_enabled": True,
+        "chat_remote_read_enabled": True,
+        "chat_lazy_workspace_enabled": True,
+        "chat_external_pi_worker_endpoints": (
+            SimpleNamespace(worker_id="staging-worker"),
+        ),
     }
     values.update(updates)
     return SimpleNamespace(**values)
@@ -273,7 +373,7 @@ def test_system_control_plane_independently_resolves_exact_release_and_flags(tmp
     environment = control.environment()
     assert environment.staging_release == "0123456789ab-staging"
     assert environment.production_release == "fedcba987654-production"
-    assert set(control.snapshot_flags().values()) == {False}
+    assert control.snapshot_flags() == {"external_pi_admission": False}
 
     staging_current = tmp_path / "paperswithcode/environments/staging/current"
     staging_current.unlink()
@@ -322,6 +422,74 @@ def test_system_control_plane_refuses_missing_staging_prerequisite(tmp_path, upd
         control.setup_profile(resolve_durable_profile("32-functional-turns"))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("chat_new_session_pi_percentage", 0),
+        ("chat_new_session_pi_percentage", 99),
+        ("chat_sandbox_executor_enabled", False),
+        ("chat_remote_workspace_tools_enabled", False),
+        ("chat_remote_bash_enabled", False),
+        ("chat_remote_read_enabled", False),
+        ("chat_lazy_workspace_enabled", False),
+    ),
+)
+def test_system_control_plane_requires_qualification_runtime_flags(
+    tmp_path, field, value
+):
+    from backend.loadtests.external_pi_fleet_core import resolve_durable_profile
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        SystemDurableQualificationControlPlane,
+    )
+
+    control = SystemDurableQualificationControlPlane(
+        release_id="0123456789ab-staging",
+        settings=_safe_settings(**{field: value}),
+        app_root=_release_tree(tmp_path),
+        environ={"PWC_RELEASE_ID": "0123456789ab-staging"},
+        mem_total=lambda: 16 * 1024**3,
+        prerequisites=_ready_prerequisites,
+        resource_preflight=lambda _profile: None,
+        sampler_factory=lambda _profile: object(),
+        cleanup_probe=lambda: None,
+        modal_rate_path=tmp_path / "rate.json",
+    )
+
+    with pytest.raises(QualificationRefused, match="staging_prerequisite"):
+        control.setup_profile(resolve_durable_profile("32-functional-turns"))
+
+
+def test_system_control_plane_requires_prerequisite_worker_in_configured_topology(
+    tmp_path,
+):
+    from backend.loadtests.external_pi_fleet_core import resolve_durable_profile
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        SystemDurableQualificationControlPlane,
+    )
+
+    control = SystemDurableQualificationControlPlane(
+        release_id="0123456789ab-staging",
+        settings=_safe_settings(
+            chat_external_pi_worker_endpoints=(
+                SimpleNamespace(worker_id="different-worker"),
+            )
+        ),
+        app_root=_release_tree(tmp_path),
+        environ={"PWC_RELEASE_ID": "0123456789ab-staging"},
+        mem_total=lambda: 16 * 1024**3,
+        prerequisites=_ready_prerequisites,
+        resource_preflight=lambda _profile: None,
+        sampler_factory=lambda _profile: object(),
+        cleanup_probe=lambda: None,
+        modal_rate_path=tmp_path / "rate.json",
+    )
+
+    with pytest.raises(QualificationRefused, match="staging_prerequisite"):
+        control.setup_profile(resolve_durable_profile("32-functional-turns"))
+
+
 def test_cleanup_counts_only_transient_workers_and_exact_scope(tmp_path):
     from backend.scripts.qualify_durable_external_turns import (
         ScopedCleanupState,
@@ -347,6 +515,31 @@ def test_cleanup_counts_only_transient_workers_and_exact_scope(tmp_path):
     assert proof.final_active_external_workers == 0
 
 
+def test_cleanup_fails_if_scope_creation_was_attempted_but_never_bound(tmp_path):
+    from backend.scripts.qualify_durable_external_turns import (
+        SystemDurableQualificationControlPlane,
+    )
+    from backend.services.durable_external_qualification_system import (
+        system_cleanup_state,
+    )
+
+    control = SystemDurableQualificationControlPlane(
+        release_id="0123456789ab-staging",
+        settings=_safe_settings(),
+        app_root=_release_tree(tmp_path),
+        environ={"PWC_RELEASE_ID": "0123456789ab-staging"},
+        mem_total=lambda: 16 * 1024**3,
+        prerequisites=_ready_prerequisites,
+        resource_preflight=lambda _profile: None,
+        sampler_factory=lambda _profile: object(),
+        cleanup_probe=lambda: system_cleanup_state(control),
+        modal_rate_path=tmp_path / "rate.json",
+    )
+    control.mark_scope_attempted()
+
+    assert control.cleanup_transient_workers().passed is False
+
+
 def test_modal_rate_evidence_requires_root_owned_mode_0600_bounded_file(tmp_path):
     from backend.scripts.qualify_durable_external_turns import (
         QualificationRefused,
@@ -355,7 +548,15 @@ def test_modal_rate_evidence_requires_root_owned_mode_0600_bounded_file(tmp_path
     from backend.loadtests.external_pi_fleet_core import resolve_durable_profile
 
     path = tmp_path / "rate.json"
-    path.write_text(json.dumps({"PWC_RELEASE_ID": "0123456789ab-staging"}))
+    path.write_text(
+        json.dumps(
+            {
+                "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "25",
+                "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+                "PWC_RELEASE_ID": "0123456789ab-staging",
+            }
+        )
+    )
     path.chmod(0o600)
     control = SystemDurableQualificationControlPlane(
         release_id="0123456789ab-staging",
@@ -374,7 +575,22 @@ def test_modal_rate_evidence_requires_root_owned_mode_0600_bounded_file(tmp_path
     assert control.protected_runtime_evidence(profile)["PWC_RELEASE_ID"].endswith(
         "-staging"
     )
+    assert "PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS" not in (
+        control.protected_runtime_evidence(profile)
+    )
     path.chmod(0o644)
+    with pytest.raises(QualificationRefused, match="modal_rate"):
+        control.protected_runtime_evidence(profile)
+    path.chmod(0o600)
+    path.write_text(
+        json.dumps(
+            {
+                "PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND": "not-a-rate",
+                "PWC_MODAL_EXECUTOR_RATE_SOURCE_ID": "modal-staging-price-v1",
+                "PWC_RELEASE_ID": "0123456789ab-staging",
+            }
+        )
+    )
     with pytest.raises(QualificationRefused, match="modal_rate"):
         control.protected_runtime_evidence(profile)
 

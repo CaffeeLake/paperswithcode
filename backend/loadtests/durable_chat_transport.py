@@ -15,6 +15,9 @@ from backend.loadtests.external_pi_fleet_core import (
     FleetRunRefused,
     DurableQualificationEvidence,
 )
+from backend.services.durable_external_qualification_contract import (
+    DURABLE_QUALIFICATION_TEARDOWN_TIMEOUT_SECONDS,
+)
 
 _STAGING_ORIGIN = "https://staging.paperswithcode.co"
 _CHAT_STREAM_PATH = "/api/v1/chat/stream"
@@ -96,6 +99,8 @@ class DurableChatTransportConfig:
     initial_model: str
     qualification_run_id: str = field(default="", repr=False)
     admin_token: str = field(default="", repr=False)
+    max_spend_microusd: int = field(default=10_000_000)
+    provider_spend_ceiling_microusd: int = field(default=0)
     timeout_seconds: float = 90.0
 
     def __post_init__(self) -> None:
@@ -119,6 +124,10 @@ class DurableChatTransportConfig:
             raise FleetRunRefused("durable qualification admin credential is invalid")
         if bool(self.qualification_run_id) != bool(self.admin_token):
             raise FleetRunRefused("durable qualification credentials are incomplete")
+        if self.qualification_run_id and not 1 <= self.max_spend_microusd <= 10_000_000:
+            raise FleetRunRefused("durable qualification spend envelope is invalid")
+        if not 0 <= self.provider_spend_ceiling_microusd <= self.max_spend_microusd:
+            raise FleetRunRefused("durable qualification provider budget is invalid")
         if not 1 <= self.timeout_seconds <= 120:
             raise FleetRunRefused("durable transport timeout is invalid")
 
@@ -512,7 +521,7 @@ class HttpDurableQualificationEvidenceSource:
                     f"{_QUALIFICATION_SCOPE_PATH}/{scope_id}/teardown",
                 ),
                 headers=self._headers() | {"X-Admin-Token": self._config.admin_token},
-                timeout=30.0,
+                timeout=DURABLE_QUALIFICATION_TEARDOWN_TIMEOUT_SECONDS,
                 allow_redirects=False,
             )
             with response:

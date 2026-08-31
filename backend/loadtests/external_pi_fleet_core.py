@@ -342,7 +342,9 @@ class DurableQualificationReport(BaseModel):
     release_id: str = Field(pattern=r"^[0-9a-f]{12}-staging$")
     status: Literal["completed", "resource_refused", "failed"]
     reason: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
-    profiles: tuple[DurableProfileReport, ...] = Field(max_length=2)
+    profiles: tuple[DurableProfileReport, ...] = Field(max_length=1)
+    max_spend_microusd: int = Field(default=0, ge=0, le=10_000_000)
+    provider_spend_ceiling_microusd: int = Field(default=0, ge=0, le=10_000_000)
     flags_restored: bool
     exact_workers_drained: bool
     transient_workers_removed: bool
@@ -369,19 +371,17 @@ class DurableQualificationReport(BaseModel):
 
     @model_validator(mode="after")
     def validate_status_evidence(self) -> DurableQualificationReport:
+        if self.provider_spend_ceiling_microusd > self.max_spend_microusd:
+            raise ValueError("durable report spend evidence is inconsistent")
         names = tuple(item.profile for item in self.profiles)
-        expected = ("32-functional-turns", "100-immediate-admission")
+        expected = ("32-functional-turns",)
         if names != expected[: len(names)] or any(
             not item.passed or item.modal_rate_release_id != self.release_id
             for item in self.profiles
         ):
             raise ValueError("durable report profiles are invalid")
         if self.status == "completed":
-            if (
-                self.reason is not None
-                or names not in {expected[:1], expected}
-                or not self.cleanup_passed
-            ):
+            if self.reason is not None or names != expected or not self.cleanup_passed:
                 raise ValueError(
                     "completed durable report requires an approved profile sequence and cleanup"
                 )
@@ -396,14 +396,33 @@ class DurableQualificationReport(BaseModel):
             if self.reason is None:
                 raise ValueError("failed durable report requires a typed reason")
             failed_profile_limits = {
-                "durable_qualification_failed": 1,
-                "durable_profile_failed": 1,
-                "cleanup_failed": 2,
-                "staging_isolation_required": 1,
-                "exact_staging_release_required": 1,
-                "approved_16_gib_host_required": 1,
-                "public_external_admission_flags_must_be_off": 1,
+                "durable_qualification_failed": 0,
+                "durable_profile_failed": 0,
+                "cleanup_failed": 1,
+                "staging_isolation_required": 0,
+                "exact_staging_release_required": 0,
+                "approved_16_gib_host_required": 0,
+                "public_external_admission_flags_must_be_off": 0,
                 "public_external_admission_flags_are_invalid": 0,
+                "staging_prerequisite_missing": 0,
+                "active_staging_worker_required": 0,
+                "binding_profile_order_required": 0,
+                "host_cpu_evidence_unavailable": 0,
+                "host_memory_evidence_unavailable": 0,
+                "process_memory_evidence_unavailable": 0,
+                "protected_modal_rate_evidence_invalid": 0,
+                "protected_staging_settings_invalid": 0,
+                "public_external_admission_flags_drifted": 0,
+                "qualification_run_id_invalid": 0,
+                "qualification_scope_invalid": 0,
+                "resource_preflight_invalid": 0,
+                "resource_sampling_failed": 0,
+                "resource_sampling_lifecycle_invalid": 0,
+                "resource_sampling_stalled": 0,
+                "spend_envelope_invalid": 0,
+                "spend_envelope_exceeded": 0,
+                "staging_database_required": 0,
+                "staging_pi_openai_model_required": 0,
             }
             maximum_profiles = failed_profile_limits.get(self.reason or "")
             if maximum_profiles is None or len(names) > maximum_profiles:
@@ -424,10 +443,7 @@ class DurableQualificationReport(BaseModel):
             self.status == "completed"
             and self.reason is None
             and tuple(item.profile for item in self.profiles)
-            in {
-                ("32-functional-turns",),
-                ("32-functional-turns", "100-immediate-admission"),
-            }
+            == ("32-functional-turns",)
             and all(item.passed for item in self.profiles)
             and self.cleanup_passed
         )

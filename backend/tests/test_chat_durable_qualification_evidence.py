@@ -500,9 +500,11 @@ def test_collect_locks_scope_before_closing_authorization(engine):
     lock_requests = []
 
     class LockedService(ChatDurableQualificationEvidenceService):
-        def require_active_scope(self, scope_id, *, settings, lock=False):
+        def require_collectable_scope(self, scope_id, *, settings, lock=False):
             lock_requests.append((scope_id, lock))
-            return super().require_active_scope(scope_id, settings=settings, lock=lock)
+            return super().require_collectable_scope(
+                scope_id, settings=settings, lock=lock
+            )
 
     with Session(engine) as db, db.begin():
         _add_valid_functional_evidence(db)
@@ -512,6 +514,44 @@ def test_collect_locks_scope_before_closing_authorization(engine):
         )
 
     assert lock_requests == [(SCOPE_ID, True)]
+
+
+def test_collect_replays_exact_teardown_closed_scope_without_moving_window(engine):
+    with Session(engine) as db, db.begin():
+        _add_valid_functional_evidence(db)
+        db.get(ChatQualificationScope, SCOPE_ID).window_ended_at = END
+
+    with Session(engine) as db:
+        service = ChatDurableQualificationEvidenceService(
+            db, now=lambda: END + timedelta(minutes=1)
+        )
+        first = service.collect(scope_id=SCOPE_ID, settings=_settings())
+        second = service.collect(scope_id=SCOPE_ID, settings=_settings())
+        persisted_end = db.get(ChatQualificationScope, SCOPE_ID).window_ended_at
+
+    assert first == second
+    assert first.window_ended_at_ms == round(END.timestamp() * 1_000)
+    assert persisted_end.replace(tzinfo=UTC) == END
+
+
+def test_collect_closed_scope_refuses_wrong_release_or_expired_scope(engine):
+    with Session(engine) as db, db.begin():
+        _add_valid_functional_evidence(db)
+        scope = db.get(ChatQualificationScope, SCOPE_ID)
+        scope.window_ended_at = END
+
+    with Session(engine) as db:
+        service = ChatDurableQualificationEvidenceService(db, now=lambda: END)
+        with pytest.raises(QualificationEvidenceUnavailable, match="unavailable"):
+            service.collect(
+                scope_id=SCOPE_ID,
+                settings=_settings().model_copy(update={"release_id": "wrong-staging"}),
+            )
+        db.rollback()
+        with pytest.raises(QualificationEvidenceUnavailable, match="unavailable"):
+            ChatDurableQualificationEvidenceService(
+                db, now=lambda: END + timedelta(hours=2)
+            ).collect(scope_id=SCOPE_ID, settings=_settings())
 
 
 def test_admission_profile_requires_exact_100_no_tool_denominator(engine):

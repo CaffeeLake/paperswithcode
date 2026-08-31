@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.models.database import ChatTurnLatency
 from backend.chat_sandbox_worker.mcp_app_registry import egress_policy_digest
 from backend.services.chat_sandbox_capacity_repository import (
     CapacityUnavailable,
@@ -558,6 +560,16 @@ class ChatSandboxAcquisitionCoordinator:
 
         sandbox = None
         try:
+            with self.session_factory() as evidence_db:
+                qualification_profile = evidence_db.scalar(
+                    select(ChatTurnLatency.qualification_profile)
+                    .where(
+                        ChatTurnLatency.chat_session_id == chat_session_id,
+                        ChatTurnLatency.terminal_status == "running",
+                    )
+                    .order_by(ChatTurnLatency.started_at.desc())
+                    .limit(1)
+                )
             async with asyncio.timeout(self.ready_timeout_seconds):
                 sandbox = await self.provider.create(
                     name=f"chat-{chat_session_id}",
@@ -574,6 +586,11 @@ class ChatSandboxAcquisitionCoordinator:
                         "release": self.settings.release_id,
                         "image": self.settings.chat_modal_image_version,
                         "egress": egress_policy_digest(self.settings),
+                        **(
+                            {"qualification_profile": qualification_profile}
+                            if qualification_profile == "32-functional-turns"
+                            else {}
+                        ),
                     },
                     worker_generation=claim.worker_generation,
                     launch_mode=launch_mode,

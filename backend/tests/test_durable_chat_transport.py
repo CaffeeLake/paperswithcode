@@ -498,6 +498,16 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
             _Response(
                 200,
                 payload={
+                    "expected_tool_turns": 16,
+                    "targeted_sessions": 16,
+                    "closed_intervals": 16,
+                    "eviction_events": 16,
+                    "source": "exact_scope_canonical_eviction",
+                },
+            ),
+            _Response(
+                200,
+                payload={
                     "expected_users": 32,
                     "admitted_turns": 32,
                     "admission_denominator_events": 32,
@@ -515,16 +525,6 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
                     "source": "durable_qualification_records",
                 },
             ),
-            _Response(
-                200,
-                payload={
-                    "expected_tool_turns": 16,
-                    "targeted_sessions": 16,
-                    "closed_intervals": 16,
-                    "eviction_events": 16,
-                    "source": "exact_scope_canonical_eviction",
-                },
-            ),
             _Response(204),
         )
     )
@@ -540,21 +540,21 @@ def test_http_durable_evidence_source_reads_exact_scoped_content_free_seam():
     )
 
     scope = source.begin_scope("32-functional-turns")
-    snapshot = source.collect(scope["scope_id"])
     proof = source.teardown(scope["scope_id"])
+    snapshot = source.collect(scope["scope_id"])
     source.cleanup(scope["scope_id"])
 
     posts = [call for call in session.calls if call[0] == "post"]
     assert posts[0][1].endswith("/api/v1/chat/admin/qualification-scopes")
     assert posts[0][2]["json"]["run_id"] == "run-f32"
-    assert posts[1][1] == (
-        "https://staging.paperswithcode.co/api/v1/chat/admin/qualification-evidence"
-    )
-    assert posts[1][2]["json"] == {"scope_id": str(scope["scope_id"])}
-    assert posts[1][2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
-    assert posts[2][1].endswith(
+    assert posts[1][1].endswith(
         f"/api/v1/chat/admin/qualification-scopes/{scope['scope_id']}/teardown"
     )
+    assert posts[2][1] == (
+        "https://staging.paperswithcode.co/api/v1/chat/admin/qualification-evidence"
+    )
+    assert posts[2][2]["json"] == {"scope_id": str(scope["scope_id"])}
+    assert posts[2][2]["headers"]["Origin"] == "https://staging.paperswithcode.co"
     assert proof["closed_intervals"] == 16
     assert session.calls.count(("close",)) == 4
     assert snapshot.billed_duration_ms == 4

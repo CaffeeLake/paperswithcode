@@ -37,7 +37,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from backend.config import get_settings
+from backend.config import Settings, get_settings
 from backend.services.hf_inference_billing_service import (
     OAUTH_COOKIE_NAME,
     HfInferenceCredential,
@@ -196,12 +196,19 @@ def _encode_session(user: dict) -> str:
 
 def _encode_legacy_session(user: dict) -> str:
     settings = get_settings()
+    return encode_qualification_session(user, settings, is_admin=_is_admin(user))
+
+
+def encode_qualification_session(
+    user: dict, settings: Settings, *, is_admin: bool = False
+) -> str:
+    """Encode the staging qualification cookie with explicitly supplied keys."""
     payload = {
         "sub": user["sub"],
         "username": user["username"],
         "name": user.get("name"),
         "avatar_url": user.get("avatar_url"),
-        "is_admin": _is_admin(user),
+        "is_admin": is_admin,
         "exp": int(time.time()) + SESSION_TTL_SECONDS,
     }
     qualification_owner = user.get("chat_qualification_owner")

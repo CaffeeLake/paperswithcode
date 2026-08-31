@@ -39,10 +39,12 @@ from backend.services.durable_external_qualification import (
     build_synthetic_transport_config,
     qualification_signal_context,
     select_staging_pi_openai_model,
+    qualification_spend_ceiling_microusd,
 )
 from backend.services.durable_external_qualification_system import (
     SystemDurableQualificationControlPlane,
     build_system_control_plane,
+    load_protected_staging_settings,
 )
 
 
@@ -131,6 +133,9 @@ class GuardedLiveDurableOperator:
             run_live_durable_profile,
         )
 
+        mark_scope_attempted = getattr(self.control_plane, "mark_scope_attempted", None)
+        if callable(mark_scope_attempted):
+            mark_scope_attempted()
         scope = self.evidence_source.begin_scope(profile.name)
         scope_id = scope["scope_id"]
         if not isinstance(scope_id, uuid.UUID):
@@ -156,18 +161,33 @@ class GuardedLiveDurableOperator:
 
         environment = self.environment()
         evidence = self.evidence_source.collect(measurement.qualification_scope_id)
+        protected_rate = dict(self.control_plane.protected_runtime_evidence(profile))
+        protected_rate["PWC_MODAL_EXECUTOR_RATE_ATTESTED_AT_MS"] = str(
+            evidence.window_ended_at_ms
+        )
         rate = load_modal_rate_evidence(
-            self.control_plane.protected_runtime_evidence(profile),
+            protected_rate,
             expected_release=environment.target_release,
             window_started_at_ms=evidence.window_started_at_ms,
             window_ended_at_ms=evidence.window_ended_at_ms,
             now_ms=round(datetime.now(UTC).timestamp() * 1_000),
         )
-        return finalize_live_durable_profile(
+        report = finalize_live_durable_profile(
             measurement,
             qualification_evidence=evidence,
             modal_rate=rate,
         )
+        if report.modal_estimated_cost_microusd > self.spend_envelope_microusd:
+            raise QualificationRefused("spend_envelope_exceeded")
+        return report
+
+    @property
+    def spend_envelope_microusd(self) -> int:
+        return self.transport_config.max_spend_microusd
+
+    @property
+    def provider_spend_ceiling_microusd(self) -> int:
+        return self.transport_config.provider_spend_ceiling_microusd
 
     def cleanup_profile_evidence(self, profile: DurableQualificationProfile) -> None:
         scope_id = self._scopes.pop(profile.name, None)
@@ -213,6 +233,8 @@ def validate_qualification_environment(environment: QualificationEnvironment) ->
     if (
         environment.name != "staging"
         or environment.production_release == environment.target_release
+        or environment.production_release.partition("-")[0]
+        == environment.target_release.partition("-")[0]
     ):
         raise QualificationRefused("staging_isolation_required")
     if (
@@ -253,10 +275,7 @@ def _resource_refusal(
 def run_durable_qualification(
     operator: DurableQualificationOperator,
     *,
-    profiles: Sequence[str] = (
-        "32-functional-turns",
-        "100-immediate-admission",
-    ),
+    profiles: Sequence[str] = ("32-functional-turns",),
 ) -> DurableQualificationReport:
     """Run the fixed profiles and return directly publishable fail-closed evidence."""
     environment: QualificationEnvironment | None = None
@@ -270,10 +289,7 @@ def run_durable_qualification(
     unreportable_refusal: str | None = None
     try:
         profile_names = tuple(profiles)
-        if profile_names not in {
-            ("32-functional-turns",),
-            ("32-functional-turns", "100-immediate-admission"),
-        }:
+        if profile_names != ("32-functional-turns",):
             raise QualificationRefused("binding_profile_order_required")
         environment = operator.environment()
         validate_qualification_environment(environment)
@@ -293,6 +309,7 @@ def run_durable_qualification(
             result = None
             primary_error: BaseException | None = None
             profile_cleanup_failed = False
+            teardown_succeeded = False
             try:
                 operator.setup_profile(profile)
                 result = operator.run_profile(profile)
@@ -306,6 +323,7 @@ def run_durable_qualification(
                         scope_id = scope_source(profile)
                 if scope_id is not None or not callable(scope_source):
                     operator.teardown_profile(profile, scope_id)
+                    teardown_succeeded = True
             except BaseException:
                 profile_cleanup_failed = True
 
@@ -317,7 +335,7 @@ def run_durable_qualification(
                 except BaseException as error:
                     primary_error = error
             cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
-            if callable(cleanup_evidence):
+            if callable(cleanup_evidence) and teardown_succeeded:
                 try:
                     cleanup_evidence(profile)
                 except BaseException:
@@ -366,6 +384,10 @@ def run_durable_qualification(
         status=status,
         reason=reason,
         profiles=tuple(reports),
+        max_spend_microusd=getattr(operator, "spend_envelope_microusd", 0),
+        provider_spend_ceiling_microusd=getattr(
+            operator, "provider_spend_ceiling_microusd", 0
+        ),
         flags_restored=flags_restored,
         exact_workers_drained=cleanup.exact_workers_drained,
         transient_workers_removed=cleanup.transient_workers_removed,
@@ -407,9 +429,8 @@ def main() -> int:
     if _STAGING_RELEASE.fullmatch(args.release_id) is None:
         parser.error("exact immutable staging release is required")
     try:
-        from backend.config import get_settings
         from backend.loadtests.external_pi_fleet_core import publish_durable_report
-        from backend.routers.auth import _encode_legacy_session
+        from backend.routers.auth import encode_qualification_session
         from backend.scripts.qualify_chat_sandbox import (
             merge_release_settings,
             settings_for_release,
@@ -417,21 +438,33 @@ def main() -> int:
 
         current = Path("/srv/paperswithcode/environments/staging/current")
         release_settings = settings_for_release(current)
-        settings = merge_release_settings(get_settings(), release_settings)
+        protected_settings = load_protected_staging_settings()
+        settings = merge_release_settings(protected_settings, release_settings)
         control_plane = build_system_control_plane(
             release_id=args.release_id,
             settings=settings,
+            environ={"PWC_RELEASE_ID": protected_settings.release_id},
         )
         model = select_staging_pi_openai_model(settings)
         run_id = uuid.uuid4().hex[:24]
+        static_rate = control_plane.protected_runtime_evidence(
+            resolve_durable_profile("32-functional-turns")
+        )
+        provider_ceiling, required_ceiling = qualification_spend_ceiling_microusd(
+            settings,
+            modal_rate_microusd_per_second=int(
+                static_rate["PWC_MODAL_EXECUTOR_RATE_MICROUSD_PER_SECOND"]
+            ),
+        )
 
         def encode(subject: str) -> str:
-            return _encode_legacy_session(
+            return encode_qualification_session(
                 {
                     "sub": subject,
                     "username": subject,
                     "chat_qualification_owner": subject,
-                }
+                },
+                settings,
             )
 
         transport = build_synthetic_transport_config(
@@ -440,6 +473,8 @@ def main() -> int:
             model=model,
             cookie_encoder=encode,
             max_spend_usd=args.max_spend_usd,
+            required_spend_microusd=required_ceiling,
+            provider_spend_ceiling_microusd=provider_ceiling,
         )
         with qualification_signal_context():
             report = run_live_durable_qualification(

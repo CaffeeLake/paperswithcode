@@ -42,6 +42,9 @@ from backend.loadtests.external_pi_fleet_core import (
     ModalRateEvidence,
     DurableQualificationEvidence,
 )
+from backend.services.durable_external_qualification_contract import (
+    DURABLE_QUALIFICATION_RUN_TIMEOUT_SECONDS,
+)
 from backend.loadtests.external_pi_shadow_core import BaselineObservation
 
 
@@ -326,7 +329,7 @@ def run_local_durable_profile(
     resources: DurableRunResources,
     lifecycle_source: ModalLifecycleEvidenceSource,
     modal_rate: ModalRateEvidence,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = DURABLE_QUALIFICATION_RUN_TIMEOUT_SECONDS,
     barrier_timeout_seconds: float = 5.0,
     monotonic: Callable[[], float] = time.monotonic,
 ):
@@ -440,7 +443,7 @@ def run_live_durable_profile(
     transport_config,
     resources: DurableRunResources,
     qualification_scope_id: uuid.UUID,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = DURABLE_QUALIFICATION_RUN_TIMEOUT_SECONDS,
     barrier_timeout_seconds: float = 5.0,
 ):
     """Guarded constructor: live evidence can only use the real chat transport."""

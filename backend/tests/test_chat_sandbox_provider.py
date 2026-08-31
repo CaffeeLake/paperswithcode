@@ -45,8 +45,21 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+@pytest.mark.parametrize(
+    ("tags", "expected_lifetime"),
+    (
+        ({"service": "pwc-chat"}, 3600),
+        (
+            {
+                "service": "pwc-chat",
+                "qualification_profile": "32-functional-turns",
+            },
+            120,
+        ),
+    ),
+)
 def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
-    monkeypatch,
+    monkeypatch, tags, expected_lifetime
 ):
     captured: dict[str, object] = {}
     app = object()
@@ -82,7 +95,7 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     result = asyncio.run(
         provider.create(
             name="chat-test",
-            tags={"service": "pwc-chat"},
+            tags=tags,
             worker_generation="generation-a",
         )
     )
@@ -95,7 +108,10 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
     assert options["app"] is app
     assert options["image"] is image
     assert options["name"] == "chat-test"
-    assert options["tags"] == {"service": "pwc-chat"}
+    assert options["tags"] == tags
+    assert options["timeout"] == expected_lifetime
+    if "qualification_profile" in tags:
+        assert options["idle_timeout"] == expected_lifetime
     assert options["region"] == CHAT_SANDBOX_REGION
     assert options["cpu"] == (0.125, 1)
     assert options["memory"] == (512, 2048)

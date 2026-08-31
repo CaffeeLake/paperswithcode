@@ -345,3 +345,22 @@ def test_stale_dispatch_is_marked_unknown_once_before_ceiling_settlement():
         assert service.mark_stale_dispatched_unknown(now=later) == 0
         aggregate = db.get(ChatOpenAIMonthlyUsage, ("owner", now.date().replace(day=1)))
         assert aggregate.unknown_cost_calls == 1
+
+
+def test_qualification_turns_have_a_fixed_provider_request_ceiling():
+    from backend.chat_gateway_app import (
+        QUALIFICATION_PROVIDER_REQUESTS,
+        QUALIFICATION_PROVIDER_TURN_TOKENS,
+        _provider_turn_limits,
+    )
+
+    database = SimpleNamespace(scalar=lambda _query: "32-functional-turns")
+    limits = _provider_turn_limits(
+        SimpleNamespace(turn_id=object(), scopes=[]), database
+    )
+
+    assert limits == (
+        QUALIFICATION_PROVIDER_REQUESTS,
+        QUALIFICATION_PROVIDER_TURN_TOKENS,
+    )
+    assert limits[0] == 2
