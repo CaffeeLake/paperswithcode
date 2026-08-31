@@ -227,16 +227,16 @@ arrival count: 2x32 qualifies 32, 4x16 qualifies 48, and 3x32 qualifies 64.
 Each target is exactly the capacity remaining after one worker is removed. Run
 them in ascending order and stop at the first refusal or failure.
 
-## Durable external-turn production gate
+## Durable external-turn staging gate
 
-The durable 32/100 qualification is distinct from the synthetic shadow and
+The durable qualification is distinct from the synthetic shadow and
 transient compatibility fleet checks above. Task 11 provides only deterministic
-fault/load contracts. It must not be used to generate staging traffic. A
-separately authorized operation must invoke guarded
-`backend.scripts.qualify_durable_external_turns.run_live_durable_qualification` and
-must use the exact active immutable staging release while production remains a
-different release and all public external-admission flags are off.
-The executable Locust barrier, exact 16/8/8 and 100-user assignments, stream
+fault/load contracts. The root CLI runs only after explicit authorization with
+the exact confirmation `QUALIFY_STAGING_DURABLE_EXTERNAL_TURNS`, the exact active
+immutable staging release, and a positive spend envelope no greater than $10.
+Production must remain a different immutable release and all ordinary external
+admission flags must remain off. The executable Locust barrier, exact 16/8/8
+assignment, stream
 evidence normalization, identity-aware executor counts, fixed 80% CPU guard,
 and strict retained report/cleanup schema are Task 11 code. Task 12 supplies
 only protected credentials, exact release/host control, and bounded runtime
@@ -272,11 +272,12 @@ protected staging runtime must explicitly provide all four rate attestations:
 Attestation time must fall inside the server-issued cohort window; old, future,
 wrong-source, or wrong-release evidence refuses the report.
 
-The mandatory order is 32 simultaneous full functional turns (16 no-tool,
-eight read-only CLI, eight Bash), followed immediately by 100 simultaneous
-admission/stream chats. Each cohort is released at once; application-level
-queueing is forbidden. The controller rechecks the approved 8 GiB VPS class and
-the existing 1.5 GiB projected `MemAvailable`/80% CPU guard before each cohort.
+The current mandatory gate is exactly 32 simultaneous full functional turns
+(16 no-tool, eight read-only CLI, eight Bash). The future ordered 32-then-100
+controller API remains inert unless separately authorized; standalone 100 is
+refused. The cohort is released at once and application-level queueing is
+forbidden. The controller rechecks the approved 15–17 GiB window around the
+16 GiB VPS class and the existing 1.5 GiB projected `MemAvailable`/80% CPU guard.
 A resource refusal is retained safety evidence and ends the operation; it never
 authorizes overcommit.
 

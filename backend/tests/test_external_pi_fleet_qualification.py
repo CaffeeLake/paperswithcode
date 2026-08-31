@@ -380,14 +380,14 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
         "final_active_external_workers": 0,
         "final_active_sandboxes": 0,
     }
-    with pytest.raises(ValidationError, match="completed.*both profiles"):
-        DurableQualificationReport(
-            release_id="0123456789ab-staging",
-            status="completed",
-            reason=None,
-            profiles=(profile_report,),
-            **cleanup,
-        )
+    completed = DurableQualificationReport(
+        release_id="0123456789ab-staging",
+        status="completed",
+        reason=None,
+        profiles=(profile_report,),
+        **cleanup,
+    )
+    assert completed.passed is True
     report = DurableQualificationReport(
         release_id="0123456789ab-staging",
         status="failed",
@@ -409,8 +409,10 @@ def test_durable_report_is_atomic_mode_0600_and_contains_no_payloads(tmp_path: P
     assert "prompt" not in destination.read_text(encoding="utf-8")
     assert "token" not in destination.read_text(encoding="utf-8")
 
-    forged = report.model_copy(update={"status": "completed", "reason": None})
-    with pytest.raises(ValidationError, match="completed.*both profiles"):
+    forged = report.model_copy(
+        update={"status": "completed", "reason": None, "profiles": ()}
+    )
+    with pytest.raises(ValidationError, match="completed.*profile sequence"):
         publish_durable_report(forged, tmp_path / "forged.json", tmp_path)
 
 
@@ -436,7 +438,7 @@ class _DurableOperator:
             target_release="0123456789ab-staging",
             staging_release="0123456789ab-staging",
             production_release="fedcba987654-production",
-            host_mem_total_bytes=8 * 1024**3,
+            host_mem_total_bytes=16 * 1024**3,
             public_external_admission_flags=(False, False, False),
         )
         self.refuse_profile = refuse_profile
@@ -646,7 +648,7 @@ def test_durable_controller_refuses_unsafe_environment_but_still_restores(update
         "target_release": "0123456789ab-staging",
         "staging_release": "0123456789ab-staging",
         "production_release": "fedcba987654-production",
-        "host_mem_total_bytes": 8 * 1024**3,
+        "host_mem_total_bytes": 16 * 1024**3,
         "public_external_admission_flags": (False, False, False),
     }
     values.update(updates)
@@ -703,6 +705,29 @@ def test_durable_controller_cannot_skip_or_reverse_the_binding_profile_order():
         )
     assert not any(event[0] == "setup" for event in operator.events)
     assert operator.events[-1] == ("cleanup_transient_workers",)
+
+
+def test_durable_controller_accepts_standalone_functional_profile_only():
+    from backend.scripts.qualify_durable_external_turns import (
+        QualificationRefused,
+        run_durable_qualification,
+    )
+
+    operator = _DurableOperator()
+    report = run_durable_qualification(
+        operator,
+        profiles=("32-functional-turns",),
+    )
+
+    assert report.status == "completed"
+    assert [profile.profile for profile in report.profiles] == ["32-functional-turns"]
+    assert [event for event in operator.events if event[0] == "run"] == [
+        ("run", "32-functional-turns")
+    ]
+
+    for forbidden in ((), ("100-immediate-admission",)):
+        with pytest.raises(QualificationRefused, match="profile_order"):
+            run_durable_qualification(_DurableOperator(), profiles=forbidden)
 
 
 def test_durable_controller_requires_snapshot_flags_off_before_setup():
@@ -975,7 +1000,7 @@ def test_controller_generated_cleanup_failure_is_a_valid_failed_report() -> None
         ("durable_profile_failed", 1, True),
         ("staging_isolation_required", 1, True),
         ("exact_staging_release_required", 1, True),
-        ("approved_8_gib_host_required", 1, True),
+        ("approved_16_gib_host_required", 1, True),
         ("public_external_admission_flags_must_be_off", 1, True),
         ("public_external_admission_flags_are_invalid", 0, False),
     ),

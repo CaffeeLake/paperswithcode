@@ -377,9 +377,13 @@ class DurableQualificationReport(BaseModel):
         ):
             raise ValueError("durable report profiles are invalid")
         if self.status == "completed":
-            if self.reason is not None or names != expected or not self.cleanup_passed:
+            if (
+                self.reason is not None
+                or names not in {expected[:1], expected}
+                or not self.cleanup_passed
+            ):
                 raise ValueError(
-                    "completed durable report requires both profiles and cleanup"
+                    "completed durable report requires an approved profile sequence and cleanup"
                 )
         elif self.status == "resource_refused":
             if (
@@ -397,7 +401,7 @@ class DurableQualificationReport(BaseModel):
                 "cleanup_failed": 2,
                 "staging_isolation_required": 1,
                 "exact_staging_release_required": 1,
-                "approved_8_gib_host_required": 1,
+                "approved_16_gib_host_required": 1,
                 "public_external_admission_flags_must_be_off": 1,
                 "public_external_admission_flags_are_invalid": 0,
             }
@@ -420,7 +424,10 @@ class DurableQualificationReport(BaseModel):
             self.status == "completed"
             and self.reason is None
             and tuple(item.profile for item in self.profiles)
-            == ("32-functional-turns", "100-immediate-admission")
+            in {
+                ("32-functional-turns",),
+                ("32-functional-turns", "100-immediate-admission"),
+            }
             and all(item.passed for item in self.profiles)
             and self.cleanup_passed
         )

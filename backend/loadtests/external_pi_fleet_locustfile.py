@@ -447,14 +447,25 @@ def run_live_durable_profile(
     from backend.loadtests.durable_chat_transport import create_live_durable_transport
 
     started_at = datetime.now(UTC)
-    observations = _run_durable_observations(
-        profile_name=profile_name,
-        transport=create_live_durable_transport(
-            transport_config, qualification_scope_id
-        ),
-        timeout_seconds=timeout_seconds,
-        barrier_timeout_seconds=barrier_timeout_seconds,
-    )
+    start_sampling = getattr(resources, "start", None)
+    stop_sampling = getattr(resources, "stop", None)
+    sampling = callable(start_sampling) and callable(stop_sampling)
+    if sampling:
+        start_sampling()
+    try:
+        observations = _run_durable_observations(
+            profile_name=profile_name,
+            transport=create_live_durable_transport(
+                transport_config, qualification_scope_id
+            ),
+            timeout_seconds=timeout_seconds,
+            barrier_timeout_seconds=barrier_timeout_seconds,
+        )
+    finally:
+        if sampling:
+            resources = stop_sampling()
+    if not isinstance(resources, DurableRunResources):
+        raise FleetRunRefused("durable resource evidence is invalid")
     return DurableProfileMeasurement(
         profile_name=profile_name,
         observations=observations,

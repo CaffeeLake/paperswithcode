@@ -1,15 +1,12 @@
-"""Pure guarded controller for staging durable external-turn qualification.
-
-Task 11 defines the transaction and evidence contracts only. A live system adapter is
-intentionally supplied by the separately authorized staging operation in Task 12.
-"""
+"""Root-operated controller and CLI for durable external-turn qualification."""
 
 from __future__ import annotations
 
-import re
+import argparse
+import os
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from backend.loadtests.external_pi_fleet_core import (
@@ -17,101 +14,36 @@ from backend.loadtests.external_pi_fleet_core import (
     DurableQualificationReport,
     DurableQualificationProfile,
     HostResourceSnapshot,
-    resolve_durable_profile,
     load_modal_rate_evidence,
+    resolve_durable_profile,
 )
 from backend.loadtests.durable_chat_transport import DurableChatTransportConfig
-
-_STAGING_RELEASE = re.compile(r"^[0-9a-f]{12}-staging$")
-_MIN_APPROVED_HOST_MEMORY_BYTES = 7 * 1024**3
-_MAX_APPROVED_HOST_MEMORY_BYTES = 9 * 1024**3
-
-
-class QualificationRefused(RuntimeError):
-    """The durable-turn qualification would violate an operator gate."""
-
-
-@dataclass(frozen=True, slots=True)
-class QualificationEnvironment:
-    name: str
-    target_release: str
-    staging_release: str
-    production_release: str
-    host_mem_total_bytes: int
-    public_external_admission_flags: tuple[bool, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ImmutableFlagSnapshot:
-    entries: tuple[tuple[str, bool], ...]
-
-    @classmethod
-    def capture(cls, value: Mapping[str, bool]) -> ImmutableFlagSnapshot:
-        if not isinstance(value, Mapping) or not 1 <= len(value) <= 32:
-            raise QualificationRefused("public_external_admission_flags_are_invalid")
-        entries = tuple(sorted(value.items()))
-        if any(
-            not isinstance(name, str)
-            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name)
-            or type(enabled) is not bool
-            for name, enabled in entries
-        ):
-            raise QualificationRefused("public_external_admission_flags_are_invalid")
-        return cls(entries)
-
-    @property
-    def any_enabled(self) -> bool:
-        return any(enabled for _, enabled in self.entries)
-
-    def as_dict(self) -> dict[str, bool]:
-        return dict(self.entries)
-
-
-@dataclass(frozen=True, slots=True)
-class CleanupProof:
-    exact_workers_drained: bool
-    transient_workers_removed: bool
-    listeners_gone: bool
-    status_files_gone: bool
-    processes_gone: bool
-    final_active_backend_turns: int
-    final_active_external_workers: int
-    final_active_sandboxes: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.exact_workers_drained,
-            self.transient_workers_removed,
-            self.listeners_gone,
-            self.status_files_gone,
-            self.processes_gone,
-        )
-        counts = (
-            self.final_active_backend_turns,
-            self.final_active_external_workers,
-            self.final_active_sandboxes,
-        )
-        if any(type(value) is not bool for value in values) or any(
-            type(count) is not int or count < 0 or count > 1_000_000 for count in counts
-        ):
-            raise ValueError("durable cleanup proof is invalid")
-
-    @property
-    def passed(self) -> bool:
-        return (
-            self.exact_workers_drained
-            and self.transient_workers_removed
-            and self.listeners_gone
-            and self.status_files_gone
-            and self.processes_gone
-            and self.final_active_backend_turns == 0
-            and self.final_active_external_workers == 0
-            and self.final_active_sandboxes == 0
-        )
-
-
-_FAILED_CLEANUP = CleanupProof(False, False, False, False, False, 0, 0, 0)
-QualificationResult = DurableQualificationReport
+from backend.services.durable_external_qualification import (
+    CONFIRMATION,
+    DURABLE_REPORT_PATH,
+    DURABLE_REPORT_ROOT,
+    CleanupProof,
+    DurableQualificationInterrupted,
+    DurableResourceSample,
+    ImmutableFlagSnapshot,
+    QualificationEnvironment,
+    QualificationRefused,
+    QualificationResult,
+    ScopedCleanupState,
+    StagingQualificationPrerequisites,
+    WholeWindowResourceSampler,
+    _FAILED_CLEANUP,
+    _MAX_APPROVED_HOST_MEMORY_BYTES,
+    _MIN_APPROVED_HOST_MEMORY_BYTES,
+    _STAGING_RELEASE,
+    build_synthetic_transport_config,
+    qualification_signal_context,
+    select_staging_pi_openai_model,
+)
+from backend.services.durable_external_qualification_system import (
+    SystemDurableQualificationControlPlane,
+    build_system_control_plane,
+)
 
 
 class DurableQualificationOperator(Protocol):
@@ -206,6 +138,9 @@ class GuardedLiveDurableOperator:
         self._scopes[profile.name] = scope_id
         if scope.get("app_release_id") != self.environment().target_release:
             raise QualificationRefused("exact_staging_release_required")
+        bind_scope = getattr(self.control_plane, "bind_scope", None)
+        if callable(bind_scope):
+            bind_scope(scope_id)
         return run_live_durable_profile(
             profile_name=profile.name,
             transport_config=self.transport_config,
@@ -268,12 +203,13 @@ def run_live_durable_qualification(
         GuardedLiveDurableOperator(
             control_plane=control_plane,
             transport_config=transport_config,
-        )
+        ),
+        profiles=("32-functional-turns",),
     )
 
 
 def validate_qualification_environment(environment: QualificationEnvironment) -> None:
-    """Require an isolated exact staging release on the approved 8 GiB class."""
+    """Require an isolated exact staging release on the approved 16 GiB class."""
     if (
         environment.name != "staging"
         or environment.production_release == environment.target_release
@@ -290,7 +226,7 @@ def validate_qualification_environment(environment: QualificationEnvironment) ->
         <= environment.host_mem_total_bytes
         <= _MAX_APPROVED_HOST_MEMORY_BYTES
     ):
-        raise QualificationRefused("approved_8_gib_host_required")
+        raise QualificationRefused("approved_16_gib_host_required")
     if not environment.public_external_admission_flags or any(
         type(flag) is not bool or flag
         for flag in environment.public_external_admission_flags
@@ -334,10 +270,10 @@ def run_durable_qualification(
     unreportable_refusal: str | None = None
     try:
         profile_names = tuple(profiles)
-        if profile_names != (
-            "32-functional-turns",
-            "100-immediate-admission",
-        ):
+        if profile_names not in {
+            ("32-functional-turns",),
+            ("32-functional-turns", "100-immediate-admission"),
+        }:
             raise QualificationRefused("binding_profile_order_required")
         environment = operator.environment()
         validate_qualification_environment(environment)
@@ -442,16 +378,110 @@ def run_durable_qualification(
     )
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the root-only staging durable external-turn qualification; "
+            f"confirmation must be {CONFIRMATION}."
+        )
+    )
+    parser.add_argument("--environment", choices=("staging",), required=True)
+    parser.add_argument("--release-id", required=True)
+    parser.add_argument("--confirm", required=True)
+    parser.add_argument("--max-spend-usd", required=True)
+    parser.add_argument(
+        "--profile",
+        choices=("32-functional-turns",),
+        default="32-functional-turns",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error("run through sudo as the root operator")
+    if args.confirm != CONFIRMATION:
+        parser.error("exact durable qualification confirmation is required")
+    if _STAGING_RELEASE.fullmatch(args.release_id) is None:
+        parser.error("exact immutable staging release is required")
+    try:
+        from backend.config import get_settings
+        from backend.loadtests.external_pi_fleet_core import publish_durable_report
+        from backend.routers.auth import _encode_legacy_session
+        from backend.scripts.qualify_chat_sandbox import (
+            merge_release_settings,
+            settings_for_release,
+        )
+
+        current = Path("/srv/paperswithcode/environments/staging/current")
+        release_settings = settings_for_release(current)
+        settings = merge_release_settings(get_settings(), release_settings)
+        control_plane = build_system_control_plane(
+            release_id=args.release_id,
+            settings=settings,
+        )
+        model = select_staging_pi_openai_model(settings)
+        run_id = uuid.uuid4().hex[:24]
+
+        def encode(subject: str) -> str:
+            return _encode_legacy_session(
+                {
+                    "sub": subject,
+                    "username": subject,
+                    "chat_qualification_owner": subject,
+                }
+            )
+
+        transport = build_synthetic_transport_config(
+            run_id=run_id,
+            admin_token=settings.admin_api_token,
+            model=model,
+            cookie_encoder=encode,
+            max_spend_usd=args.max_spend_usd,
+        )
+        with qualification_signal_context():
+            report = run_live_durable_qualification(
+                control_plane=control_plane,
+                transport_config=transport,
+            )
+        publish_durable_report(report, DURABLE_REPORT_PATH, DURABLE_REPORT_ROOT)
+    except BaseException:  # noqa: BLE001 - never disclose protected live details
+        print("durable external-turn qualification failed closed", file=os.sys.stderr)
+        return 1
+    return 0 if report.passed else 1
+
+
 __all__ = (
+    "CONFIRMATION",
+    "DURABLE_REPORT_PATH",
+    "DURABLE_REPORT_ROOT",
     "DurableQualificationOperator",
+    "DurableQualificationInterrupted",
+    "DurableResourceSample",
     "GuardedLiveDurableOperator",
     "LiveQualificationControlPlane",
+    "WholeWindowResourceSampler",
     "CleanupProof",
     "ImmutableFlagSnapshot",
     "QualificationEnvironment",
     "QualificationRefused",
     "QualificationResult",
+    "ScopedCleanupState",
+    "StagingQualificationPrerequisites",
+    "SystemDurableQualificationControlPlane",
+    "build_parser",
+    "build_system_control_plane",
+    "build_synthetic_transport_config",
+    "main",
+    "qualification_signal_context",
     "run_durable_qualification",
     "run_live_durable_qualification",
+    "select_staging_pi_openai_model",
     "validate_qualification_environment",
 )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
