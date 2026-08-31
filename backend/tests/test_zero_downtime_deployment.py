@@ -31,6 +31,9 @@ from deploy.release import atomic_symlink, validate_rolling_compatibility
 from deploy.runtime import prepare_runtime, runtime_id, runtime_manifest
 
 
+START_RECOVERY_SLOT = deploy_cli._start_recovery_slot
+
+
 def test_accounting_covers_complete_streaming_body(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -539,6 +542,19 @@ def _activation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         lambda release, *_args: manifests[release],
     )
     monkeypatch.setattr(deploy_cli, "_write_journal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(deploy_cli, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        deploy_cli, "_persist_active_slot_socket", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        deploy_cli, "prepare_candidate_if_enabled", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        deploy_cli, "stop_slot_if_enabled", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        deploy_cli, "_start_recovery_slot", lambda *_args, **_kwargs: None
+    )
 
     def prepare(_environment, slot, release, _runtime):
         atomic_symlink(release, root / "slots" / slot / "release")
@@ -565,7 +581,6 @@ def test_live_smoke_failure_restores_complete_activation(
         "_unix_json",
         lambda *args, **kwargs: {"accepting_chat_turns": True},
     )
-
     with pytest.raises(deploy_cli.DeployError, match="restored"):
         deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
 
@@ -573,6 +588,72 @@ def test_live_smoke_failure_restores_complete_activation(
     assert (root / "current").resolve() == old
     assert (root / "previous").resolve() == older
     assert smokes == [candidate, old]
+
+
+def test_automatic_rollback_restores_old_slot_boot_persistence_after_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    persisted: list[str] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_persist_active_slot_socket",
+        lambda _environment, slot: persisted.append(slot),
+    )
+    monkeypatch.setattr(deploy_cli, "smoke_public", lambda *_args: None)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {"accepting_chat_turns": True},
+    )
+
+    def stop(_environment: str, slot: str, _release_id: str) -> None:
+        if slot == "blue":
+            raise deploy_cli.ExternalPiSlotError("old slot drain failed")
+
+    monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", stop)
+
+    with pytest.raises(deploy_cli.DeployError, match="prior activation was restored"):
+        deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
+
+    assert persisted == ["green", "blue"]
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+
+
+def test_automatic_rollback_proves_old_slot_ready_before_repointing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    readiness: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_start_recovery_slot",
+        lambda _environment, slot, release: readiness.append((slot, release.name))
+        or (
+            (root / "active").resolve() == (root / "slots" / "green").resolve()
+            and (root / "current").resolve() == candidate
+        )
+        or pytest.fail("rollback pointers moved before old-slot readiness"),
+    )
+    smokes = iter((OSError("candidate smoke failed"), None))
+
+    def smoke(*_args):
+        result = next(smokes)
+        if result:
+            raise result
+
+    monkeypatch.setattr(deploy_cli, "smoke_public", smoke)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {"accepting_chat_turns": True},
+    )
+
+    with pytest.raises(deploy_cli.DeployError, match="prior activation was restored"):
+        deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
+
+    assert readiness == [("blue", "old")]
 
 
 def test_candidate_failure_leaves_live_activation_unchanged(
@@ -1155,14 +1236,68 @@ def test_legacy_service_retires_only_after_nginx_slot_migration(
         deploy_cli, "_nginx_uses_active_slot", lambda _environment: True
     )
     monkeypatch.setattr(deploy_cli, "_systemctl_state", lambda _unit: next(states))
+    monkeypatch.setattr(
+        deploy_cli,
+        "_systemctl_enabled_state",
+        lambda _unit: "enabled" if not commands else "disabled",
+    )
 
     assert deploy_cli._retire_legacy_service("staging")
-    assert commands == [["systemctl", "stop", "paperswithcode-backend@staging.service"]]
+    assert commands == [
+        [
+            "systemctl",
+            "disable",
+            "--now",
+            "paperswithcode-backend@staging.service",
+        ]
+    ]
     assert events == [
         (
             ("legacy-retire", "staging", "success"),
             {"unit": "paperswithcode-backend@staging.service"},
         )
+    ]
+
+
+def test_legacy_service_is_disabled_even_when_already_inactive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(deploy_cli, "_nginx_uses_active_slot", lambda _env: True)
+    monkeypatch.setattr(deploy_cli, "_systemctl_state", lambda _unit: "inactive")
+    enabled_states = iter(["enabled", "disabled"])
+    monkeypatch.setattr(
+        deploy_cli, "_systemctl_enabled_state", lambda _unit: next(enabled_states)
+    )
+    monkeypatch.setattr(
+        deploy_cli, "run", lambda command, **_kwargs: commands.append(command)
+    )
+    monkeypatch.setattr(deploy_cli, "log_event", lambda *_args, **_kwargs: None)
+
+    assert deploy_cli._retire_legacy_service("production")
+    assert commands == [
+        [
+            "systemctl",
+            "disable",
+            "--now",
+            "paperswithcode-backend@production.service",
+        ]
+    ]
+
+
+def test_persist_active_slot_enables_only_its_socket(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy_cli, "run", lambda command, **_kwargs: commands.append(command)
+    )
+
+    deploy_cli._persist_active_slot_socket("production", "green")
+
+    assert commands == [
+        ["systemctl", "enable", "paperswithcode-production-backend@green.socket"],
+        ["systemctl", "disable", "paperswithcode-production-backend@blue.socket"],
     ]
 
 
@@ -1201,11 +1336,52 @@ def test_interrupted_cutover_recovers_from_every_mutation_boundary(
             "original_previous": older.name,
         },
     )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy_cli, "run", lambda command, **_kwargs: commands.append(command)
+    )
+    monkeypatch.setattr(deploy_cli, "_start_recovery_slot", START_RECOVERY_SLOT)
     monkeypatch.setattr(
         deploy_cli,
-        "_unix_json",
-        lambda *args, **kwargs: {"accepting_chat_turns": True},
+        "_persist_active_slot_socket",
+        lambda environment, slot: commands.extend(
+            [
+                [
+                    "systemctl",
+                    "enable",
+                    deploy_cli._slot_unit(environment, slot, "socket"),
+                ],
+                [
+                    "systemctl",
+                    "disable",
+                    deploy_cli._slot_unit(
+                        environment,
+                        "green" if slot == "blue" else "blue",
+                        "socket",
+                    ),
+                ],
+            ]
+        ),
     )
+    initial_current = (root / "current").resolve()
+    initial_active = (root / "active").resolve()
+    requests: list[tuple[str, str]] = []
+
+    def unix(_environment, slot, path, *, method="GET", **_kwargs):
+        requests.append((method, path))
+        if path in {"/internal/deployment-status", "/health"}:
+            assert (root / "current").resolve() == initial_current
+            assert (root / "active").resolve() == initial_active
+        if path == "/internal/deployment-status":
+            return {"release_id": "old", "slot": slot}
+        if path == "/health":
+            return {"release_id": "old"}
+        assert path == "/internal/undrain"
+        assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+        assert (root / "current").resolve() == old
+        return {"accepting_chat_turns": True}
+
+    monkeypatch.setattr(deploy_cli, "_unix_json", unix)
     smokes: list[Path] = []
     lifecycle_events: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
@@ -1237,6 +1413,17 @@ def test_interrupted_cutover_recovers_from_every_mutation_boundary(
     assert lifecycle_events == [
         ("stop", "green", "candidate"),
         ("prepare", "blue", "old"),
+    ]
+    assert requests[:3] == [
+        ("GET", "/internal/deployment-status"),
+        ("GET", "/health"),
+        ("POST", "/internal/undrain"),
+    ]
+    assert commands == [
+        ["systemctl", "start", "paperswithcode-staging-backend@blue.socket"],
+        ["systemctl", "start", "paperswithcode-staging-backend@blue.service"],
+        ["systemctl", "enable", "paperswithcode-staging-backend@blue.socket"],
+        ["systemctl", "disable", "paperswithcode-staging-backend@green.socket"],
     ]
 
 

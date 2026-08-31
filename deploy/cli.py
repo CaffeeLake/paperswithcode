@@ -922,6 +922,35 @@ def _journal(environment: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _start_recovery_slot(environment: str, slot: str, release: Path) -> None:
+    """Start a rollback target and wait until its control endpoint is ready."""
+
+    run(["systemctl", "start", _slot_unit(environment, slot, "socket")])
+    run(["systemctl", "start", _slot_unit(environment, slot)])
+    expected_release = validate_manifest(release, environment)["release_id"]
+    deadline = time.monotonic() + 60
+    last = None
+    while time.monotonic() < deadline:
+        last = _unix_json(
+            environment,
+            slot,
+            "/internal/deployment-status",
+            check=False,
+        )
+        if (
+            last
+            and last.get("release_id") == expected_release
+            and last.get("slot") == slot
+        ):
+            health = _unix_json(environment, slot, "/health", check=False)
+            if health and health.get("release_id") == expected_release:
+                return
+        time.sleep(0.25)
+    raise DeployError(
+        f"{environment}/{slot} rollback target failed readiness: {last!r}"
+    )
+
+
 def _recover_interrupted_activation(environment: str) -> None:
     """Conservatively restore the old slot if cutover smoke was interrupted."""
 
@@ -992,6 +1021,7 @@ def _recover_interrupted_activation(environment: str) -> None:
         ),
         interrupted_phase=journal["phase"],
     )
+    _start_recovery_slot(environment, old_slot, old_release)
     atomic_symlink(_slot_root(environment, old_slot), root / "active")
     atomic_symlink(old_release, root / "current")
     if original_previous:
@@ -1016,6 +1046,7 @@ def _recover_interrupted_activation(environment: str) -> None:
         environment,
         validate_manifest(old_release, environment)["release_id"],
     )
+    _persist_active_slot_socket(environment, old_slot)
     _write_journal(
         environment,
         "automatic-rollback-complete",
@@ -1211,19 +1242,34 @@ def _stop_drained_slot(environment: str, slot: str) -> bool:
 
 
 def _retire_legacy_service(environment: str) -> bool:
-    """Stop the fixed-port owner only after nginx selects the active slot."""
+    """Disable the fixed-port owner only after nginx selects the active slot."""
 
     if not _nginx_uses_active_slot(environment):
         return False
     unit = _unit(environment)
-    if _systemctl_state(unit) != "active":
+    state = _systemctl_state(unit)
+    enabled_state = _systemctl_enabled_state(unit)
+    if state == "inactive" and enabled_state == "disabled":
         return False
-    run(["systemctl", "stop", unit])
+    run(["systemctl", "disable", "--now", unit])
     state = _systemctl_state(unit)
     if state != "inactive":
         raise DeployError(f"legacy service {unit} did not stop cleanly: {state}")
+    enabled_state = _systemctl_enabled_state(unit)
+    if enabled_state != "disabled":
+        raise DeployError(
+            f"legacy service {unit} remains enabled after retirement: {enabled_state}"
+        )
     log_event("legacy-retire", environment, "success", unit=unit)
     return True
+
+
+def _persist_active_slot_socket(environment: str, slot: str) -> None:
+    """Make the selected socket, and only that socket, survive a host reboot."""
+
+    inactive = "green" if slot == "blue" else "blue"
+    run(["systemctl", "enable", _slot_unit(environment, slot, "socket")])
+    run(["systemctl", "disable", _slot_unit(environment, inactive, "socket")])
 
 
 def activate_slot(
@@ -1254,6 +1300,7 @@ def activate_slot(
             runtime,
         )
         smoke_public(release, environment, validate_manifest(release)["release_id"])
+        _persist_active_slot_socket(environment, active)
         _write_journal(
             environment,
             "settled",
@@ -1369,6 +1416,7 @@ def activate_slot(
     )
     try:
         smoke_public(release, environment, candidate_manifest["release_id"])
+        _persist_active_slot_socket(environment, inactive)
         stop_slot_if_enabled(environment, active, active_manifest["release_id"])
     except (
         DeployError,
@@ -1385,6 +1433,7 @@ def activate_slot(
                 original_previous.name if original_previous is not None else None
             ),
         )
+        _start_recovery_slot(environment, active, old_release)
         atomic_symlink(_slot_root(environment, active), root / "active")
         atomic_symlink(old_release, root / "current")
         if original_previous:
@@ -1401,6 +1450,7 @@ def activate_slot(
             candidate_drain_error = error
         prepare_candidate_if_enabled(environment, active, active_manifest["release_id"])
         smoke_public(old_release, environment, active_manifest["release_id"])
+        _persist_active_slot_socket(environment, active)
         if candidate_drain_error is not None:
             _write_journal(
                 environment,
