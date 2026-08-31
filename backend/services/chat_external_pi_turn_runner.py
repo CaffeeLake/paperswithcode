@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager
@@ -58,6 +59,7 @@ from backend.services.chat_qualification_stale_boundary import (
 
 MAX_EXTERNAL_TURN_FRAME_BYTES = 2 * 1024 * 1024 + 256 * 1024
 type LifecycleObserver = Callable[[str, str | None, int], None]
+logger = logging.getLogger("uvicorn.error")
 
 
 def _worker_websocket_url(base_url: str) -> str:
@@ -268,7 +270,18 @@ class ExternalPiChatTurnRunner:
                         yield event
                         acknowledged_sequence = sequence
                     raise OSError("External Pi transport ended before terminal")
-            except (OSError, TimeoutError, WebSocketException):
+            except (OSError, TimeoutError, WebSocketException) as error:
+                received = getattr(error, "rcvd", None)
+                close_code = getattr(received, "code", None)
+                close_reason = getattr(received, "reason", None)
+                logger.warning(
+                    "external Pi transport ended: error=%s code=%s reason=%s",
+                    type(error).__name__,
+                    close_code if isinstance(close_code, int) else "unknown",
+                    close_reason
+                    if isinstance(close_reason, str) and len(close_reason) <= 64
+                    else "unknown",
+                )
                 if not started:
                     raise
             finally:
