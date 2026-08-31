@@ -1014,7 +1014,7 @@ class ChatQualificationScopeResponse(BaseModel):
 class ChatQualificationEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    scope_id: uuid.UUID
+    scope_id: uuid.UUID = Field(strict=False)
 
 
 class ChatQualificationTeardownResponse(BaseModel):

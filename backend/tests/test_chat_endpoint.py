@@ -146,6 +146,18 @@ def test_admin_qualification_evidence_is_content_free_and_bounded(monkeypatch):
     assert "turn_id" not in response and "chat_session_id" not in response
 
 
+def test_chat_qualification_evidence_request_accepts_json_uuid():
+    from backend.models.chat import ChatQualificationEvidenceRequest
+
+    scope_id = uuid.uuid4()
+
+    request = ChatQualificationEvidenceRequest.model_validate(
+        {"scope_id": str(scope_id)}
+    )
+
+    assert request.scope_id == scope_id
+
+
 def test_chat_quota_configuration_and_billing_api_fields_are_removed():
     settings = get_settings()
 
