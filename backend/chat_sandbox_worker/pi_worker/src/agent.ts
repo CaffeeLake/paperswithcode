@@ -44,6 +44,26 @@ export interface RunTurn {
   hf_username: string;
 }
 
+type TurnFailurePhase =
+  | "initialize"
+  | "session_bind_restore"
+  | "prompt_render"
+  | "transcript_initialize"
+  | "agent_session"
+  | "model_prompt"
+  | "transcript_finalize";
+
+export function turnFailureDiagnostic(phase: TurnFailurePhase, error: unknown): string {
+  const errorClass = error instanceof TypeError
+    ? "TypeError"
+    : error instanceof RangeError
+      ? "RangeError"
+      : error instanceof SyntaxError
+        ? "SyntaxError"
+        : "Error";
+  return `External Pi turn failed phase=${phase} error=${errorClass}\n`;
+}
+
 const externalStateRoot = process.env.PWC_EXTERNAL_PI_STATE_ROOT;
 const harnessWorkspace = externalStateRoot
   ? path.join(externalStateRoot, "workspace")
@@ -74,6 +94,7 @@ export class PiWorker {
   private mcpStatus: McpStatusSnapshot | undefined;
   private mcpReadiness: McpReadinessSnapshot | undefined;
   private activeProfile: string | undefined;
+  private failurePhase: TurnFailurePhase = "initialize";
   private readonly policy = new PolicyController({
     maximumCalls: Number(process.env.PWC_CHAT_MAX_TOOL_CALLS ?? 12),
     maximumRounds: Number(process.env.PWC_CHAT_MAX_TURNS ?? 8) - 2,
@@ -236,8 +257,10 @@ export class PiWorker {
   private async open(run: RunTurn): Promise<void> {
     await this.initialize();
     const phaseStarted = performance.now();
+    this.failurePhase = "session_bind_restore";
     const state = await this.sessionManager(run);
     this.emit(run.request_id, { type: "_latency", phase: "session_bind_restore", elapsed_ms: Math.round(performance.now() - phaseStarted) });
+    this.failurePhase = "prompt_render";
     let taskCatalog: string | undefined;
     try {
       taskCatalog = await fetchLiveTaskCatalog();
@@ -270,6 +293,7 @@ export class PiWorker {
         : createHash("sha256").update(taskCatalog).digest("hex"),
     });
     if (!this.mirror) {
+      this.failurePhase = "transcript_initialize";
       // The remote count includes the session header; getEntries() contains
       // only tree entries.
       this.mirroredEntryCount = Math.max(0, state.initialCount - 1);
@@ -291,6 +315,7 @@ export class PiWorker {
       return;
     }
     await this.disposeSession();
+    this.failurePhase = "agent_session";
     const protocol = run.provider_protocol ?? "anthropic-messages";
     const provider = this.prewarmedModel === run.model
       && this.prewarmedProtocol === protocol
@@ -408,6 +433,7 @@ export class PiWorker {
     this.activeRequest = run.request_id;
     this.cancelled = false;
     this.boundChatSession ??= run.chat_session_id;
+    this.failurePhase = "initialize";
     try {
       await this.initialize();
       this.emit(run.request_id, { type: "worker_ready" });
@@ -444,6 +470,7 @@ export class PiWorker {
       });
       this.emit(run.request_id, { type: "_sdk_session", session_id: this.boundAgentSession });
       this.emit(run.request_id, { type: "workspace_ready" });
+      this.failurePhase = "model_prompt";
       let mirrorFailed = false;
       let recovery: RecoverySummary = {
         reason: null,
@@ -463,6 +490,7 @@ export class PiWorker {
         });
       } finally {
         unsubscribe();
+        this.failurePhase = "transcript_finalize";
         try {
           this.mirrorNativeEntries();
           await this.mirror.flush();
@@ -505,6 +533,7 @@ export class PiWorker {
       if (this.cancelled) {
         this.emit(run.request_id, { type: "worker_done", status: "stopped" });
       } else {
+        process.stderr.write(turnFailureDiagnostic(this.failurePhase, error));
         this.emit(run.request_id, {
           type: "error",
           code: "gateway_unavailable",
