@@ -679,10 +679,18 @@ def _read_systemd_pair(timer_unit: str, service_unit: str) -> Optional[Dict[str,
     service = _systemd_show(
         service_unit,
         "LoadState,ActiveState,SubState,Result,ExecMainStatus,"
-        "ExecMainStartTimestamp,ExecMainExitTimestamp",
+        "ExecMainStartTimestamp,ExecMainExitTimestamp,Job",
     )
     if timer is None or service is None:
         return None
+    service_job = (
+        _systemd_show(service["Job"], "Type,State") if service.get("Job") else None
+    )
+    service_start_queued = bool(
+        service_job
+        and service_job.get("Type") == "start"
+        and service_job.get("State") in {"waiting", "running"}
+    )
     return {
         "available": True,
         "timer": timer_unit,
@@ -698,6 +706,7 @@ def _read_systemd_pair(timer_unit: str, service_unit: str) -> Optional[Dict[str,
         "last_started_at": service.get("ExecMainStartTimestamp") or None,
         "last_completed_at": service.get("ExecMainExitTimestamp") or None,
         "service_active": service.get("ActiveState") == "active",
+        "service_start_queued": service_start_queued,
         "boot_started_at": _system_boot_started_at(),
     }
 
@@ -736,11 +745,28 @@ def fetch_systemd_status(
         return key
 
     latest = max(statuses, key=timestamp_key("last_completed_at"))
+    queued_statuses = [
+        status for status in statuses if status.get("service_start_queued")
+    ]
+    queued_triggers = [status.get("last_trigger_at") for status in queued_statuses]
+    queued_since_at = None
+    if queued_statuses and all(
+        _parse_log_timestamp(value) is not None for value in queued_triggers
+    ):
+        queued_since_at = min(
+            queued_triggers,
+            key=lambda value: _parse_log_timestamp(value)
+            or datetime.max.replace(tzinfo=timezone.utc),
+        )
     merged = dict(latest)
     merged.update(
         enabled=all(status["enabled"] for status in statuses),
         timer_active=all(status["timer_active"] for status in statuses),
         service_active=any(status["service_active"] for status in statuses),
+        service_start_queued=any(
+            status.get("service_start_queued") for status in statuses
+        ),
+        queued_since_at=queued_since_at,
         last_started_at=max(statuses, key=timestamp_key("last_started_at")).get(
             "last_started_at"
         ),
@@ -935,6 +961,31 @@ def _execution_health(
                     "reason": f"systemd service exceeded its {job.expected_runtime_minutes}m runtime budget",
                 }
             return {**base, "status": "running", "reason": "systemd service is active"}
+        if evidence.get("service_start_queued"):
+            queue_budget = job.expected_runtime_minutes + job.schedule_grace_minutes
+            queue_age = _minutes_since(evidence.get("queued_since_at"), now=now)
+            if queue_age is None:
+                return {
+                    **base,
+                    "status": "unknown",
+                    "reason": (
+                        "systemd start is queued but its queue age is unavailable"
+                    ),
+                }
+            if queue_age > queue_budget:
+                return {
+                    **base,
+                    "status": "stuck",
+                    "reason": (
+                        "systemd start remained queued beyond its "
+                        f"{queue_budget}m budget"
+                    ),
+                }
+            return {
+                **base,
+                "status": "running",
+                "reason": "systemd start is queued",
+            }
         if evidence.get("service_result") not in {None, "", "success"} or evidence.get(
             "exec_main_status"
         ) not in {None, 0}:

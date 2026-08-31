@@ -371,6 +371,7 @@ def test_schedule_grace_transitions_are_deterministic():
             job,
             log,
             db_metrics=db,
+            lock_state={"exists": False, "held": False, "stale": False},
             systemd_status=stale_systemd,
             now=datetime(2026, 8, 14, 12, 24, tzinfo=timezone.utc),
         )
@@ -378,6 +379,7 @@ def test_schedule_grace_transitions_are_deterministic():
             job,
             log,
             db_metrics=db,
+            lock_state={"exists": False, "held": False, "stale": False},
             systemd_status=stale_systemd,
             now=datetime(2026, 8, 14, 12, 26, tzinfo=timezone.utc),
         )
@@ -508,8 +510,13 @@ def test_systemd_adapter_reads_only_registry_units():
             (),
             {
                 "returncode": 0,
-                "stdout": "Result=success\nExecMainStatus=0\nActiveState=inactive\nExecMainStartTimestamp=Fri 2026-08-14 12:19:00 UTC\nExecMainExitTimestamp=Fri 2026-08-14 12:19:05 UTC\n",
+                "stdout": "Result=success\nExecMainStatus=0\nActiveState=inactive\nJob=101665\nExecMainStartTimestamp=Fri 2026-08-14 12:19:00 UTC\nExecMainExitTimestamp=Fri 2026-08-14 12:19:05 UTC\n",
             },
+        )(),
+        type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": "Type=start\nState=waiting\n"},
         )(),
     ]
     job = _job("monitor_chat_operational_alerts")
@@ -526,11 +533,93 @@ def test_systemd_adapter_reads_only_registry_units():
     assert status["available"] is True
     assert status["enabled"] is True
     assert status["service_result"] == "success"
+    assert status["service_start_queued"] is True
     assert status["boot_started_at"] == "2026-08-14T08:00:00Z"
     assert [call.args[0][2] for call in run.call_args_list] == [
         job.systemd_timer,
         job.systemd_service,
+        "101665",
     ]
+
+
+def test_systemd_adapter_does_not_treat_a_stop_job_as_a_queued_start():
+    responses = [
+        type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "UnitFileState=enabled\nActiveState=active\nSubState=waiting\n",
+            },
+        )(),
+        type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "Result=success\nExecMainStatus=0\nActiveState=inactive\nJob=42\n",
+            },
+        )(),
+        type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": "Type=stop\nState=waiting\n"},
+        )(),
+    ]
+    job = _job("monitor_chat_operational_alerts")
+    with (
+        patch("backend.services.cron_health.subprocess.run", side_effect=responses),
+        patch(
+            "backend.services.cron_health._system_boot_started_at",
+            return_value="2026-08-14T08:00:00Z",
+        ),
+    ):
+        status = fetch_systemd_status(job)
+
+    assert status["service_start_queued"] is False
+
+
+def test_multi_unit_adapter_preserves_the_oldest_queued_lane_trigger():
+    job = _job("preload_thumbnails")
+    common = {
+        "available": True,
+        "enabled": True,
+        "timer_active": True,
+        "service_active": False,
+        "service_result": "success",
+        "exec_main_status": 0,
+        "next_trigger_at": None,
+        "boot_started_at": "2026-08-14T08:00:00Z",
+    }
+    statuses = [
+        {
+            **common,
+            "timer": job.systemd_unit_pairs[0][0],
+            "service": job.systemd_unit_pairs[0][1],
+            "service_start_queued": True,
+            "last_trigger_at": "2026-08-14T08:30:00Z",
+            "last_started_at": "2026-08-14T07:30:00Z",
+            "last_completed_at": "2026-08-14T07:31:00Z",
+        },
+        *[
+            {
+                **common,
+                "timer": timer,
+                "service": service,
+                "service_start_queued": False,
+                "last_trigger_at": "2026-08-14T12:00:00Z",
+                "last_started_at": "2026-08-14T12:00:00Z",
+                "last_completed_at": "2026-08-14T12:01:00Z",
+            }
+            for timer, service in job.systemd_unit_pairs[1:]
+        ],
+    ]
+
+    with patch("backend.services.cron_health._read_systemd_pair", side_effect=statuses):
+        status = fetch_systemd_status(job)
+
+    assert status["service_start_queued"] is True
+    assert status["queued_since_at"] == "2026-08-14T08:30:00Z"
 
 
 def test_systemd_adapter_attaches_persistent_execution_when_boot_lost_timestamps():

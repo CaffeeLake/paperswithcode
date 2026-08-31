@@ -347,6 +347,91 @@ def test_post_reboot_overdue_systemd_slot_is_broken():
     )
 
 
+def test_systemd_invocation_queued_behind_a_dependency_is_running():
+    job = get_cron_job("calculate_trending_scores")
+    assert job is not None
+
+    evaluated = evaluate_job_health(
+        job,
+        {"status": "unknown", "is_running": False, "work_metrics": {}},
+        lock_state={"exists": False, "held": False, "stale": False},
+        systemd_status={
+            "available": True,
+            "enabled": True,
+            "timer_active": True,
+            "service_active": False,
+            "service_start_queued": True,
+            "service_result": "success",
+            "exec_main_status": 0,
+            "queued_since_at": "2026-08-28T11:15:00Z",
+            "last_started_at": "2026-08-28T10:15:00Z",
+            "last_completed_at": "2026-08-28T10:16:00Z",
+        },
+        process_running=False,
+        now=NOW,
+    )
+
+    assert evaluated["execution_health"]["status"] == "running"
+    assert evaluated["execution_health"]["reason"] == ("systemd start is queued")
+
+
+def test_systemd_start_cannot_remain_queued_past_its_budget():
+    job = get_cron_job("calculate_trending_scores")
+    assert job is not None
+
+    evaluated = evaluate_job_health(
+        job,
+        {"status": "unknown", "is_running": False, "work_metrics": {}},
+        lock_state={"exists": False, "held": False, "stale": False},
+        systemd_status={
+            "available": True,
+            "enabled": True,
+            "timer_active": True,
+            "service_active": False,
+            "service_start_queued": True,
+            "service_result": "success",
+            "exec_main_status": 0,
+            "queued_since_at": "2026-08-28T10:00:00Z",
+            "last_started_at": "2026-08-28T09:15:00Z",
+            "last_completed_at": "2026-08-28T09:16:00Z",
+        },
+        process_running=False,
+        now=NOW,
+    )
+
+    assert evaluated["execution_health"]["status"] == "stuck"
+    assert evaluated["execution_health"]["reason"] == (
+        "systemd start remained queued beyond its 70m budget"
+    )
+
+
+def test_systemd_queued_start_without_age_evidence_is_unknown():
+    job = get_cron_job("calculate_trending_scores")
+    assert job is not None
+
+    evaluated = evaluate_job_health(
+        job,
+        {"status": "unknown", "is_running": False, "work_metrics": {}},
+        lock_state={"exists": False, "held": False, "stale": False},
+        systemd_status={
+            "available": True,
+            "enabled": True,
+            "timer_active": True,
+            "service_active": False,
+            "service_start_queued": True,
+            "service_result": "success",
+            "exec_main_status": 0,
+        },
+        process_running=False,
+        now=NOW,
+    )
+
+    assert evaluated["execution_health"]["status"] == "unknown"
+    assert evaluated["execution_health"]["reason"] == (
+        "systemd start is queued but its queue age is unavailable"
+    )
+
+
 def test_persistent_execution_pairs_exact_release_launch_with_terminal_log(tmp_path):
     launcher = tmp_path / "launcher.jsonl"
     launcher.write_text(
