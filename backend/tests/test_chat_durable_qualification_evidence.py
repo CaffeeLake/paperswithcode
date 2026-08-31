@@ -705,8 +705,15 @@ def test_exact_scope_teardown_is_isolated_and_idempotent(engine):
                 allow_ended=allow_ended,
             )
 
+    moments = iter(
+        (
+            START + timedelta(seconds=1),
+            START + timedelta(seconds=2),
+            START + timedelta(seconds=3),
+        )
+    )
     with Session(engine) as db:
-        service = LockedService(db, now=lambda: END)
+        service = LockedService(db, now=lambda: next(moments))
         first = asyncio.run(
             service.teardown_scope(
                 scope_id=SCOPE_ID, settings=_settings(), sandbox_manager=manager
@@ -714,8 +721,16 @@ def test_exact_scope_teardown_is_isolated_and_idempotent(engine):
         )
         db.commit()
     with Session(engine) as db:
-        ended_at = db.get(ChatQualificationScope, SCOPE_ID).window_ended_at
-        assert ended_at.replace(tzinfo=UTC) == END
+        ended_at = db.get(ChatQualificationScope, SCOPE_ID).window_ended_at.replace(
+            tzinfo=UTC
+        )
+        latest_eviction = max(
+            row.occurred_at.replace(tzinfo=UTC)
+            for row in db.query(ChatQualificationEvidenceEvent).filter_by(
+                event_type="workspace_evicted"
+            )
+        )
+        assert latest_eviction <= ended_at
     with Session(engine) as db:
         service = LockedService(db, now=lambda: END)
         second = asyncio.run(

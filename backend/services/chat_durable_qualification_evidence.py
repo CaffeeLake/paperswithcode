@@ -582,9 +582,7 @@ class ChatDurableQualificationEvidenceService:
             lock=True,
             allow_ended=True,
         )
-        if scope.window_ended_at is None:
-            scope.window_ended_at = self.now()
-            self.db.flush()
+        close_window = scope.window_ended_at is None
         rows = self.db.execute(
             select(
                 ChatTurnLatency.turn_id,
@@ -680,6 +678,8 @@ class ChatDurableQualificationEvidenceService:
                         occurred_at=occurred_at,
                     )
                 )
+        if close_window:
+            scope.window_ended_at = self.now()
         self.db.flush()
         expected_tool_turns = len(tool_rows)
         return QualificationTeardownProof(
