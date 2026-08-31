@@ -25,18 +25,18 @@ It runs on a Hetzner CPX42 with 8 vCPUs, 16 GB RAM, and an 80 GB disk.
 
 ## Development workflow
 
-- Give each implementation task an isolated worktree and a dedicated
-  `codex/<short-feature-name>` branch. If Codex supplies a detached-HEAD
-  worktree, create the branch before the first commit. Do not develop independent
-  features in the primary `main` checkout.
+- Give each feature request and non-hotfix bug fix an isolated worktree and a
+  dedicated `codex/<short-feature-name>` branch. If Codex supplies a
+  detached-HEAD worktree, create the branch before the first commit. Do not
+  develop independent features in the primary `main` checkout.
 - Commit only the task's intended changes. Never switch, reset, delete, or reuse
   another task's worktree or branch.
-- Implementation approval includes validation and a commit to the feature
-  branch. An ordinary feature task then stops and reports its branch, commit, and
-  verification; it does not update `main`, push `origin main`, or deploy.
+- Implementation approval includes validation, a commit to the task branch,
+  pushing that branch, and opening a GitHub pull request. Feature requests and
+  non-hotfix bug fixes then stop and report their PR and verification; they do
+  not update `main` or deploy before the PR is merged.
 - Concurrent feature tasks are allowed, but one explicitly designated publishing
-  task must serialize integration, pushing, and deployment. Do not create a pull
-  request unless the user asks for one.
+  task must serialize integration, pushing, and deployment.
 - Put domain logic in `backend/services/`, HTTP adapters in `backend/routers/`,
   API models in `backend/models/api.py`, and persistence models and migrations in
   `backend/models/database.py` and `backend/database/migrations/`.
@@ -51,11 +51,15 @@ It runs on a Hetzner CPX42 with 8 vCPUs, 16 GB RAM, and an 80 GB disk.
 
 ## Publishing and releases
 
-- The publishing task fetches `origin main`, integrates completed feature
-  commits onto current `main`, resolves conflicts deliberately, reruns
-  proportionate validation, pushes `origin main`, and deploys that exact commit
-  with `pwc-deploy`. Never force-push. If local and remote `main` have diverged,
-  stop and resolve the divergence safely before pushing.
+- Urgent hotfixes that restore broken production or staging behavior may always
+  be validated, committed, and pushed directly to `main`, then deployed as that
+  exact commit with `pwc-deploy` under the environment rules below.
+- Feature requests and all bug fixes that are not urgent service-restoration
+  hotfixes must reach `main` through a merged GitHub pull request. The publishing
+  task fetches the merged `origin main`, reruns proportionate validation, and
+  deploys that exact commit with `pwc-deploy`.
+- Never force-push. If local and remote `main` have diverged, stop and resolve the
+  divergence safely before pushing.
 - Production is the default for publishable non-chat source changes unless the
   user requests local-only work or no deployment.
 - Chat-interface changes for `staging.paperswithcode.co/chat`—including its
