@@ -1112,27 +1112,11 @@ def validate_external_pi_migration_policy(settings: Settings) -> None:
         "admission": settings.chat_external_pi_admission_enabled,
         "supervisor": settings.chat_external_pi_supervisor_enabled,
     }
-    migration_switches = {
-        **worker_switches,
-        "ready_registry": settings.chat_external_pi_ready_registry_enabled,
-        "event_journal_schema": settings.chat_turn_event_journal_schema_enabled,
-        "runtime_contract": bool(settings.chat_external_pi_runtime_contract_version),
-        "remote_tools": settings.chat_remote_workspace_tools_enabled,
-        "safe_cli": settings.chat_safe_cli_fast_path_enabled,
-        "lazy_workspace": settings.chat_lazy_workspace_enabled,
-        "durable_dispatch": settings.chat_durable_turn_dispatch_enabled,
-    }
     executor_switches = {
         "executor": settings.chat_sandbox_executor_enabled,
         "bash": settings.chat_remote_bash_enabled,
         "read": settings.chat_remote_read_enabled,
     }
-    if settings.environment == "production" and any(
-        (*migration_switches.values(), *executor_switches.values())
-    ):
-        raise RuntimeError(
-            "external Pi migration controls are staging-only until production approval"
-        )
     if any(worker_switches.values()):
         try:
             external_worker_endpoints(settings)

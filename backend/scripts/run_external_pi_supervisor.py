@@ -1,4 +1,4 @@
-"""Run the staging-only lifecycle supervisor for one external Pi worker."""
+"""Run the lifecycle supervisor for one deployed external Pi worker."""
 
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 def validate_supervisor_settings(settings: Settings) -> None:
     if not settings.chat_external_pi_supervisor_enabled:
         raise RuntimeError("External Pi supervisor is not enabled")
-    if settings.environment != "staging":
-        raise RuntimeError("External Pi supervisor is staging-only")
+    if settings.environment not in {"staging", "production"}:
+        raise RuntimeError("External Pi supervisor requires a deployed environment")
     validate_external_pi_migration_policy(settings)
 
 

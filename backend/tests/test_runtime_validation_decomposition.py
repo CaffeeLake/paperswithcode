@@ -426,44 +426,37 @@ def test_external_pi_runtime_keeps_complete_legacy_singleton_compatible_and_reje
         runtime_validation.validate_external_pi_migration_policy(settings)
 
 
-def test_external_pi_migration_controls_remain_staging_only(settings_factory):
+def test_production_external_pi_requires_complete_authenticated_topology(
+    settings_factory,
+):
     settings, _release = settings_factory("production")
     settings.chat_external_pi_shadow_enabled = True
 
-    with pytest.raises(RuntimeError, match="staging-only"):
+    with pytest.raises(RuntimeError, match="topology is incomplete"):
         runtime_validation.validate_chat_capacity_and_spend_policy(settings)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("chat_external_pi_ready_registry_enabled", True),
-        ("chat_turn_event_journal_schema_enabled", True),
-        ("chat_external_pi_runtime_contract_version", "durable-external-pi-v1"),
-    ],
-)
-def test_durable_external_contract_attestations_remain_staging_only(
-    settings_factory, field, value
-):
+def test_production_accepts_complete_durable_external_contract(settings_factory):
     settings, _release = settings_factory("production")
-    setattr(settings, field, value)
-
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_external_pi_migration_policy(settings)
-
-    settings.chat_external_pi_shadow_enabled = False
+    settings.chat_external_pi_worker_url = "http://127.0.0.1:8776"
+    settings.chat_external_pi_worker_id = "production-blue"
+    settings.chat_external_pi_worker_token = "p" * 32
+    settings.chat_external_pi_worker_contract_version = "external-pi-v1"
+    settings.chat_external_pi_shadow_enabled = True
+    settings.chat_external_pi_admission_enabled = True
     settings.chat_external_pi_supervisor_enabled = True
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
-
-
-def test_disabled_production_rejects_durable_turn_dispatch(settings_factory):
-    settings, _release = settings_factory("production")
-    assert settings.chat_enabled is False
+    settings.chat_external_pi_ready_registry_enabled = True
+    settings.chat_turn_event_journal_schema_enabled = True
+    settings.chat_external_pi_runtime_contract_version = "durable-external-pi-v1"
+    settings.chat_remote_workspace_tools_enabled = True
+    settings.chat_lazy_workspace_enabled = True
     settings.chat_durable_turn_dispatch_enabled = True
+    settings.chat_sandbox_executor_enabled = True
+    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
+    settings.chat_remote_bash_enabled = True
+    settings.chat_remote_read_enabled = True
 
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_runtime(settings)
+    runtime_validation.validate_external_pi_migration_policy(settings)
 
 
 def test_staging_can_qualify_durable_bridge_without_external_admission(
@@ -475,43 +468,6 @@ def test_staging_can_qualify_durable_bridge_without_external_admission(
     runtime_validation.validate_external_pi_migration_policy(settings)
 
     assert settings.chat_external_pi_admission_enabled is False
-
-
-@pytest.mark.parametrize(
-    "switch",
-    [
-        "chat_sandbox_executor_enabled",
-        "chat_remote_bash_enabled",
-        "chat_remote_read_enabled",
-    ],
-)
-def test_executor_bridge_controls_remain_staging_only(settings_factory, switch):
-    settings, _release = settings_factory("production")
-    setattr(settings, switch, True)
-    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
-
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_chat_capacity_and_spend_policy(settings)
-
-
-@pytest.mark.parametrize(
-    "switch",
-    [
-        "chat_sandbox_executor_enabled",
-        "chat_remote_bash_enabled",
-        "chat_remote_read_enabled",
-    ],
-)
-def test_disabled_production_runtime_rejects_executor_bridge_controls(
-    settings_factory, switch
-):
-    settings, _release = settings_factory("production")
-    assert settings.chat_enabled is False
-    setattr(settings, switch, True)
-    settings.chat_sandbox_executor_contract_version = "sandbox-executor-v1"
-
-    with pytest.raises(RuntimeError, match="staging-only"):
-        runtime_validation.validate_runtime(settings)
 
 
 def test_deployed_runtime_allows_disabled_executor_bridge_and_staging_qualification(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release-managed lifecycle for the staging external Pi shadow worker."""
+"""Release-managed lifecycle for environment-isolated external Pi workers."""
 
 from __future__ import annotations
 
@@ -25,9 +25,12 @@ CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode
 STATUS_ROOT = Path(
     os.environ.get("PWC_EXTERNAL_PI_STATUS_ROOT", "/run/paperswithcode/external-pi")
 )
-WORKER_CONFIG = CONFIG_ROOT / "external-pi-worker.env"
 WORKER_USER = "pwc-external-pi"
-SLOT_PORTS = {"blue": 8766, "green": 8767}
+WORKER_CONFIG = CONFIG_ROOT / "external-pi-worker.env"
+ENVIRONMENT_SLOT_PORTS = {
+    "staging": {"blue": 8766, "green": 8767},
+    "production": {"blue": 8776, "green": 8777},
+}
 MAXIMUM_SESSIONS = 32
 CONTRACT_VERSION = "external-pi-v1"
 DRAIN_SECONDS_MINIMUM = 5
@@ -87,11 +90,10 @@ class ExternalPiSlot:
 
 
 def resolve_external_pi_slot(environment: str, slot: str) -> ExternalPiSlot:
-    if environment != "staging":
-        raise ValueError("external Pi slot lifecycle is staging-only")
-    if slot not in SLOT_PORTS:
+    ports = ENVIRONMENT_SLOT_PORTS.get(environment)
+    if ports is None or slot not in ports:
         raise ValueError("external Pi deployment slot is invalid")
-    release_link = APP_ROOT / "environments/staging/slots" / slot / "release"
+    release_link = APP_ROOT / "environments" / environment / "slots" / slot / "release"
     if not release_link.is_symlink():
         raise ValueError("external Pi slot release pointer is missing")
     release = release_link.resolve(strict=True)
@@ -112,15 +114,15 @@ def resolve_external_pi_slot(environment: str, slot: str) -> ExternalPiSlot:
     entry_point = runtime / str(runtime_value["entry_point"])
     return ExternalPiSlot(
         slot=slot,
-        port=SLOT_PORTS[slot],
-        worker_id=f"staging-{slot}",
+        port=ports[slot],
+        worker_id=f"{environment}-{slot}",
         release=release,
         release_id=str(manifest["release_id"]),
         runtime=runtime,
         node=runtime / "node/bin/node",
         entry_point=entry_point,
         prompt=runtime / "assets/pi-system-prompt.txt",
-        status_path=STATUS_ROOT / f"staging-{slot}.json",
+        status_path=STATUS_ROOT / f"{environment}-{slot}.json",
     )
 
 
@@ -134,7 +136,12 @@ def node_environment(
     if len(token) < 32:
         raise ValueError("external Pi worker token is missing or too short")
     state_root = protected.get("PWC_EXTERNAL_PI_STATE_ROOT", "")
-    if state_root != f"/run/paperswithcode/external-pi-{resolved.slot}":
+    expected_state_root = (
+        f"/run/paperswithcode/external-pi-{resolved.slot}"
+        if resolved.worker_id.startswith("staging-")
+        else f"/run/paperswithcode/external-pi-{resolved.worker_id}"
+    )
+    if state_root != expected_state_root:
         raise ValueError("external Pi worker state root is invalid")
     return {
         "PWC_EXTERNAL_PI_HOST": "127.0.0.1",
@@ -158,7 +165,7 @@ def supervisor_environment(
     }
     values.update(
         {
-            "PWC_ENVIRONMENT": "staging",
+            "PWC_ENVIRONMENT": resolved.worker_id.rsplit("-", 1)[0],
             "PWC_RELEASE_ID": resolved.release_id,
             "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED": "true",
             "PWC_CHAT_EXTERNAL_PI_WORKER_ID": resolved.worker_id,
@@ -188,21 +195,30 @@ def supervisor_environment(
 
 
 def _supervisor_unit(environment: str, slot: str) -> str:
-    if environment != "staging" or slot not in SLOT_PORTS:
-        raise ValueError("external Pi slot lifecycle is staging-only")
-    return f"paperswithcode-staging-external-pi@{slot}.service"
+    if (
+        environment not in ENVIRONMENT_SLOT_PORTS
+        or slot not in ENVIRONMENT_SLOT_PORTS[environment]
+    ):
+        raise ValueError("external Pi deployment slot is invalid")
+    return f"paperswithcode-{environment}-external-pi@{slot}.service"
 
 
 def _worker_unit(environment: str, slot: str) -> str:
-    if environment != "staging" or slot not in SLOT_PORTS:
-        raise ValueError("external Pi slot lifecycle is staging-only")
-    return f"paperswithcode-staging-external-pi-worker@{slot}.service"
+    if (
+        environment not in ENVIRONMENT_SLOT_PORTS
+        or slot not in ENVIRONMENT_SLOT_PORTS[environment]
+    ):
+        raise ValueError("external Pi deployment slot is invalid")
+    return f"paperswithcode-{environment}-external-pi-worker@{slot}.service"
 
 
 def _status_path(environment: str, slot: str) -> Path:
-    if environment != "staging" or slot not in SLOT_PORTS:
-        raise ValueError("external Pi slot lifecycle is staging-only")
-    return STATUS_ROOT / f"staging-{slot}.json"
+    if (
+        environment not in ENVIRONMENT_SLOT_PORTS
+        or slot not in ENVIRONMENT_SLOT_PORTS[environment]
+    ):
+        raise ValueError("external Pi deployment slot is invalid")
+    return STATUS_ROOT / f"{environment}-{slot}.json"
 
 
 def _read_status(environment: str, slot: str) -> dict:
@@ -219,8 +235,8 @@ def slot_status(environment: str, slot: str) -> dict:
     return _read_status(environment, slot)
 
 
-def _protected_staging_values() -> dict[str, str]:
-    path = CONFIG_ROOT / "staging.env"
+def _read_protected_values(environment: str) -> dict[str, str]:
+    path = CONFIG_ROOT / f"{environment}.env"
     if not path.is_file():
         return {}
     values: dict[str, str] = {}
@@ -231,11 +247,22 @@ def _protected_staging_values() -> dict[str, str]:
     return values
 
 
+def _protected_staging_values() -> dict[str, str]:
+    """Compatibility seam for the qualified staging lifecycle."""
+    return _read_protected_values("staging")
+
+
+def _protected_environment_values(environment: str) -> dict[str, str]:
+    if environment not in ENVIRONMENT_SLOT_PORTS:
+        raise ValueError("external Pi deployment environment is invalid")
+    if environment == "staging":
+        return _protected_staging_values()
+    return _read_protected_values(environment)
+
+
 def drain_stop_timeout_seconds(environment: str) -> float:
     """Bound systemctl by the protected drain contract plus fixed teardown time."""
-    if environment != "staging":
-        raise ValueError("external Pi drain lifecycle is staging-only")
-    values = _protected_staging_values()
+    values = _protected_environment_values(environment)
     raw_drain = values.get("PWC_CHAT_EXTERNAL_PI_DRAIN_SECONDS", "60")
     raw_poll = values.get("PWC_CHAT_EXTERNAL_PI_DRAIN_POLL_SECONDS", "1")
     try:
@@ -259,9 +286,9 @@ def drain_stop_timeout_seconds(environment: str) -> float:
 
 
 def protected_lease_seconds(environment: str) -> int:
-    if environment != "staging":
-        raise ValueError("external Pi lease lifecycle is staging-only")
-    raw = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_LEASE_SECONDS", "30")
+    raw = _protected_environment_values(environment).get(
+        "PWC_CHAT_EXTERNAL_PI_LEASE_SECONDS", "30"
+    )
     try:
         lease_seconds = int(raw)
     except ValueError as error:
@@ -273,19 +300,24 @@ def protected_lease_seconds(environment: str) -> int:
 
 def sync_worker_environment(environment: str) -> None:
     """Publish only the worker token to the dedicated protected environment."""
-    if environment != "staging":
-        raise ValueError("external Pi worker environment is staging-only")
-    token = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "")
+    token = _protected_environment_values(environment).get(
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", ""
+    )
     if len(token) < 32 or "\n" in token or "\r" in token:
         raise ValueError("external Pi worker token is missing or invalid")
-    temporary = WORKER_CONFIG.with_name(f".{WORKER_CONFIG.name}.new-{os.getpid()}")
+    worker_config = (
+        WORKER_CONFIG
+        if environment == "staging"
+        else CONFIG_ROOT / f"external-pi-worker-{environment}.env"
+    )
+    temporary = worker_config.with_name(f".{worker_config.name}.new-{os.getpid()}")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             os.fchmod(handle.fileno(), 0o640)
             handle.write(f"PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN={token}\n")
         os.chown(temporary, 0, grp.getgrnam(WORKER_USER).gr_gid)
-        os.replace(temporary, WORKER_CONFIG)
+        os.replace(temporary, worker_config)
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
@@ -303,11 +335,13 @@ def _stop_proven_orphaned_worker_if_active(
         return
     if not _supervisor_is_inactive(environment, slot):
         raise ExternalPiSlotError("external Pi supervisor is still active")
-    token = _protected_staging_values().get("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", "")
+    token = _protected_environment_values(environment).get(
+        "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN", ""
+    )
     if len(token) < 32:
         raise ExternalPiSlotError("external Pi worker token is unavailable")
     request = urllib.request.Request(
-        f"http://127.0.0.1:{SLOT_PORTS[slot]}/v1/status",
+        f"http://127.0.0.1:{ENVIRONMENT_SLOT_PORTS[environment][slot]}/v1/status",
         headers={"Authorization": f"Bearer {token}"},
         method="GET",
     )
@@ -324,7 +358,7 @@ def _stop_proven_orphaned_worker_if_active(
     identity_and_capacity_match = (
         isinstance(status, dict)
         and status.get("protocol") == CONTRACT_VERSION
-        and status.get("worker_id") == f"staging-{slot}"
+        and status.get("worker_id") == f"{environment}-{slot}"
         and type(status.get("active_sessions")) is int
         and status.get("active_sessions") == 0
         and type(status.get("maximum_sessions")) is int
@@ -388,7 +422,7 @@ def qualify_candidate(
         generation = last.get("generation")
         if (
             last.get("release_id") == release_id
-            and last.get("worker_id") == f"staging-{slot}"
+            and last.get("worker_id") == f"{environment}-{slot}"
             and last.get("state") == "ready"
             and last.get("authenticated") is True
             and last.get("registered") is True
@@ -462,7 +496,7 @@ def _restart_supervisor_after_lease_expiry(
             generation = last.get("generation")
             if (
                 last.get("release_id") == release_id
-                and last.get("worker_id") == f"staging-{slot}"
+                and last.get("worker_id") == f"{environment}-{slot}"
                 and last.get("state") == "ready"
                 and last.get("authenticated") is True
                 and last.get("registered") is True
@@ -588,7 +622,7 @@ def stop_slot(
         previous,
         value,
         release_id=release_id,
-        worker_id=f"staging-{slot}",
+        worker_id=f"{environment}-{slot}",
     ):
         subprocess.run(
             ["systemctl", "stop", _worker_unit(environment, slot)], check=True
@@ -639,9 +673,9 @@ def prepare_candidate(environment: str, slot: str, release_id: str) -> int:
 
 
 def lifecycle_enabled(environment: str) -> bool:
-    if environment != "staging":
+    if environment not in ENVIRONMENT_SLOT_PORTS:
         return False
-    values = _protected_staging_values()
+    values = _protected_environment_values(environment)
     raw_shadow = values.get("PWC_CHAT_EXTERNAL_PI_SHADOW_ENABLED", "false").lower()
     raw_supervisor = values.get(
         "PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false"

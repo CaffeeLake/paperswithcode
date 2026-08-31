@@ -15,7 +15,10 @@ except ModuleNotFoundError:
     from runtime import runtime_id, runtime_manifest  # type: ignore[no-redef]
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
-EXTERNAL_PI_SLOT_PORTS = {"blue": 8766, "green": 8767}
+EXTERNAL_PI_SLOT_PORTS = {
+    "staging": {"blue": 8766, "green": 8767},
+    "production": {"blue": 8776, "green": 8777},
+}
 
 
 def resolve_slot(environment: str, slot: str) -> tuple[Path, Path, dict]:
@@ -121,16 +124,14 @@ def configure_release(manifest: dict, release: Path, environment: str) -> None:
 
 
 def configure_external_pi_slot(environment: str, slot: str) -> None:
-    """Bind a staging backend slot to its authenticated loopback worker."""
-    if environment != "staging":
-        return
+    """Bind a deployed backend slot to its environment-isolated worker."""
     try:
-        port = EXTERNAL_PI_SLOT_PORTS[slot]
+        port = EXTERNAL_PI_SLOT_PORTS[environment][slot]
     except KeyError as error:
-        raise ValueError("invalid deployment slot") from error
+        raise ValueError("invalid deployment environment or slot") from error
     os.environ.update(
         {
-            "PWC_CHAT_EXTERNAL_PI_WORKER_ID": f"staging-{slot}",
+            "PWC_CHAT_EXTERNAL_PI_WORKER_ID": f"{environment}-{slot}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_URL": f"http://127.0.0.1:{port}",
             "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": "external-pi-v1",
             "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "32",

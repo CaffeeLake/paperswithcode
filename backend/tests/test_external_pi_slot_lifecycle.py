@@ -22,7 +22,13 @@ from backend.services.chat_external_worker_capacity import external_worker_endpo
 from backend.services.runtime_validation import validate_external_pi_migration_policy
 
 
-def _release(root: Path, slot: str, runtime_id: str = "a" * 64) -> Path:
+def _release(
+    root: Path,
+    slot: str,
+    runtime_id: str = "a" * 64,
+    *,
+    environment: str = "staging",
+) -> Path:
     release = root / "releases" / f"release-{slot}"
     release.mkdir(parents=True)
     (release / "release.json").write_text(
@@ -37,7 +43,7 @@ def _release(root: Path, slot: str, runtime_id: str = "a" * 64) -> Path:
             }
         )
     )
-    slot_root = root / "environments" / "staging" / "slots" / slot
+    slot_root = root / "environments" / environment / "slots" / slot
     slot_root.mkdir(parents=True)
     (slot_root / "release").symlink_to(release)
     runtime = root / "runtimes/external-pi" / runtime_id
@@ -50,10 +56,21 @@ def _release(root: Path, slot: str, runtime_id: str = "a" * 64) -> Path:
     return release
 
 
-def test_slot_runtime_is_staging_only_and_uses_recorded_immutable_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("environment", "port", "worker_id"),
+    (
+        ("staging", 8766, "staging-blue"),
+        ("production", 8776, "production-blue"),
+    ),
+)
+def test_slot_runtime_is_environment_isolated_and_uses_recorded_immutable_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+    port: int,
+    worker_id: str,
 ):
-    _release(tmp_path, "blue")
+    _release(tmp_path, "blue", environment=environment)
     monkeypatch.setattr(lifecycle, "APP_ROOT", tmp_path)
     monkeypatch.setattr(
         lifecycle,
@@ -64,15 +81,14 @@ def test_slot_runtime_is_staging_only_and_uses_recorded_immutable_runtime(
         },
     )
 
-    resolved = lifecycle.resolve_external_pi_slot("staging", "blue")
+    resolved = lifecycle.resolve_external_pi_slot(environment, "blue")
 
-    assert resolved.port == 8766
-    assert resolved.worker_id == "staging-blue"
+    assert resolved.port == port
+    assert resolved.worker_id == worker_id
     assert resolved.release_id == "release-blue"
     assert resolved.runtime.name == "a" * 64
     assert resolved.node == resolved.runtime / "node/bin/node"
-    with pytest.raises(ValueError, match="staging-only"):
-        lifecycle.resolve_external_pi_slot("production", "blue")
+    assert resolved.status_path == lifecycle.STATUS_ROOT / f"{environment}-blue.json"
 
 
 def test_wrong_or_unrecorded_runtime_is_rejected(
@@ -1808,9 +1824,10 @@ def test_external_pi_hosts_bypasses_the_public_cdn_only_for_the_worker(
     install_host_layout.install_external_pi_hosts(hosts)
 
     assert hosts.read_text() == (
-        "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
+        "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co "
+        "chat-gateway.paperswithcode.co\n"
         "::1 localhost ip6-localhost ip6-loopback "
-        "chat-gateway-staging.paperswithcode.co\n"
+        "chat-gateway-staging.paperswithcode.co chat-gateway.paperswithcode.co\n"
     )
     assert hosts.stat().st_mode & 0o777 == 0o644
 

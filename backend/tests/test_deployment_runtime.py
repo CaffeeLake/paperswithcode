@@ -730,21 +730,24 @@ def test_staging_slot_launcher_binds_external_pi_loopback_identity(
     assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
 
 
-def test_production_slot_launcher_does_not_bind_external_pi_worker(
+def test_production_slot_launcher_binds_isolated_external_pi_worker(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    preserved = {
-        "PWC_CHAT_EXTERNAL_PI_WORKER_ID": "preserved-id",
-        "PWC_CHAT_EXTERNAL_PI_WORKER_URL": "preserved-url",
-        "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION": "preserved-contract",
-        "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS": "preserved-capacity",
-    }
-    for key, value in preserved.items():
-        monkeypatch.setenv(key, value)
-
+    for key in (
+        "PWC_CHAT_EXTERNAL_PI_WORKER_ID",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_URL",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION",
+        "PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS",
+    ):
+        monkeypatch.delenv(key, raising=False)
     slot_launcher.configure_external_pi_slot("production", "blue")
 
-    assert {key: os.environ[key] for key in preserved} == preserved
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_ID"] == "production-blue"
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_URL"] == "http://127.0.0.1:8776"
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_CONTRACT_VERSION"] == (
+        "external-pi-v1"
+    )
+    assert os.environ["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
 
 
 def test_production_chat_accepts_bounded_hf_catalog_policy(tmp_path: Path):
@@ -3936,6 +3939,46 @@ def test_staging_chat_durable_dispatch_toggle_is_single_key(enabled: bool):
     assert configure_host_env.staging_chat_durable_dispatch_values(enabled=enabled) == {
         "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED": "true" if enabled else "false"
     }
+
+
+def test_production_durable_external_values_enable_32_with_isolated_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        configure_host_env.secrets, "token_urlsafe", lambda _size: "p" * 64
+    )
+    values = configure_host_env.production_durable_external_values(
+        {
+            "PWC_CHAT_PUBLIC_ADMISSION_ENABLED": "PWC_CHAT_PUBLIC_ADMISSION_ENABLED=true",
+            "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "PWC_CHAT_SANDBOX_ADMISSION_ENABLED=true",
+        },
+        enabled=True,
+    )
+
+    assert values["PWC_CHAT_MAX_CONCURRENCY"] == "32"
+    assert values["PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED"] == "true"
+    assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "true"
+    assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
+    assert values["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"] == "p" * 64
+    assert values["PWC_CHAT_REMOTE_BASH_ENABLED"] == "true"
+    assert values["PWC_CHAT_REMOTE_READ_ENABLED"] == "true"
+
+
+def test_production_durable_external_values_preserve_token_on_disable():
+    values = configure_host_env.production_durable_external_values(
+        {
+            "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN": (
+                "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=" + "k" * 64
+            )
+        },
+        enabled=False,
+    )
+
+    assert "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN" not in values
+    assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
+    assert values["PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED"] == "false"
+    assert values["PWC_CHAT_BLANK_POOL_ENABLED"] == "true"
+    assert values["PWC_CHAT_PI_PREWARM_ENABLED"] == "true"
 
 
 def _staging_durable_external_qualification_baseline() -> dict[str, str]:

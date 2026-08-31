@@ -495,7 +495,7 @@ def prepare_release(sha: str, environment: str) -> Path:
             json.dumps(manifest, indent=2) + "\n",
             encoding="utf-8",
         )
-        if environment == "staging":
+        if environment in {"staging", "production"}:
             manifest["external_pi_runtime"] = external_pi_runtime_descriptor(source)
         manifest_path.write_text(
             json.dumps(manifest, indent=2) + "\n",
@@ -1742,7 +1742,7 @@ def deploy(args: argparse.Namespace) -> int:
         runtime, runtime_built = prepare_runtime(release, RUNTIMES)
         external_pi_runtime = None
         external_pi_runtime_built = False
-        if args.environment == "staging":
+        if external_pi_lifecycle_enabled(args.environment):
             external_pi_runtime, external_pi_runtime_built = (
                 prepare_external_pi_runtime(release, EXTERNAL_PI_RUNTIMES)
             )
@@ -1895,7 +1895,7 @@ def rollback(args: argparse.Namespace) -> int:
         validate_manifest(pointers.previous, args.environment)
         target = pointers.previous
         runtime, _ = prepare_runtime(target, RUNTIMES)
-        if args.environment == "staging":
+        if external_pi_lifecycle_enabled(args.environment):
             prepare_external_pi_runtime(target, EXTERNAL_PI_RUNTIMES)
         result = activate_slot(target, args.environment, runtime)
         log_event(
@@ -2032,13 +2032,13 @@ def status(_: argparse.Namespace) -> int:
             )
             if live:
                 slot_item["deployment"] = live
-            if environment == "staging":
+            if environment in {"staging", "production"}:
                 slot_item["external_pi_shadow"] = {
                     "supervisor": _systemctl_state(
-                        f"paperswithcode-staging-external-pi@{slot}.service"
+                        f"paperswithcode-{environment}-external-pi@{slot}.service"
                     ),
                     "worker": _systemctl_state(
-                        f"paperswithcode-staging-external-pi-worker@{slot}.service"
+                        f"paperswithcode-{environment}-external-pi-worker@{slot}.service"
                     ),
                     "lifecycle": external_pi_slot_status(environment, slot) or None,
                 }

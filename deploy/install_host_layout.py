@@ -22,6 +22,8 @@ SYSTEMD_UNITS = (
     "paperswithcode-staging-backend@.socket",
     "paperswithcode-staging-external-pi@.service",
     "paperswithcode-staging-external-pi-worker@.service",
+    "paperswithcode-production-external-pi@.service",
+    "paperswithcode-production-external-pi-worker@.service",
     "paperswithcode-production-backend@.service",
     "paperswithcode-production-backend@.socket",
     "pwc-postgres-backup.service",
@@ -39,9 +41,10 @@ SYSTEMD_UNITS = (
     "autonomous/cron-audit.timer",
 )
 EXTERNAL_PI_HOSTS = (
-    "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
+    "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co "
+    "chat-gateway.paperswithcode.co\n"
     "::1 localhost ip6-localhost ip6-loopback "
-    "chat-gateway-staging.paperswithcode.co\n"
+    "chat-gateway-staging.paperswithcode.co chat-gateway.paperswithcode.co\n"
 )
 
 
@@ -137,15 +140,14 @@ def main() -> int:
     ):
         ensure_dir(path, "root", "root", 0o755)
     ensure_dir(CONFIG_ROOT, "root", "root", 0o711)
-    worker_environment = CONFIG_ROOT / "external-pi-worker.env"
-    if not worker_environment.exists():
-        worker_environment.write_text("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=\n")
-    os.chown(
-        worker_environment,
-        0,
-        grp.getgrnam("pwc-external-pi").gr_gid,
-    )
-    worker_environment.chmod(0o640)
+    for worker_environment in (
+        CONFIG_ROOT / "external-pi-worker.env",
+        CONFIG_ROOT / "external-pi-worker-production.env",
+    ):
+        if not worker_environment.exists():
+            worker_environment.write_text("PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN=\n")
+        os.chown(worker_environment, 0, grp.getgrnam("pwc-external-pi").gr_gid)
+        worker_environment.chmod(0o640)
     install_external_pi_hosts(CONFIG_ROOT / "external-pi-hosts")
     for path in (
         APP_ROOT / "releases",
