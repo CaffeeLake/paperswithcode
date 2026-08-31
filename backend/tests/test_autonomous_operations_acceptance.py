@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from backend.models.database import (
     AutonomousControlEvent,
     AutonomousOperatorState,
+    ChatReliabilityBaseline,
 )
 from backend.services.autonomous_acceptance_service import (
     AcceptanceNotReady,
@@ -29,6 +30,7 @@ def db():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     AutonomousOperatorState.__table__.create(engine)
     AutonomousControlEvent.__table__.create(engine)
+    ChatReliabilityBaseline.__table__.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         session.add_all(
             [
@@ -247,7 +249,7 @@ def test_rollout_units_are_packaged_but_not_implicitly_enabled():
     assert 'systemctl", "start' not in installer
 
 
-def test_chat_acceptance_stays_hard_locked_until_scalable_baseline_reconciliation(db):
+def test_chat_acceptance_stays_locked_without_recorded_scalable_baseline(db):
     service = AutonomousAcceptanceService()
 
     readiness = service.readiness(db, Operator.CHAT_RELIABILITY)
@@ -271,3 +273,41 @@ def test_chat_acceptance_stays_hard_locked_until_scalable_baseline_reconciliatio
             actor="admin:owner",
             now=NOW,
         )
+
+
+def test_chat_acceptance_uses_recorded_exact_qualified_baseline(db):
+    repository = AutonomousOperationsRepository()
+    service = AutonomousAcceptanceService(repository)
+    repository.qualify_chat_baseline(
+        db,
+        sha="0a5e6338caece3c71ffc1c2e8cac507e86d13e8b",
+        actor="admin:owner",
+        expected_revision=0,
+        now=NOW,
+    )
+
+    for index, gate in enumerate(
+        (
+            "qualified_baseline",
+            "qualified_fallback",
+            "atomic_provider_manifest",
+            "billing_auth_failover",
+            "threshold_failover",
+            "fallback_restoration",
+            "broken_stream",
+            "persistence_reopen",
+            "independent_review_rejection",
+            "staging_canary_failure",
+            "production_rollback",
+            "privacy_redaction",
+            "retry_exhaustion",
+            "daily_review_cycle",
+            "synthetic_cycle",
+        ),
+        start=1,
+    ):
+        record(service, db, Operator.CHAT_RELIABILITY, gate, index)
+
+    readiness = service.readiness(db, Operator.CHAT_RELIABILITY)
+    assert readiness.ready is True
+    assert "qualified_baseline" in readiness.passed_gates

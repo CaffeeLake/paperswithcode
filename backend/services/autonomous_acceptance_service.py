@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models.database import AutonomousControlEvent
+from backend.models.database import AutonomousControlEvent, ChatReliabilityBaseline
 from backend.services.autonomous_operations_repository import (
     AutonomousOperationsRepository,
     AutonomousStateConflict,
@@ -87,10 +87,6 @@ class AutonomousAcceptanceService:
 
     @staticmethod
     def _target(operator: Operator, gate_code: str) -> str:
-        if operator is Operator.CHAT_RELIABILITY:
-            raise ValueError(
-                "Chat acceptance is locked pending the qualified scalable-chat baseline"
-            )
         if (gate_code == _SHADOW_GATE and operator is not Operator.SUBMISSIONS) or (
             gate_code != _SHADOW_GATE and gate_code not in _REQUIREMENTS[operator]
         ):
@@ -107,6 +103,18 @@ class AutonomousAcceptanceService:
         actor: str,
         occurred_at: datetime,
     ) -> uuid.UUID:
+        if (
+            operator is Operator.CHAT_RELIABILITY
+            and db.scalar(
+                select(ChatReliabilityBaseline).where(
+                    ChatReliabilityBaseline.singleton.is_(True)
+                )
+            )
+            is None
+        ):
+            raise ValueError(
+                "Chat acceptance is locked pending the qualified scalable-chat baseline"
+            )
         target = self._target(operator, gate_code)
         return self.repository.append_acceptance_evidence(
             db,
@@ -117,7 +125,15 @@ class AutonomousAcceptanceService:
         )
 
     def readiness(self, db: Session, operator: Operator) -> AcceptanceReadiness:
-        if operator is Operator.CHAT_RELIABILITY:
+        if (
+            operator is Operator.CHAT_RELIABILITY
+            and db.scalar(
+                select(ChatReliabilityBaseline).where(
+                    ChatReliabilityBaseline.singleton.is_(True)
+                )
+            )
+            is None
+        ):
             return AcceptanceReadiness(
                 operator,
                 False,
