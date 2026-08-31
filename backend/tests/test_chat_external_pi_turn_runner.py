@@ -1245,6 +1245,13 @@ def _tool_runner(executor, workspace_manager):
     )
 
 
+def test_external_run_frame_omits_absent_paper_descriptor():
+    runner = _tool_runner(FakeExecutor(), FakeWorkspaceManager(FakeProvider()))
+
+    assert runner.admission.paper_descriptor is None
+    assert "paper_descriptor" not in runner._run_frame()
+
+
 def test_tool_execution_persists_waiting_tool_until_safe_settlement():
     states: list[str] = []
     observations: list[tuple[str, str | None, int]] = []

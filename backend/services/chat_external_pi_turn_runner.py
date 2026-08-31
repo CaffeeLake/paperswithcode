@@ -463,7 +463,7 @@ class ExternalPiChatTurnRunner:
         }
 
     def _run_frame(self) -> dict[str, object]:
-        return {
+        frame = {
             "v": 1,
             "type": "run_turn",
             "request_id": self.request_id,
@@ -482,7 +482,6 @@ class ExternalPiChatTurnRunner:
             "reader_mode": self.admission.reader_mode,
             "poster_mode": self.admission.poster_mode,
             "paper_artifacts_enabled": self.admission.paper_artifacts_enabled,
-            "paper_descriptor": self.admission.paper_descriptor,
             "reasoning_effort": self.admission.reasoning_effort,
             "fetchable_urls": list(self.admission.fetchable_urls),
             "hf_username": self.hf_username,
@@ -490,6 +489,9 @@ class ExternalPiChatTurnRunner:
             "capability": self.capability.token,
             "gateway_url": self.settings.chat_gateway_url,
         }
+        if self.admission.paper_descriptor is not None:
+            frame["paper_descriptor"] = self.admission.paper_descriptor
+        return frame
 
     @staticmethod
     def _decode(raw: str | bytes) -> dict[str, object]:
