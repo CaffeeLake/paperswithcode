@@ -30,8 +30,9 @@ from backend.chat_sandbox_worker.contract import (
 BACKEND = Path(__file__).resolve().parents[1]
 REPOSITORY = Path(__file__).resolve().parents[2]
 WORKER = Path(__file__).resolve().parent
-RESTRICTED_HF = REPOSITORY / "restricted_hf_cli"
-S2_CLI = REPOSITORY / "s2_cli"
+CLIS = REPOSITORY / "clis"
+RESTRICTED_HF = CLIS / "restricted_hf_cli"
+S2_CLI = CLIS / "s2_cli"
 
 app = modal.App(MODAL_APP_NAME)
 image = (
