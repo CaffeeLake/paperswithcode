@@ -59,7 +59,10 @@ export function replaceTaskCatalog(source: string, taskCatalog: string): string 
 }
 
 export async function loadPromptAsset(assetPath?: string): Promise<string> {
-  return readFile(assetPath ?? "/opt/pwc/pi-system-prompt.txt", "utf8");
+  return readFile(
+    assetPath ?? process.env.PWC_EXTERNAL_PI_PROMPT_PATH ?? "/opt/pwc/pi-system-prompt.txt",
+    "utf8",
+  );
 }
 
 export async function fetchLiveTaskCatalog(

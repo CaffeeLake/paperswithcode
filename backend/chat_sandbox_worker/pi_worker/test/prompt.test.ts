@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { renderPrompt } from "../src/prompt.js";
+import { loadPromptAsset, renderPrompt } from "../src/prompt.js";
+
+test("loads the immutable external-worker prompt path from the launcher environment", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pwc-prompt-"));
+  const promptPath = path.join(directory, "pi-system-prompt.txt");
+  const previous = process.env.PWC_EXTERNAL_PI_PROMPT_PATH;
+  await writeFile(promptPath, "immutable external prompt", "utf8");
+  process.env.PWC_EXTERNAL_PI_PROMPT_PATH = promptPath;
+  try {
+    assert.equal(await loadPromptAsset(), "immutable external prompt");
+  } finally {
+    if (previous === undefined) delete process.env.PWC_EXTERNAL_PI_PROMPT_PATH;
+    else process.env.PWC_EXTERNAL_PI_PROMPT_PATH = previous;
+    await rm(directory, { recursive: true });
+  }
+});
 
 test("renders the trusted reader-mode metadata independently of paper evidence", async () => {
   const source = [
