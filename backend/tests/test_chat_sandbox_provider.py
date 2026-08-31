@@ -131,6 +131,20 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
 def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatch):
     captured: dict[str, object] = {}
 
+    class Sandbox:
+        object_id = "sb-executor"
+
+        def __init__(self):
+            self.exec = _AsyncCall(self._exec)
+
+        async def _exec(self, *command, **options):
+            captured["readiness"] = (command, options)
+
+            async def wait():
+                return None
+
+            return SimpleNamespace(returncode=0, wait=_AsyncCall(wait))
+
     async def lookup(*_args, **_options):
         return object()
 
@@ -140,7 +154,7 @@ def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatc
     async def create(*command, **options):
         captured["command"] = command
         captured["options"] = options
-        return SimpleNamespace(object_id="sb-executor")
+        return Sandbox()
 
     monkeypatch.setattr(chat_sandbox_provider.modal.App, "lookup", _AsyncCall(lookup))
     monkeypatch.setattr(
@@ -178,6 +192,10 @@ def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatc
     assert "OPENROUTER_API_KEY" not in options["env"]
     assert "HF_TOKEN" not in options["env"]
     assert options["inbound_cidr_allowlist"] == []
+    assert captured["readiness"] == (
+        ("test", "-S", "/run/pwc-chat-executor/executor.sock"),
+        {"timeout": 5},
+    )
 
 
 def test_executor_launch_mode_requires_its_independent_kill_switch():

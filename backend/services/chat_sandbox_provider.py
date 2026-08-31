@@ -21,6 +21,7 @@ from backend.chat_sandbox_worker.contract import (
     MODAL_APP_NAME,
     PROVIDER_OUTPUT_TOKEN_LIMIT,
 )
+from backend.chat_sandbox_worker.executor_daemon import EXECUTOR_SOCKET
 from backend.chat_sandbox_worker.executor_protocol import PROTOCOL as EXECUTOR_PROTOCOL
 from backend.chat_sandbox_worker.mcp_app_registry import (
     egress_policy_digest,
@@ -361,7 +362,33 @@ class ModalSandboxProviderAdapter:
                 )
             ),
         )
-        if not persistent_enabled or executor_enabled:
+        if executor_enabled:
+            deadline = (
+                time.monotonic() + self.settings.chat_worker_ready_timeout_seconds
+            )
+            while time.monotonic() < deadline:
+                try:
+                    probe = await sandbox.exec.aio(
+                        "test",
+                        "-S",
+                        str(EXECUTOR_SOCKET),
+                        timeout=5,
+                    )
+                    await probe.wait.aio()
+                    if probe.returncode == 0:
+                        return sandbox
+                except Exception:
+                    pass
+                if await self.poll(sandbox) is not None:
+                    break
+                await asyncio.sleep(0.05)
+            await sandbox.terminate.aio(
+                wait=self.settings.chat_sandbox_spend_enforcement_enabled
+            )
+            raise SandboxError(
+                "sandbox_worker_not_ready", "Sandbox executor readiness timed out"
+            )
+        if not persistent_enabled:
             return sandbox
         deadline = time.monotonic() + self.settings.chat_worker_ready_timeout_seconds
         while time.monotonic() < deadline:
