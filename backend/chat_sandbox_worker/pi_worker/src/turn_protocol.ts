@@ -12,8 +12,8 @@ export interface ExternalRunTurn extends RunTurn {
 export interface TurnClaimFrame {
   turnId: string;
   workerId: string;
-  workerGeneration: number;
-  leaseGeneration: number;
+  workerGeneration: number | string;
+  leaseGeneration: number | string;
 }
 
 export interface AttachTurn {
@@ -41,6 +41,12 @@ export interface AcknowledgeTerminal {
 
 export class TurnProtocolError extends Error {}
 
+function validGeneration(value: unknown): value is number | string {
+  if (Number.isSafeInteger(value) && (value as number) >= 1) return true;
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,18}$/u.test(value)) return false;
+  return BigInt(value) <= 9_223_372_036_854_775_807n;
+}
+
 function parseTurnClaim(value: unknown): TurnClaimFrame {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TurnProtocolError("Invalid Pi turn claim");
@@ -52,10 +58,8 @@ function parseTurnClaim(value: unknown): TurnClaimFrame {
     || !claim.turnId
     || typeof claim.workerId !== "string"
     || !claim.workerId
-    || !Number.isSafeInteger(claim.workerGeneration)
-    || (claim.workerGeneration as number) < 1
-    || !Number.isSafeInteger(claim.leaseGeneration)
-    || (claim.leaseGeneration as number) < 1
+    || !validGeneration(claim.workerGeneration)
+    || !validGeneration(claim.leaseGeneration)
   ) {
     throw new TurnProtocolError("Invalid Pi turn claim");
   }

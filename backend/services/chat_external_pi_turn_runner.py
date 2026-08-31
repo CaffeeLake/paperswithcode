@@ -435,18 +435,17 @@ class ExternalPiChatTurnRunner:
 
     def _turn_claim_frame(self) -> dict[str, object]:
         durable_claim = self.admission.durable_claim
-        worker_claim = self.external_worker_claim
         if (
             durable_claim is None
             or durable_claim.turn_id != self.admission.turn_id
-            or worker_claim is None
+            or self.external_worker_claim is None
         ):
             raise RuntimeError("External Pi turn requires the durable turn claim")
         return {
             "turnId": str(durable_claim.turn_id),
-            "workerId": worker_claim.worker_id,
-            "workerGeneration": worker_claim.generation,
-            "leaseGeneration": durable_claim.lease_generation,
+            "workerId": durable_claim.worker_id,
+            "workerGeneration": str(durable_claim.worker_generation),
+            "leaseGeneration": str(durable_claim.lease_generation),
         }
 
     def _attach_frame(self, after_sequence: int) -> dict[str, object]:

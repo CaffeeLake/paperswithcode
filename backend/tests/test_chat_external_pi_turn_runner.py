@@ -969,9 +969,9 @@ def test_external_pi_runner_fences_socket_and_run_with_distinct_claims():
     assert connection["kwargs"]["ping_timeout"] == 20
     assert json.loads(socket.sent[0])["turnClaim"] == {
         "turnId": str(turn_id),
-        "workerId": "external-pi-1",
-        "workerGeneration": 7,
-        "leaseGeneration": 9,
+        "workerId": "api-1",
+        "workerGeneration": "4",
+        "leaseGeneration": "9",
     }
 
 
@@ -1259,7 +1259,7 @@ def test_external_run_frame_omits_absent_paper_descriptor():
     assert "paper_descriptor" not in runner._run_frame()
 
 
-def test_external_run_frame_uses_bounded_external_worker_fence():
+def test_external_run_frame_preserves_exact_durable_turn_fence_as_strings():
     runner = _tool_runner(FakeExecutor(), FakeWorkspaceManager(FakeProvider()))
     runner.external_worker_claim = ExternalWorkerClaim(
         "staging-green", uuid.uuid4(), 72, "release-a", "external-pi-v1"
@@ -1267,9 +1267,9 @@ def test_external_run_frame_uses_bounded_external_worker_fence():
 
     assert runner._turn_claim_frame() == {
         "turnId": str(runner.admission.turn_id),
-        "workerId": "staging-green",
-        "workerGeneration": 72,
-        "leaseGeneration": runner.admission.durable_claim.lease_generation,
+        "workerId": runner.admission.durable_claim.worker_id,
+        "workerGeneration": str(runner.admission.durable_claim.worker_generation),
+        "leaseGeneration": str(runner.admission.durable_claim.lease_generation),
     }
 
 
@@ -1734,9 +1734,9 @@ def test_external_pi_runner_reattaches_same_run_from_last_acknowledged_sequence(
         "request_id": "request-1",
         "turnClaim": {
             "turnId": str(turn_id),
-            "workerId": "external-pi-1",
-            "workerGeneration": 7,
-            "leaseGeneration": 9,
+            "workerId": "api-1",
+            "workerGeneration": "4",
+            "leaseGeneration": "9",
         },
         "afterSequence": 1,
     }
@@ -1746,9 +1746,9 @@ def test_external_pi_runner_reattaches_same_run_from_last_acknowledged_sequence(
         "request_id": "request-1",
         "turnClaim": {
             "turnId": str(turn_id),
-            "workerId": "external-pi-1",
-            "workerGeneration": 7,
-            "leaseGeneration": 9,
+            "workerId": "api-1",
+            "workerGeneration": "4",
+            "leaseGeneration": "9",
         },
         "sequence": 3,
     }
