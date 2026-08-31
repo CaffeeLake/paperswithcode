@@ -1412,21 +1412,32 @@ async def responses(
         raise HTTPException(
             status_code=422, detail="Invalid Responses request"
         ) from None
-    row = _scope(
-        _bearer(authorization),
-        "model",
-        x_pwc_session,
-        x_pwc_turn,
-        db,
-        turn_fence=turn_fence,
-    )
+    try:
+        row = _scope(
+            _bearer(authorization),
+            "model",
+            x_pwc_session,
+            x_pwc_turn,
+            db,
+            turn_fence=turn_fence,
+        )
+    except HTTPException:
+        logger.warning("chat OpenAI gateway rejected phase=capability_scope")
+        raise
     if (
         row.agent_harness != "pi"
         or row.provider_mode != "openai_funded"
         or row.model != settings.chat_openai_luna_route
     ):
+        logger.warning("chat OpenAI gateway rejected phase=capability_profile")
         raise HTTPException(status_code=403, detail="Capability rejected")
-    payload, maximum_tokens = _trusted_openai_payload(untrusted_payload, row, settings)
+    try:
+        payload, maximum_tokens = _trusted_openai_payload(
+            untrusted_payload, row, settings
+        )
+    except HTTPException:
+        logger.warning("chat OpenAI gateway rejected phase=request_contract")
+        raise
     trusted_raw = json.dumps(payload, separators=(",", ":")).encode()
     if len(trusted_raw) > MAX_OPENAI_REQUEST_BYTES:
         raise HTTPException(status_code=413, detail="Model request is too large")
