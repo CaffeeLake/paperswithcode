@@ -60,12 +60,28 @@ from backend.services.chat_stream_service import (
     _public_poster_tool_event,
     encode_journal_frame,
     sequential_reasoning_events,
+    sanitized_exception_origin,
 )
+
+
 from backend.services.chat_turn_event_repository import JournalFrame
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_tracing_service import ChatTurnTrace
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.utils.auth import require_user
+
+
+def test_sanitized_exception_origin_reports_only_source_location():
+    try:
+        int(None)
+    except TypeError as error:
+        origin = sanitized_exception_origin(error)
+
+    assert origin.startswith(
+        "test_chat_endpoint.py:test_sanitized_exception_origin_reports_only_source_location:"
+    )
+    assert origin.rsplit(":", 1)[1].isdigit()
+    assert "None" not in origin
 
 
 def _cookie_request() -> Request:

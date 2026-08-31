@@ -109,6 +109,23 @@ from backend.utils.urls import parse_arxiv_url
 
 logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 15.0
+_EXCEPTION_ORIGIN = re.compile(
+    r"^[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_<>]{1,128}:[1-9][0-9]{0,5}$"
+)
+
+
+def sanitized_exception_origin(error: BaseException) -> str:
+    """Return content-free source metadata for an unexpected provider defect."""
+    traceback = error.__traceback__
+    if traceback is None:
+        return "unknown"
+    while traceback.tb_next is not None:
+        traceback = traceback.tb_next
+    code = traceback.tb_frame.f_code
+    value = (
+        f"{posixpath.basename(code.co_filename)}:{code.co_name}:{traceback.tb_lineno}"
+    )
+    return value if _EXCEPTION_ORIGIN.fullmatch(value) else "unknown"
 
 
 def encode_journal_frame(frame: JournalFrame) -> bytes:
@@ -2060,9 +2077,10 @@ class ChatStreamOrchestrator:
             await queue.put({"type": "error", "message": str(exc), "code": exc.code})
         except Exception as exc:
             logger.warning(
-                "chat research producer failed session_id=%s error=%s",
+                "chat research producer failed session_id=%s error=%s origin=%s",
                 self.admission.session_id,
                 type(exc).__name__,
+                sanitized_exception_origin(exc),
             )
             await queue.put(
                 {
