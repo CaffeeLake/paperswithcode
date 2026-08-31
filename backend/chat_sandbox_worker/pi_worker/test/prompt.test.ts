@@ -4,7 +4,67 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadPromptAsset, renderPrompt } from "../src/prompt.js";
+import { fetchLiveTaskCatalog, loadPromptAsset, renderPrompt } from "../src/prompt.js";
+
+test("coalesces concurrent live task catalog loads and reuses the successful result", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: [{ name: "Text Reranking", slug: "text-reranking" }],
+          next_page: null,
+        };
+      },
+    } as Response;
+  };
+  try {
+    const url = "https://catalog-coalescing.example.test/api/v1";
+    const [first, second] = await Promise.all([
+      fetchLiveTaskCatalog(url),
+      fetchLiveTaskCatalog(url),
+    ]);
+    const third = await fetchLiveTaskCatalog(url);
+
+    assert.equal(requests, 1);
+    assert.equal(first, second);
+    assert.equal(second, third);
+    assert.match(third, /`text-reranking` — Text Reranking/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("does not cache a failed live task catalog load", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return {
+      ok: requests > 1,
+      status: requests > 1 ? 200 : 503,
+      async json() {
+        return {
+          results: [{ name: "Image Classification", slug: "image-classification" }],
+          next_page: null,
+        };
+      },
+    } as Response;
+  };
+  try {
+    const url = "https://catalog-retry.example.test/api/v1";
+    await assert.rejects(fetchLiveTaskCatalog(url), /request failed: 503/u);
+    const catalog = await fetchLiveTaskCatalog(url);
+
+    assert.equal(requests, 2);
+    assert.match(catalog, /`image-classification` — Image Classification/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("loads the immutable external-worker prompt path from the launcher environment", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pwc-prompt-"));

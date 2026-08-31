@@ -20,6 +20,7 @@ import {
 interface ExternalTurnWorker {
   run(run: RunTurn): Promise<void>;
   cancel(requestId: string): Promise<void>;
+  dispose(): Promise<void>;
 }
 
 type TurnEmitter = (requestId: string, event: PwCEvent) => void;
@@ -340,7 +341,7 @@ export function createExternalWorkerServer(options: ExternalWorkerServerOptions)
         candidate = turns.start(run.request_id, run.turnClaim, socket);
         const worker = options.createTurnWorker!(candidate.emit, run, candidate.channel);
         candidate.setCancelWorker(() => worker.cancel(run.request_id));
-        const running = worker.run(run);
+        const running = worker.run(run).finally(() => worker.dispose());
         retained = candidate;
         operationCounters.model_calls += 1;
         void running;

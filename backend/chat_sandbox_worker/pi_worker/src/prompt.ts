@@ -6,6 +6,17 @@ const USER_SENTINEL = "__PWC_HF_USERNAME__";
 const TASK_CATALOG_START = "<!-- PWC_TASK_CATALOG_START -->";
 const TASK_CATALOG_END = "<!-- PWC_TASK_CATALOG_END -->";
 const PAPER_PROMPT_START = "## Private paper authoring (paper-v1)";
+const TASK_CATALOG_CACHE_TTL_MS = 5 * 60 * 1_000;
+
+let taskCatalogCache: {
+  apiUrl: string;
+  value: string;
+  expiresAt: number;
+} | undefined;
+let taskCatalogLoad: {
+  apiUrl: string;
+  promise: Promise<string>;
+} | undefined;
 
 export async function renderPrompt(options: {
   model: string;
@@ -68,10 +79,37 @@ export async function loadPromptAsset(assetPath?: string): Promise<string> {
 export async function fetchLiveTaskCatalog(
   apiUrl = process.env.PWC_API_URL ?? "http://127.0.0.1:8765/api/v1",
 ): Promise<string> {
+  const normalizedApiUrl = apiUrl.replace(/\/$/, "");
+  const now = Date.now();
+  if (
+    taskCatalogCache?.apiUrl === normalizedApiUrl
+    && taskCatalogCache.expiresAt > now
+  ) {
+    return taskCatalogCache.value;
+  }
+  if (taskCatalogLoad?.apiUrl === normalizedApiUrl) {
+    return taskCatalogLoad.promise;
+  }
+  const promise = loadLiveTaskCatalog(normalizedApiUrl);
+  taskCatalogLoad = { apiUrl: normalizedApiUrl, promise };
+  try {
+    const value = await promise;
+    taskCatalogCache = {
+      apiUrl: normalizedApiUrl,
+      value,
+      expiresAt: Date.now() + TASK_CATALOG_CACHE_TTL_MS,
+    };
+    return value;
+  } finally {
+    if (taskCatalogLoad?.promise === promise) taskCatalogLoad = undefined;
+  }
+}
+
+async function loadLiveTaskCatalog(apiUrl: string): Promise<string> {
   const tasks = new Map<string, string>();
   const signal = AbortSignal.timeout(3_000);
   for (let page = 1; page <= 10; page += 1) {
-    const url = new URL(`${apiUrl.replace(/\/$/, "")}/tasks/`);
+    const url = new URL(`${apiUrl}/tasks/`);
     url.searchParams.set("page", String(page));
     url.searchParams.set("page_size", "100");
     url.searchParams.set("ordering", "name");

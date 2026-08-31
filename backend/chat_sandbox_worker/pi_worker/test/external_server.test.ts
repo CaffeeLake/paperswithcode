@@ -98,6 +98,7 @@ test("external shadow HTTP service authenticates and exposes no run endpoint", a
 test("external worker streams one authenticated Pi turn without a local shell", async () => {
   const token = "s".repeat(32);
   const observed: Record<string, unknown>[] = [];
+  let disposals = 0;
   const server = createExternalWorkerServer({
     token,
     maximumConcurrent: 8,
@@ -119,6 +120,7 @@ test("external worker streams one authenticated Pi turn without a local shell", 
         emit(run.request_id, { type: "worker_done", status: "complete" });
       },
       async cancel() {},
+      async dispose() { disposals += 1; },
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -196,6 +198,8 @@ test("external worker streams one authenticated Pi turn without a local shell", 
       workerGeneration: 4,
       leaseGeneration: 9,
     });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(disposals, 1);
   } finally {
     socket.close();
     server.close();
@@ -231,6 +235,7 @@ test("external worker reattaches a pending tool request without restarting or ca
         emit(run.request_id, { type: "worker_done", status: "complete" });
       },
       async cancel() { cancels += 1; },
+      async dispose() {},
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -324,6 +329,7 @@ test("retained runs hold capacity across detach and release it on terminal ackno
         emit(run.request_id, { type: "worker_done", status: "complete" });
       },
       async cancel() {},
+      async dispose() {},
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -421,6 +427,7 @@ test("authenticated detached cancellation requires the exact claim and aborts on
         cancels += 1;
         throw new Error("cancel failed");
       },
+      async dispose() {},
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -495,7 +502,9 @@ test("external worker rejects a tool result without an attached retained run", a
     instanceId: "10000000-0000-4000-8000-000000000001",
     releaseId: "release-a",
     profile: { prompt: "system", tool_names: [] },
-    createTurnWorker: () => ({ async run() {}, async cancel() {} }),
+    createTurnWorker: () => ({
+      async run() {}, async cancel() {}, async dispose() {},
+    }),
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -551,6 +560,7 @@ test("duplicate run start is rejected without counting or disturbing the incumbe
         emit(run.request_id, { type: "worker_done", status: "complete" });
       },
       async cancel() {},
+      async dispose() {},
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -632,6 +642,7 @@ test("worker construction failure releases the provisional run without counting 
           emit(run.request_id, { type: "worker_done", status: "complete" });
         },
         async cancel() {},
+        async dispose() {},
       };
     },
   });
@@ -715,6 +726,7 @@ test("rejected second attach has no authority over the incumbent run", async () 
         emit(run.request_id, { type: "worker_done", status: "complete" });
       },
       async cancel() { cancels += 1; },
+      async dispose() {},
     }),
   });
   server.listen(0, "127.0.0.1");
@@ -828,7 +840,9 @@ test("external worker rejects missing and stale upgrade generations", async () =
     instanceId: "10000000-0000-4000-8000-000000000001",
     releaseId: "release-a",
     profile: { prompt: "system", tool_names: [] },
-    createTurnWorker: () => ({ async run() {}, async cancel() {} }),
+    createTurnWorker: () => ({
+      async run() {}, async cancel() {}, async dispose() {},
+    }),
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

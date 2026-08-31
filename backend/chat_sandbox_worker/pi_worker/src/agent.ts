@@ -186,12 +186,20 @@ export class PiWorker {
     await this.session.abort();
   }
 
+  async dispose(): Promise<void> {
+    await this.disposeSession();
+  }
+
   private async disposeSession(reason: "new" | "resume" = "new"): Promise<void> {
-    if (!this.session) return;
-    await this.session.extensionRunner.emit({ type: "session_shutdown", reason });
-    this.session.dispose();
+    const session = this.session;
+    if (!session) return;
     this.session = undefined;
     this.activeProfile = undefined;
+    try {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason });
+    } finally {
+      session.dispose();
+    }
   }
 
   private async sessionManager(run: RunTurn): Promise<{ manager: SessionManager; initialCount: number; created: boolean }> {
