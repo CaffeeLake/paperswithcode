@@ -284,7 +284,9 @@ def load_protected_staging_settings(
     values = {
         key.removeprefix("PWC_").lower(): value
         for key, value in raw.items()
-        if key.startswith("PWC_") and value is not None
+        if key.startswith("PWC_")
+        and value is not None
+        and key.removeprefix("PWC_").lower() in Settings.model_fields
     }
     try:
         settings = Settings.model_validate(values)

@@ -299,6 +299,26 @@ def test_protected_staging_settings_ignore_ambient_admin_credential(
     assert settings.release_id == "development"
 
 
+def test_protected_staging_settings_ignore_unrelated_pwc_keys(tmp_path):
+    from backend.services.durable_external_qualification_system import (
+        load_protected_staging_settings,
+    )
+
+    path = tmp_path / "staging.env"
+    path.write_text(
+        "PWC_ENVIRONMENT=staging\n"
+        f"PWC_ADMIN_API_TOKEN={'p' * 40}\n"
+        f"PWC_JWT_SECRET={'j' * 40}\n"
+        "PWC_TRENDING_PIN_ARXIV_IDS=2601.00001:72\n"
+    )
+    path.chmod(0o640)
+    os.chown(path, 0, grp.getgrnam("pwc-staging").gr_gid)
+
+    settings = load_protected_staging_settings(path)
+
+    assert settings.environment == "staging"
+
+
 @pytest.mark.parametrize("mode", (0o600, 0o644, 0o660))
 def test_protected_staging_settings_reject_wrong_mode(tmp_path, mode):
     from backend.services.durable_external_qualification_system import (
