@@ -37,6 +37,7 @@ from backend.models.chat import LatexPaperSourceEdit
 from backend.models.database import (
     ChatMessageRecord,
     ChatOpenRouterProviderCall,
+    ChatQualificationScope,
     ChatSession,
     ChatTurnCapability,
     ChatTurnLatency,
@@ -233,16 +234,31 @@ def _output_tokens_allowed(value: int) -> bool:
 
 
 def _provider_turn_limits(row: ChatTurnCapability, db: Session) -> tuple[int, int]:
-    qualification_profile = db.scalar(
-        select(ChatTurnLatency.qualification_profile).where(
-            ChatTurnLatency.turn_id == row.turn_id
-        )
-    )
-    if qualification_profile == "32-functional-turns":
+    qualification_scope_id = _qualification_scope_claim(row, db)
+    if qualification_scope_id is not None:
         return QUALIFICATION_PROVIDER_REQUESTS, QUALIFICATION_PROVIDER_TURN_TOKENS
     if {"artifact", "paper_grant"} & set(getattr(row, "scopes", ())):
         return MAX_POSTER_PROVIDER_REQUESTS, MAX_POSTER_PROVIDER_TURN_TOKENS
     return MAX_PROVIDER_REQUESTS, MAX_PROVIDER_TURN_TOKENS
+
+
+def _qualification_scope_claim(
+    row: ChatTurnCapability, db: Session
+) -> uuid.UUID | None:
+    return db.scalar(
+        select(ChatQualificationScope.id)
+        .join(
+            ChatTurnLatency,
+            ChatTurnLatency.qualification_scope_id == ChatQualificationScope.id,
+        )
+        .where(
+            ChatTurnLatency.turn_id == row.turn_id,
+            ChatTurnLatency.qualification_profile == "32-functional-turns",
+            ChatQualificationScope.profile == "32-functional-turns",
+            ChatQualificationScope.window_ended_at.is_(None),
+            ChatQualificationScope.expires_at > datetime.now(UTC),
+        )
+    )
 
 
 def _user_provider_credential(row, settings: Settings) -> HfInferenceCredential:
@@ -1406,6 +1422,7 @@ async def responses(
         raise HTTPException(status_code=413, detail="Model request is too large")
     owner_id = _capability_owner(row, db)
     capability_id = row.id
+    qualification_scope_id = _qualification_scope_claim(row, db)
     try:
         maximum_requests, maximum_turn_tokens = _provider_turn_limits(row, db)
         ChatCapabilityService(db).meter_provider(
@@ -1445,6 +1462,7 @@ async def responses(
                 request_bytes=len(trusted_raw),
                 maximum_output_tokens=maximum_tokens,
             ),
+            qualification_scope_id=qualification_scope_id,
         )
         db.commit()
     except OpenAIBudgetExhausted:

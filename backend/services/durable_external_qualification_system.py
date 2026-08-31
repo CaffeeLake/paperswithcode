@@ -354,7 +354,9 @@ class _SystemResourceEvidence:
             raise QualificationRefused("host_cpu_evidence_unavailable")
         return max(0.0, min(100.0, (total - idle) * 100 / total))
 
-    def _scope_counts(self) -> tuple[int, int, int]:
+    def _scope_counts(
+        self, *, include_terminal_reservations: bool = False
+    ) -> tuple[int, int, int]:
         scope_id = self.control_plane.qualification_scope_id
         if scope_id is None:
             raise QualificationRefused("qualification_scope_invalid")
@@ -366,17 +368,32 @@ class _SystemResourceEvidence:
         from backend.database.connection import db_manager
 
         with db_manager.session_local() as db:
+            if include_terminal_reservations:
+                turn_count_sql = """
+                    SELECT count(*)
+                    FROM chat_external_worker_reservations AS reservation
+                    JOIN chat_turn_latency AS latency
+                      ON latency.turn_id = reservation.turn_id
+                    WHERE latency.qualification_scope_id = :scope_id
+                      AND reservation.worker_id = :worker_id
+                      AND reservation.release_id = :release_id
+                      AND reservation.expires_at > now()
+                """
+            else:
+                turn_count_sql = """
+                    SELECT count(*)
+                    FROM chat_turn_latency
+                    WHERE qualification_scope_id = :scope_id
+                      AND terminal_status = 'running'
+                """
             active_turns = int(
                 db.execute(
-                    text(
-                        """
-                        SELECT count(*)
-                        FROM chat_turn_latency
-                        WHERE qualification_scope_id = :scope_id
-                          AND terminal_status = 'running'
-                        """
-                    ),
-                    {"scope_id": scope_id},
+                    text(turn_count_sql),
+                    {
+                        "scope_id": scope_id,
+                        "worker_id": worker_ids[0],
+                        "release_id": self.control_plane.release_id,
+                    },
                 ).scalar_one()
             )
             workers = int(
@@ -388,16 +405,20 @@ class _SystemResourceEvidence:
                         JOIN chat_turn_latency AS latency
                           ON latency.turn_id = reservation.turn_id
                         WHERE latency.qualification_scope_id = :scope_id
-                          AND latency.terminal_status = 'running'
                           AND reservation.worker_id = :worker_id
                           AND reservation.release_id = :release_id
                           AND reservation.expires_at > now()
+                          AND (
+                            :include_terminal_reservations
+                            OR latency.terminal_status = 'running'
+                          )
                         """
                     ),
                     {
                         "scope_id": scope_id,
                         "worker_id": worker_ids[0],
                         "release_id": self.control_plane.release_id,
+                        "include_terminal_reservations": include_terminal_reservations,
                     },
                 ).scalar_one()
             )
@@ -558,7 +579,9 @@ def system_cleanup_state(
             not control_plane.scope_attempted, 0, 0, 0, 0, 0, 0, 0
         )
     evidence = _SystemResourceEvidence(control_plane)
-    active_turns, active_workers, sandboxes = evidence._scope_counts()
+    active_turns, active_workers, sandboxes = evidence._scope_counts(
+        include_terminal_reservations=True
+    )
     exact_drained = active_turns == 0 and active_workers == 0 and sandboxes == 0
     return ScopedCleanupState(
         exact_workers_drained=exact_drained,

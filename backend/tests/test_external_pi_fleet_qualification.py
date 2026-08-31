@@ -825,12 +825,36 @@ def test_durable_controller_retains_scope_when_teardown_fails_for_cleanup_retry(
     assert report.status == "failed"
     assert report.reason == expected_reason
     assert ("teardown", "32-functional-turns") in operator.events
-    if stage == "teardown":
+    if stage in {"teardown", "cleanup_transient_workers"}:
         assert ("cleanup_evidence", "32-functional-turns") not in operator.events
     else:
         assert ("cleanup_evidence", "32-functional-turns") in operator.events
-    assert operator.events[-2][0] == "restore_flags"
-    assert operator.events[-1] == ("cleanup_transient_workers",)
+    assert operator.events.index(("cleanup_transient_workers",)) < (
+        operator.events.index(("cleanup_evidence", "32-functional-turns"))
+        if ("cleanup_evidence", "32-functional-turns") in operator.events
+        else len(operator.events)
+    )
+
+
+def test_durable_controller_does_not_delete_scope_when_final_probe_finds_leak():
+    from backend.scripts.qualify_durable_external_turns import (
+        CleanupProof,
+        run_durable_qualification,
+    )
+
+    class LeakingOperator(_DurableOperator):
+        def cleanup_profile_evidence(self, profile):
+            self.events.append(("cleanup_evidence", profile.name))
+
+        def cleanup_transient_workers(self):
+            self.events.append(("cleanup_transient_workers",))
+            return CleanupProof(True, True, True, True, True, 0, 1, 0)
+
+    operator = LeakingOperator()
+    report = run_durable_qualification(operator)
+
+    assert report.reason == "cleanup_failed"
+    assert not any(event[0] == "cleanup_evidence" for event in operator.events)
 
 
 def test_primary_profile_failure_plus_worker_cleanup_failure_is_typed_cleanup_failed():

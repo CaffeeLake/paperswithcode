@@ -190,9 +190,10 @@ class GuardedLiveDurableOperator:
         return self.transport_config.provider_spend_ceiling_microusd
 
     def cleanup_profile_evidence(self, profile: DurableQualificationProfile) -> None:
-        scope_id = self._scopes.pop(profile.name, None)
+        scope_id = self._scopes.get(profile.name)
         if scope_id is not None:
             self.evidence_source.cleanup(scope_id)
+            self._scopes.pop(profile.name, None)
 
     def qualification_scope_id(
         self, profile: DurableQualificationProfile
@@ -282,6 +283,7 @@ def run_durable_qualification(
     environment_valid = False
     previous_flags: ImmutableFlagSnapshot | None = None
     reports: list[DurableProfileReport] = []
+    pending_evidence_cleanup: list[DurableQualificationProfile] = []
     status = "failed"
     reason: str | None = "durable_qualification_failed"
     flags_restored = False
@@ -334,12 +336,8 @@ def run_durable_qualification(
                     report = finalize(profile, result) if callable(finalize) else result
                 except BaseException as error:
                     primary_error = error
-            cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
-            if callable(cleanup_evidence) and teardown_succeeded:
-                try:
-                    cleanup_evidence(profile)
-                except BaseException:
-                    profile_cleanup_failed = True
+            if teardown_succeeded:
+                pending_evidence_cleanup.append(profile)
             if profile_cleanup_failed:
                 raise QualificationRefused("cleanup_failed")
             if primary_error is not None:
@@ -379,6 +377,15 @@ def run_durable_qualification(
     if not cleanup.passed or (previous_flags is not None and not flags_restored):
         status = "failed"
         reason = "cleanup_failed"
+    else:
+        cleanup_evidence = getattr(operator, "cleanup_profile_evidence", None)
+        if callable(cleanup_evidence):
+            try:
+                for profile in pending_evidence_cleanup:
+                    cleanup_evidence(profile)
+            except BaseException:
+                status = "failed"
+                reason = "cleanup_failed"
     return DurableQualificationReport(
         release_id=environment.target_release,
         status=status,
