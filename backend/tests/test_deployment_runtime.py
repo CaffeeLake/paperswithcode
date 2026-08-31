@@ -3956,6 +3956,7 @@ def test_production_durable_external_values_enable_32_with_isolated_token(
     )
 
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == "32"
+    assert values["PWC_CHAT_USER_MAX_CONCURRENCY"] == "1"
     assert values["PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED"] == "true"
     assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "true"
     assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"

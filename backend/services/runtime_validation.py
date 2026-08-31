@@ -152,6 +152,13 @@ _SANDBOX_CAPACITY_POLICY = SandboxCapacityPolicy(
     blank_pool_min=1,
     blank_pool_max=1,
 )
+_EXTERNAL_PI_CAPACITY_POLICY = SandboxCapacityPolicy(
+    max_concurrency=32,
+    user_max_concurrency=1,
+    total_live_cap=16,
+    blank_pool_min=1,
+    blank_pool_max=1,
+)
 
 
 def validate_deployment_identity(settings: Settings) -> None:
@@ -681,6 +688,23 @@ def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     _validate_chat_capacity_and_spend_policy(settings)
 
 
+def _validate_chat_capacity_policy(settings: Settings) -> None:
+    configured = SandboxCapacityPolicy(
+        max_concurrency=settings.chat_max_concurrency,
+        user_max_concurrency=settings.chat_user_max_concurrency,
+        total_live_cap=settings.chat_sandbox_total_live_cap,
+        blank_pool_min=settings.chat_blank_pool_min,
+        blank_pool_max=settings.chat_blank_pool_max,
+    )
+    expected = (
+        _EXTERNAL_PI_CAPACITY_POLICY
+        if settings.chat_external_pi_admission_enabled
+        else _SANDBOX_CAPACITY_POLICY
+    )
+    if configured != expected:
+        raise RuntimeError("chat capacity must be the reviewed runtime profile")
+
+
 def _validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
     """Validate sandbox spend, capacity, alerting, and provider reserve."""
 
@@ -711,15 +735,7 @@ def _validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
                 "sandbox spend policy must be $75/$100/$250 with no environment cap"
             )
         raise RuntimeError("team sandbox spend policy is not reviewed")
-    configured_capacity = SandboxCapacityPolicy(
-        max_concurrency=settings.chat_max_concurrency,
-        user_max_concurrency=settings.chat_user_max_concurrency,
-        total_live_cap=settings.chat_sandbox_total_live_cap,
-        blank_pool_min=settings.chat_blank_pool_min,
-        blank_pool_max=settings.chat_blank_pool_max,
-    )
-    if configured_capacity != _SANDBOX_CAPACITY_POLICY:
-        raise RuntimeError("chat capacity must be two active turns plus one warm blank")
+    _validate_chat_capacity_policy(settings)
     expected_modal_environment = f"pwc-chat-{settings.environment}"
     if settings.chat_sandbox_modal_environment != expected_modal_environment:
         raise RuntimeError(
