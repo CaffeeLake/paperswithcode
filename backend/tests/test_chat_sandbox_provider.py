@@ -130,6 +130,7 @@ def test_create_nonpersistent_sandbox_preserves_provider_isolation_contract(
 
 def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatch):
     captured: dict[str, object] = {}
+    probes: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     class Sandbox:
         object_id = "sb-executor"
@@ -138,7 +139,7 @@ def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatc
             self.exec = _AsyncCall(self._exec)
 
         async def _exec(self, *command, **options):
-            captured["readiness"] = (command, options)
+            probes.append((command, options))
 
             async def wait():
                 return None
@@ -173,7 +174,10 @@ def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatc
     result = asyncio.run(
         provider.create(
             name="chat-executor-test",
-            tags={"service": "pwc-chat"},
+            tags={
+                "service": "pwc-chat",
+                "qualification_profile": "32-functional-turns",
+            },
             worker_generation="generation-a",
             launch_mode=SandboxLaunchMode.EXECUTOR,
         )
@@ -192,10 +196,20 @@ def test_create_executor_sandbox_uses_root_daemon_and_pinned_contract(monkeypatc
     assert "OPENROUTER_API_KEY" not in options["env"]
     assert "HF_TOKEN" not in options["env"]
     assert options["inbound_cidr_allowlist"] == []
-    assert captured["readiness"] == (
-        ("test", "-S", "/run/pwc-chat-executor/executor.sock"),
-        {"timeout": 5},
-    )
+    assert probes == [
+        (
+            ("test", "-S", "/run/pwc-chat-executor/executor.sock"),
+            {"timeout": 5},
+        ),
+        (
+            (
+                "sh",
+                "-c",
+                "printf durable-ready > /workspace/durable-ready.txt",
+            ),
+            {"timeout": 5},
+        ),
+    ]
 
 
 def test_executor_launch_mode_requires_its_independent_kill_switch():

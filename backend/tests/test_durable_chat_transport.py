@@ -263,7 +263,7 @@ def test_read_workload_requires_the_pi_read_tool_for_a_known_executor_file():
         "message"
     ]
     assert prompt == (
-        "Use the Read tool exactly once to read /opt/pwc/PWC_CLI_SKILL.md. "
+        "Use the Read tool exactly once to read durable-ready.txt. "
         "Do not use Bash or any other tool."
     )
 

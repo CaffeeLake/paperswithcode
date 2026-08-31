@@ -376,6 +376,16 @@ class ModalSandboxProviderAdapter:
                     )
                     await probe.wait.aio()
                     if probe.returncode == 0:
+                        if qualification_profile == "32-functional-turns":
+                            seed = await sandbox.exec.aio(
+                                "sh",
+                                "-c",
+                                "printf durable-ready > /workspace/durable-ready.txt",
+                                timeout=5,
+                            )
+                            await seed.wait.aio()
+                            if seed.returncode != 0:
+                                break
                         return sandbox
                 except Exception:
                     pass

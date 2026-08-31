@@ -56,10 +56,13 @@ _PROMPTS = {
     "no_tool": "Reply with READY only. Do not call tools.",
     "admission_stream": "Reply with READY only. Do not call tools.",
     "read": (
-        "Use the Read tool exactly once to read /opt/pwc/PWC_CLI_SKILL.md. "
+        "Use the Read tool exactly once to read durable-ready.txt. "
         "Do not use Bash or any other tool."
     ),
-    "bash": "Run `printf durable-ready` exactly once, then report only the exit code.",
+    "bash": (
+        "Use the Bash tool exactly once to run `printf durable-ready`, "
+        "then report only the exit code."
+    ),
 }
 
 
