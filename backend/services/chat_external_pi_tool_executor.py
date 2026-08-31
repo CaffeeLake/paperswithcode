@@ -203,7 +203,7 @@ class ExternalPiToolWorkspaceExecutor:
     async def _ensure_executor(
         self,
         workspace: ExternalExecutorWorkspace,
-        tool_call_id: str,
+        _tool_call_id: str,
         operation_id: str,
     ) -> ExecutorContext:
         context = ExecutorContext(
@@ -213,7 +213,10 @@ class ExternalPiToolWorkspaceExecutor:
             session_id=str(self.admission.session_id),
             turn_id=str(self.admission.turn_id),
             execution_id=operation_id,
-            tool_call_id=tool_call_id,
+            # Provider tool-call IDs are untrusted and can contain characters
+            # outside the executor protocol. The harness-issued operation ID is
+            # already unique, replay-stable, and bound to the provider call.
+            tool_call_id=operation_id,
             worker_generation=workspace.worker_generation,
             capability=self.capability.token,
         )

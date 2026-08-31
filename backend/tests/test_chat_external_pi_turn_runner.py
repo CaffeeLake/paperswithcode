@@ -144,9 +144,11 @@ class FakeProvider:
 
 def test_workspace_ack_is_not_misreported_as_executor_start():
     events = []
+    contexts = []
 
     class Executor:
-        async def ensure_workspace(self, _context):
+        async def ensure_workspace(self, context):
+            contexts.append(context)
             events.append("workspace_ack")
 
     turn_id = uuid.uuid4()
@@ -166,11 +168,15 @@ def test_workspace_ack_is_not_misreported_as_executor_start():
 
     asyncio.run(
         ExternalPiToolWorkspaceExecutor._ensure_executor(
-            owner, workspace, "tool-call", "operation-a"
+            owner,
+            workspace,
+            "call_BRXcbfqP7dwS0QnvatEH7mtL|fc_unsafe-provider-id",
+            "operation-a",
         )
     )
 
     assert events == ["workspace_ack"]
+    assert contexts[0].tool_call_id == "operation-a"
 
 
 def test_executor_start_evidence_follows_successful_executor_operation():
