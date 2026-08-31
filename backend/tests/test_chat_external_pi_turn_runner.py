@@ -387,6 +387,13 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     provider = FakeProvider()
     workspace_manager = FakeWorkspaceManager(provider)
     executor = FakeExecutor()
+    observed = []
+
+    def observe(event, code, value):
+        if event == "worker_ready":
+            raise ValueError("transport-only readiness is not a lifecycle metric")
+        observed.append((event, code, value))
+
     socket = FakeSocket(
         [
             '{"type":"worker_ready","worker_sequence":1}',
@@ -436,6 +443,7 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
         ),
         worker_status_resolver=lambda: _async_value(worker_status(repository.claim)),
         session_factory=SessionContext,
+        observe=observe,
     )
 
     async def exercise():
@@ -456,6 +464,7 @@ def test_external_pi_runner_lazily_creates_executor_for_remote_read():
     assert executor.contexts[0].workspace_generation == 37
     assert executor.contexts[0].worker_generation == "durable-workspace-generation"
     assert '"type":"tool_result"' in socket.sent[1]
+    assert all(event != "worker_ready" for event, _code, _value in observed)
 
 
 def test_external_pi_runner_routes_bash_through_resumable_execution():
