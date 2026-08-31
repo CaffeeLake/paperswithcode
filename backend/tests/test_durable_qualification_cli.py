@@ -342,6 +342,31 @@ def test_bind_active_staging_worker_uses_verified_slot(tmp_path):
     assert configured_worker_ids(bound) == ("staging-green",)
 
 
+def test_system_resource_sampler_uses_active_slot_backend_unit(tmp_path, monkeypatch):
+    from backend.services import durable_external_qualification_system as system
+
+    slot = tmp_path / "environments" / "staging" / "slots" / "blue"
+    slot.mkdir(parents=True)
+    (slot.parents[1] / "active").symlink_to(slot)
+    control = SimpleNamespace(app_root=tmp_path)
+    evidence = system._SystemResourceEvidence(control)
+    monkeypatch.setattr(evidence, "_scope_counts", lambda: (3, 1, 2))
+    monkeypatch.setattr(evidence, "_cpu_percent", lambda: 12.5)
+    monkeypatch.setattr(system, "_proc_memory_value", lambda _name: 10_000)
+    units = []
+    monkeypatch.setattr(
+        system, "_systemctl_memory", lambda unit: units.append(unit) or 1_000
+    )
+
+    sample = evidence.sample()
+
+    assert sample.active_backend_turns == 3
+    assert units == [
+        "paperswithcode-staging-backend@blue.service",
+        "paperswithcode-staging-external-pi-worker@blue.service",
+    ]
+
+
 @pytest.mark.parametrize("mode", (0o600, 0o644, 0o660))
 def test_protected_staging_settings_reject_wrong_mode(tmp_path, mode):
     from backend.services.durable_external_qualification_system import (

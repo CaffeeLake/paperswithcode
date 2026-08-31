@@ -503,7 +503,7 @@ class _SystemResourceEvidence:
             raise QualificationRefused("active_staging_worker_required")
         return DurableResourceSample(
             process_memory_bytes=_systemctl_memory(
-                "paperswithcode-backend@staging.service"
+                f"paperswithcode-staging-backend@{slot}.service"
             ),
             worker_memory_bytes=_systemctl_memory(
                 f"paperswithcode-staging-external-pi-worker@{slot}.service"
