@@ -1101,6 +1101,41 @@ def test_callback_policy_allows_only_resolution_payload_for_resolution_job():
         )
 
 
+def test_callback_policy_rejects_cron_created_release_pages():
+    body = ApplyMutationRequest.model_validate(
+        {
+            "resolve_model_paper": {
+                "decision": "accept",
+                "reason": "New weights announced in an official release blog.",
+                "novelty_kind": "new_weights",
+                "evidence_urls": ["https://example.com/blog/model-release"],
+                "external_paper": {
+                    "source_url": "https://example.com/blog/model-release",
+                    "title": "Model Release",
+                    "abstract": "The publisher announces newly trained weights.",
+                    "date_published": "2026-08-31",
+                },
+                "model_release": {
+                    "canonical_name": "Model",
+                    "publisher": "org",
+                    "is_open": True,
+                    "aliases": ["org/model"],
+                },
+            }
+        }
+    )
+    row = SimpleNamespace(
+        kind="resolve-model-paper",
+        trigger="hf-trending-cron",
+        status="running",
+        submitted_at=None,
+        applied_at=None,
+    )
+
+    with pytest.raises(ValueError, match="cannot create external papers"):
+        CodexCurationCallbackService(SimpleNamespace())._validate_mutation(row, body)
+
+
 def test_callback_applies_resolution_and_records_job_result():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(

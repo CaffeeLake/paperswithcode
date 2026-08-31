@@ -1003,6 +1003,14 @@ class CodexCurationCallbackService:
                 raise ValueError(
                     "Resolution jobs accept only model resolution payloads"
                 )
+            if (
+                getattr(row, "trigger", None) == "hf-trending-cron"
+                and body.resolve_model_paper.external_paper is not None
+            ):
+                raise ValueError(
+                    "The trending-model cron cannot create external papers; "
+                    "resolve to an existing paper or arXiv paper, or reject the candidate"
+                )
             return
         if body.resolve_model_paper is not None:
             raise ValueError("Model resolution is allowed only for resolution jobs")
