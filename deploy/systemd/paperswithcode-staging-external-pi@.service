@@ -23,6 +23,6 @@ ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/srv/paperswithcode
 ReadWritePaths=/var/lib/paperswithcode/staging /run/paperswithcode/external-pi
-CPUQuota=10%
+CPUQuota=25%
 MemoryMax=536870912
 TasksMax=64
