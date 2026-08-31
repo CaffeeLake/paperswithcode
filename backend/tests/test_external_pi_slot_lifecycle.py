@@ -1809,7 +1809,8 @@ def test_external_pi_hosts_bypasses_the_public_cdn_only_for_the_worker(
 
     assert hosts.read_text() == (
         "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
-        "::1 localhost ip6-localhost ip6-loopback\n"
+        "::1 localhost ip6-localhost ip6-loopback "
+        "chat-gateway-staging.paperswithcode.co\n"
     )
     assert hosts.stat().st_mode & 0o777 == 0o644
 

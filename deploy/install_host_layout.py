@@ -40,7 +40,8 @@ SYSTEMD_UNITS = (
 )
 EXTERNAL_PI_HOSTS = (
     "127.0.0.1 localhost chat-gateway-staging.paperswithcode.co\n"
-    "::1 localhost ip6-localhost ip6-loopback\n"
+    "::1 localhost ip6-localhost ip6-loopback "
+    "chat-gateway-staging.paperswithcode.co\n"
 )
 
 
