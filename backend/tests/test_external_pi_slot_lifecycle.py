@@ -1749,6 +1749,12 @@ def test_systemd_templates_split_worker_and_supervisor_credentials():
     assert "external_pi_worker_launcher.py staging %i" in worker
     assert "staging.env" not in worker
     assert "ProtectProc=invisible" in worker
+    assert "CPUQuota=50%" in worker
+    assert "MemoryMax=805306368" in worker
+    assert "TasksMax=128" in worker
+    assert "CPUQuota=25%" in supervisor
+    assert "MemoryMax=536870912" in supervisor
+    assert "TasksMax=64" in supervisor
     timeout_line = next(
         line for line in supervisor.splitlines() if line.startswith("TimeoutStopSec=")
     )
