@@ -88,7 +88,15 @@ def test_slot_runtime_is_environment_isolated_and_uses_recorded_immutable_runtim
     assert resolved.release_id == "release-blue"
     assert resolved.runtime.name == "a" * 64
     assert resolved.node == resolved.runtime / "node/bin/node"
-    assert resolved.status_path == lifecycle.STATUS_ROOT / f"{environment}-blue.json"
+    expected_status = (
+        lifecycle.STATUS_ROOT / "staging-blue.json"
+        if environment == "staging"
+        else lifecycle.PRODUCTION_STATUS_ROOT.with_name(
+            f"{lifecycle.PRODUCTION_STATUS_ROOT.name}-blue"
+        )
+        / "status.json"
+    )
+    assert resolved.status_path == expected_status
 
 
 def test_wrong_or_unrecorded_runtime_is_rejected(

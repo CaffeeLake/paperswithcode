@@ -25,6 +25,12 @@ CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode
 STATUS_ROOT = Path(
     os.environ.get("PWC_EXTERNAL_PI_STATUS_ROOT", "/run/paperswithcode/external-pi")
 )
+PRODUCTION_STATUS_ROOT = Path(
+    os.environ.get(
+        "PWC_PRODUCTION_EXTERNAL_PI_STATUS_ROOT",
+        "/run/paperswithcode/external-pi-status-production",
+    )
+)
 WORKER_USER = "pwc-external-pi"
 WORKER_CONFIG = CONFIG_ROOT / "external-pi-worker.env"
 ENVIRONMENT_SLOT_PORTS = {
@@ -89,6 +95,15 @@ class ExternalPiSlot:
     status_path: Path
 
 
+def _environment_status_path(environment: str, slot: str) -> Path:
+    if environment == "staging":
+        return STATUS_ROOT / f"staging-{slot}.json"
+    return (
+        PRODUCTION_STATUS_ROOT.with_name(f"{PRODUCTION_STATUS_ROOT.name}-{slot}")
+        / "status.json"
+    )
+
+
 def resolve_external_pi_slot(environment: str, slot: str) -> ExternalPiSlot:
     ports = ENVIRONMENT_SLOT_PORTS.get(environment)
     if ports is None or slot not in ports:
@@ -122,7 +137,7 @@ def resolve_external_pi_slot(environment: str, slot: str) -> ExternalPiSlot:
         node=runtime / "node/bin/node",
         entry_point=entry_point,
         prompt=runtime / "assets/pi-system-prompt.txt",
-        status_path=STATUS_ROOT / f"{environment}-{slot}.json",
+        status_path=_environment_status_path(environment, slot),
     )
 
 
@@ -218,7 +233,7 @@ def _status_path(environment: str, slot: str) -> Path:
         or slot not in ENVIRONMENT_SLOT_PORTS[environment]
     ):
         raise ValueError("external Pi deployment slot is invalid")
-    return STATUS_ROOT / f"{environment}-{slot}.json"
+    return _environment_status_path(environment, slot)
 
 
 def _read_status(environment: str, slot: str) -> dict:
