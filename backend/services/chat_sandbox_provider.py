@@ -477,6 +477,7 @@ class ModalSandboxProviderAdapter:
             stderr=StreamType.DEVNULL,
             timeout=timeout_seconds,
             workdir="/workspace",
+            env={"PYTHONPATH": "/opt/pwc"},
             text=False,
         )
 

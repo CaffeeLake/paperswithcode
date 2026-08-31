@@ -685,6 +685,7 @@ def test_open_executor_relay_uses_bounded_binary_process():
                 "stderr": StreamType.DEVNULL,
                 "timeout": 31,
                 "workdir": "/workspace",
+                "env": {"PYTHONPATH": "/opt/pwc"},
                 "text": False,
             },
         )
