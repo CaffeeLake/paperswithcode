@@ -458,9 +458,14 @@ def test_production_accepts_complete_durable_external_contract(settings_factory)
     settings.chat_max_concurrency = 32
     settings.chat_user_max_concurrency = 1
     settings.chat_sandbox_total_live_cap = 16
+    settings.chat_openai_direct_enabled = True
+    settings.openai_api_key = "test-only"
+    settings.chat_blank_pool_enabled = False
+    settings.chat_pi_prewarm_enabled = False
 
     runtime_validation.validate_external_pi_migration_policy(settings)
     runtime_validation._validate_chat_capacity_policy(settings)
+    runtime_validation._validate_chat_resource_policy(settings)
 
 
 def test_staging_can_qualify_durable_bridge_without_external_admission(
