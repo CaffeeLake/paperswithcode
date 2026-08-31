@@ -26,7 +26,7 @@ test("remote tool bridge correlates Bash output and Read bytes", async () => {
     "tool-1", "pwc search papers attention", 30_000,
     (data) => chunks.push(data.toString("utf8")),
   );
-  const content = await bridge.read("tool-2", "/opt/pwc/PWC_CLI_SKILL.md");
+  const content = await bridge.read("tool-2", "/workspace/durable-ready.txt");
 
   assert.equal(execution.exitCode, 0);
   assert.deepEqual(chunks, ["paper result\n"]);
@@ -46,7 +46,7 @@ test("remote tool bridge correlates Bash output and Read bytes", async () => {
     operation_id: requests[1]?.operation_id,
     tool_call_id: "tool-2",
     operation: "read",
-    path: "/opt/pwc/PWC_CLI_SKILL.md",
+    path: "durable-ready.txt",
     offset: 0,
     max_bytes: 1024 * 1024,
   });

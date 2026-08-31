@@ -62,12 +62,16 @@ export class RemoteToolBridge {
   }
 
   async read(toolCallId: string, path: string): Promise<Buffer> {
+    const workspacePrefix = "/workspace/";
+    const remotePath = path.startsWith(workspacePrefix)
+      ? path.slice(workspacePrefix.length)
+      : path;
     const result = await this.exchange({
       type: "tool_request",
       operation_id: randomUUID(),
       tool_call_id: toolCallId,
       operation: "read",
-      path,
+      path: remotePath,
       offset: 0,
       max_bytes: MAX_REMOTE_READ_BYTES,
     });
