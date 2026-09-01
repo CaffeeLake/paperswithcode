@@ -39,6 +39,9 @@ PRODUCTION_STATUS_ROOT = Path(
 )
 WORKER_USER = "pwc-external-pi"
 WORKER_CONFIG = CONFIG_ROOT / "external-pi-worker.env"
+RUNUSER = "/usr/sbin/runuser"
+PSQL = "/usr/bin/psql"
+DATABASE = "paperswithcode_hf"
 ENVIRONMENT_SLOT_PORTS = {
     "staging": {"blue": 8766, "green": 8767},
     "production": {"blue": 8776, "green": 8777},
@@ -531,6 +534,117 @@ def _stale_bound_worker_is_proven(
     )
 
 
+def _expired_database_worker_is_proven(
+    endpoint_status: object,
+    database_status: object,
+    *,
+    trusted_release_ids: frozenset[str],
+) -> bool:
+    """Prove an idle endpoint's exact durable lease and reservations expired."""
+    if not isinstance(endpoint_status, dict) or not isinstance(database_status, dict):
+        return False
+    counters = endpoint_status.get("operation_counters")
+    generation = endpoint_status.get("worker_generation")
+    release_id = endpoint_status.get("release_id")
+    maximum_sessions = endpoint_status.get("maximum_sessions")
+    return bool(
+        endpoint_status.get("protocol") == CONTRACT_VERSION
+        and release_id in trusted_release_ids
+        and endpoint_status.get("state") == "ready"
+        and type(endpoint_status.get("active_sessions")) is int
+        and endpoint_status["active_sessions"] == 0
+        and type(maximum_sessions) is int
+        and maximum_sessions > 0
+        and type(generation) is int
+        and generation > 0
+        and isinstance(counters, dict)
+        and set(counters) == set(OPERATION_COUNTER_NAMES)
+        and all(
+            type(counters[name]) is int and counters[name] == 0
+            for name in OPERATION_COUNTER_NAMES
+        )
+        and database_status.get("worker_id") == endpoint_status.get("worker_id")
+        and database_status.get("release_id") == release_id
+        and database_status.get("contract_version") == CONTRACT_VERSION
+        and database_status.get("generation") == generation
+        and database_status.get("state") in {"ready", "offline"}
+        and database_status.get("maximum_sessions") == maximum_sessions
+        and type(database_status.get("active_sessions")) is int
+        and database_status["active_sessions"] == 0
+        and database_status.get("lease_expired") is True
+        and database_status.get("reservation_free") is True
+    )
+
+
+def _read_database_worker_statuses(environment: str, slot: str) -> dict[str, dict]:
+    if environment not in ENVIRONMENT_SLOT_PORTS or slot not in {"blue", "green"}:
+        raise ValueError("external Pi deployment slot is invalid")
+    schema = "staging" if environment == "staging" else "public"
+    prefix = f"{environment}-{slot}-%"
+    query = f"""
+SELECT json_build_object(
+    'worker_id', w.worker_id,
+    'release_id', w.release_id,
+    'contract_version', w.contract_version,
+    'generation', w.generation,
+    'state', w.state,
+    'maximum_sessions', w.maximum_sessions,
+    'active_sessions', w.active_sessions,
+    'lease_expired', w.lease_expires_at <= clock_timestamp(),
+    'reservation_free', NOT EXISTS (
+        SELECT 1
+          FROM {schema}.chat_external_worker_reservations AS r
+         WHERE r.worker_id = w.worker_id
+           AND r.worker_generation = w.generation
+           AND r.expires_at > clock_timestamp()
+    )
+)::text
+  FROM {schema}.chat_external_workers AS w
+ WHERE w.worker_id LIKE '{prefix}'
+ ORDER BY w.worker_id;
+"""
+    try:
+        result = subprocess.run(
+            [
+                RUNUSER,
+                "-u",
+                "postgres",
+                "--",
+                PSQL,
+                "--dbname",
+                DATABASE,
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "--set",
+                "ON_ERROR_STOP=1",
+                "--command",
+                query,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={"LANG": "C.UTF-8", "PATH": "/usr/bin:/bin"},
+        )
+    except OSError:
+        return {}
+    if result.returncode != 0:
+        return {}
+    statuses: dict[str, dict] = {}
+    try:
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            worker_id = value.get("worker_id") if isinstance(value, dict) else None
+            if not isinstance(worker_id, str) or worker_id in statuses:
+                return {}
+            statuses[worker_id] = value
+    except (AttributeError, json.JSONDecodeError):
+        return {}
+    return statuses
+
+
 def sync_worker_environment(environment: str) -> None:
     """Publish only the worker token to the dedicated protected environment."""
     token = _protected_environment_values(environment).get(
@@ -579,6 +693,13 @@ def _stop_proven_orphaned_worker_if_active(
         trusted_release_ids = trusted_release_ids | {expected_release_id}
     lease_seconds = protected_lease_seconds(environment)
     now = time.time()
+    database_statuses: dict[str, dict] | None = None
+
+    def database_status(worker_id: str) -> dict:
+        nonlocal database_statuses
+        if database_statuses is None:
+            database_statuses = _read_database_worker_statuses(environment, slot)
+        return database_statuses.get(worker_id, {})
 
     def safe_status(
         status: object,
@@ -622,6 +743,11 @@ def _stop_proven_orphaned_worker_if_active(
                 trusted_release_ids=trusted_release_ids,
                 lease_seconds=lease_seconds,
                 now=now,
+            )
+            or _expired_database_worker_is_proven(
+                status,
+                database_status(worker_id),
+                trusted_release_ids=trusted_release_ids,
             )
         )
 

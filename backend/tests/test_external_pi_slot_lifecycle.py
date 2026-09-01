@@ -1774,6 +1774,49 @@ def test_stale_failed_supervisor_proves_zero_use_bound_worker_is_expired(tmp_pat
     )
 
 
+def test_expired_database_lease_proves_zero_use_bound_worker_is_expired():
+    endpoint = {
+        "protocol": "external-pi-v1",
+        "worker_id": "staging-blue-00",
+        "release_id": "release-blue",
+        "state": "ready",
+        "active_sessions": 0,
+        "maximum_sessions": 2,
+        "worker_generation": 5,
+        "operation_counters": {
+            "shadow_requests": 0,
+            "model_calls": 0,
+            "tool_calls": 0,
+            "provider_calls": 0,
+            "modal_calls": 0,
+            "billing_events": 0,
+        },
+    }
+    database_status = {
+        "worker_id": "staging-blue-00",
+        "release_id": "release-blue",
+        "contract_version": "external-pi-v1",
+        "generation": 5,
+        "state": "ready",
+        "maximum_sessions": 2,
+        "active_sessions": 0,
+        "lease_expired": True,
+        "reservation_free": True,
+    }
+
+    assert lifecycle._expired_database_worker_is_proven(
+        endpoint,
+        database_status,
+        trusted_release_ids=frozenset({"release-blue"}),
+    )
+    database_status["lease_expired"] = False
+    assert not lifecycle._expired_database_worker_is_proven(
+        endpoint,
+        database_status,
+        trusted_release_ids=frozenset({"release-blue"}),
+    )
+
+
 def test_stop_slot_cleans_exact_unclaimed_request_free_worker(
     monkeypatch: pytest.MonkeyPatch,
 ):
