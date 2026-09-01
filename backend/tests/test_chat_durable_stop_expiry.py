@@ -118,7 +118,7 @@ def test_missing_process_local_external_control_interrupts_with_exact_code():
 
     async def missing(_request):
         calls.append("control-missing")
-        return False
+        return CancelControlResult.MISSING
 
     class Manager:
         async def cancel_status(self, *_args):

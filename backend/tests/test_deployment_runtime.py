@@ -3961,6 +3961,9 @@ def test_production_durable_external_values_enable_32_with_isolated_token(
     assert values["PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED"] == "true"
     assert values["PWC_CHAT_EXTERNAL_PI_WORKER_MAX_SESSIONS"] == "32"
     assert values["PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN"] == "p" * 64
+    assert values["PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY"] == "32"
+    assert values["PWC_CHAT_OPENAI_USER_MAX_CONCURRENCY"] == "1"
+    assert values["PWC_CHAT_OPENAI_GLOBAL_RATE_LIMIT_CALLS"] == "512"
     assert values["PWC_CHAT_REMOTE_BASH_ENABLED"] == "true"
     assert values["PWC_CHAT_REMOTE_READ_ENABLED"] == "true"
 
@@ -3977,6 +3980,9 @@ def test_production_durable_external_values_preserve_token_on_disable():
 
     assert "PWC_CHAT_EXTERNAL_PI_WORKER_TOKEN" not in values
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
+    assert values["PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY"] == "4"
+    assert values["PWC_CHAT_OPENAI_USER_MAX_CONCURRENCY"] == "2"
+    assert values["PWC_CHAT_OPENAI_GLOBAL_RATE_LIMIT_CALLS"] == "80"
     assert values["PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED"] == "false"
     assert values["PWC_CHAT_BLANK_POOL_ENABLED"] == "true"
     assert values["PWC_CHAT_PI_PREWARM_ENABLED"] == "true"
@@ -3997,6 +4003,9 @@ def _staging_durable_external_qualification_baseline() -> dict[str, str]:
             "PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED=true"
         ),
         "PWC_CHAT_MAX_CONCURRENCY": "PWC_CHAT_MAX_CONCURRENCY=2",
+        "PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY": (
+            "PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY=4"
+        ),
         "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": ("PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP=3"),
         "PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true",
         "PWC_CHAT_PI_PREWARM_ENABLED": "PWC_CHAT_PI_PREWARM_ENABLED=true",
@@ -4023,6 +4032,7 @@ def test_staging_durable_external_qualification_profile_is_exact_and_reversible(
         "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "true",
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
         "PWC_CHAT_PI_PREWARM_ENABLED": "false",
+        "PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY": "32",
     }
 
     active = configure_host_env.assign(baseline, enabled)
@@ -4041,8 +4051,20 @@ def test_staging_durable_external_qualification_profile_is_exact_and_reversible(
         "PWC_CHAT_LAZY_WORKSPACE_ENABLED": "false",
         "PWC_CHAT_BLANK_POOL_ENABLED": "true",
         "PWC_CHAT_PI_PREWARM_ENABLED": "true",
+        "PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY": "4",
         "PWC_ADMIN_API_TOKEN": "",
     }
+
+
+def test_staging_durable_external_qualification_accepts_implicit_openai_default():
+    baseline = _staging_durable_external_qualification_baseline()
+    baseline.pop("PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY")
+
+    enabled = configure_host_env.staging_durable_external_qualification_values(
+        baseline, enabled=True
+    )
+
+    assert enabled["PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY"] == "32"
 
 
 def test_staging_durable_external_qualification_installs_scoped_admin_token(
@@ -4070,6 +4092,7 @@ def test_staging_durable_external_qualification_installs_scoped_admin_token(
     (
         ("PWC_CHAT_EXTERNAL_PI_ADMISSION_ENABLED", "true"),
         ("PWC_CHAT_MAX_CONCURRENCY", "32"),
+        ("PWC_CHAT_OPENAI_GLOBAL_MAX_CONCURRENCY", "8"),
         ("PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP", "16"),
         ("PWC_CHAT_EXTERNAL_PI_SUPERVISOR_ENABLED", "false"),
         ("PWC_CHAT_DURABLE_TURN_DISPATCH_ENABLED", "false"),
