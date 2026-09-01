@@ -81,6 +81,7 @@ async def run() -> None:
                 http=http,
                 session_factory=db_manager.session_local,
                 wait_for_stop=wait_for_stop,
+                release_connections=db_manager.engine.dispose,
             )
             runtime.observe = observe
             await runtime.run()

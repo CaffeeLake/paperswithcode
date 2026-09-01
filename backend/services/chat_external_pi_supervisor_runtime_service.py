@@ -69,12 +69,17 @@ class ChatExternalPiSupervisorRuntime:
     startup_timeout_seconds: float
     drain_poll_seconds: float
     observe: LifecycleObserver | None = None
+    release_connections: Callable[[], None] | None = None
 
     async def _transaction(self, operation):
-        with self.session_factory() as db:
-            result = await operation(db)
-            db.commit()
-            return result
+        try:
+            with self.session_factory() as db:
+                result = await operation(db)
+                db.commit()
+                return result
+        finally:
+            if self.release_connections is not None:
+                self.release_connections()
 
     async def _wait_for_drain_retry(
         self, *, deadline: float, error: BaseException
