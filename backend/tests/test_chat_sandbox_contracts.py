@@ -2961,6 +2961,18 @@ def test_tool_policy_rejects_traversal_and_enforces_aggregate_bytes(tmp_path):
         "Read and Grep may only access /workspace or the approved CLI guides. "
         "Rerun the source command with output redirected to /workspace, then try again."
     )
+    inlined_skill = budget.authorize(
+        "inlined-skill",
+        "Read",
+        {"file_path": str(guide)},
+        workspace=workspace,
+        guide=guide,
+    )
+    assert not inlined_skill.allowed
+    assert inlined_skill.reason == (
+        "The pwc, s2, and restricted hf CLI skills are already included verbatim in "
+        "your system prompt. Read that text instead and run the CLI directly."
+    )
     assert not budget.tooling_closed
     assert budget.authorize(
         "recovery",
@@ -3367,7 +3379,9 @@ def test_prompt_and_manifest_share_six_round_contract():
         "user asks\nfor a visual explanation or visualization."
     )
     assert visual_instruction in prompt
-    assert "Use Read only in `/workspace`" in prompt
+    assert "use Read only in\n`/workspace`" in prompt
+    assert "already included\nverbatim later in this system prompt" in prompt
+    assert "Never read, `cat`,\nor otherwise open `/opt/pwc/PWC_CLI_SKILL.md`" in prompt
     assert "HF access is anonymous-only" in prompt
     assert "fix the JSON and call `create_view` once more" in prompt
     assert prompt.index("## Tool usage") < prompt.index(visual_instruction)
@@ -3413,17 +3427,18 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert CONTROL_PORT == 8080
 
 
-def test_pi_prompt_keeps_cli_contract_without_embedding_reference_appendices():
+def test_pi_prompt_embeds_cli_skills_without_requiring_a_read_tool_call():
     prompt = render(agent_harness="pi")
 
-    assert len(prompt.encode("utf-8")) < 20_000
     assert "pwc task --name TASK" in prompt
     assert "pwc benchmark list --task TASK" in prompt
     assert "/opt/pwc/PWC_CLI_SKILL.md" in prompt
     assert "/opt/pwc/HF_CLI_SKILL.md" in prompt
     assert "/opt/pwc/S2_CLI_SKILL.md" in prompt
-    assert "# pwc CLI skill" not in prompt
-    assert "## Complete live task lookup index" not in prompt
+    assert "# pwc CLI skill" in prompt
+    assert "name: pwc-cli" in prompt
+    assert "# s2 CLI skill" in prompt
+    assert "# restricted hf CLI skill" in prompt
 
 
 @pytest.mark.parametrize(
