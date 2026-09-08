@@ -2123,13 +2123,14 @@ def test_expired_database_lease_proves_used_idle_worker_is_expired():
     )
 
 
-def test_expired_database_lease_proves_stable_draining_turns_are_orphaned():
+@pytest.mark.parametrize("state", ("draining", "ready"))
+def test_expired_database_lease_proves_stable_draining_turns_are_orphaned(state):
     endpoint = {
         "protocol": "external-pi-v1",
         "worker_id": "production-blue-00",
         "instance_id": "00000000-0000-0000-0000-000000000001",
         "release_id": "old-release",
-        "state": "draining",
+        "state": state,
         "active_sessions": 3,
         "maximum_sessions": 4,
         "worker_generation": 7,
@@ -2148,7 +2149,7 @@ def test_expired_database_lease_proves_stable_draining_turns_are_orphaned():
         "release_id": "old-release",
         "contract_version": "external-pi-v1",
         "generation": 7,
-        "state": "draining",
+        "state": state,
         "maximum_sessions": 4,
         "active_sessions": 3,
         "lease_expired": True,
@@ -2166,7 +2167,7 @@ def test_expired_database_lease_proves_stable_draining_turns_are_orphaned():
 @pytest.mark.parametrize(
     ("target", "field", "unsafe_value"),
     (
-        ("first", "state", "ready"),
+        ("first", "state", "offline"),
         ("second", "active_sessions", 2),
         ("second", "operation_counters", {"model_calls": 382}),
         ("database", "lease_expired", False),
@@ -2175,17 +2176,19 @@ def test_expired_database_lease_proves_stable_draining_turns_are_orphaned():
         ("database", "instance_id", "00000000-0000-0000-0000-000000000002"),
     ),
 )
+@pytest.mark.parametrize("state", ("draining", "ready"))
 def test_orphaned_draining_turn_proof_rejects_live_or_changing_work(
     target: str,
     field: str,
     unsafe_value: object,
+    state: str,
 ):
     endpoint = {
         "protocol": "external-pi-v1",
         "worker_id": "production-blue-00",
         "instance_id": "00000000-0000-0000-0000-000000000001",
         "release_id": "old-release",
-        "state": "draining",
+        "state": state,
         "active_sessions": 3,
         "maximum_sessions": 4,
         "worker_generation": 7,
@@ -2206,7 +2209,7 @@ def test_orphaned_draining_turn_proof_rejects_live_or_changing_work(
         "release_id": "old-release",
         "contract_version": "external-pi-v1",
         "generation": 7,
-        "state": "draining",
+        "state": state,
         "maximum_sessions": 4,
         "active_sessions": 3,
         "lease_expired": True,
@@ -2224,9 +2227,11 @@ def test_orphaned_draining_turn_proof_rejects_live_or_changing_work(
 
 
 @pytest.mark.parametrize("backend_inactive", (True, False))
+@pytest.mark.parametrize("state", ("draining", "ready"))
 def test_only_an_inactive_backend_allows_orphaned_draining_turns_to_stop(
     monkeypatch: pytest.MonkeyPatch,
     backend_inactive: bool,
+    state: str,
 ):
     worker_active = True
 
@@ -2253,7 +2258,7 @@ def test_only_an_inactive_backend_allows_orphaned_draining_turns_to_stop(
             "worker_id": spec.worker_id,
             "instance_id": f"00000000-0000-0000-0000-{index:012d}",
             "release_id": "old-release",
-            "state": "draining",
+            "state": state,
             "active_sessions": 3 if index == 0 else 0,
             "maximum_sessions": 4,
             "worker_generation": 7,
@@ -2275,7 +2280,7 @@ def test_only_an_inactive_backend_allows_orphaned_draining_turns_to_stop(
             "release_id": "old-release",
             "contract_version": "external-pi-v1",
             "generation": 7,
-            "state": "draining",
+            "state": state,
             "maximum_sessions": 4,
             "active_sessions": statuses[spec.worker_id]["active_sessions"],
             "lease_expired": True,

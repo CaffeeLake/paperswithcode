@@ -988,11 +988,17 @@ def _recover_interrupted_activation(environment: str) -> None:
             for release in (pointers.current, pointers.previous)
             if release is not None
         )
+        _unix_json(
+            environment, candidate_slot, "/internal/drain", method="POST", check=False
+        )
+        if not _stop_drained_slot(environment, candidate_slot):
+            raise DeployError("abandoned candidate backend has not finished draining")
         stop_slot_if_enabled(
             environment,
             candidate_slot,
             candidate_manifest["release_id"],
             validated_orphan_release_ids=validated_orphan_release_ids,
+            allow_orphaned_turn_reap=True,
         )
         _write_journal(
             environment,

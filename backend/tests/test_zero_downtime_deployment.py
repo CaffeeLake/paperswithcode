@@ -1759,6 +1759,58 @@ def test_interrupted_cutover_recovers_from_every_mutation_boundary(
     ]
 
 
+@pytest.mark.parametrize("backend_stopped", (True, False))
+def test_interrupted_candidate_recovery_stops_backend_before_orphan_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_stopped: bool
+):
+    root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_cli, "RELEASES", tmp_path)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_journal",
+        lambda _: {
+            "phase": "candidate-preparing",
+            "candidate_slot": "green",
+            "candidate_release": candidate.name,
+        },
+    )
+    events = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda environment, slot, path, **kw: events.append(
+            (slot, path, kw.get("method"))
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "_stop_drained_slot",
+        lambda environment, slot: events.append((slot, "backend-stop"))
+        or backend_stopped,
+    )
+
+    def stop(environment, slot, release_id, **kwargs):
+        assert kwargs["allow_orphaned_turn_reap"] is True
+        assert kwargs["validated_orphan_release_ids"] == frozenset(
+            {old.name, older.name}
+        )
+        events.append((slot, "worker-stop"))
+
+    monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", stop)
+
+    if backend_stopped:
+        deploy_cli._recover_interrupted_activation("staging")
+    else:
+        with pytest.raises(deploy_cli.DeployError, match="candidate backend.*drain"):
+            deploy_cli._recover_interrupted_activation("staging")
+    assert events == [
+        ("green", "/internal/drain", "POST"),
+        ("green", "backend-stop"),
+    ] + ([("green", "worker-stop")] if backend_stopped else [])
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+
+
 def test_interrupted_candidate_recovery_does_not_abandon_unproven_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1846,7 +1898,9 @@ def test_interrupted_candidate_recovery_trusts_only_validated_release_pointers(
         release_id: str,
         *,
         validated_orphan_release_ids: frozenset[str],
+        allow_orphaned_turn_reap: bool,
     ) -> None:
+        assert allow_orphaned_turn_reap
         calls.append((environment, slot, release_id, validated_orphan_release_ids))
 
     monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", stop)
@@ -1891,7 +1945,9 @@ def test_interrupted_candidate_recovery_trusts_validated_pointers_in_production(
         release_id: str,
         *,
         validated_orphan_release_ids: frozenset[str],
+        allow_orphaned_turn_reap: bool,
     ) -> None:
+        assert allow_orphaned_turn_reap
         calls.append((environment, slot, release_id, validated_orphan_release_ids))
 
     monkeypatch.setattr(deploy_cli, "stop_slot_if_enabled", stop)

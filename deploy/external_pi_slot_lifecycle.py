@@ -688,7 +688,7 @@ def _orphaned_draining_turns_are_proven(
     endpoint_identity_matches = (
         first_status.get("protocol") == CONTRACT_VERSION
         and release_id in trusted_release_ids
-        and first_status.get("state") == "draining"
+        and first_status.get("state") in {"draining", "ready"}
         and type(generation) is int
         and generation > 0
         and isinstance(instance_id, str)
@@ -714,7 +714,7 @@ def _orphaned_draining_turns_are_proven(
         and database_status.get("active_sessions") == active_sessions
     )
     database_owner_is_expired = (
-        database_status.get("state") == "draining"
+        database_status.get("state") == first_status.get("state")
         and database_status.get("lease_expired") is True
         and database_status.get("reservation_free") is True
     )
@@ -980,7 +980,7 @@ def _stop_proven_orphaned_worker_if_active(
             allow_orphaned_turn_reap
             and _backend_slot_is_inactive(environment, slot)
             and isinstance(status, dict)
-            and status.get("state") == "draining"
+            and status.get("state") in {"draining", "ready"}
             and type(status.get("active_sessions")) is int
             and status["active_sessions"] > 0
         ):
