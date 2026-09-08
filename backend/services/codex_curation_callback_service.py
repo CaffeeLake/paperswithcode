@@ -1228,6 +1228,7 @@ class CodexCurationCallbackService:
                     raise ValueError(
                         "Scheduled enrichment cannot remove an existing repository"
                     )
+            removed_pages: set[str] = set()
             if mutation.project_pages is not None:
                 current_pages = {
                     page.url: getattr(page, "source", "unknown")

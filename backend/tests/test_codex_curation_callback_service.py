@@ -665,6 +665,30 @@ def test_callback_apply_failures_do_not_pause_scheduled_dispatch(error):
     assert _requires_scheduled_dispatch_pause(error) is False
 
 
+def test_scheduled_enrichment_can_leave_project_pages_unchanged():
+    class Database:
+        def get(self, _model, _key):
+            return SimpleNamespace(id=42)
+
+        def query(self, _model):
+            return _ListQuery([])
+
+    result = _service(Database(), SimpleNamespace())._validate_scheduled_policy(
+        SimpleNamespace(
+            kind="enrich-paper",
+            paper_id=42,
+            trigger="hf-daily-cron",
+            trace_status="disabled",
+            url_candidates={"complete": True},
+        ),
+        ApplyMutationRequest(
+            enrich=EnrichPaperMutation(task_ids=[], method_ids=[], urls_extracted=True)
+        ),
+    )
+
+    assert result["removed_hf_api_project_pages"] == []
+
+
 def test_scheduled_enrichment_allows_evidenced_hf_project_page_removal():
     from backend.models.database import Paper
 
