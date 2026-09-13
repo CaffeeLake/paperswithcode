@@ -17,6 +17,7 @@ from backend.models.api import (
 from backend.services.codex_curation_callback_service import (
     CodexCurationCallbackService,
     CodexCurationEvaluationPaperMismatchError,
+    CodexCurationEvaluationsNotAllowedError,
     CodexCurationMutationClosedError,
     CodexCurationPaperNotFoundError,
     _requires_scheduled_dispatch_pause,
@@ -493,7 +494,12 @@ def test_late_evaluation_failure_rolls_back_the_whole_apply():
     assert row.applied_at is None
 
 
-def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
+@pytest.mark.parametrize(
+    "error_type", [ValueError, CodexCurationEvaluationsNotAllowedError]
+)
+def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply(
+    error_type,
+):
     row = SimpleNamespace(
         id=42,
         kind="add-evals",
@@ -511,7 +517,7 @@ def test_scheduled_validation_failure_keeps_job_open_for_one_corrected_apply():
     database = Database()
     service = _service(database, SimpleNamespace())
     service._validate_scheduled_policy = lambda *_args: (_ for _ in ()).throw(
-        ValueError("Evaluation metric value 91.9 is outside configured scale 0-1")
+        error_type("Evaluation metric value 91.9 is outside configured scale 0-1")
     )
 
     with pytest.raises(ValueError, match="outside configured scale"):

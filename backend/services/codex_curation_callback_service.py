@@ -110,7 +110,13 @@ def _retryable_scheduled_validation(row, exc: Exception) -> bool:
     return bool(
         getattr(row, "trigger", "admin") != "admin"
         and not prior_rejection
-        and (type(exc) is ValueError or isinstance(exc, CatalogValidationError))
+        and (
+            type(exc) is ValueError
+            or isinstance(
+                exc,
+                (CatalogValidationError, CodexCurationEvaluationsNotAllowedError),
+            )
+        )
     )
 
 

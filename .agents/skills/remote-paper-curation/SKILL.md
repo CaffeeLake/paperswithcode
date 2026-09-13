@@ -12,6 +12,13 @@ or edit repository files. Fetch the job-scoped paper context with:
 python jobs/curation_api.py context
 ```
 
+Choose the workflow from the context's job kind. For `enrich-paper`, submit
+only the `enrich` payload; keep `evaluations`, `evaluation_removals`,
+`validation_evidence`, and `benchmark_gaps` as empty arrays. Benchmark discovery
+and score/gap submission below belong to `add-evals`, even if the enrichment
+paper contains evaluation tables. The scheduled workflow runs that stage
+separately. Follow the enrichment instructions below for links and taxonomy.
+
 Search existing task/method taxonomy with:
 
 ```bash
@@ -80,7 +87,7 @@ eligible result from a model introduced by the paper, exactly as required by
 gamma sweeps, or other ablation rows. Apply the same best-eligible-only rule to
 `blocked_evaluations` inside benchmark gaps.
 
-For every paper-native result blocked by missing catalog configuration, include
+For `add-evals`, when a paper-native result is blocked by missing catalog configuration, include
 one structured `benchmark_gaps` entry conforming to
 `jobs/schemas/curation_proposal.schema.json`. Group all introduced-model results
 blocked by the same configuration in one entry, include primary-paper evidence
