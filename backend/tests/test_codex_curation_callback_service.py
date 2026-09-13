@@ -1157,3 +1157,33 @@ def test_scheduled_enrichment_only_allows_existing_http_project_pages(url, accep
     else:
         with pytest.raises(ValueError, match="Project page links must use HTTPS"):
             service._validate_scheduled_policy(row, body)
+
+
+def test_retry_feedback_is_scoped_and_exposes_only_rejection_details():
+    previous = SimpleNamespace(
+        id="old",
+        kind="add-evals",
+        paper_id=42,
+        candidate_id=None,
+        error="Rejected",
+        validation_summary={
+            "error": "exact field diff required",
+            "before_state": {"private": "omit"},
+        },
+        proposal={"untrusted": "omit"},
+    )
+    db = SimpleNamespace(get=lambda *_: previous)
+    service = CodexCurationCallbackService(
+        db,
+        job_service=SimpleNamespace(),
+        evaluation_service=SimpleNamespace(),
+        association_service=SimpleNamespace(),
+    )
+    row = SimpleNamespace(retry_of_id="old", kind="add-evals", paper_id=42)
+    result = service._retry_feedback(row)
+    assert result["validation_error"] == "exact field diff required"
+    assert "proposal" not in result
+    assert "before_state" not in result
+    row.paper_id = 43
+    assert service._retry_feedback(row) is None
+    assert service._retry_feedback(SimpleNamespace()) is None

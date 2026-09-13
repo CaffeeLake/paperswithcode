@@ -12,6 +12,9 @@ or edit repository files. Fetch the job-scoped paper context with:
 python jobs/curation_api.py context
 ```
 
+If context includes `retry_feedback`, address its exact rejection before apply.
+Re-read current rows and sources; a prior proposal is not evidence.
+
 Choose the workflow from the context's job kind. For `enrich-paper`, submit
 only the `enrich` payload; keep `evaluations`, `evaluation_removals`,
 `validation_evidence`, and `benchmark_gaps` as empty arrays. Benchmark discovery
@@ -54,11 +57,17 @@ Never invent IDs, create benchmark metadata, or import comparator rows. Submit
 an empty evaluation list only after running the `leaderboards` command for every
 benchmark found across the required sources and checking eligible results against
 configured leaderboards and existing rows. Already-satisfied results are omitted.
+Never submit `best_rank`: the server derives ranks from the complete leaderboard.
+Do not rewrite existing rows just to rephrase methodology or source URLs; omit
+already-correct rows. If an actual factual correction is needed, supply the exact
+field diff and primary evidence required by the schema.
 The helper will report `no_changes` when nothing needs writing; do not describe
 that outcome as an applied mutation.
 
-For `hf-trending-cron`, eligibility is restricted to the exact release in
-`context.source_candidate.model_release`, including its canonical name and aliases.
+Whenever `context.source_candidate.model_release` is present, eligibility is
+restricted to that exact release, including its canonical name and aliases. This
+also applies to retries labeled `hf-daily-cron`; the supplied release determines
+scope, not the trigger label.
 An older paper may document the family without reporting results for this release.
 Never relabel older or sibling model results as the triggering release, including
 after a model-ownership validation error. If the exact release has no eligible
