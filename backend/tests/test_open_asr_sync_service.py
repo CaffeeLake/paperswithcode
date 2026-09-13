@@ -22,7 +22,6 @@ from backend.models.database import (
     TaskDatasetMetric,
 )
 from backend.services.open_asr_sync_service import (
-    DEFAULT_COLUMNS,
     LEGACY_SOURCE_URL,
     MANAGED_METHODOLOGY_PREFIX,
     SPACE_APP_URL,
@@ -132,7 +131,22 @@ def test_parse_and_fetch_public_leaderboard_contract():
 
         def predict(self, query, proprietary, llm, columns, *, api_name):
             assert (query, proprietary, llm) == ("", True, False)
-            assert columns == DEFAULT_COLUMNS
+            # The current English default averages all ten datasets. Keeping
+            # the old Earnings22 name fails; omitting Monsoon changes scores.
+            assert columns == [
+                "RTFx ⬆️️",
+                "License",
+                "AMI-Cleaned",
+                "Earnings22-Cleaned-AA-chunked",
+                "Gigaspeech-Cleaned",
+                "LS Clean",
+                "LS Other",
+                "SPGISpeech",
+                "Voice Arena Monsoon",
+                "Voxpopuli-AA-Cleaned",
+                "Private (scripted)",
+                "Private (conversational)",
+            ]
             assert api_name == "/_main_table_update"
             return {
                 "datatype": ["str", "str", "markdown", "number", "number"],

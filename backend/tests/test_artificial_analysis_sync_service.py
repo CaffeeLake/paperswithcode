@@ -89,7 +89,10 @@ def test_fetches_every_api_page_and_validates_reviewed_models(monkeypatch):
         {
             "intelligence_index_version": "4.1",
             "pagination": {"has_more": False, "total_pages": 2},
-            "data": [_api_row("other-model", intelligence=12.3, agentic=None)],
+            "data": [
+                _api_row("reviewed-model"),
+                _api_row("other-model", intelligence=12.3, agentic=None),
+            ],
         },
     ]
 
@@ -111,6 +114,31 @@ def test_fetches_every_api_page_and_validates_reviewed_models(monkeypatch):
     ]
     assert leaderboard.entries[0].scores == {"intelligence": 42.5, "agentic": 41.0}
     assert leaderboard.entries[1].scores == {"intelligence": 12.3}
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"name": "Different model"},
+        {"release_date": "2026-08-02"},
+        {"evaluations": {"artificial_analysis_intelligence_index": 1.0}},
+    ],
+)
+def test_rejects_conflicting_duplicate_models(changed):
+    first = _api_row("duplicate-model")
+
+    class Client:
+        def get(self, *args, **kwargs):
+            return _Response(
+                {
+                    "intelligence_index_version": "4.1",
+                    "pagination": {"has_more": False, "total_pages": 1},
+                    "data": [first, {**first, **changed}],
+                }
+            )
+
+    with pytest.raises(ValueError, match="conflicting model slug: duplicate-model"):
+        aa.fetch_artificial_analysis_leaderboard(api_key="secret", client=Client())
 
 
 def _session() -> Session:

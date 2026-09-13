@@ -402,9 +402,16 @@ def fetch_artificial_analysis_leaderboard(
         if owned_client:
             active_client.close()
 
-    slugs = [entry.slug for entry in all_entries]
-    if len(slugs) != len(set(slugs)):
-        raise ValueError("Artificial Analysis response contains duplicate model slugs")
+    unique_entries: dict[str, ArtificialAnalysisEntry] = {}
+    for entry in all_entries:
+        previous = unique_entries.get(entry.slug)
+        if previous is not None and previous != entry:
+            raise ValueError(
+                f"Artificial Analysis response contains conflicting model slug: {entry.slug}"
+            )
+        unique_entries[entry.slug] = entry
+    all_entries = list(unique_entries.values())
+    slugs = list(unique_entries)
     missing = sorted(set(MODEL_PAPER_IDENTITIES) - set(slugs))
     if missing:
         raise ValueError(
