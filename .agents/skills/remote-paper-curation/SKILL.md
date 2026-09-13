@@ -98,7 +98,10 @@ observations never create tasks, datasets, metrics, or leaderboards.
 Within each gap, every `blocked_evaluations.metrics` key and `best_metric` must
 exactly match a name in that gap's `protocol.metrics`. Represent ID/OOD or other
 evaluation splits in `split`; do not append split suffixes to metric names unless
-those exact names are defined by the protocol. Check this consistency before apply.
+those exact names are defined by the protocol. Every protocol metric requires a
+nonempty `definition` explaining what it measures, grounded in the source. Copy
+the manifest source kind into each gap's evidence too. Check these fields before
+apply; schema-shaped objects with empty definitions are rejected.
 
 For `enrich-paper`, preserve the existing task/method/link lists from context,
 append only high-confidence additions, and submit an `enrich` payload with the
