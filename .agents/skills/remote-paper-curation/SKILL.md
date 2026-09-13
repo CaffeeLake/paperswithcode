@@ -96,6 +96,15 @@ eligible result from a model introduced by the paper, exactly as required by
 gamma sweeps, or other ablation rows. Apply the same best-eligible-only rule to
 `blocked_evaluations` inside benchmark gaps.
 
+Compare each proposed score with the paper's existing row on that leaderboard,
+including other sizes of the same family. If the existing result is equal or
+better under the configured metric direction and scale, omit the new variant and
+report `already_present`. If the new result is better, provide primary evidence
+and the existing row's full before-state in `evaluation_removals` to consolidate
+onto the new best result. Explain the best-result replacement; do not call an
+accurately reported older score factually wrong. Never insert a second variant
+and expect the server to silently remove the first.
+
 For `add-evals`, when a paper-native result is blocked by missing catalog configuration, include
 one structured `benchmark_gaps` entry conforming to
 `jobs/schemas/curation_proposal.schema.json`. Group all introduced-model results

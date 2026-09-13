@@ -1683,7 +1683,8 @@ def test_resolution_scope_excludes_publisher_only_sibling():
     assert [paper["id"] for paper in context["paper_candidates"]] == [exact.id]
 
 
-def test_trending_eval_ownership_rejects_sibling_model_name():
+@pytest.mark.parametrize("trigger", ["hf-trending-cron", "hf-daily-cron"])
+def test_trending_eval_ownership_rejects_sibling_model_name(trigger):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -1742,7 +1743,7 @@ def test_trending_eval_ownership_rejects_sibling_model_name():
     row = SimpleNamespace(
         paper_id=paper.id,
         parent_workflow_id=workflow.id,
-        trigger="hf-trending-cron",
+        trigger=trigger,
     )
     service = CodexCurationCallbackService(db)
 

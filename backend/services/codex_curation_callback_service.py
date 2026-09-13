@@ -993,7 +993,12 @@ class CodexCurationCallbackService:
             ]
             if len(leaderboard_rows) > 1:
                 raise ValueError(
-                    "Scheduled curation must keep one paper-native result per leaderboard"
+                    "Scheduled curation must keep one paper-native result per leaderboard; "
+                    f"paper {row.paper_id}, task {task_id}, dataset {dataset_id}, "
+                    f"metric {best_metric!r} already contains "
+                    f"{[(item.id, item.model_name) for item in leaderboard_rows]}. "
+                    "Omit a weaker/equal variant; replacing the current best requires "
+                    "evidence-backed removal of the superseded row."
                 )
 
     def _validate_mutation(self, row, body: ApplyMutationRequest) -> None:
@@ -1065,14 +1070,15 @@ class CodexCurationCallbackService:
         self, row, body: ApplyMutationRequest
     ) -> None:
         """Keep one trending release's model lanes on its canonical paper."""
-        if (
-            getattr(row, "trigger", None) != "hf-trending-cron"
-            or getattr(row, "parent_workflow_id", None) is None
-        ):
+        if getattr(row, "parent_workflow_id", None) is None:
             return
         workflow = self.db.get(PaperCurationWorkflow, row.parent_workflow_id)
         if workflow is None or workflow.source_candidate_id is None:
-            raise ValueError("Trending evaluation job has no source model candidate")
+            if getattr(row, "trigger", None) == "hf-trending-cron":
+                raise ValueError(
+                    "Trending evaluation job has no source model candidate"
+                )
+            return
         candidate = self.db.get(TrendingModelCandidate, workflow.source_candidate_id)
         if candidate is None or candidate.model_release_id is None:
             raise ValueError("Trending evaluation job has no resolved model release")
