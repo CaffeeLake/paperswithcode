@@ -243,8 +243,10 @@ def test_preflight_uses_discovered_project_candidate_for_conditional_html(
     )
 
 
+@pytest.mark.parametrize("image_caption", [False, True])
 def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
     monkeypatch,
+    image_caption,
 ):
     monkeypatch.setenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV, "hf-test")
     monkeypatch.setattr(
@@ -259,6 +261,11 @@ def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
         if "/api/papers/" in url:
             return b"{}", url
         if url.endswith(".md"):
+            if image_caption:
+                return (
+                    b"Title: https://arxiv.org/html/2608.00042/figure.svg\n\nMarkdown Content:\nA bar chart.",
+                    url,
+                )
             raise urllib.error.HTTPError(url, 404, "not found", {}, None)
         raise AssertionError("OCR Markdown must avoid the PDF fallback")
 
@@ -316,6 +323,30 @@ def test_preflight_accepts_ocr_markdown_when_hf_papers_api_has_no_record(
     assert result["awaiting_markdown"] is False
     assert result["markdown_available"] is True
     assert result["errors"] == [{"source": "hf_api", "error": "HTTPError"}]
+
+
+@pytest.mark.parametrize("project_status", [404, 410, 503])
+def test_preflight_dead_project_page_keeps_paper_evidence(monkeypatch, project_status):
+    monkeypatch.setattr(
+        url_preflight.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _HeadResponse(),
+    )
+
+    def fetch(url: str, _limit: int):
+        if "/api/papers/" in url:
+            return json.dumps(
+                {"projectPage": "https://example.github.io/missing"}
+            ).encode(), url
+        if url.endswith(".md"):
+            return b"# Complete paper\n", url
+        raise urllib.error.HTTPError(url, project_status, "unavailable", {}, None)
+
+    context = _context(project_page=False)
+    context["paper"]["repositories"] = []
+    result = url_preflight.extract_candidates(context, fetch=fetch)
+    assert result["complete"] is (project_status in {404, 410})
+    assert result["errors"][0]["http_status"] == project_status
 
 
 def test_preflight_does_not_fetch_pdf_when_hf_markdown_is_available(monkeypatch):
@@ -518,11 +549,11 @@ def test_trace_json_keeps_gap_reasoning_first_with_deterministic_nested_keys():
 
 
 def test_hourly_reconciliation_requeues_markdown_ready_papers():
-    workflow = Path(
-        ".github/workflows/cron-enqueue-hf-daily-paper-curation.yml"
+    timer = Path(
+        "deploy/systemd/cron/pwc-cron-enqueue-hf-daily-paper-curation.timer"
     ).read_text()
-    assert 'cron: "27 * * * *"' in workflow
-    assert 'cron: "20 2 * * *"' not in workflow
+    assert "OnCalendar=*-*-* *:27:00" in timer
+    assert "Persistent=true" in timer
 
 
 def test_canary_gate_excludes_durable_deferred_overflow():

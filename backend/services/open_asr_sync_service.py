@@ -11,7 +11,7 @@ from typing import Any
 
 from gradio_client import Client
 from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.errors import HFValidationError, HfHubHTTPError
 from sqlalchemy.orm import Session
 
 from backend.config import get_settings
@@ -374,6 +374,11 @@ class OpenAsrPaperDiscoveryService:
                     timeout=10,
                     expand=["safetensors", "tags"],
                 )
+            except HFValidationError:
+                # Proprietary display names (for example a preview linked to
+                # a documentation Space) are not necessarily Hub model IDs.
+                result.unavailable_models.append(model_id)
+                continue
             except HfHubHTTPError as exc:
                 if reviewed_arxiv_id is None:
                     result.unavailable_models.append(model_id)

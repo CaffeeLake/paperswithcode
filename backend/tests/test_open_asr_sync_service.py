@@ -188,6 +188,9 @@ def test_discovery_indexes_only_single_tag_with_exact_ownership():
 
     class FakeHfApi:
         def model_info(self, model_id, **_kwargs):
+            from huggingface_hub.utils import validate_repo_id
+
+            validate_repo_id(model_id)
             return SimpleNamespace(
                 id=model_id,
                 tags=["arxiv:2605.28139"],
@@ -222,6 +225,7 @@ def test_discovery_indexes_only_single_tag_with_exact_ownership():
             ingestion_service=FakeIngestionService(),
         ).discover(
             [
+                "sophea/asr-k1 (preview)",
                 "org/ARK-ASR-3B",
                 "org/Audio8-ASR-0.1B",
                 # Keep the accepted paper last: SQLite cannot serialize the
@@ -237,6 +241,7 @@ def test_discovery_indexes_only_single_tag_with_exact_ownership():
     assert discovered.hf_model_url == "https://huggingface.co/org/ARK-ASR-0.6B"
     assert discovered.num_parameters == 1_299_463_168
     assert result.indexed_papers == ["2605.28139"]
+    assert result.unavailable_models == ["sophea/asr-k1 (preview)"]
     assert result.rejected_papers == [
         "org/ARK-ASR-3B:2605.28139",
         "org/Audio8-ASR-0.1B:2605.28139",
