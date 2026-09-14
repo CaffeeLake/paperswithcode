@@ -261,7 +261,7 @@ class ChatExternalExecutorWorkspaceManager:
             session_id=session_id,
             turn_claim=turn_claim,
             verify_executor_health=True,
-            launch_mode=SandboxLaunchMode.LEGACY,
+            launch_mode=SandboxLaunchMode.LEGACY_EXECUTOR,
         )
 
     async def _acquire(

@@ -54,6 +54,7 @@ _FAILURE_CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 class SandboxLaunchMode(StrEnum):
     LEGACY = "legacy"
     EXECUTOR = "executor"
+    LEGACY_EXECUTOR = "legacy_executor"
 
 
 EXECUTOR_RENDEZVOUS_URLS = {
@@ -282,7 +283,11 @@ class ModalSandboxProviderAdapter:
             raise SandboxError(
                 "sandbox_launch_mode_invalid", "Sandbox launch mode is invalid"
             )
-        executor_enabled = launch_mode is SandboxLaunchMode.EXECUTOR
+        remote_executor = launch_mode is SandboxLaunchMode.EXECUTOR
+        executor_enabled = launch_mode in {
+            SandboxLaunchMode.EXECUTOR,
+            SandboxLaunchMode.LEGACY_EXECUTOR,
+        }
         if executor_enabled and not self.settings.chat_sandbox_executor_enabled:
             raise SandboxError(
                 "sandbox_executor_disabled", "Sandbox executor launch is disabled"
@@ -296,14 +301,14 @@ class ModalSandboxProviderAdapter:
                 "sandbox_executor_contract_invalid",
                 "Sandbox executor contract is invalid",
             )
-        if executor_enabled and executor_launch is None:
+        if remote_executor and executor_launch is None:
             raise SandboxError(
                 "sandbox_executor_admission_missing",
                 "Sandbox executor admission is unavailable",
             )
         rendezvous_url = (
             executor_launch.rendezvous_url(self.settings.environment)
-            if executor_enabled and executor_launch is not None
+            if remote_executor and executor_launch is not None
             else None
         )
         try:
@@ -343,6 +348,8 @@ class ModalSandboxProviderAdapter:
                 "--authorization-env",
                 "PWC_CHAT_EXECUTOR_AUTHORIZATION_KEYS",
             )
+            if remote_executor
+            else ("python", "-m", "backend.chat_sandbox_worker.executor_daemon")
             if executor_enabled
             else (
                 ("python", "-m", "backend.chat_sandbox_worker.control_daemon")
@@ -379,6 +386,12 @@ class ModalSandboxProviderAdapter:
                         "PWC_CHAT_EXECUTOR_CONTRACT_VERSION": (
                             self.settings.chat_sandbox_executor_contract_version
                         ),
+                    }
+                    if executor_enabled
+                    else {}
+                ),
+                **(
+                    {
                         "PWC_CHAT_EXECUTOR_ADMISSION": (
                             executor_launch.encoded_admission()
                         ),
@@ -386,7 +399,7 @@ class ModalSandboxProviderAdapter:
                             executor_launch.authorization_keys()
                         ),
                     }
-                    if executor_enabled
+                    if remote_executor
                     else {}
                 ),
             },
@@ -410,9 +423,9 @@ class ModalSandboxProviderAdapter:
                 *outbound_domains,
                 *(
                     ["chat-executor.paperswithcode.co"]
-                    if executor_enabled and self.settings.environment == "production"
+                    if remote_executor and self.settings.environment == "production"
                     else ["chat-executor.staging.paperswithcode.co"]
-                    if executor_enabled
+                    if remote_executor
                     else []
                 ),
             ],
@@ -444,12 +457,12 @@ class ModalSandboxProviderAdapter:
                 )
             ),
         )
-        if executor_enabled:
+        if remote_executor:
             # Only authenticated durable registration establishes executor
             # readiness. Modal exec probes are intentionally not part of the
             # warm path and cannot establish remote identity.
             return sandbox
-        if not persistent_enabled:
+        if not persistent_enabled and not executor_enabled:
             return sandbox
         deadline = time.monotonic() + self.settings.chat_worker_ready_timeout_seconds
         while time.monotonic() < deadline:
@@ -458,6 +471,7 @@ class ModalSandboxProviderAdapter:
                     sandbox,
                     persistent=True,
                     worker_generation=worker_generation,
+                    launch_mode=launch_mode,
                 ):
                     return sandbox
             except Exception:
@@ -486,7 +500,10 @@ class ModalSandboxProviderAdapter:
         worker_generation: str | None,
         launch_mode: SandboxLaunchMode = SandboxLaunchMode.LEGACY,
     ) -> bool:
-        if launch_mode is SandboxLaunchMode.EXECUTOR:
+        if launch_mode in {
+            SandboxLaunchMode.EXECUTOR,
+            SandboxLaunchMode.LEGACY_EXECUTOR,
+        }:
             command = ("test", "-S", str(EXECUTOR_SOCKET))
         elif persistent:
             if not worker_generation:
