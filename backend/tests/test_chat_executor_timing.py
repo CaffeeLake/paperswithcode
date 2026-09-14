@@ -11,7 +11,7 @@ def test_stage_records_elapsed_time_and_outcome_without_exception_content(
 ):
     times = iter([10.0, 10.125])
     monkeypatch.setattr(chat_executor_timing.time, "monotonic", lambda: next(times))
-    caplog.set_level(logging.INFO, logger=chat_executor_timing.__name__)
+    caplog.set_level(logging.INFO, logger=chat_executor_timing.logger.name)
     error = RuntimeError("private command and credential")
     if failed:
         with pytest.raises(RuntimeError) as caught:
@@ -25,3 +25,32 @@ def test_stage_records_elapsed_time_and_outcome_without_exception_content(
     assert f"duration_ms=125 success={not failed}" in caplog.text
     assert "identity=generation-1" in caplog.text
     assert "private" not in caplog.text
+
+
+def test_stage_is_visible_with_deployed_uvicorn_logging():
+    import subprocess
+    import sys
+    import textwrap
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+            import logging.config
+            from uvicorn.config import LOGGING_CONFIG
+            from backend.services.chat_executor_timing import executor_stage
+            logging.config.dictConfig(LOGGING_CONFIG)
+            with executor_stage("registration", "generation-test"):
+                pass
+        """),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert (
+        "chat executor timing stage=registration identity=generation-test"
+        in result.stderr
+    )
+    assert "success=True" in result.stderr
