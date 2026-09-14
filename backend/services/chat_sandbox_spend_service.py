@@ -881,6 +881,9 @@ class ChatSandboxSpendService:
             row.modal_sandbox_id = sandbox_id
             row.provider_created_at = now
             row.updated_at = now
+            # Production sessions disable autoflush; subsequent claim/terminate
+            # lookups must see this provider identity in the same transaction.
+            self.db.flush()
 
     def abort_reservation(
         self, interval_id: uuid.UUID, reason: str, now: datetime | None = None

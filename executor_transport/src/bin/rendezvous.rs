@@ -266,11 +266,20 @@ async fn dispatch(
     allowed_backend_uid: u32,
     allowed_harness_uid: u32,
 ) -> Result<(), ConnectionError> {
-    let mut prefix = [0_u8; 4];
-    timeout(Duration::from_millis(PREAUTH_DEADLINE_MS), async {
-        let result: Result<(), std::io::Error> = loop {
+    let prefix = peek_protocol_prefix(&stream).await?;
+    if &prefix == b"GET " {
+        handle_environment(stream, state).await
+    } else {
+        handle_local(stream, state, allowed_backend_uid, allowed_harness_uid).await
+    }
+}
+
+async fn peek_protocol_prefix(stream: &UnixStream) -> Result<[u8; 4], ConnectionError> {
+    Ok(timeout(Duration::from_millis(PREAUTH_DEADLINE_MS), async {
+        let mut prefix = [0_u8; 4];
+        loop {
             stream.readable().await?;
-            match stream.try_io(tokio::io::Interest::READABLE, || {
+            let result = stream.try_io(tokio::io::Interest::READABLE, || {
                 let read = unsafe {
                     libc::recv(
                         stream.as_raw_fd(),
@@ -281,24 +290,26 @@ async fn dispatch(
                 };
                 if read < 0 {
                     Err(std::io::Error::last_os_error())
+                } else if read == 0 {
+                    Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
                 } else if read < prefix.len() as isize {
                     Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
                 } else {
                     Ok(())
                 }
-            }) {
-                Ok(result) => break Ok(result),
-                Err(_) => continue,
+            });
+            match result {
+                Ok(()) => return Ok::<_, std::io::Error>(prefix),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Peeking leaves partial bytes readable. Yield so a partial
+                    // or abandoned prefix cannot starve the server or deadline.
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Err(error) => return Err(error),
             }
-        };
-        result
+        }
     })
-    .await??;
-    if &prefix == b"GET " {
-        handle_environment(stream, state).await
-    } else {
-        handle_local(stream, state, allowed_backend_uid, allowed_harness_uid).await
-    }
+    .await??)
 }
 
 async fn handle_local(
@@ -967,5 +978,45 @@ fn validate_upgrade(
         Ok(response)
     } else {
         Err(http_error())
+    }
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn closed_connection_returns_eof() {
+        let (reader, writer) = UnixStream::pair().unwrap();
+        drop(writer);
+        let error = peek_protocol_prefix(&reader).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fragmented_prefix_yields_and_preserves_bytes() {
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"GE").await.unwrap();
+        let writer_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            writer.write_all(b"T ").await.unwrap();
+        });
+        assert_eq!(peek_protocol_prefix(&reader).await.unwrap(), *b"GET ");
+        let mut bytes = [0; 4];
+        reader.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(bytes, *b"GET ");
+        writer_task.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abandoned_partial_prefix_is_bounded() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"G").await.unwrap();
+        drop(writer);
+        assert!(peek_protocol_prefix(&reader).await.is_err());
     }
 }

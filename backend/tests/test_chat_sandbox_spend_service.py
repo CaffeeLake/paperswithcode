@@ -1148,3 +1148,23 @@ def test_billing_cycle_is_utc_and_rejects_naive_time():
 
 def test_legacy_spend_schema_import_reexports_canonical_chat_contract():
     assert ChatSandboxSpendResponse is CanonicalSpendResponse
+
+
+def test_provider_identity_is_visible_to_cleanup_without_autoflush():
+    sessions = factory()
+    sessions.configure(autoflush=False)
+    now = datetime.now(UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        interval_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="failed-start", now=now
+        )
+        service.provider_created(interval_id, "sb-failed-start", now)
+        service.terminate(
+            "sb-failed-start", "sandbox_start_failed", confirmed=True, now=now
+        )
+    with sessions() as db:
+        rows = list(db.scalars(select(ChatSandboxComputeInterval)))
+        assert len(rows) == 1
+        assert rows[0].id == interval_id
+        assert rows[0].terminal_at is not None
