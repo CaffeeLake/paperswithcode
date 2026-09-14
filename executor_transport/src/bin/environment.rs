@@ -414,7 +414,7 @@ async fn open_websocket(
 > {
     let (socket, _) = timeout(
         deadline,
-        connect_async_with_config(url, Some(websocket_config()), false),
+        connect_async_with_config(url, Some(websocket_config()), true),
     )
     .await
     .map_err(|_| "rendezvous connection timed out")??;
@@ -1019,6 +1019,23 @@ fn verification_key(
 mod tests {
     use super::*;
     use pwc_persistent_executor_transport::protocol::{AuthorizationClaims, AuthorizationSigner};
+
+    #[tokio::test]
+    async fn control_connection_disables_nagle_buffering() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let client = open_websocket(&url, Duration::from_secs(1)).await.unwrap();
+        let tokio_tungstenite::MaybeTlsStream::Plain(tcp) = client.get_ref() else {
+            panic!("test connection must use plain TCP");
+        };
+        assert!(tcp.nodelay().unwrap());
+        drop(client);
+        drop(server.await.unwrap());
+    }
 
     #[tokio::test]
     async fn registration_readiness_waits_for_the_local_daemon_listener() {
