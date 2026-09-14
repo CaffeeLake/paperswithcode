@@ -34,6 +34,13 @@ export function ChatConversation({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTopBeforeToggleRef = useRef<number | null>(null);
   const editScrollAnchorRef = useRef<string | null>(null);
+  const followingBottomRef = useRef(true);
+  const previousUserCountRef = useRef(0);
+  const previousBusyRef = useRef(false);
+  const userMessages = messages.filter((message) => message.role === "user");
+  const userCount = userMessages.length;
+  const firstUserId = userMessages[0]?.id;
+  const latestUserId = userMessages.at(-1)?.id;
 
   useEffect(() => {
     if (busy) setEditingMessageId(null);
@@ -43,6 +50,12 @@ export function ChatConversation({
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;
     if (!scrollElement) return;
+    // Canonical reloads replace optimistic IDs without adding a new question.
+    if (userCount > previousUserCountRef.current || (busy && !previousBusyRef.current)) {
+      followingBottomRef.current = true;
+    }
+    previousUserCountRef.current = userCount;
+    previousBusyRef.current = busy;
     if (scrollTopBeforeToggleRef.current !== null) {
       scrollElement.scrollTop = scrollTopBeforeToggleRef.current;
       scrollTopBeforeToggleRef.current = null;
@@ -52,26 +65,32 @@ export function ChatConversation({
       const target = Array.from(
         scrollElement.querySelectorAll<HTMLElement>("[data-message-id]"),
       ).find((element) => element.dataset.messageId === editScrollAnchorRef.current);
+      editScrollAnchorRef.current = null;
       if (target) {
         const containerRect = scrollElement.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
         scrollElement.scrollTop += targetRect.top - containerRect.top - 24;
+        followingBottomRef.current = false;
         return;
       }
     }
-    scrollElement.scrollTop = scrollElement.scrollHeight;
-  }, [messages]);
+    if (followingBottomRef.current) scrollElement.scrollTop = scrollElement.scrollHeight;
+  }, [messages, userCount, busy]);
 
-  const userMessages = messages.filter((message) => message.role === "user");
-  const firstUserId = userMessages[0]?.id;
-  const latestUserId = userMessages.at(-1)?.id;
   const toggleBlock = (messageId: string, blockIndex: number) => {
     scrollTopBeforeToggleRef.current = scrollRef.current?.scrollTop ?? null;
     onToggleBlock(messageId, blockIndex);
   };
 
   return (
-    <div className="chat-conversation" ref={scrollRef}>
+    <div
+      className="chat-conversation"
+      ref={scrollRef}
+      onScroll={(event) => {
+        const { scrollHeight, scrollTop, clientHeight } = event.currentTarget;
+        followingBottomRef.current = scrollHeight - scrollTop - clientHeight <= 48;
+      }}
+    >
       <div className="chat-conversation-inner">
         {messages.length === 0 && queuedDraft?.text && <UserMessage
           id="queued-launch-preview"
@@ -101,7 +120,10 @@ export function ChatConversation({
               onResendDraft={(nextDraft) => {
                 if (message.id !== firstUserId) editScrollAnchorRef.current = message.id;
                 const accepted = onEditAndResend(message.id, nextDraft);
-                if (accepted) setEditingMessageId(null);
+                if (accepted) {
+                  if (message.id === firstUserId) followingBottomRef.current = true;
+                  setEditingMessageId(null);
+                }
                 else editScrollAnchorRef.current = null;
                 return accepted;
               }}
