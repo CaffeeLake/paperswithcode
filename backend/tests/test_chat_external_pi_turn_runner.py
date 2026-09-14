@@ -387,6 +387,42 @@ class LostExecutor(FakeExecutor):
         )
 
 
+@pytest.mark.parametrize("remote_enabled", [False, True])
+def test_legacy_admission_uses_legacy_workspace_without_rendezvous(remote_enabled):
+    class Manager(FakeWorkspaceManager):
+        async def acquire(self, **kwargs):
+            raise AssertionError("executor startup requires a rendezvous bundle")
+
+        async def acquire_legacy(self, *, session_id, turn_claim):
+            return await super().acquire(session_id=session_id, turn_claim=turn_claim)
+
+    manager = Manager(FakeProvider())
+    executor = FakeExecutor()
+    runner = _tool_runner(executor, manager)
+    runner.tool_executor.settings.chat_executor_remote_transport_enabled = (
+        remote_enabled
+    )
+    assert runner.tool_executor.admission.executor_transport == "legacy"
+
+    result = asyncio.run(
+        runner._tool_result(
+            {
+                "operation_id": "legacy-operation",
+                "tool_call_id": "legacy-tool",
+                "operation": "exec",
+                "command": "printf x >> marker",
+                "timeout_ms": 1000,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert executor.exec_calls == 1
+    assert len(manager.acquired) == 1
+    assert len(manager.released) == 1
+    assert manager.invalidated == []
+
+
 def test_turn_binding_is_lazy_ordered_shared_bounded_and_settled_once():
     events: list[str] = []
 

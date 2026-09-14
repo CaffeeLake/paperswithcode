@@ -322,11 +322,9 @@ class ExternalPiToolWorkspaceExecutor:
                 getattr(manager, "acquire_for_binding", None) if persistent else None
             )
             if acquire_for_binding is None:
-                legacy_acquire = (
-                    getattr(manager, "acquire_legacy", None)
-                    if self.settings.chat_executor_remote_transport_enabled
-                    else None
-                )
+                # Legacy admission also applies when remote transport is disabled.
+                # Executor startup requires a rendezvous bundle in either case.
+                legacy_acquire = getattr(manager, "acquire_legacy", None)
                 workspace = await (legacy_acquire or manager.acquire)(
                     session_id=self.admission.session_id,
                     turn_claim=turn_claim,
