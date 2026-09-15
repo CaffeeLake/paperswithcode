@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deploy import cli, install_host_layout, mcp_release, smoke_test
+from deploy import cli, install_host_layout, mcp_launcher, mcp_release, smoke_test
 
 
 SHA = "a" * 40
@@ -18,6 +18,8 @@ def _release(root: Path, name: str = "aaaaaaaaaaaaaaaa") -> Path:
     executable = project / ".venv/bin/pwc-mcp"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\n")
+    interpreter = project / ".venv/bin/python"
+    interpreter.write_text("#!/bin/sh\n")
     (project / "uv.lock").write_text("locked\n")
     manifest = {
         "schema_version": 1,
@@ -37,6 +39,7 @@ def _release(root: Path, name: str = "aaaaaaaaaaaaaaaa") -> Path:
         project / "pyproject.toml"
     )
     executable.chmod(0o755)
+    interpreter.chmod(0o755)
     manifest["source_tree_sha256"] = mcp_release._source_tree_sha256(release)
     (release / "manifest.json").write_text(json.dumps(manifest))
     return release
@@ -100,12 +103,30 @@ def test_prepare_release_repairs_existing_release_traversal(tmp_path, monkeypatc
     assert release.stat().st_mode & 0o777 == 0o755
 
 
+def test_validate_release_rejects_nonportable_runtime_interpreter(tmp_path):
+    release = _release(tmp_path)
+    interpreter = release / "mcp_server/.venv/bin/python"
+    managed = tmp_path / "managed-python"
+    managed.write_text("#!/bin/sh\n")
+    managed.chmod(0o755)
+    interpreter.unlink()
+    interpreter.symlink_to(managed)
+
+    with pytest.raises(mcp_release.McpReleaseError, match="manifest is invalid"):
+        mcp_release.validate_release(release)
+
+
 def test_prepare_release_makes_new_release_traversable(tmp_path, monkeypatch):
     releases = tmp_path / "releases"
     monkeypatch.setattr(mcp_release, "MCP_ROOT", tmp_path)
     monkeypatch.setattr(mcp_release, "MCP_RELEASES", releases)
     monkeypatch.setattr(mcp_release, "_extract", lambda *args: None)
-    monkeypatch.setattr(mcp_release, "_run", lambda *args, **kwargs: None)
+    commands = []
+    monkeypatch.setattr(
+        mcp_release,
+        "_run",
+        lambda command, **kwargs: commands.append(command),
+    )
     monkeypatch.setattr(
         mcp_release,
         "_descriptor",
@@ -120,6 +141,9 @@ def test_prepare_release_makes_new_release_traversable(tmp_path, monkeypatch):
     release = mcp_release.prepare_release(SHA)
 
     assert release.stat().st_mode & 0o777 == 0o755
+    assert "--no-editable" in commands[0]
+    assert commands[0][commands[0].index("--python") + 1] == "/usr/bin/python3"
+    assert "--no-managed-python" in commands[0]
 
 
 def test_environment_pointers_are_independent_and_atomic(tmp_path, monkeypatch):
@@ -167,8 +191,68 @@ def test_qualify_uses_unprivileged_user_distinct_config_and_temporary_port(
     assert command[:4] == ["/usr/sbin/runuser", "-u", "pwc-mcp", "--"]
     assert "PORT=18123" in command
     assert "PWC_API_URL=http://127.0.0.1:8011/api/v1" in command
+    assert command[-11:] == [
+        str(release / "mcp_server/.venv/bin/python"),
+        "-m",
+        "uvicorn",
+        "pwc_mcp.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18123",
+        "--no-proxy-headers",
+        "--no-access-log",
+    ]
     assert observed["environment"]["TOKEN"] == "private"
     assert observed["terminated"] is True
+
+
+def test_launcher_runs_installed_module_with_virtualenv_python(tmp_path, monkeypatch):
+    release = _release(tmp_path)
+    interpreter = release / "mcp_server/.venv/bin/python"
+    interpreter.write_text("#!/bin/sh\n")
+    interpreter.chmod(0o755)
+    root = tmp_path / "environments/staging"
+    mcp_release._atomic_pointer(release, root / "current")
+    monkeypatch.setattr(mcp_launcher, "MCP_ENVIRONMENTS", tmp_path / "environments")
+    monkeypatch.setattr(mcp_launcher, "validate_release", lambda release: None)
+    observed = {}
+    monkeypatch.setattr(
+        mcp_launcher.os,
+        "chdir",
+        lambda directory: observed.update(cwd=directory),
+    )
+
+    def execve(executable, arguments, environment):
+        observed.update(
+            executable=executable,
+            arguments=arguments,
+            environment=environment,
+        )
+        raise RuntimeError("execve called")
+
+    monkeypatch.setattr(mcp_launcher.os, "execve", execve)
+    monkeypatch.setattr(mcp_launcher.sys, "argv", ["mcp_launcher.py", "staging"])
+
+    with pytest.raises(RuntimeError, match="execve called"):
+        mcp_launcher.main()
+
+    assert observed["executable"] == interpreter
+    assert observed["cwd"] == release / "mcp_server"
+    assert observed["arguments"] == [
+        str(interpreter),
+        "-m",
+        "uvicorn",
+        "pwc_mcp.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8003",
+        "--no-proxy-headers",
+        "--no-access-log",
+    ]
 
 
 def test_failed_activation_restores_previous_pointer(tmp_path, monkeypatch):

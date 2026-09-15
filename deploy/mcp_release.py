@@ -207,6 +207,11 @@ def validate_release(release: Path | None) -> dict[str, object]:
     except (OSError, json.JSONDecodeError) as error:
         raise McpReleaseError("MCP release manifest is invalid") from error
     artifacts = manifest.get("artifact_sha256") if isinstance(manifest, dict) else None
+    interpreter = release / "mcp_server/.venv/bin/python"
+    try:
+        resolved_interpreter = interpreter.resolve(strict=True)
+    except OSError:
+        resolved_interpreter = None
     if (
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != 1
@@ -216,6 +221,15 @@ def validate_release(release: Path | None) -> dict[str, object]:
         or manifest.get("source_tree_sha256") != _source_tree_sha256(release)
         or not (release / "mcp_server/.venv/bin/pwc-mcp").is_file()
         or not os.access(release / "mcp_server/.venv/bin/pwc-mcp", os.X_OK)
+        or not interpreter.is_file()
+        or not os.access(interpreter, os.X_OK)
+        or (
+            interpreter.is_symlink()
+            and (
+                resolved_interpreter is None
+                or not resolved_interpreter.is_relative_to(Path("/usr/bin"))
+            )
+        )
         or not isinstance(artifacts, dict)
         or artifacts.get("mcp_server/pyproject.toml")
         != _sha256(release / "mcp_server/pyproject.toml")
@@ -250,6 +264,10 @@ def prepare_release(sha: str) -> Path:
                 "sync",
                 "--locked",
                 "--no-dev",
+                "--no-editable",
+                "--python",
+                "/usr/bin/python3",
+                "--no-managed-python",
                 "--project",
                 str(temporary / "mcp_server"),
             ]
@@ -358,7 +376,17 @@ def qualify_release(release: Path, environment: str) -> None:
         "PWC_MCP_HOST=127.0.0.1",
         f"PWC_MCP_PORT={port}",
         f"PWC_API_URL={MCP_API_URLS[environment]}",
-        str(release / "mcp_server/.venv/bin/pwc-mcp"),
+        str(release / "mcp_server/.venv/bin/python"),
+        "-m",
+        "uvicorn",
+        "pwc_mcp.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--no-proxy-headers",
+        "--no-access-log",
     ]
     environment_values = os.environ.copy()
     for raw_line in config.read_text().splitlines():
