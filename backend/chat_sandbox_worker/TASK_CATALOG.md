@@ -20,10 +20,10 @@ The goal is to split up those tasks in the future.
 - `speaker-verification` — Speaker Verification
 - `audio-compression` — Audio Compression
 - `voice-cloning` — Voice cloning
+- `speaker-diarization` — Speaker Diarization
 - `audio-classification` — Audio Classification
 - `audio-editing` — Audio and Speech Editing
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
-- `spoken-language-identification` — Spoken Language Identification
 
 ### General
 
@@ -32,13 +32,13 @@ The goal is to split up those tasks in the future.
 - `reasoning` — Reasoning
 - `agents` — Agents
 - `math` — Mathematics
+- `pseudo-labelling` — Pseudo Labelling
 - `world-models` — World Models
 - `robotics` — Robotics
 - `embedding-models` — Embedding models
-- `pseudo-labelling` — Pseudo Labelling
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
-- `ocr` — OCR
+- `anomaly-detection` — Anomaly Detection
 
 ### Language
 
@@ -77,8 +77,8 @@ The goal is to split up those tasks in the future.
 - `video-frame-interpolation` — Video frame interpolation
 - `video-super-resolution` — Video super-resolution
 - `video-restoration` — Video Restoration
-- `video-matting` — Video Matting
 - `cross-view-object-correspondence` — Cross-view object correspondence
+- `video-matting` — Video Matting
 
 ### Vision
 
@@ -205,6 +205,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `semi-supervised-image-classification` — Semi-Supervised Image Classification
 - `sequential-recommendation` — Sequential Recommendation
 - `session-based-recommendation` — Session-Based Recommendation
+- `speaker-diarization` — Speaker Diarization
 - `speaker-verification` — Speaker Verification
 - `speech-enhancement` — Speech Enhancement
 - `spoken-language-identification` — Spoken Language Identification
