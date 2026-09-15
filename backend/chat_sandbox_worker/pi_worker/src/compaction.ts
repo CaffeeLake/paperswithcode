@@ -38,10 +38,11 @@ export async function summarizeAll(
   text: string,
   summarize: (chunk: string) => Promise<string>,
   signal: AbortSignal,
+  chunkBytes = CHUNK_BYTES,
 ): Promise<string> {
   let input = text;
   for (;;) {
-    const chunks = splitSummaryInput(input);
+    const chunks = splitSummaryInput(input, chunkBytes);
     const summaries: string[] = [];
     // Two independent chunks at a time; retain source order for the merge.
     for (let offset = 0; offset < chunks.length; offset += 2) {
@@ -138,6 +139,10 @@ export class CompactionController {
   constructor(private readonly emit: (event: PwCEvent) => void, private readonly budgetMs = COMPACTION_BUDGET_MS) {
   }
 
+  setProtectedRequest(prompt: string): void {
+    this.protectedRequest = prompt;
+  }
+
   startRecovery(): void {
     if (this.recoveryDeadline !== Infinity) return;
     this.recoveryDeadline = Math.min(performance.now() + this.budgetMs, this.turnDeadline);
@@ -207,7 +212,7 @@ export class CompactionController {
               if (response.stopReason === "length") maxTokens = provider.model.maxTokens;
               this.retryUsed = true;
             }
-          }, signal);
+          }, signal, Math.min(768 * 1024, Math.max(CHUNK_BYTES, provider.model.contextWindow - 32_000)));
           tokensAfter = estimateTokens({ role: "user", content: summary, timestamp: Date.now() });
           outcome = "success";
           // Recovery prompts are persisted as user messages by Pi. Pin the
