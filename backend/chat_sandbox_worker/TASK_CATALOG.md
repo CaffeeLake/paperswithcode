@@ -33,8 +33,8 @@ The goal is to split up those tasks in the future.
 - `agents` — Agents
 - `math` — Mathematics
 - `world-models` — World Models
-- `embedding-models` — Embedding models
 - `robotics` — Robotics
+- `embedding-models` — Embedding models
 - `pseudo-labelling` — Pseudo Labelling
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
