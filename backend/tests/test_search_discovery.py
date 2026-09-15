@@ -188,6 +188,7 @@ def test_missing_entity_and_unknown_top_level_are_real_404s(client, monkeypatch)
         "/chat/abc",
         "/pdf/2606.23050",
         "/privacy",
+        "/authorize-paper-edit/00000000-0000-0000-0000-000000000001",
     ],
 )
 def test_known_client_only_routes_keep_the_spa_shell(client, path):
