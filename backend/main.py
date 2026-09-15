@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import get_settings
+from backend.services.catalog_admission import CatalogAdmissionMiddleware
 from backend.services.deployment_lifecycle import (
     DeploymentAccountingMiddleware,
     deployment_lifecycle,
@@ -658,6 +659,10 @@ def create_app() -> FastAPI:
     from backend.routers import discovery_pages
 
     app.include_router(discovery_pages.router, tags=["discovery_pages"])
+
+    if settings.is_deployed:
+        # Admit before middleware, database dependencies, and response allocation.
+        app.add_middleware(CatalogAdmissionMiddleware)
 
     return app
 
