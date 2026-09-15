@@ -37,8 +37,8 @@ The goal is to split up those tasks in the future.
 - `robotics` — Robotics
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
-- `coding-agents` — Coding Agents
 - `anomaly-detection` — Anomaly Detection
+- `coding-agents` — Coding Agents
 
 ### Language
 
@@ -70,8 +70,8 @@ The goal is to split up those tasks in the future.
 - `video-generation` — Video generation
 - `video-understanding` — Video Understanding
 - `video-classification` — Video classification
-- `video-editing` — Video Editing
 - `video-segmentation` — Video segmentation
+- `video-editing` — Video Editing
 - `object-tracking` — Object Tracking
 - `video-compression` — Video Compression
 - `video-frame-interpolation` — Video frame interpolation
