@@ -59,11 +59,6 @@ function formatLongDate(iso: string | null | undefined): string {
   }
 }
 
-function formatStars(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
-
 function formatResourceLinkLabel(url: string, fallback: string): string {
   try {
     const parsed = new URL(url);
@@ -313,7 +308,6 @@ const PaperDetailView: React.FC = () => {
     hasIntroducedItems,
     hasLineageItems,
     hfArtifactViewer,
-    hfPaperExists,
     introducedBenchmarks,
     introducedFrameworks,
     introducedMethods,
@@ -322,7 +316,6 @@ const PaperDetailView: React.FC = () => {
     paperSourceLabel,
     predecessorPapers,
     projectPages,
-    repoSummary,
     safeAbstractUrl,
     safeConferenceUrl,
     safePdfUrl,
@@ -483,46 +476,6 @@ const PaperDetailView: React.FC = () => {
                 </a>
               </EditableActionButton>
             )}
-            {hfArtifactViewer.paperHref && hfPaperExists && (
-              <a
-                className="bm-action-btn"
-                href={hfArtifactViewer.paperHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="View on Hugging Face"
-              >
-                View on <span aria-hidden="true">🤗</span>
-              </a>
-            )}
-            {repoSummary.githubUrl && (
-              <EditableActionButton
-                showEdit
-                onEdit={() => openEdit("repositories")}
-                editAriaLabel="Edit code repositories"
-              >
-                <a
-                  className="action-btn-segment action-btn-main"
-                  href={repoSummary.githubUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Icon name="github" size={12} /> Code
-                  {repoSummary.github != null && (
-                    <span style={{ opacity: 0.7, marginLeft: 4 }}>· {formatStars(repoSummary.github)} ★</span>
-                  )}
-                </a>
-              </EditableActionButton>
-            )}
-            {!repoSummary.githubUrl ? (
-              <button
-                type="button"
-                className="action-btn"
-                onClick={() => openEdit("repositories")}
-                title="Add GitHub repository"
-              >
-                <Icon name="github" size={12} /> Add code
-              </button>
-            ) : null}
             {projectPages.length === 1 ? (
               <EditableActionButton
                 showEdit
@@ -570,16 +523,6 @@ const PaperDetailView: React.FC = () => {
                 </DropdownMenu>
               </EditableActionButton>
             ) : null}
-            {projectPages.length === 0 && isSignedIn ? (
-              <button
-                type="button"
-                className="action-btn"
-                onClick={() => openEdit("project-pages")}
-                title="Add project page"
-              >
-                <Icon name="globe" size={12} /> Add project page
-              </button>
-            ) : null}
             {safeConferenceUrl && (
               <a className="action-btn" href={safeConferenceUrl} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" size={12} /> Conference
@@ -618,13 +561,7 @@ const PaperDetailView: React.FC = () => {
                 {o.name}
               </Link>
             ))}
-            <button
-              type="button"
-              className="action-btn"
-              onClick={() => openEdit("organizations")}
-            >
-              Edit organizations
-            </button>
+            <PaperAgentEdits paperId={Number(paper.id)} />
             {isAdmin && isCodexEnrichPaperEnabled() && (
               <CodexEnrichPaperDialog
                 paperId={Number(paper.id)}
@@ -753,7 +690,6 @@ const PaperDetailView: React.FC = () => {
             </div>
           )}
 
-          <PaperAgentEdits paperId={Number(paper.id)} />
           <PaperMetadataSections
             canEdit
             onEditMethods={() => openEdit("methods")}
@@ -793,7 +729,7 @@ const PaperDetailView: React.FC = () => {
       <PaperDetailEditors
         activeEditor={activeEditor}
         arxivId={arxivId}
-        editSubmitMode={activeEditor === "organizations" && !isAdmin ? "pending" : editSubmitMode}
+        editSubmitMode={editSubmitMode}
         evaluations={evaluations ?? []}
         isAdmin={isAdmin}
         isLinkedAuthor={isLinkedAuthor}
