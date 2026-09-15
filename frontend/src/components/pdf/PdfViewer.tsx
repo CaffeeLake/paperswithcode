@@ -177,6 +177,7 @@ export function PdfViewer({
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(initialPage);
+  const [navigationPage, setNavigationPage] = useState<number>();
   const [fitWidth, setFitWidth] = useState(700);
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState("");
@@ -216,6 +217,7 @@ export function PdfViewer({
     pinchDelta.current = 0;
     setPages(0);
     setPage(initialPage);
+    setNavigationPage(undefined);
     setZoom(1);
     renderedZoom.current = 1;
     liveZoom.current = 1;
@@ -322,7 +324,9 @@ export function PdfViewer({
     const element = scrollRef.current;
     if (!element || !pages) return;
     let frame = 0;
-    const update = () => {
+    let settleTimer = 0;
+    const update = (settled = false) => {
+      window.clearTimeout(settleTimer);
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const center = element.getBoundingClientRect().top + element.clientHeight / 2;
@@ -338,13 +342,25 @@ export function PdfViewer({
             bestPage = Number(candidate.dataset.page);
           }
         });
+        if (settled) setNavigationPage(undefined);
         if (bestPage !== page) setCurrentPage(bestPage);
       });
     };
-    element.addEventListener("scroll", update, { passive: true });
+    // Persist the visible page after scrolling settles, including browsers
+    // without scrollend support. Intermediate animation pages are not reading positions.
+    const scheduleUpdate = () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => update(true), 150);
+    };
+    const finishScroll = () => update(true);
+    element.addEventListener("scroll", scheduleUpdate, { passive: true });
+    element.addEventListener("scrollend", finishScroll);
     update();
     return () => {
-      element.removeEventListener("scroll", update);
+      element.removeEventListener("scroll", scheduleUpdate);
+      element.removeEventListener("scrollend", finishScroll);
+      window.clearTimeout(settleTimer);
       cancelAnimationFrame(frame);
     };
   }, [page, pageWidth, pages, setCurrentPage]);
@@ -407,8 +423,10 @@ export function PdfViewer({
 
   const jumpToPage = (next: number) => {
     const bounded = Math.max(1, Math.min(pages || 1, next));
-    scrollRef.current?.querySelector<HTMLElement>(`[data-page="${bounded}"]`)?.scrollIntoView({ block: "start" });
-    setCurrentPage(bounded);
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth";
+    setNavigationPage(behavior === "smooth" ? bounded : undefined);
+    scrollRef.current?.querySelector<HTMLElement>(`[data-page="${bounded}"]`)?.scrollIntoView({ block: "start", behavior });
+    if (behavior === "instant") setCurrentPage(bounded);
   };
   // React-PDF retains its initial onItemClick callback. Forward through a ref so
   // links use the loaded page count and current reader callbacks. Our wrappers
@@ -427,7 +445,7 @@ export function PdfViewer({
   return <div ref={rootRef} className="pdf-viewer">
     {chrome === "canvas" ? <CanvasPdfToolbar
       downloadUrl={downloadUrl}
-      page={page}
+      page={navigationPage ?? page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}
       onPage={jumpToPage}
@@ -438,7 +456,7 @@ export function PdfViewer({
       paperTitle={paperTitle}
       paperHref={paperHref}
       resources={resources}
-      page={page}
+      page={navigationPage ?? page}
       pages={pages}
       zoomPercent={Math.round(zoom * 100)}
       searchOpen={searchOpen}

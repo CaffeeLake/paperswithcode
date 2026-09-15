@@ -100,7 +100,7 @@ describe("PdfViewer resize rendering", () => {
     });
   });
 
-  it("navigates internal links to unmounted destination pages using current callbacks", () => {
+  it("navigates to unmounted pages and persists the visible page after scrolling settles", async () => {
     intersecting = false;
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -125,9 +125,31 @@ describe("PdfViewer resize rendering", () => {
     view.rerender(<PdfViewer {...props} onPageChange={updatedPageChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Citation link" }));
 
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
     expect(scrollIntoView.mock.contexts.at(-1)).toBe(destination);
-    expect(updatedPageChange).toHaveBeenCalledWith(13);
+    expect(updatedPageChange).not.toHaveBeenCalled();
+    view.container.querySelectorAll<HTMLElement>("[data-page]").forEach((element) => {
+      vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+        top: element === destination ? 0 : -1000,
+        bottom: element === destination ? 900 : -100,
+      } as DOMRect);
+    });
+    fireEvent.scroll(screen.getByRole("region", { name: "Paper PDF" }));
+    expect(updatedPageChange).not.toHaveBeenCalled();
+    await waitFor(() => expect(updatedPageChange).toHaveBeenCalledWith(13));
+    expect(onPageChange).not.toHaveBeenCalled();
+  });
+
+  it("advances repeated Next clicks while a smooth scroll is still running", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    const onPageChange = vi.fn();
+    const view = render(<PdfViewer url="/sample.pdf" paperKey="test" paperTitle="Test" paperHref="/" chrome="canvas" onPageChange={onPageChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load long PDF" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(view.container.querySelector('[data-page="3"]'));
+    expect(screen.getByText("Page 3 of 13")).toBeInTheDocument();
     expect(onPageChange).not.toHaveBeenCalled();
   });
 
