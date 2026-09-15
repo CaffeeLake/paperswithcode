@@ -74,6 +74,7 @@ const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
 const SettingsView = React.lazy(() => import("@/views/SettingsView"));
 const PrivacyView = React.lazy(() => import("@/views/PrivacyView"));
+const McpView = React.lazy(() => import("@/views/McpView"));
 const SubmitView = React.lazy(() => import("@/views/SubmitView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const AutonomousOperations = React.lazy(() => import("@/pages/AutonomousOperations"));
@@ -301,6 +302,7 @@ const Shell: React.FC = () => {
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
             <Route path="/privacy" element={<PrivacyView />} />
+            <Route path="/mcp" element={<McpView />} />
             <Route path="/admin-dashboard" element={<AdminDashboardRoute />} />
             <Route path="/autonomous-operations" element={<AdminGatedRoute element={<AutonomousOperations />} />} />
             <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
