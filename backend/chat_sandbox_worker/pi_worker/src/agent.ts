@@ -454,7 +454,13 @@ export class PiWorker {
       modelRuntime: provider.runtime,
       model: provider.model,
       thinkingLevel: thinkingLevel(run.reasoning_effort),
-      tools: ["read", "bash", "search_web", ...(this.gateway && this.remoteTools ? (pwcMcpEnabled() ? PWC_MCP_TOOL_NAMES : CATALOG_TOOL_NAMES) : []), ...(this.excalidrawAvailable ? [...EXCALIDRAW_MODEL_TOOLS] : [])],
+      // MCP research turns have no sandbox tools; poster and paper authoring keep them.
+      tools: [
+        ...(this.gateway && this.remoteTools && pwcMcpEnabled() && !run.poster_mode && run.paper_artifacts_enabled !== true ? [] : ["read", "bash"]),
+        "search_web",
+        ...(this.gateway && this.remoteTools ? (pwcMcpEnabled() ? PWC_MCP_TOOL_NAMES : CATALOG_TOOL_NAMES) : []),
+        ...(this.excalidrawAvailable ? [...EXCALIDRAW_MODEL_TOOLS] : []),
+      ],
       excludeTools: ["edit", "write", "grep", "find", "ls", "ask_question"],
       resourceLoader: loader,
       settingsManager: settings,
@@ -462,6 +468,15 @@ export class PiWorker {
     });
     await created.session.bindExtensions({ mode: "print" });
     created.extensionsResult.runtime.refreshTools();
+    if (this.gateway && this.remoteTools && pwcMcpEnabled()) {
+      // Catalog research depends on these tools alone; never continue without them.
+      const active = new Set(created.session.getActiveToolNames());
+      const missing = PWC_MCP_TOOL_NAMES.filter((name) => !active.has(name));
+      if (missing.length) {
+        const reasons = created.extensionsResult.errors.map((item) => item.error).join("; ");
+        throw new Error(`PwC MCP tools are unavailable (${missing.length} of ${PWC_MCP_TOOL_NAMES.length} missing)${reasons ? `: ${reasons}` : ""}`);
+      }
+    }
     this.mcpReadiness = assessExcalidrawReadiness({
       enabled: this.excalidrawAvailable,
       connectionMode: "lazy",

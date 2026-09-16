@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -10,17 +11,37 @@ from typing import Any
 import httpx
 
 ENDPOINT = "https://paperswithcode.co/mcp"
+# Each environment talks to its own MCP component (deploy/mcp_release.py ports);
+# staging must exercise the staging release rather than production's.
+# The gateway connects to the loopback listener directly (no nginx hop) so the
+# server accepts X-PwC-MCP-Client and rate-limits each chat session on its own.
+ENDPOINTS = {
+    "production": "http://127.0.0.1:8002/mcp",
+    "staging": "http://127.0.0.1:8003/mcp",
+}
+CLIENT_IDENTITY_HEADER = "X-PwC-MCP-Client"
 MAX_RESPONSE_BYTES = 1024 * 1024
+# One tool per read-only pwc CLI research command (huggingface/pwc-cli PR #13).
 TOOL_NAMES = frozenset(
     {
         "search_papers",
         "get_paper_info",
         "list_papers",
         "read_paper",
+        "list_recent_papers",
+        "list_trending_papers",
         "get_related_papers",
         "get_paper_lineage",
         "get_task",
+        "list_tasks",
         "get_method",
+        "list_methods",
+        "get_conference",
+        "list_conferences",
+        "get_organization",
+        "list_organizations",
+        "get_framework",
+        "list_frameworks",
         "list_benchmarks",
         "get_benchmark",
     }
@@ -35,10 +56,28 @@ class PwcMcpError(Exception):
     """Sanitized upstream failure; never includes request or response contents."""
 
 
+def endpoint_for(environment: str) -> str:
+    """Return the MCP endpoint of one environment; unknown names use the public URL."""
+    return ENDPOINTS.get(environment, ENDPOINT)
+
+
+def client_identity(session_id: str) -> str:
+    """Opaque per-chat-session rate-limit identity; never the raw session ID."""
+    digest = hashlib.sha256(f"chat-session:{session_id}".encode()).hexdigest()
+    return f"chat-{digest[:32]}"
+
+
 async def request_mcp(
-    client: httpx.AsyncClient, method: str, params: dict[str, Any]
+    client: httpx.AsyncClient,
+    method: str,
+    params: dict[str, Any],
+    endpoint: str = ENDPOINT,
+    identity: str | None = None,
 ) -> dict[str, Any]:
     request_id = str(uuid.uuid4())
+    headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
+    if identity:
+        headers[CLIENT_IDENTITY_HEADER] = identity
     payload = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -49,9 +88,9 @@ async def request_mcp(
         async with asyncio.timeout(30):
             async with client.stream(
                 "POST",
-                ENDPOINT,
+                endpoint,
                 json=payload,
-                headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+                headers=headers,
             ) as response:
                 if response.status_code != 200:
                     raise PwcMcpError("Papers With Code MCP is unavailable")

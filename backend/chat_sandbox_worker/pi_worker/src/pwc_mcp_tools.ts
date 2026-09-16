@@ -2,14 +2,53 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { gatewayHeaders, type GatewayContext } from "./provider.js";
 
+// One tool per read-only pwc CLI research command (huggingface/pwc-cli PR #13).
 export const PWC_MCP_TOOLS = [
   "search_papers", "get_paper_info", "list_papers", "read_paper",
-  "get_related_papers", "get_paper_lineage", "get_task", "get_method",
+  "list_recent_papers", "list_trending_papers",
+  "get_related_papers", "get_paper_lineage",
+  "get_task", "list_tasks", "get_method", "list_methods",
+  "get_conference", "list_conferences", "get_organization", "list_organizations",
+  "get_framework", "list_frameworks",
   "list_benchmarks", "get_benchmark",
 ] as const;
 export const PWC_MCP_TOOL_NAMES = PWC_MCP_TOOLS.map(name => `pwc_${name}`);
 export const pwcMcpEnabled = () => process.env.PWC_CHAT_PWC_MCP_ENABLED === "true";
 const MAX_BYTES = 1024 * 1024;
+// The hosted MCP server admits four concurrent requests per client, and every
+// chat turn reaches it through one gateway address. Queue parallel tool calls
+// below that ceiling instead of letting the extras fail with 429.
+export const MAX_CONCURRENT_MCP_REQUESTS = 3;
+
+/** Small FIFO semaphore; callers await `acquire()` and must call the release. */
+export class RequestGate {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+  constructor(private readonly limit: number) {}
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve, reject) => {
+        const entry = () => { signal?.removeEventListener("abort", abort); resolve(); };
+        const abort = () => {
+          const index = this.waiting.indexOf(entry);
+          if (index >= 0) this.waiting.splice(index, 1);
+          reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+        };
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener("abort", abort, { once: true });
+        this.waiting.push(entry);
+      });
+    }
+    this.active += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active -= 1;
+      this.waiting.shift()?.();
+    };
+  }
+}
 type Fetcher = typeof fetch;
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -50,8 +89,20 @@ export async function requestPwcMcp(
   try { payload = JSON.parse(Buffer.concat(chunks, size).toString("utf8")); }
   catch { throw new Error("PwC MCP returned invalid JSON."); }
   if (!object(payload) || !object(payload.result)) throw new Error("PwC MCP returned an invalid response.");
-  if (payload.result.isError === true) throw new Error("PwC MCP could not complete that tool request.");
+  if (payload.result.isError === true) throw new Error(mcpToolErrorMessage(payload.result));
   return payload.result;
+}
+
+const MAX_ERROR_CHARS = 400;
+
+/** The first-party server returns sanitized, actionable errors (for example a closest-match hint). */
+export function mcpToolErrorMessage(result: ObjectValue): string {
+  const first = Array.isArray(result.content) ? result.content[0] : undefined;
+  const text = object(first) && typeof first.text === "string"
+    ? first.text.replace(/^Error executing tool [a-z_]+: /u, "").replace(/[\u0000-\u001f\u007f]+/gu, " ").trim()
+    : "";
+  if (!text) return "PwC MCP could not complete that tool request.";
+  return `PwC MCP tool error: ${text.slice(0, MAX_ERROR_CHARS)}. Correct the arguments or use another tool; do not repeat the identical call.`;
 }
 
 /** Keep server-owned schemas while accepting null for optional strict-model fields. */
@@ -64,7 +115,9 @@ export function nullableOptionalFields(schema: ObjectValue): TSchema {
   return { ...schema, properties } as TSchema;
 }
 
-export function createPwcMcpToolsExtension(gateway: GatewayContext, fetcher: Fetcher = fetch): ExtensionFactory {
+export function createPwcMcpToolsExtension(
+  gateway: GatewayContext, fetcher: Fetcher = fetch, gate: RequestGate = new RequestGate(MAX_CONCURRENT_MCP_REQUESTS),
+): ExtensionFactory {
   return async (pi) => {
     const result = await requestPwcMcp(gateway, undefined, {}, undefined, fetcher);
     if (!Array.isArray(result.tools)) throw new Error("PwC MCP tool discovery failed.");
@@ -83,7 +136,10 @@ export function createPwcMcpToolsExtension(gateway: GatewayContext, fetcher: Fet
         parameters: nullableOptionalFields(tool.inputSchema),
         execute: async (_id, args, signal) => {
           if (!object(args)) throw new Error("Invalid PwC MCP tool arguments.");
-          const result = await requestPwcMcp(gateway, name, args, signal, fetcher);
+          const release = await gate.acquire(signal);
+          let result: ObjectValue;
+          try { result = await requestPwcMcp(gateway, name, args, signal, fetcher); }
+          finally { release(); }
           if (!object(result.structuredContent)) throw new Error("PwC MCP tool returned no structured result.");
           // Keep continuation metadata ahead of large paper text under output budgets.
           const content = { next_cursor: result.structuredContent.next_cursor, ...result.structuredContent };

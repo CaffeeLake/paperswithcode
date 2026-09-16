@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPwcMcpToolsExtension, nullableOptionalFields, PWC_MCP_TOOLS, PWC_MCP_TOOL_NAMES, requestPwcMcp } from "../src/pwc_mcp_tools.js";
+import { createPwcMcpToolsExtension, MAX_CONCURRENT_MCP_REQUESTS, mcpToolErrorMessage, RequestGate, nullableOptionalFields, PWC_MCP_TOOLS, PWC_MCP_TOOL_NAMES, requestPwcMcp } from "../src/pwc_mcp_tools.js";
 import { gatewayHeaders, type GatewayContext } from "../src/provider.js";
 const gateway: GatewayContext = { url: "https://gateway.example/private", capability: "private-test-token", sessionId: "s", turnId: "t", turnClaim: { turnId: "t", workerId: "w", workerGeneration: "1", leaseGeneration: "2" } };
 
@@ -30,14 +30,18 @@ test("optional fields accept null and required server fields remain required", (
   assert.deepEqual(schema.properties.cursor.anyOf[1], { type: "null" });
 });
 
-test("denial and MCP errors do not retry or expose error bodies", async () => {
+test("denials hide HTTP bodies while first-party tool errors stay actionable", async () => {
   let calls = 0;
   await assert.rejects(requestPwcMcp(gateway, "read_paper", {}, undefined, async () => {
     calls++; return new Response("secret-token", { status: 403 });
   }), /^Error: PwC MCP request failed \(403\)\.$/u);
   assert.equal(calls, 1);
+  await assert.rejects(requestPwcMcp(gateway, "get_task", {}, undefined, async () =>
+    Response.json({ result: { isError: true, content: [{ text: "Error executing tool get_task: Task not found: language-modelling; closest results: Language Modeling" }] } })),
+  /^Error: PwC MCP tool error: Task not found: language-modelling; closest results: Language Modeling\. Correct the arguments/u);
   await assert.rejects(requestPwcMcp(gateway, "read_paper", {}, undefined, async () =>
-    Response.json({ result: { isError: true, content: [{ text: "secret" }] } })), /could not complete/u);
+    Response.json({ result: { isError: true, content: [] } })), /could not complete/u);
+  assert.equal(mcpToolErrorMessage({ content: [{ text: `x${"y".repeat(1000)}` }] }).length < 520, true);
 });
 
 test("oversize streams are cancelled and abort signal reaches fetch", async () => {
@@ -67,7 +71,8 @@ test("MCP tools preserve shared search, call, and output budgets", async () => {
     assert.equal(p.authorize("a", "pwc_list_papers", { search: "VLA" }), undefined);
     const result = p.finish("a", "x".repeat(500));
     assert.ok(Buffer.byteLength(result.content[0]!.text) <= 100);
-    assert.match(p.authorize("b", "bash", { command: "pwc search x" }) ?? "", /Answer now/iu);
+    assert.match(p.authorize("b", "bash", { command: "pwc search x" }) ?? "", /not available for research/iu);
+    assert.match(p.authorize("c", "pwc_search_papers", { query: "VLA" }) ?? "", /Answer now/iu);
     const { renderPrompt } = await import("../src/prompt.js");
     const prompt = await renderPrompt({ model: "test", hfUsername: "test", webSearchEnabled: false, readerMode: false,
       catalogToolsEnabled: true, mcpSkill: "Pinned MCP skill", source: "The available tools for a normal research turn are Bash, Read, and search_web." });
@@ -76,4 +81,48 @@ test("MCP tools preserve shared search, call, and output budgets", async () => {
     if (original === undefined) delete process.env.PWC_CHAT_PWC_MCP_ENABLED;
     else process.env.PWC_CHAT_PWC_MCP_ENABLED = original;
   }
+});
+
+
+test("parallel MCP tool calls are queued below the server's per-client concurrency limit", async () => {
+  assert.equal(MAX_CONCURRENT_MCP_REQUESTS, 3);
+  const registered: any[] = [];
+  let inFlight = 0; let peak = 0;
+  const pending: Array<() => void> = [];
+  await createPwcMcpToolsExtension(gateway, async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (!body.tool) {
+      return Response.json({ result: { tools: PWC_MCP_TOOLS.map(name => ({
+        name, description: "d", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {} },
+      })) } });
+    }
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise<void>((resolve) => pending.push(resolve));
+    inFlight--;
+    return Response.json({ result: { structuredContent: { ok: true } } });
+  }, new RequestGate(3))({ registerTool: (tool: any) => registered.push(tool) } as never);
+  const tool = registered.find((item) => item.name === "pwc_get_benchmark");
+  const calls = Array.from({ length: 5 }, (_, index) => tool.execute(`id-${index}`, { benchmark: `b${index}` }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(peak, 3);
+  assert.equal(pending.length, 3);
+  pending.splice(0).forEach((resolve) => resolve());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  pending.splice(0).forEach((resolve) => resolve());
+  const results = await Promise.all(calls);
+  assert.equal(results.length, 5);
+  assert.equal(peak, 3);
+  assert.equal(inFlight, 0);
+});
+
+test("a queued MCP call aborts cleanly without occupying a slot", async () => {
+  const gate = new RequestGate(1);
+  const release = await gate.acquire();
+  const controller = new AbortController();
+  const waiting = gate.acquire(controller.signal);
+  controller.abort();
+  await assert.rejects(waiting, { name: "AbortError" });
+  release();
+  const next = await gate.acquire();
+  next();
 });
