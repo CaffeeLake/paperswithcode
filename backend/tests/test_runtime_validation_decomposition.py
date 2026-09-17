@@ -254,7 +254,7 @@ def test_external_pi_shadow_worker_starts_at_eight_but_remains_configurable():
         == 32
     )
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, chat_external_pi_worker_max_sessions=33)
+        Settings(_env_file=None, chat_external_pi_worker_max_sessions=65)
 
 
 def test_durable_turn_controls_keep_current_capacity_and_allow_100_qualification():
@@ -1239,3 +1239,81 @@ def test_four_spares_pass_capacity_and_direct_openai_resource_validation(
     settings.chat_pi_prewarm_reasoning_effort = "low"
     runtime_validation._validate_chat_capacity_policy(settings)
     runtime_validation._validate_chat_resource_policy(settings)
+
+
+@pytest.mark.parametrize(
+    ("environment", "remote", "concurrency", "pool", "accepted"),
+    [
+        ("production", False, 64, 1, True),
+        ("staging", False, 64, 1, True),
+        ("staging", True, 64, 4, True),
+        ("production", False, 48, 1, False),
+        ("production", False, 96, 1, False),
+        ("production", True, 64, 4, False),
+    ],
+)
+def test_sixty_four_turn_tier_is_a_reviewed_capacity_profile(
+    environment, remote, concurrency, pool, accepted
+):
+    settings = Settings(
+        environment=environment,
+        chat_external_pi_admission_enabled=True,
+        chat_executor_remote_transport_enabled=remote,
+        chat_max_concurrency=concurrency,
+        chat_user_max_concurrency=1,
+        chat_sandbox_total_live_cap=16,
+        chat_blank_pool_min=pool,
+        chat_blank_pool_max=pool,
+        chat_external_pi_worker_max_sessions=64,
+    )
+    if accepted:
+        runtime_validation._validate_chat_capacity_policy(settings)
+    else:
+        with pytest.raises(RuntimeError, match="reviewed runtime profile"):
+            runtime_validation._validate_chat_capacity_policy(settings)
+
+
+@pytest.mark.parametrize(
+    ("environment", "turns", "openai_concurrency", "rate_calls", "recognized"),
+    [
+        ("production", 32, 32, 512, True),
+        ("production", 64, 64, 4096, True),
+        ("production", 64, 64, 512, False),
+        ("production", 64, 32, 4096, False),
+        ("production", 32, 32, 4096, False),
+        ("production", 48, 48, 4096, False),
+        ("staging", 32, 32, 300, True),
+        ("staging", 32, 32, 512, False),
+        ("staging", 64, 64, 4096, True),
+    ],
+)
+def test_durable_external_profile_requires_tier_consistent_openai_budgets(
+    settings_factory, environment, turns, openai_concurrency, rate_calls, recognized
+):
+    settings, _release = settings_factory(environment)
+    _configure_durable_external_admission_resource_profile(settings)
+    settings.chat_max_concurrency = turns
+    settings.chat_openai_global_max_concurrency = openai_concurrency
+    settings.chat_openai_global_rate_limit_calls = rate_calls
+
+    assert (
+        runtime_validation._is_durable_external_admission_profile(settings)
+        is recognized
+    )
+    assert runtime_validation._external_pi_capacity_tier(settings) == (
+        turns if recognized else None
+    )
+
+
+def test_capacity_tier_openai_allowances_match_the_host_env_helper():
+    from deploy import configure_host_env
+
+    assert {
+        environment: {tier: str(calls) for tier, calls in allowances.items()}
+        for environment, allowances in (
+            runtime_validation._EXTERNAL_PI_OPENAI_RATE_LIMIT_CALLS.items()
+        )
+    } == configure_host_env._CHAT_CAPACITY_TIER_RATE_LIMIT_CALLS
+    assert set(runtime_validation._EXTERNAL_PI_CAPACITY_POLICIES) == set(
+        configure_host_env.CHAT_CAPACITY_TIERS
+    )
