@@ -12,10 +12,21 @@ const TOOLS = [
   ["list_papers", "Filter and order papers by taxonomy, venue, date, or organization."],
   ["get_paper_info", "Read canonical metadata, authors, abstract, links, and resources."],
   ["read_paper", "Read stored paper Markdown with safe continuation for long papers."],
+  ["list_recent_papers", "Browse the most recently indexed research."],
   ["get_related_papers", "Find related work already indexed in the catalogue."],
+  ["list_trending_papers", "Discover papers with recent repository momentum."],
+  ["get_paper_evaluations", "Inspect benchmark results reported by one paper."],
   ["get_paper_lineage", "Follow explicit predecessor and successor relationships."],
+  ["list_tasks", "Search tasks and retrieve stable slugs for exact lookup."],
   ["get_task", "Inspect a research task and its benchmark coverage."],
+  ["list_methods", "Search methods and retrieve stable slugs for exact lookup."],
   ["get_method", "Inspect a method, its source paper, and catalogue metadata."],
+  ["list_conferences", "Browse conferences with imported papers."],
+  ["get_conference", "Inspect one exact conference edition."],
+  ["list_organizations", "Browse research organizations."],
+  ["get_organization", "Inspect one exact research organization."],
+  ["list_frameworks", "Browse frameworks by domain, category, or platform."],
+  ["get_framework", "Inspect one exact research framework."],
   ["list_benchmarks", "Browse and filter benchmark leaderboards."],
   ["get_benchmark", "Read one benchmark, metrics, datasets, and leading results."],
 ] as const;
@@ -196,7 +207,7 @@ const McpView: React.FC = () => {
       <section className="mcp-section" aria-labelledby="mcp-tools">
         <div className="mcp-section-heading">
           <p className="sidebar-label">Catalogue</p>
-          <h2 id="mcp-tools">Ten focused, read-only tools</h2>
+          <h2 id="mcp-tools">Twenty-one focused, read-only tools</h2>
         </div>
         <div className="mcp-tool-grid">
           {TOOLS.map(([name, description]) => (
@@ -255,6 +266,7 @@ const McpView: React.FC = () => {
             <a href="https://github.com/huggingface/pwc-cli" target="_blank" rel="noreferrer">CLI repository <ExternalLink size={13} /></a>
             <a href="https://modelcontextprotocol.io/docs/2026-07-28/learn/server-concepts" target="_blank" rel="noreferrer">MCP specification <ExternalLink size={13} /></a>
             <a href="/docs" target="_blank" rel="noreferrer">Public API <ExternalLink size={13} /></a>
+            <a href="/mcp/schema" target="_blank" rel="noreferrer">MCP tool schema <ExternalLink size={13} /></a>
             <a href="/llms.txt" target="_blank" rel="noreferrer">llms.txt <ExternalLink size={13} /></a>
           </nav>
         </div>
