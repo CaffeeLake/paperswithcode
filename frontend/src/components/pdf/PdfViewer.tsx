@@ -15,6 +15,8 @@ import type { PdfToolbarResources } from "./PdfToolbar";
 import { createPdfCitationResolver, type PdfCitationResolver } from "./pdfCitationLinks";
 import { PdfPaperLink } from "./PdfPaperLink";
 import { usePdfPaperLinks } from "./usePdfPaperLinks";
+import { PdfOutline } from "./PdfOutline";
+import { activeSectionIndex, loadPdfOutline, pdfSectionFromHash, type PdfOutlineEntry } from "./pdfOutline";
 
 interface PdfViewerProps {
   url: string;
@@ -34,6 +36,15 @@ interface PdfViewerProps {
   loadErrorMessage?: string;
   chrome?: "reader" | "canvas";
 }
+
+// Section jumps leave this much of the previous section visible above the
+// heading; the reading anchor sits just below so the jumped-to section is active.
+const SECTION_SCROLL_MARGIN = 8;
+const SECTION_ANCHOR_OFFSET = 24;
+// Placeholder height for pages that have not rendered yet, until the document's
+// own page proportions are known. Accurate placeholders keep page and section
+// jumps from overshooting when the pages above the target are still unrendered.
+const DEFAULT_PAGE_ASPECT = 1.35;
 
 function pdfErrorMessage(error: Error): string {
   const message = error.message.toLowerCase();
@@ -75,6 +86,7 @@ export function highlightPdfText(text: string, query: string, active: boolean): 
 function LazyPdfPage({
   page,
   width,
+  aspect,
   searchQuery,
   activeSearchPage,
   resolveCitation,
@@ -82,6 +94,7 @@ function LazyPdfPage({
 }: {
   page: number;
   width: number;
+  aspect: number;
   searchQuery: string;
   activeSearchPage?: number;
   resolveCitation?: PdfCitationResolver;
@@ -99,7 +112,7 @@ function LazyPdfPage({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  return <div ref={ref} className="pdf-page" data-page={page} style={{ minHeight: Math.round(width * 1.35) }}>
+  return <div ref={ref} className="pdf-page" data-page={page} style={{ minHeight: Math.round(width * aspect) }}>
     {visible && <Page
       pageNumber={page}
       width={width}
@@ -191,6 +204,11 @@ export function PdfViewer({
   const retainLiveResizeScale = useRef(false);
   const [retry, setRetry] = useState(0);
   const [pages, setPages] = useState(0);
+  const [pageAspect, setPageAspect] = useState(DEFAULT_PAGE_ASPECT);
+  const [outline, setOutline] = useState<PdfOutlineEntry[]>([]);
+  const [activeSection, setActiveSection] = useState(-1);
+  const [navigationSection, setNavigationSection] = useState<number>();
+  const sectionNavigation = useRef<(entry: PdfOutlineEntry, behavior?: ScrollBehavior) => void>(() => {});
   const [page, setPage] = useState(initialPage);
   const [navigationPage, setNavigationPage] = useState<number>();
   const [fitWidth, setFitWidth] = useState(700);
@@ -231,6 +249,10 @@ export function PdfViewer({
     pinchCommitTimer.current = 0;
     pinchDelta.current = 0;
     setPages(0);
+    setPageAspect(DEFAULT_PAGE_ASPECT);
+    setOutline([]);
+    setActiveSection(-1);
+    setNavigationSection(undefined);
     setResolveCitation(undefined);
     setPage(initialPage);
     setNavigationPage(undefined);
@@ -345,11 +367,14 @@ export function PdfViewer({
       window.clearTimeout(settleTimer);
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const center = element.getBoundingClientRect().top + element.clientHeight / 2;
+        const top = element.getBoundingClientRect().top;
+        const center = top + element.clientHeight / 2;
         let bestPage = page;
         let bestDistance = Number.POSITIVE_INFINITY;
+        const rects = new Map<number, DOMRect>();
         element.querySelectorAll<HTMLElement>("[data-page]").forEach((candidate) => {
           const rect = candidate.getBoundingClientRect();
+          rects.set(Number(candidate.dataset.page), rect);
           const distance = center >= rect.top && center <= rect.bottom
             ? 0
             : Math.min(Math.abs(center - rect.top), Math.abs(center - rect.bottom));
@@ -358,8 +383,18 @@ export function PdfViewer({
             bestPage = Number(candidate.dataset.page);
           }
         });
-        if (settled) setNavigationPage(undefined);
+        if (settled) {
+          setNavigationPage(undefined);
+          setNavigationSection(undefined);
+        }
         if (bestPage !== page) setCurrentPage(bestPage);
+        // The section in view is the last one starting above the reading
+        // anchor, just below the top edge, where section jumps land.
+        const sectionTops = outline.map((entry) => {
+          const rect = rects.get(entry.page);
+          return rect ? rect.top + rect.height * entry.offset : Number.POSITIVE_INFINITY;
+        });
+        setActiveSection(activeSectionIndex(sectionTops, top + SECTION_ANCHOR_OFFSET));
       });
     };
     // Persist the visible page after scrolling settles, including browsers
@@ -379,7 +414,7 @@ export function PdfViewer({
       window.clearTimeout(settleTimer);
       cancelAnimationFrame(frame);
     };
-  }, [page, pageWidth, pages, setCurrentPage]);
+  }, [outline, page, pageWidth, pages, setCurrentPage]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -444,11 +479,28 @@ export function PdfViewer({
     scrollRef.current?.querySelector<HTMLElement>(`[data-page="${bounded}"]`)?.scrollIntoView({ block: "start", behavior });
     if (behavior === "instant") setCurrentPage(bounded);
   };
+  const jumpToSection = (entry: PdfOutlineEntry, behavior?: ScrollBehavior) => {
+    const scroller = scrollRef.current;
+    const target = scroller?.querySelector<HTMLElement>(`[data-page="${entry.page}"]`);
+    if (!scroller || !target) return;
+    const resolvedBehavior = behavior
+      ?? (window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth");
+    const rect = target.getBoundingClientRect();
+    const top = rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop + rect.height * entry.offset;
+    setNavigationPage(resolvedBehavior === "smooth" ? entry.page : undefined);
+    setNavigationSection(resolvedBehavior === "smooth" ? entry.index : undefined);
+    scroller.scrollTo({ top: Math.max(0, top - SECTION_SCROLL_MARGIN), behavior: resolvedBehavior });
+    if (resolvedBehavior === "instant") setCurrentPage(entry.page);
+    if (chrome === "reader") {
+      window.history.replaceState(window.history.state, "", `#pdf-section-${entry.index}`);
+    }
+  };
   // React-PDF retains its initial onItemClick callback. Forward through a ref so
   // links use the loaded page count and current reader callbacks. Our wrappers
   // exist even when the destination Page is unmounted by lazy rendering.
   useLayoutEffect(() => {
     internalLinkNavigation.current = jumpToPage;
+    sectionNavigation.current = jumpToSection;
   });
   const navigateMatch = (direction: 1 | -1) => {
     if (!matches.length) return;
@@ -488,6 +540,7 @@ export function PdfViewer({
       onSearchQuery={setSearchQuery}
       onSearch={navigateMatch}
     />}
+    <div className="pdf-scroll-frame">
     <div ref={scrollRef} className="pdf-scroll" role="region" aria-label={chrome === "canvas" ? `${paperTitle} PDF preview` : "Paper PDF"}>
       {error ? <div className="pdf-error" role="alert">
         <p>{error}</p>
@@ -502,14 +555,40 @@ export function PdfViewer({
           if (chrome === "reader") setResolveCitation(() => createPdfCitationResolver(pdf, previewCache.lookup));
           setPages(pdf.numPages);
           setError("");
+          // Papers use one page size throughout; the first page stands for all
+          // placeholders. If it cannot be read, keep the default proportions and
+          // still restore the reader's position.
+          const placeholdersSized = pdf.getPage(1).then((first) => {
+            const [left, bottom, right, top] = first.view;
+            const aspect = (top - bottom) / (right - left);
+            if (documentRef.current === pdf && aspect > 0) setPageAspect(aspect);
+          }, () => undefined);
           const restoredPage = Math.max(1, Math.min(pdf.numPages, initialPage));
-          if (restoredPage > 1) {
+          const restorePage = () => {
+            if (restoredPage <= 1) return;
+            scrollRef.current?.querySelector<HTMLElement>(`[data-page="${restoredPage}"]`)?.scrollIntoView({ block: "start" });
+            setPage(restoredPage);
+            onPageChange?.(restoredPage);
+          };
+          // Scroll only once placeholders have their final size and are laid out,
+          // otherwise a later resize would move the target out from under the reader.
+          const afterLayout = (callback: () => void) => void placeholdersSized.then(() => {
             requestAnimationFrame(() => requestAnimationFrame(() => {
-              scrollRef.current?.querySelector<HTMLElement>(`[data-page="${restoredPage}"]`)?.scrollIntoView({ block: "start" });
-              setPage(restoredPage);
-              onPageChange?.(restoredPage);
+              if (documentRef.current === pdf) callback();
             }));
-          }
+          });
+          // A `#pdf-section-<n>` deep link takes precedence over the remembered
+          // page, but only once the outline confirms the section exists.
+          const section = chrome === "reader" ? pdfSectionFromHash(window.location.hash) : undefined;
+          if (section === undefined) afterLayout(restorePage);
+          // A malformed outline must not take the reader down with it.
+          void loadPdfOutline(pdf).catch(() => []).then((entries) => {
+            if (documentRef.current !== pdf) return;
+            setOutline(entries);
+            if (section === undefined) return;
+            const entry = entries[section];
+            afterLayout(() => entry ? sectionNavigation.current(entry, "instant") : restorePage());
+          });
         }}
         onLoadError={(loadError) => setError(loadErrorMessage || pdfErrorMessage(loadError))}
         externalLinkTarget="_blank"
@@ -524,6 +603,7 @@ export function PdfViewer({
             key={pageNumber}
             page={pageNumber}
             width={pageWidth}
+            aspect={pageAspect}
             searchQuery={searchQuery.trim()}
             activeSearchPage={matches[activeMatch]}
             resolveCitation={resolveCitation}
@@ -531,6 +611,12 @@ export function PdfViewer({
           />)}
         </div>
       </Document>}
+    </div>
+    <PdfOutline
+      entries={outline}
+      activeIndex={navigationSection ?? activeSection}
+      onSelect={jumpToSection}
+    />
     </div>
   </div>;
 }
