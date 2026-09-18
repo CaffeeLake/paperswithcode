@@ -36,6 +36,7 @@ from backend.models.chat import (
     ArchiveOldChatsResponse,
     ChatAvailabilityResponse,
     ChatBrowserLatencyRequest,
+    ChatFeedbackListResponse,
     ChatFeedbackRequest,
     ChatMessageResponse,
     ChatRequest,
@@ -2394,6 +2395,20 @@ def report_browser_latency(
     return Response(status_code=204)
 
 
+@router.get(
+    "/admin/feedback",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatFeedbackListResponse,
+)
+def list_chat_feedback(
+    limit: int = Query(default=50, ge=1, le=200),
+    value: bool | None = Query(default=None),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    return ChatFeedbackService(db, settings).list_recent(limit=limit, value=value)
+
+
 @router.post("/messages/{message_id}/feedback", status_code=204)
 def submit_chat_feedback(
     message_id: uuid.UUID,
@@ -2411,10 +2426,14 @@ def submit_chat_feedback(
             comment=body.comment,
         )
     except ChatFeedbackUnavailable:
+        db.rollback()
         raise HTTPException(
             status_code=503,
             detail="Chat feedback is temporarily unavailable",
         ) from None
     if not found:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Assistant response not found")
+    # The request session only closes on exit; the stored rating must commit.
+    db.commit()
     return Response(status_code=204)
