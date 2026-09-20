@@ -81,7 +81,7 @@ def test_live_spend_ceiling_uses_enforced_provider_and_lifecycle_limits():
     )
 
     settings = Settings(
-        chat_openai_pricing_verified_at="2026-08-31",
+        chat_openai_pricing_verified_at="2026-09-20",
         chat_openai_pricing_max_age_days=30,
     )
     provider, total = qualification_spend_ceiling_microusd(

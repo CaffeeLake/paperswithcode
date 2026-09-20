@@ -365,7 +365,7 @@ class Settings(BaseSettings):
     chat_openai_luna_route: str = Field(default="gpt-5.6-luna@openai")
     chat_openai_model: str = Field(default="gpt-5.6-luna", pattern=r"^gpt-5\.6-luna$")
     chat_openai_service_tier: Literal["default"] = Field(default="default")
-    chat_openai_pricing_verified_at: str = Field(default="2026-08-20")
+    chat_openai_pricing_verified_at: str = Field(default="2026-09-20")
     chat_openai_pricing_max_age_days: int = Field(default=30, ge=1, le=90)
     chat_openai_input_microusd_per_million_tokens: int = Field(default=200_000, ge=1)
     chat_openai_cached_input_microusd_per_million_tokens: int = Field(

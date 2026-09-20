@@ -44,7 +44,7 @@ def _settings(**overrides) -> Settings:
     values = {
         "environment": "staging",
         "jwt_secret": "test-secret-not-for-production",
-        "chat_openai_pricing_verified_at": "2026-08-20",
+        "chat_openai_pricing_verified_at": "2026-09-20",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
