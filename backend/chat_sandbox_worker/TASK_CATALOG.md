@@ -19,8 +19,8 @@ The goal is to split up those tasks in the future.
 - `audio-understanding` — Audio understanding
 - `speaker-verification` — Speaker Verification
 - `audio-compression` — Audio Compression
-- `voice-cloning` — Voice cloning
 - `speaker-diarization` — Speaker Diarization
+- `voice-cloning` — Voice cloning
 - `audio-classification` — Audio Classification
 - `audio-editing` — Audio and Speech Editing
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
