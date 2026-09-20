@@ -235,6 +235,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `video-understanding` — Video Understanding
 - `visual-grounding` — Visual Grounding
 - `visual-place-recognition` — Visual Place Recognition
+- `visual-place-recognition-re-ranking` — Visual Place Recognition with Re-ranking
 - `voice-cloning` — Voice cloning
 - `world-knowledge` — World Knowledge
 - `world-models` — World Models
