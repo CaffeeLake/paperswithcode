@@ -37,8 +37,8 @@ The goal is to split up those tasks in the future.
 - `world-models` — World Models
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
-- `anomaly-detection` — Anomaly Detection
 - `coding-agents` — Coding Agents
+- `anomaly-detection` — Anomaly Detection
 
 ### Language
 
