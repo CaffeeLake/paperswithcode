@@ -255,6 +255,7 @@ def test_preflight_uses_discovered_project_candidate_for_conditional_html(
 def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
     monkeypatch,
     image_caption,
+    tmp_path,
 ):
     monkeypatch.setenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV, "hf-test")
     monkeypatch.setattr(
@@ -290,6 +291,7 @@ def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
         _context(project_page=False),
         fetch=fetch,
         fetch_ocr_markdown=fetch_ocr_markdown,
+        source_cache_dir=tmp_path / "paper-sources",
     )
 
     assert result["complete"] is True
@@ -299,6 +301,15 @@ def test_preflight_uses_ocr_markdown_when_public_markdown_is_unavailable(
     }
     assert not result["errors"]
     assert not any("/pdf/" in url for url in fetched)
+    source = next(
+        item for item in result["source_documents"] if item["kind"] == "paper_markdown"
+    )
+    monkeypatch.delenv(url_preflight.OCR_MARKDOWN_TOKEN_ENV)
+    cached = Path(source["local_path"]).read_bytes()
+    assert cached.endswith(PAPER_TEXT)
+    assert hashlib.sha256(cached).hexdigest() == source["sha256"]
+    assert source["url"] == "https://signed.example/markdown"
+    assert "hf-test" not in json.dumps(result)
 
 
 def test_preflight_accepts_ocr_markdown_when_hf_papers_api_has_no_record(

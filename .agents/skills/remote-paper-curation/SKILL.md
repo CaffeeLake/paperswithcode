@@ -13,6 +13,13 @@ python jobs/curation_api.py context
 ```
 
 Read the validated `paper_markdown` or `paper_pdf` in the source manifest.
+When a source document supplies `local_path`, read that file and verify its
+`sha256` before use. Preflight has already downloaded this exact paper text;
+its private bucket URL may return 401 after the download credential is removed.
+Use the supplied `url` for citations and source coverage, and the local file for
+reading. Never request or recover the removed bucket credential. Do not treat a
+401 from re-fetching that URL as missing evidence when the verified local copy
+is available.
 A cached image caption, SVG title, diagram notice, empty wrapper, or successful
 HTTP response alone does not count as reading the paper. The PDF preflight
 checks only the first two pages for readable content and artifact URLs; read

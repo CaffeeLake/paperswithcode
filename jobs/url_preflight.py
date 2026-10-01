@@ -193,6 +193,7 @@ def extract_candidates(
     *,
     fetch=_fetch,
     fetch_ocr_markdown=_fetch_ocr_markdown,
+    source_cache_dir: Path | None = None,
 ) -> dict:
     paper = context["paper"]
     arxiv_id = paper.get("arxiv_id")
@@ -211,6 +212,11 @@ def extract_candidates(
                 "sha256": hashlib.sha256(body).hexdigest(),
             }
         )
+        if source_cache_dir is not None and source in {"hf_markdown", "ocr_markdown"}:
+            source_cache_dir.mkdir(parents=True, exist_ok=True)
+            cached = source_cache_dir / f"{hashlib.sha256(body).hexdigest()}.md"
+            cached.write_bytes(body)
+            sources[-1]["local_path"] = str(cached.resolve())
 
     def add(raw: str, source: str, base_url: str | None = None) -> None:
         normalized = normalize_candidate(raw, base_url)
@@ -410,6 +416,11 @@ def extract_candidates(
     for source in sources:
         if source.get("source") in {"hf_markdown", "ocr_markdown"}:
             document("paper_markdown", source.get("final_url"))
+            if source.get("local_path"):
+                for entry in source_documents:
+                    if entry["url"] == source["final_url"]:
+                        entry["local_path"] = source["local_path"]
+                        entry["sha256"] = source["sha256"]
         elif source.get("source") == "paper_pdf":
             document("paper_pdf", source.get("url"))
 
@@ -454,7 +465,14 @@ def main() -> None:
         raise SystemExit("usage: url_preflight.py CONTEXT.json OUTPUT.json")
     context = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     Path(sys.argv[2]).write_text(
-        json.dumps(extract_candidates(context), indent=2), encoding="utf-8"
+        json.dumps(
+            extract_candidates(
+                context,
+                source_cache_dir=Path(sys.argv[2]).resolve().parent / "paper-sources",
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
 
