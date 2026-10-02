@@ -91,3 +91,37 @@ async def test_slot_released_on_exception_or_cancellation(failure):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "accept", "content_type"),
+    [
+        ("/paper/2609.38597", "text/html", b"text/html"),
+        ("/api/v1/papers/", "text/html", b"application/json"),
+        ("/paper/2609.38597", "application/json", b"application/json"),
+    ],
+)
+async def test_saturation_uses_html_only_for_browser_pages(path, accept, content_type):
+    async def app(*args):
+        pytest.fail("Saturated requests must not allocate catalog resources")
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    request = scope(path)
+    request["headers"] = [(b"accept", accept.encode())]
+    middleware = CatalogAdmissionMiddleware(app, limit=0)
+    await middleware(request, None, send)
+
+    assert sent[0]["status"] == 503
+    headers = dict(sent[0]["headers"])
+    assert headers[b"content-type"].startswith(content_type)
+    assert headers[b"cache-control"] == b"no-store"
+    assert headers[b"retry-after"] == b"1"
+    if content_type == b"text/html":
+        assert b'<a href="">Try again</a>' in sent[1]["body"]
+    else:
+        assert b'"detail":"Catalog is busy. Please retry shortly."' in sent[1]["body"]

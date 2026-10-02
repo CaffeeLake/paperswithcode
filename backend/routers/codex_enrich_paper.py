@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from backend.config import Settings, get_settings
 from backend.database.connection import get_database_session
@@ -47,7 +48,8 @@ async def start_job(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        return _service(db).start(
+        return await run_in_threadpool(
+            _service(db).start,
             kind="enrich-paper",
             paper_id=body.paper_id,
             requested_by=admin["username"],
@@ -65,7 +67,7 @@ async def get_job(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        return _service(db).get(job_id, settings)
+        return await run_in_threadpool(_service(db).get, job_id, settings)
     except (CodexPaperJobsDisabledError, CodexPaperJobNotFoundError) as error:
         raise _not_found(error) from error
 
@@ -78,6 +80,6 @@ async def cancel_job(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        return _service(db).cancel(job_id, settings)
+        return await run_in_threadpool(_service(db).cancel, job_id, settings)
     except (CodexPaperJobsDisabledError, CodexPaperJobNotFoundError) as error:
         raise _not_found(error) from error

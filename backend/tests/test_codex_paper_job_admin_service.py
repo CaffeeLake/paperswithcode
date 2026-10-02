@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from types import SimpleNamespace
 
@@ -240,3 +241,45 @@ def test_start_routes_translate_domain_errors_exactly(
 
     assert error.value.status_code == 404
     assert error.value.detail == detail
+
+
+@pytest.mark.parametrize("router_module", [codex_add_evals, codex_enrich_paper])
+@pytest.mark.parametrize("operation", ["start", "get", "cancel"])
+def test_blocking_job_operations_run_off_the_event_loop(
+    monkeypatch, router_module, operation
+):
+    calls = []
+
+    class Service:
+        def __getattr__(self, name):
+            def blocking_operation(*args, **kwargs):
+                calls.append((name, threading.get_ident()))
+                raise (
+                    CodexPaperJobNotFoundError("Job not found")
+                    if name != "start"
+                    else CodexPaperNotFoundError("Paper not found")
+                )
+
+            return blocking_operation
+
+    monkeypatch.setattr(router_module, "_service", lambda db: Service())
+
+    async def invoke():
+        loop_thread = threading.get_ident()
+        with pytest.raises(HTTPException) as error:
+            if operation == "start":
+                await router_module.start_job(
+                    SimpleNamespace(paper_id=42),
+                    {"username": "admin"},
+                    object(),
+                    _settings(),
+                )
+            else:
+                await getattr(router_module, operation + "_job")(
+                    uuid.uuid4(), {}, object(), _settings()
+                )
+        assert error.value.status_code == 404
+        assert calls[0][0] == operation
+        assert calls[0][1] != loop_thread
+
+    asyncio.run(invoke())

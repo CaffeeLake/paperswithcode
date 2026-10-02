@@ -1,6 +1,7 @@
 """Bound concurrent catalog reads before they allocate DB and response state."""
 
-from starlette.responses import JSONResponse
+from starlette.datastructures import Headers
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
@@ -54,11 +55,28 @@ class CatalogAdmissionMiddleware:
         # No await between checking and reserving: admission is atomic on the
         # worker's event loop and never creates an unbounded waiting queue.
         if self.active >= self.limit:
-            await JSONResponse(
+            response = JSONResponse(
                 {"detail": "Catalog is busy. Please retry shortly."},
                 status_code=503,
                 headers={"Retry-After": "1", "Cache-Control": "no-store"},
-            )(scope, receive, send)
+            )
+            if not scope["path"].startswith("/api/") and "text/html" in Headers(
+                scope=scope
+            ).get("accept", ""):
+                response = HTMLResponse(
+                    '<!doctype html><html lang="en"><head>'
+                    '<meta charset="utf-8">'
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    "<title>Please try again · Papers with Code</title>"
+                    '</head><body style="font:18px system-ui;max-width:36rem;'
+                    'margin:12vh auto;padding:24px">'
+                    "<h1>Please try again</h1>"
+                    "<p>Papers with Code is busy. Please try again in a moment.</p>"
+                    '<a href="">Try again</a></body></html>',
+                    status_code=503,
+                    headers={"Retry-After": "1", "Cache-Control": "no-store"},
+                )
+            await response(scope, receive, send)
             return
         self.active += 1
         try:
