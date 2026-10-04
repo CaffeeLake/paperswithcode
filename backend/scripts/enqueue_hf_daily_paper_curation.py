@@ -11,6 +11,8 @@ from datetime import date
 from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.services.codex_add_evals_service import CanaryDispatchFailed
+from backend.models.database import PaperCurationJob
+from backend.services.curation_trace_service import CurationTraceService
 from backend.services.hf_daily_curation_service import (
     CurationRetryConflict,
     HFDailyCurationService,
@@ -28,6 +30,8 @@ def main() -> int:
     action.add_argument("--disable-dispatch", action="store_true")
     action.add_argument("--canary-job", type=uuid.UUID)
     action.add_argument("--retry-job", type=uuid.UUID)
+    action.add_argument("--retry-trace", type=uuid.UUID)
+    action.add_argument("--reconcile-jobs", action="store_true")
     action.add_argument("--validate-job", type=uuid.UUID)
     action.add_argument("--status", action="store_true")
     parser.add_argument("--reason")
@@ -37,6 +41,14 @@ def main() -> int:
     try:
         service = HFDailyCurationService(db, get_settings())
         if args.status:
+            result = service.status()
+        elif args.retry_trace:
+            row = db.get(PaperCurationJob, args.retry_trace)
+            if row is None or row.trace_status != "finalize_failed":
+                raise ValueError("Job is not awaiting trace finalization")
+            result = CurationTraceService(db, service.settings).retry_finalize(row)
+        elif args.reconcile_jobs:
+            service.job_service.reconcile(db, service.settings)
             result = service.status()
         elif args.canary_job:
             try:

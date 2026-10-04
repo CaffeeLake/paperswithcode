@@ -142,3 +142,82 @@ def test_upload_worker_module_runs_under_release_interpreter():
         curation_trace_service.UPLOAD_WORKER.name == "curation_trace_upload_worker.py"
     )
     assert Path(sys.executable).exists()
+
+
+def test_trace_accepts_large_compressible_events_without_losing_bytes():
+    import base64
+    import gzip
+
+    raw = b'{"type":"tool_output","text":"' + b"x" * 14_200_000 + b'"}\n'
+    encoded = base64.b64encode(gzip.compress(raw)).decode()
+    assert curation_trace_service.CurationTraceService.decode_events(encoded) == raw
+
+
+def test_trace_rejects_expansion_beyond_bound(monkeypatch):
+    import base64
+    import gzip
+
+    monkeypatch.setattr(curation_trace_service, "MAX_EXPANDED_TRACE_BYTES", 1024)
+    encoded = base64.b64encode(gzip.compress(b"x" * 1025)).decode()
+    with pytest.raises(ValueError, match="trace is too large"):
+        curation_trace_service.CurationTraceService.decode_events(encoded)
+
+
+def test_trace_preserves_compressed_size_limit(monkeypatch):
+    import base64
+    import gzip
+
+    monkeypatch.setattr(curation_trace_service, "MAX_TRACE_BYTES", 1)
+    encoded = base64.b64encode(gzip.compress(b"ok")).decode()
+    with pytest.raises(ValueError, match="compressed trace is too large"):
+        curation_trace_service.CurationTraceService.decode_events(encoded)
+
+
+def test_cli_recovers_only_trace_without_redispatch(monkeypatch):
+    import uuid
+    from types import SimpleNamespace
+    from backend.scripts import enqueue_hf_daily_paper_curation as cli
+
+    job_id = uuid.uuid4()
+    row = SimpleNamespace(id=job_id, trace_status="finalize_failed")
+    db = SimpleNamespace(get=lambda model, key: row if key == job_id else None)
+    calls = []
+    settings = object()
+
+    def session():
+        yield db
+
+    monkeypatch.setattr(cli, "get_database_session", session)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        cli, "HFDailyCurationService", lambda *args: SimpleNamespace(settings=settings)
+    )
+    monkeypatch.setattr(
+        cli,
+        "CurationTraceService",
+        lambda *args: SimpleNamespace(
+            retry_finalize=lambda selected: calls.append(selected)
+            or {"status": "stored"}
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["curation", "--retry-trace", str(job_id)])
+    assert cli.main() == 0
+    assert calls == [row]
+
+
+def test_cli_rejects_trace_retry_for_nonfailed_trace(monkeypatch):
+    import uuid
+    from types import SimpleNamespace
+    from backend.scripts import enqueue_hf_daily_paper_curation as cli
+
+    def session():
+        yield SimpleNamespace(
+            get=lambda *args: SimpleNamespace(trace_status="complete")
+        )
+
+    monkeypatch.setattr(cli, "get_database_session", session)
+    monkeypatch.setattr(cli, "get_settings", lambda: object())
+    monkeypatch.setattr(cli, "HFDailyCurationService", lambda *args: object())
+    monkeypatch.setattr(sys, "argv", ["curation", "--retry-trace", str(uuid.uuid4())])
+    with pytest.raises(ValueError, match="not awaiting"):
+        cli.main()

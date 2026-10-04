@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import io
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ SECRET_PATTERNS = (
     re.compile(r"\b(?:hf|sk)-[A-Za-z0-9_-]{12,}\b"),
 )
 MAX_TRACE_BYTES = 8_000_000
+MAX_EXPANDED_TRACE_BYTES = 32_000_000
 UPLOAD_TIMEOUT_SECONDS = 180
 UPLOAD_WORKER = Path(__file__).with_name("curation_trace_upload_worker.py")
 
@@ -167,8 +169,11 @@ class CurationTraceService:
         compressed = base64.b64decode(encoded, validate=True)
         if len(compressed) > MAX_TRACE_BYTES:
             raise ValueError("compressed trace is too large")
-        raw = gzip.decompress(compressed)
-        if len(raw) > MAX_TRACE_BYTES:
+        # Tool output can expand well beyond the wire-size budget. Bound the
+        # read itself so oversized gzip payloads cannot exhaust an API worker.
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+            raw = stream.read(MAX_EXPANDED_TRACE_BYTES + 1)
+        if len(raw) > MAX_EXPANDED_TRACE_BYTES:
             raise ValueError("trace is too large")
         return redact_trace(raw)
 
