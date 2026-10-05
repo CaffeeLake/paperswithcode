@@ -70,8 +70,8 @@ The goal is to split up those tasks in the future.
 - `video-generation` — Video generation
 - `video-understanding` — Video Understanding
 - `video-classification` — Video classification
-- `video-editing` — Video Editing
 - `video-segmentation` — Video segmentation
+- `video-editing` — Video Editing
 - `object-tracking` — Object Tracking
 - `video-compression` — Video Compression
 - `video-frame-interpolation` — Video frame interpolation
