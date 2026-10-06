@@ -32,8 +32,8 @@ The goal is to split up those tasks in the future.
 - `reasoning` — Reasoning
 - `agents` — Agents
 - `math` — Mathematics
-- `pseudo-labelling` — Pseudo Labelling
 - `robotics` — Robotics
+- `pseudo-labelling` — Pseudo Labelling
 - `world-models` — World Models
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
