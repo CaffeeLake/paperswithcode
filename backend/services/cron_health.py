@@ -1242,6 +1242,24 @@ class OutputEvaluationContext:
     dependency_status: str | None
 
 
+def _tabarena_contract(
+    status: str,
+    reasons: List[str],
+    context: OutputEvaluationContext,
+) -> tuple[str, List[str]]:
+    stale = context.db.get("stale_evaluations")
+    if stale is None:
+        return _worse_output(status, "unknown"), reasons + [
+            "TabArena owned-row freshness evidence is unavailable"
+        ]
+    if stale:
+        return _worse_output(status, "degraded"), reasons + [
+            f"{stale} managed TabArena evaluations are stale; "
+            "check unresolved paper identities"
+        ]
+    return status, reasons
+
+
 def _workflow_output_contract(
     status: str,
     reasons: List[str],
@@ -1865,6 +1883,28 @@ def _enrichment_snapshot_contract(status, reasons, context):
     return "healthy", ["fresh valid local snapshot and successful export completion"]
 
 
+def _artificial_analysis_contract(
+    status: str,
+    reasons: List[str],
+    context: OutputEvaluationContext,
+) -> tuple[str, List[str]]:
+    stale = context.db.get("stale_evaluations")
+    missing = context.db.get("missing_fresh_datasets")
+    if stale is None or missing is None:
+        return _worse_output(status, "unknown"), reasons + [
+            "Artificial Analysis cohort freshness evidence is unavailable"
+        ]
+    if missing:
+        status = _worse_output(status, "degraded")
+        reasons.append(
+            f"{missing} Artificial Analysis datasets lack fresh managed rows"
+        )
+    if stale:
+        status = _worse_output(status, "degraded")
+        reasons.append(f"{stale} Artificial Analysis managed evaluations are stale")
+    return status, reasons
+
+
 @dataclass(frozen=True)
 class OutputPolicy:
     """Registry-selected output rules and their operator guidance."""
@@ -1876,8 +1916,10 @@ class OutputPolicy:
 
 
 OUTPUT_POLICIES = {
+    "artificial_analysis": OutputPolicy(_artificial_analysis_contract),
     "enrichment_snapshot": OutputPolicy(_enrichment_snapshot_contract),
     "generic": OutputPolicy(lambda status, reasons, _context: (status, reasons)),
+    "tabarena": OutputPolicy(_tabarena_contract),
     "github_stars": OutputPolicy(_github_stars_contract),
     "hot_github_trending": OutputPolicy(_hot_github_trending_contract),
     "repository_trending": OutputPolicy(_trending_contract),

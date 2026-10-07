@@ -610,7 +610,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         systemd_timer="pwc-cron-sync-tabarena.timer",
         systemd_service="pwc-cron-sync-tabarena.service",
         systemd_extra_units=(),
-        output_evaluator="generic",
+        output_evaluator="tabarena",
         display_name="Sync TabArena",
         category="hourly",
         schedule="55 * * * * (hourly)",
@@ -627,10 +627,19 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    count(*) FILTER (
                      WHERE e.updated_at > now() - interval '2 hours 30 minutes'
                    ) AS recent_writes,
-                   count(*) AS matched_evaluations
+                   count(*) AS matched_evaluations,
+                   min(e.updated_at) AS oldest_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at IS NULL OR
+                           e.updated_at <= now() - interval '2 hours 30 minutes'
+                   ) AS stale_evaluations
             FROM evaluations e
             JOIN datasets d ON d.id = e.dataset_id
+            JOIN tasks t ON t.id = e.task_id
             WHERE d.slug = 'tabarena-v0-1'
+              AND t.slug = 'tabular-learning'
+              AND e.methodology LIKE
+                  'Managed by the Papers with Code TabArena live sync.%'
               AND e.best_metric = 'Elo'
               AND e.external_source_url =
                   'https://huggingface.co/spaces/TabArena/leaderboard'
@@ -968,7 +977,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         systemd_timer="pwc-cron-sync-artificial-analysis.timer",
         systemd_service="pwc-cron-sync-artificial-analysis.service",
         systemd_extra_units=(),
-        output_evaluator="generic",
+        output_evaluator="artificial_analysis",
         display_name="Sync Artificial Analysis Leaderboards",
         category="hourly",
         schedule="35 * * * * (hourly)",
@@ -1012,33 +1021,17 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                   )
             )
             SELECT max(updated_at) AS last_write,
-                   LEAST(
-                     count(*) FILTER (
-                       WHERE dataset_slug = 'artificial-analysis-intelligence-index'
-                         AND updated_at > now() - interval '2 hours 30 minutes'
-                     ),
-                     count(*) FILTER (
-                       WHERE dataset_slug = 'artificial-analysis-agentic-index'
-                         AND updated_at > now() - interval '2 hours 30 minutes'
-                     ),
-                     count(*) FILTER (
-                       WHERE dataset_slug =
-                         'artificial-analysis-provider-voice-tts-arena'
-                         AND updated_at > now() - interval '2 hours 30 minutes'
-                     )
+                   count(*) FILTER (
+                     WHERE updated_at > now() - interval '2 hours 30 minutes'
                    ) AS recent_writes,
-                   LEAST(
-                     count(*) FILTER (
-                       WHERE dataset_slug = 'artificial-analysis-intelligence-index'
-                     ),
-                     count(*) FILTER (
-                       WHERE dataset_slug = 'artificial-analysis-agentic-index'
-                     ),
-                     count(*) FILTER (
-                       WHERE dataset_slug =
-                         'artificial-analysis-provider-voice-tts-arena'
-                     )
-                   ) AS matched_evaluations
+                   count(*) AS matched_evaluations,
+                   count(*) FILTER (
+                     WHERE updated_at IS NULL
+                        OR updated_at <= now() - interval '2 hours 30 minutes'
+                   ) AS stale_evaluations,
+                   3 - count(DISTINCT dataset_slug) FILTER (
+                     WHERE updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS missing_fresh_datasets
             FROM managed_evaluations
         """,
         workflow_file="cron-sync-artificial-analysis.yml",
