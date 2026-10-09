@@ -554,6 +554,7 @@ class HFDailyCurationService:
             canary_capacity,
             reconcile_limit,
         )
+        admission_capacity = min(capacity, reconcile_limit)
 
         for cohort_date, order, arxiv_id in discovered:
             paper = (
@@ -596,13 +597,16 @@ class HFDailyCurationService:
                     ):
                         self._enqueue_workflow(existing, paper, priority=10)
                         create_capacity -= 1
+                        admission_capacity -= 1
                         summary["released_deferred"] += 1
                 if (
                     existing.status in {"failed", "partial"}
-                    and summary["retried"] < reconcile_limit
+                    and admission_capacity > 0
                     and self.retry_terminal_workflow(existing)
                 ):
                     summary["retried"] += 1
+                    admission_capacity -= 1
+                    create_capacity = max(0, create_capacity - 1)
                 continue
             admin_success = {
                 kind: self.db.query(PaperCurationJob)
@@ -646,20 +650,25 @@ class HFDailyCurationService:
                 summary["deferred"] += 1
             else:
                 create_capacity -= 1
+                admission_capacity -= 1
                 summary["created"] += 1
             self.db.add(workflow)
             self.db.flush()
             if workflow.status == "queued":
                 self._enqueue_workflow(workflow, paper, priority=10)
 
+        # Resume source-ready historical work too; blocked daily papers must
+        # not prevent it from using capacity left after daily admission. Existing
+        # awaiting-Markdown workflows may resume even before the canary opens.
+        self.db.flush()
+        markdown_ready = self.release_awaiting_markdown(admission_capacity)
+        create_capacity = max(0, create_capacity - markdown_ready)
+        summary["released_markdown_ready"] += markdown_ready
+
         # Only fill spare capacity with historical work after admitting today's
         # rolling HF daily cohort, including previously deferred daily papers.
         self.db.flush()
-        deferred = (
-            []
-            if has_pending_daily_papers(self.db)
-            else deferred_workflows_for_release(self.db, create_capacity)
-        )
+        deferred = deferred_workflows_for_release(self.db, create_capacity)
         for workflow in deferred:
             paper = self.db.get(Paper, workflow.paper_id)
             if paper is None:
