@@ -54,6 +54,14 @@ RESERVED_AGENT_FIELDS = {
 }
 
 
+def benchmark_candidate_identity_key(gap: dict) -> str:
+    """Return a stable identity for the proposed benchmark, not its evidence."""
+    normalized = gap["_normalized"]
+    name = re.sub(r"[^a-z0-9]", "", normalized["name"].lower())
+    identity_source = f"benchmark-v2:{gap['gap_type']}:{name}"
+    return hashlib.sha256(identity_source.encode()).hexdigest()
+
+
 def _bounded_text(value: Any, name: str, limit: int = 2_000) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} is required")
@@ -527,21 +535,40 @@ class BenchmarkGapService:
     def persist(
         self, *, paper_id: int, job_id: uuid.UUID, gaps: list[dict]
     ) -> list[dict]:
-        results = []
-        for gap in gaps:
+        keyed_gaps = [(benchmark_candidate_identity_key(gap), gap) for gap in gaps]
+        results = {}
+        # Lock candidates in key order so concurrent jobs sharing benchmarks
+        # cannot deadlock; results keep the agent's gap order.
+        for identity_key, gap in sorted(keyed_gaps, key=lambda item: item[0]):
             normalized = gap.pop("_normalized")
-            identity_source = normalized["canonical_url"] or (
-                re.sub(r"[^a-z0-9]", "", normalized["name"].lower())
-                + ":"
-                + ",".join(map(str, normalized["task_ids"]))
-            )
-            identity_key = hashlib.sha256(identity_source.encode()).hexdigest()
             row = (
                 self.db.query(BenchmarkCurationCandidate)
                 .filter(BenchmarkCurationCandidate.identity_key == identity_key)
                 .with_for_update()
                 .one_or_none()
             )
+            if row is None:
+                # Pre-v2 rows hashed the evidence URL. Reuse a same-name
+                # candidate so later papers still aggregate onto it.
+                name_key = re.sub(r"[^a-z0-9]", "", normalized["name"].lower())
+                row = (
+                    self.db.query(BenchmarkCurationCandidate)
+                    .filter(BenchmarkCurationCandidate.gap_type == gap["gap_type"])
+                    .filter(
+                        func.regexp_replace(
+                            func.lower(BenchmarkCurationCandidate.canonical_name),
+                            "[^a-z0-9]",
+                            "",
+                            "g",
+                        )
+                        == name_key
+                    )
+                    .order_by(BenchmarkCurationCandidate.first_seen_at.asc())
+                    .with_for_update()
+                    .first()
+                )
+                if row is not None:
+                    row.identity_key = identity_key
             if row is None:
                 row = BenchmarkCurationCandidate(
                     id=uuid.uuid4(),
@@ -583,8 +610,11 @@ class BenchmarkGapService:
                 .scalar()
                 or 0
             )
-            results.append({"candidate_id": str(row.id), "identity_key": identity_key})
-        return results
+            results[identity_key] = {
+                "candidate_id": str(row.id),
+                "identity_key": identity_key,
+            }
+        return [results[identity_key] for identity_key, _ in keyed_gaps]
 
     def promote_and_enqueue(
         self,

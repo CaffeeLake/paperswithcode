@@ -38,7 +38,10 @@ from backend.models.database import (
     Task,
     TaskDataset,
 )
-from backend.services.benchmark_gap_service import BenchmarkGapService
+from backend.services.benchmark_gap_service import (
+    BenchmarkGapService,
+    benchmark_candidate_identity_key,
+)
 from backend.services.autonomous_operations_repository import (
     AutonomousOperationsRepository,
     Operator,
@@ -2247,6 +2250,178 @@ def test_benchmark_gap_rejects_server_owned_fields():
     assert rejected == [
         {"index": 0, "error": "agent proposal contains server-owned fields"}
     ]
+
+
+def test_benchmark_candidate_identity_uses_benchmark_name_not_evidence_url():
+    osworld = {
+        "gap_type": "dataset_missing",
+        "_normalized": {
+            "name": "OSWorld 2.0 (0808 offline)",
+            "canonical_url": "https://arxiv.org/abs/2609.15364",
+        },
+    }
+    agents_last_exam = {
+        "gap_type": "dataset_missing",
+        "_normalized": {
+            "name": "Agents' Last Exam (Near-term)",
+            "canonical_url": "https://arxiv.org/abs/2609.15364",
+        },
+    }
+    gamecraft_from_another_paper = {
+        "gap_type": "dataset_missing",
+        "_normalized": {
+            "name": "GameCraft Bench",
+            "canonical_url": "https://arxiv.org/abs/2609.01481",
+        },
+    }
+    gamecraft_from_result_paper = {
+        "gap_type": "dataset_missing",
+        "_normalized": {
+            "name": "GameCraft-Bench",
+            "canonical_url": "https://arxiv.org/abs/2609.15364",
+        },
+    }
+
+    assert benchmark_candidate_identity_key(osworld) != (
+        benchmark_candidate_identity_key(agents_last_exam)
+    )
+    assert benchmark_candidate_identity_key(gamecraft_from_another_paper) == (
+        benchmark_candidate_identity_key(gamecraft_from_result_paper)
+    )
+
+
+def test_benchmark_gap_persist_upgrades_matching_legacy_identity():
+    legacy = SimpleNamespace(
+        id=uuid.uuid4(),
+        identity_key="legacy-url-hash",
+        gap_type="dataset_missing",
+        canonical_name="GameCraft-Bench",
+        last_seen_at=None,
+        distinct_paper_count=0,
+    )
+
+    class Query:
+        def __init__(self, result):
+            self.result = result
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def one_or_none(self):
+            return self.result
+
+        def first(self):
+            return self.result
+
+        def scalar(self):
+            return self.result
+
+    class Database:
+        def __init__(self):
+            self.query_count = 0
+            self.added = []
+
+        def query(self, _model):
+            self.query_count += 1
+            return Query({1: None, 2: legacy, 3: None, 4: 1}[self.query_count])
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            pass
+
+    gap = {
+        "gap_type": "dataset_missing",
+        "reasoning": "The exact protocol is absent.",
+        "_normalized": {
+            "name": "GameCraft Bench",
+            "canonical_url": "https://arxiv.org/abs/2609.15364",
+            "task_ids": [15],
+            "aliases": [],
+        },
+    }
+    expected_key = benchmark_candidate_identity_key(gap)
+    database = Database()
+
+    result = BenchmarkGapService(database).persist(
+        paper_id=114228,
+        job_id=uuid.uuid4(),
+        gaps=[gap],
+    )
+
+    assert legacy.identity_key == expected_key
+    assert result == [{"candidate_id": str(legacy.id), "identity_key": expected_key}]
+    assert len(database.added) == 1
+    assert isinstance(database.added[0], BenchmarkCurationEvidence)
+
+
+def test_benchmark_gap_persist_locks_candidates_in_identity_order():
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def one_or_none(self):
+            return None
+
+        def first(self):
+            return None
+
+        def scalar(self):
+            return 1
+
+    class Database:
+        def __init__(self):
+            self.added = []
+
+        def query(self, _model):
+            return Query()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            pass
+
+    def gap(name):
+        return {
+            "gap_type": "dataset_missing",
+            "reasoning": "The exact protocol is absent.",
+            "_normalized": {
+                "name": name,
+                "canonical_url": None,
+                "task_ids": [15],
+                "aliases": [],
+            },
+        }
+
+    gaps = [gap("OSWorld 0808"), gap("GameCraft-Bench"), gap("ALE Near-term")]
+    expected_keys = [benchmark_candidate_identity_key(item) for item in gaps]
+    database = Database()
+
+    result = BenchmarkGapService(database).persist(
+        paper_id=114228, job_id=uuid.uuid4(), gaps=gaps
+    )
+
+    locked_keys = [
+        row.identity_key
+        for row in database.added
+        if not isinstance(row, BenchmarkCurationEvidence)
+    ]
+    assert locked_keys == sorted(expected_keys)
+    assert [item["identity_key"] for item in result] == expected_keys
 
 
 def test_reviewed_benchmark_promotion_requeues_only_evidence_papers():
