@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Github, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
+import { AstraRoboticsFeature } from "@/components/AstraRoboticsFeature";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { PaperDateFilter } from "@/components/PaperDateFilter";
@@ -495,6 +496,8 @@ const TagBrowseView: React.FC = () => {
       {task.slug === "healthcare" && (
         <HealthcareMedicalAiHub task={task} relatedTasks={sisters} />
       )}
+
+      {task.slug === "robotics" && <AstraRoboticsFeature />}
 
       <div className="task-page-grid" style={{ marginTop: 28 }}>
         <div>
