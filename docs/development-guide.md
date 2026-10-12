@@ -41,7 +41,7 @@ served by nginx in production.
   | --- | --- |
   | Chat sessions, turns, streaming, admission, qualification | `uv run pytest backend/tests/chat -q` |
   | Chat sandbox, executor, worker, broker | `uv run pytest backend/tests/chat_sandbox -q` |
-  | Chat gateway | `uv run pytest backend/tests/chat_gateway -q` |
+  | Chat gateway: provider lifecycle, OpenAI Responses, Anthropic Messages, turn fence, catalog tools | `uv run pytest backend/tests/chat_gateway -q` |
   | Deployment, releases, nginx, host environment | `uv run pytest backend/tests/deployment -q` |
 
 For scripts that mutate domain data, use the existing services where possible.
