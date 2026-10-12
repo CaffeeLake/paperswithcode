@@ -45,6 +45,7 @@ served by nginx in production.
   | Chat budgets and billing: direct OpenAI, OpenRouter, HF inference | `uv run pytest backend/tests/chat_budget -q` |
   | Chat title generation and its budget | `uv run pytest backend/tests/chat_title -q` |
   | Hosted MCP: research catalog, deployment, nginx contract | `uv run pytest backend/tests/mcp -q` |
+  | Curation: autonomous operations, Codex jobs, submissions | `uv run pytest backend/tests/curation -q` |
   | Deployment, releases, nginx, host environment | `uv run pytest backend/tests/deployment -q` |
   | Papers: feeds, search, Markdown pipeline, arXiv/PDF ingestion, thumbnails, SEO | `uv run pytest backend/tests/paper -q` |
   | External Pi fleet, slots, turn runner, workers | `uv run pytest backend/tests/external_pi -q` |
