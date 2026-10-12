@@ -46,6 +46,7 @@ served by nginx in production.
   | Chat title generation and its budget | `uv run pytest backend/tests/chat_title -q` |
   | Hosted MCP: research catalog, deployment, nginx contract | `uv run pytest backend/tests/mcp -q` |
   | Deployment, releases, nginx, host environment | `uv run pytest backend/tests/deployment -q` |
+  | CRON registry, schedules, health, dashboard, logs | `uv run pytest backend/tests/cron -q` |
 
 For scripts that mutate domain data, use the existing services where possible.
 Run them with `uv run --env-file backend/keys.env …`.
