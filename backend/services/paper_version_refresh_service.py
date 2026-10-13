@@ -9,9 +9,11 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from backend.models.papers import Paper
-from backend.services.author_service import normalize_arxiv_author_name
+from backend.services.author_service import (
+    get_or_create_author_by_name,
+    normalize_arxiv_author_name,
+)
 from backend.models.database import (
-    Author as DBAuthor,
     Evaluation as DBEvaluation,
     Paper as DBPaper,
     PaperAuthor,
@@ -321,13 +323,13 @@ class PaperVersionRefreshService:
     def _replace_paper_authors(self, paper_id: int, author_names: List[str]) -> None:
         self.db.query(PaperAuthor).filter(PaperAuthor.paper_id == paper_id).delete()
 
+        linked_ids: set[int] = set()
         for order, full_name in enumerate(author_names, start=1):
             name = normalize_arxiv_author_name(full_name)
-            author = self.db.query(DBAuthor).filter(DBAuthor.name == name).first()
-            if author is None:
-                author = DBAuthor(name=name)
-                self.db.add(author)
-                self.db.flush()
+            author = get_or_create_author_by_name(self.db, name)
+            if author.id in linked_ids:
+                continue
+            linked_ids.add(author.id)
             self.db.add(
                 PaperAuthor(
                     paper_id=paper_id,
