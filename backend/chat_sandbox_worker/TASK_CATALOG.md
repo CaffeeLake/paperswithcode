@@ -93,7 +93,7 @@ The goal is to split up those tasks in the future.
 - `depth-estimation` — Depth estimation
 - `image-editing` — Image editing
 - `3d-generation` — 3D generation
-- `image-inpainting` — Image Inpainting
+- `image-restoration` — Image Restoration
 
 ## Complete task lookup index
 
