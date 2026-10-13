@@ -122,6 +122,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `autonomous-driving` — Autonomous Driving
 - `biology` — Biology
 - `camera-pose-estimation` — Camera Pose Estimation
+- `camouflaged-object-detection` — Camouflaged object detection
 - `classic-language-modeling` — Classic Language Modeling
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `click-through-rate-prediction` — Click-Through Rate Prediction
