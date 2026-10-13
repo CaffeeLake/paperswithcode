@@ -122,6 +122,7 @@ def add_candidate(
     **fields,
 ) -> BenchmarkCurationCandidate:
     fields.setdefault("identity_key", uuid.uuid4().hex)
+    fields.setdefault("first_seen_at", datetime.now(UTC))
     candidate = BenchmarkCurationCandidate(
         id=uuid.uuid4(),
         canonical_name=name,
@@ -131,7 +132,6 @@ def add_candidate(
         status=status,
         distinct_paper_count=papers,
         confidence=confidence,
-        first_seen_at=datetime.now(UTC),
         last_seen_at=datetime.now(UTC),
         **fields,
     )
@@ -264,7 +264,7 @@ def test_review_applies_each_decision_and_queues_creation(db):
 
 def test_review_rejects_ineligible_candidates_and_merge_chains(db):
     approved = add_candidate(db, "Approved", status="approved")
-    with pytest.raises(ValueError, match="not eligible"):
+    with pytest.raises(ValueError, match="outside this review's batch"):
         service(db).apply_review(
             ReviewBenchmarkGapsMutation(
                 summary="x",
@@ -291,6 +291,7 @@ def test_review_rejects_ineligible_candidates_and_merge_chains(db):
                         "merge_into_candidate_id": c.id,
                         "reason": "x",
                     },
+                    {"candidate_id": c.id, "decision": "approve", "reason": "x"},
                 ],
             )
         )
@@ -784,3 +785,102 @@ def test_first_creation_job_of_an_approval_counts_toward_backoff(db):
     review.handle_terminal_job(second)
 
     assert candidate.status == "candidate"
+
+
+def test_review_decides_exactly_the_batch_it_was_served(db):
+    first = add_candidate(db, "Tiny-ImageNet", papers=16)
+    skipped = add_candidate(db, "ModelNet40", papers=9)
+    gone = add_candidate(db, "LaterRejected", papers=4)
+    review = service(db)
+    job = review.job_service.enqueue_benchmark_job(
+        db,
+        kind="review-benchmark-gaps",
+        benchmark_candidate_id=None,
+        requested_by="test",
+        settings=get_settings(),
+        priority=10,
+    )
+    served = review.review_context(job)["candidates"]
+    assert [item["id"] for item in served] == [
+        str(first.id),
+        str(skipped.id),
+        str(gone.id),
+    ]
+    # After the snapshot: a new candidate outranks the batch, one leaves it.
+    late = add_candidate(db, "BrandNewBench", papers=30)
+    gone.status = "rejected"
+    gone.reviewed_paper_count = 4
+    assert review.review_context(job)["candidates"][0]["id"] == str(first.id)
+
+    with pytest.raises(ValueError, match=f"1 have no decision: {skipped.id}"):
+        review.apply_review(
+            ReviewBenchmarkGapsMutation(
+                summary="x",
+                decisions=[
+                    {"candidate_id": first.id, "decision": "approve", "reason": "x"}
+                ],
+            ),
+            scope=job.review_scope,
+        )
+    with pytest.raises(ValueError, match="outside this review's batch"):
+        review.apply_review(
+            ReviewBenchmarkGapsMutation(
+                summary="x",
+                decisions=[
+                    {"candidate_id": late.id, "decision": "approve", "reason": "x"}
+                ],
+            ),
+            scope=job.review_scope,
+        )
+
+    result = review.apply_review(
+        ReviewBenchmarkGapsMutation(
+            summary="x",
+            decisions=[
+                {"candidate_id": first.id, "decision": "approve", "reason": "x"},
+                {"candidate_id": skipped.id, "decision": "defer", "reason": "x"},
+                {"candidate_id": gone.id, "decision": "approve", "reason": "x"},
+            ],
+        ),
+        scope=job.review_scope,
+    )
+
+    assert result["decisions"] == {"approve": 1, "defer": 1}
+    assert result["skipped_no_longer_eligible"] == [str(gone.id)]
+    assert gone.status == "rejected"
+    assert late.status == "candidate" and late.reviewed_at is None
+
+
+def test_skipped_merges_do_not_block_eligible_merges_into_them(db):
+    keep = add_candidate(db, "Tiny-ImageNet", papers=5)
+    middle = add_candidate(db, "TinyImageNet", papers=4)
+    alias = add_candidate(db, "Tiny ImageNet 200", papers=3)
+    scope = [str(keep.id), str(middle.id), str(alias.id)]
+    # Deferred after the snapshot: no longer eligible, still a merge target.
+    middle.deferred_until = datetime.now(UTC) + timedelta(days=1)
+
+    result = service(db).apply_review(
+        ReviewBenchmarkGapsMutation(
+            summary="x",
+            decisions=[
+                {"candidate_id": keep.id, "decision": "approve", "reason": "x"},
+                {
+                    "candidate_id": middle.id,
+                    "decision": "merge",
+                    "merge_into_candidate_id": keep.id,
+                    "reason": "x",
+                },
+                {
+                    "candidate_id": alias.id,
+                    "decision": "merge",
+                    "merge_into_candidate_id": middle.id,
+                    "reason": "x",
+                },
+            ],
+        ),
+        scope=scope,
+    )
+
+    assert result["decisions"] == {"approve": 1, "merge": 1}
+    assert result["skipped_no_longer_eligible"] == [str(middle.id)]
+    assert alias.merged_into_id == middle.id

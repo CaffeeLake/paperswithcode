@@ -466,21 +466,41 @@ class BenchmarkGapReviewService:
             for item in candidates
         ]
 
-    def review_context(self) -> dict:
+    def _batch_ids(self, now: datetime) -> list[str]:
+        return [
+            str(item.id) for item in self.eligible_query(now).limit(REVIEW_BATCH_LIMIT)
+        ]
+
+    def review_context(self, row: PaperCurationJob) -> dict:
+        """Serve the job's frozen batch, recording it on first read."""
         now = _now()
-        query = self.eligible_query(now)
-        candidates = query.limit(REVIEW_BATCH_LIMIT).all()
+        if row.review_scope is None:
+            # Lock the job so overlapping first reads record a single batch.
+            self.db.refresh(row, with_for_update=True)
+            if row.review_scope is None:
+                row.review_scope = self._batch_ids(now)
+            self.db.commit()
+        candidates = {
+            str(item.id): item
+            for item in self.db.query(BenchmarkCurationCandidate).filter(
+                BenchmarkCurationCandidate.id.in_(
+                    [uuid.UUID(value) for value in row.review_scope]
+                )
+            )
+        }
         return {
             "policy": {
                 "min_distinct_papers": MIN_DISTINCT_PAPERS,
-                "eligible_total": query.count(),
+                "eligible_total": self.eligible_query(now).count(),
                 "batch_limit": REVIEW_BATCH_LIMIT,
                 "daily_creation_cap": DAILY_CREATION_CAP,
                 "creation_jobs_today": self._jobs_created_since(
                     "add-benchmark", _utc_midnight(now)
                 ),
             },
-            "candidates": self._summaries(candidates),
+            "candidates": self._summaries(
+                [candidates[value] for value in row.review_scope if value in candidates]
+            ),
         }
 
     def creation_context(self, row: PaperCurationJob) -> dict:
@@ -591,19 +611,58 @@ class BenchmarkGapReviewService:
 
     # Overseer decisions
 
-    def apply_review(self, mutation: ReviewBenchmarkGapsMutation) -> dict:
+    def apply_review(
+        self,
+        mutation: ReviewBenchmarkGapsMutation,
+        *,
+        scope: list[str] | None = None,
+    ) -> dict:
+        """Apply one decision per candidate in the review's frozen batch.
+
+        ``scope`` is the batch served to the job (the current batch when
+        omitted). Every scoped candidate that is still eligible needs a
+        decision; a scoped candidate that left eligibility meanwhile is skipped.
+        """
         now = _now()
+        scope_ids = {
+            uuid.UUID(value)
+            for value in (scope if scope is not None else self._batch_ids(now))
+        }
         eligible = {item.id for item in self.eligible_query(now).all()}
+        outside = [
+            str(item.candidate_id)
+            for item in mutation.decisions
+            if item.candidate_id not in scope_ids
+        ]
+        if outside:
+            raise ValueError(
+                f"Candidates outside this review's batch: {', '.join(outside[:20])}"
+            )
+        decided = {item.candidate_id for item in mutation.decisions}
+        missing = sorted(
+            str(value) for value in scope_ids & eligible if value not in decided
+        )
+        if missing:
+            raise ValueError(
+                f"Decide every candidate in context.review.candidates; "
+                f"{len(missing)} have no decision: {', '.join(missing[:20])}"
+                + (" ..." if len(missing) > 20 else "")
+            )
+        skipped = [
+            str(item.candidate_id)
+            for item in mutation.decisions
+            if item.candidate_id not in eligible
+        ]
         merge_sources = {
-            item.candidate_id for item in mutation.decisions if item.decision == "merge"
+            item.candidate_id
+            for item in mutation.decisions
+            if item.decision == "merge" and item.candidate_id in eligible
         }
         counts: Counter[str] = Counter()
         for decision in mutation.decisions:
+            if decision.candidate_id not in eligible:
+                continue
             candidate = self.db.get(BenchmarkCurationCandidate, decision.candidate_id)
-            if candidate is None or candidate.id not in eligible:
-                raise ValueError(
-                    f"Candidate {decision.candidate_id} is not eligible for review"
-                )
             candidate.review_reason = decision.reason
             # Database time, like the created_at of jobs queued in this transaction.
             candidate.reviewed_at = func.now()
@@ -650,6 +709,7 @@ class BenchmarkGapReviewService:
         return {
             "status": "applied",
             "decisions": dict(counts),
+            "skipped_no_longer_eligible": skipped,
             "summary": mutation.summary,
             "creation_jobs_queued": self.queue_approved_creations(now),
         }
