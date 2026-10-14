@@ -26,6 +26,7 @@ import {
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
   CHAT_REASONING_EFFORT_KEY,
+  CHAT_WEB_SEARCH_KEY,
   clearQueuedChatLaunch,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
@@ -148,6 +149,8 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     ));
   };
   const queuedLaunchRef = useRef(readQueuedChatLaunch());
+  // Queued launch controls belong to the chat the launch returns to.
+  const queuedLaunchRouteRef = useRef(routeSessionId ?? null);
   const requestedModelRef = useRef(searchParams.get("model") || queuedLaunchRef.current?.model);
   const [models, setModels] = useState<ChatModelChoice[]>(
     staging ? STAGING_FALLBACK_CHAT_MODELS : PRODUCTION_FALLBACK_CHAT_MODELS,
@@ -172,7 +175,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
   );
   const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
   const [webSearchEnabled, setWebSearchEnabled] = useState(
-    () => queuedLaunchRef.current?.webSearchEnabled ?? false,
+    () => queuedLaunchRef.current?.webSearchEnabled ?? true,
   );
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     () => queuedLaunchRef.current?.reasoningEffort ?? "low",
@@ -262,6 +265,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.setItem(CHAT_REASONING_EFFORT_KEY, reasoningEffort);
+    sessionStorage.setItem(CHAT_WEB_SEARCH_KEY, webSearchEnabled ? "1" : "0");
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
     const returnTo = mode === "paper" && primaryPaper
@@ -270,7 +274,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
         ? `/chat/${routeSessionIdRef.current}`
         : "/chat";
     window.location.href = hfLoginUrl(returnTo, selectedProvider === "huggingface");
-  }, [mode, primaryPaper, reasoningEffort, selectedModel, selectedProvider]);
+  }, [mode, primaryPaper, reasoningEffort, selectedModel, selectedProvider, webSearchEnabled]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -332,6 +336,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     sessionStorage.removeItem(CHAT_MODEL_KEY);
     sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
     clearQueuedChatLaunch();
+    queuedLaunchRef.current = null;
     setDraft(emptyDraft());
     onPaperSelectionChange?.(undefined);
     if (mode === "paper") onReaderSubmit?.();
@@ -396,7 +401,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     if (!selectedId) {
       loadChat([], null);
       if (initializedRoute !== undefined) {
-        setWebSearchEnabled(false);
+        setWebSearchEnabled(true);
         setReasoningEffort("low");
       }
       setInitializedRoute(null);
@@ -411,7 +416,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     });
     setSessionError("");
     setSelectedModel(detail.selected_model);
-    const queued = queuedLaunchRef.current && detail.messages.length === 0 ? queuedLaunchRef.current : null;
+    const queued = selectedId === queuedLaunchRouteRef.current ? queuedLaunchRef.current : null;
     setWebSearchEnabled(queued ? queued.webSearchEnabled : detail.web_search_enabled);
     setReasoningEffort(queued ? queued.reasoningEffort : detail.reasoning_effort ?? "high");
   }, [routeSessionId, selectedTurn, detail, loadChat, activeConfiguration, routeQuery.isFetching, initializedRoute]);
@@ -475,7 +480,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     setInitializedRoute(null);
     setDraft(emptyDraft());
     onPaperSelectionChange?.(undefined);
-    setWebSearchEnabled(false);
+    setWebSearchEnabled(true);
     setReasoningEffort("low");
     if (mode === "paper") onReaderNewChat?.();
     else navigate("/chat");

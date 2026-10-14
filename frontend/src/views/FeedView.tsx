@@ -123,7 +123,7 @@ export const AskAssistant: React.FC = () => {
   const question = draft.text;
   const [scrollTop, setScrollTop] = useState(0);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [launching, setLaunching] = useState(false);
   // Set when the browser blocks the mirror's new tab, so the question survives
@@ -193,7 +193,8 @@ export const AskAssistant: React.FC = () => {
     }
     setLaunching(true);
     queueChatLaunch(nextDraft, selectedModel, {
-      webSearchEnabled: webSearchAvailable && webSearchEnabled,
+      // The chat page gates this on availability, which may still be loading here.
+      webSearchEnabled,
       reasoningEffort,
     });
     try {
