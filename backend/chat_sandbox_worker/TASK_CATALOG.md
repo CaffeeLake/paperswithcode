@@ -46,8 +46,8 @@ The goal is to split up those tasks in the future.
 - `summarization` — Summarization
 - `machine-translation` — Machine Translation
 - `text-reranking` — Text Reranking
-- `named-entity-recognition` — Named Entity Recognition
 - `text-classification` — Text classification
+- `named-entity-recognition` — Named Entity Recognition
 - `text-to-sql` — Text-to-SQL
 - `relation-extraction` — Relation Extraction
 - `table-question-answering` — Table question answering
