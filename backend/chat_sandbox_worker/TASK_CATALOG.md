@@ -84,8 +84,8 @@ The goal is to split up those tasks in the future.
 
 - `image-generation` — Image generation
 - `image-understanding` — Image Understanding
-- `image-segmentation` — Image segmentation
 - `image-classification` — Image Classification
+- `image-segmentation` — Image segmentation
 - `medical-imaging` — Medical Imaging
 - `object-detection` — Object Detection
 - `3d-understanding` — 3D understanding
