@@ -622,17 +622,31 @@ Configuration is fail-closed. Production direct apply requires all of:
   public Docker Space plus its exact 40-character Hub revision;
 - pinned model `gpt-5.6-luna`, medium reasoning, and Codex CLI version.
 
-The production image is the public, content-versioned Docker Space
-`hf.co/spaces/nielsr/pwc-codex-curator-87ebc81c234c`, pinned to Hub revision
-`556b5d14b762684586030d3018999dae392200c9`. The dispatcher reads the Space
-revision before every launch and pauses daily dispatch if it differs. Never
-update a versioned curator Space in place: publish a new Space whose suffix is
-the first 12 characters of the runner SHA-256, record its exact Hub revision,
-run a standalone Jobs capability probe, then update both
-`PWC_CODEX_JOBS_IMAGE` and `PWC_CODEX_JOBS_IMAGE_REVISION`. A mutable registry
-tag such as `latest` is never valid for scheduled production dispatch.
+The production image is published to the Hugging Face container registry as
+`cr.hf.co/nielsr/pwc-codex-curator` and pinned by its runner tag plus digest
+(`cr.hf.co/nielsr/pwc-codex-curator:runner-<hash>@sha256:<digest>`). The digest
+decides what is pulled; the tag lets a test fail when the runner changes
+without a new image. The **Build Codex
+curator image** workflow builds `jobs/Dockerfile.codex-curator` on every `main`
+change to the Dockerfile or runner (or on manual dispatch), tags it with the
+commit SHA and `runner-<first 12 hex of the runner SHA-256>`, and prints the
+digest to pin in its run summary. It pushes with the `HF_REGISTRY_TOKEN`
+repository secret, a fine-grained token with write access to that container
+repository only. The Dockerfile's SHA-256 check makes a stale runner fail the
+build, so each digest is bound to exactly one runner.
 
-After publishing and probing the replacement Space, install only its image pin
+To roll out a new runner: let the workflow publish it, run a standalone Jobs
+capability probe against the digest, then update `PWC_CODEX_JOBS_IMAGE` and
+clear `PWC_CODEX_JOBS_IMAGE_REVISION` (a revision applies only to legacy Space
+images). A mutable tag such as `latest` or `runner-…` is never valid for
+scheduled production dispatch.
+
+The previous Space image `hf.co/spaces/nielsr/pwc-codex-curator-87ebc81c234c`
+at Hub revision `556b5d14b762684586030d3018999dae392200c9` is still accepted
+and remains the rollback pin. Hugging Face does not guarantee that a Space's
+built image stays pullable, so do not publish new runners as Spaces.
+
+After publishing and probing the replacement image, install only its pin
 without rewriting the protected Codex credentials:
 
 ```bash
@@ -649,10 +663,10 @@ the active release, apply the protected environment through the same qualified
 path with `--refresh-environment` instead.
 
 The current image probe is recorded at
-`https://huggingface.co/jobs/nielsr/6aa7ca705527934177edd5e7`; its command
+`https://huggingface.co/jobs/nielsr/6acf2858c6628814522382f0`; its command
 checks the Codex version, PyPDF2 version, full runner SHA-256, exact model, and
-scoped callback-token inheritance. The public Space avoids Docker Hub and does
-not require personal GitHub Packages access.
+scoped callback-token inheritance. The image is public, so Jobs pull it without
+registry credentials.
 
 The private application repository credential is never sent to a remote job.
 After authenticating with its paper-scoped callback token, the runner downloads
