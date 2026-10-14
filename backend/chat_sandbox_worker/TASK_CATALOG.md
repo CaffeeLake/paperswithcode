@@ -149,6 +149,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `graph-regression` — Graph Regression
 - `head-pose-estimation` — Head Pose Estimation
 - `healthcare` — Healthcare & Medical AI
+- `human-object-interaction-detection` — Human-Object Interaction Detection
 - `image-anomaly-detection` — Image Anomaly Detection
 - `image-classification` — Image Classification
 - `image-compression` — Image Compression
