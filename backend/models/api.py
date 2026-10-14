@@ -190,3 +190,10 @@ from backend.models.trends import (
     TrendPoint as TrendPoint,
     TrendsResponse as TrendsResponse,
 )
+from backend.models.research import (
+    FollowView as FollowView,
+    ResearchEntry as ResearchEntry,
+    ResearchFeedEntry as ResearchFeedEntry,
+    SubscriptionUpdate as SubscriptionUpdate,
+    SubscriptionView as SubscriptionView,
+)

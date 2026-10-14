@@ -1,7 +1,8 @@
 /**
  * Account settings view (`/settings`).
  *
- * Houses display preferences and chat provider settings. Display preferences
+ * Houses research follows, the weekly email, display preferences, and chat
+ * provider settings. Display preferences
  * persist server-side for signed-in users and remain session-local for guests.
  */
 
@@ -11,6 +12,7 @@ import { ExternalLink, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
+import ResearchSettings from "@/components/ResearchSettings";
 import { Switch } from "@/components/ui/switch";
 import { chatApi } from "@/lib/api/chat";
 import { ApiError } from "@/lib/apiTransport";
@@ -169,7 +171,7 @@ const SettingsView: React.FC = () => {
             <em>Settings</em>
           </h1>
           <div className="feed-subtitle">
-            Control how papers and benchmarks are displayed across the site.
+            Manage what you follow, your weekly email, and how papers are displayed.
           </div>
         </div>
       </div>
@@ -179,6 +181,7 @@ const SettingsView: React.FC = () => {
           <span className="sr-only">Loading settings…</span>
         </div>
       ) : <div className="settings-page-content">
+      <ResearchSettings />
       {user && <section className="settings-section">
         <h2 className="settings-section-title">Catalog access</h2>
         <div className="settings-note settings-note-flush">
