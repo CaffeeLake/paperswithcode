@@ -41,6 +41,7 @@ from backend.scripts.generate_missing_paper_markdown import (
 )
 from backend.utils.hf_daily_papers import fetch_hf_daily_papers
 from backend.utils.urls import get_paper_route_identifier
+from jobs.curation_failure_codes import AWAITING_MARKDOWN
 
 FetchCohort = Callable[[date], list[str]]
 MarkdownAvailable = Callable[[Paper, Settings], bool]
@@ -443,6 +444,59 @@ class HFDailyCurationService:
         workflow.status = "queued"
         workflow.deferred_reason = None
 
+    def release_admin_awaiting_markdown(self) -> int:
+        """Requeue parked admin paper jobs once their canonical Markdown exists.
+
+        A parked job that a newer live, waiting, or completed admin job for the
+        same paper and stage replaced is canceled instead. Each transition applies only while the row is still
+        waiting, so a concurrent admin cancel is never overwritten.
+        """
+        released = 0
+        for row in (
+            self.db.query(PaperCurationJob)
+            .filter(PaperCurationJob.status == AWAITING_MARKDOWN)
+            .order_by(PaperCurationJob.created_at)
+            .all()
+        ):
+            superseded = (
+                self.db.query(PaperCurationJob.id)
+                .filter(
+                    PaperCurationJob.paper_id == row.paper_id,
+                    PaperCurationJob.kind == row.kind,
+                    PaperCurationJob.trigger == "admin",
+                    PaperCurationJob.created_at > row.created_at,
+                    PaperCurationJob.status.notin_({"failed", "canceled"}),
+                )
+                .first()
+                is not None
+            )
+            if superseded:
+                changes = {
+                    "status": "canceled",
+                    "error": "Superseded by a newer admin job for this paper.",
+                }
+            else:
+                paper = self.db.get(Paper, row.paper_id)
+                if paper is None or not self.markdown_available(paper, self.settings):
+                    continue
+                changes = {
+                    "status": "queued",
+                    "hf_job_id": None,
+                    "error": None,
+                    "started_at": None,
+                    "finished_at": None,
+                }
+            updated = (
+                self.db.query(PaperCurationJob)
+                .filter(
+                    PaperCurationJob.id == row.id,
+                    PaperCurationJob.status == AWAITING_MARKDOWN,
+                )
+                .update(changes, synchronize_session="fetch")
+            )
+            released += updated if changes["status"] == "queued" else 0
+        return released
+
     def reconcile(
         self,
         *,
@@ -452,6 +506,11 @@ class HFDailyCurationService:
         dry_run: bool = False,
     ) -> dict:
         today = today or datetime.now(UTC).date()
+        released_admin = self.release_admin_awaiting_markdown()
+        if not dry_run:
+            # Publish releases before the slow cohort fetch rather than holding
+            # their row locks against admin cancels.
+            self.db.commit()
         discovered: list[tuple[date, int, str]] = []
         seen: set[str] = set()
         for offset in range(lookback_days):
@@ -538,6 +597,7 @@ class HFDailyCurationService:
             "missing_imports": [],
             "already_satisfied": 0,
             "released_markdown_ready": 0,
+            "released_admin_markdown_ready": released_admin,
             "retried": 0,
         }
 
