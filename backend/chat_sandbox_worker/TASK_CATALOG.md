@@ -33,8 +33,8 @@ The goal is to split up those tasks in the future.
 - `agents` — Agents
 - `math` — Mathematics
 - `robotics` — Robotics
-- `continual-learning` — Continual Learning
 - `world-models` — World Models
+- `continual-learning` — Continual Learning
 - `pseudo-labelling` — Pseudo Labelling
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
@@ -62,11 +62,11 @@ The goal is to split up those tasks in the future.
 - `recommendation-systems` — Recommendation Systems
 - `tabular-learning` — Tabular Learning
 - `time-series-forecasting` — Time-series forecasting
-- `motion-sensing` — Motion Sensing
 - `brain-computer-interface` — Brain-Computer Interface
+- `motion-sensing` — Motion Sensing
 - `time-series-classification` — Time-series classification
-- `biology` — Biology
 - `sleep-stage-classification` — Sleep Stage Classification
+- `biology` — Biology
 - `knowledge-tracing` — Knowledge Tracing
 
 ### Video
