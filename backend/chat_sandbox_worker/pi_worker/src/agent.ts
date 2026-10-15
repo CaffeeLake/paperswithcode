@@ -27,7 +27,7 @@ import { type GatewayContext } from "./provider.js";
 import { createRemoteToolsExtension, type RemoteToolBridge } from "./external_tools.js";
 import { PWC_MCP_TOOL_NAMES, createPwcMcpToolsExtension, pwcMcpEnabled } from "./pwc_mcp_tools.js";
 import { CATALOG_TOOL_NAMES, createCatalogToolsExtension } from "./catalog_tools.js";
-import { loadPromptAsset, renderPrompt } from "./prompt.js";
+import { loadPromptAsset, renderPrompt, taskCatalogForPrompt } from "./prompt.js";
 import { recoverIncompleteResponse, type RecoverySummary } from "./recovery.js";
 import { createOrBind, restoreFile, TranscriptMirror } from "./transcript.js";
 import { shouldResetSession } from "./session.js";
@@ -111,6 +111,7 @@ export class PiWorker {
   private noWebMcpExtension: ReturnType<typeof createWebMcpExtension> | undefined;
   private mcpReadiness: McpReadinessSnapshot | undefined;
   private activeProfile: string | undefined;
+  private sessionTaskCatalog: string | undefined;
   private failurePhase: TurnFailurePhase = "initialize";
   private readonly policy: PolicyController;
   private readonly excalidrawAvailable: boolean;
@@ -213,6 +214,7 @@ export class PiWorker {
     if (!session) return;
     this.session = undefined;
     this.activeProfile = undefined;
+    this.sessionTaskCatalog = undefined;
     try {
       await session.extensionRunner.emit({ type: "session_shutdown", reason });
     } finally {
@@ -341,6 +343,12 @@ export class PiWorker {
     }
     this.emit(run.request_id, { type: "_latency", phase: "session_bind_restore", elapsed_ms: Math.round(performance.now() - phaseStarted) });
     this.failurePhase = "prompt_render";
+    // A new session takes the last live task index (refreshed in the
+    // background at most every five minutes, never blocking) or keeps the
+    // deploy-time snapshot when none is cached yet. An open session keeps the
+    // index it started with: policy re-applies the rendered prompt every turn,
+    // and a mid-conversation change would invalidate the prompt cache.
+    const taskCatalog = this.session ? this.sessionTaskCatalog : taskCatalogForPrompt();
     const prompt = await renderPrompt({
       model: run.model,
       hfUsername: run.hf_username,
@@ -350,6 +358,7 @@ export class PiWorker {
       paperArtifactsEnabled: run.paper_artifacts_enabled,
       catalogToolsEnabled: Boolean(this.gateway && this.remoteTools),
       ...(run.paper_descriptor === undefined ? {} : { paperDescriptor: run.paper_descriptor }),
+      ...(taskCatalog === undefined ? {} : { taskCatalog }),
       source: this.promptAsset!,
     });
     const coldProviderResult = await coldProviderPromise;
@@ -495,6 +504,7 @@ export class PiWorker {
     this.emit(run.request_id, { type: "_mcp_readiness", ...this.mcpReadiness });
     this.session = created.session;
     this.activeProfile = profile;
+    this.sessionTaskCatalog = taskCatalog;
     this.emit(run.request_id, { type: "_latency", phase: "agent_session_ready", elapsed_ms: Math.round(performance.now() - phaseStarted) });
   }
 
