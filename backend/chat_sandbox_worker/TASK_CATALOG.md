@@ -138,6 +138,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `depth-estimation` — Depth estimation
 - `document-layout-analysis` — Document Layout Analysis
 - `document-understanding` — Document Understanding
+- `domain-generalization` — Domain Generalization
 - `earth-observation` — Earth Observation
 - `embedding-models` — Embedding models
 - `emotion-recognition` — Emotion Recognition
@@ -185,6 +186,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `motion-sensing` — Motion Sensing
 - `multi-agent-reinforcement-learning` — Multi-Agent Reinforcement Learning
 - `named-entity-recognition` — Named Entity Recognition
+- `no-reference-image-quality-assessment` — No-Reference Image Quality Assessment
 - `node-classification` — Node Classification
 - `novel-view-synthesis` — Novel View Synthesis
 - `object-counting` — Object Counting
