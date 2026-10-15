@@ -152,6 +152,7 @@ from backend.models.database.papers import (
     PaperMethodExclusion,
     PaperDataset,
     PaperRelation,
+    PaperSuggestedQuestions,
 )
 from backend.models.database.resources import (
     Repository,
@@ -309,6 +310,7 @@ __all__ = [
     "ModelProviderAlias",
     "ProjectPage",
     "PaperProjectPage",
+    "PaperSuggestedQuestions",
     "PaperXThread",
     "PaperXPost",
     "XInsightPost",
