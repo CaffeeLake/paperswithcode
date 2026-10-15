@@ -19,8 +19,8 @@ The goal is to split up those tasks in the future.
 - `audio-understanding` — Audio understanding
 - `speaker-verification` — Speaker Verification
 - `audio-compression` — Audio Compression
-- `speaker-diarization` — Speaker Diarization
 - `speech-translation` — Speech Translation
+- `speaker-diarization` — Speaker Diarization
 - `voice-cloning` — Voice cloning
 - `audio-classification` — Audio Classification
 - `audio-editing` — Audio and Speech Editing
@@ -38,7 +38,7 @@ The goal is to split up those tasks in the future.
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
-- `anomaly-detection` — Anomaly Detection
+- `continual-learning` — Continual Learning
 
 ### Language
 
