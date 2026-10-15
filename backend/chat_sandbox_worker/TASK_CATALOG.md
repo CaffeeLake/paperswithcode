@@ -23,7 +23,7 @@ The goal is to split up those tasks in the future.
 - `speaker-diarization` — Speaker Diarization
 - `voice-cloning` — Voice cloning
 - `audio-classification` — Audio Classification
-- `audio-editing` — Audio and Speech Editing
+- `sound-event-detection` — Sound Event Detection
 
 ### General
 
@@ -33,12 +33,12 @@ The goal is to split up those tasks in the future.
 - `agents` — Agents
 - `math` — Mathematics
 - `robotics` — Robotics
+- `continual-learning` — Continual Learning
 - `world-models` — World Models
 - `pseudo-labelling` — Pseudo Labelling
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
 - `coding-agents` — Coding Agents
-- `continual-learning` — Continual Learning
 
 ### Language
 
@@ -50,9 +50,9 @@ The goal is to split up those tasks in the future.
 - `named-entity-recognition` — Named Entity Recognition
 - `text-to-sql` — Text-to-SQL
 - `relation-extraction` — Relation Extraction
+- `fake-news-detection` — Fake News Detection
 - `table-question-answering` — Table question answering
 - `part-of-speech-tagging` — Part-of-Speech Tagging
-- `fake-news-detection` — Fake News Detection
 - `dialogue-state-tracking` — Dialogue State Tracking
 
 ### Other
@@ -63,11 +63,11 @@ The goal is to split up those tasks in the future.
 - `tabular-learning` — Tabular Learning
 - `time-series-forecasting` — Time-series forecasting
 - `motion-sensing` — Motion Sensing
-- `time-series-classification` — Time-series classification
 - `brain-computer-interface` — Brain-Computer Interface
+- `time-series-classification` — Time-series classification
 - `biology` — Biology
-- `knowledge-tracing` — Knowledge Tracing
 - `sleep-stage-classification` — Sleep Stage Classification
+- `knowledge-tracing` — Knowledge Tracing
 
 ### Video
 
@@ -79,10 +79,10 @@ The goal is to split up those tasks in the future.
 - `video-editing` — Video Editing
 - `object-tracking` — Object Tracking
 - `video-compression` — Video Compression
+- `video-text-retrieval` — Video-Text Retrieval
 - `video-frame-interpolation` — Video frame interpolation
 - `video-super-resolution` — Video super-resolution
 - `video-restoration` — Video Restoration
-- `video-text-retrieval` — Video-Text Retrieval
 
 ### Vision
 
