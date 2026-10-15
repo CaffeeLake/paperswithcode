@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 import httpx
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.models.database import (
@@ -34,6 +34,7 @@ from backend.models.database import (
     Evaluation,
     Metric,
     Paper,
+    PaperXThread,
     Task,
     XInsightPost,
 )
@@ -43,7 +44,11 @@ from backend.services.method_service import MethodService
 from backend.services.task_service import TaskService
 from backend.services.x_insight_cards import Bar, render_bar_card, render_list_card
 from backend.services.x_thread_discovery_service import short_name
-from backend.services.x_trending_post_service import XPoster, weighted_length
+from backend.services.x_trending_post_service import (
+    XPoster,
+    paragraphs,
+    weighted_length,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +67,12 @@ BENCHMARK_MIN_RECENT_PAPERS = 5
 LUNA_MODEL = "gpt-5.6-luna"
 RESPONSES_URL = "https://api.openai.com/v1/responses"
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_MENTION = re.compile(r"@[A-Za-z0-9_]{1,15}")
+_X_HANDLE = re.compile(r"[A-Za-z0-9_]{1,15}")
+_HF_X_LINK = re.compile(
+    r'href="https://(?:www\.)?(?:twitter|x)\.com/([A-Za-z0-9_]{1,15})/?"'
+)
+_IGNORED_HANDLES = {"huggingface", "home", "intent", "share", "x", "twitter"}
 
 LUNA_INSTRUCTIONS = """You write posts for the Papers with Code account on X, \
 read by ML researchers and engineers.
@@ -71,9 +82,11 @@ reading. Lead with the most interesting fact. Plain, specific, confident; no \
 hype words ("groundbreaking", "game-changer", "revolutionary"), no emojis, \
 hashtags, links, or questions to the reader.
 
-Hard rules: keep every number exactly as written in the draft, add no new \
-numbers, and state nothing that is not in the draft or the facts. Keep names \
-as written. Stay within the character limit. Output only the post text."""
+Hard rules: keep the draft's opening (such as "Congrats @team on achieving \
+SOTA on X!" or "New SOTA on X") at the start, keep every @mention exactly as \
+written and add none, keep every number exactly as written in the draft, add no new numbers, and state nothing that is not in the draft or the facts. Keep names \
+as written. Put each sentence on its own line with an empty line between \
+sentences. Stay within the character limit. Output only the post text."""
 
 
 @dataclass
@@ -115,6 +128,22 @@ def recently_posted(
     )
     if not ever:
         query = query.where(XInsightPost.posted_at >= now - REPEAT_AFTER)
+    return db.scalar(query.limit(1)) is not None
+
+
+def sota_posted(db: Session, subject_key: str) -> bool:
+    """Whether this paper's SOTA on this benchmark and metric was announced.
+
+    Keys are `dataset:metric:paper`, since the comparison spans every task's
+    leaderboard; posts made before that carried a `task:` prefix.
+    """
+    query = select(XInsightPost.id).where(
+        XInsightPost.kind == "new_sota",
+        or_(
+            XInsightPost.subject_key == subject_key,
+            XInsightPost.subject_key.endswith(f":{subject_key}", autoescape=True),
+        ),
+    )
     return db.scalar(query.limit(1)) is not None
 
 
@@ -161,17 +190,20 @@ def top_papers(db: Session, *, period: str, now: datetime) -> Insight | None:
         text=text,
         link=SITE,
         image=render_list_card(
-            heading, span, [" ".join(paper.title.split()) for paper in papers]
+            heading,
+            span,
+            [" ".join(paper.title.split()) for paper in papers],
+            eyebrow=f"Top papers · {'weekly' if period == 'week' else 'monthly'}",
         ),
         facts={"papers": [paper.title for paper in papers], "period": span},
     )
 
 
 def compose_list(head: str, labels: list[str], max_chars: int = 280) -> str:
-    """Numbered list, dropping entries from the end until it fits (min 3)."""
+    """Numbered list, an empty line between entries, dropping entries to fit (min 3)."""
     while True:
         lines = [f"{index + 1}. {label}" for index, label in enumerate(labels)]
-        text = head + "\n\n" + "\n".join(lines)
+        text = "\n\n".join([head, *lines])
         if weighted_length(text) <= max_chars or len(labels) <= 3:
             return text
         labels = labels[:-1]
@@ -188,7 +220,13 @@ class Row:
     value: float
 
 
-def _leaderboard(db: Session, task_id: int, dataset_id: int, metric: str) -> list[Row]:
+def _leaderboard(db: Session, dataset_id: int, metric: str) -> list[Row]:
+    """Every result for this benchmark and metric, across all tasks.
+
+    A benchmark can have a leaderboard under several tasks (IFEval under both
+    Instruction Following and Language Modeling); a new SOTA has to beat them
+    all, or the site itself would contradict the post.
+    """
     rows = db.execute(
         select(
             Evaluation.id,
@@ -196,7 +234,6 @@ def _leaderboard(db: Session, task_id: int, dataset_id: int, metric: str) -> lis
             Evaluation.model_name,
             Evaluation.metrics[metric].astext,
         ).where(
-            Evaluation.task_id == task_id,
             Evaluation.dataset_id == dataset_id,
             Evaluation.metrics.has_key(metric),
         )
@@ -219,8 +256,17 @@ def _distinct_models(rows: list[Row], limit: int) -> list[Row]:
     return result[:limit]
 
 
-def new_sota(db: Session, *, now: datetime) -> Insight | None:
-    """The most contested leaderboard a recent paper just topped."""
+def new_sota(
+    db: Session,
+    *,
+    now: datetime,
+    fetch_org_handle: Callable[[str], str | None] | None = None,
+) -> Insight | None:
+    """The most contested leaderboard a recent paper just topped.
+
+    The post congratulates the team behind the paper (see `sota_credit`).
+    """
+    fetch_org_handle = fetch_org_handle or hf_org_x_handle
     since = now - SOTA_WINDOW
     published_after = now.date() - timedelta(days=SOTA_PAPER_AGE_DAYS)
     candidates = db.execute(
@@ -236,13 +282,13 @@ def new_sota(db: Session, *, now: datetime) -> Insight | None:
             Paper.date_published >= published_after,
         )
     ).all()
-    best: tuple[int, Insight] | None = None
+    best: tuple[int, Insight, Paper] | None = None
     for evaluation, paper, dataset, task in candidates:
         metric = evaluation.best_metric
-        subject = f"{task.id}:{dataset.id}:{metric}:{paper.id}"
-        if recently_posted(db, "new_sota", subject, now, ever=True):
+        subject = f"{dataset.id}:{metric}:{paper.id}"
+        if sota_posted(db, subject):
             continue
-        rows = _leaderboard(db, task.id, dataset.id, metric)
+        rows = _leaderboard(db, dataset.id, metric)
         if len(rows) < SOTA_MIN_ENTRIES or (best and len(rows) <= best[0]):
             continue
         direction = db.scalar(select(Metric.direction).where(Metric.name == metric))
@@ -259,17 +305,14 @@ def new_sota(db: Session, *, now: datetime) -> Insight | None:
         top = _distinct_models(rows, 6)
         if mine not in top:
             top = [mine, *top[:5]]
-        text = (
-            f"New SOTA on {dataset.name} ({task.name}): {mine.model} reaches "
-            f"{fmt(mine.value)} {metric}, ahead of {previous.model} at "
-            f"{fmt(previous.value)}."
-        )
+        text = ""  # written below for the chosen leaderboard only
         link = f"{SITE}/benchmark/{dataset.slug}?task={task.slug}&eval={evaluation.id}"
         image = render_bar_card(
             f"New SOTA on {dataset.name}",
-            f"{task.name} · {metric} ({'lower' if lower else 'higher'} is better)",
+            f"{metric} ({'lower' if lower else 'higher'} is better)",
             [Bar(row.model, row.value, fmt(row.value), row is mine) for row in top],
             lower_is_better=lower,
+            eyebrow=f"New state of the art · {task.name}",
         )
         insight = Insight(
             kind="new_sota",
@@ -290,8 +333,81 @@ def new_sota(db: Session, *, now: datetime) -> Insight | None:
                 "leaderboard_entries": len(rows),
             },
         )
-        best = (len(rows), insight)
-    return best[1] if best else None
+        best = (len(rows), insight, paper)
+    if best is None:
+        return None
+    _, insight, paper = best
+    handles, organization = sota_credit(db, paper, fetch_org_handle)
+    insight.text = sota_text(insight.facts, handles=handles, organization=organization)
+    insight.facts["congratulated"] = [f"@{h}" for h in handles] or organization
+    return insight
+
+
+def hf_org_x_handle(hf_slug: str) -> str | None:
+    """The X account an organization links from its Hugging Face page."""
+    try:
+        response = httpx.get(f"https://huggingface.co/{hf_slug}", timeout=15)
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    handles = {
+        handle
+        for handle in _HF_X_LINK.findall(response.text)
+        if handle.casefold() not in _IGNORED_HANDLES
+    }
+    return handles.pop() if len(handles) == 1 else None
+
+
+def sota_credit(
+    db: Session, paper: Paper, fetch_org_handle: Callable[[str], str | None]
+) -> tuple[list[str], str | None]:
+    """X handles to congratulate, and the organization's name.
+
+    The organization's own account comes first: a linked X thread posted by
+    it, else the X link on its Hugging Face page. Without one, up to two
+    authors who posted linked threads (already reviewed as the paper's own
+    authors). Every handle is a public account tied to the paper itself.
+    """
+    organization = paper.organizations[0] if paper.organizations else None
+    threads = db.execute(
+        select(PaperXThread.author_handle, PaperXThread.author_name)
+        .where(PaperXThread.paper_id == paper.id)
+        .order_by(PaperXThread.position)
+    ).all()
+    handles: list[str] = []
+    if organization:
+        names = {organization.name.casefold(), (organization.slug or "").casefold()}
+        handles = [
+            handle
+            for handle, name in threads
+            if (name or "").casefold() in names or handle.casefold() in names
+        ][:1]
+        if not handles and organization.hf_slug:
+            handle = fetch_org_handle(organization.hf_slug)
+            handles = [handle] if handle else []
+    if not handles:
+        handles = [handle for handle, _ in threads][:2]
+    handles = [h for h in dict.fromkeys(handles) if _X_HANDLE.fullmatch(h or "")]
+    return handles, organization.name if organization else None
+
+
+def sota_text(
+    facts: dict[str, Any], *, handles: list[str], organization: str | None
+) -> str:
+    if handles:
+        mentions = " and ".join(f"@{handle}" for handle in handles)
+        lead = f"Congrats {mentions} on achieving SOTA on {facts['benchmark']}!"
+    elif organization:
+        lead = f"Congrats to {organization} on achieving SOTA on {facts['benchmark']}!"
+    else:
+        lead = f"New SOTA on {facts['benchmark']}!"
+    return (
+        f"{lead}\n\n"
+        f"{facts['model']} scores {facts['value']} {facts['metric']}.\n\n"
+        f"That puts it ahead of {facts['previous_model']} at "
+        f"{facts['previous_value']}."
+    )
 
 
 # --- Trending benchmarks, methods, tasks ------------------------------------
@@ -347,11 +463,11 @@ def trending_benchmark(db: Session, *, now: datetime) -> Insight | None:
     if featured.baseline:
         growth = f"up from {featured.baseline} in the 180 days before."
     else:
-        growth = "none did in the 180 days before."
+        growth = "after none in the 180 days before."
     text = (
-        f"{dataset.name} is the fastest-growing benchmark on Papers with Code: "
-        f"{featured.recent} papers reported results on it in the last 90 days; "
-        f"{growth}"
+        f"{dataset.name} is the fastest-growing benchmark on Papers with Code."
+        f"\n\n{featured.recent} papers reported results on it in the last 90 "
+        f"days, {growth}"
     )
     image = render_bar_card(
         "Fastest-growing benchmarks",
@@ -365,6 +481,7 @@ def trending_benchmark(db: Session, *, now: datetime) -> Insight | None:
             )
             for row in scored
         ],
+        eyebrow="Trending benchmarks · last 90 days",
     )
     return Insight(
         kind="trending_benchmark",
@@ -395,8 +512,8 @@ def _trending_taxonomy(
     if featured is None:
         return None
     text = (
-        f"{featured.name} is the fastest-rising {noun} on Papers with Code: "
-        f"{featured.recent_paper_count} papers in the last 30 days, "
+        f"{featured.name} is the fastest-rising {noun} on Papers with Code."
+        f"\n\n{featured.recent_paper_count} papers in the last 30 days: "
         f"{fmt_lift(featured.share_lift)} its share of new papers in the 180 "
         f"days before."
     )
@@ -407,6 +524,7 @@ def _trending_taxonomy(
             Bar(item.name, item.share_lift, fmt_lift(item.share_lift), item is featured)
             for item in results
         ],
+        eyebrow=f"Trending {noun}s · last 30 days",
     )
     return Insight(
         kind=kind,
@@ -498,11 +616,13 @@ def numbers(text: str) -> set[str]:
 def accept_rewrite(
     draft: str, rewrite: str, *, facts: str = "", max_chars: int
 ) -> bool:
-    """A rewrite keeps every number of the draft and adds none beyond the facts."""
+    """A rewrite keeps every number and @mention of the draft, adding no number
+    beyond the facts and no other mention."""
     return (
         bool(rewrite)
         and weighted_length(rewrite) <= max_chars
         and numbers(draft) <= numbers(rewrite) <= numbers(draft) | numbers(facts)
+        and set(_MENTION.findall(rewrite)) == set(_MENTION.findall(draft))
         and "http" not in rewrite
         and "#" not in rewrite
     )
@@ -543,6 +663,7 @@ def write_with_luna(
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
         logger.warning("x_insight_rewrite_failed kind=%s %s", insight.kind, error)
         return insight.text
+    rewrite = paragraphs(rewrite)
     if accept_rewrite(insight.text, rewrite, facts=facts, max_chars=max_chars):
         return rewrite
     logger.warning("x_insight_rewrite_rejected kind=%s", insight.kind)
