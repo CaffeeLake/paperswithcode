@@ -70,6 +70,7 @@ The goal is to split up those tasks in the future.
 - `video-generation` — Video generation
 - `video-understanding` — Video Understanding
 - `video-classification` — Video classification
+- `action-recognition` — Action Recognition
 - `video-segmentation` — Video segmentation
 - `video-editing` — Video Editing
 - `object-tracking` — Object Tracking
@@ -77,8 +78,7 @@ The goal is to split up those tasks in the future.
 - `video-frame-interpolation` — Video frame interpolation
 - `video-super-resolution` — Video super-resolution
 - `video-restoration` — Video Restoration
-- `cross-view-object-correspondence` — Cross-view object correspondence
-- `video-matting` — Video Matting
+- `video-quality-assessment` — Video Quality Assessment
 
 ### Vision
 
@@ -109,6 +109,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `3d-semantic-segmentation` — 3D semantic segmentation
 - `3D-tracking` — 3D Tracking
 - `3d-understanding` — 3D understanding
+- `action-recognition` — Action Recognition
 - `agents` — Agents
 - `ai-weather-forecasting` — AI Weather Forecasting
 - `anomaly-detection` — Anomaly Detection
@@ -123,6 +124,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `biology` — Biology
 - `camera-pose-estimation` — Camera Pose Estimation
 - `camouflaged-object-detection` — Camouflaged object detection
+- `change-detection` — Change Detection
 - `classic-language-modeling` — Classic Language Modeling
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `click-through-rate-prediction` — Click-Through Rate Prediction
@@ -143,6 +145,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `face-recognition` — Face Recognition
 - `face-verification` — Face Verification
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
+- `gaze-estimation` — Gaze Estimation
 - `generative-recommendation` — Generative Recommendation
 - `graph-classification` — Graph Classification
 - `graph-machine-learning` — Graph Machine Learning
@@ -154,6 +157,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `image-classification` — Image Classification
 - `image-compression` — Image Compression
 - `image-dehazing` — Image Dehazing
+- `image-denoising` — Image Denoising
 - `image-editing` — Image editing
 - `image-generation` — Image generation
 - `image-inpainting` — Image Inpainting
@@ -191,6 +195,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `omni-models` — Omni models
 - `optical-flow` — Optical Flow
 - `part-of-speech-tagging` — Part-of-Speech Tagging
+- `person-re-identification` — Person Re-Identification
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
 - `pseudo-labelling` — Pseudo Labelling
@@ -230,6 +235,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `video-frame-interpolation` — Video frame interpolation
 - `video-generation` — Video generation
 - `video-matting` — Video Matting
+- `video-quality-assessment` — Video Quality Assessment
 - `video-restoration` — Video Restoration
 - `video-segmentation` — Video segmentation
 - `video-super-resolution` — Video super-resolution
