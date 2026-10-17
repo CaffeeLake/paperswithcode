@@ -127,6 +127,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `audio-compression` — Audio Compression
 - `audio-generation` — Audio Generation
 - `audio-understanding` — Audio understanding
+- `auto-research` — Auto-Research
 - `automatic-music-transcription` — Automatic Music Transcription
 - `automatic-speech-recognition` — Automatic Speech Recognition
 - `autonomous-driving` — Autonomous Driving
