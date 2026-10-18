@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import fcntl
 import gzip
 import json
 import os
@@ -15,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 USER_AGENT = "PapersWithCode-Curation/1.0 (+https://paperswithcode.co)"
+SEEN_LEADERBOARDS = "/tmp/pwc-curation-leaderboards.jsonl"
 
 
 def request_json(
@@ -50,8 +52,38 @@ def request_json(
         raise RuntimeError(
             f"Curation API rejected {method} {path} (HTTP {error.code}): {detail}"
         ) from error
-    raw = response.read().decode()
-    return json.loads(raw)
+    result = json.loads(response.read().decode())
+    if path.startswith("leaderboards?"):
+        remember_leaderboards(result.get("leaderboards") or [])
+    return result
+
+
+def _seen_leaderboards() -> dict[str, set[str]]:
+    seen: dict[str, set[str]] = {}
+    if not os.path.exists(SEEN_LEADERBOARDS):
+        return seen
+    with open(SEEN_LEADERBOARDS, encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        for line in handle:
+            for key, metrics in json.loads(line).items():
+                seen.setdefault(key, set()).update(metrics)
+    return seen
+
+
+def remember_leaderboards(boards: list[dict]) -> None:
+    """Record configured boards so apply can check evaluations against them.
+
+    Each lookup appends one locked line, so parallel lookups cannot drop boards.
+    """
+    found = {
+        f"{board['task']['id']}:{board['dataset']['id']}": [
+            metric["name"] for metric in board["metrics"]
+        ]
+        for board in boards
+    }
+    with open(SEEN_LEADERBOARDS, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(json.dumps(found) + "\n")
 
 
 def request(
@@ -180,6 +212,37 @@ def check_benchmark_gap_fields(proposal: dict, candidates: dict | None) -> None:
         )
 
 
+def check_evaluation_leaderboards(proposal: dict) -> None:
+    """Refuse evaluations on boards the leaderboards command never returned.
+
+    The server rejects an evaluation without a configured task/dataset/metric
+    board, and a second rejection closes the job. Catch it here so the worker
+    fixes the proposal before spending its only correction.
+    """
+    seen = _seen_leaderboards()
+    errors = []
+    for index, item in enumerate(proposal.get("evaluations") or []):
+        key = f"{item.get('task_id')}:{item.get('dataset_id')}"
+        if key not in seen:
+            errors.append(
+                f"evaluations[{index}] ({item.get('model_name')}): task_id "
+                f"{item.get('task_id')} + dataset_id {item.get('dataset_id')} is not "
+                "a configured leaderboard returned by the leaderboards command; "
+                "remove this evaluation or use the exact task_id and dataset_id "
+                "of a returned board"
+            )
+        elif item.get("best_metric") not in seen[key]:
+            errors.append(
+                f"evaluations[{index}] ({item.get('model_name')}): best_metric "
+                f"{item.get('best_metric')!r} is not configured for this board; "
+                f"configured metrics: {sorted(seen[key])}"
+            )
+    if errors:
+        raise ValueError(
+            "Proposal preflight failed (no apply attempted):\n" + "\n".join(errors)
+        )
+
+
 def store_trace_with_retry(path: str, payload: dict) -> dict:
     last_error: Exception | None = None
     for attempt in range(5):
@@ -274,6 +337,7 @@ def main() -> None:
         proposal = make_scheduled_enrichment_additive(proposal, context)
         trace = _trace_payload(proposal)
         check_benchmark_gap_fields(proposal, trace["url_candidates"])
+        check_evaluation_leaderboards(proposal)
         store_trace_with_retry("trace/preapply", trace)
         request("apply", "POST", proposal, timeout=300)
 
