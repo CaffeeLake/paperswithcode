@@ -28,9 +28,9 @@ The goal is to split up those tasks in the future.
 ### General
 
 - `reinforcement-learning` — Reinforcement Learning
+- `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `language-modeling` — Language Modeling
 - `reasoning` — Reasoning
-- `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `agents` — Agents
 - `math` — Mathematics
 - `robotics` — Robotics
