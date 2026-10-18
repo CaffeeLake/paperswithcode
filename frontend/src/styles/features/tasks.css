@@ -5,6 +5,11 @@
   gap: 48px;
   align-items: start;
 }
+@media (min-width: 1200px) {
+  .task-hero-grid--wide {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 720px);
+  }
+}
 .task-figure-card {
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
