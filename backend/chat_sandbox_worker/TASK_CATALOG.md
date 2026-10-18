@@ -38,7 +38,7 @@ The goal is to split up those tasks in the future.
 - `pseudo-labelling` — Pseudo Labelling
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
-- `coding-agents` — Coding Agents
+- `classic-reinforcement-learning` — Classic Reinforcement Learning
 
 ### Language
 
