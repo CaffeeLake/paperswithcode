@@ -34,11 +34,11 @@ The goal is to split up those tasks in the future.
 - `math` — Mathematics
 - `robotics` — Robotics
 - `continual-learning` — Continual Learning
+- `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `world-models` — World Models
 - `pseudo-labelling` — Pseudo Labelling
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
-- `classic-reinforcement-learning` — Classic Reinforcement Learning
 
 ### Language
 
