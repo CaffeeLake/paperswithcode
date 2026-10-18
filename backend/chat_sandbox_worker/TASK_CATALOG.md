@@ -30,9 +30,9 @@ The goal is to split up those tasks in the future.
 - `reinforcement-learning` — Reinforcement Learning
 - `language-modeling` — Language Modeling
 - `reasoning` — Reasoning
+- `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `agents` — Agents
 - `math` — Mathematics
-- `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `robotics` — Robotics
 - `continual-learning` — Continual Learning
 - `world-models` — World Models
