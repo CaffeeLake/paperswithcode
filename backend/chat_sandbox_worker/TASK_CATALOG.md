@@ -273,6 +273,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `time-series-classification` — Time-series classification
 - `time-series-forecasting` — Time-series forecasting
 - `trajectory-prediction` — Trajectory Prediction
+- `unsupervised-domain-adaptation` — Unsupervised Domain Adaptation
 - `video-classification` — Video classification
 - `video-compression` — Video Compression
 - `video-editing` — Video Editing
