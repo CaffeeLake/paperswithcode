@@ -32,3 +32,39 @@ export function citedAnchors(text: string): string[] {
   const anchors = [...text.matchAll(/\]\(pdf:(p\d+b\d+)\)/g)].map((match) => match[1]);
   return [...new Set(anchors)];
 }
+
+const PREVIEW_MAX_WIDTH = 320;
+const VIEWPORT_MARGIN = 12;
+// Room the preview needs above the chip before it opens below instead.
+const PREVIEW_ROOM_ABOVE = 170;
+
+export interface PreviewPlacement {
+  /** Horizontal offset from the chip's left edge, in px. */
+  left: number;
+  below: boolean;
+}
+
+/** Keep the hover preview inside the viewport, whatever the chip's position. */
+export function previewPlacement(
+  chip: Pick<DOMRect, "left" | "top">,
+  viewportWidth: number,
+): PreviewPlacement {
+  const width = Math.min(PREVIEW_MAX_WIDTH, viewportWidth * 0.7);
+  const rightmost = viewportWidth - VIEWPORT_MARGIN - width - chip.left;
+  const leftmost = VIEWPORT_MARGIN - chip.left;
+  return {
+    left: Math.max(leftmost, Math.min(0, rightmost)),
+    below: chip.top < PREVIEW_ROOM_ABOVE,
+  };
+}
+
+/**
+ * Sentence-case a citation label: uppercase its first letter, unless the label
+ * starts with a deliberately lowercase term such as "pLDDT" or "iPhone".
+ */
+export function capitalizeCitationLabel(label: string): string {
+  const [first, second] = label;
+  if (!first || first === first.toUpperCase()) return label;
+  if (second && second !== second.toLowerCase()) return label;
+  return first.toUpperCase() + label.slice(1);
+}

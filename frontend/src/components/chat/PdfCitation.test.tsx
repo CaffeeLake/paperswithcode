@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
 import { PdfCitationContext } from "@/components/chat/PdfCitationContext";
-import { citationBoxes, citedAnchors } from "@/components/pdf/pdfCitations";
+import { capitalizeCitationLabel, citationBoxes, citedAnchors, previewPlacement } from "@/components/pdf/pdfCitations";
 import type { PaperLayout } from "@/lib/api/papers";
 
 const layout: PaperLayout = {
@@ -59,5 +59,41 @@ describe("ChatMarkdown pdf citations", () => {
     );
     expect(container.querySelectorAll(".chat-pdf-citation")).toHaveLength(2);
     expect(container.querySelector(".chat-pdf-sources")).toBeNull();
+  });
+});
+
+describe("pdf citation preview placement", () => {
+  it("opens rightward when there is room and stays inside the viewport near the right edge", () => {
+    const viewport = 1200;
+    expect(previewPlacement({ left: 100, top: 400 }, viewport)).toEqual({ left: 0, below: false });
+    const nearRight = previewPlacement({ left: 1100, top: 400 }, viewport);
+    expect(1100 + nearRight.left + 320).toBeLessThanOrEqual(viewport - 12);
+  });
+
+  it("stays inside a narrow viewport and opens below chips near the top", () => {
+    const placement = previewPlacement({ left: 300, top: 40 }, 390);
+    const width = 390 * 0.7;
+    expect(300 + placement.left).toBeGreaterThanOrEqual(12);
+    expect(300 + placement.left + width).toBeLessThanOrEqual(390 - 12);
+    expect(placement.below).toBe(true);
+  });
+});
+
+describe("citation labels", () => {
+  it("sentence-cases labels but keeps deliberate lowercase terms", () => {
+    expect(capitalizeCitationLabel("working memory")).toBe("Working memory");
+    expect(capitalizeCitationLabel("Hybrid generation")).toBe("Hybrid generation");
+    expect(capitalizeCitationLabel("pLDDT scores")).toBe("pLDDT scores");
+    expect(capitalizeCitationLabel("§5.1")).toBe("§5.1");
+    expect(capitalizeCitationLabel("")).toBe("");
+  });
+
+  it("capitalizes the rendered chip label", () => {
+    render(
+      <PdfCitationContext.Provider value={{ layout, open: vi.fn() }}>
+        <ChatMarkdown text="See [working memory](pdf:p5b2)." papers={{}} />
+      </PdfCitationContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "Jump to passage on page 5" }).textContent).toContain("Working memory");
   });
 });
