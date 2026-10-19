@@ -76,8 +76,8 @@ The goal is to split up those tasks in the future.
 - `video-classification` — Video classification
 - `action-recognition` — Action Recognition
 - `video-segmentation` — Video segmentation
-- `object-tracking` — Object Tracking
 - `video-editing` — Video Editing
+- `object-tracking` — Object Tracking
 - `video-compression` — Video Compression
 - `video-text-retrieval` — Video-Text Retrieval
 - `video-frame-interpolation` — Video frame interpolation
