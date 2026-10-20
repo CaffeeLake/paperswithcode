@@ -217,6 +217,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `named-entity-recognition` — Named Entity Recognition
 - `no-reference-image-quality-assessment` — No-Reference Image Quality Assessment
 - `node-classification` — Node Classification
+- `non-rigid-3d-shape-correspondence` — Non-rigid 3D Shape Correspondence
 - `novel-view-synthesis` — Novel View Synthesis
 - `object-counting` — Object Counting
 - `object-detection` — Object Detection
