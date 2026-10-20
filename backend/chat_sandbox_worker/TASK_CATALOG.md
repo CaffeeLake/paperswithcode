@@ -43,6 +43,8 @@ The goal is to split up those tasks in the future.
 ### Language
 
 - `question-answering` — Question Answering
+- `retrieval-augmented-generation` — Retrieval-Augmented Generation
+- `code-generation` — Code Generation
 - `summarization` — Summarization
 - `machine-translation` — Machine Translation
 - `text-reranking` — Text Reranking
@@ -52,8 +54,6 @@ The goal is to split up those tasks in the future.
 - `relation-extraction` — Relation Extraction
 - `fake-news-detection` — Fake News Detection
 - `table-question-answering` — Table question answering
-- `part-of-speech-tagging` — Part-of-Speech Tagging
-- `dialogue-state-tracking` — Dialogue State Tracking
 
 ### Other
 
@@ -139,6 +139,8 @@ This compact index contains every current task and subtask. Treat names and slug
 - `classic-language-modeling` — Classic Language Modeling
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `click-through-rate-prediction` — Click-Through Rate Prediction
+- `code-generation` — Code Generation
+- `code-summarization` — Code Summarization
 - `coding-agents` — Coding Agents
 - `collaborative-filtering` — Collaborative Filtering
 - `computer-use-agents` — Computer Use Agents
@@ -162,6 +164,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `face-anti-spoofing` — Face Anti-Spoofing
 - `face-recognition` — Face Recognition
 - `face-verification` — Face Verification
+- `facial-landmark-detection` — Facial Landmark Detection
 - `fake-news-detection` — Fake News Detection
 - `few-shot-object-detection` — Few-Shot Object Detection
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
@@ -230,6 +233,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `oriented-object-detection` — Oriented Object Detection
 - `part-of-speech-tagging` — Part-of-Speech Tagging
 - `person-re-identification` — Person Re-Identification
+- `point-cloud-registration` — Point Cloud Registration
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
 - `pseudo-labelling` — Pseudo Labelling
@@ -242,6 +246,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `relation-extraction` — Relation Extraction
 - `remote-sensing` — Remote Sensing
 - `retrieval` — Retrieval
+- `retrieval-augmented-generation` — Retrieval-Augmented Generation
 - `robotics` — Robotics
 - `safety-and-grounding` — Safety and Grounding
 - `saliency-detection` — Saliency Detection
