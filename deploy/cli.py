@@ -52,7 +52,7 @@ try:
         slot_status as external_pi_slot_status,
         stop_slot_if_enabled,
     )
-    from deploy import mcp_release
+    from deploy import build_sandbox, mcp_release
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
         ENVIRONMENTS,
@@ -85,6 +85,7 @@ except ModuleNotFoundError:
         slot_status as external_pi_slot_status,
         stop_slot_if_enabled,
     )
+    import build_sandbox  # type: ignore[no-redef]
     import mcp_release  # type: ignore[no-redef]
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
@@ -309,14 +310,19 @@ print(json.dumps(descriptor, sort_keys=True))
         "PATH": os.defpath,
         "PYTHONPATH": str(source),
         "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PWC_RELEASE_ENVIRONMENT": environment,
         "PWC_RELEASE_CHAT_ENABLED": "true" if enabled else "false",
     }
+    # Importing release modules runs release code, so never do it as root.
     output = subprocess.check_output(
-        [sys.executable, "-c", script],
+        build_sandbox.command([sys.executable, "-c", script]),
         cwd=source,
         env=environment_values,
         text=True,
+        # A process the import leaves behind can hold stdout open; never wait
+        # for it forever.
+        timeout=300,
     )
     descriptor = json.loads(output)
     if not isinstance(descriptor, dict):
@@ -475,7 +481,23 @@ def prepare_release(sha: str, environment: str) -> Path:
     try:
         _extract_commit(sha, source)
         frontend = source / "frontend"
-        build_env = os.environ.copy()
+        build_home = build_root / "home"
+        build_home.mkdir()
+        npm_cache = build_root / "npm-cache"
+        npm_cache.mkdir()
+        # The build user may enter build_root but never rename its entries, so
+        # it cannot swap ``source`` for a symlink before root publishes it.
+        build_root.chmod(0o711)
+        # npm lifecycle scripts and the Vite config are release code: build as
+        # the unprivileged build user with a private HOME and npm cache instead
+        # of root's environment.
+        build_env = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(build_home),
+            "LANG": "C.UTF-8",
+            "npm_config_cache": str(npm_cache),
+            "npm_config_update_notifier": "false",
+        }
         build_env.update(
             frontend_feature_environment(
                 environment,
@@ -484,12 +506,22 @@ def prepare_release(sha: str, environment: str) -> Path:
         )
         build_env.update(frontend_analytics_environment(environment))
         build_env.update(frontend_host_environment(environment))
-        run(["npm", "ci"], cwd=frontend, env=build_env)
-        run(
-            ["npm", "run", "build", "--", "--mode", environment],
-            cwd=frontend,
-            env=build_env,
-        )
+        for lent in (source, build_home, npm_cache):
+            build_sandbox.lend(lent)
+        try:
+            run(build_sandbox.command(["npm", "ci"]), cwd=frontend, env=build_env)
+            run(
+                build_sandbox.command(
+                    ["npm", "run", "build", "--", "--mode", environment]
+                ),
+                cwd=frontend,
+                env=build_env,
+            )
+            descriptor = _chat_descriptor_from_source(
+                source, environment, chat_enabled=expected_features["chat"]
+            )
+        finally:
+            build_sandbox.reclaim(source)
         shutil.move(str(frontend / "dist"), str(source / "frontend-dist"))
         shutil.rmtree(frontend / "node_modules")
         for env_file in source.rglob(".env*"):
@@ -510,9 +542,6 @@ def prepare_release(sha: str, environment: str) -> Path:
                 "release contains forbidden artifacts: "
                 + ", ".join(str(path.relative_to(source)) for path in forbidden[:10])
             )
-        descriptor = _chat_descriptor_from_source(
-            source, environment, chat_enabled=expected_features["chat"]
-        )
         manifest = build_manifest(
             sha,
             environment,
