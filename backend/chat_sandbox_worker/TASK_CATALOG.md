@@ -66,6 +66,7 @@ The goal is to split up those tasks in the future.
 - `motion-sensing` — Motion Sensing
 - `time-series-classification` — Time-series classification
 - `sleep-stage-classification` — Sleep Stage Classification
+- `ecg-classification` — ECG Classification
 - `biology` — Biology
 - `knowledge-tracing` — Knowledge Tracing
 
@@ -158,6 +159,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `document-understanding` — Document Understanding
 - `domain-generalization` — Domain Generalization
 - `earth-observation` — Earth Observation
+- `ecg-classification` — ECG Classification
 - `embedding-models` — Embedding models
 - `emotion-recognition` — Emotion Recognition
 - `entity-typing` — Entity Typing
@@ -197,6 +199,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `image-super-resolution` — Image super-resolution
 - `image-understanding` — Image Understanding
 - `image-to-image-translation` — Image-to-Image Translation
+- `instance-segmentation` — Instance Segmentation
 - `instruction-following` — Instruction Following
 - `knowledge-graph-completion` — Knowledge Graph Completion
 - `knowledge-tracing` — Knowledge Tracing
@@ -264,6 +267,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `speech-translation` — Speech Translation
 - `spoken-language-identification` — Spoken Language Identification
 - `stereo-matching` — Stereo Matching
+- `style-transfer` — Style Transfer
 - `summarization` — Summarization
 - `surface-normal-estimation` — Surface Normal Estimation
 - `table-question-answering` — Table question answering
@@ -273,6 +277,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `temporal-graph-learning` — Temporal Graph Learning
 - `text-classification` — Text classification
 - `text-reranking` — Text Reranking
+- `text-to-image-generation` — Text-to-Image Generation
 - `text-to-speech` — Text-to-speech
 - `text-to-sql` — Text-to-SQL
 - `time-series-anomaly-detection` — Time Series Anomaly Detection
