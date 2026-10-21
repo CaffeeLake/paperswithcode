@@ -160,6 +160,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `domain-generalization` — Domain Generalization
 - `earth-observation` — Earth Observation
 - `ecg-classification` — ECG Classification
+- `egocentric-vision` — Egocentric Vision
 - `embedding-models` — Embedding models
 - `emotion-recognition` — Emotion Recognition
 - `entity-typing` — Entity Typing
@@ -236,6 +237,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `oriented-object-detection` — Oriented Object Detection
 - `part-of-speech-tagging` — Part-of-Speech Tagging
 - `person-re-identification` — Person Re-Identification
+- `pii-detection` — PII Detection
 - `point-cloud-registration` — Point Cloud Registration
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
@@ -250,6 +252,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `remote-sensing` — Remote Sensing
 - `retrieval` — Retrieval
 - `retrieval-augmented-generation` — Retrieval-Augmented Generation
+- `robotic-manipulation` — Robotic Manipulation
 - `robotics` — Robotics
 - `safety-and-grounding` — Safety and Grounding
 - `saliency-detection` — Saliency Detection
