@@ -324,7 +324,7 @@ This compact index contains every current task and subtask. Treat names and slug
 
 Frameworks are software libraries, inference engines, serving systems, and toolkits; this index lists every catalog framework by domain and category. Use the slug with `pwc framework --name FRAMEWORK`.
 
-- Large Language Models / Inference & Serving: `vllm` vLLM, `sglang` SGLang, `llama-cpp` llama.cpp, `mlx-lm` MLX-LM, `mlx-vlm` MLX-VLM, `ollama` Ollama, `text-embeddings-inference` Text Embeddings Inference, `vllm-omni` vLLM-Omni, `tensorrt-llm` TensorRT-LLM
+- Large Language Models / Inference & Serving: `vllm` vLLM, `sglang` SGLang, `llama-cpp` llama.cpp, `mlx-lm` MLX-LM, `mlx-vlm` MLX-VLM, `ollama` Ollama, `text-embeddings-inference` Text Embeddings Inference, `vllm-omni` vLLM-Omni, `tensorrt-llm` TensorRT-LLM, `open-webui` Open WebUI
 - Large Language Models / Training & Fine-tuning: `trl` TRL, `unsloth` Unsloth, `prime-rl` prime-rl, `verl` verl
 - Large Language Models / Model Libraries: `transformers` Transformers, `sentence-transformers` Sentence Transformers
 - Large Language Models / Agent Frameworks: `hermes-agent` Hermes Agent, `openclaw` OpenClaw, `cua` Cua, `browser-use` Browser Use
