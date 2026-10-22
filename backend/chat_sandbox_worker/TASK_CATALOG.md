@@ -20,10 +20,10 @@ The goal is to split up those tasks in the future.
 - `speaker-verification` — Speaker Verification
 - `audio-compression` — Audio Compression
 - `speech-translation` — Speech Translation
+- `audio-source-separation` — Audio Source Separation
+- `speech-to-speech` — Speech-to-Speech
 - `speaker-diarization` — Speaker Diarization
 - `voice-cloning` — Voice cloning
-- `audio-classification` — Audio Classification
-- `sound-event-detection` — Sound Event Detection
 
 ### General
 
@@ -127,11 +127,13 @@ This compact index contains every current task and subtask. Treat names and slug
 - `audio-classification` — Audio Classification
 - `audio-compression` — Audio Compression
 - `audio-generation` — Audio Generation
+- `audio-source-separation` — Audio Source Separation
 - `audio-understanding` — Audio understanding
 - `auto-research` — Auto-Research
 - `automatic-music-transcription` — Automatic Music Transcription
 - `automatic-speech-recognition` — Automatic Speech Recognition
 - `autonomous-driving` — Autonomous Driving
+- `backdoor-attack` — Backdoor Attack
 - `biology` — Biology
 - `brain-computer-interface` — Brain-Computer Interface
 - `camera-pose-estimation` — Camera Pose Estimation
@@ -169,6 +171,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `face-verification` — Face Verification
 - `facial-landmark-detection` — Facial Landmark Detection
 - `fake-news-detection` — Fake News Detection
+- `fall-detection` — Fall Detection
 - `few-shot-object-detection` — Few-Shot Object Detection
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
 - `gaze-estimation` — Gaze Estimation
@@ -179,6 +182,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `handwritten-text-recognition` — Handwritten Text Recognition
 - `head-pose-estimation` — Head Pose Estimation
 - `healthcare` — Healthcare & Medical AI
+- `human-mesh-recovery` — Human Mesh Recovery
 - `human-object-interaction-detection` — Human-Object Interaction Detection
 - `hyperspectral-image-classification` — Hyperspectral Image Classification
 - `image-anomaly-detection` — Image Anomaly Detection
@@ -256,6 +260,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `robotics` — Robotics
 - `safety-and-grounding` — Safety and Grounding
 - `saliency-detection` — Saliency Detection
+- `scene-graph-generation` — Scene Graph Generation
 - `scene-text-detection` — Scene Text Detection
 - `scene-text-recognition` — Scene Text Recognition
 - `semi-supervised-image-classification` — Semi-Supervised Image Classification
@@ -268,6 +273,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `speaker-verification` — Speaker Verification
 - `speech-enhancement` — Speech Enhancement
 - `speech-translation` — Speech Translation
+- `speech-to-speech` — Speech-to-Speech
 - `spoken-language-identification` — Spoken Language Identification
 - `stereo-matching` — Stereo Matching
 - `style-transfer` — Style Transfer
