@@ -251,6 +251,13 @@ class Paper(BaseModel):
     x_threads: Optional[List["XThread"]] = Field(
         None, description="X (formerly Twitter) posts introducing this paper"
     )
+    abstract_mentions: Optional[List["AbstractMention"]] = Field(
+        None,
+        description=(
+            "Catalog methods, benchmarks, and frameworks named in the abstract, "
+            "as character spans of `abstract` (paper detail only)."
+        ),
+    )
     tasks: Optional[List["TaskSummary"]] = Field(
         None, description="AI/ML tasks associated with this paper"
     )
@@ -1042,6 +1049,28 @@ class MethodSummary(BaseModel):
         if v is None:
             return v
         return str(v)
+
+
+class AbstractMentionPreview(BaseModel):
+    """Hover-card content, sent with the paper so cards open without a fetch."""
+
+    name: str
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    count: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class AbstractMention(BaseModel):
+    """One linked catalog name in a paper abstract."""
+
+    start: int = Field(..., description="Character offset into the abstract")
+    end: int = Field(..., description="Exclusive end offset")
+    surface: str = Field(..., description="The abstract text at this span")
+    entity_type: Literal["method", "benchmark", "framework"]
+    slug: str
+    name: str
+    preview: Optional[AbstractMentionPreview] = None
 
 
 class FrameworkSummary(BaseModel):

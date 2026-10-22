@@ -13,6 +13,8 @@ from backend.models.evaluations import (
     LeaderboardRankSummary,
 )
 from backend.models.papers import (
+    AbstractMention,
+    AbstractMentionPreview,
     AuthorLink,
     FrameworkSummary,
     MethodSummary,
@@ -41,6 +43,7 @@ from backend.models.database import (
     PaperProjectPage as DBPaperProjectPage,
     PaperRelation as DBPaperRelation,
     PaperRepository as DBPaperRepository,
+    PaperAbstractMention as DBPaperAbstractMention,
     PaperSuggestedQuestions as DBPaperSuggestedQuestions,
     PaperTask,
     PaperXThread as DBPaperXThread,
@@ -48,6 +51,7 @@ from backend.models.database import (
     Repository as DBRepository,
     Task as DBTask,
 )
+from backend.services.abstract_link_service import abstract_sha, catalog_previews
 from backend.utils.organization_logos import organization_logo_path
 from backend.utils.urls import get_method_source_url, get_paper_route_identifier
 
@@ -92,8 +96,10 @@ class PaperRelations:
     project_pages: dict[int, list[ProjectPage]] = field(default_factory=dict)
     x_threads: dict[int, list[XThread]] = field(default_factory=dict)
     suggested_questions: dict[int, list[str]] = field(default_factory=dict)
+    abstract_mentions: dict[int, list[AbstractMention]] = field(default_factory=dict)
 
 
+_MENTION_KIND = {"method": "method", "dataset": "benchmark", "framework": "framework"}
 _RelationValue = TypeVar("_RelationValue")
 _AuthorRow = tuple[int, int, str, str | None, str | None]
 
@@ -166,8 +172,57 @@ class PaperRelationLoader:
         self._load_card_relations(unique_ids, relations, author_link_limit=None)
         self._load_detail_relations(unique_ids, relations)
         self._load_suggested_questions(unique_ids, relations)
+        self._load_abstract_mentions(unique_ids, relations)
         self._load_repository_coverage(unique_ids, relations)
         return relations
+
+    def _load_abstract_mentions(
+        self,
+        paper_ids: list[int],
+        relations: PaperRelations,
+    ) -> None:
+        """Linked abstract spans, only while they match the current abstract."""
+        rows = (
+            self.db.query(DBPaperAbstractMention, DBPaper.abstract)
+            .join(DBPaper, DBPaper.id == DBPaperAbstractMention.paper_id)
+            .filter(
+                DBPaperAbstractMention.paper_id.in_(paper_ids),
+                DBPaperAbstractMention.linked.is_(True),
+            )
+            .order_by(
+                DBPaperAbstractMention.paper_id, DBPaperAbstractMention.start_offset
+            )
+            .all()
+        )
+        current = [
+            mention
+            for mention, abstract in rows
+            if mention.abstract_sha == abstract_sha(abstract or "")
+        ]
+        previews = catalog_previews(
+            self.db, {(m.entity_type, m.entity_id) for m in current}
+        )
+        for mention in current:
+            preview = previews.get((mention.entity_type, mention.entity_id))
+            if preview is None:
+                continue  # entity deleted since it was judged
+            relations.abstract_mentions.setdefault(mention.paper_id, []).append(
+                AbstractMention(
+                    start=mention.start_offset,
+                    end=mention.end_offset,
+                    surface=mention.surface,
+                    entity_type=_MENTION_KIND[mention.entity_type],
+                    slug=preview.slug,
+                    name=preview.name,
+                    preview=AbstractMentionPreview(
+                        name=preview.card_name,
+                        description=preview.description,
+                        image_url=preview.image_url,
+                        count=preview.count,
+                        detail=preview.detail,
+                    ),
+                )
+            )
 
     def _load_suggested_questions(
         self,
