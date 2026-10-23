@@ -172,6 +172,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `facial-landmark-detection` — Facial Landmark Detection
 - `fake-news-detection` — Fake News Detection
 - `fall-detection` — Fall Detection
+- `few-shot-class-incremental-learning` — Few-Shot Class-Incremental Learning
 - `few-shot-object-detection` — Few-Shot Object Detection
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
 - `gaze-estimation` — Gaze Estimation
