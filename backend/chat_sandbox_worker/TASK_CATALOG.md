@@ -238,6 +238,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `ocr` — OCR
 - `offline-reinforcement-learning` — Offline Reinforcement Learning
 - `omni-models` — Omni models
+- `on-the-fly-category-discovery` — On-the-Fly Category Discovery
 - `open-set-recognition` — Open-Set Recognition
 - `optical-flow` — Optical Flow
 - `oriented-object-detection` — Oriented Object Detection
