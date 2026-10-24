@@ -60,15 +60,15 @@ The goal is to split up those tasks in the future.
 - `healthcare` — Healthcare & Medical AI
 - `graph-machine-learning` — Graph Machine Learning
 - `recommendation-systems` — Recommendation Systems
+- `causal-inference` — Causal Inference
 - `tabular-learning` — Tabular Learning
 - `time-series-forecasting` — Time-series forecasting
+- `materials-and-chemistry` — Materials & Chemistry
 - `brain-computer-interface` — Brain-Computer Interface
+- `finance` — Finance
 - `motion-sensing` — Motion Sensing
-- `time-series-classification` — Time-series classification
-- `sleep-stage-classification` — Sleep Stage Classification
-- `ecg-classification` — ECG Classification
-- `biology` — Biology
-- `knowledge-tracing` — Knowledge Tracing
+- `computer-aided-design` — Computer-Aided Design
+- `quantum-machine-learning` — Quantum Machine Learning
 
 ### Video
 
@@ -98,7 +98,7 @@ The goal is to split up those tasks in the future.
 - `depth-estimation` — Depth estimation
 - `image-editing` — Image editing
 - `3d-generation` — 3D generation
-- `image-restoration` — Image Restoration
+- `spatial-understanding` — Spatial Understanding
 
 ## Complete task lookup index
 
@@ -130,6 +130,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `audio-source-separation` — Audio Source Separation
 - `audio-understanding` — Audio understanding
 - `auto-research` — Auto-Research
+- `autoformalization` — Autoformalization
 - `automatic-music-transcription` — Automatic Music Transcription
 - `automatic-speech-recognition` — Automatic Speech Recognition
 - `autonomous-driving` — Autonomous Driving
@@ -138,6 +139,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `brain-computer-interface` — Brain-Computer Interface
 - `camera-pose-estimation` — Camera Pose Estimation
 - `camouflaged-object-detection` — Camouflaged object detection
+- `causal-inference` — Causal Inference
 - `change-detection` — Change Detection
 - `classic-language-modeling` — Classic Language Modeling
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
@@ -146,11 +148,14 @@ This compact index contains every current task and subtask. Treat names and slug
 - `code-summarization` — Code Summarization
 - `coding-agents` — Coding Agents
 - `collaborative-filtering` — Collaborative Filtering
+- `composed-image-retrieval` — Composed Image Retrieval
 - `computer-use-agents` — Computer Use Agents
+- `computer-aided-design` — Computer-Aided Design
 - `continual-learning` — Continual Learning
 - `continuous-control` — Continuous Control
 - `cross-view-object-correspondence` — Cross-view object correspondence
 - `crowd-counting` — Crowd Counting
+- `cybersecurity` — Cybersecurity
 - `deep-research-agents` — Deep Research Agents
 - `deepfake-detection` — Deepfake Detection
 - `depth-completion` — Depth Completion
@@ -174,6 +179,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `fall-detection` — Fall Detection
 - `few-shot-class-incremental-learning` — Few-Shot Class-Incremental Learning
 - `few-shot-object-detection` — Few-Shot Object Detection
+- `finance` — Finance
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
 - `gaze-estimation` — Gaze Estimation
 - `generative-recommendation` — Generative Recommendation
@@ -198,6 +204,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `image-inpainting` — Image Inpainting
 - `image-matching` — Image Matching
 - `image-matting` — Image Matting
+- `image-quality-assessment` — Image Quality Assessment
 - `image-registration` — Image Registration
 - `image-restoration` — Image Restoration
 - `image-retrieval` — Image Retrieval
@@ -207,6 +214,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `image-to-image-translation` — Image-to-Image Translation
 - `instance-segmentation` — Instance Segmentation
 - `instruction-following` — Instruction Following
+- `inverse-rendering` — Inverse Rendering
 - `knowledge-graph-completion` — Knowledge Graph Completion
 - `knowledge-tracing` — Knowledge Tracing
 - `knowledge-aware-multimodal-recommendation` — Knowledge-Aware and Multimodal Recommendation
@@ -217,6 +225,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `long-horizon-agents` — Long-Horizon Agents
 - `low-light-image-enhancement` — Low-Light Image Enhancement
 - `machine-translation` — Machine Translation
+- `materials-and-chemistry` — Materials & Chemistry
 - `math` — Mathematics
 - `medical-imaging` — Medical Imaging
 - `medical-question-answering` — Medical Question Answering
@@ -226,6 +235,8 @@ This compact index contains every current task and subtask. Treat names and slug
 - `motion-generation` — Motion Generation
 - `motion-sensing` — Motion Sensing
 - `multi-agent-reinforcement-learning` — Multi-Agent Reinforcement Learning
+- `multi-agent-systems` — Multi-Agent Systems
+- `multi-label-image-classification` — Multi-label Image Classification
 - `multimodal-sentiment-analysis` — Multimodal Sentiment Analysis
 - `named-entity-recognition` — Named Entity Recognition
 - `no-reference-image-quality-assessment` — No-Reference Image Quality Assessment
@@ -249,6 +260,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
 - `pseudo-labelling` — Pseudo Labelling
+- `quantum-machine-learning` — Quantum Machine Learning
 - `question-answering` — Question Answering
 - `radiology-report-generation` — Radiology Report Generation
 - `reasoning` — Reasoning
@@ -271,21 +283,26 @@ This compact index contains every current task and subtask. Treat names and slug
 - `skeleton-based-action-recognition` — Skeleton-based Action Recognition
 - `sleep-stage-classification` — Sleep Stage Classification
 - `sound-event-detection` — Sound Event Detection
+- `spatial-understanding` — Spatial Understanding
 - `speaker-diarization` — Speaker Diarization
 - `speaker-verification` — Speaker Verification
+- `speech-deepfake-detection` — Speech Deepfake Detection
 - `speech-enhancement` — Speech Enhancement
 - `speech-translation` — Speech Translation
 - `speech-to-speech` — Speech-to-Speech
 - `spoken-language-identification` — Spoken Language Identification
 - `stereo-matching` — Stereo Matching
+- `streaming-video-understanding` — Streaming Video Understanding
 - `style-transfer` — Style Transfer
 - `summarization` — Summarization
 - `surface-normal-estimation` — Surface Normal Estimation
 - `table-question-answering` — Table question answering
 - `table-structure-recognition` — Table Structure Recognition
 - `tabular-learning` — Tabular Learning
+- `talking-head-generation` — Talking Head Generation
 - `temporal-action-localization` — Temporal Action Localization
 - `temporal-graph-learning` — Temporal Graph Learning
+- `test-time-adaptation` — Test-time Adaptation
 - `text-classification` — Text classification
 - `text-reranking` — Text Reranking
 - `text-to-image-generation` — Text-to-Image Generation
@@ -294,8 +311,10 @@ This compact index contains every current task and subtask. Treat names and slug
 - `time-series-anomaly-detection` — Time Series Anomaly Detection
 - `time-series-classification` — Time-series classification
 - `time-series-forecasting` — Time-series forecasting
+- `traffic-forecasting` — Traffic Forecasting
 - `trajectory-prediction` — Trajectory Prediction
 - `unsupervised-domain-adaptation` — Unsupervised Domain Adaptation
+- `video-anomaly-detection` — Video Anomaly Detection
 - `video-classification` — Video classification
 - `video-compression` — Video Compression
 - `video-editing` — Video Editing
