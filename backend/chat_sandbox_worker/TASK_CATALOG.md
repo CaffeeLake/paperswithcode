@@ -34,8 +34,8 @@ The goal is to split up those tasks in the future.
 - `agents` — Agents
 - `math` — Mathematics
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
-- `continual-learning` — Continual Learning
 - `world-models` — World Models
+- `continual-learning` — Continual Learning
 - `pseudo-labelling` — Pseudo Labelling
 - `embedding-models` — Embedding models
 - `remote-sensing` — Remote Sensing
@@ -61,8 +61,8 @@ The goal is to split up those tasks in the future.
 - `graph-machine-learning` — Graph Machine Learning
 - `recommendation-systems` — Recommendation Systems
 - `causal-inference` — Causal Inference
-- `tabular-learning` — Tabular Learning
 - `time-series-forecasting` — Time-series forecasting
+- `tabular-learning` — Tabular Learning
 - `materials-and-chemistry` — Materials & Chemistry
 - `brain-computer-interface` — Brain-Computer Interface
 - `finance` — Finance
