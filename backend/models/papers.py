@@ -1162,11 +1162,12 @@ class OrganizationSummary(BaseModel):
     name: str = Field(..., description="Organization name (e.g., 'NVIDIA')")
     slug: str = Field(..., description="URL-friendly slug (e.g., 'nvidia')")
     logo_url: Optional[str] = Field(None, description="Organization logo image URL")
-    source: Literal["manual", "hf_org_papers", "curation"] = Field(
+    source: Literal["manual", "hf_org_papers", "curation", "openalex"] = Field(
         ...,
         description=(
-            "Association provenance: 'manual', 'hf_org_papers', or 'curation' "
-            "(read from the paper by the enrichment curator)"
+            "Association provenance: 'manual', 'hf_org_papers', 'curation' "
+            "(read from the paper by the enrichment curator), or 'openalex' "
+            "(OpenAlex author affiliations)"
         ),
     )
     added_by_hf_username: Optional[str] = Field(

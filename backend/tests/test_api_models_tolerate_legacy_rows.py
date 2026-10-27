@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from backend.database.organizations_setup.backfill_openalex_organizations import (
+    OPENALEX_SOURCE,
+)
 from backend.models.evaluations import Dataset
-from backend.models.papers import Paper
+from backend.models.papers import OrganizationSummary, Paper
 
 
 @pytest.mark.parametrize(
@@ -32,3 +35,9 @@ def test_paper_version_defaults_when_the_column_is_null():
 
     assert paper.version == "v1"
     assert Paper(id="1", title="T", authors=[], version="v3").version == "v3"
+
+
+def test_organization_summary_accepts_openalex_affiliation_links():
+    org = OrganizationSummary(id="7", name="MIT", slug="mit", source=OPENALEX_SOURCE)
+
+    assert org.source == "openalex"
