@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy, TextContent, TextItem } from "pdfjs-dist/types/src/display/api";
 import type { PaperReferenceQuery } from "@/lib/api/papers.types";
+import type { PdfHighlightBox } from "./pdfCitations";
 
 export interface PdfLinkAnnotation {
   id: string;
@@ -23,6 +24,8 @@ export function arxivIdFromUrl(value: string): string | null {
 const MAX_TITLE_CANDIDATES = 8;
 const REFERENCE_HEADING_SCAN_PAGES = 12;
 const MAX_TITLE_LENGTH = 300;
+// Pages whose citations are read ahead of the one being indexed.
+const CITATION_READ_AHEAD = 6;
 
 // Sentences of a bibliography entry that could be its title. The backend only
 // accepts an exact letters-and-digits match, so author lists and venues are
@@ -68,6 +71,60 @@ interface PageText { view: number[]; content: TextContent }
 /** A resolved bibliography entry on one page; box is [x0, y0, x1, y1] on a 0–1000 page grid. */
 export interface PdfBibliographyLink { name: string; routeId: string; box: number[] }
 
+// Converts PDF user-space coordinates to the 0–1000 grid of a page's view box.
+function pageGrid([left, bottom, right, top]: number[]) {
+  return {
+    x: (value: number) => Math.round((value - left) / (right - left) * 1000),
+    y: (value: number) => Math.round((top - value) / (top - bottom) * 1000),
+  };
+}
+
+// Numbered in-text citations such as "[3]", "[2, 7]", or "[4-6]".
+const NUMBERED_CITATION = /\[(\d{1,3}(?:\s*[,;\u2013-]\s*\d{1,3})*)\]/g;
+
+function citedNumbers(group: string): number[] {
+  return group.split(/[,;]/).flatMap(part => {
+    const [from, to = from] = part.split(/[\u2013-]/).map(Number);
+    return to >= from && to - from < 50 ? Array.from({ length: to - from + 1 }, (_, index) => from + index) : [from];
+  });
+}
+
+// Boxes of the numbered citations printed in text items, keyed by number. Items
+// of a line are joined first because "[20]" may arrive as "[" + "20]".
+export function numberedCitationBoxes(items: TextContent['items'], view: number[]): Map<number, number[][]> {
+  const grid = pageGrid(view);
+  const boxes = new Map<number, number[][]>();
+  const lines: { text: string; parts: { start: number; item: TextItem }[] }[] = [];
+  let line: (typeof lines)[number] | undefined;
+  for (const item of items) {
+    if (!('str' in item)) continue;
+    if (!line || Math.abs(item.transform[5] - line.parts[0].item.transform[5]) > 1) {
+      line = { text: '', parts: [] };
+      lines.push(line);
+    }
+    line.parts.push({ start: line.text.length, item });
+    line.text += item.str;
+    if (item.hasEOL) line = undefined;
+  }
+  for (const { text, parts } of lines) {
+    const partAt = (offset: number) => parts.filter(part => part.start <= offset).pop() ?? parts[0];
+    // Character positions inside an item are estimated from its width.
+    const xAt = (offset: number) => {
+      const { start, item } = partAt(offset);
+      return item.transform[4] + item.width * Math.min(1, (offset - start) / Math.max(item.str.length, 1));
+    };
+    for (const match of text.matchAll(NUMBERED_CITATION)) {
+      const index = match.index ?? 0;
+      const { item } = partAt(index);
+      const baseline = item.transform[5];
+      const height = item.height || Math.abs(item.transform[3]);
+      const box = [grid.x(xAt(index)), grid.y(baseline + height), grid.x(xAt(index + match[0].length)), grid.y(baseline) + 3];
+      for (const number of citedNumbers(match[1])) boxes.set(number, [...boxes.get(number) ?? [], box]);
+    }
+  }
+  return boxes;
+}
+
 // Named bibliography destinations delimit each entry. An explicit arXiv link or
 // identifier inside the entry wins; otherwise the entry's sentences go to the
 // catalog for exact title matching. Author names alone never resolve anything.
@@ -77,6 +134,7 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
   const pageText = new Map<number, Promise<PageText>>();
   const entries = new Map<string, Promise<ReferenceEntry | null>>();
   let catalog: Promise<Map<string, string>> | undefined;
+  let citations: Promise<Map<string, PdfHighlightBox[][]>> | undefined;
   const getPageText = (page: number) => {
     let text = pageText.get(page);
     if (!text) {
@@ -84,6 +142,14 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
       pageText.set(page, text);
     }
     return text;
+  };
+  const getPageLinks = (page: number) => {
+    let annotations = pageLinks.get(page);
+    if (!annotations) {
+      annotations = pdf.getPage(page).then(proxy => proxy.getAnnotations());
+      pageLinks.set(page, annotations);
+    }
+    return annotations;
   };
   const getReferences = () => references ??= (async () => {
     const destinations = await pdf.getDestinations();
@@ -132,14 +198,9 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
         const column = samePage.filter(position => Math.abs(position.x - start.x) < 24);
         const bottom = Math.max(0, ...column.filter(position => position.y < start.y - 1).map(position => position.y));
         const right = Math.min(Infinity, ...samePage.filter(position => position.x > start.x + 24).map(position => position.x - 4));
-        let annotations = pageLinks.get(start.page);
-        if (!annotations) {
-          annotations = pdf.getPage(start.page).then(page => page.getAnnotations());
-          pageLinks.set(start.page, annotations);
-        }
         const ids = new Set<string>();
         const insideEntry = (x: number, y: number) => x >= start.x - 4 && x < right && y <= start.y + 3 && y > bottom;
-        for (const annotation of await annotations) {
+        for (const annotation of await getPageLinks(start.page)) {
           if (!annotation.url || !annotation.rect) continue;
           const id = arxivIdFromUrl(annotation.url);
           if (!id) continue;
@@ -160,9 +221,7 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
         if (gap > 0) printed.length = gap;
         let box: number[] | null = null;
         if (printed.length) {
-          const [left, bottomEdge, right, top] = view;
-          const x = (value: number) => Math.round((value - left) / (right - left) * 1000);
-          const y = (value: number) => Math.round((top - value) / (top - bottomEdge) * 1000);
+          const { x, y } = pageGrid(view);
           box = [
             x(Math.min(...printed.map(item => item.transform[4]))),
             y(Math.max(...printed.map(item => item.transform[5] + item.height))),
@@ -193,6 +252,52 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
       return matches;
     }
   })();
+  // Where the text cites each entry: hyperref links to its destination, or for
+  // numbered PDFs without them, "[n]" labels printed before the bibliography.
+  const getCitations = () => citations ??= (async () => {
+    const byName = new Map<string, PdfHighlightBox[][]>();
+    const add = (name: string, page: number, bbox: number[]) => {
+      const citations = byName.get(name) ?? [];
+      const boxes = citations[citations.length - 1];
+      const last = boxes?.[boxes.length - 1];
+      // Author/year citations link "Chen et al." and "2017" separately: side
+      // by side on one line, or wrapped onto the start of the next, they are
+      // one citation.
+      if (last?.page === page && Math.abs(last.bbox[1] - bbox[1]) < 5 && bbox[0] >= last.bbox[0] && bbox[0] - last.bbox[2] < 15) {
+        last.bbox = [last.bbox[0], Math.min(last.bbox[1], bbox[1]), Math.max(last.bbox[2], bbox[2]), Math.max(last.bbox[3], bbox[3])];
+      } else if (last?.page === page && bbox[1] > last.bbox[1] && bbox[1] - last.bbox[3] < 10 && bbox[0] < last.bbox[0]) {
+        boxes.push({ page, bbox });
+      } else {
+        byName.set(name, [...citations, [{ page, bbox }]]);
+      }
+    };
+    const positions = await getReferences();
+    if (!positions.length) return byName;
+    // Citations of one page as [name, box] pairs; an unreadable page has none.
+    const first = positions[0];
+    const numbered = first.name.startsWith('text:');
+    const pageCitations = async (page: number): Promise<[string, number[]][]> => {
+      if (numbered) {
+        const { view, content } = await getPageText(page);
+        const items = page < first.page ? content.items : content.items.filter(item => 'str' in item && item.transform[5] > first.y + 1);
+        return [...numberedCitationBoxes(items, view)].flatMap(([number, boxes]) => boxes.map(box => [`text:${number}`, box] as [string, number[]]));
+      }
+      const annotations = (await getPageLinks(page)).filter(annotation => typeof annotation.dest === 'string' && /^cite[.:]/i.test(annotation.dest));
+      if (!annotations.length) return [];
+      const { x, y } = pageGrid((await pdf.getPage(page)).view);
+      return annotations.flatMap(({ dest, rect }) => rect ? [[dest as string, [x(rect[0]), y(rect[3]), x(rect[2]), y(rect[1])]] as [string, number[]]] : []);
+    };
+    // Like the text search, read a few pages ahead rather than the whole
+    // range-loaded document at once, and add citations in page order.
+    const last = numbered ? first.page : pdf.numPages;
+    const scans: Promise<[string, number[]][]>[] = [];
+    const scan = (page: number) => scans[page] ??= pageCitations(page).catch(() => []);
+    for (let page = 1; page <= last; page++) {
+      for (let ahead = page + 1; ahead <= Math.min(last, page + CITATION_READ_AHEAD); ahead++) void scan(ahead);
+      for (const [name, bbox] of await scan(page)) add(name, page, bbox);
+    }
+    return byName;
+  })();
   // Warm every bibliography card as soon as the document opens.
   if (lookup) void getCatalog();
   const routeIdFor = async (name: string) => {
@@ -215,6 +320,10 @@ export function createPdfCitationResolver(pdf: PDFDocumentProxy, lookup?: PdfCit
     }));
     return links.filter((link): link is PdfBibliographyLink => link !== null);
   };
-  return Object.assign(resolve, { bibliographyLinks });
+  // Where the text cites an entry, in reading order, each citation as the boxes
+  // of its one or more printed lines. Scans the whole document once, so cards
+  // never wait for it.
+  const citationsOf = async (name: string): Promise<PdfHighlightBox[][]> => (await getCitations()).get(name) ?? [];
+  return Object.assign(resolve, { bibliographyLinks, citationsOf });
 }
 export type PdfCitationResolver = ReturnType<typeof createPdfCitationResolver>;
