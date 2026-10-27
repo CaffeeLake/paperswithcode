@@ -271,6 +271,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `remote-sensing` — Remote Sensing
 - `retrieval` — Retrieval
 - `retrieval-augmented-generation` — Retrieval-Augmented Generation
+- `reward-model-evaluation` — Reward model evaluation
 - `robotics` — Robotics
 - `safety-and-grounding` — Safety and Grounding
 - `saliency-detection` — Saliency Detection
