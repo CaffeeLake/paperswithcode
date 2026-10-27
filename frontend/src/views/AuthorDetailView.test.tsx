@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Paper } from "@/lib/api/papers.types";
@@ -30,6 +30,11 @@ const paper: Paper = {
 
 afterEach(() => vi.restoreAllMocks());
 
+function OrgPage() {
+  const location = useLocation();
+  return <h1>{`Organization page${location.search}`}</h1>;
+}
+
 function renderAuthor(path = "/authors/7") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -40,6 +45,7 @@ function renderAuthor(path = "/authors/7") {
             path="/authors/:authorId"
             element={<><Link to="/authors/8">Coauthor</Link><AuthorDetailView /></>}
           />
+          <Route path="/orgs/:slug" element={<OrgPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -109,6 +115,27 @@ describe("AuthorDetailView", () => {
       "href",
       "https://huggingface.co/researcher",
     );
+  });
+
+  it("sends an organization listed as an author to its organization page", async () => {
+    vi.spyOn(papersApi, "getAuthor").mockResolvedValue({
+      id: "7",
+      full_name: "Nvidia",
+      organization_slug: "nvidia",
+      paper_count: 22,
+    });
+    vi.spyOn(papersApi, "list").mockResolvedValue({
+      count: 1,
+      next_page: null,
+      previous_page: null,
+      results: [paper],
+    });
+
+    renderAuthor("/authors/7?has_code=true");
+
+    expect(
+      await screen.findByRole("heading", { name: "Organization page?has_code=true" }),
+    ).toBeInTheDocument();
   });
 
   it("links a verified Google Scholar profile", async () => {
