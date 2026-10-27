@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionManager, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { CompactionController, protectedPreparation, splitSummaryInput, summarizeAll } from "../src/compaction.js";
+import { CompactionController, compactionReserveTokens, omitPaperEvidence, protectedPreparation, requestToPin, splitSummaryInput, summarizeAll } from "../src/compaction.js";
 import { boundedGatewayPayload, type createProvider } from "../src/provider.js";
 import type { PwCEvent } from "../src/events.js";
 
@@ -224,10 +224,117 @@ test("synthetic recovery prompts cannot replace the verbatim admitted request", 
   const original = "Compare exact values, preserve 0.000123 and never publish.";
   controller.reset(Infinity, () => {}, original);
   const event = preparation();
+  // The admitted request was summarized away; a recovery prompt is now the latest user message.
+  const first = event.branchEntries[0]!;
+  if (first.type === "message" && first.message.role === "user") first.message.content = original;
   const last = event.branchEntries.at(-1)!;
   if (last.type === "message" && last.message.role === "user") last.message.content = "Your previous response ended without an answer. Continue.";
   const handler = hook(controller, async () => ({ stopReason: "stop", content: [{ type: "text", text: "A concise summary" }] }));
   const result = await handler(event);
   assert.ok(result.compaction?.summary.includes(original));
+  controller.finish();
+});
+
+function readerPrompt(request: string): string {
+  return [
+    "<paper_context_notice>\nThis is a paper-reader turn.\n</paper_context_notice>",
+    "<referenced_papers>",
+    '<paper route_id="paper:42" title="Scaling Verification">',
+    "<paper_markdown_prefix>\n" + "PAPER-BODY ".repeat(5_000) + "\n</paper_markdown_prefix>",
+    "</paper>",
+    '<viewer_context trust="client_orientation" page="7" />',
+    "</referenced_papers>",
+    `<user_request>\n${request}\n</user_request>`,
+  ].join("\n");
+}
+
+test("paper evidence is omitted from summary input but paper identity, viewer and request stay", () => {
+  const result = omitPaperEvidence(readerPrompt("What is the tie rate?"));
+  assert.doesNotMatch(result, /PAPER-BODY/);
+  assert.match(result, /<paper route_id="paper:42" title="Scaling Verification">/);
+  assert.match(result, /<viewer_context trust="client_orientation" page="7" \/>/);
+  assert.match(result, /What is the tie rate\?/);
+  assert.equal(omitPaperEvidence("plain request"), "plain request");
+});
+
+test("reader compaction summarizes old turns without their papers and does not re-pin a kept request", async () => {
+  const manager = SessionManager.inMemory("/workspace");
+  const latest = readerPrompt("What does G mean?");
+  for (const request of ["Translate this", "Explain the tie rate"]) {
+    manager.appendMessage({ role: "user", content: readerPrompt(request), timestamp: Date.now() });
+    manager.appendMessage({ role: "assistant", api: "openai-responses", provider: "pwc-gateway", model: "test", stopReason: "stop", timestamp: Date.now(),
+      content: [{ type: "text", text: `Answer to ${request}` }],
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  }
+  manager.appendMessage({ role: "user", content: latest, timestamp: Date.now() });
+  const event = preparation();
+  event.reason = "threshold";
+  event.branchEntries = manager.getBranch();
+  event.preparation.firstKeptEntryId = event.branchEntries.at(-1)!.id;
+  const seen: string[] = [];
+  const controller = new CompactionController(() => {});
+  controller.reset(Infinity, () => {}, latest);
+  const handler = hook(controller, async (_model, context) => {
+    seen.push(JSON.stringify(context));
+    return { stopReason: "stop", content: [{ type: "text", text: "Summary of earlier turns" }] };
+  });
+  const result = await handler(event);
+  assert.equal(result.compaction?.summary, "Summary of earlier turns");
+  assert.ok(seen.every((input) => !input.includes("PAPER-BODY")));
+  assert.ok(seen.some((input) => input.includes("Explain the tie rate")));
+  controller.finish();
+});
+
+test("threshold compaction neither arms the run abort nor fails the turn", async () => {
+  let aborted = 0;
+  const events: PwCEvent[] = [];
+  const controller = new CompactionController((event) => events.push(event), 20);
+  controller.reset(Infinity, () => { aborted++; });
+  const handler = hook(controller, (_model, _context, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener("abort", () => reject(options.signal.reason));
+  }));
+  const event = preparation();
+  event.reason = "threshold";
+  assert.deepEqual(await handler(event), { cancel: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(aborted, 0);
+  assert.equal(controller.failed, false);
+  assert.equal(controller.attempted, false);
+  assert.equal(events.at(-1)?.outcome, "timeout");
+  controller.finish();
+});
+
+test("the compaction reserve fits a reader prompt on large windows and keeps Pi's default on small ones", () => {
+  assert.equal(compactionReserveTokens(272_000), 90_666);
+  assert.equal(compactionReserveTokens(200_000), 66_666);
+  assert.equal(compactionReserveTokens(48_000), 16_384);
+});
+
+test("an incoming prompt that Pi has not appended yet is never pinned", () => {
+  const event = preparation();
+  const incoming = readerPrompt("Explain the pivots");
+  assert.equal(requestToPin(event.branchEntries, event.branchEntries[1]!.id, incoming), "");
+  const kept = event.branchEntries[1]!;
+  if (kept.type === "message" && kept.message.role === "user") kept.message.content = incoming;
+  assert.equal(requestToPin(event.branchEntries, event.branchEntries[1]!.id, incoming), "");
+  assert.equal(requestToPin(event.branchEntries, event.branchEntries[2]!.id, incoming), incoming);
+});
+
+test("a failed threshold compaction leaves the overflow retry for recovery", async () => {
+  let attempts = 0;
+  const controller = new CompactionController(() => {});
+  const handler = hook(controller, async () => {
+    attempts++;
+    if (attempts <= 2) throw new Error("unavailable");
+    return attempts === 3
+      ? { stopReason: "error" }
+      : { stopReason: "stop", content: [{ type: "text", text: "Recovered summary" }] };
+  });
+  const threshold = preparation();
+  threshold.reason = "threshold";
+  assert.deepEqual(await handler(threshold), { cancel: true });
+  assert.equal(controller.failed, false);
+  assert.ok((await handler(preparation())).compaction);
+  assert.equal(attempts, 4);
   controller.finish();
 });
