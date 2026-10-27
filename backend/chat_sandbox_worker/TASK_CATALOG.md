@@ -52,8 +52,8 @@ The goal is to split up those tasks in the future.
 - `named-entity-recognition` — Named Entity Recognition
 - `text-to-sql` — Text-to-SQL
 - `relation-extraction` — Relation Extraction
-- `fake-news-detection` — Fake News Detection
 - `ai-generated-text-detection` — AI-Generated Text Detection
+- `fake-news-detection` — Fake News Detection
 
 ### Other
 
@@ -164,6 +164,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `dialogue-state-tracking` — Dialogue State Tracking
 - `document-image-rectification` — Document Image Rectification
 - `document-layout-analysis` — Document Layout Analysis
+- `document-retrieval` — Document Retrieval
 - `document-understanding` — Document Understanding
 - `domain-generalization` — Domain Generalization
 - `earth-observation` — Earth Observation
