@@ -118,6 +118,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `6d-pose-estimation` — 6D Pose Estimation
 - `action-anticipation` — Action Anticipation
 - `action-recognition` — Action Recognition
+- `agent-swarms` — Agent Swarms
 - `agents` — Agents
 - `ai-weather-forecasting` — AI Weather Forecasting
 - `ai-generated-text-detection` — AI-Generated Text Detection
@@ -189,6 +190,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `graph-machine-learning` — Graph Machine Learning
 - `graph-regression` — Graph Regression
 - `handwritten-text-recognition` — Handwritten Text Recognition
+- `harness-engineering` — Harness Engineering
 - `head-pose-estimation` — Head Pose Estimation
 - `healthcare` — Healthcare & Medical AI
 - `human-mesh-recovery` — Human Mesh Recovery
