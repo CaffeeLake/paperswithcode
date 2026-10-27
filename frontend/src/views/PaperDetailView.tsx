@@ -43,6 +43,7 @@ import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
 import { CodexEnrichPaperDialog } from "@/components/paper-detail/CodexEnrichPaperDialog";
 import { isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
+import { organizationShortName } from "@/lib/organizationNames";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 
 const EDIT_SECTION_LABEL: Record<PaperEditSection, string> = {
@@ -335,28 +336,31 @@ const PaperDetailView: React.FC = () => {
     ? readerRoute
     : null;
   const organizations = paper.organizations || [];
-  const renderTitleOrg = (o: NonNullable<typeof paper.organizations>[number]) => (
-    <Link
-      key={o.id}
-      to={`/orgs/${o.slug}`}
-      className={`detail-title-org${o.logo_url ? " detail-title-org--logo" : ""}`}
-      title={o.name}
-      aria-label={o.name}
-    >
-      {o.logo_url ? (
-        <img
-          src={o.logo_url}
-          alt=""
-          onError={(e) => {
-            e.currentTarget.parentElement?.classList.remove("detail-title-org--logo");
-            e.currentTarget.replaceWith(o.name);
-          }}
-        />
-      ) : (
-        o.name
-      )}
-    </Link>
-  );
+  const renderTitleOrg = (o: NonNullable<typeof paper.organizations>[number]) => {
+    const orgLabel = organizationShortName(o) ?? o.name;
+    return (
+      <Link
+        key={o.id}
+        to={`/orgs/${o.slug}`}
+        className={`detail-title-org${o.logo_url ? " detail-title-org--logo" : ""}`}
+        title={o.name}
+        aria-label={o.name}
+      >
+        {o.logo_url ? (
+          <img
+            src={o.logo_url}
+            alt=""
+            onError={(e) => {
+              e.currentTarget.parentElement?.classList.remove("detail-title-org--logo");
+              e.currentTarget.replaceWith(orgLabel);
+            }}
+          />
+        ) : (
+          orgLabel
+        )}
+      </Link>
+    );
+  };
   const visibleAuthors = showAllAuthors || authorEntries.length <= authorLimit
     ? authorEntries
     : authorEntries.slice(0, authorLimit);
