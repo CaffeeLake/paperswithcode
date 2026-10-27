@@ -29,19 +29,23 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-QLEVER_WIKIDATA_URL = "https://qlever.cs.uni-freiburg.de/api/wikidata"
+WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 SERPAPI_URL = "https://serpapi.com/search.json"
+SERPAPI_ACCOUNT_URL = "https://serpapi.com/account.json"
 
 # Scholar user IDs are 12 URL-safe characters; Wikidata also holds junk values.
 SCHOLAR_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12}$")
 
+# One shard per first character of the Scholar ID keeps each query far below
+# the Wikidata Query Service's 60 s limit (~2k people, under 20 s each).
 WIKIDATA_QUERY = """
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
 SELECT ?p ?g ?s2 ?orcid (GROUP_CONCAT(DISTINCT ?n; SEPARATOR="|") AS ?names) WHERE {
   ?p wdt:P1960 ?g .
+  FILTER(STRSTARTS(?g, "%s"))
   { ?p rdfs:label ?n } UNION { ?p skos:altLabel ?n }
   FILTER(LANG(?n) = "en" || LANG(?n) = "mul")
   OPTIONAL { ?p wdt:P4012 ?s2 }
@@ -49,6 +53,9 @@ SELECT ?p ?g ?s2 ?orcid (GROUP_CONCAT(DISTINCT ?n; SEPARATOR="|") AS ?names) WHE
 }
 GROUP BY ?p ?g ?s2 ?orcid
 """
+SCHOLAR_ID_FIRST_CHARS = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+)
 
 MIN_MATCHED_PAPERS = 2
 MIN_MATCHED_SHARE = 0.5
@@ -137,14 +144,39 @@ def _strip_tsv(value: str) -> str:
     return match.group(1) if match else value
 
 
-def fetch_wikidata_tsv(client: httpx.Client) -> str:
-    response = client.get(
-        QLEVER_WIKIDATA_URL,
-        params={"query": WIKIDATA_QUERY},
-        headers={"Accept": "text/tab-separated-values"},
-        follow_redirects=True,
-        timeout=300,
-    )
+def fetch_wikidata_tsv(client: httpx.Client, attempts: int = 5) -> str:
+    """All Wikidata people with a Scholar ID, as one TSV with a single header."""
+    shards = [
+        _fetch_wikidata_shard(client, char, attempts) for char in SCHOLAR_ID_FIRST_CHARS
+    ]
+    header = shards[0].partition("\n")[0]
+    rows = [shard.partition("\n")[2].strip("\n") for shard in shards]
+    return "\n".join([header, *filter(None, rows)])
+
+
+def _fetch_wikidata_shard(client: httpx.Client, first_char: str, attempts: int) -> str:
+    for attempt in range(attempts):
+        response = client.get(
+            WIKIDATA_SPARQL_URL,
+            params={"query": WIKIDATA_QUERY % first_char},
+            headers={
+                "Accept": "text/tab-separated-values",
+                # Wikimedia asks automated clients to identify themselves.
+                "User-Agent": "PapersWithCode-ScholarLinks/1.0 (https://paperswithcode.co)",
+            },
+            timeout=120,
+        )
+        if response.status_code != 429 and response.status_code < 500:
+            break
+        if attempt + 1 < attempts:
+            wait = 30 * 2**attempt
+            logger.warning(
+                "Wikidata HTTP %d for shard %r; retrying in %d s",
+                response.status_code,
+                first_char,
+                wait,
+            )
+            time.sleep(wait)
     response.raise_for_status()
     return response.text
 
@@ -284,6 +316,15 @@ class SerpApiScholar:
         self.max_pages = max_pages
         self.requests = 0
 
+    def searches_left(self) -> int:
+        """Searches left this month; reading the account costs none."""
+        response = self.client.get(
+            SERPAPI_ACCOUNT_URL, params={"api_key": self.api_key}, timeout=60
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"SerpAPI account HTTP {response.status_code}")
+        return int(response.json().get("total_searches_left") or 0)
+
     def profile(
         self, scholar_id: str, start_page: int = 0, max_pages: int | None = None
     ) -> dict:
@@ -355,6 +396,55 @@ def full_profile_evidence(
         profile["complete"] = rest["complete"]
         evidence = serpapi_evidence(papers, profile, common_name)
     return profile, evidence
+
+
+def sample_papers(papers: list[AuthorPaper], size: int) -> list[AuthorPaper]:
+    """An even sample of an author's papers, enough to judge an S2 match."""
+    papers = sorted(papers, key=lambda p: p.paper_id)
+    if len(papers) <= size:
+        return papers
+    step = len(papers) / size
+    return [papers[int(i * step)] for i in range(size)]
+
+
+def evidence_json(evidence: Evidence) -> dict:
+    return {
+        "verdict": evidence.verdict,
+        "considered": evidence.considered,
+        "matched": len(evidence.matched_paper_ids),
+        "share": round(evidence.share, 2),
+        "matched_paper_ids": evidence.matched_paper_ids,
+        "conflicting_paper_ids": evidence.conflicting_paper_ids,
+    }
+
+
+def decide(rows: list[dict]) -> None:
+    """Set each candidate's status; only a sole verified person is proposed.
+
+    Rows carry `author_id`, `scholar_id`, `s2` and `serpapi` evidence (as from
+    `evidence_json`, `serpapi` may be None).
+    """
+    for row in rows:
+        # Scholar's own list is the stronger proof; it decides when present.
+        row["status"] = (row["serpapi"] or row["s2"])["verdict"]
+    by_author = defaultdict(list)
+    for row in rows:
+        by_author[row["author_id"]].append(row)
+    for author_rows in by_author.values():
+        verified = {r["scholar_id"] for r in author_rows if r["status"] == "verified"}
+        for row in author_rows:
+            if row["status"] == "verified":
+                row["status"] = "proposed" if len(verified) == 1 else "ambiguous"
+    by_scholar = defaultdict(list)
+    for row in rows:
+        if row["status"] == "proposed":
+            by_scholar[row["scholar_id"]].append(row)
+    for scholar_rows in by_scholar.values():
+        # Two Wikidata items may carry one Scholar ID; only distinct authors count.
+        if len({r["author_id"] for r in scholar_rows}) > 1:
+            # Several PwC rows for one person: likely duplicates to merge first.
+            for row in scholar_rows:
+                row["status"] = "shared_scholar_id"
 
 
 def iter_chunks(items: list, size: int) -> Iterator[list]:
