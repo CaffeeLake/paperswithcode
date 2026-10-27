@@ -53,7 +53,7 @@ The goal is to split up those tasks in the future.
 - `text-to-sql` — Text-to-SQL
 - `relation-extraction` — Relation Extraction
 - `fake-news-detection` — Fake News Detection
-- `table-question-answering` — Table question answering
+- `ai-generated-text-detection` — AI-Generated Text Detection
 
 ### Other
 
@@ -120,6 +120,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `action-recognition` — Action Recognition
 - `agents` — Agents
 - `ai-weather-forecasting` — AI Weather Forecasting
+- `ai-generated-text-detection` — AI-Generated Text Detection
 - `anomaly-detection` — Anomaly Detection
 - `aspect-based-sentiment-analysis` — Aspect-Based Sentiment Analysis
 - `atari-games` — Atari Games
