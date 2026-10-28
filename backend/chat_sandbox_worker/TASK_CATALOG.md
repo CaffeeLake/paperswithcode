@@ -153,6 +153,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `composed-image-retrieval` — Composed Image Retrieval
 - `computer-use-agents` — Computer Use Agents
 - `computer-aided-design` — Computer-Aided Design
+- `constituency-parsing` — Constituency Parsing
 - `continual-learning` — Continual Learning
 - `continuous-control` — Continuous Control
 - `cross-view-object-correspondence` — Cross-view object correspondence
