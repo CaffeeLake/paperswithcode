@@ -33,7 +33,6 @@ import {
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
   CHAT_REASONING_EFFORT_KEY,
-  CHAT_WEB_SEARCH_KEY,
   clearQueuedChatLaunch,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
@@ -161,7 +160,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
   };
   const queuedLaunchRef = useRef(readQueuedChatLaunch());
   // Queued launch controls belong to the chat the launch returns to.
-  const queuedLaunchRouteRef = useRef(routeSessionId ?? null);
   const requestedModelRef = useRef(searchParams.get("model") || queuedLaunchRef.current?.model);
   const [models, setModels] = useState<ChatModelChoice[]>(
     staging ? STAGING_FALLBACK_CHAT_MODELS : PRODUCTION_FALLBACK_CHAT_MODELS,
@@ -187,11 +185,9 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     dismissedCreditsNotice,
   );
   const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
-  const [webSearchEnabled, setWebSearchEnabled] = useState(
-    () => queuedLaunchRef.current?.webSearchEnabled ?? true,
-  );
   const reasoningEffort = DEFAULT_REASONING_EFFORT;
-  const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
+  // Web search has no user control: every turn uses it whenever the deployment offers it.
+  const webSearchEnabled = Boolean(availabilityQuery.data?.web_search_available);
   const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => {
     const queryPrompt = searchParams.get("q")?.trim();
     if (queryPrompt) return emptyDraft(queryPrompt);
@@ -213,7 +209,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
   const chat = useChat({
     sessionId: routeSessionId ?? null,
     initialModel: selectedModel,
-    webSearchEnabled: webSearchAvailable && webSearchEnabled,
+    webSearchEnabled,
     reasoningEffort,
     primaryPaperRouteId: mode === "paper" ? primaryPaper?.routeId : undefined,
     viewerContext: mode === "paper" && currentPage
@@ -276,7 +272,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.setItem(CHAT_REASONING_EFFORT_KEY, reasoningEffort);
-    sessionStorage.setItem(CHAT_WEB_SEARCH_KEY, webSearchEnabled ? "1" : "0");
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
     const returnTo = mode === "paper" && primaryPaper
@@ -285,7 +280,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
         ? `/chat/${routeSessionIdRef.current}`
         : "/chat";
     window.location.href = hfLoginUrl(returnTo, userBilledInference);
-  }, [mode, primaryPaper, reasoningEffort, selectedModel, userBilledInference, webSearchEnabled]);
+  }, [mode, primaryPaper, reasoningEffort, selectedModel, userBilledInference]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
@@ -419,15 +414,11 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
       const configuration = activeConfiguration;
       if (configuration) {
         if (configuration.model) setSelectedModel(configuration.model);
-        setWebSearchEnabled(configuration.webSearchEnabled);
       }
       return;
     }
     if (!selectedId) {
       loadChat([], null);
-      if (initializedRoute !== undefined) {
-        setWebSearchEnabled(true);
-      }
       setInitializedRoute(null);
       return;
     }
@@ -440,8 +431,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     });
     setSessionError("");
     setSelectedModel(detail.selected_model);
-    const queued = selectedId === queuedLaunchRouteRef.current ? queuedLaunchRef.current : null;
-    setWebSearchEnabled(queued ? queued.webSearchEnabled : detail.web_search_enabled);
   }, [routeSessionId, selectedTurn, detail, loadChat, activeConfiguration, routeQuery.isFetching, initializedRoute]);
 
   useEffect(() => {
@@ -464,7 +453,7 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
       || chat.busy
       || !pendingAutoDraft.text
       || autoSendStartedRef.current
-      || (Boolean(user) && webSearchEnabled && availabilityQuery.isFetching)
+      || (Boolean(user) && availabilityQuery.isFetching)
       || (routeSessionId && !routeReady)
     ) return;
     // Deferring avoids React StrictMode's development-only effect cleanup from
@@ -485,7 +474,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     routeReady,
     send,
     user,
-    webSearchEnabled,
   ]);
 
   useEffect(() => {
@@ -503,7 +491,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     setInitializedRoute(null);
     setDraft(emptyDraft());
     onPaperSelectionChange?.(undefined);
-    setWebSearchEnabled(true);
     if (mode === "paper") onReaderNewChat?.();
     else navigate("/chat");
   };
@@ -603,9 +590,6 @@ const ChatExperienceContent: React.FC<ChatExperienceProps> = ({
     paperMentionsEnabled: Boolean(availabilityQuery.data?.paper_mentions_enabled),
     paperSelectionEnabled: availabilityQuery.data?.paper_reader_selection_enabled === true,
     paperArtifactsEnabled: mode === "general" && availabilityQuery.data?.paper_artifacts_enabled === true,
-    webSearchAvailable,
-    webSearchEnabled,
-    onWebSearchChange: setWebSearchEnabled,
   };
 
   return (
