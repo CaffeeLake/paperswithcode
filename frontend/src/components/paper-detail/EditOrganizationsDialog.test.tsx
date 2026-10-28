@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EditOrganizationsDialog } from "./EditOrganizationsDialog";
 
-const { getOrganizations, updatePaperOrganizations, submit } = vi.hoisted(() => ({
+const { getOrganizations, updatePaperOrganizations, submit, onOpenChange } = vi.hoisted(() => ({
+  onOpenChange: vi.fn(),
   submit: vi.fn(),
   getOrganizations: vi.fn(),
   updatePaperOrganizations: vi.fn(),
@@ -42,7 +43,7 @@ function renderDialog(initialOrganizationIds: number[] = [], submitMode: "direct
       <MemoryRouter>
       <EditOrganizationsDialog
         open
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         paperId="42"
         initialOrganizationIds={initialOrganizationIds}
         submitMode={submitMode}
@@ -59,6 +60,7 @@ beforeEach(() => {
   updatePaperOrganizations.mockReset();
   updatePaperOrganizations.mockResolvedValue({ id: "42", title: "Updated" });
   submit.mockReset();
+  onOpenChange.mockReset();
   submit.mockResolvedValue({ id: "pending-1" });
 });
 
@@ -137,7 +139,7 @@ describe("EditOrganizationsDialog", () => {
    await user.type(screen.getByRole("searchbox", { name: "Search organizations" }), "Prime Intellect");
 
    expect(screen.getByRole("textbox", { name: "Organization name" })).toHaveValue("Prime Intellect");
-   const submitButton = screen.getByRole("button", { name: "Submit for review" });
+   const submitButton = screen.getByRole("button", { name: "Submit organization" });
    expect(submitButton).toBeDisabled();
    await user.type(
      screen.getByRole("textbox", { name: "Hugging Face organization" }),
@@ -162,4 +164,17 @@ describe("EditOrganizationsDialog", () => {
        image: { file_name: "logo.png", mime_type: "image/png", data_url: "data:image/png;base64,iVBORw==" },
      },
    });
+ });
+
+ it("adds an auto-approved organization suggestion straight to the paper", async () => {
+   submit.mockResolvedValue({ id: "pending-2", status: "approved" });
+   const client = renderDialog([], "pending");
+   const user = userEvent.setup();
+   await screen.findByText("NVIDIA");
+   await user.type(screen.getByRole("searchbox", { name: "Search organizations" }), "General Reasoning");
+   await user.type(screen.getByRole("textbox", { name: "Hugging Face organization" }), "GeneralReasoning");
+   await user.click(screen.getByRole("button", { name: "Submit organization" }));
+
+   await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+   expect(client.getQueryState(["paper", "42"])?.isInvalidated).toBe(true);
  });

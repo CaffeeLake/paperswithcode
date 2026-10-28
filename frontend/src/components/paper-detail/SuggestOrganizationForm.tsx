@@ -31,10 +31,16 @@ function readLogo(file: File): Promise<Logo> {
 interface Props {
   paperId: string;
   initialName: string;
+  /** Called when the suggestion was approved at once and the paper now has it. */
+  onApplied: (name: string) => void;
 }
 
-/** Queue a missing organization for admin review; approval also tags the paper. */
-export function SuggestOrganizationForm({ paperId, initialName }: Props) {
+/**
+ * Suggest a missing organization; approval creates it and tags the paper. One
+ * with a real Hugging Face organization is approved at once and takes its
+ * website and logo from Hugging Face.
+ */
+export function SuggestOrganizationForm({ paperId, initialName, onApplied }: Props) {
   const [name, setName] = useState(initialName);
   const [hfSlug, setHfSlug] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -50,6 +56,9 @@ export function SuggestOrganizationForm({ paperId, initialName }: Props) {
           ...(logo ? { image: logo } : {}),
         }),
       ),
+    onSuccess: (submitted) => {
+      if (submitted.status === "approved") onApplied(name.trim());
+    },
   });
 
   if (suggest.isSuccess) {
@@ -101,13 +110,15 @@ export function SuggestOrganizationForm({ paperId, initialName }: Props) {
       {logo && <img src={logo.data_url} alt="Selected logo" className="h-12 w-12 rounded border object-contain" />}
       {logoError && <p className="text-sm text-destructive">{logoError}</p>}
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">An admin reviews every new organization.</p>
+        <p className="text-xs text-muted-foreground">
+          With a Hugging Face organization it is added right away; otherwise an admin reviews it.
+        </p>
         <Button
           type="submit"
           variant="outline"
           disabled={!name.trim() || (!hfSlug.trim() && !websiteUrl.trim()) || suggest.isPending}
         >
-          {suggest.isPending ? "Submitting..." : "Submit for review"}
+          {suggest.isPending ? "Submitting..." : "Submit organization"}
         </Button>
       </div>
       {suggest.error && <p className="text-sm text-destructive">{getApiErrorMessage(suggest.error, "Could not submit this organization.")}</p>}
