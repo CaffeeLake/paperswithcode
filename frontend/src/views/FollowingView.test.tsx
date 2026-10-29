@@ -38,7 +38,7 @@ beforeEach(() => {
     reasons: ['Task'], scores: [] }]);
   vi.spyOn(researchApi, 'topic').mockResolvedValue(null);
 });
-const topic = { text: 'real-time video generation', set_at: '2026-10-28T10:00:00Z', status: 'done' as const,
+const topic = { text: 'real-time video generation', label: null, set_at: '2026-10-28T10:00:00Z', status: 'done' as const,
   judged: 10, total: 10, suggestions: [] };
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); sessionStorage.clear(); login.hfLoginUrl.mockClear(); });
 it('renders following in the existing tab row with standard paper cards and thumbnails', async () => {
@@ -260,7 +260,7 @@ it('shows the feed for an account that follows only a topic', async () => {
   vi.mocked(researchApi.follows).mockResolvedValue([]);
   vi.mocked(researchApi.topic).mockResolvedValue({ ...topic, status: 'running', judged: 200, total: 4700 });
   renderFeed();
-  expect(await screen.findByText(/Finding papers about \u201creal-time video generation\u201d/)).toBeInTheDocument();
+  expect(await screen.findByText(/Showing the closest papers about \u201creal-time video generation\u201d now/)).toBeInTheDocument();
   expect(await screen.findByText('A paper')).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Build your personal research feed' })).not.toBeInTheDocument();
 });

@@ -15,7 +15,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 beforeEach(() => { vi.spyOn(researchApi, 'topic').mockResolvedValue(null); });
 afterEach(() => vi.restoreAllMocks());
 describe('research topic', () => {
-  const saved = { text: 'real-time video generation', set_at: '2026-10-28T10:00:00Z', status: 'pending' as const,
+  const saved = { text: 'real-time video generation', label: null, set_at: '2026-10-28T10:00:00Z', status: 'pending' as const,
     judged: 0, total: null, suggestions: [] };
   it('saves a trimmed topic and reports backfill progress', async () => {
     vi.spyOn(researchApi, 'follows').mockResolvedValue([]);
@@ -27,7 +27,7 @@ describe('research topic', () => {
     fireEvent.change(input, { target: { value: '  real-time   video generation ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Follow topic' }));
     await waitFor(() => expect(set).toHaveBeenCalledWith('real-time video generation'));
-    expect(await screen.findByText('Finding matching papers: 200 of 4,700 checked…')).toBeInTheDocument();
+    expect(await screen.findByText('Your feed shows the closest papers now. Refining matches: 200 of 4,700 checked…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update topic' })).toBeDisabled();
   });
   it('removes the topic and names exact catalog matches', async () => {
