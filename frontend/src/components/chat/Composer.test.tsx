@@ -26,6 +26,7 @@ describe("Composer paper mentions", () => {
   beforeEach(() => {
     vi.spyOn(papersApi, "search").mockResolvedValue({ next_page: null, previous_page: null, results: [paper] });
     vi.spyOn(chatApi, "prewarmPaperContext").mockResolvedValue(undefined);
+    vi.spyOn(chatApi, "getAutocompleteVocabulary").mockResolvedValue({ names: ["Object Detection"] });
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
@@ -169,5 +170,36 @@ describe("Composer paper selection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove selected paper passage" }));
     expect(onDraftChange).toHaveBeenCalledWith({ text: "", paperMentions: [] });
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("Composer completion", () => {
+  beforeEach(() => {
+    vi.spyOn(chatApi, "getAutocompleteVocabulary").mockResolvedValue({ names: ["Object Detection"] });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("completes the typed catalog name on Tab and otherwise leaves Tab alone", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(<QueryClientProvider client={client}><Harness onSend={vi.fn()} /></QueryClientProvider>);
+    const textarea = screen.getByRole("combobox");
+
+    fireEvent.change(textarea, { target: { value: "Contrast", selectionStart: 8 } });
+    expect(fireEvent.keyDown(textarea, { key: "Tab" })).toBe(true);
+    expect(screen.queryByText(/Tab to complete/)).not.toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: "papers on object det", selectionStart: 20 } });
+    await waitFor(() => expect(container.querySelector(".chat-prompt-completion")).toHaveTextContent("ection"));
+    expect(screen.getByText(/Tab to complete/)).toBeInTheDocument();
+    expect(fireEvent.keyDown(textarea, { key: "Tab", isComposing: true })).toBe(true);
+    expect(textarea).toHaveValue("papers on object det");
+
+    (textarea as HTMLTextAreaElement).setSelectionRange(3, 3);
+    fireEvent.click(textarea);
+    expect(container.querySelector(".chat-prompt-completion")).not.toBeInTheDocument();
+    (textarea as HTMLTextAreaElement).setSelectionRange(20, 20);
+    fireEvent.click(textarea);
+    expect(fireEvent.keyDown(textarea, { key: "Tab" })).toBe(false);
+    expect(textarea).toHaveValue("papers on object detection");
   });
 });
