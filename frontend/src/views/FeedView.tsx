@@ -1,5 +1,5 @@
 import FollowingIntro from "@/components/FollowingIntro";
-import TopicSettings from "@/components/TopicSettings";
+import TopicDialog from "@/components/TopicDialog";
 import { clearPendingTopic, readPendingTopic, useSaveTopic } from "@/lib/researchTopic";
 import { useOptionalAuth } from "@/lib/authContext";
 import { researchApi, type FollowKind } from "@/lib/api/research";
@@ -386,6 +386,9 @@ const FeedView: React.FC<{ following?: boolean }> = ({ following = false }) => {
     wasBuilding.current = topicBuilding;
   }, [topicBuilding, queryClient, user?.hf_subject]);
   const noFollows = following && !!user && follows.data?.length === 0 && topic.isSuccess && !topic.data;
+  // The intro opens its topic pop-up only for visitors who arrived without follows, not after a removal.
+  const [hadFollows, setHadFollows] = useState(false);
+  if (!hadFollows && (!!topic.data || !!follows.data?.length)) setHadFollows(true);
   // Save the topic a guest submitted before signing in; it stays stashed until the save succeeds.
   const pendingSave = useSaveTopic();
   const { mutate: savePendingTopic } = pendingSave;
@@ -573,15 +576,18 @@ const FeedView: React.FC<{ following?: boolean }> = ({ following = false }) => {
               </Alert>
             )}
 
-            {following && !!user && topic.isSuccess && !follows.isPending && !noFollows && (!topic.data || editingTopic ? (
-              <section className="following-topic-card" aria-label={topic.data ? "Edit your topic" : "Follow a topic"}>
-                <TopicSettings onDone={topic.data ? () => setEditingTopic(false) : undefined} />
-              </section>
+            {following && !!user && topic.isSuccess && !follows.isPending && !noFollows && (!topic.data ? (
+              <div className="following-topic-note" role="status">
+                Describe a topic in your own words, and a model adds matching new papers to this feed.{" "}
+                <button type="button" className="link-button" onClick={() => setEditingTopic(true)}>Follow a topic</button>
+              </div>
             ) : topicBuilding ? (
               <div className="following-topic-note" role="status">
                 Finding papers about “{topic.data.text}”. This will take a few minutes. They’ll appear here as they are found.
               </div>
             ) : null)}
+
+            {following && !!user && <TopicDialog open={editingTopic} onOpenChange={setEditingTopic} />}
 
             {topicOnly && topic.data && (
               <div className="following-topic-note following-topic-filter" role="status">
@@ -591,7 +597,7 @@ const FeedView: React.FC<{ following?: boolean }> = ({ following = false }) => {
             )}
 
             {(following && !auth?.isLoading && !user) || noFollows ? (
-              <FollowingIntro popularTasks={popularTasks} />
+              <FollowingIntro popularTasks={popularTasks} openTopic={!hadFollows} />
             ) : isLoading ? (
               <div className="paper-list">
                 {Array.from({ length: 6 }).map((_, i) => (
