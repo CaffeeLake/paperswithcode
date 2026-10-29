@@ -51,9 +51,9 @@ The goal is to split up those tasks in the future.
 - `text-classification` — Text classification
 - `named-entity-recognition` — Named Entity Recognition
 - `text-to-sql` — Text-to-SQL
+- `natural-language-inference` — Natural Language Inference
 - `relation-extraction` — Relation Extraction
 - `ai-generated-text-detection` — AI-Generated Text Detection
-- `fake-news-detection` — Fake News Detection
 
 ### Other
 
@@ -118,6 +118,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `6d-pose-estimation` — 6D Pose Estimation
 - `action-anticipation` — Action Anticipation
 - `action-recognition` — Action Recognition
+- `age-estimation` — Age Estimation
 - `agent-swarms` — Agent Swarms
 - `agents` — Agents
 - `ai-weather-forecasting` — AI Weather Forecasting
@@ -143,6 +144,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `camouflaged-object-detection` — Camouflaged object detection
 - `causal-inference` — Causal Inference
 - `change-detection` — Change Detection
+- `chart-understanding` — Chart Understanding
 - `classic-language-modeling` — Classic Language Modeling
 - `classic-reinforcement-learning` — Classic Reinforcement Learning
 - `click-through-rate-prediction` — Click-Through Rate Prediction
@@ -155,7 +157,9 @@ This compact index contains every current task and subtask. Treat names and slug
 - `computer-aided-design` — Computer-Aided Design
 - `constituency-parsing` — Constituency Parsing
 - `continual-learning` — Continual Learning
+- `continual-test-time-adaptation` — Continual Test-Time Adaptation
 - `continuous-control` — Continuous Control
+- `coreference-resolution` — Coreference Resolution
 - `cross-view-object-correspondence` — Cross-view object correspondence
 - `crowd-counting` — Crowd Counting
 - `cybersecurity` — Cybersecurity
@@ -163,6 +167,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `deepfake-detection` — Deepfake Detection
 - `depth-completion` — Depth Completion
 - `depth-estimation` — Depth estimation
+- `dialect-identification` — Dialect Identification
 - `dialogue-state-tracking` — Dialogue State Tracking
 - `document-image-rectification` — Document Image Rectification
 - `document-layout-analysis` — Document Layout Analysis
@@ -174,15 +179,20 @@ This compact index contains every current task and subtask. Treat names and slug
 - `egocentric-vision` — Egocentric Vision
 - `embedding-models` — Embedding models
 - `emotion-recognition` — Emotion Recognition
+- `end-to-end-autonomous-driving` — End-to-End Autonomous Driving
+- `entity-resolution` — Entity Resolution
 - `entity-typing` — Entity Typing
 - `face-anti-spoofing` — Face Anti-Spoofing
+- `face-detection` — Face Detection
 - `face-recognition` — Face Recognition
 - `face-verification` — Face Verification
+- `facial-expression-recognition` — Facial Expression Recognition
 - `facial-landmark-detection` — Facial Landmark Detection
 - `fake-news-detection` — Fake News Detection
 - `fall-detection` — Fall Detection
 - `few-shot-class-incremental-learning` — Few-Shot Class-Incremental Learning
 - `few-shot-object-detection` — Few-Shot Object Detection
+- `few-shot-segmentation` — Few-Shot Segmentation
 - `finance` — Finance
 - `full-duplex-spoken-dialogue` — Full-Duplex Spoken Dialogue
 - `gaze-estimation` — Gaze Estimation
@@ -216,9 +226,11 @@ This compact index contains every current task and subtask. Treat names and slug
 - `image-segmentation` — Image segmentation
 - `image-super-resolution` — Image super-resolution
 - `image-understanding` — Image Understanding
+- `image-text-retrieval` — Image-Text Retrieval
 - `image-to-image-translation` — Image-to-Image Translation
 - `instance-segmentation` — Instance Segmentation
 - `instruction-following` — Instruction Following
+- `intent-detection` — Intent Detection
 - `inverse-rendering` — Inverse Rendering
 - `knowledge-graph-completion` — Knowledge Graph Completion
 - `knowledge-tracing` — Knowledge Tracing
@@ -230,12 +242,16 @@ This compact index contains every current task and subtask. Treat names and slug
 - `long-horizon-agents` — Long-Horizon Agents
 - `low-light-image-enhancement` — Low-Light Image Enhancement
 - `machine-translation` — Machine Translation
+- `machine-unlearning` — Machine Unlearning
 - `materials-and-chemistry` — Materials & Chemistry
 - `math` — Mathematics
+- `medical-image-segmentation` — Medical Image Segmentation
 - `medical-imaging` — Medical Imaging
 - `medical-question-answering` — Medical Question Answering
 - `medical-visual-question-answering` — Medical Visual Question Answering
 - `membership-inference` — Membership Inference
+- `meta-learning` — Meta-Learning
+- `micro-expression-recognition` — Micro-Expression Recognition
 - `molecular-property-prediction` — Molecular Property Prediction
 - `motion-generation` — Motion Generation
 - `motion-sensing` — Motion Sensing
@@ -244,6 +260,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `multi-label-image-classification` — Multi-label Image Classification
 - `multimodal-sentiment-analysis` — Multimodal Sentiment Analysis
 - `named-entity-recognition` — Named Entity Recognition
+- `natural-language-inference` — Natural Language Inference
 - `no-reference-image-quality-assessment` — No-Reference Image Quality Assessment
 - `node-classification` — Node Classification
 - `non-rigid-3d-shape-correspondence` — Non-rigid 3D Shape Correspondence
@@ -256,11 +273,14 @@ This compact index contains every current task and subtask. Treat names and slug
 - `omni-models` — Omni models
 - `on-the-fly-category-discovery` — On-the-Fly Category Discovery
 - `open-set-recognition` — Open-Set Recognition
+- `open-vocabulary-object-detection` — Open-Vocabulary Object Detection
 - `optical-flow` — Optical Flow
 - `oriented-object-detection` — Oriented Object Detection
+- `panoptic-segmentation` — Panoptic Segmentation
 - `part-of-speech-tagging` — Part-of-Speech Tagging
 - `person-re-identification` — Person Re-Identification
 - `pii-detection` — PII Detection
+- `pitch-estimation` — Pitch Estimation
 - `point-cloud-registration` — Point Cloud Registration
 - `pose-estimation` — Pose Estimation
 - `procedural-generalization` — Procedural Generalization
@@ -284,6 +304,8 @@ This compact index contains every current task and subtask. Treat names and slug
 - `scene-text-detection` — Scene Text Detection
 - `scene-text-recognition` — Scene Text Recognition
 - `semi-supervised-image-classification` — Semi-Supervised Image Classification
+- `semi-supervised-object-detection` — Semi-Supervised Object Detection
+- `sentiment-analysis` — Sentiment Analysis
 - `sequential-recommendation` — Sequential Recommendation
 - `session-based-recommendation` — Session-Based Recommendation
 - `skeleton-based-action-recognition` — Skeleton-based Action Recognition
@@ -317,6 +339,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `time-series-anomaly-detection` — Time Series Anomaly Detection
 - `time-series-classification` — Time-series classification
 - `time-series-forecasting` — Time-series forecasting
+- `topic-modeling` — Topic Modeling
 - `traffic-forecasting` — Traffic Forecasting
 - `trajectory-prediction` — Trajectory Prediction
 - `unsupervised-domain-adaptation` — Unsupervised Domain Adaptation
@@ -328,6 +351,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `video-generation` — Video generation
 - `video-inpainting` — Video Inpainting
 - `video-matting` — Video Matting
+- `video-object-detection` — Video Object Detection
 - `video-quality-assessment` — Video Quality Assessment
 - `video-question-answering` — Video Question Answering
 - `video-restoration` — Video Restoration
