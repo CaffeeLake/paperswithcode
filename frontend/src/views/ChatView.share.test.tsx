@@ -71,20 +71,18 @@ vi.mock("@/lib/authContext", () => ({
     isLoading: mocks.authLoading,
   }),
 }));
-vi.mock("@/components/ui/use-toast", () => ({
+vi.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: mocks.toast }),
 }));
-vi.mock("@/components/HfSignInButton", () => ({
+vi.mock("@/lib/apiUrl", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/apiUrl")>(),
   hfLoginUrl: mocks.hfLoginUrl,
 }));
 vi.mock("@/lib/chatSessions", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/lib/chatSessions")>();
   return {
     ...original,
-    getSession: mocks.getSession,
     listSessions: mocks.listSessions,
-    getChatModels: mocks.getChatModels,
-    createOrRefreshShare: mocks.createShare,
     toUiMessages: () => mocks.messages,
   };
 });
@@ -137,6 +135,9 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   vi.unstubAllEnvs();
+  vi.spyOn(chatApi, "getSession").mockImplementation((id) => mocks.getSession(id));
+  vi.spyOn(chatApi, "getModels").mockImplementation(() => mocks.getChatModels());
+  vi.spyOn(chatApi, "createOrRefreshShare").mockImplementation((id) => mocks.createShare(id));
   vi.spyOn(chatApi, "getOpenAIUsage").mockResolvedValue({ used_percent: 0, remaining_percent: 100, resets_at: "2026-11-01T00:00:00Z", available: true, as_of: "2026-10-03T00:00:00Z" });
   mocks.busy = false;
   mocks.activeSessionId = null;
@@ -278,7 +279,7 @@ describe("ChatView inference authorization", () => {
 
     await waitFor(() => expect(mocks.hfLoginUrl).toHaveBeenCalledWith(
       `/chat/${sessionId}`,
-      true,
+      { authorizeInference: true },
     ));
   });
 
@@ -344,7 +345,7 @@ describe("ChatView inference authorization", () => {
     await user.type(composer, "What is new in vision-language models?");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(mocks.hfLoginUrl).toHaveBeenCalledWith("/chat", true));
+    await waitFor(() => expect(mocks.hfLoginUrl).toHaveBeenCalledWith("/chat", { authorizeInference: true }));
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/v1/me/inference-billing"),
       expect.objectContaining({ credentials: "include" }),
