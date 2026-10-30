@@ -258,6 +258,7 @@ This compact index contains every current task and subtask. Treat names and slug
 - `multi-agent-reinforcement-learning` — Multi-Agent Reinforcement Learning
 - `multi-agent-systems` — Multi-Agent Systems
 - `multi-label-image-classification` — Multi-label Image Classification
+- `multi-view-clustering` — Multi-View Clustering
 - `multimodal-sentiment-analysis` — Multimodal Sentiment Analysis
 - `named-entity-recognition` — Named Entity Recognition
 - `natural-language-inference` — Natural Language Inference
